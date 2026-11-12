@@ -94,7 +94,14 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 58's waiting line
+number is the one `DaemonAPIVersion` declares, last bumped by contract 86's merge wait
+(INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's answer about
+merging the pull request's head carries `mergeWait`, the head the round waits on, the merge state
+the record holds for that head, when that state was last read, when GitHub last moved the pull
+request, how many of the fence's check runs are that head's own, and the head and state the
+architect and the reviewer were told of; an issue whose round waits on nothing there carries no
+such key, and a caller from a pod below 86 is served every issue without `mergeWait`), after
+contract 58's waiting line
 (INFRA-1100: an issue of `GET /legion/v1/state` that `admission.waiting` names carries
 `waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
 an issue the list does not name carries no such key, and a caller
