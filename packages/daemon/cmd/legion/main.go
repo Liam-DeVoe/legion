@@ -93,27 +93,28 @@ type commandEntry struct {
 }
 
 var commands = map[string]commandEntry{
-	"version":        {runVersion, "print the version and the commit the binary was built from"},
-	"start":          {runStart, "run the Legion daemon from legion.yaml in the foreground; --check-config validates the file and exits"},
-	"stop":           {runStop, "stop the daemon registered for legion.yaml's project"},
-	"state":          {runState, "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)"},
-	"legions":        {runLegions, "list the daemons registered on this machine"},
-	"status":         {runStatus, "say whether a team's daemon is running, or set an issue's Dispatch status"},
-	"restart":        {runRestart, "stop a registered daemon and start it again from the configuration it recorded"},
-	"claude-bridge":  {runClaudeBridge, "run Claude Code in Oh My Pi's place under worker-shim, for a role worker_backends puts on claude"},
-	"worker-shim":    {runWorkerShim, "bridge an agent's Oh My Pi to the daemon's worker stream (the daemon starts it in every pod)"},
-	"launcher":       {runLauncher, "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command"},
-	"model-token":    {runModelToken, "sign a pod in to Cognito with its service-account token and print the access token (a model apiKey command)"},
-	"claims":         {runClaims, "the operator's hand on the daemon's claims"},
-	"sessions":       {runSessions, "copy recorded session files into Oh My Pi's session database (runtime.kubernetes.session_store postgres)"},
-	"probe-boot":     {runProbeBoot, "run a Kubernetes daemon's cluster check and worker image probe from legion.yaml, with no workflow, and exit"},
-	"probe-image":    {runProbeImage, "run the worker image's launch probes (the image build and the daemon's probe Sandbox run it)"},
-	"workspace-init": {runWorkspaceInit, "an issue pod's init containers: fetch the repository, clone the skills marketplace, provision the issue's workspace; and a repository cache pod's process"},
-	"skills-check":   {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
-	"controller":     {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
-	"git-credential": {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
-	"gh":             {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
-	"leak-check":     {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
+	"version":          {runVersion, "print the version and the commit the binary was built from"},
+	"config-reference": {runConfigReference, "print legion.yaml's key table as JSON: every top-level key with its default, whether it is required and what it does, and the described nested keys under it"},
+	"start":            {runStart, "run the Legion daemon from legion.yaml in the foreground; --check-config validates the file and exits"},
+	"stop":             {runStop, "stop the daemon registered for legion.yaml's project"},
+	"state":            {runState, "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)"},
+	"legions":          {runLegions, "list the daemons registered on this machine"},
+	"status":           {runStatus, "say whether a team's daemon is running, or set an issue's Dispatch status"},
+	"restart":          {runRestart, "stop a registered daemon and start it again from the configuration it recorded"},
+	"claude-bridge":    {runClaudeBridge, "run Claude Code in Oh My Pi's place under worker-shim, for a role worker_backends puts on claude"},
+	"worker-shim":      {runWorkerShim, "bridge an agent's Oh My Pi to the daemon's worker stream (the daemon starts it in every pod)"},
+	"launcher":         {runLauncher, "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command"},
+	"model-token":      {runModelToken, "sign a pod in to Cognito with its service-account token and print the access token (a model apiKey command)"},
+	"claims":           {runClaims, "the operator's hand on the daemon's claims"},
+	"sessions":         {runSessions, "copy recorded session files into Oh My Pi's session database (runtime.kubernetes.session_store postgres)"},
+	"probe-boot":       {runProbeBoot, "run a Kubernetes daemon's cluster check and worker image probe from legion.yaml, with no workflow, and exit"},
+	"probe-image":      {runProbeImage, "run the worker image's launch probes (the image build and the daemon's probe Sandbox run it)"},
+	"workspace-init":   {runWorkspaceInit, "an issue pod's init containers: fetch the repository, clone the skills marketplace, provision the issue's workspace; and a repository cache pod's process"},
+	"skills-check":     {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
+	"controller":       {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
+	"git-credential":   {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
+	"gh":               {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
+	"leak-check":       {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
 }
 
 // helpRequested says whether a command's first argument asks for its usage.
@@ -626,7 +627,9 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stdout, line)
 	}
 	fmt.Fprintln(stdout, blockedSummary(state.Admission.Blocked))
-	fmt.Fprintln(stdout, memorySummary(state.Issues))
+	for _, line := range experimentLines(state.Settings, state.Daemon.Project, state.Issues) {
+		fmt.Fprintln(stdout, line)
+	}
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
@@ -740,42 +743,77 @@ func waitingLineLines(waiting []string, issues map[string]api.Issue) []string {
 // `legion state --json`.
 const waitingLineNamedCap = 10
 
-// memorySummary is the one line an operator reads for the memory groups the project's work was
-// drawn into: how many issues carry a draw at all, and how many of those under each group and
-// mode, in group and then mode order, so two runs over one state print one line.
+// experimentLines are the lines an operator reads for the experiments the deployment declares
+// (the daemon's own project): one per experiment, in the order the daemon's loader declares
+// them — the `memory` block's experiment first, then the `experiments` key's own in the file's
+// order (api.ProjectSettings.DeclaredExperiments) — counting how many issues hold each arm of
+// it. An experiment no issue holds is `none` after its name, as a deployment that has drawn
+// nothing has always read.
 //
-// It counts issues, and not the trees the draw is made for, because the state carries no tree: a
-// draw would have to stand for its tree, and it cannot. Every issue of a tree carries its root's
-// draw, and a tree handed over as one of its own carries its old tree's draw verbatim — the
-// group, the mode and the instant alike — so two trees share one draw and no draw is a tree's
-// name. It names no issue either: the per-issue values are in `legion state --json`, where a line
-// per issue would print hundreds on a live deployment.
-func memorySummary(issues map[string]api.Issue) string {
-	type groupMode struct{ group, mode string }
-	counts := map[groupMode]int{}
-	drawn := 0
+// The list is built from the settings and not from `settings.projects.<KEY>.experiments` alone,
+// because the two keys a project declares an experiment with are carried apart there: a
+// deployment that writes the `memory` block and no `experiments` key — which is what this fleet
+// runs — declares one experiment and carries an empty `experiments`, and reading that key alone
+// would print `experiments: none` while every issue holds a memory assignment.
+//
+// It counts issues, and not the trees a tree experiment is drawn for, because the state carries
+// no tree: a draw would have to stand for its tree, and it cannot. Every issue of a tree carries
+// its root's draw, and a tree handed over as one of its own carries its old tree's draw verbatim
+// — the arm, the mode and the instant alike — so two trees share one draw and no draw is a
+// tree's name. It names no issue either: the per-issue answers are in `legion state --json`,
+// where a line per issue would print hundreds on a live deployment.
+//
+// Every project declares at least the memory experiment, so there is always a line: a project
+// whose settings carry no `memory` block and no experiment of its own declares that one at mode
+// off (config.Project.ExperimentsDeclared), and its line counts the arms its issues hold —
+// `memory: none` for a deployment that has drawn nothing yet, which is the line such a
+// deployment read before any experiment was declared.
+func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
+	declared := settings.Projects[project].DeclaredExperiments(project)
+	counts := make(map[string]map[string]int, len(declared))
 	for _, issue := range issues {
-		if issue.MemoryGroup == "" {
-			continue
+		for _, assignment := range issue.Assignments {
+			held, counted := counts[assignment.Experiment]
+			if !counted {
+				held = map[string]int{}
+				counts[assignment.Experiment] = held
+			}
+			held[assignment.Variant]++
 		}
-		drawn++
-		counts[groupMode{group: issue.MemoryGroup, mode: issue.MemoryDrawMode}]++
 	}
-	if drawn == 0 {
-		return "memory: none"
+	lines := make([]string, len(declared))
+	for i, experiment := range declared {
+		lines[i] = experimentLine(experiment.Name, counts[experiment.Name])
 	}
-	kinds := slices.SortedFunc(maps.Keys(counts), func(a, b groupMode) int {
-		return cmp.Or(cmp.Compare(a.group, b.group), cmp.Compare(a.mode, b.mode))
-	})
-	named := make([]string, len(kinds))
-	for i, kind := range kinds {
-		named[i] = fmt.Sprintf("%d %s (%s)", counts[kind], kind.group, kind.mode)
+	return lines
+}
+
+// experimentLine is one experiment's line: how many issues hold an arm of it at all, and how
+// many of those under each arm, in arm order, so two runs over one state print one line. An arm
+// an issue was settled at no variant under — a hand-over out of a tree that held no row for the
+// experiment — is `no variant`, which is an answer and no arm, told apart from an issue the
+// experiment never reached, which holds no row and is counted in nothing.
+func experimentLine(name string, counts map[string]int) string {
+	held := 0
+	for _, count := range counts {
+		held += count
+	}
+	if held == 0 {
+		return name + ": none"
+	}
+	named := make([]string, 0, len(counts))
+	for _, variant := range slices.Sorted(maps.Keys(counts)) {
+		arm := variant
+		if arm == "" {
+			arm = "no variant"
+		}
+		named = append(named, fmt.Sprintf("%d %s", counts[variant], arm))
 	}
 	noun := "issues"
-	if drawn == 1 {
+	if held == 1 {
 		noun = "issue"
 	}
-	return fmt.Sprintf("memory: %d %s — %s", drawn, noun, strings.Join(named, ", "))
+	return fmt.Sprintf("%s: %d %s — %s", name, held, noun, strings.Join(named, ", "))
 }
 
 // awaitingSummary is the one line an operator reads for the roots that wait on a person
