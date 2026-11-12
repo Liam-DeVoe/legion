@@ -82,9 +82,10 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 // no line fail here: a body with the keys gone and nothing anywhere saying so is the state this
 // requirement exists to end, where an absent fact and a withheld fact read alike.
 func TestANarrowedBodySaysSo(t *testing.T) {
-	// A caller one contract below the mark is below that narrowing and above every other row of
-	// stateNarrowings, so its request writes exactly one line and the line below names the keys
-	// of that one arm.
+	// A caller one contract below the mark is below that narrowing, below mergeWaitContract's
+	// (the one row above it, which the populated state carries an object for) and above every
+	// other row of stateNarrowings, so its request writes exactly two lines, lowest contract
+	// first, and the first names the keys of the mark's own arm.
 	t.Run("a caller below the contract is told nothing, and the log says what was taken", func(t *testing.T) {
 		const remote = statePodAddr + ":41000"
 		body, narrowings := stateNarrowed(t, populatedState(t), remote, podClaims(recordFieldsContract-1))
@@ -100,9 +101,12 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 
-		if len(narrowings) != 1 {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want the one of the mark's own contract: %+v",
+		if len(narrowings) != 2 {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want the mark's own contract's and mergeWaitContract's: %+v",
 				len(narrowings), recordFieldsContract-1, narrowings)
+		}
+		if !strings.Contains(narrowings[1].Dropped, mergeWaitField) {
+			t.Errorf("the second line says it dropped %q, want the row above the mark's, which drops %s", narrowings[1].Dropped, mergeWaitField)
 		}
 		line := narrowings[0]
 		if line.Caller != remote || line.Pod != statePodUID {
@@ -123,6 +127,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 
 	// The body of a caller at the contract: the two numbers stand beside the record whose keys
 	// the same contract added, so a reader that has the record can say which contract it reads.
+	// The one narrowing such a caller can meet is mergeWaitContract's, the row above it, and none
+	// may take the record.
 	t.Run("a caller at the contract carries the two numbers beside the record", func(t *testing.T) {
 		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(recordFieldsContract))
 
@@ -140,8 +146,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 					recordFieldsContract, key, body)
 			}
 		}
-		if len(narrowings) != 0 {
-			t.Errorf("the daemon narrowed the body of a caller at %d: %+v", recordFieldsContract, narrowings)
+		for _, line := range narrowings {
+			if line.Dropped != "the issues' "+mergeWaitField {
+				t.Errorf("the daemon narrowed the body of a caller at %d by more than the row above it: %+v", recordFieldsContract, narrowings)
+			}
 		}
 	})
 
