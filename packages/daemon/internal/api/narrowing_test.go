@@ -105,8 +105,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want the mark's own contract's and mergeWaitContract's: %+v",
 				len(narrowings), recordFieldsContract-1, narrowings)
 		}
-		if !strings.Contains(narrowings[1].Dropped, mergeWaitField) {
-			t.Errorf("the second line says it dropped %q, want the row above the mark's, which drops %s", narrowings[1].Dropped, mergeWaitField)
+		if !strings.Contains(narrowings[1].Dropped, MergeWaitField) {
+			t.Errorf("the second line says it dropped %q, want the row above the mark's, which drops %s", narrowings[1].Dropped, MergeWaitField)
 		}
 		line := narrowings[0]
 		if line.Caller != remote || line.Pod != statePodUID {
@@ -147,7 +147,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 		for _, line := range narrowings {
-			if line.Dropped != "the issues' "+mergeWaitField {
+			if line.Dropped != "the issues' "+MergeWaitField {
 				t.Errorf("the daemon narrowed the body of a caller at %d by more than the row above it: %+v", recordFieldsContract, narrowings)
 			}
 		}

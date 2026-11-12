@@ -240,7 +240,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				if carries, want := view["waitingLine"] != nil, tc.line && lined[key]; carries != want {
 					t.Errorf("issue %s of %s carries a place in the waiting line = %v, want %v", key, body, carries, want)
 				}
-				if carries, want := view[mergeWaitField] != nil, tc.wait && waits[key]; carries != want {
+				if carries, want := view[MergeWaitField] != nil, tc.wait && waits[key]; carries != want {
 					t.Errorf("issue %s of %s carries what its round waits on from GitHub = %v, want %v", key, body, carries, want)
 				}
 				if tc.memory {
@@ -333,7 +333,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 					}
 				}
 				if !tc.wait {
-					delete(issue, mergeWaitField)
+					delete(issue, MergeWaitField)
 				}
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
