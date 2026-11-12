@@ -31,6 +31,14 @@ import {
   documentRoute,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import {
+  CLOSED_ISSUE_REMOVE_REFUSAL,
+  CLOSED_ISSUE_RENAME_REFUSAL,
+  CorrectTitle,
+  correctionIsOffered,
+  RemoveDocument,
+  removalIsOffered,
+} from "./DocumentWayBack";
 
 export function artifactVersionUrl(artifactID: string, version: number): string {
   return `/api/v1/artifacts/${encodeURIComponent(artifactID)}/versions/${version}`;
@@ -86,6 +94,10 @@ export function ArtifactHeader({
   // issue or project; its page is under the agent's session.
   const agentRoute = documentRoute(artifact);
   const agentSession = agentRoute.kind === "agent-artifact" ? agentRoute.session : undefined;
+  // A project's document is not removed, and an agent's conversation holds files rather than
+  // documents: the removal is the issue document's alone. A `const` keeps the narrowing inside
+  // the callback below.
+  const issueKey = artifact.issue_key;
 
   useEffect(() => {
     if (!highlight) {
@@ -199,6 +211,27 @@ export function ArtifactHeader({
                 >
                   Name version
                 </button>
+                {!correctionIsOffered(artifact) ? null : (
+                  <CorrectTitle
+                    artifact={artifact}
+                    refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
+                  />
+                )}
+                {issueKey === null || !removalIsOffered(artifact) ? null : (
+                  <RemoveDocument
+                    artifact={artifact}
+                    onRemoved={() =>
+                      // The route stays on the document the issue no longer holds, so the
+                      // artifacts panel's own branch says it is gone rather than failing to
+                      // load. A version route is normalised away first: the version the person
+                      // was reading went with the document.
+                      navigate(
+                        buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug })
+                      )
+                    }
+                    refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+                  />
+                )}
                 <div className="flex items-center gap-3">
                   {version === undefined ? null : (
                     <button
