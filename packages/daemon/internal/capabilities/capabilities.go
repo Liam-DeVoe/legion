@@ -406,9 +406,12 @@ const heldSequence = `\x{FFFE}|\x{FDD0}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 // also ran across one would let one run hold a start after each opener in it.
 const jwtFirstHeldSequence = `\x{FFFE}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 
-// bearerRule is the bare bearer rule's pattern: its label, its value, and the `://` after the
-// value where one follows. RE2 has no lookahead, so the rule takes that `://` into its match and
-// redactBearer reads it there, rather than the rule standing itself down before a URL.
+// apiKeyRule and bearerRule are the API-key and bare bearer rules' patterns: each a label, its
+// value, and the `://` after the value where one follows. RE2 has no lookahead, so each rule takes
+// that `://` into its match and redactLabeledValue reads it there, rather than the rule standing
+// itself down before a URL.
+var apiKeyRule = regexp.MustCompile(`(?i)((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*\\?["']?)((?:[A-Za-z0-9._~+/=*-]|` + heldSequence + `)+)(://)?`)
+
 var bearerRule = regexp.MustCompile(`(?i)\b(bearer[ \x{FFFE}\x{FFFF}]+)((?:[A-Za-z0-9._~+/=*-]|` + heldSequence + `)+)(://)?`)
 
 // urlScheme is a whole value that is a URL scheme: what the userinfo rule takes before its `://`.
@@ -422,20 +425,23 @@ var urlScheme = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*$`)
 // was escaped again. Order matters: the Authorization header runs before the bare bearer rule, so a
 // header under any scheme loses its whole value and keeps a listed scheme's label, and the GitHub
 // rule before the JWT rule, so a stateless installation token (`ghs_<app id>_<JWT>`) reads
-// `ghs_***`. Where one rule's mask would take what another rule reads, the mask stands back: a
-// bare bearer value takes no `:`, so a URL after a bearer label (`Bearer http://user:pw@host`)
-// would be the value `http`, and masking it would take the scheme the userinfo rule anchors on,
-// since `***://` is no scheme — the userinfo would never be masked at all. So the bearer rule
-// takes the `://` after its value as well and redactBearer gives such a match back unchanged. The
-// passes then do the rest, as they do for a userinfo the Authorization rule opens: where a control
-// rune parts a userinfo from its `@` (`Bearer http://u:pw`, a control rune, an Authorization value
-// that runs across spaces to a `)` before the `@`), the Authorization rule masks what stood
-// between them on the first pass and the userinfo rule reaches its `@` on the next. The JWT rule
-// starts nowhere its first segment's class could have run on from: not after held, a C1 introducer
-// or a value character, and not after a held `[` and its parameters, followed by any final byte
-// or by a `\uXXXX` escape whose backslash is that final byte. The plugin
-// says so with a lookbehind; here the rule's last alternative matches that held prefix with `eyJ`
-// and redactJWT gives it back unchanged. It may start after an opener, which its first segment does
+// `ghs_***`. Where one rule's mask would take what another rule reads, the mask stands back:
+// an API-key value and a bare bearer value take no `:`, so a URL after either label (`api-key:
+// http://user:pw@host`, `Bearer http://user:pw@host`) would be the value `http`, and masking
+// it would take the scheme the userinfo rule anchors on, since `***://` is no scheme — the
+// userinfo would never be masked at all. So both rules take the `://` after their value as well,
+// and redactLabeledValue gives such a match back unchanged; a new rule whose value class stops
+// at a `:`, so that a URL's scheme can be its whole value, must stand back before `://` in the
+// same way. The passes then do the rest, as they do for a userinfo the Authorization rule opens:
+// where a control rune parts a userinfo from its `@` (`Bearer http://u:pw`, a control rune,
+// an Authorization value that runs across spaces to a `)` before the `@`), the Authorization
+// rule masks what stood between them on the first pass and the userinfo rule reaches its `@`
+// on the next. The JWT rule starts nowhere its first segment's class could have run on from:
+// not after held, a C1 introducer or a value character, and not after a held `[` and its
+// parameters, followed by any final byte or by a `\uXXXX` escape whose backslash is that final
+// byte. The plugin says so with a lookbehind; here the rule's last alternative matches that
+// held prefix with `eyJ` and redactJWT gives it back unchanged. It may start after an opener,
+// which its first segment does
 // not run across, and right after a percent or `\u` escape that no held sequence closes. A JWT may
 // also start right after held when its first segment crosses no held character and no opener, only
 // a C1 introducer, so a JWT right after a replacement character is masked in the first pass, before
@@ -469,8 +475,9 @@ var urlScheme = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*$`)
 // space in the line may stand for a control rune the rule read across. A rule whose value needs
 // nothing after it (password, Authorization, the API-key headers, the JSON members, bearer, the
 // query parameter) masks a value the cut parts to the end of the text, so it is never open at a
-// cut; the `://` the bearer rule takes after its value is no exception, since it holds no space
-// and a cut where the whole text has whitespace never parts it from the value before it. A token
+// cut; the `://` the API-key and bearer rules take after their value is no exception, since it
+// holds no space and a cut where the whole text has whitespace never parts it from the value
+// before it. A token
 // rule (GitHub, the JWT, the prefixed tokens, AIza, AKIA) needs a least length or a
 // terminator, but matches within one run with no whitespace in it, which a cut where the whole text
 // has whitespace keeps whole, and takes no `*` in its value, so no other rule's `***` joins it to
@@ -488,9 +495,9 @@ var credentialRules = []struct {
 	{pattern: regexp.MustCompile(`(?i)([?&](?:token|key|secret|password|access_token|accesstoken|refresh_token|id_token|auth_token|private_token|api_key|apikey|client_secret|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^ &#"'<>]+`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?i)\b(password[ \x{FFFE}\x{FFFF}]*=[ \x{FFFE}\x{FFFF}]*)(?:(')(?:[^'\\]|\\.)*('?)|[^ &#"'<>]+)`), replacement: "${1}${2}***${3}"},
 	{pattern: regexp.MustCompile(`(?i)(authorization\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*)(?:(\\["'](?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)[^"'\\]+|(["'](?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)(?:[^"'\\]|\\.)+|(\[?(?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)[^)\]}>]+)`), replacement: "${1}${2}${3}${4}***"},
-	{pattern: regexp.MustCompile(`(?i)((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*\\?["']?)(?:[A-Za-z0-9._~+/=*-]|` + heldSequence + `)+`), replacement: "${1}***"},
+	{pattern: apiKeyRule, replace: func(m string) string { return redactLabeledValue(apiKeyRule, m) }},
 	{pattern: regexp.MustCompile(`(?i)(\\?["'](?:api_key|access_token)\\?["'][ \x{FFFE}\x{FFFF}]*:[ \x{FFFE}\x{FFFF}]*\\?["'])[^"'\\]+`), replacement: "${1}***"},
-	{pattern: bearerRule, replace: redactBearer},
+	{pattern: bearerRule, replace: func(m string) string { return redactLabeledValue(bearerRule, m) }},
 	{pattern: regexp.MustCompile(`\b(gh[pousr]_|github_pat_)(?:[A-Za-z0-9._-]|` + heldSequence + `){20,}`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?:\x{FFFF}eyJ(?:[A-Za-z0-9_-]|\x{FFFE}){8,}|\x{FFFF}\[[0-?]*(?:[@-~]|\\u[0-9A-Fa-f]{4})?eyJ[A-Za-z0-9_-]*\x{FFFE}(?:[A-Za-z0-9_-]|\x{FFFE})*|(?:^|[^A-Za-z0-9_\x{FFFE}\x{FFFF}-]|%[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4})eyJ(?:[A-Za-z0-9_-]|` + jwtFirstHeldSequence + `){8,})\.(?:[A-Za-z0-9_-]|` + heldSequence + `){8,}\.(?:[A-Za-z0-9_-]|` + heldSequence + `)*|\x{FFFF}\[[0-?]*(?:[@-~]?|\\u[0-9A-Fa-f]{4})eyJ`), replace: redactJWT},
 	{pattern: regexp.MustCompile(`\b(sk-|dsp_|ddsat_|ddpat_|ddapp_|ya29\.|xox[a-z]-|glpat-|npm_)(?:[A-Za-z0-9_-]|` + heldSequence + `){20,}`), replacement: "${1}***"},
@@ -498,13 +505,15 @@ var credentialRules = []struct {
 	{pattern: regexp.MustCompile(`\b(AKIA|ASIA)(?:(?:` + heldSequence + `)*[A-Z0-9]){16}\b`), replacement: "${1}***"},
 }
 
-// redactBearer is a bearer rule match redacted. A value that is a URL scheme followed by `://` is
-// no bearer token but the head of a URL (`Bearer http://user:pw@host`), and masking it would leave
-// `***://`, which is no scheme for the userinfo rule to anchor on, so such a match is given back
-// unchanged and the userinfo rule masks the userinfo instead. Any other match keeps its label, and
-// the `://` after its value, which is text of its own, and replaces the value.
-func redactBearer(match string) string {
-	parts := bearerRule.FindStringSubmatch(match)
+// redactLabeledValue is an API-key or bearer rule match redacted. Each rule takes the `://` after
+// its value into its match, since RE2 has no lookahead. A value that is a URL scheme followed by
+// `://` is no credential but the head of a URL (`api-key: http://user:pw@host`, `Bearer
+// http://user:pw@host`), and masking it would leave `***://`, which is no scheme for the userinfo
+// rule to anchor on, so such a match is given back unchanged and the userinfo rule masks the
+// userinfo instead. Any other match keeps its label, and the `://` after its value, which is text
+// of its own, and replaces the value.
+func redactLabeledValue(rule *regexp.Regexp, match string) string {
+	parts := rule.FindStringSubmatch(match)
 	if parts[3] != "" && urlScheme.MatchString(parts[2]) {
 		return match
 	}

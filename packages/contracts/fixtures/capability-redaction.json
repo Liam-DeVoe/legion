@@ -188,6 +188,12 @@
       "want": "{\\\"x-api-key\\\":\\\"***\\\"}"
     },
     {
+      "pattern": "api-key-header",
+      "name": "a URL after the label, whose scheme the rule keeps so that the userinfo is masked",
+      "detail": "api-key: http://u:SECRET@h",
+      "want": "api-key: http://***@h"
+    },
+    {
       "pattern": "json-member",
       "name": "an api_key member",
       "detail": "{\"api_key\":\"jsonSecret123\",\"model\":\"x\"}",
@@ -714,6 +720,12 @@
       "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign",
       "detail": "Bearer http://u:SECRET\u0007Authorization:a b)@h",
       "want": "Bearer http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after an api-key label, a userinfo a control character parts from its at sign",
+      "detail": "api-key: http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: http://***@h"
     },
     {
       "pattern": "cleanup",

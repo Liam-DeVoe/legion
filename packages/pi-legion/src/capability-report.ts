@@ -472,11 +472,14 @@ function truncateUtf8(text: string, max: number): string {
  * `packages/daemon/internal/capabilities` and in its order, which its comment explains; the shared
  * fixture names each with an example. A value class runs across a `HELD_SEQUENCE`, and a separator
  * takes a space or `HELD`. The userinfo rule starts only where a run of scheme characters starts.
- * The bearer rule stands back from a URL after its label (`Bearer http://user:pw@host`): its value
- * takes no `:`, so masking it would mask the scheme the userinfo rule anchors on, since `***://`
- * is no scheme, and the userinfo would never be masked. Its negative lookahead for a scheme and
- * `://` reads like the daemon's rule, which has no lookahead and so takes that `://` into its
- * match and gives such a match back unchanged (`redactBearer`). The JWT rule starts nowhere its
+ * The API-key and bearer rules stand back from a URL after their label (`api-key:
+ * http://user:pw@host`, `Bearer http://user:pw@host`): their value takes no `:`, so masking
+ * it would mask the scheme the userinfo rule anchors on, since `***://` is no scheme, and the
+ * userinfo would never be masked. A rule whose value class stops at a `:`, so that a URL's
+ * scheme can be its whole value, must stand back before `://` the same way, and a new such rule
+ * must too. Their negative lookahead for a scheme and `://` reads like the daemon's rules,
+ * which have no lookahead and so take that `://` into their match and give such a match back
+ * unchanged (`redactLabeledValue`). The JWT rule starts nowhere its
  * first segment's class could have run on from: not after held, a C1 introducer or a value
  * character, and not after a held `[` and its parameters, followed by any final byte or by a
  * `\uXXXX` escape whose backslash is that final byte. Its one lookbehind for the held prefix reads
@@ -506,7 +509,7 @@ const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
   ],
   [
     new RegExp(
-      String.raw`((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \ufffe\uffff]*[:=][ \ufffe\uffff]*\\?["']?)(?:[A-Za-z0-9._~+/=*-]|${HELD_SEQUENCE})+`,
+      String.raw`((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \ufffe\uffff]*[:=][ \ufffe\uffff]*\\?["']?)(?![a-z][a-z0-9+.-]*://)(?:[A-Za-z0-9._~+/=*-]|${HELD_SEQUENCE})+`,
       "gi"
     ),
     "$1***",
