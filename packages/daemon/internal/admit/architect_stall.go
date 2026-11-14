@@ -219,21 +219,16 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 // work of its entry has stood more than workflow.StrandedReleaseWake. It answers what the record
 // says, and "" for a root it does not read.
 //
-// A start of the run is the daemon's next move while a lane holds it, and otherwise while it was
-// queued at most workflow.StrandedReleaseWake ago, unless it has already run against the claim
-// and a run of it ended without success; the pass's own start (sent) is one too. The outbox's
-// start of a failed or a retired claim relaunches it on the session it kept, so a claim such a
-// start will reach is no stall: a controller woken for it would take `fresh_session`, which
-// discards the session that start resumes, and the mark the wake writes would leave a real
-// failure later in the run waking nobody. Every re-admission of a closed tree makes that shape,
-// since the linger's end retires the architect's claim and the promotion queues its start in the
-// same pass that reads this arm. A start the outbox is running is the next move as well: the
-// outbox records the start on the claim before it relaunches the claim, so for that moment the
-// claim still reads failed or retired. A start that has run against the claim and left it failed
-// or retired is no next move, though the outbox runs it again on its backoff for as long as its
-// launches fail: that claim is the failure no further send cures, which R7's second arm names, and
-// so is a claim whose start has stood owed past the bound (the architect's reading of R7 at
-// dispatch://INFRA-2614, measured by its tester on the whole daemon). A root waiting on a person
+// workflow.ArchitectRelaunchOf decides which start of the run is the daemon's next move, and the
+// pass's own start (sent) is one too. The arm waits while such a start stands because the
+// outbox's start of a failed or a retired claim relaunches it on the session it kept: a
+// controller woken for that claim would take `fresh_session`, which discards the session that
+// start resumes, and the mark the wake writes would leave a real failure later in the run waking
+// nobody. Every re-admission of a closed tree makes that shape, since the linger's end retires the
+// architect's claim and the promotion queues its start in the same pass that reads this arm. A
+// claim whose start has run against it and failed, or whose start has stood owed past the bound,
+// is the failure no further send cures, which R7's second arm names (the architect's reading of R7
+// at dispatch://INFRA-2614, measured by its tester on the whole daemon). A root waiting on a person
 // is read as workflow.Stranded reads it: the person's answer resumes its architect with a start of
 // its own (ResumeAwaitedRoot), so a failed or a retired claim of such a root is relaunched by the
 // daemon's next move too.

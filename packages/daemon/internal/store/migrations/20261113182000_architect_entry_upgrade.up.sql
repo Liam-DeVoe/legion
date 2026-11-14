@@ -142,7 +142,7 @@
 -- fill marks that arm for no root, so the first pass wakes the controller again for a root whose
 -- claim is still failed or retired then, with no start of its run that is the daemon's next move
 -- for it (none queued in the last ten minutes, or only one that has already run against the claim
--- and failed).
+-- and left it failed or retired).
 --
 -- The drop of the table and the delete of 20261113181500's row are that migration's way back, and
 -- its header says why they go together. The roll-forward makes the marks' table again, empty,
