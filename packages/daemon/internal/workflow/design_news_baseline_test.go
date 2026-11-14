@@ -38,7 +38,10 @@ func toldVersions(t *testing.T, pool *pgxpool.Pool, tree string) map[string]map[
 // that had moved with the gate would hide from its holder what that approval changed.
 //
 // Before the opening nothing is written: a registration whose document no person has approved
-// releases nothing, so neither the architect nor any holder has taken a version of it yet.
+// releases nothing, so neither the architect nor any holder has taken a version of it yet. The
+// root's own first phase waits for its open child (children-first), so at the opening's pass only
+// the child starts, and the root, still at admitted with its row given back for the wait, has no
+// holder row: no work of its own has started to take a version.
 func TestTheFirstOpeningAndEachFirstEntryTakeTheApprovedVersionsAsTheirBaseline(t *testing.T) {
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -61,20 +64,19 @@ func TestTheFirstOpeningAndEachFirstEntryTakeTheApprovedVersionsAsTheirBaseline(
 	}
 
 	// The opening starts no phase itself: admission's pass gives each issue whose first phase can
-	// start the slot it needs, and that start is each member's first working phase.
+	// start the slot it needs, and that start is each member's first working phase. The child
+	// starts; the root's own first phase waits for that open child (record.LineFacts.ChildWaits).
 	admissionPass(t, pool, engine)
-	for _, key := range []string{gatedRoot, child} {
-		if got := phaseOf(t, pool, key); got != phase.Planning {
-			t.Fatalf("%s = %s after the opening's pass, want planning", key, got)
-		}
+	if got := phaseOf(t, pool, child); got != phase.Planning {
+		t.Fatalf("%s = %s after the opening's pass, want planning", child, got)
 	}
+	assertRootWaitsOnItsChild(t, pool, gatedRoot)
 	released := map[string]map[record.DesignStep]int{
 		gatedRoot + "/architect": {record.DesignStepSpec: 4},
-		gatedRoot + "/holder":    {record.DesignStepSpec: 4},
 		child + "/holder":        {record.DesignStepSpec: 4},
 	}
 	if got := toldVersions(t, pool, gatedRoot); !reflect.DeepEqual(got, released) {
-		t.Fatalf("the told rows once the first phases started = %v, want %v: each holder takes the version approved when its work started", got, released)
+		t.Fatalf("the told rows once the first phases started = %v, want %v: each holder takes the version approved when its work started, and the waiting root has started none", got, released)
 	}
 
 	// A new version closes the gate and a person approves it: the gate opens again, at 5, and no row

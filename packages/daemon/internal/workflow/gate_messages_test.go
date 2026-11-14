@@ -207,7 +207,7 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 		LatestVersion: 1, ApprovedVersion: new(1), EverOpened: true})
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
-	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	seedTreeLifecycle(t, pool, gatedRoot)
 	took := map[record.DesignStep]int{record.DesignStepCriteria: 1, record.DesignStepSpec: 3}
 	seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
 	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)
@@ -246,7 +246,7 @@ func TestAnUnregisteredGatedStepLeavesTheMessageAndTheHoldAgreed(t *testing.T) {
 	// merger's hold lets it go and the tree's work stands released.
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 3, ApprovedVersion: new(3)})
-	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	seedTreeLifecycle(t, pool, gatedRoot)
 	engine := stepsEngine(twoSteps(), nil)
 
 	applyMirrored(t, pool, engine, "spec-4", intake.DispatchArtifact{
@@ -270,7 +270,7 @@ func TestARegistrationThatClosesTheStandingGateTellsTheMerger(t *testing.T) {
 		LatestVersion: 1, ApprovedVersion: new(1)})
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 3, ApprovedVersion: new(3)})
-	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	seedTreeLifecycle(t, pool, gatedRoot)
 	engine := stepsEngine(twoSteps(), nil)
 
 	applyMirrored(t, pool, engine, "register-spec-4", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepSpec,
@@ -297,7 +297,7 @@ func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
 	// The spec step stands at a version with its reviewer, so the merger's hold holds it.
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 4})
-	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	seedTreeLifecycle(t, pool, gatedRoot)
 	took := map[record.DesignStep]int{record.DesignStepCriteria: 1, record.DesignStepSpec: 4}
 	seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
 	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)
