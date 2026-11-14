@@ -4675,7 +4675,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   Only `Delete` and `recordDroppedStart` write a record, and a restart's delete writes none, so a consumer that goes without a `Delete` leaves the previous record standing for its 72 hours.
   Two kinds of consumer go that way: one the server removed on its inactive threshold, and one a restart deleted on a listener that then stopped before its create.
   The server's removal of a consumer on its inactive threshold writes no record, so that case keeps today's behaviour, a create at the caller's start, clamped, unless an older record of the same `envoy_stream_id` still stands.
-  Where one stands, the caller's start is lowered to that older floor plus one, and the session is given again everything stored since that floor, which its ledger drops within the limits below.
+  Where one stands, the caller's start is lowered to that older floor plus one, and the session is given again everything stored since that floor, which its ledger drops within the limits above.
   Where that floor's next message has aged out of the stream, the answer says `gap: true`, although the client may hold every message.
   Both cases need a consumer to go without a delete, which the sweep and the reaper exist to prevent, and the INFO line counts each lowered start, these included ("The log lines of a start" above).
   A record read that fails fails the create, for a caller's start as for a start of 0 (`bus.SessionConsumers.resumeFloor`), so no consumer is created that could skip what the record protects.
