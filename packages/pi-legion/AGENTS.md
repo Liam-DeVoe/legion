@@ -94,20 +94,25 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 129's merge wait
+number is the one `DaemonAPIVersion` declares, last bumped by contract 133's merge wait
 (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's
 answer about merging the pull request's head carries `mergeWait`, the head the round waits on, the
 merge state the record holds for that head, when that state was last read, when GitHub last moved
-the pull request, how many of the fence's check runs are that head's own, and the head and state
-the architect and the reviewer were told of; an issue whose round waits on nothing there carries
-no such key, and a caller from a pod below 129 is served every issue without `mergeWait`), after
-contract 123 (INFRA-3146: a phase completion names the head its evidence is about, and the route
-judges that head; no field moves on the wire), after contract 111 (dispatch://INFRA-2560:
-every issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`,
-how long it has been still, which a caller below 111 is served without), after contract 104's
-claim recoveries (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no
-process stands behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming
-`fresh_session`, and no shape the plugin parses moves), after contract 98's held list
+the pull request, how many of the fence's check runs are that head's own, and the head and state the
+architect and the reviewer were told of; an issue whose round waits on nothing there carries no such
+key, and a caller from a pod below 133 is served every issue without `mergeWait`), after contract
+132's `waiting_on_issue` (dispatch://INFRA-3036: the waiting line's `kind` gains `waiting_on_issue`,
+a started issue that gave its admission slot back to wait on another issue, and a caller from a pod
+whose claims record a contract under 132 is served such a member without its `kind`, `api.stateFor`,
+`withoutWaitingOnIssue`), after contract 123's phase completion head (dispatch://INFRA-3146: a phase
+completion names the head its evidence is about, which `handoff_complete` reads from the handoff
+record's `head` for the planner, the tester and the reviewer as well as the implementer, and no
+shape the plugin parses moves), after contract 111's tree quiet time (dispatch://INFRA-2560: every
+issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`, how long it
+has been still, which a caller below 111 is served without), after contract 104's claim recoveries
+(dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no process stands
+behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming `fresh_session`, and no shape
+the plugin parses moves), after contract 98's held list
 (dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
 each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
@@ -227,9 +232,8 @@ command (`legion controller start` ends the operator's Oh My Pi command line wit
 `/legion-controller-start`, and this plugin sends the controller's start message from that
 command, never from `session_start`; "The controller's start turn" below), after contract 40's
 `awaiting_person` phase and strict `waitingOn` issue view on `GET /legion/v1/state` (a root whose
-architect waits on a person, and what it waits on; such a root holds its admission slot, as every
-issue does from the moment the daemon starts it until its work is past its review, until it is done,
-or until Dispatch takes it out of the workflow;
+architect waits on a person, and what it waits on; such a root holds its admission slot through that
+wait (the rule: https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label);
 a 39 plugin rejects both), after contract 39's one-container issue pod (INFRA-208: a sandbox locator
 of an issue pod's role names container `roles`, and `settings` on `GET /legion/v1/state` gives
 `runtime.kubernetes.resources` as `{issue, controller}`), after contract 38's blocked issues on

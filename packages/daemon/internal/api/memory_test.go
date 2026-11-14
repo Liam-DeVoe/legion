@@ -28,10 +28,11 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // issue of it that is not working now carries its answer under `why`, each issue whose current
 // phase names a phase worker role carries the entry that role stands on and the entry it was given,
 // each reviewing root of it carries what its round waits on from GitHub, and every issue of a live
-// tree carries that tree's quiet time, so one state proves every downgrade of stateNarrowings and
-// that they compose. What the quiet-time band is measured on in finer grain — both halves on each
-// member of one tree, and neither on an issue whose tree has left the workflow — is
-// quiet_time_test.go's state of its own.
+// tree carries that tree's quiet time, so one state proves every downgrade of stateNarrowings but
+// waitingOnIssueContract's, and that they compose; it stands no member of the line of the kind that
+// contract added, whose downgrade waiting_on_issue_test.go proves. What the quiet-time band is
+// measured on in finer grain — both halves on each member of one tree, and neither on an issue
+// whose tree has left the workflow — is quiet_time_test.go's state of its own.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -104,9 +105,10 @@ var (
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys the last
 // strict reader before it knows, and the rest of the body as it is. The downgrades compose, band by
-// band, as the rows of the table below say: a pod below 46 is served none of the keys a row of
-// stateNarrowings strips, a pod in a band is served the keys of every row at or below that band's
-// contract and none of a later row's, and a pod at this daemon's declared contract
+// band, as the rows of the table below say, waitingOnIssueContract's row finding nothing to take
+// here since the fixture stands no member of its kind: a pod below 46 is served none of the keys a
+// row of stateNarrowings strips, a pod in a band is served the keys of every row at or below that
+// band's contract and none of a later row's, and a pod at this daemon's declared contract
 // (DaemonAPIVersion), a pod whose claims record no contract and a caller in no pod — the operator's
 // `legion state`, whose memory line reads the draws, whose queue line reads the wakes, whose
 // tool-call line reads the step records and whose merge-wait line reads the waits — are served all
@@ -180,9 +182,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// at 98 or above is served the list and every older pod is not.
 		held bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
-		// `treeMovedAt` and `quietHours` (quietTimeContract, 111), so a pod at 111 or above is served
-		// the measure and every older pod is not. The two arrive and leave together (withoutQuietTime),
-		// so one column answers for both.
+		// `treeMovedAt` and `quietHours` (quietTimeContract, 111), so a pod at 111 or above is
+		// served the measure and every older pod is not. The two arrive and leave together
+		// (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// wait is whether the caller is served what each reviewing issue's round waits on from
 		// GitHub (mergeWaitContract), the contract that added it, so a pod at it is served the
@@ -243,10 +245,13 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from 98 to 110, from heldContract to below quietTimeContract: the held list is
 		// served too, and every key a later row of stateNarrowings adds is held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
-		// The band from 111 to 128, from quietTimeContract to below mergeWaitContract, the last
-		// band under the declared contract: the tree quiet time is served too, and every key a
-		// later row of stateNarrowings adds is held back.
+		// The band from quietTimeContract to below waitingOnIssueContract: the tree quiet time is
+		// served too, and every key a later row of stateNarrowings adds is held back.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
+		// The band from waitingOnIssueContract to below mergeWaitContract, the last band under the
+		// declared contract: the fixture stands nothing waitingOnIssueContract's row takes, so it
+		// reads as the band below it, and `mergeWait` is still held back.
+		{name: "a pod at waitingOnIssueContract", remote: statePodAddr + ":41000", claims: podClaims(waitingOnIssueContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		{name: "a pod at mergeWaitContract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},

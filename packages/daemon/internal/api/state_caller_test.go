@@ -390,8 +390,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		held bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
 		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 111 added), so a pod at
-		// 111 or above is served the measure and every older pod is not. The two leave together
-		// (withoutQuietTime), so one column answers for both.
+		// 111 or above is served the measure and a pod still running an older plugin is not. The
+		// two leave together (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// wait is whether the caller is served what each reviewing issue's round waits on from
 		// GitHub, `mergeWait` (mergeWaitContract, the contract that added it), so a pod at it or
@@ -421,7 +421,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// and every key a later row of stateNarrowings adds is held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true},
 		// The band from quietTimeContract to below mergeWaitContract: the tree quiet time is
-		// served too, and every key a later row of stateNarrowings adds is held back.
+		// served too, and `mergeWait` is held back. waitingOnIssueContract stands inside it, and its
+		// strip takes a word of the line's `kind` and no key, so the band reads alike on either side
+		// of it; waiting_on_issue_test.go reads that word.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
@@ -511,7 +513,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go holds
 			// that half), with the two keys contract 111 added gone, each issue of a live tree's
 			// `treeMovedAt` and `quietHours` (withoutQuietTime), and with what each reviewing issue's
-			// round waits on from GitHub gone, the object contract 129 added (withoutMergeWait).
+			// round waits on from GitHub gone, the object contract 133 added (withoutMergeWait).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is.
 			var want, got map[string]any
