@@ -491,7 +491,6 @@ test("a release the reader stopped says Retry sends it again, not that it failed
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the release of this claim", "made", {
-        again: "Retry",
         method: "DELETE",
         stopped: new SendStoppedError(),
       })
@@ -519,7 +518,6 @@ test("a pin the reader stopped says Retry sends it again, not that it failed", a
     await stopTheLateWrite(view.client);
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the pin status", "saved", {
-        again: "Retry",
         method: "PUT",
         stopped: new SendStoppedError(),
       })
@@ -545,7 +543,6 @@ test("an unsubscribe the reader stopped says Retry sends it again, not that it f
     await stopTheLateWrite(view.client);
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("this agent's unsubscribe", "made", {
-        again: "Retry",
         method: "DELETE",
         stopped: new SendStoppedError(),
       })

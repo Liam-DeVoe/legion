@@ -266,7 +266,6 @@ test("a Mark read the reader stopped says what Retry does, not a message's words
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("this thread's read mark", "saved", {
-        again: "Retry",
         method: "PUT",
         stopped: new SendStoppedError(),
       })

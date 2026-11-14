@@ -19,8 +19,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   ownerRepoPattern,
   settingsFieldLabel,
@@ -287,13 +286,8 @@ export function ArchitectureSourcesSection(): ReactNode {
             <div className="mt-4">
               <QueryError
                 message={
-                  endedStopped(saveSource)
-                    ? stoppedWriteNote("the architecture source", "saved", {
-                        again: "Retry",
-                        method: saveSource.method,
-                        stopped: saveSource.error,
-                      })
-                    : apiErrorMessage(saveSource.error, "Couldn't save the architecture source.")
+                  stoppedNote(saveSource, "the architecture source", "saved") ??
+                  apiErrorMessage(saveSource.error, "Couldn't save the architecture source.")
                 }
                 onRetry={() => submitGuard.retryLast(saveSource)}
                 retrying={saveSource.isPending}
@@ -304,13 +298,8 @@ export function ArchitectureSourcesSection(): ReactNode {
             <div className="mt-4">
               <QueryError
                 message={
-                  endedStopped(deleteSource)
-                    ? stoppedWriteNote("the removal of the architecture source", "made", {
-                        again: "Retry",
-                        method: deleteSource.method,
-                        stopped: deleteSource.error,
-                      })
-                    : "Couldn't delete the architecture source."
+                  stoppedNote(deleteSource, "the removal of the architecture source", "made") ??
+                  "Couldn't delete the architecture source."
                 }
                 onRetry={deleteSource.retry}
                 retrying={deleteSource.isPending}
@@ -321,16 +310,8 @@ export function ArchitectureSourcesSection(): ReactNode {
             <div className="mt-4">
               <QueryError
                 message={
-                  endedStopped(refreshSource)
-                    ? stoppedWriteNote("the refresh of the architecture source", "made", {
-                        again: "Retry",
-                        method: refreshSource.method,
-                        stopped: refreshSource.error,
-                      })
-                    : apiErrorMessage(
-                        refreshSource.error,
-                        "Couldn't refresh the architecture source."
-                      )
+                  stoppedNote(refreshSource, "the refresh of the architecture source", "made") ??
+                  apiErrorMessage(refreshSource.error, "Couldn't refresh the architecture source.")
                 }
                 onRetry={refreshSource.retry}
                 retrying={refreshSource.isPending}

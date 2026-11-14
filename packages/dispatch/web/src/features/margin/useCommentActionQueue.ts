@@ -8,8 +8,7 @@ import {
   type WriteMethod,
 } from "../../api/client";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 
 export type CommentAction = "accept" | "reject" | "resolve" | "reopen";
 
@@ -42,13 +41,9 @@ function actionFailure(
 ): CommentActionFailure {
   return {
     id,
-    message: endedStopped(action)
-      ? stoppedWriteNote("this action", "saved", {
-          again: "Retry",
-          method: action.method,
-          stopped: action.error,
-        })
-      : apiErrorMessage(action.error, "Could not save this action."),
+    message:
+      stoppedNote(action, "this action", "saved") ??
+      apiErrorMessage(action.error, "Could not save this action."),
     retryable: !apiErrorCodeIn(action.error, permanentRefusals),
   };
 }

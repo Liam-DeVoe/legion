@@ -91,8 +91,9 @@ export function SettingsPage(): ReactNode {
         kind: "put",
         message:
           error instanceof SendStoppedError
-            ? stoppedWriteNote(`the mapping of ${variables.repo}`, "saved", {
-                again: "Retry",
+            ? // Built inside `putMapping`'s own `onError`, where its `KeyedWriteResult` is not in
+              // hand to read the method from; it is this write's own `PUT` (`useKeyedWrite` method).
+              stoppedWriteNote(`the mapping of ${variables.repo}`, "saved", {
                 method: "PUT",
                 stopped: error,
               })
@@ -150,8 +151,9 @@ export function SettingsPage(): ReactNode {
         kind: "delete",
         message:
           error instanceof SendStoppedError
-            ? stoppedWriteNote(`the removal of ${repo}'s mapping`, "made", {
-                again: "Retry",
+            ? // Built inside `deleteMapping`'s own `onError`, where its `KeyedWriteResult` is not in
+              // hand to read the method from; it is this write's own `DELETE` (`useKeyedWrite`).
+              stoppedWriteNote(`the removal of ${repo}'s mapping`, "made", {
                 method: "DELETE",
                 stopped: error,
               })

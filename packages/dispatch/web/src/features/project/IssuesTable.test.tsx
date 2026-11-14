@@ -768,7 +768,6 @@ test("Start next stops at a refused predecessor and names every issue that did n
  *  have saved it, and its Retry there asks again under its key. */
 const stoppedStep = (key: string) =>
   stoppedWriteNote(`the change to ${key}`, "saved", {
-    again: "Retry",
     method: "PATCH",
     stopped: new SendStoppedError(),
   });
@@ -844,7 +843,6 @@ test("a stopped epic creation says the epic may have been made, not a message's 
   await named;
   expect((await screen.findByRole("alert")).textContent).toContain(
     `${stoppedWriteNote("the epic “Committed once”", "made", {
-      again: "Retry",
       method: "POST",
       stopped: new SendStoppedError(),
     })} Retry it in Pending changes.`

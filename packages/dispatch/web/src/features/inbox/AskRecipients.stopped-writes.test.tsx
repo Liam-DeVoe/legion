@@ -48,7 +48,6 @@ test("AskRecipients says an unfollow the reader stopped may have been made, not 
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the unfollow", "made", {
-        again: "Retry",
         method: "DELETE",
         stopped: new SendStoppedError(),
       })
@@ -72,7 +71,6 @@ test("AskRecipients says an unsubscribe the reader stopped may have been made, n
     await stopTheLateWrite(page.queryClient);
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the unsubscribe", "made", {
-        again: "Retry",
         method: "DELETE",
         stopped: new SendStoppedError(),
       })

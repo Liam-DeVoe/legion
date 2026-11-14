@@ -415,7 +415,6 @@ test("a draft's upload the reader stopped says Retry makes it again, not that it
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the upload", "stored", {
-        again: "Retry",
         method: "POST",
         stopped: new SendStoppedError(),
       })

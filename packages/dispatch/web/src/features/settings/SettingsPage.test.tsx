@@ -284,7 +284,6 @@ test("a mapping removal the reader stopped says Retry makes it again, not that i
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the removal of acme/api's mapping", "made", {
-        again: "Retry",
         method: "DELETE",
         stopped: new SendStoppedError(),
       })
@@ -341,7 +340,6 @@ test("a mapping save the reader stopped says Retry sends it again, not that it f
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the mapping of acme/api", "saved", {
-        again: "Retry",
         method: "PUT",
         stopped: new SendStoppedError(),
       })

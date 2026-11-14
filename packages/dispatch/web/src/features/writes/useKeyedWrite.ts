@@ -11,7 +11,7 @@ import { useCallback, useRef, useState } from "react";
 
 import type { WriteBounds, WriteMethod, WriteRequest } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey, SendStoppedError } from "./keyed-write";
+import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "./keyed-write";
 import { plainWrite, useWrites } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
@@ -129,6 +129,20 @@ export function endedStopped<
   W extends { readonly error: unknown; readonly method: WriteMethod | undefined },
 >(write: W): write is W & { readonly error: SendStoppedError; readonly method: WriteMethod } {
   return write.error instanceof SendStoppedError && write.method !== undefined;
+}
+
+/** The sentence a surface shows for its write where the reader stopped it, under the plain Retry
+ *  the surface offers that makes that very press again (`stoppedWriteNote`, `retry`), or
+ *  `undefined` where the newest press did not end stopped, so the surface shows its refusal's own
+ *  words instead (`apiErrorMessage`). `what` is what Dispatch has not confirmed and `made` what the
+ *  write does once it lands, as `stoppedWriteNote` takes them; the method the Retry's sentence
+ *  reads is the write's own, so no site states it a second time (`KeyedWriteResult.method`). */
+export function stoppedNote<
+  W extends { readonly error: unknown; readonly method: WriteMethod | undefined },
+>(write: W, what: string, made: string): string | undefined {
+  return endedStopped(write)
+    ? stoppedWriteNote(what, made, { method: write.method, stopped: write.error })
+    : undefined;
 }
 
 /** The callbacks a surface hands one `mutate`, as TanStack calls them with the press the hook made

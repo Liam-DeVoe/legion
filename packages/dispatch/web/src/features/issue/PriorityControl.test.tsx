@@ -381,7 +381,6 @@ test("a priority the reader stopped says Retry asks again under its key, not tha
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the priority of CORE-1", "saved", {
-        again: "Retry",
         method: "PATCH",
         stopped: new SendStoppedError(),
       })

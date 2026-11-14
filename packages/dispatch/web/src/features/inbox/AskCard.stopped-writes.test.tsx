@@ -50,7 +50,6 @@ test("a hand-on the reader stopped says what Retry does, not a message's words",
     // The alert's paragraph, without its Retry button's name.
     expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the hand-on of this question", "made", {
-        again: "Retry",
         method: "PUT",
         stopped: new SendStoppedError(),
       })
@@ -94,7 +93,6 @@ test("an answer the reader stopped says Retry asks again under its key, not that
     // The alert's paragraph, without its Retry button's name.
     expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("your answer", "saved", {
-        again: "Retry",
         method: "POST",
         stopped: new SendStoppedError(),
       })
@@ -152,7 +150,6 @@ test("a clarification the reader stopped says Retry asks again under its key, no
     await stopTheLateWrite(queryClient);
     expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("your clarification", "sent", {
-        again: "Retry",
         method: "POST",
         stopped: new SendStoppedError(),
       })
@@ -184,7 +181,6 @@ test("a reply the reader stopped says Retry asks again under its key", async () 
     await stopTheLateWrite(queryClient);
     expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("your reply", "posted", {
-        again: "Retry",
         method: "POST",
         stopped: new SendStoppedError(),
       })

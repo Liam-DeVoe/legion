@@ -20,8 +20,7 @@ import type {
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
-import { stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
 import { useAnswerDraft } from "./answer-drafts";
 import {
@@ -70,15 +69,9 @@ function answerFailure(answer: {
   readonly error: Error;
   readonly method: WriteMethod | undefined;
 }): AskAnswerFailure {
-  if (endedStopped(answer)) {
-    return {
-      message: stoppedWriteNote("your answer", "saved", {
-        again: "Retry",
-        method: answer.method,
-        stopped: answer.error,
-      }),
-      retryable: true,
-    };
+  const stopped = stoppedNote(answer, "your answer", "saved");
+  if (stopped !== undefined) {
+    return { message: stopped, retryable: true };
   }
   const { error } = answer;
   if (error instanceof ApiError) {

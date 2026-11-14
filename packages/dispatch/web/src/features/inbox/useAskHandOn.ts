@@ -3,8 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
-import { stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { invalidateOwnerReads } from "./owner-reads";
 
 export interface AskHandOnWrite {
@@ -89,13 +88,7 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
   return {
     // A hand-on the reader stopped may have been made, and Retry makes it again (`retry`): the
     // error's own words are a composer's, of a message.
-    error: endedStopped(mutation)
-      ? stoppedWriteNote("the hand-on of this question", "made", {
-          again: "Retry",
-          method: mutation.method,
-          stopped: mutation.error,
-        })
-      : mutation.error?.message,
+    error: stoppedNote(mutation, "the hand-on of this question", "made") ?? mutation.error?.message,
     failed: mutation.isError,
     pending: mutation.isPending,
     retry: mutation.retry,

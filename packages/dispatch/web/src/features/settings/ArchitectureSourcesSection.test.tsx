@@ -334,7 +334,6 @@ test("a source save the reader stopped says Retry sends it again, not that it fa
     // The alert's paragraph, without its Retry button's name.
     expect(page.section.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the architecture source", "saved", {
-        again: "Retry",
         method: "PUT",
         stopped: new SendStoppedError(),
       })
@@ -357,7 +356,6 @@ test("a source removal the reader stopped says Retry sends it again, not that it
     await stopTheLateWrite(page.queryClient);
     expect(page.section.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the removal of the architecture source", "made", {
-        again: "Retry",
         method: "DELETE",
         stopped: new SendStoppedError(),
       })
@@ -383,7 +381,6 @@ test("a source refresh the reader stopped says Retry asks again under its key", 
     await stopTheLateWrite(page.queryClient);
     expect(page.section.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the refresh of the architecture source", "made", {
-        again: "Retry",
         method: "POST",
         stopped: new SendStoppedError(),
       })

@@ -4,8 +4,8 @@ import { useState } from "react";
 import { api, askSnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import { SendStoppedError } from "../writes/keyed-write";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 
 export interface AskSnoozeWrite {
@@ -65,13 +65,12 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   return {
     // A save the reader stopped may have been made, and Retry makes it again (`retry`): the
     // error's own words are a composer's, of a message.
-    error: endedStopped(mutation)
-      ? stoppedWriteNote(mutation.variables === null ? "the un-snooze" : "the snooze", "saved", {
-          again: "Retry",
-          method: mutation.method,
-          stopped: mutation.error,
-        })
-      : mutation.error?.message,
+    error:
+      stoppedNote(
+        mutation,
+        mutation.variables === null ? "the un-snooze" : "the snooze",
+        "saved"
+      ) ?? mutation.error?.message,
     failed: mutation.isError,
     pending: mutation.isPending,
     pendingUntil: mutation.isPending ? mutation.variables : undefined,

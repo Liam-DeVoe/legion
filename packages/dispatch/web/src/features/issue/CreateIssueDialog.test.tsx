@@ -261,7 +261,6 @@ test("a create the reader stopped says Retry asks again under its key, not that 
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the new issue", "made", {
-        again: "Retry",
         method: "POST",
         stopped: new SendStoppedError(),
       })

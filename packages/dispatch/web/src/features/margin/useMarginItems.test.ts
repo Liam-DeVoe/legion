@@ -754,7 +754,6 @@ test("an action the reader stopped says Retry makes it again, not that it failed
 
     expect(actionFailureShown()).toEqual({
       message: stoppedWriteNote("this action", "saved", {
-        again: "Retry",
         method: "POST",
         stopped: new SendStoppedError(),
       }),

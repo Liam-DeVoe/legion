@@ -309,7 +309,6 @@ test("an unsubscribe the reader stopped says Retry sends it again, not that it f
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("this agent's unsubscribe", "made", {
-        again: "Retry",
         method: "DELETE",
         stopped: new SendStoppedError(),
       })

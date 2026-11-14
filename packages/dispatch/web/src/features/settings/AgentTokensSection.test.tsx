@@ -424,7 +424,6 @@ test("a mint the reader stopped says Retry asks again under its key", async () =
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the new agent token", "made", {
-        again: "Retry",
         method: "POST",
         stopped: new SendStoppedError(),
       })

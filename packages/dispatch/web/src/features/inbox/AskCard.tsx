@@ -57,7 +57,7 @@ import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped } from "../writes/useKeyedWrite";
+import { stoppedNote } from "../writes/useKeyedWrite";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -836,13 +836,8 @@ export function AskCard({
             message={
               // A question back the reader stopped may have been sent, and Retry makes that very
               // press again (`retryLast`).
-              endedStopped(clarification)
-                ? stoppedWriteNote("your clarification", "sent", {
-                    again: "Retry",
-                    method: clarification.method,
-                    stopped: clarification.error,
-                  })
-                : "Could not send your clarification."
+              stoppedNote(clarification, "your clarification", "sent") ??
+              "Could not send your clarification."
             }
             onRetry={() => submitGuard.retryLast(clarification)}
             retrying={clarification.isPending}

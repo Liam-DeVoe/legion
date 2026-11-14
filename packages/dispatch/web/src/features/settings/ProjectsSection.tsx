@@ -26,7 +26,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { endedStopped, type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
+import { type KeyedPress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsFieldLabel,
   settingsMonoInput,
@@ -261,13 +261,8 @@ export function ProjectsSection(): ReactNode {
             <div className="mt-4">
               <QueryError
                 message={
-                  endedStopped(createProject)
-                    ? stoppedWriteNote("the new project", "made", {
-                        again: "Retry",
-                        method: createProject.method,
-                        stopped: createProject.error,
-                      })
-                    : apiErrorMessage(createProject.error, "Couldn't create the project.")
+                  stoppedNote(createProject, "the new project", "made") ??
+                  apiErrorMessage(createProject.error, "Couldn't create the project.")
                 }
                 onRetry={() => projectSubmitGuard.retryLast(createProject)}
                 retrying={createProject.isPending}
@@ -327,8 +322,10 @@ function DefaultAssigneeCell({
           <QueryError
             message={
               write.error instanceof SendStoppedError
-                ? stoppedWriteNote("the default assignee", "saved", {
-                    again: "Retry",
+                ? // `useDefaultAssigneeWrite` reads this row's refusal from the mutation cache, not
+                  // from a `KeyedWriteResult`, so no write is in hand here to read the method from;
+                  // a default assignee is always this `PUT`.
+                  stoppedWriteNote("the default assignee", "saved", {
                     method: "PUT",
                     stopped: write.error,
                   })

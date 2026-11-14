@@ -178,11 +178,14 @@ export function retryNote(keyed: boolean, refusal: Error, made: string): string 
   return retriesUnderItsKey(refusal) ? sameKeyRetryNote(made) : expiredRetryNote(made);
 }
 
-/** What a surface's control does with a write the reader stopped (`stoppedWriteNote`): `again`
- *  names a control that makes that very press again (`retry`, `again`), and `method` is the
- *  write's own, which says whether that press goes under its key (`goesUnderKey`); `anew` says
- *  what a control that is a press of its own sends (`mutate`, under a key of its own). */
+/** What a surface's control does with a write the reader stopped (`stoppedWriteNote`): a control
+ *  that makes that very press again (`retry`, `again`), with `method` the write's own, which says
+ *  whether that press goes under its key (`goesUnderKey`). A plain Retry button the sentence does
+ *  not name carries no label; one with its own words carries `again`, named so the sentence says
+ *  which control to press. `anew` says what a control that is a press of its own sends (`mutate`,
+ *  under a key of its own). */
 export type StoppedControl =
+  | { readonly method: WriteMethod; readonly stopped: SendStoppedError }
   | { readonly again: string; readonly method: WriteMethod; readonly stopped: SendStoppedError }
   | { readonly anew: string };
 
@@ -199,7 +202,7 @@ export function stoppedWriteNote(what: string, made: string, control: StoppedCon
   if ("anew" in control) {
     return `${unconfirmed} ${control.anew}`;
   }
-  const pressed = control.again === "Retry" ? "" : ` Pressing ${control.again} again retries it.`;
+  const pressed = "again" in control ? ` Pressing ${control.again} again retries it.` : "";
   const note = retryNote(goesUnderKey(control.method), control.stopped, made);
   return `${unconfirmed}${pressed} ${note}`;
 }

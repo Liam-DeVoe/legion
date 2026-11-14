@@ -2263,7 +2263,6 @@ test("a snooze the reader stopped says what Retry does, not a message's words", 
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the snooze", "saved", {
-        again: "Retry",
         method: "PUT",
         stopped: new SendStoppedError(),
       })

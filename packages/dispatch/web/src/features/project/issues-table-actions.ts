@@ -161,8 +161,9 @@ export function useIssueTableActions({
       const note =
         stopped[0] === undefined
           ? undefined
-          : stoppedWriteNote(what, "saved", {
-              again: "Retry",
+          : // The batch runs through `writes.run` with no hook, so no `KeyedWriteResult` is in hand
+            // to read the method from; each issues-table change is this `PATCH`.
+            stoppedWriteNote(what, "saved", {
               method: "PATCH",
               stopped: stopped[0].error,
             });
@@ -356,7 +357,9 @@ export function useIssueTableActions({
         const epic = await creation.catch((error: unknown) => {
           throw error instanceof SendStoppedError
             ? new Error(
-                `${stoppedWriteNote(`the epic “${title}”`, "made", { again: "Retry", method: "POST", stopped: error })} Retry it in Pending changes.`,
+                // The epic goes through `writes.run` with no hook, so no `KeyedWriteResult` is in
+                // hand to read the method from; creating an epic is this `POST`.
+                `${stoppedWriteNote(`the epic “${title}”`, "made", { method: "POST", stopped: error })} Retry it in Pending changes.`,
                 { cause: error }
               )
             : error;

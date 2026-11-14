@@ -20,8 +20,7 @@ import {
 } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
 
 export function DocumentPage(): ReactNode {
@@ -147,13 +146,8 @@ export function DocumentPage(): ReactNode {
         {unsubscribe.isError ? (
           <QueryError
             message={
-              endedStopped(unsubscribe)
-                ? stoppedWriteNote("this agent's unsubscribe", "made", {
-                    again: "Retry",
-                    method: unsubscribe.method,
-                    stopped: unsubscribe.error,
-                  })
-                : "Could not unsubscribe this agent."
+              stoppedNote(unsubscribe, "this agent's unsubscribe", "made") ??
+              "Could not unsubscribe this agent."
             }
             onRetry={unsubscribe.retry}
             retrying={unsubscribe.isPending}

@@ -167,7 +167,6 @@ test("a new project the reader stopped says Retry makes it again, not that it fa
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the new project", "made", {
-        again: "Retry",
         method: "POST",
         stopped: new SendStoppedError(),
       })
@@ -218,7 +217,6 @@ test("a default assignee save the reader stopped says Retry makes it again, not 
 
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the default assignee", "saved", {
-        again: "Retry",
         method: "PUT",
         stopped: new SendStoppedError(),
       })

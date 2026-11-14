@@ -68,7 +68,7 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
@@ -890,13 +890,7 @@ export function IssueHeader({
       {updateState.isError ? (
         <QueryError
           message={
-            endedStopped(updateState)
-              ? stoppedWriteNote("the pin status", "saved", {
-                  again: "Retry",
-                  method: updateState.method,
-                  stopped: updateState.error,
-                })
-              : "Could not save pin status."
+            stoppedNote(updateState, "the pin status", "saved") ?? "Could not save pin status."
           }
           onRetry={() => pinGuard.retryLast(updateState)}
           retrying={updateState.isPending}
@@ -905,13 +899,8 @@ export function IssueHeader({
       {unsubscribe.isError ? (
         <QueryError
           message={
-            endedStopped(unsubscribe)
-              ? stoppedWriteNote("this agent's unsubscribe", "made", {
-                  again: "Retry",
-                  method: unsubscribe.method,
-                  stopped: unsubscribe.error,
-                })
-              : "Could not unsubscribe this agent."
+            stoppedNote(unsubscribe, "this agent's unsubscribe", "made") ??
+            "Could not unsubscribe this agent."
           }
           onRetry={unsubscribe.retry}
           retrying={unsubscribe.isPending}
@@ -920,13 +909,8 @@ export function IssueHeader({
       {releaseClaim.isError ? (
         <QueryError
           message={
-            endedStopped(releaseClaim)
-              ? stoppedWriteNote("the release of this claim", "made", {
-                  again: "Retry",
-                  method: releaseClaim.method,
-                  stopped: releaseClaim.error,
-                })
-              : "Could not release this claim."
+            stoppedNote(releaseClaim, "the release of this claim", "made") ??
+            "Could not release this claim."
           }
           onRetry={releaseClaim.retry}
           retrying={releaseClaim.isPending}

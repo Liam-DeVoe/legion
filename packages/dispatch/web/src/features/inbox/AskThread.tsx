@@ -28,8 +28,7 @@ import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
-import { stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
 
 export type CreateReply = (
@@ -165,15 +164,7 @@ export function AskReplyComposer({
       </button>
       {submit.isError ? (
         <QueryError
-          message={
-            endedStopped(submit)
-              ? stoppedWriteNote("your reply", "posted", {
-                  again: "Retry",
-                  method: submit.method,
-                  stopped: submit.error,
-                })
-              : "Could not post your reply."
-          }
+          message={stoppedNote(submit, "your reply", "posted") ?? "Could not post your reply."}
           onRetry={submit.retry}
           retrying={submit.isPending}
         />
