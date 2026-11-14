@@ -147,8 +147,9 @@ func TestContractARenewalKeepsTheCredentialAndItsPods(t *testing.T) {
 	}
 	before := c.snapshot().cred
 	enrolled := enrollPod(t, rig, c, "pod-uid-1")
-	time.Sleep(10 * time.Millisecond)
-	// The kubelet's next token, which outlives the first, so the renewed credential expires later.
+	// The kubelet's next token, which outlives the first, so the renewed credential expires later:
+	// the broker ends a credential at the earlier of its token's expiry and an hour from its login,
+	// the first one at its token's, which this login's token and this login's hour both outlast.
 	c.TokenFile = daemonTokenFile(t, rig, brokertest.DaemonAccount, time.Hour+30*time.Second)
 	renewed, err := c.Login(ctx)
 	if err != nil {
