@@ -191,12 +191,28 @@ var goingWriteFields = map[string]string{
 	"dispatch_handoff_write":     "handoff",
 }
 
-// goingIssueFields are the issue's own fields each argument of an update writes, by argument.
+// goingIssueFields are the issue's own fields each argument of an update writes, by argument. The
+// advances relation is one of them: a write replaces the issue's own set, so its value before and
+// after is the own priority ids and the revision the read answered (goingAdvancesValue,
+// goingIssueFieldValue), which the undo writes back against as a compare-and-set.
 var goingIssueFields = map[string]string{
 	"status": "status", "title": "title", "labels": "labels", "priority": "priority",
 	"assignee": "assignee", "route": "route", "parent": "parent", "blocked_by": "blocked_by",
 	"components": "components", "repo": "repo", "external_links": "external_links",
-	"before": "rank", "after": "rank",
+	"advances": goingAdvances, "before": "rank", "after": "rank",
+}
+
+// goingAdvances is the field an issue's `advances` relation is recorded under, and goingAdvancesValue
+// its value as a write back reads it: the priority ids the issue's own relations state, and the
+// revision the read answered. A write of `advances` carries the whole own set and no inherited
+// entry, so the undo writes the own ids back (updateIssueInput.Advances) and carries the revision
+// the write left as the route's own compare-and-set (advances_revision, refuseAdvancesRevision), so
+// a second writer's change since the write refuses the write back rather than overwriting it.
+const goingAdvances = "advances"
+
+type goingAdvancesValue struct {
+	IDs      []string `json:"ids"`
+	Revision int64    `json:"revision"`
 }
 
 // goingAskFields are the parts of an ask an edit writes.
@@ -497,9 +513,19 @@ func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared,
 	return observed, nil
 }
 
-// goingIssueFieldValue is one field of an issue's read as an update writes it.
+// goingIssueFieldValue is one field of an issue's read as an update writes it. The advances
+// relation is the issue's own priority ids and its revision (goingAdvancesValue): a write replaces
+// the own set, so inherited entries are no part of its value and the revision is what the undo's
+// write back carries.
 func goingIssueFieldValue(issue map[string]json.RawMessage, field string) any {
 	raw := issue[field]
+	if field == goingAdvances {
+		var entries []model.IssueAdvance
+		_ = json.Unmarshal(raw, &entries)
+		var revision int64
+		_ = json.Unmarshal(issue["advances_revision"], &revision)
+		return goingAdvancesValue{IDs: ownAdvances(entries), Revision: revision}
+	}
 	if field == "components" {
 		var components model.IssueComponents
 		if json.Unmarshal(raw, &components) == nil {

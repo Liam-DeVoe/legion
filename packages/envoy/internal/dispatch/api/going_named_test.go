@@ -140,6 +140,47 @@ func TestGoingAutomaticHoldsAHandOverAndALinkToTheWordsToo(t *testing.T) {
 	}
 }
 
+// TestGoingAutomaticHoldsTheAdvancesRelationToTheWordsToo (merge of the `advances` relation):
+// on the page's own issue, an update that also states which priorities the issue advances names
+// existing items, so a relation only stored text named is an offer, and runs at once only where
+// the words name the priority by its id. A priority id is a slug (priorityIDPattern); the words
+// name one only where it is spelled as an id written short (text.IsIDPrefix), so a priority whose
+// id is ordinary words is never named and its update is always an offer. The revision token the
+// write carries beside the list (advances_revision) names no item and is a precondition, so it
+// neither runs anything at once on its own nor holds back an update whose priorities the words
+// name.
+func TestGoingAutomaticHoldsTheAdvancesRelationToTheWordsToo(t *testing.T) {
+	// A priority id spelled as hex digits is both a slug the grammar admits (priorityIDPattern)
+	// and an id written short (text.IsIDPrefix), so the words can name it as goingNamesItem reads
+	// an id.
+	const priority = "2a7f1c90"
+	update := func(extra map[string]any) map[string]any {
+		arguments := map[string]any{"issue": "DEMO-12", "status": "done", "reason": "Shipped."}
+		for name, value := range extra {
+			arguments[name] = value
+		}
+		return arguments
+	}
+	for _, tc := range []struct {
+		name, words string
+		extra       map[string]any
+		automatic   bool
+	}{
+		{"the update alone", "mark this done", nil, true},
+		{"a priority only stored text named", "mark this done", map[string]any{"advances": []any{priority}}, false},
+		{"a priority whose id is ordinary words", "mark this done and advance the daemon", map[string]any{"advances": []any{"ship-the-daemon"}}, false},
+		{"a priority the words name by its id", "mark this done; it advances 2a7f1c90", map[string]any{"advances": []any{priority}}, true},
+		{"a revision token beside a priority the words name", "mark this done; it advances 2a7f1c90", map[string]any{"advances": []any{priority}, "advances_revision": float64(7)}, true},
+		{"a revision token beside a priority only stored text named", "mark this done", map[string]any{"advances": []any{priority}, "advances_revision": float64(7)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := goingAutomaticOf(t, tc.words, true, "dispatch_issue_update", update(tc.extra), goingHolds{}); got != tc.automatic {
+				t.Fatalf("%q with %v is automatic=%v, want %v", tc.words, tc.extra, got, tc.automatic)
+			}
+		})
+	}
+}
+
 // TestGoingAutomaticHoldsAnUploadsNameToTheWordsWhereItsOwnerHoldsThatDocument (review round 2,
 // finding A): an upload whose name is a document the page's issue already holds would write that
 // document's next version, so it runs at once only where the words write the name; an upload

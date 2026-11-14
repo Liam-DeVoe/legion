@@ -177,6 +177,58 @@ func TestGoingUndoWritesBackAnIssuesFieldsAnAsksTextAndADocumentsContent(t *test
 	})
 }
 
+// TestGoingUndoPutsBackAnIssuesAdvancesRelation: a write that replaces an issue's advances
+// relation is a field the undo writes back, by the issue's own priority ids before the write,
+// carrying the revision the write left as the route's compare-and-set (advances_revision).
+func TestGoingUndoPutsBackAnIssuesAdvancesRelation(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Advancing", "The spec.\n").Key
+	first := createTestPriority(t, rig.mux, map[string]any{"title": "Ship the daemon"}, "alice").ID
+	second := createTestPriority(t, rig.mux, map[string]any{"title": "Cut the queue"}, "alice").ID
+	rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"advances": []string{first}})
+	before := rig.issueRead(t, issue)
+
+	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{
+		"issue": issue, "advances": []any{second}, "advances_revision": before.AdvancesRevision,
+	}, nil)
+	if written := rig.issueRead(t, issue); !slices.Equal(advanceEntries(written.Advances), []string{second + " own"}) {
+		t.Fatalf("the write left %s advancing %v, want only %s", issue, advanceEntries(written.Advances), second)
+	}
+	line := oneLine(t, rig.undo(t, "alice", run, nil), true)
+	after := rig.issueRead(t, issue)
+	if line.Undo != goingUndoWriteBack || !slices.Equal(advanceEntries(after.Advances), []string{first + " own"}) {
+		t.Fatalf("the undo answered %+v and %s advances %v, want %s back", line, issue, advanceEntries(after.Advances), first)
+	}
+}
+
+// TestGoingUndoRefusesAnAdvancesRelationASecondWriterChanged: a second writer who changes the
+// issue's advances relation between the write and its undo moves its revision, so the undo is
+// refused for advances, naming what it holds now, and writes nothing.
+func TestGoingUndoRefusesAnAdvancesRelationASecondWriterChanged(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Contended advance", "The spec.\n").Key
+	first := createTestPriority(t, rig.mux, map[string]any{"title": "Ship the daemon"}, "alice").ID
+	second := createTestPriority(t, rig.mux, map[string]any{"title": "Cut the queue"}, "alice").ID
+	third := createTestPriority(t, rig.mux, map[string]any{"title": "Hold the line"}, "alice").ID
+	rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"advances": []string{first}})
+	before := rig.issueRead(t, issue)
+
+	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{
+		"issue": issue, "advances": []any{second}, "advances_revision": before.AdvancesRevision,
+	}, nil)
+	left := rig.issueRead(t, issue)
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue,
+		map[string]any{"advances": []string{third}, "advances_revision": left.AdvancesRevision})
+
+	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	if line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "advances") {
+		t.Fatalf("the undo answered %+v, want advances refused as changed", line)
+	}
+	if read := rig.issueRead(t, issue); !slices.Equal(advanceEntries(read.Advances), []string{third + " own"}) {
+		t.Fatalf("the undo left %s advancing %v, want bob's %s untouched", issue, advanceEntries(read.Advances), third)
+	}
+}
+
 // TestGoingUndoReversesAClaimAFollowACommentResolveAndAnOpenedAsk: a reverse undo runs the write's
 // reverse, as the caller: the claim released, the follow unfollowed, the thread reopened, and an
 // ask the turn opened - an approval request's among them - retracted.
@@ -716,7 +768,7 @@ func TestGoingUndoOfARankWhoseNeighboursCannotBeReadFailsUnsettled(t *testing.T)
 	_, outcome, _ := undoer.writeBack(context.Background(), write, read, goingIssuePatchRoute, map[string]string{"key": issue},
 		func(string, json.RawMessage, json.RawMessage, json.RawMessage) (any, string, error) {
 			return nil, "", err
-		}, func(string, json.RawMessage) any { return nil }, "ISSUE_CHANGED")
+		}, func(map[string]json.RawMessage) map[string]any { return nil }, func(string) bool { return false })
 	if outcome.OK || outcome.Status != http.StatusInternalServerError || goingUndoSettles(outcome) {
 		t.Fatalf("the write back answered %+v, want the server's own 500, which settles nothing", outcome)
 	}

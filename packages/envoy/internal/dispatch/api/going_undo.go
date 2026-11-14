@@ -481,9 +481,13 @@ const goingRank = "rank"
 // neighbours the issue stood between before the write (rankRestore), while the issue's rank is
 // still the one the write left; a neighbour that is no longer an issue of the project is passed
 // over, and with neither left the rank is refused, naming why. A failed read of the neighbours
-// fails the undo of the write, which leaves it undoable. The update expects each field it writes
-// back to hold what the write left (updateIssueInput.Expect), its rank the rank string, so a
-// change another writer makes after the read is refused by the update itself.
+// fails the undo of the write, which leaves it undoable. The advances relation is put back as the
+// issue's own priority ids before the write, carrying the revision the write left as the route's
+// own compare-and-set (advances_revision, refuseAdvancesRevision): a second writer who changed the
+// relation since moved its revision, so the write back is refused, 409 ADVANCES_REVISION, and
+// nothing is written. Every other field the update expects to hold what the write left
+// (updateIssueInput.Expect), its rank the rank string, so a change another writer makes after the
+// read is refused by the update itself.
 func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome, []goingUndoField) {
 	read := func(fields []string) (map[string]any, error) {
 		current, err := u.observer.issueFields(ctx, write.Target, fields)
@@ -491,32 +495,70 @@ func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any,
 		return now, err
 	}
 	restoreOf := func(field string, held, before, after json.RawMessage) (any, string, error) {
-		if field != goingRank {
+		switch field {
+		case goingAdvances:
+			var heldValue, afterValue goingAdvancesValue
+			if json.Unmarshal(held, &heldValue) != nil || json.Unmarshal(after, &afterValue) != nil {
+				return nil, "advances: the write's record holds no revision to write back against", nil
+			}
+			// The revision moves on every write of the relation, so a revision that is no longer
+			// the one the write left is another writer's change since.
+			if heldValue.Revision != afterValue.Revision {
+				return nil, fmt.Sprintf("advances holds revision %d now, which another write left", heldValue.Revision), nil
+			}
+			var beforeValue goingAdvancesValue
+			_ = json.Unmarshal(before, &beforeValue)
+			ids := beforeValue.IDs
+			if ids == nil {
+				ids = []string{}
+			}
+			return ids, "", nil
+		case goingRank:
+			var heldPlace, beforePlace, afterPlace goingRankPlace
+			if json.Unmarshal(held, &heldPlace) != nil || json.Unmarshal(before, &beforePlace) != nil || json.Unmarshal(after, &afterPlace) != nil {
+				return nil, "rank: the write's record holds no place to put the issue back in", nil
+			}
+			// Its neighbours move as other issues are ranked; only its own rank says whether another
+			// writer moved this issue.
+			if heldPlace.Rank != afterPlace.Rank {
+				return nil, fmt.Sprintf("rank: the issue was moved again since this write, between %s and %s",
+					goingNeighbourText(heldPlace.After), goingNeighbourText(heldPlace.Before)), nil
+			}
+			return u.observer.rankRestore(ctx, write.Target, beforePlace)
+		default:
 			if !goingSameJSON(held, after) {
 				return nil, goingChangedField(field, held), nil
 			}
 			return goingWriteBackValue(field, before), "", nil
 		}
-		var heldPlace, beforePlace, afterPlace goingRankPlace
-		if json.Unmarshal(held, &heldPlace) != nil || json.Unmarshal(before, &beforePlace) != nil || json.Unmarshal(after, &afterPlace) != nil {
-			return nil, "rank: the write's record holds no place to put the issue back in", nil
-		}
-		// Its neighbours move as other issues are ranked; only its own rank says whether another
-		// writer moved this issue.
-		if heldPlace.Rank != afterPlace.Rank {
-			return nil, fmt.Sprintf("rank: the issue was moved again since this write, between %s and %s",
-				goingNeighbourText(heldPlace.After), goingNeighbourText(heldPlace.Before)), nil
-		}
-		return u.observer.rankRestore(ctx, write.Target, beforePlace)
 	}
-	expectOf := func(field string, after json.RawMessage) any {
-		var place goingRankPlace
-		if field == goingRank && json.Unmarshal(after, &place) == nil {
-			return place.Rank
+	bodyOf := func(restored map[string]json.RawMessage) map[string]any {
+		body, expect := map[string]any{}, map[string]any{}
+		for field, after := range restored {
+			switch field {
+			case goingAdvances:
+				var value goingAdvancesValue
+				if json.Unmarshal(after, &value) == nil {
+					body["advances_revision"] = value.Revision
+				}
+			case goingRank:
+				var place goingRankPlace
+				if json.Unmarshal(after, &place) == nil {
+					expect[field] = place.Rank
+				} else {
+					expect[field] = goingJSONOrNullRaw(after)
+				}
+			default:
+				expect[field] = goingJSONOrNullRaw(after)
+			}
 		}
-		return goingJSONOrNullRaw(after)
+		if len(expect) > 0 {
+			body["expect"] = expect
+		}
+		return body
 	}
-	return u.writeBack(ctx, write, read, goingIssuePatchRoute, map[string]string{"key": write.Target}, restoreOf, expectOf, "ISSUE_CHANGED")
+	changed := func(code string) bool { return code == "ISSUE_CHANGED" || code == codeAdvancesRevision }
+	return u.writeBack(ctx, write, read, goingIssuePatchRoute, map[string]string{"key": write.Target}, restoreOf, bodyOf, changed)
 }
 
 // rankRestore is how a write back puts an issue at the place it held: between the two neighbours
@@ -622,24 +664,33 @@ func (u goingUndoer) askFields(ctx context.Context, write goingRunWrite) (any, g
 		}
 		return goingJSONOrNullRaw(before), "", nil
 	}
-	expectOf := func(_ string, after json.RawMessage) any { return goingJSONOrNullRaw(after) }
-	return u.writeBack(ctx, write, read, goingAskEditRoute, map[string]string{"id": write.Target}, restoreOf, expectOf, "ASK_CHANGED")
+	bodyOf := func(restored map[string]json.RawMessage) map[string]any {
+		expect := map[string]any{}
+		for field, after := range restored {
+			expect[field] = goingJSONOrNullRaw(after)
+		}
+		return map[string]any{"expect": expect}
+	}
+	changed := func(code string) bool { return code == "ASK_CHANGED" }
+	return u.writeBack(ctx, write, read, goingAskEditRoute, map[string]string{"id": write.Target}, restoreOf, bodyOf, changed)
 }
 
 // writeBack is a write back of the fields one write changed, by one PATCH through route, its
 // placeholders filled from values: restoreOf says, from what each field holds now, held before
 // the write and was left by it, the value the PATCH writes back, or why the field is left as it
 // is - another writer changed it since - or fails, which fails the whole write back before
-// anything is sent. The PATCH expects each field it writes back to hold what the write left
-// (expectOf, the route's expect), decided under the lock the route takes, so a field another
-// writer changes between the read and the PATCH is never written over: the route's refusal of
-// it (changedCode) is the field changed, and nothing is written back. Every field's own outcome
-// is answered beside the write's.
+// anything is sent. bodyOf adds the body keys the PATCH guards the write back with, from the
+// fields restored and what the write left them: the expect map most fields ride (the route's
+// expect), and a precondition token a field carries instead (advances_revision), each decided
+// under the lock the route takes, so a field another writer changes between the read and the PATCH
+// is never written over. A refusal whose code `changed` names is that race - the route wrote
+// nothing back, the field is the field changed - and every other refusal leaves the fields with it.
+// Every field's own outcome is answered beside the write's.
 func (u goingUndoer) writeBack(
 	ctx context.Context, write goingRunWrite, read func([]string) (map[string]any, error),
 	route string, values map[string]string,
 	restoreOf func(field string, held, before, after json.RawMessage) (any, string, error),
-	expectOf func(field string, after json.RawMessage) any, changedCode string,
+	bodyOf func(restored map[string]json.RawMessage) map[string]any, changed func(code string) bool,
 ) (any, goingWriteOutcome, []goingUndoField) {
 	var before, after map[string]json.RawMessage
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
@@ -650,7 +701,8 @@ func (u goingUndoer) writeBack(
 	if err != nil {
 		return nil, goingFailed(err), nil
 	}
-	restore, expect := map[string]any{}, map[string]any{}
+	restore := map[string]any{}
+	restoredAfter := map[string]json.RawMessage{}
 	var changes, restored []string
 	outcomes := make([]goingUndoField, 0, len(fields))
 	for _, field := range fields {
@@ -663,14 +715,14 @@ func (u goingUndoer) writeBack(
 			outcomes = append(outcomes, goingUndoField{Field: field, Message: why})
 			continue
 		}
-		restore[field], expect[field] = value, expectOf(field, after[field])
+		restore[field], restoredAfter[field] = value, after[field]
 		restored = append(restored, field)
 		outcomes = append(outcomes, goingUndoField{Field: field, OK: true})
 	}
 	if len(restore) > 0 {
-		restore["expect"] = expect
+		maps.Copy(restore, bodyOf(restoredAfter))
 		if outcome := u.send(ctx, 0, route, values, restore); !outcome.OK {
-			if outcome.Code == changedCode {
+			if changed(outcome.Code) {
 				// Another writer changed a field after the read: the route wrote nothing back.
 				outcome = goingChanged([]string{outcome.Message}, nil)
 			}

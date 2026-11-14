@@ -34,13 +34,17 @@ const (
 // goingItemArguments are the arguments that name an item of Dispatch's an invocation acts on,
 // links to or moves beside, by the kind of item each names: an issue (every issue argument the
 // search lists, the issues one waits on and the two a rank moves it between), the project, an
-// ask, a comment, a message or a result by its id, a document by its id, slug or file name under
-// its owner, and the session a message goes to.
+// ask, a comment, a message, a result or a priority an issue advances by its id, a document by
+// its id, slug or file name under its owner, and the session a message goes to. A priority id is
+// a slug (priorityIDPattern), so the words name one only where it is spelled as an id written
+// short (goingNamesItem, goingIDOf); a priority whose id is ordinary words the words never name,
+// so an update stating it is an offer the person picks.
 var goingItemArguments = func() map[string]string {
 	named := map[string]string{
 		"project":    goingNamesProject,
 		"session":    goingNamesSession,
 		"retract":    goingNamesItem,
+		"advances":   goingNamesItem,
 		"blocked_by": goingNamesIssue,
 		"before":     goingNamesIssue,
 		"after":      goingNamesIssue,
@@ -70,15 +74,19 @@ var goingHeldArguments = map[string]bool{"route": true, "assignee": true, "defau
 // its edits, an ask's options, a result's fields - and what places it there: a passage of the
 // issue's own document (anchor, quote), a reference written into its text or refused (ref), a
 // file path the bar refuses, a handoff's phase, which appends that phase's next version and
-// overwrites nothing, and a new project's key, which a key already taken refuses. An upload's
+// overwrites nothing, a new project's key, which a key already taken refuses, and a precondition
+// token the write is held to rather than a thing it writes: a passage's revision (precondition)
+// and the advances relation's revision (advances_revision), each the revision the read this write
+// answers returned, which names no item and only decides whether the write is refused. An upload's
 // name is one of them for every action but the upload's own (goingUploadNames).
 var goingContentArguments = map[string]bool{
-	"action": true, "anchor": true, "body": true, "check": true, "commit": true, "components": true,
-	"content": true, "delivery": true, "excluded": true, "external": true, "external_links": true,
-	"failed": true, "force": true, "images": true, "include_verification": true, "key": true,
-	"kind": true, "labels": true, "multiple": true, "name": true, "negative_control": true,
-	"observed": true, "occurrence": true, "ops": true, "options": true, "path": true, "phase": true,
-	"precondition": true, "priority": true, "question": true, "quote": true, "reason": true,
+	"action": true, "advances_revision": true, "anchor": true, "body": true, "check": true,
+	"commit": true, "components": true, "content": true, "delivery": true, "excluded": true,
+	"external": true, "external_links": true, "failed": true, "force": true, "images": true,
+	"include_verification": true, "key": true, "kind": true, "labels": true, "multiple": true,
+	"name": true, "negative_control": true, "observed": true, "occurrence": true, "ops": true,
+	"options": true, "path": true, "phase": true, "precondition": true, "priority": true,
+	"question": true, "quote": true, "reason": true,
 	"ref": true, "release": true, "replace_with": true, "repo": true, "role": true, "run": true,
 	"screenshots": true, "skipped": true, "spec": true, "status": true, "summary": true,
 	"surface": true, "title": true, "turn": true, "urgency": true, "verdict": true, "version": true,
