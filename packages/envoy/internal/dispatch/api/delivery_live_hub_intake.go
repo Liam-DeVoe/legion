@@ -132,7 +132,7 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 // every view dirty: a view computed before it read the database at a moment the hub cannot place
 // against the feed's head, so it may have missed an event at or below it, which no feed will carry.
 func (h *deliveryHub) applyFeed(g *hubGeneration, taken hubEventFeed) {
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	g.p0 = taken.p0
 	h.dirtyAllLocked(g, now)
@@ -184,7 +184,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 			return err
 		}
 		reset := latest < seq
-		if !reset && seq > 0 && h.clock.Now().Sub(at) < delivery.ChangeRetention {
+		if !reset && seq > 0 && h.now().Sub(at) < delivery.ChangeRetention {
 			read, err := delivery.ChangeAt(ctx, pool, seq)
 			if err != nil {
 				return err
@@ -198,7 +198,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 					return err
 				}
 			}
-			now := h.clock.Now()
+			now := h.now()
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			g.changeSeq, g.changeAt = latest, timeOrZero(latestAt)
@@ -210,7 +210,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 		if err != nil {
 			return err
 		}
-		now := h.clock.Now()
+		now := h.now()
 		h.mu.Lock()
 		for _, change := range changes {
 			for _, view := range g.views {
@@ -231,7 +231,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 // in id order, so the hub keeps no cursor of the event log: a gap in what it receives is a feed
 // that closed, which intake answers.
 func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	h.applyEventLocked(g, event, now)
 	h.mu.Unlock()

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -73,7 +74,7 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
 	running.Go(func() { intake.Run(ctx) })
-	running.Go(func() { newJobIntake(jobClient, pool, leases, github, realJobClock{}, settings).Run(ctx) })
+	running.Go(func() { newJobIntake(jobClient, pool, leases, github, clock.Real(), settings).Run(ctx) })
 	var stopped sync.Once
 	return func() {
 		stopped.Do(func() {

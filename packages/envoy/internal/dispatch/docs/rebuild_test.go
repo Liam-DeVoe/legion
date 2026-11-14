@@ -468,9 +468,7 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 			})
 		}()
 	}
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, roomWait(t)); waiting < 2 {
-		t.Fatalf("%d of the two rebuilds reached the issue's row", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(ctx); err != nil {
 		t.Fatalf("release the issue's row: %v", err)
 	}

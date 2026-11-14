@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -62,7 +63,7 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 
 // parseConnectOptions applies options over the defaults every connect starts from.
 func parseConnectOptions[O ConnectOption](options []O) connectOpts {
-	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv}
+	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: clock.Real(), environment: os.LookupEnv}
 	for _, o := range options {
 		o.apply(&opts)
 	}
@@ -78,15 +79,11 @@ func (o connectOpts) streamConfig() nats.StreamConfig {
 	return cfg
 }
 
-// AcknowledgementClock supplies deadline contexts for JetStream publish acknowledgements.
+// AcknowledgementClock supplies deadline contexts for JetStream publish acknowledgements: a
+// narrowing of clock.Clock, clock.Real unless WithPublishAcknowledgementClock names a test's
+// clocktest.Fake.
 type AcknowledgementClock interface {
 	WithTimeout(context.Context, time.Duration) (context.Context, context.CancelFunc)
-}
-
-type wallClock struct{}
-
-func (wallClock) WithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, timeout)
 }
 
 // WithPublishAcknowledgementClock overrides the clock that bounds JetStream publish acknowledgements.

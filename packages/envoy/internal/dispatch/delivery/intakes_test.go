@@ -14,6 +14,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -333,7 +334,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 
 	jobsCtx, stopJobs := context.WithCancel(ctx)
 	jobsDone := make(chan struct{})
-	jobs := newJobIntake(shared, pool, leases, github, realJobClock{}, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(shared, pool, leases, github, clock.Real(), loadedSettingsCache(t, ctx, pool))
 	go func() {
 		defer close(jobsDone)
 		jobs.Run(jobsCtx)

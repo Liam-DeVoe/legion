@@ -1397,35 +1397,14 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 	}
 }
 
-// withoutBranchCommits drops branch_commits for the length of one test, so a write of it fails
-// the way a write fails, and puts it back afterwards.
-//
-// The run ending does not contain the drop. The database DISPATCH_TEST_DATABASE_URL names is
-// the server's own and outlives the run (deliveryTestPool), and a test binary `go test
-// -timeout` kills never reaches this cleanup at all: the table would then stay missing while
-// schema_migrations still recorded the migration that creates it, and every later run of this
-// package would fail at the truncate of it. What contains it is the harness, which makes such
-// a table again before it migrates (repairDroppedTables). This cleanup is the fast path: it
-// puts the table back while the test that dropped it is still running, so the next test in
-// the same binary finds the database as it expects it.
-//
-// It is the harness's own repair that it runs, rather than a second copy of it: the repair
-// forgets the migration's recorded version, and the Migrate here makes the table again from
-// that migration.
+// withoutBranchCommits drops branch_commits from the test's own database, so a write of it fails
+// the way a write fails. Nothing puts it back: no other test reads that database, and it is
+// dropped once the test ends (deliveryTestPool).
 func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
 		t.Fatalf("drop branch_commits: %v", err)
 	}
-	t.Cleanup(func() {
-		// The test's own context is cancelled before its cleanups run, so the repair takes one
-		// that is not (context.WithoutCancel).
-		repair := context.WithoutCancel(ctx)
-		repairDroppedTables(t, repair, pool)
-		if err := (&store.Store{Pool: pool}).Migrate(repair); err != nil {
-			t.Fatalf("put branch_commits back: %v", err)
-		}
-	})
 }
 
 // A merge whose branch seed cannot be written stores no head row and says so. The seed is the

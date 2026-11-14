@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The cap on a document's queued conditional edits holds across envoy-dispatch processes (plan D9,
@@ -148,7 +149,7 @@ func TestANonMembersConditionalEditsCountForNothingAndAreDeleted(t *testing.T) {
 func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnection(t *testing.T) {
 	const storm = 20
 	// pileUpWindow is how long the test leaves the admissions to pile onto the lock: far longer
-	// than twenty goroutines take to reach Begin, and it is only the passing case that waits it out.
+	// than twenty goroutines take to reach Begin.
 	const pileUpWindow = time.Second
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
@@ -174,10 +175,11 @@ func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnect
 			results <- acquired{release: release, err: err}
 		}()
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
-		t.Fatal("no admission came to wait on the document's queue lock")
-	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, storm, pileUpWindow); waiting != 1 {
+	storetest.WaitForLockWaiters(t, holder, 1)
+	testwait.Span(t, pileUpWindow, "an admission that took a shared connection of its own would queue on the lock at a "+
+		"moment no state records: the service counts an admission when it joins the document's gate, before it "+
+		"takes a connection, and no later action of the test is ordered after a goroutine that queues nothing")
+	if waiting := storetest.LockWaiters(t, holder); waiting != 1 {
 		t.Fatalf("%d of the service's connections wait on the document's queue lock, want 1", waiting)
 	}
 	if inUse := service.store.Pool.Stat().AcquiredConns(); inUse != 1 {

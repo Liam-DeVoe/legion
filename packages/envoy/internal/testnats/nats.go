@@ -17,6 +17,11 @@
 // leaves the stream's files where they were while it answers success, and the next create of that
 // name recovers the deleted stream's messages. Every account keeps its streams in a directory of
 // its own, so the names one test uses cannot reach another.
+//
+// The daemon's tests have a copy of this rig of their own, packages/daemon/internal/testnats, which
+// starts a server in the test process as start and launch here do, one for each test. The two are
+// copies rather than one package because Go's internal rule keeps the daemon's module from
+// importing this one, so a change to how a server is started or configured belongs in both.
 package testnats
 
 import (
@@ -80,12 +85,14 @@ func init() {
 	os.Unsetenv("NATS_NKEY_SEED_FILE")
 }
 
-// Main runs the package's tests, then shuts the shared server down and removes its store if a test
-// started it, and returns the exit code. A package whose tests use URL calls it from TestMain:
-// os.Exit(testnats.Main(m)).
-func Main(m *testing.M) int {
+// Main runs the package's tests through run, then shuts the shared server down and removes its
+// store if a test started it, and returns the exit code. A package whose tests use URL calls it
+// from TestMain: os.Exit(testnats.Main(m.Run)). It takes the run function rather than *testing.M
+// so that it composes with another fixture's Main, as storetest's does:
+// os.Exit(storetest.Main(func() int { return testnats.Main(m.Run) })).
+func Main(run func() int) int {
 	mainRuns = true
-	code := m.Run()
+	code := run()
 	if sharedCleanup != nil {
 		sharedCleanup.run()
 		if sharedCleanup.failed && code == 0 {
@@ -106,7 +113,7 @@ func Main(m *testing.M) int {
 func URL(t testing.TB) string {
 	t.Helper()
 	if !mainRuns {
-		t.Fatal("testnats: the package's TestMain must return testnats.Main(m), which shuts the shared NATS server down")
+		t.Fatal("testnats: the package's TestMain must return testnats.Main(m.Run), which shuts the shared NATS server down")
 	}
 	sharedOnce.Do(func() {
 		sharedCleanup = &sharedTB{TB: t}

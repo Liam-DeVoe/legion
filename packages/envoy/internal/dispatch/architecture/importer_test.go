@@ -319,7 +319,7 @@ func (f *fakeSource) handler() http.Handler {
 	return mux
 }
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // newGitHubClient serves handler as the GitHub API and returns an App client
 // pointed at it.

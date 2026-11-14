@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	brokerstoretest "github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -38,7 +39,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain drops the databases the package's tests clone: Dispatch's (storetest.Main) and, for
+// contract_test.go's broker, the broker's (brokerstoretest.Main).
+func TestMain(m *testing.M) {
+	os.Exit(storetest.Main(func() int { return brokerstoretest.Main(m.Run) }))
+}
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
 func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
@@ -349,13 +354,11 @@ func writeSessionRecord(t *testing.T, w http.ResponseWriter, sessionsJSON, sessi
 	_, _ = w.Write([]byte(`{"error":"no live session ` + sessionID + `"}`))
 }
 
-// waitForDatabaseLocks waits up to 2 s for want backends to queue behind a lock that holder's
-// transaction owns (storetest.WaitForLockWaiters), and fails the test when they never do.
+// waitForDatabaseLocks waits for want backends to queue behind a lock that holder's transaction
+// owns (storetest.WaitForLockWaiters), and fails the test when they never do.
 func waitForDatabaseLocks(t *testing.T, holder pgx.Tx, want int) {
 	t.Helper()
-	if queued := storetest.WaitForLockWaiters(t, holder, want, 2*time.Second); queued < want {
-		t.Fatalf("waiting database locks: wanted at least %d operations queued behind the held lock, saw %d", want, queued)
-	}
+	storetest.WaitForLockWaiters(t, holder, want)
 }
 
 func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {

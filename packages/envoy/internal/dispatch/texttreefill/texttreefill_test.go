@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // openFill is a migrated database of this test's own and the pool the pass works through.
 func openFill(t *testing.T) (*store.Store, *store.Pool) {

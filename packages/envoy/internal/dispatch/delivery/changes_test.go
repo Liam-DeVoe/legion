@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -100,10 +99,12 @@ func databaseAge(t *testing.T, ctx context.Context, pool *store.Pool, query stri
 // justNow reports whether age is a moment the database's clock reached within the last minute.
 func justNow(age *time.Duration) bool { return age != nil && *age >= 0 && *age < time.Minute }
 
-// listenConn opens a connection of its own, outside the pool, listening on channel.
+// listenConn opens a connection of its own, outside the pool, to the test's database
+// (deliveryTestPool), listening on channel.
 func listenConn(t *testing.T, ctx context.Context, channel string) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(ctx, os.Getenv("DISPATCH_TEST_DATABASE_URL"))
+	pool, _ := deliveryTestPool(t)
+	conn, err := pgx.Connect(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("connect a listener: %v", err)
 	}
@@ -341,9 +342,6 @@ func TestRecordEventAtStampsTheDatabasesClock(t *testing.T) {
 func TestPruneChangesCutsAtTheDatabasesClock(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	pool = laggingDatabaseClock(t, ctx, pool, 2*time.Hour)
-	if _, err := pool.Exec(ctx, `delete from delivery_changes`); err != nil {
-		t.Fatalf("clear the change log: %v", err)
-	}
 	if _, err := pool.Exec(ctx, `
 		insert into delivery_changes (at, kind, ref) values (now() - interval '25 hours', 'settings', '25h'), (now() - interval '23 hours', 'settings', '23h')
 	`); err != nil {

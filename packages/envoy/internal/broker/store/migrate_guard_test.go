@@ -2,9 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -152,30 +149,15 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 	}
 }
 
-// emptySchemaStore opens a store on a schema of its own on the BROKER_TEST_DATABASE_URL server,
-// created empty and dropped when t ends. A test that migrates a set of its own needs one: the
-// server's shared schema already records the broker's real versions, which would pass over the
-// test set's numbers as applied.
+// emptySchemaStore opens a store on an empty database of the test's own (ownDatabase), whose
+// public schema records no version yet. A test that migrates a set of its own needs one: a schema
+// that already recorded the broker's real versions would pass over the test set's numbers as
+// applied.
 func emptySchemaStore(t *testing.T) *Store {
 	t.Helper()
-	raw := testDatabaseURL(t)
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random schema name: %v", err)
-	}
-	schema := "broker_migrate_test_" + hex.EncodeToString(suffix[:])
-	adminExec(t, raw, "create schema "+schema)
-	t.Cleanup(func() { adminExec(t, raw, "drop schema "+schema+" cascade") })
-	parsed, err := url.Parse(raw)
+	s, err := Open(context.Background(), ownDatabase(t))
 	if err != nil {
-		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	s, err := Open(context.Background(), parsed.String())
-	if err != nil {
-		t.Fatalf("open the test schema: %v", err)
+		t.Fatalf("open the test database: %v", err)
 	}
 	t.Cleanup(s.Pool.Close)
 	return s
@@ -186,7 +168,7 @@ func adminExec(t *testing.T, databaseURL, statement string) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
-		t.Fatalf("connect to BROKER_TEST_DATABASE_URL: %v", err)
+		t.Fatalf("connect to the test database: %v", err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, statement); err != nil {

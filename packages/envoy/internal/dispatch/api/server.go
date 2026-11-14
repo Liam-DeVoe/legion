@@ -25,6 +25,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
@@ -683,7 +684,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	s.eventRelay = newEventStreamRelay(s, lifetime)
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
-	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
+	s.deliveryHub = newDeliveryHub(s, lifetime, clock.Real())
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
 	}

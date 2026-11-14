@@ -16,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -58,31 +60,30 @@ func newClockedHubRig(t *testing.T, clock *fakeHubClock) *hubRig {
 	return hubOn(t, handler, database, deps, clock, nil)
 }
 
-// fakeHubClock is the real clock moved forward by Advance: Now is the wall clock plus its offset,
-// which every advance grows, and a timer fires once the wall clock plus the offset reaches its
-// moment, so a test moves the hub past a threshold or a midnight without waiting for it. A timer
-// armed for a moment the clock has already reached fires at once, however far an Advance moved it
-// before the arm. A clock from newNoonHubClock starts with the offset that makes it read noon UTC,
-// and runs with the wall clock from there. A clock from newStillHubClock stands still between
-// advances instead: Now is noon UTC plus the advances. Its timers still fire on the wall clock as
-// well, but the hub's one timer only wakes its worker, which compares each view's due moment with
-// Now (deliveryHub.work, runDue), so how long the test's own writes take decides nothing.
+// fakeHubClock is the hub's clock in these tests: a clocktest.Fake that Advance moves, so a test
+// moves the hub past a threshold or a midnight without waiting for it, whose timers also run on
+// the wall clock. Each arm is placed on the fake and on a real timer of the same wait, and fires
+// once, on whichever comes first, so a timer armed for a moment the fake has already reached fires
+// at once, however far an Advance moved it before the arm. A clock from newNoonHubClock reads noon
+// UTC now and runs with the wall clock from there; one from newHeldHubClock is the wall clock. A
+// clock from newStillHubClock stands still between advances instead: Now is noon UTC plus the
+// advances. Its timers still fire on the wall clock as well, but the hub's one timer only wakes its
+// worker, which compares each view's due moment with Now (deliveryHub.work, runDue), so how long the
+// test's own writes take decides nothing. Now reads in UTC, as the hub's own clock does.
 type fakeHubClock struct {
-	mu     sync.Mutex
-	still  time.Time
-	offset time.Duration
-	timers []*fakeHubTimer
-	// beforeArm, when set, runs at each arm, before the timer is placed, until it answers true: a
-	// test's Advance landing between the worker's read of the clock and its arm.
-	beforeArm func() bool
+	*clocktest.Fake
+	still bool
+	mu    sync.Mutex
+	// afterArm, when set, runs at each arm, once the timer is placed, until it answers true: a
+	// test's Advance landing in the worker's arm of its timer.
+	afterArm func() bool
 }
 
 type fakeHubTimer struct {
-	clock *fakeHubClock
-	at    time.Time
-	f     func()
-	real  *time.Timer
-	done  atomic.Bool
+	f    func()
+	fake clock.Timer
+	real *time.Timer
+	done atomic.Bool
 }
 
 // noonToday is noon UTC of the present's day. Every preset view is due at the next UTC midnight
@@ -91,54 +92,47 @@ type fakeHubTimer struct {
 func noonToday() time.Time { return nextUTCMidnight(time.Now()).Add(-12 * time.Hour) }
 
 // newNoonHubClock is a fakeHubClock that reads noon UTC now and runs with the wall clock from there.
-func newNoonHubClock() *fakeHubClock { return &fakeHubClock{offset: time.Until(noonToday())} }
+func newNoonHubClock() *fakeHubClock {
+	held := clocktest.Held()
+	held.Set(noonToday())
+	return &fakeHubClock{Fake: held}
+}
+
+// newHeldHubClock is a fakeHubClock on the wall clock, moved on by its advances.
+func newHeldHubClock() *fakeHubClock { return &fakeHubClock{Fake: clocktest.Held()} }
 
 // newStillHubClock is a fakeHubClock standing still at noon UTC until Advance moves it.
-func newStillHubClock() *fakeHubClock { return &fakeHubClock{still: noonToday()} }
-
-func (c *fakeHubClock) nowLocked() time.Time {
-	if c.still.IsZero() {
-		return time.Now().UTC().Add(c.offset)
-	}
-	return c.still.Add(c.offset)
+func newStillHubClock() *fakeHubClock {
+	return &fakeHubClock{Fake: clocktest.New(noonToday()), still: true}
 }
 
-func (c *fakeHubClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.nowLocked()
-}
+func (c *fakeHubClock) Now() time.Time { return c.Fake.Now().UTC() }
 
 // standsStill is whether the clock moves only by Advance, so a view's recompute, due on this
 // clock, waits for the test rather than for the wall clock.
-func (c *fakeHubClock) standsStill() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return !c.still.IsZero()
-}
+func (c *fakeHubClock) standsStill() bool { return c.still }
 
-func (c *fakeHubClock) At(at time.Time, f func()) hubTimer {
+func (c *fakeHubClock) AfterFunc(d time.Duration, f func()) clock.Timer {
+	timer := &fakeHubTimer{f: f}
+	timer.fake = c.Fake.AfterFunc(d, timer.fire)
+	timer.real = time.AfterFunc(d, timer.fire)
 	c.mu.Lock()
-	hook := c.beforeArm
+	hook := c.afterArm
 	c.mu.Unlock()
-	cleared := hook != nil && hook()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if cleared {
-		c.beforeArm = nil
+	if hook != nil && hook() {
+		c.mu.Lock()
+		c.afterArm = nil
+		c.mu.Unlock()
 	}
-	timer := &fakeHubTimer{clock: c, at: at, f: f}
-	timer.real = time.AfterFunc(at.Sub(c.nowLocked()), timer.fire)
-	c.timers = append(c.timers, timer)
 	return timer
 }
 
-// onArm runs f inside each of the hub's arms of its timer, before the timer is placed, until f
+// onArm runs f inside each of the hub's arms of its timer, once the timer is placed, until f
 // answers true.
 func (c *fakeHubClock) onArm(f func() bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.beforeArm = f
+	c.afterArm = f
 }
 
 func (t *fakeHubTimer) fire() {
@@ -147,34 +141,22 @@ func (t *fakeHubTimer) fire() {
 	}
 }
 
+// C is nil, as an AfterFunc timer's is.
+func (t *fakeHubTimer) C() <-chan time.Time { return nil }
+
 func (t *fakeHubTimer) Stop() bool {
+	t.fake.Stop()
 	t.real.Stop()
 	return t.done.CompareAndSwap(false, true)
 }
 
-// Advance moves the clock forward by d and fires every timer whose moment it reached.
-func (c *fakeHubClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	c.offset += d
-	now := c.nowLocked()
-	var due []*fakeHubTimer
-	kept := c.timers[:0]
-	for _, timer := range c.timers {
-		if timer.done.Load() {
-			continue
-		}
-		if !timer.at.After(now) {
-			due = append(due, timer)
-			continue
-		}
-		kept = append(kept, timer)
-	}
-	c.timers = kept
-	c.mu.Unlock()
-	for _, timer := range due {
-		timer.real.Stop()
-		timer.fire()
-	}
+func (t *fakeHubTimer) Reset(d time.Duration) bool {
+	t.fake.Stop()
+	t.real.Stop()
+	was := !t.done.Swap(false)
+	t.fake.Reset(d)
+	t.real.Reset(d)
+	return was
 }
 
 // hubOn builds a hub and its relay on an existing test server, as a second Dispatch task's would
@@ -1813,7 +1795,7 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 }
 
 func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing.T) {
-	clock := &fakeHubClock{}
+	clock := newHeldHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()
@@ -1851,7 +1833,7 @@ func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing
 // leaves one the worker's first pass never takes), so only the timer can wake the worker: the
 // expiry the clock already passed is due, so the timer fires and the expiry's delta follows.
 func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testing.T) {
-	clock := &fakeHubClock{}
+	clock := newHeldHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	clock.onArm(func() bool {
@@ -1915,7 +1897,7 @@ func TestAPresetRecomputeWhereOnlyTheWindowMovedSendsNothing(t *testing.T) {
 }
 
 func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
-	clock := &fakeHubClock{}
+	clock := newHeldHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()

@@ -19,7 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // bedrockShaped gives a test embedder the Identity and Limits embed.Embedder asks for: Bedrock's
 // own, so the batch size and token ceiling the tests below count against are Bedrock's. Every

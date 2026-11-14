@@ -1,4 +1,4 @@
-package storetest
+package testpg
 
 import (
 	"context"
@@ -8,30 +8,39 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestMain(m *testing.M) { os.Exit(Main(m)) }
+// testTemplate is a template with no migration: a copy of template1, which is all a test of how a
+// clone is made needs.
+var testTemplate = NewTemplate(DispatchServer, "testpg", "func TestMain(m *testing.M) { os.Exit(testTemplate.Main(m.Run)) }",
+	func(context.Context, string) error { return nil })
 
-// Open clones the template by copying its files (the package comment says why). The test reads
-// the write-ahead log of the one backend that runs a clone (pg_stat_get_backend_wal, Postgres 18),
-// so what other sessions on the server write does not count.
+func TestMain(m *testing.M) { os.Exit(testTemplate.Main(m.Run)) }
+
+// Clone copies the template by copying its files (Template says why). The test reads the
+// write-ahead log of the one backend that runs a clone (pg_stat_get_backend_wal, Postgres 18), so
+// what other sessions on the server write does not count.
 func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
-	Open(t) // prepares the template, or skips the test
+	testTemplate.Clone(t) // makes the template, or skips the test
 	ctx := context.Background()
-	conn, err := shared.admin.Acquire(ctx)
+	conn, err := testTemplate.admin.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire an admin connection: %v", err)
 	}
 	defer conn.Release()
 	var templateBytes int64
-	if err := conn.QueryRow(ctx, "select pg_database_size($1)", shared.template).Scan(&templateBytes); err != nil {
+	if err := conn.QueryRow(ctx, "select pg_database_size($1)", testTemplate.name).Scan(&templateBytes); err != nil {
 		t.Fatalf("read the template's size: %v", err)
 	}
 
-	name := randomName(t, "dispatch_test_")
+	suffix, err := randomSuffix()
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	name := "testpg_test_" + suffix
 	before := backendWALBytes(t, conn)
-	if _, err := conn.Exec(ctx, cloneStatement(name)); err != nil {
+	if _, err := conn.Exec(ctx, testTemplate.cloneStatement(name)); err != nil {
 		t.Fatalf("clone the template: %v", err)
 	}
-	dropDatabase(name)
+	testTemplate.drop(name)
 	written := backendWALBytes(t, conn) - before
 
 	if written > templateBytes/100 {

@@ -1968,7 +1968,7 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 	return value
 }
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 func waitFor(t *testing.T, timeout time.Duration, what string, condition func() bool) {
 	t.Helper()

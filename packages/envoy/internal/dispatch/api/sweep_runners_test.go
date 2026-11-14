@@ -137,9 +137,7 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 	runSweep(t, func(ctx context.Context) {
 		runSuggestionOutcomeSweep(ctx, secondPool, sweepHorizon(secondPool), nil, sweepRunnerSchedule)
 	})
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 30*time.Second); waiting < 2 {
-		t.Fatalf("%d of the two runners' passes reached the cursor lock, want both: the cursor row, not a lease, is what serialises them", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the cursor: %v", err)
 	}

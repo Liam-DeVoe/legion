@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/url"
-	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -24,35 +23,13 @@ import (
 	"github.com/sjawhar/envoy/migrationid"
 )
 
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	databaseURL := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run Postgres store tests")
-	}
-	return databaseURL
-}
-
-func openTestStore(t *testing.T) *Store {
-	t.Helper()
-	store, err := Open(context.Background(), testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(store.Pool.Close)
-	return store
-}
-
+// openEmptyTestStore opens an empty database of the test's own on the server
+// DISPATCH_TEST_DATABASE_URL names (testpg), dropped after the test ends, and skips the test when
+// that variable is unset. A test that needs the tables migrates it itself. This package's own
+// tests cannot clone storetest's migrated template, since storetest imports this package.
 func openEmptyTestStore(t *testing.T) *Store {
 	t.Helper()
-	ctx := context.Background()
-	baseURL, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	adminURL := *baseURL
-	adminURL.Path = "/postgres"
-	store, err := Open(ctx, testpg.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	store, err := Open(context.Background(), testpg.DispatchServer.Database(t, "dispatch_test"))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -76,7 +53,7 @@ func randomDatabaseSuffix(t *testing.T) string {
 // first wrong in the dangerous direction - the pool is silently pinned and the refusal never
 // fires - and the last two wrong in the worse one, refusing to boot on a valid password.
 func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
-	base := testDatabaseURL(t)
+	base := testpg.DispatchServer.Database(t, "dispatch_test")
 	withPoolSize, err := url.Parse(base)
 	if err != nil {
 		t.Fatalf("parse test database URL: %v", err)
@@ -137,7 +114,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 // time.Local, which is never time.UTC - not even under TZ=UTC, where it is a location of its own
 // named "UTC" - so this holds the connection to the zone rather than to the host's.
 func TestScannedTimestampsCarryUTCWhateverTheHostZone(t *testing.T) {
-	store := openTestStore(t)
+	store := openEmptyTestStore(t)
 	ctx := context.Background()
 	// Both wire formats: the pool's own (binary, the statement cache's) and the text one a
 	// simple-protocol query answers, each with a scan plan of its own in pgx.

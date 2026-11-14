@@ -21,7 +21,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 )
 
-func TestMain(m *testing.M) { os.Exit(Main(m)) }
+func TestMain(m *testing.M) { os.Exit(Main(m.Run)) }
 
 // This protects the rig's readiness boundary: a server can accept NATS's
 // protocol handshake while JetStream is still starting, so a KV test that returns at the handshake

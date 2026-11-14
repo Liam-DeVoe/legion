@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // leasesOf is the pool Exclusive takes its lease connections from, the one the server gives it.
 func leasesOf(t *testing.T, database *store.Store) *pgxpool.Pool {
@@ -295,9 +295,7 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	go func() {
 		answered <- duty.Exclusive(stopping, leases, name, time.Now(), time.Hour, func(context.Context) { passRan = true })
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 4*time.Second); waiting < 1 {
-		t.Fatal("the gate's period read never queued behind duty_passes")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	stop()
 	// A read on the pass's context would end at the cancel: pgx sets the socket's deadline to now,
 	// and the gate returns within milliseconds while duty_passes is still held.
@@ -306,7 +304,7 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 		t.Fatalf("the gate returned while its period read still waited on duty_passes: the cancel ended the read\n%s", logs.String())
 	case <-time.After(500 * time.Millisecond):
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Second); waiting < 1 {
+	if waiting := storetest.LockWaiters(t, holder); waiting < 1 {
 		t.Fatal("the gate's period read stopped waiting on duty_passes at the cancel")
 	}
 	if err := holder.Rollback(ctx); err != nil {

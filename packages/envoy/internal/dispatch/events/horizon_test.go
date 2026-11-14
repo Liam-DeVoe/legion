@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -882,14 +881,9 @@ func TestWriterFloorIgnoresATransactionInAnotherDatabase(t *testing.T) {
 	defer cancel()
 	horizon := NewHorizon(database.Pool)
 
-	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
+	conn, err := pgx.Connect(ctx, storetest.OtherDatabase(t))
 	if err != nil {
-		t.Fatalf("parse %s: %v", storetest.DatabaseURLEnv, err)
-	}
-	config.Database = "postgres"
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		t.Fatalf("connect to the cluster's postgres database: %v", err)
+		t.Fatalf("connect to the binary's other database: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
 	elsewhere, err := conn.Begin(ctx)

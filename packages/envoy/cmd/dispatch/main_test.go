@@ -1104,7 +1104,7 @@ func TestMain(m *testing.M) {
 		main()
 		os.Exit(0)
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(storetest.Main(m.Run))
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {

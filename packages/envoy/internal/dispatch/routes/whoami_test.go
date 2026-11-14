@@ -29,7 +29,7 @@ import (
 
 // The tests that read GET /auth/whoami's event_head off a real event log open a database of their
 // own (storetest.Open); the rest of this package's tests hold none.
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // standInEventLog gives a router built with no Store an event log whose newest event is head, so
 // GET /auth/whoami answers it: the sign-in tests read whoami for the person it names, and their
@@ -408,21 +408,17 @@ func appendOutOfOrder(t *testing.T, database *store.Store, first, second string)
 	}
 }
 
-// holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes a
-// transaction id, as a job in another database or another package's test does. Snapshots are
-// instance-wide, so until it ends no horizon on the cluster proves an observation taken after it
-// began. It commits when release runs or after hold, whichever comes first, and by the time the
-// test ends; release returns once it has.
+// holdClusterTransactionID opens a transaction in a second database of the test binary's own on
+// the test cluster (storetest.OtherDatabase) and takes a transaction id, as a job in another
+// database or another package's test does. Snapshots are instance-wide, so until it ends no
+// horizon on the cluster proves an observation taken after it began. It commits when release runs
+// or after hold, whichever comes first, and by the time the test ends; release returns once it
+// has.
 func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
 	t.Helper()
-	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
+	conn, err := pgx.Connect(t.Context(), storetest.OtherDatabase(t))
 	if err != nil {
-		t.Fatalf("parse %s: %v", storetest.DatabaseURLEnv, err)
-	}
-	config.Database = "postgres"
-	conn, err := pgx.ConnectConfig(t.Context(), config)
-	if err != nil {
-		t.Fatalf("connect to the cluster's postgres database: %v", err)
+		t.Fatalf("connect to the binary's other database: %v", err)
 	}
 	tx, err := conn.Begin(t.Context())
 	if err != nil {

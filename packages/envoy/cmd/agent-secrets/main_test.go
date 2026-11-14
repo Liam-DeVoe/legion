@@ -31,9 +31,13 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
+
+// TestMain drops the databases the broker rigs of this package's tests clone (storetest.Main).
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // testEnrollmentID is the enrollment id these tests' key dir fixture "issues" (writes into the
 // enrollment file), and the id fakeBroker's GET /v1/enrollments/self echoes back — proof that

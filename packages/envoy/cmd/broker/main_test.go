@@ -40,6 +40,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// TestMain drops the databases the package's tests clone (storetest.Main).
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
+
 // testSecretsPrefix and testSecretsKMSKeyARN are the name prefix every agent secret sits under
 // and the key every one of them is encrypted with, as productionEnv configures every broker
 // these tests start (BROKER_SECRETS_PREFIX, BROKER_SECRETS_KMS_KEY_ARN). A fake secrets file a

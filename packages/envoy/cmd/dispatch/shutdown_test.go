@@ -104,9 +104,10 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // queued behind another writer's lock on the issue. The document service starts once that share
 // ends, so the settlement owed by the edit before the signal still runs and commits. Settlement waits
 // on the same lock: the edit's own timer starts one two seconds in, during the drain, and Shutdown
-// starts another. The lock is released once Shutdown's is queued behind it too, or two seconds after
-// the document service started, which is ample for it to read what is owed; a release before that
-// read could let the timer's settlement commit first.
+// starts another. The lock is released once Shutdown's is queued behind it too, the third waiter:
+// Shutdown's worker starts its settlement only once it has read that the document owes one, so that
+// settlement's place in the queue is the fact the release needs; a release before that read could
+// let the timer's settlement commit first.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -123,14 +124,12 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	// could pass with the title change still on its way: watch the title change's own statement,
 	// the issue-row lock a PATCH takes first (api's lockIssueRows). It runs in the Dispatch
 	// process, so its backend is named by that statement rather than by a pool of its own.
-	if pid := storetest.WaitForStatementBehind(t, database, holder, renameLock, 10*time.Second); pid == 0 {
-		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
-	}
+	storetest.WaitForStatementBehind(t, database, holder, renameLock)
 
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	t.Logf("the document service started with the request in flight %v after SIGTERM", time.Since(signalled))
-	waiting := storetest.WaitForLockWaiters(t, holder, 3, 2*time.Second)
+	waiting := storetest.WaitForLockWaiters(t, holder, 3)
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
@@ -168,9 +167,7 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 		status, err := process.renameIssue(key, "Committed after the lock")
 		answered <- answer{status, err}
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
-		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 
 	signalled := process.Terminate(t)
 	select {
@@ -963,9 +960,7 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	go func() {
 		_, _ = process.trySend(http.MethodPost, "/api/v1/issues", `{"project":"STOP","title":"Never answered"}`, asUser(dispatchTestLogin))
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
-		t.Fatalf("the issue create never queued behind the project lock:\n%s", process.Output.String())
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 
 	relay.freeze()
 	signalled := process.Terminate(t)

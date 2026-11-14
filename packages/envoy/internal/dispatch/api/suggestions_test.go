@@ -296,9 +296,9 @@ func suggestionsBehindLock(
 		answered <- srv.relatedCheck(context.Background(), relatedInput{project: project, text: text, source: source})
 	}()
 	// The call queues within milliseconds, and it ends on its own once its allowance does: the wait
-	// returns at once when it answers. So the bound, three allowances, is reached only by a call
-	// that neither queued nor answered in all that time, one stuck somewhere other than this lock.
-	if s, early := storetest.WaitForQueuedBehind(t, lockTx, callPID, answered, 3*lockedSuggestionAllowance); early {
+	// returns at once when it answers. So only a call that neither queued nor answered, one stuck
+	// somewhere other than this lock, holds the wait until the shared wait gives up.
+	if s, early := storetest.WaitForQueuedBehind(t, lockTx, callPID, answered); early {
 		t.Fatalf("the related-item check answered %+v before its query waited behind the lock on %s, want the %s allowance to end while it waits", s, table, lockedSuggestionAllowance)
 	}
 	return <-answered

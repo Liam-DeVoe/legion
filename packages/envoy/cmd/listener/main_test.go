@@ -20,6 +20,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -355,60 +356,6 @@ func setupSessionConsumers(t *testing.T) *sessionDelivery {
 	return delivery
 }
 
-type listenerAcknowledgementClock struct {
-	mu        sync.Mutex
-	elapsed   time.Duration
-	deadlines []listenerAcknowledgementDeadline
-}
-
-type listenerAcknowledgementDeadline struct {
-	at     time.Duration
-	cancel context.CancelFunc
-}
-
-func (clock *listenerAcknowledgementClock) WithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(parent)
-	clock.mu.Lock()
-	clock.deadlines = append(clock.deadlines, listenerAcknowledgementDeadline{
-		at:     clock.elapsed + timeout,
-		cancel: cancel,
-	})
-	clock.mu.Unlock()
-	return ctx, cancel
-}
-
-func (clock *listenerAcknowledgementClock) Advance(elapsed time.Duration) bool {
-	clock.mu.Lock()
-	clock.elapsed += elapsed
-	var due []context.CancelFunc
-	remaining := clock.deadlines[:0]
-	for _, deadline := range clock.deadlines {
-		if deadline.at <= clock.elapsed {
-			due = append(due, deadline.cancel)
-			continue
-		}
-		remaining = append(remaining, deadline)
-	}
-	clock.deadlines = remaining
-	clock.mu.Unlock()
-
-	for _, cancel := range due {
-		cancel()
-	}
-	return len(due) > 0
-}
-
-func (clock *listenerAcknowledgementClock) CancelAll() {
-	clock.mu.Lock()
-	deadlines := clock.deadlines
-	clock.deadlines = nil
-	clock.mu.Unlock()
-
-	for _, deadline := range deadlines {
-		deadline.cancel()
-	}
-}
-
 // A publish through the listener's API to a team topic, with no session connected to receive it,
 // answers 200 with its envelope and leaves the message on the stream under notifications.team.>,
 // where the consumer of every session that follows the topic reads it whenever it comes back.
@@ -518,7 +465,8 @@ func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
 // the core subscriber holding the subject never sends.
 func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 	const topic = "notifications.github.acme.unbound"
-	clock := &listenerAcknowledgementClock{}
+	start := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	clock := clocktest.New(start)
 	client := setupPublishTestClient(t, bus.WithPublishAcknowledgementClock(clock))
 	info, err := client.JS().StreamInfo(bus.Stream)
 	if err != nil {
@@ -550,7 +498,13 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 
 	state := &listenerDeps{client: client}
 	response := make(chan *httptest.ResponseRecorder, 1)
-	t.Cleanup(clock.CancelAll)
+	// A failed step ends every deadline still armed, so the handler's publish is not left waiting
+	// on a clock nobody moves.
+	t.Cleanup(func() {
+		if armed := clock.Armed(); len(armed) > 0 {
+			clock.Set(armed[len(armed)-1])
+		}
+	})
 	go func() {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"`+topic+`","message":"ping","source":"agent"}`))
@@ -561,9 +515,10 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 
 	select {
 	case <-published:
-		if !clock.Advance(5 * time.Second) {
-			t.Fatal("publish acknowledgement deadline exceeded 5s")
+		if armed := clock.AwaitArmed(t, "the publish's acknowledgement deadline", 1); armed[0].After(start.Add(5 * time.Second)) {
+			t.Fatalf("publish acknowledgement deadline %s is past 5s", armed[0].Sub(start))
 		}
+		clock.Advance(5 * time.Second)
 	case <-t.Context().Done():
 		t.Fatal("publish did not reach the acknowledgement wait")
 	}
@@ -4957,7 +4912,7 @@ func setupTestNATS(t *testing.T) *bus.Client {
 }
 
 // TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(testnats.Main(m.Run)) }
 
 // endInterestWatcherWhileConnected ends the interest registry's KV watcher while NATS stays
 // connected: deleting the bucket's stream makes the watcher's ordered consumer fail to reset.

@@ -1,10 +1,16 @@
-// Package testpg gives a test that brings its own servers, as a natslive test does with testnats,
-// an empty Postgres database and the URL to hand a binary. The caller migrates it itself. URL is
-// the helper for a test that may have no server: it takes the one DISPATCH_TEST_DATABASE_URL
-// names, or starts a container when that variable is unset. DatabaseOn is the helper for a test
-// that already holds the URL of the server it runs on: it reads no variable and starts nothing.
-// A test of Dispatch's store that wants a migrated store rather than a URL calls
-// internal/dispatch/store/storetest instead.
+// Package testpg gives a test a Postgres database of its own and the URL to hand a binary, and is,
+// with the two storetest packages it serves, the only code of Envoy's tests that reads a variable
+// naming a Postgres server (Server). A test never gets the database that variable's URL names, so
+// two test binaries sharing one server see none of each other's rows.
+//
+// Server.Database is an empty database on the server a variable names, which the caller migrates
+// itself, skipping the test when the variable is unset. URL is the helper for a test that may have
+// no server, as a natslive test brings its own NATS through testnats: it takes a database on the
+// server DISPATCH_TEST_DATABASE_URL names, or starts a container when that variable is unset.
+// DatabaseOn is the helper for a test that already holds the URL of the server it runs on: it
+// reads no variable and starts nothing. Template is a migrated database a binary makes once and
+// copies for each test; Dispatch's and the broker's storetest packages give out its clones as
+// migrated stores, and a test of either store that wants one calls its storetest instead.
 package testpg
 
 import (
@@ -12,8 +18,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
-	"os"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
@@ -28,46 +34,25 @@ import (
 // tests run, so a test does not fetch it in the middle of a lane.
 const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11"
 
-// databaseURLEnv names the Postgres server a test may be given instead of starting one. It is
-// spelled here rather than taken from internal/dispatch/store/storetest, which declares the same
-// name as DatabaseURLEnv: importing that package would pull Dispatch's whole store, and with it
-// its dependency tree, into every module that builds this one — among them packages/envoy/infra,
-// whose go.work.sum would grow for a test helper's one string. The two must stay in step; they
-// are one variable with one meaning, "the Postgres server this lane provides".
-const databaseURLEnv = "DISPATCH_TEST_DATABASE_URL"
-
 // URL returns the loopback connection URL of an empty Postgres database of this test's own,
 // dropped when the test ends. It is reached two ways.
 //
 // With DISPATCH_TEST_DATABASE_URL set, the database is created on the server that variable names
 // — the Postgres service the envoy-go job of .github/workflows/ci.yaml already runs — and
-// dropped from it afterwards. That variable is
-// storetest's own, reused rather than doubled: it is how every Postgres-backed Dispatch test is
-// already told which server CI provides, and a second name would have to be set beside it on every
-// job and in every developer's shell for the same answer. Its database path is ignored exactly as
-// storetest ignores it: the admin connection uses the postgres database.
+// dropped from it afterwards (DispatchServer.Database). That variable is reused rather than
+// doubled: it is how every Postgres-backed Dispatch test is already told which server CI
+// provides, and a second name would have to be set beside it on every job and in every
+// developer's shell for the same answer.
 //
 // With it unset, Image is started as a container and the whole server ends with the test. A
 // developer with a container runtime and no server therefore needs no setup, and a lane that has
 // a server needs no runtime.
 func URL(t testing.TB) string {
 	t.Helper()
-	if server := os.Getenv(databaseURLEnv); server != "" {
-		return databaseOn(t, server)
+	if DispatchServer.Available() {
+		return DispatchServer.Database(t, "testpg")
 	}
 	return containerURL(t)
-}
-
-// databaseOn creates a database of this test's own on the server raw names, and drops it when the
-// test ends.
-func databaseOn(t testing.TB, raw string) string {
-	t.Helper()
-	server, err := url.Parse(raw)
-	if err != nil {
-		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
-		t.Fatalf("parse %s: %v", databaseURLEnv, errors.Unwrap(err))
-	}
-	return DatabaseOn(t, databaseURL(*server, "postgres"), "testpg")
 }
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
@@ -89,11 +74,11 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
 		t.Fatalf("parse the admin URL of the Postgres server: %v", errors.Unwrap(err))
 	}
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random database name: %v", err)
+	suffix, err := randomSuffix()
+	if err != nil {
+		t.Fatalf("%v", err)
 	}
-	name := prefix + "_" + hex.EncodeToString(suffix[:])
+	name := prefix + "_" + suffix
 	// A copy of template1's files: created the default way, through the write-ahead log, an empty
 	// database costs 4.4 MB of log (docs/testing.md, "A database a Go test creates").
 	adminExec(t, adminURL, server.Host, "create database "+name+" strategy file_copy")
@@ -123,6 +108,16 @@ func adminExec(t testing.TB, adminURL, host, statement string) {
 func databaseURL(server url.URL, database string) string {
 	server.Path = "/" + database
 	return server.String()
+}
+
+// randomSuffix is eight random bytes in hex, the part of a database's name that keeps it apart
+// from every other test's on a shared server.
+func randomSuffix() (string, error) {
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("random database name: %w", err)
+	}
+	return hex.EncodeToString(suffix[:]), nil
 }
 
 // containerURL starts Image, waits for Postgres to finish its first initialization and be ready

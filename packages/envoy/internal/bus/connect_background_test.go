@@ -10,8 +10,10 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stoppedNATS is a NATS server with JetStream that a test started and then stopped, and its URL:
@@ -141,21 +143,16 @@ func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
 	})
 }
 
-// shortAcknowledgementClock bounds a publish's wait to its own duration, so a test sees the
-// deadline pass without waiting out the five seconds a publish has.
-type shortAcknowledgementClock time.Duration
-
-func (c shortAcknowledgementClock) WithTimeout(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, time.Duration(c))
-}
-
 // A publish before the client's first connection waits within its own deadline and then fails, as
-// one does while the client reconnects; the same client publishes once its server answers.
+// one does while the client reconnects; the same client publishes once its server answers. The
+// deadline is on a clocktest.Fake, which the test moves to it once the publish has armed it, so the
+// test sees the deadline pass without waiting out the five seconds a publish has.
 func TestAPublishBeforeTheFirstConnectionFailsWithinItsOwnDeadline(t *testing.T) {
 	srv, uri := stoppedNATS(t)
+	acknowledgements := clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))
 	client, err := bus.ConnectOwningStream([]string{uri},
 		bus.WithConnectInBackground(),
-		bus.WithPublishAcknowledgementClock(shortAcknowledgementClock(300*time.Millisecond)))
+		bus.WithPublishAcknowledgementClock(acknowledgements))
 	if err != nil {
 		t.Fatalf("connect while the server is down: %v", err)
 	}
@@ -165,14 +162,16 @@ func TestAPublishBeforeTheFirstConnectionFailsWithinItsOwnDeadline(t *testing.T)
 		Topic:     "notifications.github.acme.widgets.push.branch.main",
 		DedupeKey: "publish-before-connect", IssuedAt: contracts.NowMillis(),
 	}
-	started := time.Now()
-	err = client.Publish(envelope)
-	elapsed := time.Since(started)
+	published := make(chan error, 1)
+	go func() { published <- client.Publish(envelope) }()
+	deadline := acknowledgements.AwaitArmed(t, "the acknowledgement deadline of the publish before the first connection", 1)[0]
+	if len(published) != 0 {
+		t.Fatalf("a publish before the first connection returned %v before the clock reached its deadline", <-published)
+	}
+	acknowledgements.Set(deadline)
+	err = testwait.Receive(t, "the publish before the first connection to end at its deadline", published)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a publish before the first connection = %v, want its deadline passed", err)
-	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("a publish before the first connection took %s, past its 300ms deadline", elapsed)
 	}
 
 	srv.Start(t)

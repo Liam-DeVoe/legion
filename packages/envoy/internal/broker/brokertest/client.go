@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // clientTimeout bounds every request a Client makes. It sits past the broker's own request
@@ -25,12 +26,6 @@ import (
 // one waiting on a row another process holds, say — still answers this client rather than being
 // turned into a transport error that names nothing.
 const clientTimeout = 90 * time.Second
-
-// deviceTokenTimeout bounds a device-code exchange. x/oauth2's DeviceAccessToken polls until the
-// device code expires (fifteen minutes here) whenever the broker answers authorization_pending or
-// slow_down, so an exchange that goes wrong in that direction would otherwise hang a row for the
-// whole of it instead of failing with what the broker kept saying.
-const deviceTokenTimeout = 60 * time.Second
 
 // pollInterval is the interval a Client's device-code exchange polls on, overriding the one the
 // device authorization answered: every code a test exchanges has already been approved, so the
@@ -154,7 +149,9 @@ func NewSigningKey(t *testing.T) *ecdsa.PrivateKey {
 
 // deviceClient is the OAuth client a machine logs in with: this broker's device authorization and
 // token endpoints under its public URL, over a transport that both pins the connection to this
-// client's process and signs a DPoP proof of key for every request, as the helper's own does.
+// client's process and signs a DPoP proof of key for every request, as the helper's own does. Its
+// context is the shared wait's (testwait.Context), so an exchange that goes on polling ends with
+// what the broker kept saying before the test binary's deadline does.
 func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Config, context.Context) {
 	t.Helper()
 	if c.DPoP == nil {
@@ -168,7 +165,7 @@ func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Conf
 				AuthStyle:     oauth2.AuthStyleInParams,
 			},
 		},
-		context.WithValue(context.Background(), oauth2.HTTPClient,
+		context.WithValue(testwait.Context(t), oauth2.HTTPClient,
 			&http.Client{Transport: c.DPoP(key, c.transport), Timeout: clientTimeout})
 }
 
@@ -206,7 +203,10 @@ func (c *Client) ApproveMachineLogin(t *testing.T, person, code string) (credent
 }
 
 // DeviceToken exchanges an approved device code for the machine's token pair, over a DPoP
-// transport signing with key exactly as the helper's own exchange does.
+// transport signing with key exactly as the helper's own exchange does. x/oauth2's
+// DeviceAccessToken polls until the device code expires (fifteen minutes here) whenever the broker
+// answers authorization_pending or slow_down, so it is the context, the shared wait's, that ends an
+// exchange that goes wrong in that direction.
 //
 // It answers the exchange's error instead of failing t, unlike every other helper here, because
 // the rows it exists for are about what the loser of a race is told: two processes exchanging one
@@ -216,8 +216,6 @@ func (c *Client) ApproveMachineLogin(t *testing.T, person, code string) (credent
 func (c *Client) DeviceToken(t *testing.T, key *ecdsa.PrivateKey, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
 	t.Helper()
 	config, ctx := c.deviceClient(t, key)
-	ctx, cancel := context.WithTimeout(ctx, deviceTokenTimeout)
-	defer cancel()
 	// A copy, so polling faster than the broker asked for is this exchange's business and not a
 	// mutation of the device authorization its caller still holds and may exchange again.
 	poll := *da

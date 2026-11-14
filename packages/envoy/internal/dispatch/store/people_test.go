@@ -21,7 +21,7 @@ import (
 // old, and the confirmation that follows reads new again.
 func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -77,7 +77,7 @@ func confirmedJustNow(membership auth.PersonMembership) bool {
 // make one person two rows.
 func TestPeopleTableRefusesAnEmailThatIsNotLowercase(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -152,7 +152,7 @@ func retireLines(logs *bytes.Buffer) int {
 // sealed under the signing key, in the versioned format, and only a store under that key opens it.
 func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 // replaces the value, revoking one in plain text first; a sealed value is never sent to the pool.
 func TestPgPeopleStoreReadsARefreshTokenThatDoesNotOpenAsNone(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestRetirePlainRefreshTokensRetiresATokenStoredAfterTheLastBoot(t *testing.
 // value: no later boot will see that token.
 func TestPgPeopleStoreSignInRetiresThePlainTokenItReplaces(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

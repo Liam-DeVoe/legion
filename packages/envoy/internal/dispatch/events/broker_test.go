@@ -451,7 +451,7 @@ func appendEvent(t *testing.T, database *store.Store, broker *Broker, event mode
 	return event
 }
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // statementLog records the text of every statement a pool's connections send, a pipeline's one by
 // one (pgx.QueryTracer and pgx.BatchTracer).
@@ -835,12 +835,12 @@ func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
 	// fails on it, which is what took this test red on main at 4ca6415a8. That the counted
 	// waiter was not PP-2 waiting on PP-1 is certain rather than likely: the count was only
 	// read out after PP-2's write had committed, and PP-2 cannot commit while PP-1's write
-	// holds a lock it waits on. The watch samples every 2 ms, finer than the 10 ms ticker it
-	// replaces but not continuous, and runs until the write answers, so a write that queued and
-	// then got through before the deadline is caught; its own ceiling is above the write's, so
-	// the write's answer, not the watch, is what ends it.
+	// holds a lock it waits on. The watch samples at the shared wait's pace and runs until the
+	// write answers: a write that queued behind PP-1 stays queued while PP-1's write is open, or
+	// its own deadline ends it with an error, so the write's answer, not the watch, is what ends
+	// it.
 	pid := <-backends
-	answer, answered := storetest.WaitForQueuedBehind(t, open, pid, written, 2*writeDeadline)
+	answer, answered := storetest.WaitForQueuedBehind(t, open, pid, written)
 	if !answered {
 		t.Fatalf("backend %d, the append on PP-2, queued behind a lock PP-1's open write holds; "+
 			"an append must wait for no lock of another owner's write", pid)
@@ -911,9 +911,7 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 				}
 				written <- tx.Commit(ctx)
 			}()
-			if waiting := storetest.WaitForLockWaiters(t, open, 1, 10*time.Second); waiting < 1 {
-				t.Fatalf("the second write on the %s did not wait for the first's open transaction", owner.name)
-			}
+			storetest.WaitForLockWaiters(t, open, 1)
 			if err := open.Commit(ctx); err != nil {
 				t.Fatalf("commit the first write: %v", err)
 			}

@@ -15,85 +15,18 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// fakeJobClock is a jobClock the test moves: Advance fires, in due order and on the caller's
-// goroutine, every timer due by the new time, so a read a timer starts has finished when Advance
-// returns. A timer is placed at the moment it is armed for, so one armed for a moment the clock has
-// already reached fires at the next Advance.
-type fakeJobClock struct {
-	mu     sync.Mutex
-	now    time.Time
-	timers []*fakeJobTimer
-}
-
-type fakeJobTimer struct {
-	clock   *fakeJobClock
-	at      time.Time
-	f       func()
-	stopped bool
-	fired   bool
-}
-
-func newFakeJobClock() *fakeJobClock {
-	return &fakeJobClock{now: time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)}
-}
-
-func (c *fakeJobClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeJobClock) At(at time.Time, f func()) jobTimer {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	timer := &fakeJobTimer{clock: c, at: at, f: f}
-	c.timers = append(c.timers, timer)
-	return timer
-}
-
-func (t *fakeJobTimer) Stop() bool {
-	t.clock.mu.Lock()
-	defer t.clock.mu.Unlock()
-	if t.stopped || t.fired {
-		return false
-	}
-	t.stopped = true
-	return true
-}
-
-// armed counts the timers neither fired nor stopped.
-func (c *fakeJobClock) armed() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	n := 0
-	for _, timer := range c.timers {
-		if !timer.stopped && !timer.fired {
-			n++
-		}
-	}
-	return n
-}
-
-func (c *fakeJobClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	c.now = c.now.Add(d)
-	var due []*fakeJobTimer
-	for _, timer := range c.timers {
-		if !timer.stopped && !timer.fired && !timer.at.After(c.now) {
-			timer.fired = true
-			due = append(due, timer)
-		}
-	}
-	c.mu.Unlock()
-	slices.SortStableFunc(due, func(a, b *fakeJobTimer) int { return a.at.Compare(b.at) })
-	for _, timer := range due {
-		timer.f()
-	}
+// newFakeJobClock is the JobIntake's clock in a test: a clocktest.Fake, whose Advance fires every
+// timer due by the new time in due order and returns once each has run, so a read a timer starts
+// has finished when Advance returns.
+func newFakeJobClock() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
 }
 
 // jobsFake is a fake GitHub answering run 500's jobs: a build job and the production job, each
@@ -188,7 +121,7 @@ func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
 	}, func() string { return "the job intake never bound its durable" })
 
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
-	waitFor(t, 20*time.Second, func() bool { return clock.armed() == 1 }, func() string { return "the job event scheduled no read" })
+	waitFor(t, 20*time.Second, func() bool { return len(clock.Armed()) == 1 }, func() string { return "the job event scheduled no read" })
 	if calls := fake.calls.Load(); calls != 0 {
 		t.Fatalf("read the jobs %d times before the burst went quiet", calls)
 	}
@@ -269,7 +202,7 @@ func TestAJobOfAnUntrackedRunCostsNoGitHubCall(t *testing.T) {
 	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/widgets", 999))
 	clock.Advance(jobMaxWait)
-	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
+	if armed, calls, mints := len(clock.Armed()), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
 		t.Fatalf("an untracked run's job: %d timers, %d jobs reads, %d token mints, want none", armed, calls, mints)
 	}
 }
@@ -285,7 +218,7 @@ func TestAJobOfAnotherRepositoryIsIgnored(t *testing.T) {
 	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/other", 500))
 	clock.Advance(jobMaxWait)
-	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
+	if armed, calls, mints := len(clock.Armed()), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
 		t.Fatalf("another repository's job: %d timers, %d jobs reads, %d token mints, want none", armed, calls, mints)
 	}
 }
@@ -489,41 +422,30 @@ func TestAJobsReadThatFailsIsLoggedAndTheRunIsReadAtItsEnd(t *testing.T) {
 	}
 }
 
-// concurrentJobClock is a jobClock whose timers all fire at once, each on a goroutine of its own,
-// when the test calls fireAll: the way a backlog that drains faster than jobQuiet ends every run's
-// burst together.
+// concurrentJobClock is a clocktest.Fake whose timers' functions all run at once, each on a
+// goroutine of its own beside the others, when the test calls fireAll: the way a backlog that
+// drains faster than jobQuiet ends every run's burst together. The Fake's own move runs one
+// function after another and waits for each; this one's functions only start theirs in fired.
 type concurrentJobClock struct {
-	mu     sync.Mutex
-	timers []func()
+	*clocktest.Fake
+	fired sync.WaitGroup
 }
 
-// unstoppableTimer is the timer concurrentJobClock hands back; each run is scheduled once here,
-// so nothing stops one.
-type unstoppableTimer struct{}
-
-func (unstoppableTimer) Stop() bool { return false }
-
-func (c *concurrentJobClock) Now() time.Time { return time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC) }
-
-func (c *concurrentJobClock) At(_ time.Time, f func()) jobTimer {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.timers = append(c.timers, f)
-	return unstoppableTimer{}
+func newConcurrentJobClock() *concurrentJobClock {
+	return &concurrentJobClock{Fake: clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))}
 }
 
-// fireAll starts every timer's function on a goroutine of its own and returns the group they run
-// in.
+func (c *concurrentJobClock) AfterFunc(d time.Duration, f func()) clock.Timer {
+	return c.Fake.AfterFunc(d, func() { c.fired.Go(f) })
+}
+
+// fireAll moves the fake past every timer armed, starting each one's function on a goroutine of
+// its own, and returns the group they run in.
 func (c *concurrentJobClock) fireAll() *sync.WaitGroup {
-	c.mu.Lock()
-	timers := c.timers
-	c.timers = nil
-	c.mu.Unlock()
-	var fired sync.WaitGroup
-	for _, f := range timers {
-		fired.Go(f)
+	if armed := c.Armed(); len(armed) > 0 {
+		c.Advance(max(armed[len(armed)-1].Sub(c.Now()), 0))
 	}
-	return &fired
+	return &c.fired
 }
 
 // TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce: when many tracked runs' bursts end
@@ -560,7 +482,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 	// handlers it holds.
 	t.Cleanup(releaseOnce)
 
-	clock := &concurrentJobClock{}
+	clock := newConcurrentJobClock()
 	jobs := newJobIntake(nil, pool, nil, github, clock, nil)
 	for id := int64(600); id < 600+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
@@ -630,7 +552,7 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 		}})
 	})
 
-	clock := &concurrentJobClock{}
+	clock := newConcurrentJobClock()
 	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, nil)
 	for id := int64(700); id < 700+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
@@ -807,7 +729,7 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 		t.Fatalf("the next holder was not handed the job event within %s of the stopped intake being handed it, jobAckWait being %s: %+v",
 			handOver, jobAckWait, consumer())
 	}
-	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
+	if armed, calls, mints := len(clock.Armed()), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
 		t.Fatalf("an event handled after the stop: %d timers, %d jobs reads, %d token mints, want none: nothing is read under the cancelled context",
 			armed, calls, mints)
 	}

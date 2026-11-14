@@ -34,7 +34,7 @@ import (
 	envoystore "github.com/sjawhar/envoy/internal/store"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // commentColumns is comments.sql's output contract, in order.
 var commentColumns = []string{

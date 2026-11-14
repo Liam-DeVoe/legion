@@ -11,6 +11,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -72,7 +73,7 @@ type runKey struct {
 type pendingRun struct {
 	first      time.Time
 	production Production
-	timer      jobTimer
+	timer      clock.Timer
 }
 
 const (
@@ -89,21 +90,14 @@ const (
 	jobCheckTimeout = 10 * time.Second
 )
 
-// jobClock is the time JobIntake schedules by; a test hands it a clock it moves itself. Its timer
-// calls f once the clock reaches at, at once when it already has, so a clock that moves between the
-// read and the arm fires the timer all the same (api's hubClock has the same shape).
+// jobClock is the time JobIntake schedules by, a narrowing of clock.Clock: clock.Real in
+// production and a test's clocktest.Fake. A read is armed for a moment as the wait from the clock's
+// present at the arm, so a clock that moved between the read and the arm fires the timer at that
+// moment all the same (api's hubClock has the same shape).
 type jobClock interface {
 	Now() time.Time
-	At(at time.Time, f func()) jobTimer
+	AfterFunc(d time.Duration, f func()) clock.Timer
 }
-
-type jobTimer interface{ Stop() bool }
-
-type realJobClock struct{}
-
-func (realJobClock) Now() time.Time { return time.Now() }
-
-func (realJobClock) At(at time.Time, f func()) jobTimer { return time.AfterFunc(time.Until(at), f) }
 
 // newJobIntake builds a JobIntake on natsClient, a connected client StartIntakes opens for it alone,
 // scheduling its reads by clock and checking each job event against settings.
@@ -318,7 +312,7 @@ func (j *JobIntake) schedule(key runKey, production Production) {
 	if limit := run.first.Add(jobMaxWait); limit.Before(due) {
 		due = limit
 	}
-	run.timer = j.clock.At(due, func() { j.fire(key, run) })
+	run.timer = j.clock.AfterFunc(due.Sub(j.clock.Now()), func() { j.fire(key, run) })
 }
 
 // fire ends a run's burst and reads its jobs once a read slot is free (reads). An event that
