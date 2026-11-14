@@ -402,7 +402,7 @@ func (r *providerErrorLive) ladderWalks() {
 			within = driven + ladderTolerance
 		}
 		r.awaitLog("the ladder's send "+strconv.Itoa(attempt+1), within+time.Minute, func(record loggedRecord) bool {
-			return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
+			return record.Message == providerWaitOverMessage &&
 				record.at.After(sent[attempt-1])
 		})
 		armed := r.lastLog(func(record loggedRecord) bool {
@@ -546,7 +546,7 @@ func (r *providerErrorLive) refusalGoesAgain() {
 		armed.Attrs["wait"], cause)
 
 	r.awaitLogFrom("the refused task sent again", from, ladderDelays[0]+ladderTolerance+time.Minute, func(record loggedRecord) bool {
-		return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
+		return record.Message == providerWaitOverMessage &&
 			record.Attrs["claim"] == string(token)
 	})
 	gap := time.Since(sent)

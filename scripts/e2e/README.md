@@ -3845,17 +3845,22 @@ LEGION_E2E_IMAGE=<worker image@sha256> bash scripts/e2e/share-volumes-kind.sh   
 Runs on an amd64 (x86_64) Linux host only, with the tools `burstable-kind.sh` needs;
 its cluster is [`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s, `legion-share-volumes-<pid>`, deleted on any exit.
 The kind node's own `mount.nfs` mounts the share, as a GKE node's does.
+The run also starts a JetStream `nats-server` in a container on the kind network, `legion-share-volumes-<pid>-nats`:
+`legion probe-boot` opens the daemon's task bucket `legion_tasks` on Envoy's NATS before it probes the image (`probeTaskBucket`),
+so every case's `legion.yaml` names that server and the probes reach it by name.
+`LEGION_E2E_NATS_BIN` names the binary to run; without it the run installs the pinned `nats-server` with `go install`, as [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) does.
 
 | check | what it holds |
 | :--- | :--- |
-| `binaries` | a static test binary of `TestShareVolumesMountInAnIssuePodLive` (`internal/daemon/share_volumes_live_test.go`, `-tags e2e`) and a static `legion` |
+| `binaries` | a static test binary of `TestShareVolumesMountInAnIssuePodLive` (`internal/daemon/share_volumes_live_test.go`, `-tags e2e`), a static `legion`, and the `nats-server` the broker check runs |
 | `cluster`, `agent-sandbox`, `gvisor` | as `burstable-kind.sh`'s, through the lib |
+| `broker` | a JetStream `nats-server` in a container on the kind network, ready (`Server is ready`), whose URL every `legion.yaml` names; its log is kept as evidence |
 | `images` | the worker image and the NFS server's (SIG Storage's `nfs-provisioner`, pinned by digest), pulled into the node's containerd |
 | `nfs-server` | NFS-Ganesha in the `nfs` namespace, behind a Service, exporting `/team` (seeded with one file naming the run) and `/scratch`; the node mounts `/team` and reads the seed; a PersistentVolume of `/team` and the claim `team-share` in `legion`, `Bound` |
-| `launch` | the driver, in a container on the kind network, writes four `legion.yaml` files, holds each to the pod block the loader reads from it, and launches the `shares` file's issue root through the runtime's `Spawn`; its pod carries the claim and the export as volumes, both mounted in its one `roles` container — the claim read-only, the export writable — and in no init container, under `runtimeClassName: gvisor` |
+| `launch` | the driver, in a container on the kind network, creates the `ENVOY_NOTIFICATIONS` stream on the run's `nats-server` as a deployment's listener does, writes four `legion.yaml` files naming it, holds each to the pod block the loader reads from it, and launches the `shares` file's issue root through the runtime's `Spawn`; its pod carries the claim and the export as volumes, both mounted in its one `roles` container — the claim read-only, the export writable — and in no init container, under `runtimeClassName: gvisor` |
 | `pod-shares` | in the pod's `roles` container, whose kernel is gVisor's: `cat /mnt/team/seed.txt` reads the server's seed through the claim, a write to `/mnt/team` is refused `Read-only file system`, and a file written to `/mnt/scratch` is what the server's `/export/scratch` then holds |
 | `check-config` | `legion start --check-config` passes the `shares` file and refuses a volume naming a claim and an export (`… must set exactly one of secret, config_map, projected, persistent_volume_claim, nfs`), exit 1 |
-| `probe-mounts-shares` | `legion probe-boot` on the `shares` file: the probe pod mounts both shares and its container runs, so the refusal, exit 1, is the image's own verdict on the run's agents' models, which have no route here, and names no share (`failed its probe: pod <name> Failed`, never `cannot mount` or `over its mounts`) |
+| `probe-mounts-shares` | `legion probe-boot` on the `shares` file: it opens the task bucket on the run's `nats-server` (no `the task bucket` in its output), then its probe pod mounts both shares and its container runs, so the refusal, exit 1, is the image's own verdict on the run's agents' models, which have no route here, and names no share (`failed its probe: pod <name> Failed`, never `cannot mount` or `over its mounts`) |
 | `probe-silent-server` | `legion probe-boot` refuses, exit 1, within its first attempt, the file whose export's server is `192.0.2.10` (RFC 5737's documentation range, where nothing answers): `… gives it from NFS export 192.0.2.10:/scratch: MountVolume.SetUp failed … mount failed: … Connection timed out …`, the kubelet's first report, which already stands for mount.nfs's own two minutes of retries |
 | `probe-missing-claim`, `probe-missing-export` | `legion probe-boot`, in a container on the kind network, refuses, exit 1, the file naming a claim that does not exist (`cannot mount volume "team", which runtime.kubernetes.pod.volumes gives it from PersistentVolumeClaim "absent-share": … persistentvolumeclaim "absent-share" not found`) and the file naming an export the server lacks (`… gives it from NFS export <server>:/absent: MountVolume.SetUp failed … mount failed: …`) |
 | `probe-missing-image` | `legion probe-boot` refuses, exit 1, within its first attempt and with no transient retry logged, the `shares` file with its image's digest swapped for an all-zero one the repository does not have: `worker image sha256:0…0 failed its probe: the registry does not have image <repository>@sha256:0…0: … rpc error: code = NotFound desc = failed to pull and unpack image … : not found`, once the pod's `Failed` events show the kubelet met that answer on two pulls |
@@ -3864,7 +3869,7 @@ What the proof stands in for lies outside the volume path, as `burstable-kind.sh
 the agents are sleep stubs, the store answers for an issue's first launch, the repository is public, and the roles' gh files hold a placeholder token.
 The loader, the runtime, the image probe, Agent Sandbox's pod, gVisor, the node's NFS client and the NFS server are the real ones.
 `share_volumes_kind_test.go`, untagged, builds all four files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`.
-`SHARE_VOLUMES_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the four `legion.yaml` files and the missing-image copy of the `shares` one, the issue pod's manifest and each `probe-boot`'s output.
+`SHARE_VOLUMES_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the four `legion.yaml` files and the missing-image copy of the `shares` one, the issue pod's manifest, the `nats-server`'s log and each `probe-boot`'s output.
 
 ## dispatch-claimant-delivery.sh
 

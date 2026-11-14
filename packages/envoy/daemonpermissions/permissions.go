@@ -31,12 +31,16 @@ type Permissions struct {
 // epoch, and, when another daemon created the bucket first, nats.go reads the stream and sends an
 // update of the configuration it already holds; the stream's direct get and stored-message get,
 // which read one key; the publish to its keys (`$KV.legion_tasks.>`), every write and delete of a
-// value; and the calls of its watch of the whole bucket, an ordered consumer: the consumer's
+// value; the purge of its stream (`$JS.API.STREAM.PURGE.KV_legion_tasks`), which drops the delete
+// markers of the daemon's own project's keys once they are old, one key's subject at a time, since
+// the bucket keeps one revision of each key and has no TTL and so drops none of them itself; and
+// the calls of its watch of the whole bucket, an ordered consumer: the consumer's
 // create (with the filter subject in its subject) and delete, which a watch's reset and stop
 // send, and its flow-control replies (`$JS.FC.KV_legion_tasks.>`). The watch delivers on a
 // subject nats.go makes under `_INBOX.`, which the reply subscribe above already admits, so the
 // bucket adds no subscribe. Every key is a claim of some project, and the grant reaches every
-// project's keys: a daemon writes and deletes only its own project's (legiontasks.OwnedBy).
+// project's keys and its stream's whole purge: a daemon writes, deletes and purges only its own
+// project's keys (legiontasks.OwnedBy).
 //
 // Each call owns its lists so a consumer can narrow a grant without changing another caller's.
 func Grant() Permissions {
@@ -55,6 +59,7 @@ func Grant() Permissions {
 			"$JS.API.DIRECT.GET." + legiontasks.Stream + ".>",
 			"$JS.API.STREAM.MSG.GET." + legiontasks.Stream,
 			"$KV." + legiontasks.Bucket + ".>",
+			"$JS.API.STREAM.PURGE." + legiontasks.Stream,
 			"$JS.API.CONSUMER.CREATE." + legiontasks.Stream + ".>",
 			"$JS.API.CONSUMER.DELETE." + legiontasks.Stream + ".>",
 			"$JS.FC." + legiontasks.Stream + ".>",

@@ -514,11 +514,8 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 		s.warmed.Do(s.warmCodegraph)
 		line = bytes.Clone(line)
 		s.out.send(line)
-		frame, err := shimwire.Decode(line)
-		if err == nil {
-			if summary := summarize(frame); summary != "" {
-				s.log.Print(summary)
-			}
+		if summary := summarize(line); summary != "" {
+			s.log.Print(summary)
 		}
 	}
 }
@@ -690,9 +687,28 @@ func envValue(env []string, name string) string {
 	return ""
 }
 
+// The raw frame types summarize has a line for: Oh My Pi writes each with no typed frame of its
+// own, so the shim reads them as shimwire.Raw.
+const (
+	rawErrorType          = "error"
+	rawExtensionErrorType = "extension_error"
+)
+
 // summarize is the one line the pane shows for a frame worth a human's glance, or nothing
-// (summarizeShimFrame, worker-shim.ts).
-func summarize(frame shimwire.Frame) string {
+// (summarizeShimFrame, worker-shim.ts). It reads line's type first and decodes only the frames it
+// has a line for: every other line Oh My Pi writes — an `rpc_chunk`'s few hundred kilobytes of
+// base64 among them — is forwarded to the daemon and read no further.
+func summarize(line []byte) string {
+	switch frameType(line) {
+	case shimwire.TypeAgentStart, shimwire.TypeAgentEnd, shimwire.TypeResponse, shimwire.TypeToolExecutionStart,
+		rawErrorType, rawExtensionErrorType:
+	default:
+		return ""
+	}
+	frame, err := shimwire.Decode(line)
+	if err != nil {
+		return ""
+	}
 	switch f := frame.(type) {
 	case shimwire.AgentStart:
 		return shimwire.TypeAgentStart
@@ -715,15 +731,15 @@ func summarize(frame shimwire.Frame) string {
 		return shimwire.TypeToolExecutionStart + " " + tool + " " + truncate(args.String(), 80)
 	case shimwire.Raw:
 		switch f.Type {
-		case "error":
+		case rawErrorType:
 			var event struct {
 				Message *string `json:"message"`
 			}
 			if json.Unmarshal(f.JSON, &event) == nil && event.Message != nil {
-				return "error " + *event.Message
+				return rawErrorType + " " + *event.Message
 			}
-			return "error " + string(f.JSON)
-		case "extension_error":
+			return rawErrorType + " " + string(f.JSON)
+		case rawExtensionErrorType:
 			// An extension that failed leaves the agent running without what it gives it; this
 			// line is the one place a pod's log says so (Oh My Pi reports it on its RPC stream only).
 			var event struct {
@@ -732,7 +748,7 @@ func summarize(frame shimwire.Frame) string {
 				Error         string `json:"error"`
 			}
 			_ = json.Unmarshal(f.JSON, &event)
-			return "extension_error " + event.ExtensionPath + " " + event.Event + ": " + event.Error
+			return rawExtensionErrorType + " " + event.ExtensionPath + " " + event.Event + ": " + event.Error
 		}
 	}
 	return ""

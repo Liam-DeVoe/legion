@@ -25,6 +25,7 @@ func TestDaemonPermissionsAreTheStreamsCallsThenTheTaskBuckets(t *testing.T) {
 			"$JS.API.DIRECT.GET.KV_legion_tasks.>",
 			"$JS.API.STREAM.MSG.GET.KV_legion_tasks",
 			"$KV.legion_tasks.>",
+			"$JS.API.STREAM.PURGE.KV_legion_tasks",
 			"$JS.API.CONSUMER.CREATE.KV_legion_tasks.>",
 			"$JS.API.CONSUMER.DELETE.KV_legion_tasks.>",
 			"$JS.FC.KV_legion_tasks.>",

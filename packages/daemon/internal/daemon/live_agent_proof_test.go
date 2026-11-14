@@ -65,7 +65,11 @@ const liveOmpPathEnv = "LEGION_OMP_PATH"
 
 // providerErroredMessage is the daemon's own line for a turn that ended in a provider error
 // (supervise's providerErrored), the record a step reads the reported fields off.
-const providerErroredMessage = "supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again"
+const providerErroredMessage = "supervise: the turn of this task ended in a provider error; the task is kept and given again"
+
+// providerWaitOverMessage is the daemon's own line for the end of the wait a provider error armed
+// (supervise's promptRetryDue), the record a step counts the ladder's own sends from.
+const providerWaitOverMessage = "supervise: the wait after a provider error is over; the task is given again"
 
 // paneReady is how long a real pane is given to start Oh My Pi, load the two plugins, register and
 // report ready.

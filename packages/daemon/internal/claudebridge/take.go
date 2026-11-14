@@ -32,9 +32,9 @@ import (
 //     asked about again only at its next revision.
 //
 // A seen report or a take the daemon gave no answer to is sent again (daemonLink.untilAnswered)
-// until the daemon answers it or a newer value replaces it (replace): departure 7 of INFRA-2811's
-// plan. Such a re-send is the same ask, not a second one, and the daemon answers a take repeated
-// for a number it accepted with the same text.
+// until the daemon answers it or a newer value replaces it (replace): the failures
+// daemonLink.unanswered lists, and nothing else. Such a re-send is the same ask, not a second
+// one, and the daemon answers a take repeated for a number it accepted with the same text.
 
 // The task routes the bridge calls.
 const (
@@ -154,10 +154,11 @@ func (b *bridge) reportSeen(v taskValue) {
 // ask asks the daemon to take the task the held value names (claims/take) where it may — Claude
 // Code in no turn, the seed done, no take being sent, and a task the value names that the bridge
 // has not asked about at the value's pair — and says whether it did. The answer comes back on the
-// loop (takeAnswered).
+// loop (takeAnswered). A pane that names no daemon holds no value at all (valueHanded), so this
+// never reads b.daemon without one.
 func (b *bridge) ask() bool {
 	v := b.task
-	if b.daemon == nil || v == nil || v.number == 0 || b.inRun || b.seeding || b.asking != nil || b.asked[v.at()] {
+	if v == nil || v.number == 0 || b.inRun || b.seeding || b.asking != nil || b.asked[v.at()] {
 		return false
 	}
 	b.asked[v.at()] = true
@@ -223,7 +224,7 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 
 // takePending is whether a take holds the queued deliveries back: one being sent, or one accepted
 // whose task has not started its turn yet.
-func (b *bridge) takePending() bool { return b.asking != nil || b.heldText != "" }
+func (b *bridge) takePending() bool { return b.asking != nil || b.heldTask != 0 }
 
 // startTask starts the turn of the task number, whose accepted take answered text: a turn of the
 // bridge's own whose first user message is text, sent ahead of every queued delivery, and whose
@@ -242,7 +243,7 @@ func (b *bridge) idle() {
 	if b.inRun || b.seeding {
 		return
 	}
-	if b.heldText != "" {
+	if b.heldTask != 0 {
 		text, number := b.heldText, b.heldTask
 		b.heldText, b.heldTask = "", 0
 		b.startTask(number, text)

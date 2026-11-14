@@ -382,6 +382,7 @@ func TestDaemonPermissions(t *testing.T) {
 			"$JS.API.DIRECT.GET.KV_legion_tasks.>",
 			"$JS.API.STREAM.MSG.GET.KV_legion_tasks",
 			"$KV.legion_tasks.>",
+			"$JS.API.STREAM.PURGE.KV_legion_tasks",
 			"$JS.API.CONSUMER.CREATE.KV_legion_tasks.>",
 			"$JS.API.CONSUMER.DELETE.KV_legion_tasks.>",
 			"$JS.FC.KV_legion_tasks.>",
@@ -394,12 +395,13 @@ func TestDaemonPermissions(t *testing.T) {
 }
 
 // taskBucketCalls are subjects of every call a client makes on the task bucket, one of each: its
-// stream's info, create and update, a key's direct and stored-message gets, a key's write or
-// delete, a watch's consumer create and delete, and a flow-control reply.
+// stream's info, create, update and purge, a key's direct and stored-message gets, a key's write
+// or delete, a watch's consumer create and delete, and a flow-control reply.
 var taskBucketCalls = []string{
 	"$JS.API.STREAM.INFO.KV_legion_tasks",
 	"$JS.API.STREAM.CREATE.KV_legion_tasks",
 	"$JS.API.STREAM.UPDATE.KV_legion_tasks",
+	"$JS.API.STREAM.PURGE.KV_legion_tasks",
 	"$JS.API.DIRECT.GET.KV_legion_tasks.$KV.legion_tasks.legion-example-infra-1-implementer",
 	"$JS.API.STREAM.MSG.GET.KV_legion_tasks",
 	"$KV.legion_tasks.legion-example-infra-1-implementer",

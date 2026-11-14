@@ -127,6 +127,7 @@ func TestTaskBucketGrantsOnAServer(t *testing.T) {
 		"$JS.API.STREAM.INFO." + legiontasks.Stream,
 		"$JS.API.STREAM.CREATE." + legiontasks.Stream,
 		"$JS.API.STREAM.UPDATE." + legiontasks.Stream,
+		"$JS.API.STREAM.PURGE." + legiontasks.Stream,
 		"$JS.API.DIRECT.GET." + legiontasks.Stream + ".$KV." + legiontasks.Bucket + "." + taskKey,
 		"$JS.API.STREAM.MSG.GET." + legiontasks.Stream,
 		"$KV." + legiontasks.Bucket + "." + taskKey,

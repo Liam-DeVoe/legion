@@ -226,7 +226,7 @@ type Options struct {
 	// ClaimReady is told of each claim whose agent's ready the claim took, on the session it
 	// registered: a launched or relaunched agent once it has booted and can be prompted, or a
 	// live one that took its Envoy role back. A boot's ready comes before the role, which its
-	// session claims at its first turn (supervise.SaidReady). A ready the claim refuses tells
+	// session claims right after that ready (supervise.SaidReady). A ready the claim refuses tells
 	// no one. Nil tells no one. It is called before the route answers the agent, so it returns
 	// at once.
 	ClaimReady func(c supervise.Claim)

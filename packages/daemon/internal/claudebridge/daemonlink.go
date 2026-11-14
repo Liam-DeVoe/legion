@@ -15,10 +15,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// The seen report's and the take's re-send (departure 7 of INFRA-2811's plan), with the numbers
+// The seen report's and the take's re-send (dispatch://INFRA-2811), with the numbers
 // Oh My Pi's taker uses (packages/pi-shared/src/task-take.ts: TASK_ANSWER_TIMEOUT_MS,
 // TASK_RESEND_FIRST_DELAY_MS, TASK_RESEND_MAX_DELAY_MS), so both harnesses wait out a daemon that
 // is not serving alike.
@@ -58,7 +59,7 @@ type daemonLink struct {
 }
 
 // daemonCalls is the timing and the network of the seen reports and the takes. Its zero value is
-// production's: the waits departure 7 names and the system's own dialer. A test shortens the
+// production's: the waits below and the system's own dialer. A test shortens the
 // waits and stands in for the network (Config.calls).
 type daemonCalls struct {
 	answerTimeout, resendFirst, resendMax time.Duration
@@ -125,7 +126,7 @@ func missingDaemonInputs(cfg Config) string {
 // again, the same request, after a wait that doubles from calls.resendFirst to calls.resendMax,
 // with no attempt limit; each attempt is bounded by calls.answerTimeout. The first attempt with no
 // answer is logged, once, naming what. ctx ending — the request replaced by a newer value, or the
-// bridge ending — ends the sending with ctx's error. An error that is no failure departure 7 names
+// bridge ending — ends the sending with ctx's error. An error that is no failure `unanswered` lists
 // is returned as the request's answer, and nothing sends it again.
 func (d *daemonLink) untilAnswered(ctx context.Context, what, path string, request any) (int, []byte, error) {
 	body, err := json.Marshal(request)
@@ -146,12 +147,8 @@ func (d *daemonLink) untilAnswered(ctx context.Context, what, path string, reque
 			told = true
 			d.log.Printf("%s got no answer from the daemon (%s); it is sent again until it is answered", what, why)
 		}
-		wait := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			wait.Stop()
-			return 0, nil, ctx.Err()
-		case <-wait.C:
+		if err := backoff.Sleep(ctx, delay); err != nil {
+			return 0, nil, err
 		}
 		delay = min(delay*2, d.calls.resendMax)
 	}
@@ -172,13 +169,12 @@ func (d *daemonLink) attempt(ctx context.Context, path string, body []byte) (int
 		return 0, nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
-	var answer bytes.Buffer
-	_, err = answer.ReadFrom(http.MaxBytesReader(nil, response.Body, maxTaskAnswerBytes))
-	return response.StatusCode, answer.Bytes(), err
+	answer, err := readAnswer(response, maxTaskAnswerBytes)
+	return response.StatusCode, answer, err
 }
 
 // unanswered names why an attempt got no answer from the daemon, and is "" for an attempt it
-// answered: the failures departure 7 names, and nothing else. A refused, reset or closed
+// answered: the failures listed here, and nothing else. A refused, reset or closed
 // connection and a name that did not resolve never reached the daemon or lost its answer on the
 // way; an attempt past calls.answerTimeout is a daemon that took the request and never answered;
 // and a 502, 503 or 504 that names no Legion error code is a proxy in front of a daemon that is not

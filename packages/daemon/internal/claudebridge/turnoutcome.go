@@ -117,7 +117,7 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 // nothing.
 func decodeTurnOutcome(response *http.Response) (string, claim.TurnOutcomeResponse) {
 	var decoded claim.TurnOutcomeResponse
-	body, err := readAnswer(response)
+	body, err := readAnswer(response, maxAnswerBytes)
 	if err != nil {
 		return fmt.Sprintf("%s (its answer could not be read: %v)", response.Status, err), decoded
 	}
@@ -127,11 +127,12 @@ func decodeTurnOutcome(response *http.Response) (string, claim.TurnOutcomeRespon
 	return response.Status, decoded
 }
 
-// readAnswer reads at most maxAnswerBytes of the daemon's answer: a refusal is a sentence, and
-// nothing the bridge logs needs more.
-func readAnswer(response *http.Response) ([]byte, error) {
+// readAnswer reads at most limit bytes of the daemon's answer: a refusal is a sentence, and
+// nothing the bridge logs needs more (maxAnswerBytes), while an accepted take carries the task's
+// whole text (maxTaskAnswerBytes).
+func readAnswer(response *http.Response, limit int64) ([]byte, error) {
 	var buffer bytes.Buffer
-	_, err := buffer.ReadFrom(http.MaxBytesReader(nil, response.Body, maxAnswerBytes))
+	_, err := buffer.ReadFrom(http.MaxBytesReader(nil, response.Body, limit))
 	return buffer.Bytes(), err
 }
 

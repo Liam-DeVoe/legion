@@ -446,6 +446,7 @@ When `envoy-infra:gcp:NatsHub` renders this user, set its `daemon` field to `tru
 | `$JS.API.DIRECT.GET.KV_legion_tasks.>` | |
 | `$JS.API.STREAM.MSG.GET.KV_legion_tasks` | |
 | `$KV.legion_tasks.>` | |
+| `$JS.API.STREAM.PURGE.KV_legion_tasks` | |
 | `$JS.API.CONSUMER.CREATE.KV_legion_tasks.>` | |
 | `$JS.API.CONSUMER.DELETE.KV_legion_tasks.>` | |
 | `$JS.FC.KV_legion_tasks.>` | |
@@ -462,14 +463,17 @@ The rows from `$JS.API.INFO` on are the task bucket's. The daemon creates the bu
 missing (nats.go asks JetStream's account info, `$JS.API.INFO`, before it creates one), reads the
 bucket's epoch from its stream's creation time, and, when another project's daemon created it
 first, sends the update of the configuration it already holds; it reads one key with the two gets,
-writes and deletes each claim's value under `$KV.legion_tasks.>`, and watches the whole bucket
-through an ordered consumer, whose create, delete and flow-control replies are the last three
-rows. The watch delivers on `_INBOX.>`, so the bucket adds no subscribe. The bucket serves every
-project and the grant reaches every project's keys; a daemon writes and deletes only its own
-project's, the keys that start `legion-<project>-`. Unlike the stored-message get above, these
-rows are not optional: a daemon whose user lacks any of them refuses to boot, naming the bucket
-and the subject NATS refused, and so does a daemon that connects as the agents' shared session
-user, which holds nothing of the bucket by design.
+writes and deletes each claim's value under `$KV.legion_tasks.>`, purges the stream's delete
+markers one key's subject at a time with `$JS.API.STREAM.PURGE.KV_legion_tasks`, and watches the
+whole bucket through an ordered consumer, whose create, delete and flow-control replies are the
+last three rows. The watch delivers on `_INBOX.>`, so the bucket adds no subscribe. The bucket
+serves every project and the grant reaches every project's keys and its stream's whole purge; a
+daemon writes, deletes and purges only its own project's, the keys that start `legion-<project>-`.
+Unlike the stored-message get above, these rows are not optional: a daemon whose user lacks any of
+them refuses to boot, naming the bucket and the subject NATS refused, and so does a daemon that
+connects as the agents' shared session user, which holds nothing of the bucket by design. The
+purge is the one exception: a daemon whose user lacks it boots and runs, and logs each delete
+marker it could not purge (`legion daemon could not purge a delete marker of the task bucket`).
 
 The consumer subjects end in `>`, so the grant reaches every consumer of `ENVOY_NOTIFICATIONS`,
 not just the daemon's three: a holder of the daemon's seed can read, recreate with another filter,

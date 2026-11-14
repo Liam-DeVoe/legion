@@ -56,15 +56,8 @@ type supervisor struct {
 	all atomic.Pointer[[]*supervise.Machine]
 	// issues is the lock of each issue a take that adopts the working copy holds from its in-turn
 	// check to its answer (lockIssue, supervise's Deps.LockIssue), counted by its holders and
-	// waiters so an issue no take is asking about holds no entry.
-	issuesMu sync.Mutex
-	issues   map[string]*issueLock
-}
-
-// issueLock is one issue's take lock, and how many takes hold it or wait for it.
-type issueLock struct {
-	sync.Mutex
-	takes int
+	// waiters so an issue no take is asking about holds no entry (keyedLocks).
+	issues keyedLocks
 }
 
 // member is one claim's machine, the queue its events wait in, and the issue the claim is of.
@@ -131,25 +124,11 @@ func (s *supervisor) claimInTurn(issue string, except claim.Token) (claim.Token,
 // taken before the taking claim's own machine lock and never under any other lock of the
 // supervisor's, so it is the outermost lock a take holds.
 func (s *supervisor) lockIssue(issue string) func() {
-	s.issuesMu.Lock()
-	if s.issues == nil {
-		s.issues = map[string]*issueLock{}
-	}
-	l, ok := s.issues[issue]
-	if !ok {
-		l = &issueLock{}
-		s.issues[issue] = l
-	}
-	l.takes++
-	s.issuesMu.Unlock()
-	l.Lock()
+	lock, release := s.issues.take(issue)
+	lock.Lock()
 	return func() {
-		l.Unlock()
-		s.issuesMu.Lock()
-		if l.takes--; l.takes == 0 {
-			delete(s.issues, issue)
-		}
-		s.issuesMu.Unlock()
+		lock.Unlock()
+		release()
 	}
 }
 

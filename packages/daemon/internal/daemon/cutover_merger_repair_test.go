@@ -164,7 +164,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     and `completed_at`. Its tester took its testing task, the idle release then released the
 //     tester and the merger, and the record holds no backstop row for either. The migration moves
 //     only `awaiting_merge`, so T stays in testing. The owners' read the repair shares with the
-//     boot (workflow's suspendedPhaseOwners) answers the suspended owner of any phase, here T's
+//     boot (workflow's phaseOwnersOf) answers the suspended owner of any phase, here T's
 //     tester, and every other term of the repair holds for T: a claim suspended by `released`, an
 //     open pull request, the merger's READY head, no backstop of the merger, and no start of the
 //     tester queued (StartFor). The repair's own term of the phase `merging` is the one that
@@ -206,7 +206,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     merger claim, which is resumed. That is the architect's case, decision D8 of the plan: no
 //     start the boot makes gives either a second merging task. The repair gives each its task
 //     whatever the fill says the merger finished: the merging task is work the cutover gave it,
-//     which the resume rule does not hold back (workflow's startSuspendedOwner), and A's is
+//     which the resume rule does not hold back (workflow's startPhaseOwner), and A's is
 //     written under a phase start's origin. The count is read after the boot's resume by rule and
 //     admission's pass on DaemonBooted have run, after the relaunch's ready and the repair have
 //     each decided what they give, and once nothing is left in the outbox to start either merger,

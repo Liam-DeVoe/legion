@@ -144,7 +144,8 @@ The hub refuses these before it registers anything, with an error naming the inp
   [Permission sets](../README.md#permission-sets)). Its seed belongs only to that daemon. Beside
   the notification stream's calls, the set creates, reads, writes and watches the task bucket
   `legion_tasks`, whose one writer is the daemon: JetStream's account info, the info, create and
-  update of the bucket's stream, its gets, `$KV.legion_tasks.>` and its watch's consumer calls.
+  update of the bucket's stream, its gets, `$KV.legion_tasks.>`, the purge of its stream that
+  drops a key's old delete markers, and its watch's consumer calls.
 - `permissions`: `{publish, subscribe}`, each a `nats:Rules`, an `allow` list and an optional
   `deny` list of subject patterns, for any other client.
 

@@ -43,14 +43,14 @@ import (
 // work untold: released with no wake to come, or live.
 //
 // The claims it weighs are the suspended owners of the project's unfinished phases in running
-// trees (suspendedPhaseOwners), the read the cutover's repair picks its mergers from too, and it
+// trees (phaseOwnersOf), the read the cutover's repair picks its mergers from too, and it
 // starts each of them whose claim a ByRule source suspended. Each is given the start
 // admission gives a re-admitted tree's mid-phase child, built where every start of a phase worker
 // is built (Engine.started) and so written through the outbox's start like every other
 // (StartOrOwe), and what that start carries is decided by the entry the role's phases row names,
 // read here as the ready of such a claim reads it (catch_up.go's readyWorkerTask) and admission
 // reads it for the same decision (admit's owedEntryRoles). A claim behind that entry is sent the
-// work of that entry at that entry (startSuspendedOwner: OwedEntry, sendOwedEntry), which is the
+// work of that entry at that entry (startPhaseOwner: OwedEntry, sendOwedEntry), which is the
 // task the transition wrote when it raised the number: the resume says to carry the existing phase
 // work on, and the work of an entry this claim was never given is work it does not have, so the
 // resume would spend the claim's first turn after the boot on the wrong prompt and the completion
@@ -70,11 +70,11 @@ import (
 // wakes it while its phase is open, as at the ready of any relaunch (readyWorkerTask). That row
 // waits for no admission slot, as no start that carries no task does (record's validation of
 // NeedsSlot): it puts no worker to work. The rule is this resume's alone, not the shared
-// builder's (startSuspendedOwner): the cutover's repair owes its mergers the work the cutover
+// builder's (startPhaseOwner): the cutover's repair owes its mergers the work the cutover
 // gave them, under a phase start's origin, which R4's "unless something new is owed to it" names.
 //
 // The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
-// (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
+// (phaseOwnersOf) comes next, and the status repair runs on the issues and running roots
 // that read holds, before any start. The read writes nothing, and the repair writes none of the
 // pull requests, claims and queued starts the read takes beside the issues, so the read answers
 // what it would answer after the repair.
@@ -82,7 +82,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 	if err := e.sweepMerged(ctx, tx); err != nil {
 		return intake.Result{}, err
 	}
-	owners, err := e.suspendedPhaseOwners(ctx, tx)
+	owners, err := e.phaseOwnersOf(ctx, tx)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -108,7 +108,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 				"task", held.TaskFinished, "session", held.Session)
 			continue
 		}
-		behind, err := e.startSuspendedOwner(ctx, tx, owner, row, supervise.OriginResume)
+		behind, err := e.startPhaseOwner(ctx, tx, owner, row, supervise.OriginResume)
 		if err != nil {
 			return intake.Result{}, err
 		}
@@ -124,7 +124,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 }
 
 // phaseOwner is a claim that owns its issue's unfinished phase in a running tree
-// (suspendedPhaseOwners), with what a start of it is weighed against and built from: the issue;
+// (phaseOwnersOf), with what a start of it is weighed against and built from: the issue;
 // its tree root, which StartFor and OwedEntry read; the role that works the phase; that role's
 // claim token; and the role's queued rows and claim at the issue's generation, whose Claim is
 // never nil.
@@ -136,7 +136,7 @@ type phaseOwner struct {
 	run   record.RoleRun
 }
 
-// phaseOwners is what suspendedPhaseOwners reads: every issue the store holds, of every project;
+// phaseOwners is what phaseOwnersOf reads: every issue the store holds, of every project;
 // the roots of the project's trees that run (record.RunningRoots); the suspended owners of the
 // project's unfinished phases in those trees; and the live owners of those phases, whose claim
 // has a process, launching or up. Both lists are in the order the store lists the issues.
@@ -147,7 +147,7 @@ type phaseOwners struct {
 	live      []phaseOwner
 }
 
-// suspendedPhaseOwners reads, for each issue of the project, the suspended owner of its phase
+// phaseOwnersOf reads, for each issue of the project, the suspended owner of its phase
 // while that phase is unfinished and the issue's tree runs, and the live owner beside it. The
 // boot's resume by rule (booted) and the cutover's repair of the mergers the `awaiting_merge`
 // cutover left (cutoverMergerRepair) both read their owners here, and each narrows them by terms
@@ -178,7 +178,7 @@ type phaseOwners struct {
 // judge. It is answered as live while that claim has a process, launching or up (supervise's
 // Claim.RunsNothing, read the other way), which only the cutover's repair reads: booted starts no
 // live claim.
-func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
+func (e *Engine) phaseOwnersOf(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
 		return phaseOwners{}, err
@@ -244,7 +244,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 	return owners, nil
 }
 
-// startSuspendedOwner owes owner the start the boot gives a phase owner, built from the entry row
+// startPhaseOwner owes owner the start the boot gives a phase owner, built from the entry row
 // names, and says whether the claim stands behind that entry. A claim behind it (OwedEntry, which
 // reads the owner's root for a tree close) is sent the work of that entry at that entry
 // (sendOwedEntry), under a phase start's origin. A claim level with it is sent the phase's resume
@@ -276,7 +276,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // fact of the issue, and the work each sends is work the record already owes the role, so neither
 // marks a movement of the issue. sendOwedEntry sets the mark itself on the start it writes, and
 // the resume task's start sets it here.
-func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner phaseOwner, row record.PhaseRow, levelOrigin string) (behind bool, err error) {
+func (e *Engine) startPhaseOwner(ctx context.Context, tx pgx.Tx, owner phaseOwner, row record.PhaseRow, levelOrigin string) (behind bool, err error) {
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, supervise.OriginPhaseStart, startMarks{ruleResume: true})
 	}

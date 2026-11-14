@@ -452,7 +452,7 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 		c.events.push(ToolStep{Claim: c.claim, Tool: frame.ToolName, CallID: frame.ToolCallID,
 			End: true, ConnSequence: c.seq})
 	case shimwire.Response:
-		c.answer(frame)
+		c.answerRequest(frame.ID, frame)
 	case shimwire.Raw:
 		if frame.Type == "extension_error" {
 			var event struct {
@@ -465,13 +465,13 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 				"extension", event.ExtensionPath, "event", event.Event, "error", event.Error)
 		}
 	case shimwire.AdoptWorkingCopyResult:
-		c.answerShim(frame.ID, frame)
+		c.answerRequest(frame.ID, frame)
 	case shimwire.AgentSecretsEnrollmentResult:
-		c.answerShim(frame.ID, frame)
+		c.answerRequest(frame.ID, frame)
 	case shimwire.AgentSecretsTokenResult:
-		c.answerShim(frame.ID, frame)
+		c.answerRequest(frame.ID, frame)
 	case shimwire.BundleWorkspaceResult:
-		c.answerShim(frame.ID, frame)
+		c.answerRequest(frame.ID, frame)
 	}
 }
 
@@ -488,9 +488,10 @@ func stepArgsHash(args []byte) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// answerShim hands a frame the shim answered itself to the request waiting on its id; one nobody
-// waits on any longer (its request timed out) is dropped.
-func (c *Conn) answerShim(id string, frame shimwire.Frame) {
+// answerRequest hands frame to the request waiting on id — a response Oh My Pi sent, or a result
+// the shim answered itself. One nobody is waiting on — a request that gave up, or a prompt's
+// answer an older shim replays from its backlog — is dropped.
+func (c *Conn) answerRequest(id string, frame shimwire.Frame) {
 	c.mu.Lock()
 	answer, waiting := c.pending[id]
 	delete(c.pending, id)
@@ -498,12 +499,6 @@ func (c *Conn) answerShim(id string, frame shimwire.Frame) {
 	if waiting {
 		answer <- frame
 	}
-}
-
-// answer routes a response to the request waiting on its id. One nobody is waiting on — a request
-// that gave up, or a prompt's answer an older shim replays from its backlog — is dropped.
-func (c *Conn) answer(response shimwire.Response) {
-	c.answerShim(response.ID, response)
 }
 
 // finish marks the connection ended once its reader has returned: every request still waiting

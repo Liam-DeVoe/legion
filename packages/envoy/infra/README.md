@@ -3086,11 +3086,13 @@ the set publishes JetStream's account info `$JS.API.INFO`, which nats.go asks be
 bucket; the info, create and update of the bucket's stream `KV_legion_tasks` (a daemon creates
 the bucket when it is missing, reads its epoch from the stream's creation time, and, when another
 daemon created it first, nats.go updates the stream with the configuration it already holds); its
-direct and stored-message gets; every write and delete of a value, `$KV.legion_tasks.>`; and its
-watch's consumer create and delete and their flow-control replies. The watch delivers on a reply
-inbox, which the `_INBOX.>` subscription already admits, so the bucket adds no subscribe. One
-bucket serves every project and the grant reaches every project's keys; a daemon writes and
-deletes only its own project's, the keys that start `legion-<project>-`. A daemon whose user
+direct and stored-message gets; every write and delete of a value, `$KV.legion_tasks.>`; the purge
+of its stream, `$JS.API.STREAM.PURGE.KV_legion_tasks`, which drops a key's old delete markers one
+subject at a time; and its watch's consumer create and delete and their flow-control replies. The
+watch delivers on a reply inbox, which the `_INBOX.>` subscription already admits, so the bucket
+adds no subscribe. One bucket serves every project and the grant reaches every project's keys and
+the stream's whole purge; a daemon writes, deletes and purges only its own project's, the keys
+that start `legion-<project>-`. A daemon whose user
 lacks these entries cannot open the bucket. A `gcp:NatsHub` user with `daemon: true` receives
 this set; its seed belongs to the daemon, not to a host or session.
 

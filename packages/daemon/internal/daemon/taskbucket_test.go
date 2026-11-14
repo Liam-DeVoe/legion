@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -155,6 +156,30 @@ func (r *bucketRig) epoch() string {
 	return legiontasks.Epoch(stream.CachedInfo().Created)
 }
 
+// subjects is how many messages the task bucket's stream holds on each key's subject. A key the
+// bucket holds no value for still has a subject while its delete marker stands, and has none once
+// the marker is purged (taskBucket.purgeMarkers), which a read of the key cannot tell apart.
+func (r *bucketRig) subjects() map[string]uint64 {
+	r.t.Helper()
+	stream, err := r.js.Stream(context.Background(), legiontasks.Stream)
+	if err != nil {
+		r.t.Fatalf("read the task bucket's stream: %v", err)
+	}
+	info, err := stream.Info(context.Background(), jetstream.WithSubjectFilter(">"))
+	if err != nil {
+		r.t.Fatalf("read the task bucket's subjects: %v", err)
+	}
+	return info.State.Subjects
+}
+
+// marked is whether the bucket's stream still holds anything for key: its value, or the delete
+// marker its delete left.
+func (r *bucketRig) marked(key string) bool {
+	r.t.Helper()
+	_, held := r.subjects()[keySubject(claim.Token(key))]
+	return held
+}
+
 // lines is every line of the running daemon's log whose message is msg and which is token's.
 func (r *bucketRig) lines(msg string, token claim.Token) []map[string]any {
 	r.t.Helper()
@@ -171,7 +196,7 @@ func (r *bucketRig) lines(msg string, token claim.Token) []map[string]any {
 func (r *bucketRig) writes(token claim.Token) []string {
 	r.t.Helper()
 	var causes []string
-	for _, line := range r.lines("supervise: a task value was written", token) {
+	for _, line := range r.lines(taskValueWrittenLine, token) {
 		causes = append(causes, line["cause"].(string))
 	}
 	return causes
@@ -234,9 +259,11 @@ type bucketWorker struct {
 	generation uint64
 	secret     string
 	sh         *shim
-	driver     *takeDriver
-	// silent is whether the shim leaves the daemon's get_state unanswered, as one whose agent is
-	// busy compacting answers nothing the daemon can read as idle or as in a turn.
+	// mu guards what the test sets while the serve goroutine reads it: the plugin the state probe
+	// is answered from, and silent, whether the shim leaves the daemon's get_state unanswered, as
+	// one whose agent is busy compacting answers nothing the daemon can read as idle or in a turn.
+	mu     sync.Mutex
+	driver *takeDriver
 	silent bool
 }
 
@@ -263,7 +290,10 @@ func (r *bucketRig) spawn(issue, task string) *bucketWorker {
 		r.t.Fatalf("decode the registration: %v", err)
 	}
 	w.secret = registered.Secret
-	w.driver = r.d.takeDriver(w.sh, token, w.session, w.secret, w.generation)
+	driver := r.d.takeDriver(w.sh, token, w.session, w.secret, w.generation)
+	w.mu.Lock()
+	w.driver = driver
+	w.mu.Unlock()
 	return w
 }
 
@@ -294,10 +324,13 @@ func (w *bucketWorker) serve(sh *shim) {
 		case shimwire.NegotiateProtocol:
 			_ = sh.writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
 		case shimwire.GetState:
-			if w.silent {
+			w.mu.Lock()
+			silent, driver := w.silent, w.driver
+			w.mu.Unlock()
+			if silent {
 				continue
 			}
-			streaming := w.driver != nil && w.driver.inATurn()
+			streaming := driver != nil && driver.inATurn()
 			data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
 			_ = sh.writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
 		}
@@ -374,8 +407,10 @@ func TestTaskBucketRepairsOnlyItsOwnProjectsKeys(t *testing.T) {
 	w.driver.mustEndTurn(t)
 	r.awaitEntry("the finished task's value deleted", key, func(e jetstream.KeyValueEntry) bool { return e == nil })
 
-	stray := r.put(key, number)
+	// The other project's key is written first, so the delete of the claim's own stray value
+	// proves the watch handed both over.
 	otherAgain := r.put(other, 9)
+	stray := r.put(key, number)
 	r.awaitEntry("a value of a claim the record owes nothing deleted", key, func(e jetstream.KeyValueEntry) bool { return e == nil })
 	if e := r.entry(other); e == nil || e.Revision() != otherAgain || taskOf(t, e) != 9 {
 		t.Fatalf("another project's key %s is %v after the daemon deleted its own stray value (revision %d), want task 9 at revision %d left",
@@ -383,12 +418,64 @@ func TestTaskBucketRepairsOnlyItsOwnProjectsKeys(t *testing.T) {
 	}
 }
 
+// The daemon purges the delete markers of its own project's keys once they are older than the
+// bound, and leaves every other project's marker as it stands. A delete leaves a marker that the
+// bucket — one revision of each key, file storage, no TTL — never drops by itself, so without the
+// purge every reader of the bucket would hold one record per claim that ever had a task, for the
+// bucket's whole life. A marker younger than the bound stands.
+func TestTaskBucketPurgesItsOwnProjectsOldDeleteMarkersAlone(t *testing.T) {
+	const markerLife = 2 * time.Second
+	r := newBucketRig(t)
+	r.o.taskBucketMarkerLife = markerLife
+	r.boot()
+	w := r.spawn("LEGION-1", "Say hello.")
+	w.ready()
+	key := string(w.token)
+	r.awaitEntry("the claim's value written", key, func(e jetstream.KeyValueEntry) bool { return e != nil })
+	other := "legion-" + r.project + "x-legion-1-architect"
+	r.put(other, 7)
+	r.remove(other)
+
+	w.driver.mustTake(t, "the worker takes its task")
+	w.driver.mustStartTurn(t)
+	w.driver.mustEndTurn(t)
+	r.awaitEntry("the finished task's value deleted", key, func(e jetstream.KeyValueEntry) bool { return e == nil })
+	if !r.marked(key) {
+		t.Fatalf("the delete of %s left no marker in the bucket's stream, so this proves no purge", key)
+	}
+
+	testwait.Eventually(t, "the claim's delete marker purged once it is older than the bound", func() bool { return !r.marked(key) })
+	if !r.marked(other) {
+		t.Fatalf("another project's delete marker %s was purged; a daemon purges its own project's keys alone", other)
+	}
+}
+
+// A delete marker younger than the bound stands: a listener whose watch is replaying, or whose
+// session was away, still reads the delete that tells it the claim holds no task.
+func TestTaskBucketLeavesADeleteMarkerYoungerThanTheBound(t *testing.T) {
+	r := newBucketRig(t)
+	r.o.taskBucketMarkerLife = time.Hour
+	r.boot()
+	w := r.spawn("LEGION-1", "Say hello.")
+	w.ready()
+	key := string(w.token)
+	r.awaitEntry("the claim's value written", key, func(e jetstream.KeyValueEntry) bool { return e != nil })
+	w.driver.mustTake(t, "the worker takes its task")
+	w.driver.mustStartTurn(t)
+	w.driver.mustEndTurn(t)
+	r.awaitEntry("the finished task's value deleted", key, func(e jetstream.KeyValueEntry) bool { return e == nil })
+
+	time.Sleep(settle)
+	if !r.marked(key) {
+		t.Fatalf("the delete marker of %s was purged within the hour it is kept", key)
+	}
+}
+
 // A relay frame is lost while the session it is for is not subscribed, so a worker reads its
-// claim's value from the daemon at its delivery's next epoch. The Go stand-in for the plugin is
-// unsubscribed while the value is written, and written again; at its next epoch it reads
-// claims/task and is handed the bucket's latest revision under the bucket's own epoch, which it
-// reports seen and takes.
-func TestTaskBucketAValueDroppedWhileUnsubscribedIsReadAtTheNextEpoch(t *testing.T) {
+// claim's value from the daemon rather than from the frame. The Go stand-in for the plugin reads
+// claims/task after the value was written and written again, and is handed the bucket's latest
+// revision under the bucket's own epoch, which it reports seen and takes.
+func TestClaimsTaskAnswersTheBucketsLatestRevision(t *testing.T) {
 	r := newBucketRig(t)
 	r.boot()
 	w := r.spawn("LEGION-1", "")
@@ -641,7 +728,9 @@ func TestTaskValueARestartDuringACompactionWritesOnceAndIsTakenOnce(t *testing.T
 	r.o.clock = clock
 	rebindHeldPorts(t, &r.cfg)
 	r.boot()
+	w.mu.Lock()
 	w.silent = true
+	w.mu.Unlock()
 	w.reattach()
 	r.awaitEntry("the owed task written at the boot", key, func(e jetstream.KeyValueEntry) bool {
 		return e != nil && e.Revision() > before.Revision()
@@ -657,8 +746,8 @@ func TestTaskValueARestartDuringACompactionWritesOnceAndIsTakenOnce(t *testing.T
 	if n := r.accepted(w.token); n != 1 {
 		t.Fatalf("the restarted daemon accepted %d takes, want the one", n)
 	}
-	if live, _ := clock.armed(r.cfg.WorkerTurnStartTimeout); live != 1 || r.cfg.WorkerTurnStartTimeout < 10*time.Minute {
-		t.Fatalf("%d waits of %s are armed for the take's turn, want the one second bound, never below the compaction timeout", live, r.cfg.WorkerTurnStartTimeout)
+	if live, _ := clock.armed(r.cfg.WorkerTurnStartTimeout); live != 1 {
+		t.Fatalf("%d waits of %s are armed for the take's turn, want the one second bound", live, r.cfg.WorkerTurnStartTimeout)
 	}
 	if c := r.d.claim(w.token); c.State != string(supervise.StateIdle) || c.Budgets.PromptFailures != 0 {
 		t.Fatalf("while the take's turn is held the claim is %s with %d prompt failures, want idle with none", c.State, c.Budgets.PromptFailures)

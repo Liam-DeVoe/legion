@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/legiontasks"
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
@@ -29,6 +30,12 @@ const taskBucketCallTimeout = 10 * time.Second
 // again (taskBucket.moved), and how long it waits before it opens a watch that ended again: a watch
 // of a bucket that was deleted hands over nothing more, and says nothing of it either.
 const taskBucketCheckEvery = 30 * time.Second
+
+// taskBucketMarkerLife is how long a delete marker of one of this project's keys is left in the
+// bucket before the watch purges it (taskBucket.purgeMarkers). It is long enough that a listener
+// whose watch is replaying, or whose session was away, reads the delete first, and short enough
+// that the markers of a deployment's finished tasks do not grow without bound.
+const taskBucketMarkerLife = time.Hour
 
 // taskBucket is the daemon's task bucket, legiontasks.Bucket on Envoy's NATS: each claim's key holds
 // the number of the task the claim's record owes it, which the listener relays to the session
@@ -247,23 +254,28 @@ var errTaskBucketMoved = errors.New("the task bucket is gone or was created agai
 
 // watch keeps the bucket the delivered copy of the record for as long as ctx lasts (R3): it watches
 // the whole bucket and hands each claim of sup the value its key holds (supervise.TaskValueRead),
-// whose machine writes the record's value again where the two differ. The first watch is the
-// boot's, whose reads carry supervise.TaskValueBoot; every later one reads the bucket whole again
-// under supervise.TaskValueRepair. A watch ends where the bucket is gone or was created again
-// (moved), or where its own consumer ended; the bucket is then opened again, created again where it
-// is gone (ensure), and watched again, so every owed value is written into the new one. every is
-// how often the stream is read for that (taskBucketCheckEvery), and how long a watch that ended
-// for any other reason, or an open that failed, waits before it is tried again.
-func (b *taskBucket) watch(ctx context.Context, sup *supervisor, every time.Duration) {
+// whose machine writes the record's value again where the two differ. The first watch that hands
+// the bucket over whole is the boot's, whose reads carry supervise.TaskValueBoot; every later one
+// reads the bucket whole again under supervise.TaskValueRepair. A watch that ended before it handed
+// anything over — the stream read, the watch's open or its replay failed — leaves the next one the
+// boot's, since no claim has had the boot's read yet. A watch ends where the bucket is gone or was
+// created again (moved), or where its own consumer ended; the bucket is then opened again, created
+// again where it is gone (ensure), and watched again, so every owed value is written into the new
+// one. every is how often the stream is read for that (taskBucketCheckEvery), and how long a watch
+// that ended for any other reason, or an open that failed, waits before it is tried again;
+// markerLife is how long this project's delete markers are left in the bucket (purgeMarkers).
+func (b *taskBucket) watch(ctx context.Context, sup *supervisor, every, markerLife time.Duration) {
 	cause := supervise.TaskValueBoot
 	for {
-		err := b.watchOnce(ctx, sup, cause, every)
+		handed, err := b.watchOnce(ctx, sup, cause, every, markerLife)
 		if ctx.Err() != nil {
 			return
 		}
-		cause = supervise.TaskValueRepair
+		if handed {
+			cause = supervise.TaskValueRepair
+		}
 		b.log.Warn("legion daemon watches the task bucket again", "bucket", legiontasks.Bucket, "reason", err)
-		if !errors.Is(err, errTaskBucketMoved) && !sleepFor(ctx, every) {
+		if !errors.Is(err, errTaskBucketMoved) && backoff.Sleep(ctx, every) != nil {
 			return
 		}
 		for {
@@ -273,22 +285,10 @@ func (b *taskBucket) watch(ctx context.Context, sup *supervisor, every time.Dura
 			}
 			b.log.Error("legion daemon could not open the task bucket again; trying again", "bucket", legiontasks.Bucket,
 				"after", every.String(), "error", err)
-			if !sleepFor(ctx, every) {
+			if backoff.Sleep(ctx, every) != nil {
 				return
 			}
 		}
-	}
-}
-
-// sleepFor waits d, and reports false when ctx ended first.
-func sleepFor(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
 	}
 }
 
@@ -296,47 +296,55 @@ func sleepFor(ctx context.Context, d time.Duration) bool {
 // the watch hands over the latest entry of every key, then marks the end of them — and hands every
 // claim of sup its key's entry, or none: a key with no entry is read at the bucket's last revision
 // before the watch began, so a write the claim's machine made after it is not taken for one the
-// bucket lost. Then it hands each change of a key of this daemon's project to that key's claim, and
-// reads the bucket's stream every interval, ending where it is gone or under another epoch.
+// bucket lost. It reports whether it handed that read over, which the next watch's cause turns on
+// (watch). Then it hands each change of a key of this daemon's project to that key's claim, and
+// reads the bucket's stream every interval, ending where it is gone or under another epoch, and
+// purges this project's old delete markers (purgeMarkers).
 //
 // A key of this project that no claim of sup holds is left as it stands, and logged once: this
 // daemon's store holds every claim of its project, so no record of its own owes that key anything
 // to write, and only another daemon of the same project would be writing it.
-func (b *taskBucket) watchOnce(ctx context.Context, sup *supervisor, cause string, every time.Duration) error {
+func (b *taskBucket) watchOnce(ctx context.Context, sup *supervisor, cause string, every, markerLife time.Duration) (bool, error) {
 	kv, epoch := b.handle()
 	stream, err := b.stream(ctx, legiontasks.Stream)
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		return false, errTaskBucketMoved
+	}
 	if err != nil {
-		return fmt.Errorf("read the task bucket's stream: %w", err)
+		return false, fmt.Errorf("read the task bucket's stream: %w", err)
 	}
 	if legiontasks.Epoch(stream.CachedInfo().Created) != epoch {
-		return errTaskBucketMoved
+		return false, errTaskBucketMoved
 	}
 	last := stream.CachedInfo().State.LastSeq
 	watching, stop := context.WithCancel(ctx)
 	defer stop()
 	watcher, err := kv.WatchAll(watching)
 	if err != nil {
-		return fmt.Errorf("watch the task bucket: %w", err)
+		return false, fmt.Errorf("watch the task bucket: %w", err)
 	}
 	defer func() { _ = watcher.Stop() }()
-	strays := map[string]bool{}
+	strays := map[claim.Token]bool{}
+	markers := map[claim.Token]jetstream.KeyValueEntry{}
 	held := map[claim.Token]jetstream.KeyValueEntry{}
 	for replayed := false; !replayed; {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		case entry, ok := <-watcher.Updates():
 			switch {
 			case !ok:
-				return errors.New("the task bucket's watch ended")
+				return false, errors.New("the task bucket's watch ended")
 			case entry == nil:
 				replayed = true
 			case legiontasks.OwnedBy(entry.Key(), b.project):
 				held[claim.Token(entry.Key())] = entry
+				marked(markers, entry)
 			}
 		}
 	}
-	for _, m := range sup.supervised() {
+	machines := sup.supervised()
+	for _, m := range machines {
 		token := m.View().Token
 		read := supervise.TaskValueRead{Claim: token, Value: supervise.TaskValue{Epoch: epoch, Revision: last}, Cause: cause}
 		if entry, ok := held[token]; ok {
@@ -349,20 +357,21 @@ func (b *taskBucket) watchOnce(ctx context.Context, sup *supervisor, cause strin
 		b.stray(strays, token)
 	}
 	b.log.Info("legion daemon read the task bucket whole", "bucket", legiontasks.Bucket, "epoch", epoch,
-		"claims", len(sup.supervised()), "cause", cause)
+		"claims", len(machines), "cause", cause)
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return true, ctx.Err()
 		case entry, ok := <-watcher.Updates():
 			if !ok {
-				return errors.New("the task bucket's watch ended")
+				return true, errors.New("the task bucket's watch ended")
 			}
 			if entry == nil || !legiontasks.OwnedBy(entry.Key(), b.project) {
 				continue
 			}
+			marked(markers, entry)
 			token := claim.Token(entry.Key())
 			if _, supervised := sup.Machine(token); !supervised {
 				b.stray(strays, token)
@@ -371,22 +380,86 @@ func (b *taskBucket) watchOnce(ctx context.Context, sup *supervisor, cause strin
 			sup.post(token, taskValueRead(entry, epoch, supervise.TaskValueRepair))
 		case <-ticker.C:
 			if err := b.moved(ctx, epoch); err != nil {
-				return err
+				return true, err
 			}
+			b.purgeMarkers(ctx, markers, markerLife)
 		case <-b.recheck:
 			if err := b.moved(ctx, epoch); err != nil {
-				return err
+				return true, err
 			}
 		}
 	}
 }
 
-// stray logs, once per watch, a key of this project no claim of this daemon holds.
-func (b *taskBucket) stray(logged map[string]bool, token claim.Token) {
-	if logged[string(token)] {
+// marked records entry in markers where it is a delete marker of a key of this daemon's project,
+// and forgets the key's marker where the key holds a value again. Only keys this project owns
+// reach it (watchOnce), which are the only keys purgeMarkers may purge.
+func marked(markers map[claim.Token]jetstream.KeyValueEntry, entry jetstream.KeyValueEntry) {
+	token := claim.Token(entry.Key())
+	if entry.Operation() == jetstream.KeyValuePut {
+		delete(markers, token)
 		return
 	}
-	logged[string(token)] = true
+	markers[token] = entry
+}
+
+// purgeMarkers removes from the bucket every delete marker in markers older than life, and forgets
+// it. A delete leaves a marker the bucket never drops by itself — it keeps one revision of each key
+// and has no TTL (ensure) — so without this every reader of the bucket would hold one record per
+// claim that ever had a task, for the bucket's whole life. A marker is kept life first, so a
+// listener whose watch is replaying, or whose session was away, still reads the delete that tells
+// it the claim holds no task.
+//
+// Each purge names one key's subject and stops at that marker's own revision, so a value written
+// into the key after the marker was read stands, and no key of another project is touched: markers
+// holds this project's keys alone (marked). A purge the server refused is logged and left in
+// markers, so the next check tries it again.
+func (b *taskBucket) purgeMarkers(ctx context.Context, markers map[claim.Token]jetstream.KeyValueEntry, life time.Duration) {
+	oldest := time.Now().Add(-life)
+	var stream jetstream.Stream
+	for token, marker := range markers {
+		if !marker.Created().Before(oldest) {
+			continue
+		}
+		if stream == nil {
+			read, err := b.stream(ctx, legiontasks.Stream)
+			if err != nil {
+				if ctx.Err() == nil {
+					b.log.Warn("legion daemon could not read the task bucket's stream to purge its delete markers; purging them at the next check",
+						"bucket", legiontasks.Bucket, "error", err)
+				}
+				return
+			}
+			stream = read
+		}
+		bounded, cancel := context.WithTimeout(ctx, taskBucketCallTimeout)
+		err := stream.Purge(bounded, jetstream.WithPurgeSubject(keySubject(token)), jetstream.WithPurgeSequence(marker.Revision()+1))
+		cancel()
+		if err != nil {
+			if ctx.Err() == nil {
+				b.log.Warn("legion daemon could not purge a delete marker of the task bucket; purging it at the next check",
+					"bucket", legiontasks.Bucket, "key", token, "error", err)
+			}
+			continue
+		}
+		delete(markers, token)
+		b.log.Debug("legion daemon purged a delete marker of the task bucket", "bucket", legiontasks.Bucket,
+			"key", token, "revision", marker.Revision(), "older_than", life.String())
+	}
+}
+
+// keySubject is the subject the bucket's writes of token's key are published on, `$KV.<bucket>.<key>`
+// as nats.go spells a bucket's keys: what a purge of one key filters the stream on.
+func keySubject(token claim.Token) string {
+	return "$KV." + legiontasks.Bucket + "." + string(token)
+}
+
+// stray logs, once per watch, a key of this project no claim of this daemon holds.
+func (b *taskBucket) stray(logged map[claim.Token]bool, token claim.Token) {
+	if logged[token] {
+		return
+	}
+	logged[token] = true
 	b.log.Warn("legion daemon leaves a task value of its project that no claim of its own holds", "bucket", legiontasks.Bucket, "key", token)
 }
 

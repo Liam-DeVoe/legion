@@ -552,7 +552,7 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 	// read from the daemon's own record of every such send rather than from the clock, so a
 	// compaction slower than the rung does not fail the proof for the wrong reason.
 	if sends := r.logs(func(record loggedRecord) bool {
-		return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
+		return record.Message == providerWaitOverMessage &&
 			record.Attrs["claim"] == string(token) && record.at.After(errored.at) && record.at.Before(again.at)
 	}); len(sends) != 0 {
 		t.Fatalf("the ladder's wait sent the task %d times before the compaction's own send did", len(sends))
@@ -746,7 +746,7 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 		t.Fatalf("the daemon ran %d turns of the owed task, want 2: the first send and the compaction's own", len(turns))
 	}
 	if sends := r.logs(func(record loggedRecord) bool {
-		return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
+		return record.Message == providerWaitOverMessage &&
 			record.Attrs["claim"] == string(token) && record.at.After(errored.at) && record.at.Before(again.at)
 	}); len(sends) == 0 {
 		t.Fatalf("the ladder's %s rung never came due inside the %s the summary was held for", ladderDelays[0], compactHeldSummary)

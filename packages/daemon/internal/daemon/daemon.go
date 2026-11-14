@@ -5,6 +5,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -222,6 +223,9 @@ type overrides struct {
 	// taskBucketCheck is how often the daemon's own task bucket is read for a bucket gone or
 	// created again (taskBucket.watch); zero is taskBucketCheckEvery.
 	taskBucketCheck time.Duration
+	// taskBucketMarkerLife is how long a delete marker of this project's key is left in the task
+	// bucket before the watch purges it (taskBucket.purgeMarkers); zero is taskBucketMarkerLife.
+	taskBucketMarkerLife time.Duration
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -902,6 +906,9 @@ type plan struct {
 	bucket *taskBucket
 	// taskBucketCheck is how often the watch reads the bucket's stream (taskBucket.watch).
 	taskBucketCheck time.Duration
+	// taskBucketMarkerLife is how long the watch leaves a delete marker of this project's key in
+	// the bucket (taskBucket.purgeMarkers).
+	taskBucketMarkerLife time.Duration
 	// noLaunch is why this daemon launches no worker (launchRefusal), nil for one that launches.
 	noLaunch error
 }
@@ -976,10 +983,8 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if o.pluginRelaunchable != nil {
 		pluginRelaunchable = *o.pluginRelaunchable
 	}
-	taskBucketCheck := o.taskBucketCheck
-	if taskBucketCheck == 0 {
-		taskBucketCheck = taskBucketCheckEvery
-	}
+	taskBucketCheck := cmp.Or(o.taskBucketCheck, taskBucketCheckEvery)
+	markerLife := cmp.Or(o.taskBucketMarkerLife, taskBucketMarkerLife)
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames),
 		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
@@ -989,7 +994,8 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		taskValues: o.taskValues, taskBucketCheck: taskBucketCheck, noLaunch: launchRefusal(cfg, o.taskValues),
+		taskValues: o.taskValues, taskBucketCheck: taskBucketCheck, taskBucketMarkerLife: markerLife,
+		noLaunch: launchRefusal(cfg, o.taskValues),
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -2614,7 +2620,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// reaches every claim the record owes a value (taskBucket.watch).
 	if p.bucket != nil {
 		group.Go(func() error {
-			p.bucket.watch(serving, s.supervisor, p.taskBucketCheck)
+			p.bucket.watch(serving, s.supervisor, p.taskBucketCheck, p.taskBucketMarkerLife)
 			return nil
 		})
 	}

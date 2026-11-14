@@ -68,12 +68,12 @@ type workflowRuntime struct {
 	// daemon boots, once per connect attempt: connect runs there, inside bootprobe.Run, which
 	// retries it, and a failed attempt stores nil (daemon.go). Every one of those writes is
 	// before the serving goroutine starts. It is read afterwards from several others — the serving
-	// goroutine's workflowRuntime.stop, reconnectWatchdog, the intake group — and from run itself
-	// once awaitStop has returned. Two of those close it at once when the stop's budget runs out
-	// (closeNATS), so the field is held atomically rather than leaving each reader to prove its
-	// own ordering, and internal/daemon runs under the race detector in CI
-	// (.github/workflows/ci.yaml, the step "Test the concurrent packages under the race
-	// detector").
+	// goroutine's workflowRuntime.stop, reconnectWatchdog and the intake group — while run closes
+	// that same connection through a handle of its own (daemon.go's natsConn, closeNATS). Two
+	// closes can land at once when the stop's budget runs out, so the field is held atomically
+	// rather than leaving each reader to prove its own ordering, and internal/daemon runs under
+	// the race detector in CI (.github/workflows/ci.yaml, the step "Test the concurrent packages
+	// under the race detector").
 	conn      atomic.Pointer[nats.Conn]
 	consumers *intake.Consumers
 	// setRepositories replaces the repositories GitHub intake hears, the one route the runtime

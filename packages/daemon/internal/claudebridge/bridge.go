@@ -121,8 +121,9 @@ type bridge struct {
 	task           *taskValue
 	seen, asked    map[pair]bool
 	seeing, asking *call
-	// heldText is the text of a take the daemon accepted while a turn ran, and heldTask its number:
-	// that task starts a turn of its own once the turn ends (idle). runTask is the number of the
+	// heldTask is the number of a take the daemon accepted while a turn ran, and heldText its
+	// text: that task starts a turn of its own once the turn ends (idle), and heldTask, never 0
+	// for an accepted take, is what says one is waiting. runTask is the number of the
 	// task whose turn is running (startTask), 0 for a turn of no task.
 	heldText          string
 	heldTask, runTask uint64
@@ -812,7 +813,7 @@ func (b *bridge) result(res resultLine) {
 	}
 	// A task whose take was accepted during this turn ends it here rather than wait behind the
 	// queue: its turn goes ahead of every queued delivery.
-	if stepped && len(b.queue) > 0 && b.heldText == "" {
+	if stepped && len(b.queue) > 0 && b.heldTask == 0 {
 		b.sendQueued()
 		return
 	}

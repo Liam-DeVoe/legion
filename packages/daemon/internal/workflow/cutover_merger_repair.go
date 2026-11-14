@@ -53,7 +53,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // which is R4's "unless something new is owed to it"; every ordinary relaunch keeps R4.
 //
 // It reads its mergers from the owners of the project's unfinished phases in running trees
-// (suspendedPhaseOwners), the read booted starts its owners from, so the repair and the boot's
+// (phaseOwnersOf), the read booted starts its owners from, so the repair and the boot's
 // resume by rule pick an owner by one rule. By that rule the issue is in the workflow; its tree
 // runs (record.RunningRoots), since a lingering tree's claims wait for its re-admission and a
 // queued root's members for its promotion, each of which starts every mid-phase member (admit's
@@ -89,7 +89,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // (clearHandoff): the READY was a completion under the old rule, and kept it would read as a
 // merger that has completed merging, which the silence repair never prompts. Then it reads the
 // merger's phases row and builds the start with the builder of booted's resume by rule
-// (startSuspendedOwner), from the entry that row names: a merger behind that entry (OwedEntry) is
+// (startPhaseOwner), from the entry that row names: a merger behind that entry (OwedEntry) is
 // sent the work of that entry at that entry (sendOwedEntry), and a merger level with it is sent
 // the merging resume task (ResumePhaseTask) at entry 0. Both carry a phase start's origin, since
 // the merging work is new to the merger. It builds the start that way, and not as one fixed
@@ -120,7 +120,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.CutoverMergerRepair) (intake.Result, error) {
 	owed := []string{}
 	if e.cfg.Pods != nil {
-		owners, err := e.suspendedPhaseOwners(ctx, tx)
+		owners, err := e.phaseOwnersOf(ctx, tx)
 		if err != nil {
 			return intake.Result{}, err
 		}
@@ -160,7 +160,7 @@ func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.Cu
 }
 
 // cutoverStoppedMerger is whether owner, a suspended owner of an unfinished phase in a running
-// tree (suspendedPhaseOwners), is a merger the cutover left stopped: one it left
+// tree (phaseOwnersOf), is a merger the cutover left stopped: one it left
 // (cutoverLeftMerger), suspended by the idle release, with no backstop open, and with no start
 // already covering it (StartFor).
 func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner phaseOwner) (bool, error) {
@@ -179,7 +179,7 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner phas
 }
 
 // cutoverIdleMerger is whether owner, a live owner of an unfinished phase in a running tree
-// (suspendedPhaseOwners), is a merger the cutover left idle with its merging work untold: one
+// (phaseOwnersOf), is a merger the cutover left idle with its merging work untold: one
 // it left (cutoverLeftMerger) that holds no task, and that no row the outbox holds for it covers
 // (queuedRowCovers), the two terms a ready asks of a live worker (readyWorkerTask).
 func (e *Engine) cutoverIdleMerger(ctx context.Context, tx pgx.Tx, owner phaseOwner) (bool, error) {
@@ -190,7 +190,7 @@ func (e *Engine) cutoverIdleMerger(ctx context.Context, tx pgx.Tx, owner phaseOw
 }
 
 // cutoverLeftMerger is whether owner, an owner of an unfinished phase in a running tree
-// (suspendedPhaseOwners), stands where the cutover left a merger, by the terms
+// (phaseOwnersOf), stands where the cutover left a merger, by the terms
 // cutoverMergerRepair states for every merger it selects: the issue stands in merging, its pull
 // request record is open, and the merger's phase row holds a READY head.
 func (e *Engine) cutoverLeftMerger(ctx context.Context, tx pgx.Tx, owner phaseOwner) (bool, error) {
@@ -208,7 +208,7 @@ func (e *Engine) cutoverLeftMerger(ctx context.Context, tx pgx.Tx, owner phaseOw
 
 // oweCutoverMerger owes the merger owner its merging task (cutoverMergerRepair): it clears the
 // merger's handoff, reads the merger's phases row, owes the start the boot builds for a phase
-// owner (startSuspendedOwner) from the entry that row names, under a phase start's origin, posts
+// owner (startPhaseOwner) from the entry that row names, under a phase start's origin, posts
 // the cutover's message on the issue of a stopped merger, and logs on commit the slot mark the
 // queued start carries, read back from the merger's queued rows, since the mark is StartOrOwe's
 // to set.
@@ -224,7 +224,7 @@ func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner phaseOwn
 	if err != nil {
 		return err
 	}
-	if _, err := e.startSuspendedOwner(ctx, tx, owner, row, supervise.OriginPhaseStart); err != nil {
+	if _, err := e.startPhaseOwner(ctx, tx, owner, row, supervise.OriginPhaseStart); err != nil {
 		return err
 	}
 	if stopped {
