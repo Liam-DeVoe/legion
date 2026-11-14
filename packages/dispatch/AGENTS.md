@@ -2433,16 +2433,17 @@ runs it as a process against a Bun websocket server that replays `packages/contr
 and holds the body it applies to `after.json`.
 It also checks that the probe reopens after a 4001 and after a 1012 and resumes each time with the
 change and revisions it holds.
-Neither row reads a clock, and the two catch different things.
-The 4001 row pins `--reconnect-spread-ms` a day, far above its own per-test limit, so a probe that
-answered a rotation on the timer rather than at once reaches its second subscribe inside the row
-on about one draw in 2,880 and is caught by the runner's limit on the rest: there the runner's
-limit is the discriminator, and the row's own comment carries that rate.
-The 1012 row pins 50 ms, which makes the probe's own wait a draw from [0, 50 ms) - small and
-bounded rather than deterministic - so it catches no wait at all: a reopen that waited the
-page's two-second default would still pass it. What it does catch is the resume, whose content and
-order it asserts, and the backoff's own shape is held by the unit
-row in `web/src/api/live-socket.test.ts`.
+Neither row reads a clock, and the two catch different things through the `wait_ms` each close line
+carries.
+The 4001 row answers a rotation at once, so its close line's `wait_ms` is null; a probe that
+answered the rotation on the reconnect timer instead writes the wait it computed, so the row's line
+assertion fails whatever wait it drew.
+It pins no spread, because the probe it passes arms no reconnect timer.
+The 1012 row pins `--reconnect-spread-ms` 50 ms, so the probe's own wait is a draw from [0, 50 ms),
+and the row holds that the close line's `wait_ms` is a number in that window: a reopen at once,
+which writes null, or on a later attempt's backoff, at least a second, fails it on every run.
+The backoff's own shape is held by the unit row in `web/src/api/live-socket.test.ts`, and the
+resume's content and order by the row's own assertions.
 A third row reads the wait each close line reports (`wait_ms`): at `--reconnect-spread-ms 0`, two
 1012 closes report 0 ms each only while the parsed option reaches the probe's `reconnectWaitMs`
 and a restart close sets the attempt counter back to 0.

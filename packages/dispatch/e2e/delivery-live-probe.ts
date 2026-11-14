@@ -546,8 +546,8 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
 
   const lost = (code: number, reason: string) => {
     socket = null;
-    // The close line carries the wait the probe will hold before it opens again, so a reader sees
-    // what `--reconnect-spread-ms` and the backoff came to; a close answered with no timer
+    // The close line carries the wait the probe computed before it would open again, so a reader
+    // sees what `--reconnect-spread-ms` and the backoff came to; a close answered with no timer
     // reports none.
     const closed = (waitMs: number | null) =>
       write({ at: now(), code, reason, type: "close", wait_ms: waitMs });
