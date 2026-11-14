@@ -169,7 +169,7 @@ func TestSuggestionAcceptRollbackNeverReachesTheRoom(t *testing.T) {
 		t.Fatalf("create suggestion: status=%d body=%s", suggestion.Code, suggestion.Body.String())
 	}
 	comment := decodeBody[model.Comment](t, suggestion)
-	drainDocumentUpdates(f.persistence)
+	drainSignals(f.persistence.updates)
 	closeTestGate(f.failure.releaseBeforeApply)
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -341,7 +341,7 @@ func (f *heldWriteFixture) connectPlainSocket(t *testing.T) {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	t.Cleanup(func() { _ = connection.Close() })
-	drainDocumentUpdates(f.persistence)
+	drainSignals(f.persistence.updates)
 }
 
 func (f *heldWriteFixture) connectPeer(t *testing.T) *syncedPeer {
@@ -349,7 +349,7 @@ func (f *heldWriteFixture) connectPeer(t *testing.T) *syncedPeer {
 	peer := &syncedPeer{wsURL: f.wsURL, sockets: f.sockets, headers: f.headers, artifactID: f.issue.PrimaryArtifactID, doc: crdt.New()}
 	peer.connect(t)
 	t.Cleanup(peer.close)
-	drainDocumentUpdates(f.persistence)
+	drainSignals(f.persistence.updates)
 	return peer
 }
 
@@ -638,16 +638,6 @@ func (s *recordingVersionedStore) signal() {
 	select {
 	case s.updates <- struct{}{}:
 	default:
-	}
-}
-
-func drainDocumentUpdates(store *recordingVersionedStore) {
-	for {
-		select {
-		case <-store.updates:
-		default:
-			return
-		}
 	}
 }
 

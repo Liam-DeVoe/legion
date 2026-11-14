@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -729,21 +730,16 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 // page can resubscribe. The retry is the relay's own when a test gives it one, and production's
 // eventRelayRetry when nothing does, reached through the path production takes (failedReadWait).
 func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	for name, retry := range map[string]time.Duration{
 		"a retry the relay was given": 100 * time.Millisecond,
 		"production's retry":          0,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
-			want := eventRelayRetry
-			if retry != 0 {
-				served.eventRelay.retry, want = retry, retry
-			}
+			served.eventRelay.retry = retry
+			want := cmp.Or(retry, eventRelayRetry)
 			database.Pool.Close()
 			ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
 			if err != nil {
@@ -1020,10 +1016,14 @@ func TestALiveEventFrameCarriesItsTrees(t *testing.T) {
 // the socket's writer keeps those bytes; and fixtures/live/event.json, which the contracts' and
 // the dashboard's tests read, is that frame.
 func TestAnEventFrameCarriesTheEventsOwnBytes(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test swaps process-wide state. It points pmdoc's block id generator
+	// (pmdoc.SetBlockIDGenerator) at one fixed id while it reads the event's display trees, and
+	// every test making a block in this process would draw that id.
 	event := liveFixtureEvent()
 	sent := event
+	pmdoc.SetBlockIDGenerator(func() string { return liveFixtureBlockID })
 	sent.Trees = eventDisplayTrees(event)
+	pmdoc.SetBlockIDGenerator(nil)
 	encoded, err := json.Marshal(sent)
 	if err != nil {
 		t.Fatalf("encode the event: %v", err)

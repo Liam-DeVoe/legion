@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/multitracer"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -125,22 +126,6 @@ type idleSweep struct {
 // the window a test watches holds many of them.
 const idleSweepGap = 200 * time.Millisecond
 
-// sweepTracer counts the statements of a sweep's pool and records them, so a test can wait for a
-// pass by the cursor row it holds (cursorHeld) as well as for the pool going quiet.
-type sweepTracer struct {
-	counter  *storetest.StatementCounter
-	recorder *storetest.StatementRecorder
-}
-
-func (s sweepTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	return s.recorder.TraceQueryStart(s.counter.TraceQueryStart(ctx, conn, data), conn, data)
-}
-
-func (s sweepTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
-	s.counter.TraceQueryEnd(ctx, conn, data)
-	s.recorder.TraceQueryEnd(ctx, conn, data)
-}
-
 func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSweep {
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -164,9 +149,11 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	})
 
 	srv := directServer(deps)
+	// The sweep's pool is counted and recorded, so the test can wait for a pass by the cursor row
+	// it holds (cursorHeld) as well as for the pool going quiet.
 	counter := &storetest.StatementCounter{}
 	recorder := &storetest.StatementRecorder{}
-	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, sweepTracer{counter: counter, recorder: recorder}, nil)}
+	counted := storetest.TracedStore(t, database, multitracer.New(counter, recorder))
 	schedule := suggestionSchedule{minGap: idleSweepGap, settle: settle, page: suggestionOutcomePage}
 	// The sweep reads through the counted pool and observes the horizon through the server's own
 	// (store.Pool.Horizon), so the counter sees the sweep's own statements alone.

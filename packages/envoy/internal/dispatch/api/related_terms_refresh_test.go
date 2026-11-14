@@ -543,25 +543,21 @@ const itemRowsReadSQL = `
 select coalesce(sum(seq_tup_read + idx_tup_fetch), 0) from pg_stat_xact_user_tables
  where schemaname = 'public' and relname = any($1)`
 
-// itemRowsRead reads that of the transaction it is given.
-func itemRowsRead(t *testing.T, tx pgx.Tx) int64 {
-	t.Helper()
-	var read int64
-	if err := tx.QueryRow(context.Background(), itemRowsReadSQL, itemTables).Scan(&read); err != nil {
-		t.Fatalf("read what this transaction read of the item tables: %v", err)
-	}
-	return read
-}
-
 // itemRowsReadBy runs statement in tx and answers how many rows of the item tables it read: the
-// difference of two readings taken in tx around it.
+// difference of two readings of itemRowsReadSQL taken in tx around it.
 func itemRowsReadBy(t *testing.T, tx pgx.Tx, statement func() error) int64 {
 	t.Helper()
-	before := itemRowsRead(t, tx)
+	var before, after int64
+	if err := tx.QueryRow(context.Background(), itemRowsReadSQL, itemTables).Scan(&before); err != nil {
+		t.Fatalf("read the backend's unreported item table rows before the statement: %v", err)
+	}
 	if err := statement(); err != nil {
 		t.Fatalf("run the statement whose item reads are counted: %v", err)
 	}
-	return itemRowsRead(t, tx) - before
+	if err := tx.QueryRow(context.Background(), itemRowsReadSQL, itemTables).Scan(&after); err != nil {
+		t.Fatalf("read the backend's unreported item table rows after the statement: %v", err)
+	}
+	return after - before
 }
 
 // itemNodesThatRan names every node of a plan that reads one of the item tables and ran at

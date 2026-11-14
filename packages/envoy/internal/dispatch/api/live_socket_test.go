@@ -635,10 +635,23 @@ func (r *callerRechecks) await(t *testing.T, n int, what string) {
 
 // drain discards the re-resolutions counted so far, so the count that follows starts at the
 // moment a test changed what the caller resolves to.
-func (r *callerRechecks) drain() {
+func (r *callerRechecks) drain() { drainSignals(r.resolved) }
+
+// requireResolvedAtMostOnce requires that at most one re-resolution since drain found the caller
+// still resolving: the one under way as the test changed what the caller resolves to. A test
+// reads it once the socket has closed; what names the socket.
+func (r *callerRechecks) requireResolvedAtMostOnce(t *testing.T, what string) {
+	t.Helper()
+	if resolved := len(r.resolved); resolved > 1 {
+		t.Fatalf("%s resolved its caller again %d times before it closed, want at most the one under way as the caller stopped resolving", what, resolved)
+	}
+}
+
+// drainSignals discards every signal signals holds, without waiting for one.
+func drainSignals(signals <-chan struct{}) {
 	for {
 		select {
-		case <-r.resolved:
+		case <-signals:
 		default:
 			return
 		}
@@ -768,9 +781,7 @@ func TestARevokedBearerClosesItsSocketWithPolicyViolation(t *testing.T) {
 	if code, _ := client.closeCode(t, concurrentWait); code != gws.ClosePolicyViolation {
 		t.Fatalf("the revoked token's socket closed with %d, want 1008", code)
 	}
-	if resolved := len(rechecks.resolved); resolved > 1 {
-		t.Fatalf("the revoked token resolved again %d times before its socket closed, want at most the one under way as it was revoked", resolved)
-	}
+	rechecks.requireResolvedAtMostOnce(t, "the revoked token's socket")
 	rig.sockets(t, 0)
 }
 
@@ -1175,8 +1186,9 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 	// The fourth ping comes four heartbeats in, twice the pong deadline, so a socket still open
 	// when it arrives is one the page's pongs have kept: waiting for the ping itself is what says
 	// the heartbeats passed. It must come within five heartbeats of the page opening - one ping
-	// each and a heartbeat to spare - so a writer that pings less often than its heartbeat fails
-	// here, though pongs to its slower pings would still keep the socket inside the deadline.
+	// each and a heartbeat to spare - so a writer whose pings come more than 1.25 heartbeats apart
+	// fails here, though pongs to pings less than two heartbeats apart would still keep the socket
+	// inside the deadline.
 	const pings = 4
 	opened := time.Now()
 	for ping := range pings {

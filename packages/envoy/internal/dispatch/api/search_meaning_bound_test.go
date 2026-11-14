@@ -16,11 +16,12 @@ import (
 // bound would pass on a server that holds none.
 //
 // Swapping a package-level statement is safe because the tests that swap it are serial (neither
-// caller below calls t.Parallel), and a package's parallel tests start only once every serial
-// top-level test has returned, so no other test's meaning query can read the shortened list
-// before the cleanup puts it back; a test that calls this and t.Parallel breaks that. The claim
-// path's stand-in walk is no such swap: it is a field of one server (server.legionStatusSQL),
-// which a parallel test may set.
+// caller below calls t.Parallel, nor does TestMeaningScanRollsBackWhenASettingFails, which swaps
+// it by hand), and a package's parallel tests start only once every serial top-level test has
+// returned, so no other test's meaning query can read the shortened list before the cleanup puts
+// it back; a test that swaps it and calls t.Parallel breaks that. The claim path's stand-in walk
+// is no such swap: it is a field of one server (server.legionStatusSQL), which a parallel test
+// may set.
 //
 // A millisecond is not a race against a Go timer: a meaning query is five index arms fused,
 // ranked and paged, which no database plans and runs in a millisecond. Were a millisecond ever
@@ -54,6 +55,7 @@ func endMeaningStatementsAt(t *testing.T, at string) {
 //
 // The bound is local to the transaction, so the connection goes back to the pool without it.
 func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	tx, err := directServer(deps).beginMeaningScan(ctx)
@@ -101,6 +103,8 @@ func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 // It reads the error's text too. The Go side no longer names which setting failed, since there
 // is one Exec to name; Postgres's own message still does, and that is what the server logs.
 func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
+	// Serial: this test swaps process-wide state. It replaces searchMeaningScan, a package
+	// variable every meaning query in the process reads.
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	healthy := searchMeaningScan
@@ -131,7 +135,7 @@ func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
 // whose embedding could not be had; papering a cut-off search over as a degraded result would
 // serve a caller a page of keyword hits as though meaning search had run.
 func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
-	// No t.Parallel: this test swaps process-wide state. endMeaningStatementsAt shortens
+	// Serial: this test swaps process-wide state. endMeaningStatementsAt shortens
 	// searchMeaningScan, a package variable every meaning query in the process reads.
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
@@ -170,7 +174,7 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 // with the issue and means the same thing, so the keyword stage has the item to fall back on and
 // the meaning stage has a reason to be running at all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
-	// No t.Parallel: this test swaps process-wide state. endMeaningStatementsAt shortens
+	// Serial: this test swaps process-wide state. endMeaningStatementsAt shortens
 	// searchMeaningScan, a package variable every meaning query in the process reads; and it
 	// measures the process, holding the check under its 3 s meaning allowance.
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."

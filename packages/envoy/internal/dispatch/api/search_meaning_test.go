@@ -323,7 +323,7 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 // their InputQuery calls go straight to the unwrapped fake embedder and are never subject to
 // that backoff at all.
 func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
-	// No t.Parallel: this test measures the process. Its assertion is a time: each of its live
+	// Serial: this test measures the process. Its assertion is a time: each of its live
 	// searches must answer within 1 s.
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{

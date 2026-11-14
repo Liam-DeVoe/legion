@@ -68,24 +68,11 @@ func (k *fakeLiveKind) next(t *testing.T, within time.Duration, what string) *fa
 	}
 }
 
-// none fails when the kind starts a subscription within within. A zero window reads the queue
-// once without waiting: time.After(0) is ready as the select starts, and a select with two ready
-// cases picks one at random, so a subscription already started would be missed about one run in
-// two.
+// none fails when the kind starts a subscription within within (receivedWithin).
 func (k *fakeLiveKind) none(t *testing.T, within time.Duration, what string) {
 	t.Helper()
-	if within <= 0 {
-		select {
-		case running := <-k.started:
-			t.Fatalf("%s: started %q", what, running.sub)
-		default:
-		}
-		return
-	}
-	select {
-	case running := <-k.started:
+	if running, started := receivedWithin(k.started, within); started {
 		t.Fatalf("%s: started %q", what, running.sub)
-	case <-time.After(within):
 	}
 }
 

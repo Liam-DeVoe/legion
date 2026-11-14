@@ -471,25 +471,35 @@ func (c *fakeLiveConn) next(t *testing.T, within time.Duration, what string) any
 	}
 }
 
-// none fails when the conn is sent a frame within within. A zero window reads the queue once
-// without waiting: time.After(0) is ready as the select starts, and a select with two ready
-// cases picks one at random, so a frame already queued would be missed about one run in two.
-func (c *fakeLiveConn) none(t *testing.T, within time.Duration, after string) {
-	t.Helper()
+// receivedWithin receives from values within within, answering false when nothing came. A zero
+// window reads the channel once without waiting: time.After(0) is ready as the select starts,
+// and a select with two ready cases picks one at random, so a value already queued would be
+// missed about one run in two.
+func receivedWithin[T any](values <-chan T, within time.Duration) (T, bool) {
 	if within <= 0 {
 		select {
-		case frame := <-c.frames:
-			raw, _ := json.Marshal(frame)
-			t.Fatalf("after %s, a frame nobody should be sent: %s", after, raw)
+		case value := <-values:
+			return value, true
 		default:
+			var zero T
+			return zero, false
 		}
-		return
 	}
 	select {
-	case frame := <-c.frames:
+	case value := <-values:
+		return value, true
+	case <-time.After(within):
+		var zero T
+		return zero, false
+	}
+}
+
+// none fails when the conn is sent a frame within within (receivedWithin).
+func (c *fakeLiveConn) none(t *testing.T, within time.Duration, after string) {
+	t.Helper()
+	if frame, sent := receivedWithin(c.frames, within); sent {
 		raw, _ := json.Marshal(frame)
 		t.Fatalf("after %s, a frame nobody should be sent: %s", after, raw)
-	case <-time.After(within):
 	}
 }
 

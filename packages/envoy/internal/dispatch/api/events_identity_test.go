@@ -45,13 +45,12 @@ func (i *endableIdentity) Login(*http.Request) (string, error) {
 
 // requireClosedAtTheFirstRefusal requires that the socket whose person ended closed at the first
 // re-resolution that refused them: no re-resolution after the end but the one already under way
-// found them still resolving, and the person was refused once. The close itself is waited for
-// with a give-up bound; these counts are what bound how long the socket outlived the session.
+// found them still resolving (requireResolvedAtMostOnce), and the person was refused once. The
+// close itself is waited for with a give-up bound; these counts are what bound how long the
+// socket outlived the session.
 func requireClosedAtTheFirstRefusal(t *testing.T, person *endableIdentity, rechecks *callerRechecks, what string) {
 	t.Helper()
-	if resolved := len(rechecks.resolved); resolved > 1 {
-		t.Fatalf("%s resolved its ended person again %d times before it closed, want at most the one under way as the session ended", what, resolved)
-	}
+	rechecks.requireResolvedAtMostOnce(t, what)
 	if refused := person.refused.Load(); refused != 1 {
 		t.Fatalf("%s closed after its ended person was refused %d times, want at the first refusal", what, refused)
 	}
@@ -102,11 +101,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 // agent view resolves its person on every CallerRecheck and closes with 1008 at the first
 // re-resolution after their session has ended, so the view stops relaying.
 func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
@@ -200,9 +195,7 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 			case <-time.After(liveRecheck + time.Second):
 				t.Fatalf("the document socket stayed open %s after its person's session ended", time.Since(ended).Round(time.Millisecond))
 			}
-			if resolved := len(rechecks.resolved); resolved > 1 {
-				t.Fatalf("the document socket resolved its ended person again %d times before it closed, want at most the one under way as the session ended", resolved)
-			}
+			rechecks.requireResolvedAtMostOnce(t, "the document socket")
 			if generation, _, err := rig.sessions.CurrentSessionGeneration(context.Background(), rig.email); err != nil || generation != rig.generation+1 {
 				t.Fatalf("session generation after the session ended = %d (%v), want %d", generation, err, rig.generation+1)
 			}

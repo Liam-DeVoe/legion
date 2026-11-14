@@ -391,14 +391,15 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 
 // awaitSinceRead reads again until holds accepts the answer, because a since read answers only
 // the edges at or below the event log's safe horizon, and any transaction holding a transaction
-// id on the Postgres instance holds that horizon back: in this package, storetest's own
-// "create database … template …" and "drop database … with (force)" transactions
-// (storetest.Open and storetest's dropDatabase). Such a read waits out referencesSinceWait and
-// then answers at the horizon it was left with, which may be short of what committed before it,
-// so it is read again, bounded by eventFeedWait. A read that answered within referencesSinceWait
-// was not held back: what it listed is what it owed, so holds failing on it, a missing edge as
-// much as a duplicate or a wrongly stamped one, is a product failure and fails the test at once.
-// The what argument names the read in either failure. It returns the answer holds accepted.
+// id on the Postgres instance holds that horizon back: in this package, the test harness's own
+// "create database … template …" and "drop database …" transactions (Harness.Clone and
+// Harness.drop in internal/testpg/pgtemplate, which storetest.Open uses). Such a read waits out
+// referencesSinceWait and then answers at the horizon it was left with, which may be short of
+// what committed before it, so it is read again, bounded by eventFeedWait. A read that answered
+// within referencesSinceWait was not held back: what it listed is what it owed, so holds failing
+// on it, a missing edge as much as a duplicate or a wrongly stamped one, is a product failure and
+// fails the test at once. The what argument names the read in either failure. It returns the
+// answer holds accepted.
 func awaitSinceRead(
 	t *testing.T,
 	what string,

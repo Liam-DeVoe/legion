@@ -186,7 +186,7 @@ func deliveryReceiptsOf(t *testing.T, database *store.Store, receiptType, field,
 // reason, so every try a case takes still starts inside it: that missed try's retry, and the
 // starting gate's two retries 250 ms and 750 ms after the first try.
 func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
-	// No t.Parallel: this test measures the process. Each answer of the listener must come back
+	// Serial: this test measures the process. Each answer of the listener must come back
 	// inside the client's 1.5 s window, where a later one is a receipt timeout the send retries,
 	// and each retry must start inside the 6 s take-over window: another test's work on the same
 	// machine would read as a listener that did not answer.
@@ -309,7 +309,7 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 // With no listener configured there is no take-over to wait out: the send settles failed at once,
 // well inside the production window the server runs.
 func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
-	// No t.Parallel: this test measures the process. It bounds the whole database-backed send
+	// Serial: this test measures the process. It bounds the whole database-backed send
 	// at 3 s, and another test's work on the same machine would read as a send that waited.
 	handler, _, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
 	started := time.Now()

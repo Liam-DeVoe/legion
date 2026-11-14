@@ -127,7 +127,7 @@ func TestRelatedCheckListsTheRareWordMatchNotTheCommonWordMatches(t *testing.T) 
 // listed the repeater first. The meaning stage answers here with no item near the text's
 // meaning, so its order is its keyword arms'.
 func TestRelatedCheckRanksMoreChosenWordsAboveOneRepeated(t *testing.T) {
-	// No t.Parallel: this test measures the process. Its meaning-and-keywords case needs the
+	// Serial: this test measures the process. Its meaning-and-keywords case needs the
 	// meaning stage to answer inside the 3 s meaning allowance (relatedMeaningAllowance); past
 	// it the check answers by keywords alone.
 	for _, stage := range []struct {
@@ -139,7 +139,7 @@ func TestRelatedCheckRanksMoreChosenWordsAboveOneRepeated(t *testing.T) {
 		{"meaning and keywords", testServerOptions{embedder: &fakeEmbedder{}}, "meaning_and_keywords"},
 	} {
 		t.Run(stage.name, func(t *testing.T) {
-			// No t.Parallel: the meaning-and-keywords case needs the 3 s meaning allowance met,
+			// Serial: the meaning-and-keywords case needs the 3 s meaning allowance met,
 			// as its test says.
 			handler, database, deps := newTestServer(t, stage.options)
 			createSuggestionProject(t, handler, "COORD")
@@ -172,7 +172,7 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 // An item whose meaning matches and which holds none of the text's words is found by the meaning
 // search, and the result says it searched by meaning and keywords.
 func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) {
-	// No t.Parallel: this test measures the process. Its assertion needs the meaning stage to
+	// Serial: this test measures the process. Its assertion needs the meaning stage to
 	// answer inside the 3 s meaning allowance (relatedMeaningAllowance); past it the check
 	// answers by keywords alone.
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
@@ -208,6 +208,9 @@ func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) 
 // The keyword-only run first is what says the page really is crowded: every item it lists is one
 // of the ten, so the meaning-only item is reached by the meaning leg and by nothing else.
 func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testing.T) {
+	// Serial: this test measures the process. Its assertion needs the meaning stage to answer
+	// inside the 3 s meaning allowance (relatedMeaningAllowance); past it the check answers by
+	// keywords alone.
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	// One word per crowding item, each held by that item alone, so the picker chooses all ten: it
 	// drops a word no item of the project holds and a word more than a tenth of the project holds
@@ -261,7 +264,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 // by meaning and keywords. Left out after the page instead, the ten take every place in it and
 // the keeper, eleventh by vector, is never seen (INFRA-1160).
 func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
-	// No t.Parallel: this test measures the process. Its assertion needs the meaning stage to
+	// Serial: this test measures the process. Its assertion needs the meaning stage to
 	// answer inside the 3 s meaning allowance (relatedMeaningAllowance); past it the check
 	// answers by keywords alone.
 	const text = "Archive snapshots finish late"
@@ -315,7 +318,7 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 // An embedder slower than the meaning allowance costs the check three seconds, not five: it
 // answers its keyword search's result then, saying meaning search did not answer in time.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
-	// No t.Parallel: this test measures the process. It requires the check to answer between 3
+	// Serial: this test measures the process. It requires the check to answer between 3
 	// and 4 s, which leaves a second for the keyword stage's queries, and another test's work
 	// on the same machine would read as the check running long.
 	embedder := &fakeEmbedder{delay: time.Minute}
@@ -349,7 +352,7 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 // TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan), and without JIT, which the disabled
 // plans' inflated costs would otherwise spend seconds compiling.
 func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t *testing.T) {
-	// No t.Parallel: this test measures the process. Its assertion needs the meaning stage to
+	// Serial: this test measures the process. Its assertion needs the meaning stage to
 	// answer inside the 3 s meaning allowance (relatedMeaningAllowance), with plans the
 	// disabled scans make costly; past it the check answers by keywords alone.
 	const text = "Find what this is about"
@@ -394,10 +397,11 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 // A keyword stage held a second, well past the old 300 ms bound, still answers within the
 // check's allowance.
 func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
-	// No t.Parallel: this test measures the process. A keyword stage held 1 s behind the lock
-	// must still answer inside the check's 5 s allowance (relatedCheckAllowance), which is its
-	// subject. The lock it holds is a table lock, which takes no transaction id and so holds
-	// back no event log reader.
+	// Serial: this test measures the process. A keyword stage held 1 s behind the lock must
+	// still answer inside the check's 5 s allowance (relatedCheckAllowance), which is its
+	// subject. The lock it holds is an access exclusive table lock, which at wal_level=replica,
+	// Postgres's default, takes a transaction id and so holds back the event log's safe horizon
+	// (pg_snapshot_xmin) that the package's parallel horizon readers wait on.
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SLOW")
 	key := createSearchIssue(t, handler, "SLOW", "Quarterly zymurgy ledger drifts", "")
@@ -432,7 +436,10 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 // A keyword stage held past the allowance answers that the check was not made, for time, and the
 // check is recorded so.
 func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
-	t.Parallel()
+	// Serial: this test holds an access exclusive lock on search_term_stats open. At
+	// wal_level=replica, Postgres's default, that lock takes a transaction id, which holds back
+	// the event log's safe horizon (pg_snapshot_xmin) that the package's parallel horizon
+	// readers wait on.
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "STUCK")
 	createSearchIssue(t, handler, "STUCK", "Quarterly zymurgy ledger drifts", "")
@@ -484,7 +491,10 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 // ends, is not made because the request ended, and is recorded as cancelled: it did not run out of
 // time, so the records route must not count it as skipped for time.
 func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T) {
-	t.Parallel()
+	// Serial: this test holds an access exclusive lock on search_term_stats open. At
+	// wal_level=replica, Postgres's default, that lock takes a transaction id, which holds back
+	// the event log's safe horizon (pg_snapshot_xmin) that the package's parallel horizon
+	// readers wait on.
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "GONE")
 	createSearchIssue(t, handler, "GONE", "Quarterly zymurgy ledger drifts", "")
@@ -541,9 +551,6 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	if suggestions.Outcome != "not_made" || suggestions.Missing != "the request that ran it ended before the check finished" {
 		t.Errorf("suggestions = %+v, want not made, the request having ended first", suggestions)
 	}
-	// The record's first attempt is given relatedRecordTimeout, and a slower one is written by
-	// the retry srv detached onto its own lifetime (recordRelatedChecks), so the read below waits
-	// for that work first.
 	awaitBackgroundWrites(t, srv)
 	rows := readRelatedCheckRows(t, database, "source_issue_key = $1 and outcome = 'not_made'", source)
 	if len(rows) != 1 || deref(rows[0].Reason) != "cancelled" {
@@ -561,7 +568,10 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 // left off, each block's check would read its context's end as the request that ran it going away
 // and record cancelled, which the records route does not count as skipped for time.
 func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *testing.T) {
-	t.Parallel()
+	// Serial: this test holds an access exclusive lock on search_term_stats open. At
+	// wal_level=replica, Postgres's default, that lock takes a transaction id, which holds back
+	// the event log's safe horizon (pg_snapshot_xmin) that the package's parallel horizon
+	// readers wait on.
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "DBTO")
 	createSearchIssue(t, handler, "DBTO", "Quarterly zymurgy ledger drifts", "")
@@ -608,9 +618,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 		}
 	}
 	// The rows are recorded as each check answers, in no order of the blocks', so each block's
-	// row is read by its id. A record whose first attempt ran past relatedRecordTimeout is
-	// written by the retry srv detached onto its own lifetime (recordRelatedChecks), so the read
-	// waits for that work first.
+	// row is read by its id.
 	awaitBackgroundWrites(t, srv)
 	rows := map[string]decisionBlockRow{}
 	for _, row := range readDecisionBlockRows(t, database) {
@@ -634,7 +642,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 // When the record's second runs out, pgx cancels its statement, so the row is lost unless it is
 // tried again: it is written once the lock is released.
 func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t *testing.T) {
-	// No t.Parallel: this test measures the process. It reads the database's clock and takes
+	// Serial: this test measures the process. It reads the database's clock and takes
 	// any insert started more than relatedRecordTimeout/2 (500 ms) before it for the record's
 	// first attempt; a read the machine delays by more than that after the retry's insert began
 	// takes the retry for it too, and the poll waits out the retry.
@@ -712,7 +720,9 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 // wait open. The retry is counted with that work: the wait neither returns while the retry still
 // holds its row nor panics, and the row is written once the lock holding it up is released.
 func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.T) {
-	t.Parallel()
+	// Serial: this test holds an access exclusive lock on asks open. At wal_level=replica,
+	// Postgres's default, that lock takes a transaction id, which holds back the event log's
+	// safe horizon (pg_snapshot_xmin) that the package's parallel horizon readers wait on.
 	handler, database, _, srv := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SHUT")
 	createSearchIssue(t, handler, "SHUT", "Quarterly zymurgy ledger drifts", "")
@@ -795,7 +805,7 @@ func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
 // since the gate prices the text's words through the check's own picker, and that case is the
 // third state of R3's record (TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList).
 func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
-	// No t.Parallel: this test measures the process. Its title_matches come only from the
+	// Serial: this test measures the process. Its title_matches come only from the
 	// near-copy gate, which answers only when its whole read ends inside duplicateGateTimeout
 	// (500 ms); past it the create goes in told that no near-copy check was made.
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
@@ -1138,9 +1148,6 @@ func TestRelatedCheckRecordsEachCheck(t *testing.T) {
 		t.Fatalf("stopword ask suggestions = %+v, want not made", notMade)
 	}
 
-	// Each row is written by the request's own first record attempt if it ends inside
-	// relatedRecordTimeout, and by the retry the server detaches onto its lifetime if not
-	// (recordRelatedChecks), so the reads below wait for that work first.
 	awaitBackgroundWrites(t, served)
 	foundRows := readRelatedCheckRows(t, database, "source_issue_key = $1 and source_kind = 'issue'", foundKey)
 	if len(foundRows) != 1 {
@@ -1199,9 +1206,7 @@ func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
 		len(suggestions.Related) != 0 {
 		t.Fatalf("suggestions = %+v, want not made because Dispatch already holds the issue", suggestions)
 	}
-	// The row goes through the same record as a check's (recordRelatedChecks): written by its
-	// first attempt inside relatedRecordTimeout, else by the retry the server detaches onto its
-	// lifetime, so the read waits for that work first.
+	// The row is recorded as a check's is (recordRelatedChecks).
 	awaitBackgroundWrites(t, served)
 	if rows := readRelatedCheckRows(t, database, "source_issue_key = $1 and reason = 'already_exists'", key); len(rows) != 1 || rows[0].Outcome != "not_made" {
 		t.Fatalf("already_exists rows for %s = %+v, want one not-made check", key, rows)
