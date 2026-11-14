@@ -527,7 +527,12 @@ names blocks: a list written over a paragraph's whole text, a list written over 
 nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
 matched item's own marker, and the markdown each edit answers with. It takes the first three
 inputs, with `PROJECT` optional (unset, it makes a project of its own), and writes one issue in
-that project. It is the one driver that can start its own server: given `DATABASE_URL`, a
+that project. The create of that project names `DISPATCH_DEFAULT_ASSIGNEE`, the person its
+unowned work lands on: the bearer acts for no person, so the server refuses a project that names
+none (`400 INVALID_PROJECT`). That input is required with `DISPATCH_URL` and no `PROJECT`; with
+`DATABASE_URL` it defaults to `alice`, whom the instance this run starts seeds and signs in; and
+with a `PROJECT` the server already holds, nothing is created and it is not read. It is the one
+driver that can start its own server: given `DATABASE_URL`, a
 loopback database of the run's own, it starts `bun run dispatch:local` and stops it again from
 its own trap. That command truncates and reseeds the database it is given, so before anything
 starts the run asks the server the connection string reaches, through `psql`, which database it

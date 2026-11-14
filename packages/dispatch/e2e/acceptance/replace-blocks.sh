@@ -45,6 +45,18 @@
 # DISPATCH_URL is what an agent's shell already holds; the run says so and leaves that server
 # alone.
 #
+# DISPATCH_DEFAULT_ASSIGNEE names the person the project this run makes hands its unowned work to.
+# The bearer this run holds is an agent one, which acts for no person, so a create that names
+# nobody is refused (400 INVALID_PROJECT, createProject in
+# packages/envoy/internal/dispatch/api/projects.go), and the name it carries is held to somebody
+# who has signed in (allowedLogin, issue_assignee.go of that package). With DATABASE_URL it
+# defaults to `alice`, whom the instance seeds and signs in (resetLogins in e2e/api.ts, which
+# e2e/seed.ts inserts into `people`, and the `Open (signed in as alice)` line of the hand-over
+# message in `main` of e2e/local-instance.ts), and it is read before the scrub above unsets it
+# with the other DISPATCH_ variables. With DISPATCH_URL it is required where no PROJECT is given,
+# since this run cannot know who has signed in to the caller's server; with a PROJECT that server
+# already holds, nothing is created and it is not read.
+#
 # The run writes one issue, with a spec of its own, and the project it made for it where it made
 # one; it closes that issue at the end, also when a check fails. Nothing it writes is read by a
 # second run, so it may be run again at once.
@@ -65,15 +77,21 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/<a database of this run's own> \
-         replace-blocks.sh
+         [DISPATCH_DEFAULT_ASSIGNEE=alice] replace-blocks.sh
        (starts a Dispatch of its own with `bun run dispatch:local`, which truncates and reseeds
        that database, and stops it again; PLAYWRIGHT_BASE_URL and DISPATCH_E2E_PROCESSES are
-       refused, since that command refuses them)
+       refused, since that command refuses them; DISPATCH_DEFAULT_ASSIGNEE names the person the
+       project this run makes hands its unowned work to, and defaults to alice, whom that
+       instance seeds and signs in)
 
-       DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token [PROJECT=CORE] \
+       DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token \
+         DISPATCH_DEFAULT_ASSIGNEE=<a person who has signed in there> [PROJECT=CORE] \
          replace-blocks.sh
        (the caller's own running server; DISPATCH_TOKEN_FILE=<file holding the bearer> in place of
-       DISPATCH_TOKEN; with no PROJECT the run makes a project of its own)
+       DISPATCH_TOKEN; with no PROJECT the run makes a project of its own, and the server refuses
+       that create unless it names the person the project's unowned work lands on, since this
+       bearer acts for none, so DISPATCH_DEFAULT_ASSIGNEE is required then and unread with a
+       PROJECT)
 USAGE
 }
 
@@ -161,6 +179,12 @@ shared_database() {
   exit 2
 }
 
+# The person the project this run makes names as the one its unowned work lands on, read here
+# because the scrub the DATABASE_URL branch runs unsets this variable with every other DISPATCH_
+# one. Each branch below says what it does with it; nothing reads it where PROJECT names a
+# project the server already holds, since then no project is created.
+default_assignee="${DISPATCH_DEFAULT_ASSIGNEE:-}"
+
 readonly database_url="${DATABASE_URL:-}"
 if [[ -n "$database_url" ]]; then
   own_instance=1
@@ -217,14 +241,22 @@ if [[ -n "$database_url" ]]; then
     esac
   done
   token=e2e-token
+  # The instance seeds its own people — alice and bob (resetLogins, e2e/api.ts, which e2e/seed.ts
+  # inserts into `people`) — and signs alice in, so a run that names nobody names alice.
+  default_assignee="${default_assignee:-alice}"
 else
   own_instance=0
   require_env DISPATCH_URL
+  # With no PROJECT the run makes a project on the caller's server, which refuses a create naming
+  # no person for this bearer, and this run cannot know who has signed in there; with a PROJECT
+  # nothing is created and nothing is asked for.
+  [[ -n "${PROJECT:-}" ]] || require_env DISPATCH_DEFAULT_ASSIGNEE
   read_bearer
   # shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
   base="${DISPATCH_URL%/}"
 fi
 readonly own_instance
+readonly default_assignee
 # No child process inherits the bearer from here: read_bearer has unset it from the environment,
 # curl reads it from a header file, and the CLI gets it in an environment this script builds.
 
@@ -440,8 +472,11 @@ printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 project="${PROJECT:-}"
 if [[ -z "$project" ]]; then
   project="RB$(date -u +%H%M%S)$(printf '%02d' $(($$ % 100)))"
-  run setup "create the project $project" project --key "$project" --name "Replace with blocks"
-  pass setup "created the project $project"
+  # The create names the person the project's unowned work lands on: this bearer acts for none,
+  # and the server refuses a project naming nobody for such a caller (400 INVALID_PROJECT).
+  run setup "create the project $project" project --key "$project" --name "Replace with blocks" \
+    --default-assignee "$default_assignee"
+  pass setup "created the project $project, whose unowned work lands on $default_assignee"
 fi
 readonly project
 
