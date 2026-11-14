@@ -82,18 +82,31 @@ func commandText(p *Process) string {
 //
 // Arguments that run past bound bytes (argsCut, or a joined text longer than bound) are cut to
 // their first bound bytes, on a character boundary, before they are masked, so the masking costs
-// no more for a linker's arguments or a long `python3 -c` script than for a short command. The
-// cut text then loses its last word twice, before the masking and after it, and the line ends
-// with an ellipsis, so that the cut shows nothing the whole line would have masked:
-//   - Before: the rules read a control rune as held, not as a space, and a credential runs across
-//     it, while the line shows it as a space, so one run of the text can be several words of the
-//     line. Every rule that needs something after its value to match (userinfo's `@`, a token's
-//     least length, a JWT's second dot, `AKIA`'s sixteen characters and `\b`) matches within one
-//     run with no whitespace in it, and the cut parts only the text's last run, which goes.
-//   - After: a rule whose value may hold a space (a quoted `password=`, an `Authorization` value,
-//     a JSON `api_key`) still matches a value the cut parts, since what closes it is optional, and
-//     masks it to the end of the line, where the whole line keeps the quote or bracket after its
-//     `***` and may read a scheme (`Bearer`) apart from the value: that is the line's last word.
+// no more for a linker's arguments or a long `python3 -c` script than for a short command. The cut
+// line then shows nothing the whole line masks: its words, without the ellipsis it ends with, are
+// the whole line's first words. Three steps, in this order, make it so:
+//   - The cut text loses its last run with no whitespace in it, which the cut may have parted, so
+//     it ends where the whole text has whitespace. The rules read a control rune as held, not as a
+//     space, and a credential runs across it, while the line shows it as a space, so one run of the
+//     text can be several words of the line; every token rule, which needs a least length or a
+//     terminator after its value (a token's least length, a JWT's second dot, `AKIA`'s sixteen
+//     characters and `\b`), matches within one run, and takes no `*`, so no other rule's `***`
+//     joins it to text past the cut.
+//   - What is left is masked as the head of a longer text (capabilities.RedactedCutLine). A rule
+//     whose value may hold a space (a quoted `password=`, an `Authorization` value, a JSON
+//     `api_key`) needs nothing after its value and masks a value the cut parts to the end of the
+//     line. The userinfo rule is the one rule whose match can run past the cut: it needs an `@`,
+//     and its value takes `*` and quotes, so in the whole line another rule's mask can join it to
+//     an `@` past the cut (`http://user:pw`, a control rune, then an `Authorization` value that
+//     runs to a `)` before the `@`), while in the cut text that mask runs to the end and the
+//     userinfo shows. RedactedCutLine masks the line from the first URL scheme whose userinfo no
+//     `/`, `?` or `#` closes to the line's end, one `***`.
+//   - The line loses its last word and ends with an ellipsis. A value masked to the end of the line
+//     may be no word of the whole line, which keeps the quote or bracket after its `***` and may
+//     read a scheme (`Bearer`) apart from the value. The masking comes before this drop because
+//     what it masks, from a scheme to the line's end, has no space in it: it is the last word, and
+//     the drop takes it whole with the text glued before the scheme, so no scheme is left showing
+//     any part of its userinfo, and no `scheme://***` the whole line does not show either.
 func commandLine(p *Process, bound int) string {
 	raw := "[" + p.Name + "]"
 	if len(p.Args) > 0 {
@@ -110,7 +123,7 @@ func commandLine(p *Process, bound int) string {
 		raw = raw[:end]
 	}
 	raw = raw[:max(strings.LastIndexFunc(raw, unicode.IsSpace), 0)]
-	line := capabilities.RedactedLine(raw)
+	line := capabilities.RedactedCutLine(raw)
 	return line[:max(strings.LastIndexByte(line, ' '), 0)] + ellipsis
 }
 

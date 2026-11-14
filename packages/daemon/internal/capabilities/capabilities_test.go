@@ -327,6 +327,57 @@ func TestRedactedLineMasksEachUncutCaseOfTheSharedFixture(t *testing.T) {
 	t.Logf("%d of %d cases uncut", uncut, len(fixture.Patterns))
 }
 
+// RedactedCutLine masks a userinfo the cut leaves open from its scheme to the line's end: one cut
+// before its `@`, one another rule's mask ran to the end of the cut text, and one masked at an `@`
+// of the cut text that a control rune, read as a space, leaves open to a later `@` past the cut.
+// A userinfo, masked or not, that a `/`, `?` or `#` closes is as RedactedLine gives it, and so is
+// every detail of the shared fixture with no scheme in it.
+func TestRedactedCutLineMasksAUserinfoTheCutLeavesOpenToTheEnd(t *testing.T) {
+	for _, testCase := range []struct {
+		name, text string
+		// want is what RedactedCutLine gives; empty, it is what RedactedLine gives.
+		want string
+	}{
+		{"a userinfo cut before its at sign", "curl https://user:pw", "curl https://***"},
+		{"a scheme in capitals", "curl HTTPS://USER:PW", "curl HTTPS://***"},
+		{"a scheme the cut text ends at", "curl https://", "curl https://***"},
+		{"a userinfo an Authorization value ran to the end of", "curl http://user:SECRETPASS\x07Authorization:a w w", "curl http://***"},
+		{"a userinfo a quoted password ran to the end of", "curl http://u:P\x07password='a b", "curl http://***"},
+		{"a userinfo masked at an at sign, open after it", "dial postgres://legion:p@ss\x07Authorization:a w", "dial postgres://***"},
+		{"a masked userinfo at the end of the cut text", "get http://***@h", "get http://***"},
+		{"the first scheme left open, after one a path closes", "get https://***@h/x then http://u:p more", "get https://***@h/x then http://***"},
+		{"a masked userinfo a path closes", "get http://***@h/x more", ""},
+		{"a userinfo followed by its at sign and a path", "get https://user:pw@h/x more", ""},
+		{"a userinfo followed by its at sign and a query", "get https://user:pw@h?q=1 more", ""},
+		{"a userinfo followed by its at sign and a fragment", "get https://user:pw@h#top more", ""},
+		{"a URL with no userinfo, closed by its path", "get https://example.org/a more", ""},
+		{"no scheme", "make -j8 all", ""},
+	} {
+		want := testCase.want
+		if want == "" {
+			want = RedactedLine(testCase.text)
+		}
+		if got := RedactedCutLine(testCase.text); got != want {
+			t.Errorf("%s: RedactedCutLine(%q) = %q, want %q", testCase.name, testCase.text, got, want)
+		}
+	}
+	var fixture struct {
+		Patterns []redactionCase `json:"patterns"`
+	}
+	readFixture(t, "capability-redaction.json", &fixture)
+	plain := 0
+	for _, testCase := range fixture.Patterns {
+		if strings.Contains(testCase.Detail, "://") {
+			continue
+		}
+		plain++
+		if got, want := RedactedCutLine(testCase.Detail), RedactedLine(testCase.Detail); got != want {
+			t.Errorf("%s: %s: RedactedCutLine(%q) = %q, want RedactedLine's %q", testCase.Pattern, testCase.Name, testCase.Detail, got, want)
+		}
+	}
+	t.Logf("%d of %d details with no scheme", plain, len(fixture.Patterns))
+}
+
 // cutBoundaryPads are the lengths of the run of letters a case whose cleaned text is `cleaned`
 // bytes long is pushed by, so that the MaxReportDetail cut lands at each boundary of that text in
 // turn. A sweep of every length between them cleans each case ten thousand times over and reads

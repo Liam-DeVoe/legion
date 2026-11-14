@@ -310,7 +310,8 @@ func cleanDetail(text string) string {
 // exactly as a capability report's detail is, both held to the one shared fixture. Another package
 // that prints text a process chose takes it from here: the launcher's memory guard prints a
 // process's arguments in its log and in the note to that process's role, and an argument can carry
-// a token. Unlike a detail, the line is not cut: the caller cuts it to its own bound.
+// a token. Unlike a detail, the line is not cut: the caller cuts it to its own bound, and a caller
+// that masks only the head of a longer text takes RedactedCutLine.
 func RedactedLine(text string) string {
 	marked := strings.Map(func(r rune) rune {
 		switch {
@@ -332,6 +333,41 @@ func RedactedLine(text string) string {
 		}
 	}
 	return strings.Join(strings.Fields(redacted), " ")
+}
+
+// RedactedCutLine is RedactedLine for the head of a longer text, cut where the whole text has
+// whitespace, so that each run of the head with no whitespace in it is a whole run of the text:
+// RedactedLine's line of the head, with everything after the first opener of a match the cut may
+// have left open (a credentialRules cutOpener whose cutClosed does not find it closed) one `***`
+// to the line's end. The whole text's line masks such a match up to a closer past the cut, which
+// the head does not hold, so without this the head's line would show what the whole one masks.
+// What it masks after that opener the whole line may show, but a reader of a line already cut
+// loses only more of its end. The memory guard masks a long process's arguments this way.
+func RedactedCutLine(text string) string {
+	line := RedactedLine(text)
+	open := -1
+	for _, rule := range credentialRules {
+		if rule.cutOpener == nil {
+			continue
+		}
+		for from := 0; ; {
+			at := rule.cutOpener.FindStringIndex(line[from:])
+			if at == nil {
+				break
+			}
+			from += at[1]
+			if !rule.cutClosed.MatchString(line[from:]) {
+				if open < 0 || from < open {
+					open = from
+				}
+				break
+			}
+		}
+	}
+	if open < 0 {
+		return line
+	}
+	return line[:open] + "***"
 }
 
 // held is what cleanDetail holds a control rune as while it redacts, c1Introducer what it holds
@@ -402,13 +438,34 @@ const jwtFirstHeldSequence = `\x{FFFE}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 // may be short takes `*` in its value class, and a quoted connection-string password keeps its
 // quotes, so a value already redacted is matched whole and left as it is; the others need more than
 // `***` to match at all.
+//
+// A rule whose match can still be open where a caller cut its text short says so with cutOpener,
+// where a match of it starts, and cutClosed, which reads the line after that start and finds the
+// match closed there; RedactedCutLine masks a cut line from the first opener it does not find
+// closed to the line's end, and a new rule whose match can run past a cut must say so here. The
+// userinfo rule is the one rule that can: it needs an `@` after its value, and its value class
+// takes `*`, quotes and brackets, so another rule's mask can remove the space that kept it from an
+// `@` past the cut (the Authorization value that runs across spaces to a `)`, or a quoted
+// password, which the cut text masks to its end, where the userinfo never meets its `@`). Its
+// value runs to the last `@` before ` `, `/`, `?` or `#`, so a userinfo masked at an `@` of the cut
+// text can still run on to a later one; only a `/`, `?` or `#` the line keeps closes it, since a
+// space in the line may stand for a control rune the rule read across. A rule whose value needs
+// nothing after it (password, Authorization, the API-key headers, the JSON members, bearer, the
+// query parameter) masks a value the cut parts to the end of the text, so it is never open at a
+// cut. A token rule (GitHub, the JWT, the prefixed tokens, AIza, AKIA) needs a least length or a
+// terminator, but matches within one run with no whitespace in it, which a cut where the whole text
+// has whitespace keeps whole, and takes no `*` in its value, so no other rule's `***` joins it to
+// text past the cut.
 var credentialRules = []struct {
 	pattern *regexp.Regexp
 	// replacement expands the match; replace, when set, computes it instead.
 	replacement string
 	replace     func(match string) string
+	// cutOpener and cutClosed are set on a rule whose match can be open at a cut (RedactedCutLine).
+	cutOpener, cutClosed *regexp.Regexp
 }{
-	{pattern: regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^ /?#]+@`), replacement: "${1}***@"},
+	{pattern: regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^ /?#]+@`), replacement: "${1}***@",
+		cutOpener: regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://`), cutClosed: regexp.MustCompile(`^[^ /?#]*[/?#]`)},
 	{pattern: regexp.MustCompile(`(?i)([?&](?:token|key|secret|password|access_token|accesstoken|refresh_token|id_token|auth_token|private_token|api_key|apikey|client_secret|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^ &#"'<>]+`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?i)\b(password[ \x{FFFE}\x{FFFF}]*=[ \x{FFFE}\x{FFFF}]*)(?:(')(?:[^'\\]|\\.)*('?)|[^ &#"'<>]+)`), replacement: "${1}${2}***${3}"},
 	{pattern: regexp.MustCompile(`(?i)(authorization\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*)(?:(\\["'](?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)[^"'\\]+|(["'](?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)(?:[^"'\\]|\\.)+|(\[?(?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)[^)\]}>]+)`), replacement: "${1}${2}${3}${4}***"},

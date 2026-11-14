@@ -1615,6 +1615,77 @@ func TestMemoryGuardCutCommandShowsNoPartOfACredentialTheWholeLineMasks(t *testi
 	t.Logf("%d cuts of %d details", cuts, len(fixture.Patterns))
 }
 
+// A cut command shows no part of a userinfo whose `@` lies past the cut. Past a control rune, which
+// the rules read across, a value another rule masks across spaces (an Authorization value that runs
+// to a `)`, a quoted password) joins a userinfo to an `@` that only the whole line holds, and a
+// userinfo masked at an `@` before the cut runs on to a later `@` past it. The scan reads each
+// command as it reads a cmdline past rawCommandBytes (argsCut): the reviewer's own, and each tail
+// after a pad that puts the cut at each of its bytes, the userinfo's scheme among them. Each
+// command, and its cut for the log, shows none of the userinfo, and its words without its ellipsis
+// are the whole line's first words.
+func TestMemoryGuardCutCommandShowsNoPartOfAUserinfoWhoseAtSignIsPastTheCut(t *testing.T) {
+	pod := newFakePod(t)
+	// brief is a line as an error shows it: each word longer than 64 bytes, a pad, by its length.
+	brief := func(line string) string {
+		words := strings.Fields(line)
+		for i, word := range words {
+			if len(word) > 64 {
+				words[i] = fmt.Sprintf("<%d bytes>", len(word))
+			}
+		}
+		return strings.Join(words, " ")
+	}
+	check := func(label string, args []string, hidden []string) {
+		t.Helper()
+		pod.add(fakeProcess{pid: 900, ppid: 1, args: args})
+		table, err := scan(pod.proc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, ok := table.Get(900)
+		if !ok || !p.argsCut {
+			t.Fatalf("%s: the scan read %+v, want arguments it cut", label, p)
+		}
+		var whole strings.Builder
+		escape(&whole, capabilities.RedactedLine(strings.Join(args, " ")))
+		words := strings.Fields(whole.String())
+		command := commandText(p)
+		shown, cutShort := strings.CutSuffix(command, ellipsis)
+		if got := strings.Fields(shown); !cutShort || len(got) > len(words) || !slices.Equal(got, words[:len(got)]) {
+			t.Errorf("%s: the command is %q, which is not the first words of the whole line %q, ending in %q",
+				label, brief(command), brief(whole.String()), ellipsis)
+		}
+		for _, text := range []string{command, cut(command, logCommandBytes)} {
+			for _, secret := range hidden {
+				if strings.Contains(text, secret) {
+					t.Errorf("%s: the command shows %q: %q", label, secret, brief(text))
+				}
+			}
+		}
+	}
+	check("the reviewer's command",
+		slices.Concat([]string{"curl", "http://user:SECRETPASS\x07Authorization:a"}, slices.Repeat([]string{"w"}, 3000), []string{"b)@h"}),
+		[]string{"SECRETPASS", "user:"})
+	for _, tc := range []struct {
+		name   string
+		tail   []string
+		hidden []string
+	}{
+		{"an Authorization value that runs to a bracket", []string{"http://user:SECRETPASS\x07Authorization:a", "b)@h"}, []string{"SECRETPASS", "user:"}},
+		{"a quoted password", []string{"http://u:P\x07password='a", "b", "c'@h"}, []string{"u:P"}},
+		{"a later at sign", []string{"postgres://legion:p@ss\x07Authorization:a", "b)@db.example"}, []string{"@ss"}},
+		{"a userinfo the cut parts before its at sign", []string{"https://user:pw@host/x"}, []string{"user:pw"}},
+	} {
+		tail := strings.Join(tc.tail, " ")
+		for at := 0; at <= len(tail); at++ {
+			// `curl`, a space, the pad and a space come before the tail, six bytes and the pad's, so
+			// the scan's cut at rawCommandBytes lands on the tail's byte at.
+			pad := strings.Repeat("w", rawCommandBytes-6-at)
+			check(fmt.Sprintf("%s, cut at its byte %d", tc.name, at), slices.Concat([]string{"curl", pad}, tc.tail, []string{"end"}), tc.hidden)
+		}
+	}
+}
+
 // timedClock is a fakeClock that keeps the wall time at which the guard starts each wait: it
 // starts the next once the reading before it, and all that reading led to, is done.
 type timedClock struct {
