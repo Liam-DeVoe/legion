@@ -490,9 +490,9 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 // Which copy, if either, the pod is sent is the store's one decision, made in the transaction
 // that records this pod's first ask and spends the attempts (store.TakeWorkspaceCopyForRestore,
 // runtime.DecideWorkspaceRestore): the newer copy is offered and the older closed unsent, a
-// running copy written before the newest push of the issue's branch the daemon recorded is
-// refused, where a release bundle never is, and a copy written after this pod first asked is left
-// for the next pod. Every time that decision compares is the store's clock, so this hop passes
+// running copy whose take began before the newest push of the issue's branch the daemon recorded
+// is refused, where a release bundle never is, and a copy written after this pod first asked is
+// left for the next pod. Every time that decision compares is the store's clock, so this hop passes
 // nothing of the pod but its uid. This hop only carries out what that answer says and logs each
 // copy it touched, so no state of the store depends on this hop finishing. Whatever copy it sends
 // goes without its own values of the issue's branch and its rescue branch (bundleFrames), so no

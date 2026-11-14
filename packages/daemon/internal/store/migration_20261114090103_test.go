@@ -12,7 +12,9 @@ const restoreAsksVersion = 20261114090103
 
 // A copy's `at` is when its take began, so this migration gives each of the two copy tables a
 // column of its own for the write, which the restore weighs against a pod's first ask. A row that
-// stands at the upgrade takes its `at` as its write, the one time it holds. A release bundle an
+// stands at the upgrade takes the database's clock at the upgrade as its write, and not its `at`,
+// which on an earlier release is the shim's reading by its node's clock: no first ask is recorded
+// before this migration, so every standing copy was written before every ask. A release bundle an
 // earlier daemon saves after a rollback names no such column, and is stamped with the database's
 // clock as it is written rather than refused: refused, every idle release that earlier daemon ran
 // would fail its save and be cancelled. The negative control is the earlier daemon's save read
@@ -35,16 +37,20 @@ func TestEachSavedCopyKeepsWhenItWasWrittenWith20261114090103(t *testing.T) {
 		values ('INFRA-1117', 'pod-still-running', 'PACK', 4, $1, 'c2')`, copied); err != nil {
 		t.Fatalf("save a running copy before the migration: %v", err)
 	}
+	upgradeBegan := storeClock(t, store)
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the copies' write times: %v", err)
 	}
+	upgradeEnded := storeClock(t, store)
 	for _, c := range []struct {
 		table string
-		want  time.Time
+		at    time.Time
 	}{{workspaceBundlesTable, bundled}, {runningCopiesTable, copied}} {
 		var written time.Time
-		if err := store.Pool().QueryRow(ctx, `select written_at from `+c.table+` where issue = 'INFRA-1117'`).Scan(&written); err != nil || !written.Equal(c.want) {
-			t.Fatalf("the row of %s standing at the upgrade reads as written at %s (%v), want its time %s", c.table, written, err, c.want)
+		if err := store.Pool().QueryRow(ctx, `select written_at from `+c.table+` where issue = 'INFRA-1117'`).Scan(&written); err != nil ||
+			written.Before(upgradeBegan) || written.After(upgradeEnded) {
+			t.Fatalf("the row of %s standing at the upgrade, at %s, reads as written at %s (%v), want the database's clock at the upgrade, between %s and %s",
+				c.table, c.at, written, err, upgradeBegan, upgradeEnded)
 		}
 	}
 

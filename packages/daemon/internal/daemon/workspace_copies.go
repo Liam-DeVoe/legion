@@ -646,7 +646,7 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 		}
 		w.log.Info(runningCopyDroppedLine, "issue", issue, "role", role, "bytes", 0, "took", took())
 	case w.copies.overtaken(issue):
-		w.log.Info(runningCopyOvertakenLine, "issue", issue, "role", role, "bytes", size, "taken", bundle.At, "took", took())
+		w.log.Info(runningCopyOvertakenLine, "issue", issue, "role", role, "bytes", size, "taken", begun.At(), "took", took())
 	default:
 		err := w.copyStore.PutRunningWorkspaceCopy(ctx, issue, begun, bundle)
 		if errors.Is(err, store.ErrReleaseBundleSaved) {

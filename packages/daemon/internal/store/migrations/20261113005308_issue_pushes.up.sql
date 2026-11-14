@@ -12,15 +12,16 @@
 -- behind the push and set its other bookmarks there, and the roles would have to bring their work
 -- forward over the pushed commits.
 -- store.TakeWorkspaceCopyForRestore reads this row in the transaction that chooses between the
--- issue's two copies and refuses a running copy whose `at` (when the store wrote it) is before
--- pushed_at (runtime.DecideWorkspaceRestore). It guards running copies only, because once an idle
--- release has saved its bundle, that bundle is the pod's last copy. The release's rows run the
--- save first, while the pod's roles are idle, then a stop per role, then the teardown (the
--- daemon's idleReleaseRows), so a push recorded after the save is no push of the work the bundle
--- holds, and the bundle is restored as any other. No running copy is taken off that pod after
--- the save, at a push or for any other reason, although its roles are live until their stops
--- (store.PutRunningWorkspaceCopy): such a copy would be the later of the two by the clock and
--- would be offered to the next pod in the bundle's place.
+-- issue's two copies and refuses a running copy whose `at` (the store's clock when its take
+-- began, store.Store.BeginWorkspaceCopy) is before pushed_at (runtime.DecideWorkspaceRestore). It
+-- guards running copies only, because once an idle release has saved its bundle, that bundle is
+-- the pod's last copy. The release's rows run the save first, while the pod's roles are idle,
+-- then a stop per role, then the teardown (the daemon's idleReleaseRows), so a push recorded
+-- after the save is no push of the work the bundle holds, and the bundle is restored as any
+-- other. No running copy is taken off that pod after the save, at a push or for any other reason,
+-- although its roles are live until their stops (store.PutRunningWorkspaceCopy): such a copy
+-- would be the later of the two by the clock and would be offered to the next pod in the bundle's
+-- place.
 --
 -- The record is the push webhook itself (intake.Push, the workflow engine's push handler), for
 -- every push of `legion/<KEY>` on the repository the issue is recorded on, whether or not the

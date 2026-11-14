@@ -106,6 +106,9 @@ type WorkspaceCopyBegun struct {
 	at time.Time
 }
 
+// At is the store's time the take began at, which a log line names as the copy's time.
+func (b WorkspaceCopyBegun) At() time.Time { return b.at }
+
 // BeginWorkspaceCopy reads the store's clock as the take of a copy of an issue's workspace begins.
 // The taker calls it before it asks a shim's bundler to read the workspace, and once it holds the
 // issue's one place in flight: the cadence's copy (internal/daemon's takeRunningCopy) and an idle

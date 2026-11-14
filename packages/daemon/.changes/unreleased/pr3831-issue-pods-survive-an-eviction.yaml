@@ -8,7 +8,7 @@ body: |-
   before any role starts. A confirmed restore and a cancelled release keep the work as the pod's
   own copy, so a second end of the pod before its next turn still restores it. No restore sets the
   issue's branch `legion/<KEY>` or its rescue branch, and no running copy older than the newest
-  recorded push is restored. The restore reads times from the store's clock alone.
+  recorded push is restored. The restore decision compares times from the store's clock alone.
 
   A pod the cluster ends, by an eviction, a preemption, a node going down or a delete the daemon
   did not make, continues every role of the issue in its own session with no death and no launch
@@ -21,6 +21,10 @@ body: |-
   `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst.
 
   The migrations add `workspace_running_copies`, `issue_pushes`, `issue_push_heads`,
-  `workspace_restore_asks`, `claims.pod_ends_not_ours` and `claims.start_ends_not_ours`. Rolling
-  the image back deletes `workspace_running_copies` and clears the two claims columns
-  (`docs/kubernetes.md`, "Rolling back the running copy").
+  `workspace_restore_asks`, `claims.pod_ends_not_ours`, `claims.start_ends_not_ours` and a
+  `written_at` column on `workspace_running_copies` and `workspace_bundles`. To roll back, the
+  operator first puts each lowered issue request back to its limit and waits for each pod's
+  update round, then pins the earlier image, and runs two `psql` statements: a required
+  `delete from workspace_running_copies;`, and `update claims set pod_ends_not_ours = 0,
+  start_ends_not_ours = 0;`. Re-pinning the image does neither (`docs/kubernetes.md`, "Rolling
+  back the running copy").

@@ -303,8 +303,10 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 		if !answer.OK {
 			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
 		}
+		// The shim's own time of its reading is left out: it is the node's clock, and a copy's
+		// time is the store's when its take began (store.Store.BeginWorkspaceCopy).
 		return runtime.WorkspaceBundle{
-			Bundle: answer.Bundle, Head: answer.Head, Tips: answer.Tips, Bookmarks: answer.Bookmarks, At: answer.At,
+			Bundle: answer.Bundle, Head: answer.Head, Tips: answer.Tips, Bookmarks: answer.Bookmarks,
 		}, nil
 	case shimwire.Response:
 		// A shim that does not answer the frame itself forwards it, and OMP refuses a command

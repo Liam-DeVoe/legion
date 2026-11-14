@@ -38,11 +38,10 @@ type WorkspaceBundle struct {
 	// At is when the copy's take began, by the store's clock: the store's time read before the
 	// shim's bundler read the workspace (store.Store.BeginWorkspaceCopy), which each write of a
 	// copy stores as the row's `at` (store.Store.PutWorkspaceBundle,
-	// store.Store.PutRunningWorkspaceCopy), and which a read fills back in from the row. The shim
-	// fills it with the time it read the workspace, by the clock of the node its pod runs on, and
-	// the store keeps none of that. The restore compares it with times of that same clock alone
-	// (DecideWorkspaceRestore). A copy left for the next pod is answered with the time the store
-	// wrote it here instead (WorkspaceCopyTaken).
+	// store.Store.PutRunningWorkspaceCopy), and which a read fills back in from the row. A bundle
+	// the shim's bundler answers carries no time here: the runtime leaves out the time the shim
+	// sends, which is the clock of the node its pod runs on. The restore compares this field with
+	// times of the store's clock alone (DecideWorkspaceRestore).
 	At time.Time
 	// Release is the id of the release that saved the row this bundle was read from, which the
 	// store fills on the read. The save takes that id as an argument of its own
