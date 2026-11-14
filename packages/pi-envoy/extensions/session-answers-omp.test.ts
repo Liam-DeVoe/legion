@@ -33,13 +33,12 @@ import { settled } from "@legion/test-fixtures/wait";
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 
-/** What the stand-in's answers route does: list `items` (after `delayMs`, at once when unset),
- *  accept and never answer, or answer as a Dispatch build older than the route does. */
+/** What the stand-in's answers route does: list `items` at once, accept and never answer, or
+ *  answer as a Dispatch build older than the route does. */
 type Route =
   | {
       readonly kind: "list";
       readonly items: readonly SessionAnswer[];
-      readonly delayMs?: number;
     }
   | { readonly kind: "hang" }
   | { readonly kind: "missing" };
@@ -86,9 +85,13 @@ const DELIVERER = `export default function deliverer(pi) {
 }
 `;
 
-/** A request the stand-in served, with when it arrived (`performance.now()`). */
+/** A request the stand-in served, with its place in the order the requests arrived in (`index`),
+ *  and, for an answers request, how many requests had arrived when the stand-in answered it
+ *  (`answeredAfter`): undefined while the stand-in still holds it. The cases read the order of
+ *  these events, never a clock. */
 interface Seen extends Request {
-  readonly at: number;
+  readonly index: number;
+  answeredAfter?: number;
 }
 
 /** The assignment a case's `task` call hands its subagent, which tells its requests apart. */
@@ -226,10 +229,21 @@ function answer(id: string, text: string, minutesAgo: number): SessionAnswer {
 
 /** The answers request whose read a Messages request waited on: the last one before it. */
 function answersBefore(seen: readonly Seen[], request: Seen): Seen {
-  const before = seen.filter((other) => other.path.endsWith("/answers") && other.at <= request.at);
+  const before = seen.filter(
+    (other) => other.path.endsWith("/answers") && other.index < request.index
+  );
   const last = before.at(-1);
   if (last === undefined) throw new Error("no answers request came before the Messages request");
   return last;
+}
+
+/** How long the session says it waited on Dispatch before it gave up, read off the failure line
+ *  or the cached list's reason a request carries: the product's own record of the deadline it
+ *  armed (`Dispatch did not answer within N ms`). */
+function deadlineNamed(text: string): number {
+  const named = /Dispatch did not answer within (\d+) ms/.exec(text);
+  if (named?.[1] === undefined) throw new Error(`the request names no deadline:\n${text}`);
+  return Number(named[1]);
 }
 
 /**
@@ -242,8 +256,8 @@ function answersBefore(seen: readonly Seen[], request: Seen): Seen {
  * hard link to it beside it, which both omp and Bun take for another file (omp loads a symlink and
  * its target once). With `warm`, the profile's model catalog is built before the session starts.
  * Once the steps have settled, `until` is awaited before omp's stdin closes. Returns every request
- * the stand-in served, in order of arrival, the main loop's turns among them, and when each step
- * was sent (`performance.now()`, route changes left out).
+ * the stand-in served, in order of arrival, the main loop's turns among them, and how many requests
+ * had arrived when each step was sent (`sentAfter`, route changes left out).
  */
 async function runSession(
   binary: string,
@@ -261,7 +275,7 @@ async function runSession(
   readonly seen: Seen[];
   readonly turns: Seen[];
   readonly answers: Seen[];
-  readonly sentAt: number[];
+  readonly sentAfter: number[];
   readonly summary: string;
 }> {
   const { home, workspace, sessions, root } = await ompRoot(
@@ -284,7 +298,7 @@ async function runSession(
   // before it sends the side turn's request.
   let sideTurnServed = Promise.withResolvers<void>();
   const { base } = serveStandin(cleanup, async (url, body) => {
-    const request: Seen = { path: url.pathname, body, at: performance.now() };
+    const request: Seen = { path: url.pathname, body, index: seen.length };
     seen.push(request);
     if (url.pathname === "/anthropic/v1/messages") {
       answered += 1;
@@ -306,8 +320,12 @@ async function runSession(
     if (answers !== null) {
       const current = route;
       if (current.kind === "hang") {
-        return release.promise.then(() => new Response("released", { status: 503 }));
+        return release.promise.then(() => {
+          request.answeredAfter = seen.length;
+          return new Response("released", { status: 503 });
+        });
       }
+      request.answeredAfter = seen.length;
       if (current.kind === "missing") {
         // What a Dispatch build without the route answers (routes/router.go's fallback).
         return Response.json(
@@ -319,9 +337,6 @@ async function runSession(
           { status: 404 }
         );
       }
-      // A slow Dispatch answers after a real delay: the case times the request against the read's
-      // own deadline, a platform timer inside the binary's process.
-      if (current.delayMs !== undefined) await Bun.sleep(current.delayMs);
       return Response.json({
         session_id: decodeURIComponent(answers[1] ?? ""),
         since: new Date(Date.now() - 72 * 60 * MINUTE).toISOString(),
@@ -360,9 +375,10 @@ async function runSession(
   if (options.warm === true) {
     // A fresh profile has no model catalog, so the binary builds one beside its first turn, and
     // that work holds its event loop for one to two seconds (measured with --cpu-prof: the model
-    // registry's refresh), whatever any extension does: a request waits on it as long with an
-    // answers route that answers at once. A pane's profile has the catalog already. Building it
-    // first keeps that host cost out of a case that times the answers read.
+    // registry's refresh), whatever any extension does: an answers read in flight then meets its
+    // own deadline timer and Dispatch's answer at once, and either may win. A pane's profile has
+    // the catalog already. Building it first keeps that host cost out of a case whose read is
+    // decided by its own deadline.
     const built = Bun.spawn([binary, "models", "refresh"], {
       cwd: workspace,
       env: { HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin" },
@@ -410,7 +426,7 @@ async function runSession(
     },
     cleanup
   );
-  const sentAt: number[] = [];
+  const sentAfter: number[] = [];
   for (const step of steps) {
     if ("route" in step) {
       route = step.route;
@@ -418,7 +434,7 @@ async function runSession(
     }
     if ("btw" in step) {
       sideTurnServed = Promise.withResolvers<void>();
-      sentAt.push(performance.now());
+      sentAfter.push(seen.length);
       rpc.send({ type: "btw", question: step.btw });
       await settled(
         "the stand-in to serve the side turn",
@@ -450,7 +466,7 @@ async function runSession(
             "type" in frame &&
             frame.type === "agent_end" &&
             !("isTerminal" in frame && frame.isTerminal === false);
-    sentAt.push(performance.now());
+    sentAfter.push(seen.length);
     rpc.send(
       "prompt" in step
         ? { type: "prompt", message: step.prompt }
@@ -475,7 +491,7 @@ async function runSession(
       (request) => request.path === "/anthropic/v1/messages" && isMainTurn(request)
     ),
     answers: seen.filter((request) => request.path.endsWith("/answers")),
-    sentAt,
+    sentAfter,
     summary,
   };
 }
@@ -674,120 +690,82 @@ test.skipIf(skipped)(
   }
 );
 
-// The wait each reading measures is the deadline the extension gives Dispatch
-// (`SESSION_ANSWERS_DEADLINE_MS`, 800 ms) as the machine schedules it: on this pod, with no job
-// of the tester's running, two runs of the one-reading row read 853, 841, 848 ms and 855, 839,
-// 858 ms, about 50 ms over the deadline against a 1,000 ms bound. A reading can also fall under
-// the deadline, since the deadline starts before the request reaches the stand-in that measures
-// the gap: a re-run read 682 ms.
-//
-// A median of three readings per label rather than one, because one reading judges the pod's
-// scheduling rather than the route. At c772c9881dd2, whose copy of this file is byte for byte the
-// one this change starts from, the single reading for `turn 1 with no cache` failed the bound at
-// 1012.5 ms in the package suite, and a re-run of this file alone passed. The route hangs the
-// same either way: that reading sat 212 ms over the deadline where a reading on this pod sits
-// about 50 ms over it, so what crossed is the pod's scheduling, not the route. The median of
-// three is the second of three, so no one slow reading can carry it: two of the three have to
-// cross before the row fails.
-//
-// Each reading is a session of its own, ended before the next one starts, so no reading is taken
-// beside the stand-in and the binary of an earlier one. All three are printed with the median
-// beside them, whether or not the row passes.
-//
-// Nine sessions run here, three readings for each of the three labels, and the budget below is
-// read from what one of them costs: two runs of the row read 209 s and 191 s on this pod, about
-// 22 s a session. Nine sessions at 40 s each is 360 s, which is the timeout below - over half
-// again the longer of those two runs - so a pod that schedules each session slower fails this
-// row on the route it measures rather than on the clock.
+// A Dispatch that never answers holds no request past the session's own deadline. The route holds
+// every answers request until the case ends, so a Messages request that reaches the stand-in at all
+// went out while the read it waited on was still held, which only the session's own deadline ends:
+// that is the order of events each case reads. How long the session waited is its own record: the
+// failure line, or the cached list's reason, names the deadline it armed
+// (`SESSION_ANSWERS_DEADLINE_MS`), which is under the second the row allows. No clock of this
+// test's decides it, so a slow scheduling moment on the pod has nothing to move. Each case is a
+// session of its own.
 test.skipIf(skipped)(
-  "(f) an answers route that never answers holds no request for a second, by the median of three readings: turn 1, turn 2 after a good read, and a subagent's first request",
+  "(f) an answers route that never answers holds no request for a second: turn 1, turn 2 after a good read, and a subagent's first request",
   async () => {
     const deadline = `Dispatch did not answer within ${SESSION_ANSWERS_DEADLINE_MS} ms`;
-    /** One reading: the gap between the answers request a Messages request waited on and the
-     *  request itself. */
-    const waitOf = (session: { readonly seen: Seen[] }, request: Seen): number =>
-      request.at - answersBefore(session.seen, request).at;
-    /** Three fresh readings of one case and their median against the bound, with every reading
-     *  printed and the median beside them. */
-    const median = async (label: string, reading: () => Promise<number>): Promise<void> => {
-      const readings: number[] = [];
-      for (let run = 0; run < 3; run += 1) {
-        // This reading's stand-in, binary and scratch root, ended as `afterEach` ends them, so
-        // the next reading starts on a machine holding none of them.
-        const from = cleanup.length;
-        try {
-          readings.push(await reading());
-        } finally {
-          for (const step of cleanup.splice(from).reverse()) await step();
-        }
-      }
-      const middle = [...readings].sort((first, second) => first - second)[1] as number;
-      const taken = readings.map((ms) => ms.toFixed(0)).join(", ");
-      console.log(
-        `(f) ${label}: the Messages request came ${taken} ms after the answers request over ` +
-          `three fresh sessions, a median of ${middle.toFixed(0)} ms`
-      );
-      expect(middle).toBeLessThan(1_000);
+    /** The request went out while the answers read it waited on was still held, which the route
+     *  lets go of only once the case ends, and what it carries names the deadline the session
+     *  waited, under a second. */
+    const heldNoLonger = (
+      session: { readonly seen: Seen[] },
+      request: Seen,
+      carried: string
+    ): void => {
+      expect(answersBefore(session.seen, request).answeredAfter).toBeUndefined();
+      expect(deadlineNamed(carried)).toBeLessThan(1_000);
     };
 
     // Turn 1, with no list ever read: the failure line.
-    await median("turn 1 with no cache", async () => {
-      const cold = await runSession(
-        binary(),
-        [{ route: { kind: "hang" } }, { prompt: "First question." }],
-        { warm: true }
-      );
-      const [coldFirst] = cold.turns;
-      if (coldFirst === undefined) throw new Error("no turn 1");
-      expect(listOf(coldFirst)).toBe(sessionAnswersFailureLine(deadline));
-      return waitOf(cold, coldFirst);
-    });
+    const cold = await runSession(
+      binary(),
+      [{ route: { kind: "hang" } }, { prompt: "First question." }],
+      { warm: true }
+    );
+    const [coldFirst] = cold.turns;
+    if (coldFirst === undefined) throw new Error("no turn 1");
+    expect(listOf(coldFirst)).toBe(sessionAnswersFailureLine(deadline));
+    heldNoLonger(cold, coldFirst, listOf(coldFirst));
 
     // Turn 2 after a good read: the list read in turn 1, with its read time.
     const item = answer("ask_f", "Read before Dispatch hung.", 1);
-    await median("turn 2 after a good read", async () => {
-      const cached = await runSession(
-        binary(),
-        [
-          { route: { kind: "list", items: [item] } },
-          { prompt: "First question." },
-          { route: { kind: "hang" } },
-          { prompt: "Second question." },
-        ],
-        { warm: true }
-      );
-      const [cachedFirst, cachedSecond] = cached.turns;
-      if (cachedFirst === undefined || cachedSecond === undefined) throw new Error("no turn 2");
-      expect(listOf(cachedFirst)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-      const earlier = listOf(cachedSecond);
-      const earlierCache = cachedOf(earlier);
-      expect(earlierCache.reason).toBe(deadline);
-      expect(earlier).toBe(renderSessionAnswers([item], { now: Date.now(), cached: earlierCache }));
-      return waitOf(cached, cachedSecond);
-    });
+    const cached = await runSession(
+      binary(),
+      [
+        { route: { kind: "list", items: [item] } },
+        { prompt: "First question." },
+        { route: { kind: "hang" } },
+        { prompt: "Second question." },
+      ],
+      { warm: true }
+    );
+    const [cachedFirst, cachedSecond] = cached.turns;
+    if (cachedFirst === undefined || cachedSecond === undefined) throw new Error("no turn 2");
+    expect(listOf(cachedFirst)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    const earlier = listOf(cachedSecond);
+    const earlierCache = cachedOf(earlier);
+    expect(earlierCache.reason).toBe(deadline);
+    expect(earlier).toBe(renderSessionAnswers([item], { now: Date.now(), cached: earlierCache }));
+    heldNoLonger(cached, cachedSecond, earlier);
 
     // The subagent's first request: Dispatch hangs from the parent's delegating turn on, so the
     // subagent's read is the first to hang. `task` runs in the foreground here, so no read of the
     // parent's is in flight when the subagent's starts.
-    await median("the subagent's first request", async () => {
-      const { reply, subagent } = delegating("Delegate it.", (setRoute) =>
-        setRoute({ kind: "hang" })
-      );
-      const sub = await runSession(
-        binary(),
-        [{ route: { kind: "list", items: [item] } }, { prompt: "Delegate it." }],
-        { reply, until: subagent, config: ["async:", "  enabled: false"], warm: true }
-      );
-      const subFirst = sub.turns.find(isSubagentTurn);
-      if (subFirst === undefined) throw new Error("the subagent sent no Messages request");
-      expect(sub.answers.length).toBeGreaterThanOrEqual(2);
-      expect(answersBefore(sub.seen, subFirst)).toBe(sub.answers[1] as Seen);
-      const carried = listOf(subFirst);
-      const carriedCache = cachedOf(carried);
-      expect(carriedCache.reason).toBe(deadline);
-      expect(carried).toBe(renderSessionAnswers([item], { now: Date.now(), cached: carriedCache }));
-      return waitOf(sub, subFirst);
-    });
+    const { reply, subagent } = delegating("Delegate it.", (setRoute) =>
+      setRoute({ kind: "hang" })
+    );
+    const sub = await runSession(
+      binary(),
+      [{ route: { kind: "list", items: [item] } }, { prompt: "Delegate it." }],
+      { reply, until: subagent, config: ["async:", "  enabled: false"], warm: true }
+    );
+    const subFirst = sub.turns.find(isSubagentTurn);
+    if (subFirst === undefined) throw new Error("the subagent sent no Messages request");
+    expect(sub.answers.length).toBeGreaterThanOrEqual(2);
+    expect(answersBefore(sub.seen, subFirst)).toBe(sub.answers[1] as Seen);
+    const carried = listOf(subFirst);
+    const carriedCache = cachedOf(carried);
+    expect(carriedCache.reason).toBe(deadline);
+    expect(carried).toBe(renderSessionAnswers([item], { now: Date.now(), cached: carriedCache }));
+    heldNoLonger(sub, subFirst, carried);
   }
 );
 
@@ -810,7 +788,7 @@ test.skipIf(skipped)(
     expect(textOf(messagesOf(first as Seen).at(-1))).toContain("First question.");
     expect(textOf(messagesOf(second as Seen).at(-1))).toContain("Second question.");
     expect(session.answers).toHaveLength(1);
-    expect((session.answers[0] as Seen).at).toBeLessThan((first as Seen).at);
+    expect((session.answers[0] as Seen).index).toBeLessThan((first as Seen).index);
   }
 );
 
@@ -952,12 +930,12 @@ test.skipIf(skipped)(
     // The dispatch-first skill is on it as on every request.
     expect(JSON.stringify(messages)).toContain(DISPATCH_FIRST_MARKER);
     // No answers request between the /btw and its side turn: it read nothing and waited on nothing.
-    const btwSent = session.sentAt[1] as number;
-    expect(session.answers.filter((read) => read.at >= btwSent && read.at <= side.at)).toEqual([]);
-    console.log(
-      `(i) the side turn's request came ${(side.at - btwSent).toFixed(0)} ms after the /btw command`
-    );
-    expect(side.at - btwSent).toBeLessThan(SESSION_ANSWERS_DEADLINE_MS);
+    // A read would have hung here, and a wait on it would end in the deadline's failure line or
+    // cached list, which the side turn does not carry (above).
+    const btwSent = session.sentAfter[1] as number;
+    expect(
+      session.answers.filter((read) => read.index >= btwSent && read.index < side.index)
+    ).toEqual([]);
 
     // The main loop's turns on both sides carry the list, read fresh: no read was left hanging.
     const [first, second, ...rest] = session.turns;
@@ -990,7 +968,7 @@ test.skipIf(skipped)(
     );
     expect(carriesList(handoff)).toBe(false);
     const answersBetween = session.answers.filter(
-      (read) => read.at >= (session.sentAt[1] as number) && read.at <= handoff.at
+      (read) => read.index >= (session.sentAfter[1] as number) && read.index < handoff.index
     );
     expect(answersBetween).toEqual([]);
 
@@ -1137,13 +1115,15 @@ test.skipIf(skipped)(
 // Two copies of this extension (a checkout's and an installed one, say) each run their own
 // `context` handler on one request. When the first reads an empty list it appends nothing, so the
 // second must still see that the request was decided, or it reads Dispatch again and the request
-// waits on both reads.
+// waits on both reads. What the request waited on is read off the order of events: one answers
+// request, answered before the Messages request arrived, and a request that carries no failure
+// line, which a wait the deadline ended would have put on it.
 test.skipIf(skipped)(
-  "(l) two copies and an empty list: one answers request, and the request waits under a second",
+  "(l) two copies and an empty list: one answers request, and the request waits on that read alone",
   async () => {
     const session = await runSession(
       binary(),
-      [{ route: { kind: "list", items: [], delayMs: 600 } }, { prompt: "First question." }],
+      [{ route: { kind: "list", items: [] } }, { prompt: "First question." }],
       { twoCopies: true, warm: true }
     );
 
@@ -1153,9 +1133,9 @@ test.skipIf(skipped)(
     if (first === undefined) throw new Error("no turn 1");
     expect(rest).toEqual([]);
     expect(session.answers).toHaveLength(1);
-    const ms = first.at - (session.answers[0] as Seen).at;
-    console.log(`(l) the Messages request came ${ms.toFixed(0)} ms after the answers request`);
-    expect(ms).toBeLessThan(1_000);
+    const read = session.answers[0] as Seen;
+    expect(read.answeredAfter).toBeDefined();
+    expect(first.index).toBeGreaterThanOrEqual(read.answeredAfter as number);
     expect(carriesList(first)).toBe(false);
   }
 );

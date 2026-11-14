@@ -77,11 +77,10 @@ const TWO_STEPS: readonly string[] = [
  */
 const COOLDOWN_MS = 4_000;
 
-/** The cooldown the killed-and-resumed case arms, which is what its return is measured against:
- * long enough that a restored arming is still running when the replacement pane is relaunched,
- * short enough for the return to come while the case watches. The relaunch's own boot is not
- * covered by it and is not meant to be - the case measures the return from the resumed life's
- * first served turn, and reads the restored arming from where that turn went (below). */
+/** The cooldown the killed-and-resumed case arms: long enough that a restored arming is still
+ * running when the replacement pane is relaunched, short enough for the return to come while the
+ * case watches. The case reads the arming and the return off the pane's own records, so the
+ * relaunch's own boot, however long a loaded box makes it, decides nothing. */
 const RESUME_COOLDOWN_MS = 12_000;
 
 const cleanup: Cleanup = [];
@@ -124,23 +123,32 @@ function userText(request: Request): string {
     .join("\n");
 }
 
-/** One turn the gateway served: the model it was sent to, and when it arrived. */
+/** One turn the gateway served: the model it was sent to. Its place in `served` is the order the
+ * turns arrived in, which is all a case reads of when they came. */
 interface Served {
   readonly model: string;
+}
+
+/** One record the pane's runner wrote to its transcript: the cooldown state after a change, and
+ * when the host wrote it (`at`, epoch ms), on the pane's own clock, the clock its arming reads. */
+interface CooldownRecord {
   readonly at: number;
+  readonly state: FallbackCooldownState;
 }
 
 /** What a settled fallback pane left behind, beside every pane's own record. */
 interface FallbackPane extends LegionPane {
-  /** Every turn the gateway served: its model and its time, in order. */
+  /** Every turn the gateway served, in order. */
   readonly served: readonly Served[];
   /** The model of every turn the gateway served, in order. */
   readonly models: () => string[];
-  /** When the first turn after `since` went to the stronger model, or undefined when none did:
-   * the moment the session came back. */
-  readonly returnedAt: (since: number) => number | undefined;
+  /** The turns after the `from`th (from 0) up to the first after it that went to the stronger
+   * model, which is the turn the session came back on; throws when none did. */
+  readonly beforeReturn: (from: number) => readonly Served[];
   /** The cooldown states the pane recorded in its transcript, in order. */
   readonly cooldowns: () => Promise<FallbackCooldownState[]>;
+  /** The same, each with the moment the pane wrote it. */
+  readonly records: () => Promise<CooldownRecord[]>;
 }
 
 /**
@@ -181,21 +189,51 @@ async function fallbackPane(options: {
       answer: (url, body) => {
         if (url.pathname !== "/anthropic/v1/messages") return undefined;
         const model = String(body.model ?? "");
-        served.push({ model, at: Date.now() });
+        served.push({ model });
         return options.answer(model, served.length, { path: url.pathname, body });
       },
     },
     cleanup
   );
+  const records = async (): Promise<CooldownRecord[]> =>
+    (await pane.transcriptRecords(LEGION_FALLBACK_ENTRY)).map(({ at, data }) => ({
+      at,
+      state: data as FallbackCooldownState,
+    }));
   return {
     ...pane,
     served,
     models: () => served.map((turn) => turn.model),
-    returnedAt: (since) =>
-      served.find((turn) => turn.at >= since && turn.model === "strong-model")?.at,
-    cooldowns: async () =>
-      (await pane.transcriptEntries(LEGION_FALLBACK_ENTRY)) as FallbackCooldownState[],
+    beforeReturn: (from) => {
+      const back = served.findIndex((turn, index) => index > from && turn.model === "strong-model");
+      if (back === -1)
+        throw new Error(`no turn after the ${from}th went back to the stronger model`);
+      return served.slice(from + 1, back);
+    },
+    cooldowns: async () => (await records()).map((record) => record.state),
+    records,
   };
+}
+
+/** The wait `armed`'s arming bought, by the pane's own record: its due time less the moment it was
+ * armed. */
+function waitOf(armed: CooldownRecord | undefined): number {
+  const arming = armed?.state.arming;
+  if (arming?.armedAt === undefined) throw new Error("the pane recorded no arming with its moment");
+  return arming.dueAt - arming.armedAt;
+}
+
+/** The record of the return `armed`'s arming waited for, by the pane's own record: the first after
+ * it that holds no arming, which the runner writes once it has put the session back. */
+function returnAfter(
+  records: readonly CooldownRecord[],
+  armed: CooldownRecord | undefined
+): CooldownRecord {
+  const from = armed === undefined ? -1 : records.indexOf(armed);
+  if (from === -1) throw new Error("the arming is not one of the pane's records");
+  const returned = records.slice(from + 1).find((record) => record.state.arming === undefined);
+  if (returned === undefined) throw new Error("the pane recorded no return after its arming");
+  return returned;
 }
 
 test.skipIf(skip)(
@@ -229,21 +267,26 @@ test.skipIf(skip)(
     // turn reads clean and only the fallback event itself says a filter refused the session. The
     // arming it leaves is a refusal's all the same: the same cooldown and the same doubling the
     // plugin's own walk takes.
-    const states = await pane.cooldowns();
-    expect(states[0]).toMatchObject({
+    const records = await pane.records();
+    const armed = records[0];
+    expect(armed?.state).toMatchObject({
       arming: { restoreTo: STRONG, cause: "refusal" },
       levels: { [STRONG]: 2 },
     });
-    const dueAt = states[0]?.arming?.dueAt ?? 0;
-    const waiting = pane.served.slice(1).filter((turn) => turn.at < dueAt);
+    // The wait the refusal bought is the base cooldown, counted from the moment the pane armed it.
+    expect(waitOf(armed)).toBe(COOLDOWN_MS);
     // The defect this case is the proof of: an arming the plugin read as anything but a refusal
     // waits on a suppression the host never applies for a classifier refusal — it pins the
     // fallback instead — so the session went straight back to the model that had just refused
-    // it. Nothing goes back before the wait is over, and several requests fall inside it.
-    expect(waiting.length).toBeGreaterThan(1);
-    expect(waiting.map((turn) => turn.model)).not.toContain("strong-model");
-    // And the session does come back, once the wait is over.
-    expect(pane.returnedAt(dueAt)).toBeDefined();
+    // it. Nothing goes back before the wait is over, by the pane's own record of its return.
+    expect(returnAfter(records, armed).at).toBeGreaterThanOrEqual(
+      armed?.state.arming?.dueAt ?? Number.POSITIVE_INFINITY
+    );
+    // Several requests fall inside the wait, and the session does come back once it is over:
+    // every turn before the return went to the weaker model, and the one whose request put the
+    // session back is still the weaker model's (the host chooses a request's model before it runs
+    // the `context` hook), so two at least ran while it waited.
+    expect(pane.beforeReturn(0).length).toBeGreaterThan(2);
   }
 );
 
@@ -273,25 +316,23 @@ test.skipIf(skip)(
     });
 
     expect(pane.models().slice(0, 3)).toEqual(["strong-model", "middle-model", "weak-model"]);
-    const states = await pane.cooldowns();
-    const armed = states.findLast((state) => state.arming !== undefined)?.arming;
+    const records = await pane.records();
+    const armed = records.findLast((record) => record.state.arming !== undefined);
     // The defect this case is the proof of: the plugin's own walk armed the return on the model
     // it was leaving, so the session came back to the middle of the chain and never to the model
     // it started on. The second step continues the host's own walk, so the return still points
     // at the stronger model, and the wait it bought is the doubled one of that model.
-    expect(armed).toMatchObject({ restoreTo: STRONG, cause: "refusal" });
-    expect(states.findLast((state) => state.arming !== undefined)?.levels).toEqual({
-      [STRONG]: 3,
-    });
-    const refusedAt = pane.served[1]?.at ?? 0;
-    const dueAt = armed?.dueAt ?? 0;
-    expect(dueAt - refusedAt).toBeGreaterThanOrEqual(2 * COOLDOWN_MS);
-    // Nothing went back before that wait, and what the session went back to is the stronger
-    // model: no request of this pane ever went to the middle model again.
-    const waiting = pane.served.slice(2).filter((turn) => turn.at < dueAt);
-    expect(waiting.length).toBeGreaterThan(1);
-    expect(waiting.map((turn) => turn.model)).not.toContain("strong-model");
-    expect(pane.returnedAt(dueAt)).toBeDefined();
+    expect(armed?.state.arming).toMatchObject({ restoreTo: STRONG, cause: "refusal" });
+    expect(armed?.state.levels).toEqual({ [STRONG]: 3 });
+    expect(waitOf(armed)).toBe(2 * COOLDOWN_MS);
+    // Nothing went back before that wait, by the pane's own record of its return, two requests at
+    // least ran inside it (the one whose request put the session back being the weaker model's
+    // too), and what the session went back to is the stronger model: no request of this pane ever
+    // went to the middle model again.
+    expect(returnAfter(records, armed).at).toBeGreaterThanOrEqual(
+      armed?.state.arming?.dueAt ?? Number.POSITIVE_INFINITY
+    );
+    expect(pane.beforeReturn(1).length).toBeGreaterThan(2);
     expect(pane.models().slice(2)).not.toContain("middle-model");
   }
 );
@@ -371,22 +412,25 @@ test.skipIf(skip)(
       },
     });
 
-    const secondRefusal = pane.served.filter((turn) => turn.model === "strong-model")[1]?.at;
-    expect(secondRefusal).toBeDefined();
-    const states = await pane.cooldowns();
+    // The second refusal is the second turn the stronger model was sent.
+    const strongTurns = pane.served.flatMap((turn, index) =>
+      turn.model === "strong-model" ? [index] : []
+    );
+    const secondRefusal = strongTurns[1];
+    if (secondRefusal === undefined) throw new Error("the stronger model was sent one turn only");
+    const records = await pane.records();
     // The first refusal of the stronger model took the base wait and raised its level; the second
     // took twice the base and raised it again.
-    expect(states[0]).toMatchObject({ levels: { [STRONG]: 2 } });
-    const doubled = states.findLast((state) => state.arming !== undefined);
-    expect(doubled?.levels).toEqual({ [STRONG]: 3 });
-    const dueAt = doubled?.arming?.dueAt ?? 0;
-    expect(dueAt - (secondRefusal ?? 0)).toBeGreaterThanOrEqual(2 * COOLDOWN_MS);
-    expect(dueAt - (secondRefusal ?? 0)).toBeLessThan(2 * COOLDOWN_MS + 2_000);
-    // The return came after the doubled wait, and no request went to the stronger model at the
-    // first one.
-    const returned = pane.returnedAt((secondRefusal ?? 0) + 1);
-    expect(returned).toBeDefined();
-    expect((returned ?? 0) - (secondRefusal ?? 0)).toBeGreaterThanOrEqual(2 * COOLDOWN_MS);
+    expect(records[0]?.state).toMatchObject({ levels: { [STRONG]: 2 } });
+    const doubled = records.findLast((record) => record.state.arming !== undefined);
+    expect(doubled?.state.levels).toEqual({ [STRONG]: 3 });
+    expect(waitOf(doubled)).toBe(2 * COOLDOWN_MS);
+    // The return came after the doubled wait, by the pane's own record of it, so no request went
+    // to the stronger model at the first one; and it came, after turns on the weaker model.
+    expect(returnAfter(records, doubled).at).toBeGreaterThanOrEqual(
+      doubled?.state.arming?.dueAt ?? Number.POSITIVE_INFINITY
+    );
+    expect(pane.beforeReturn(secondRefusal).length).toBeGreaterThan(0);
   }
 );
 
@@ -420,24 +464,29 @@ test.skipIf(skip)(
       },
     });
 
-    const secondRefusal = pane.served.filter((turn) => turn.model === "strong-model")[2]?.at;
-    expect(secondRefusal).toBeDefined();
-    const states = await pane.cooldowns();
-    const armings = states.filter((state) => state.arming !== undefined);
+    // The second refusal is the third turn the stronger model was sent.
+    const strongTurns = pane.served.flatMap((turn, index) =>
+      turn.model === "strong-model" ? [index] : []
+    );
+    const secondRefusal = strongTurns[2];
+    if (secondRefusal === undefined) throw new Error("the stronger model was not refused again");
+    const records = await pane.records();
+    const armings = records.filter((record) => record.state.arming !== undefined);
     // Both refusals of the stronger model armed from level 1 and raised it to 2: the clean turn
     // between them put back what the first one raised, so the second bought the base wait again
-    // rather than twice it.
-    expect(armings.map((state) => state.levels[STRONG])).toEqual([2, 2]);
-    const secondArming = states.findLastIndex((state) => state.arming !== undefined);
-    expect(states[secondArming - 1]).toEqual({ levels: { [STRONG]: 1 } });
-    const dueAt = states[secondArming]?.arming?.dueAt ?? 0;
-    expect(dueAt - (secondRefusal ?? 0)).toBeGreaterThanOrEqual(COOLDOWN_MS);
-    expect(dueAt - (secondRefusal ?? 0)).toBeLessThan(2 * COOLDOWN_MS);
-    // And the session came back at that wait, before the doubled one it would have waited had
-    // the clean turn counted for nothing.
-    const returned = pane.returnedAt((secondRefusal ?? 0) + 1);
-    expect(returned).toBeDefined();
-    expect((returned ?? 0) - (secondRefusal ?? 0)).toBeLessThan(2 * COOLDOWN_MS);
+    // rather than twice it, by the pane's own record of the moment it armed and the due time.
+    expect(armings.map((record) => record.state.levels[STRONG])).toEqual([2, 2]);
+    const secondArming = armings.at(-1);
+    expect(records[records.indexOf(secondArming as CooldownRecord) - 1]?.state).toEqual({
+      levels: { [STRONG]: 1 },
+    });
+    expect(waitOf(secondArming)).toBe(COOLDOWN_MS);
+    // And the session came back at that wait, no earlier than it says, after turns on the weaker
+    // model.
+    expect(returnAfter(records, secondArming).at).toBeGreaterThanOrEqual(
+      secondArming?.state.arming?.dueAt ?? Number.POSITIVE_INFINITY
+    );
+    expect(pane.beforeReturn(secondRefusal).length).toBeGreaterThan(0);
   }
 );
 
@@ -461,49 +510,32 @@ test.skipIf(skip)(
       },
     });
 
-    const armed = (await pane.cooldowns()).at(-1)?.arming;
-    expect(armed).toMatchObject({ restoreTo: STRONG, cause: "refusal" });
-    const dueAt = armed?.dueAt ?? 0;
-    expect(dueAt).toBeGreaterThan(Date.now());
+    // The first life ends on the arming: its last record holds it, so it never put the session
+    // back, and the wait is the transcript's to carry over. The wait is the one the case set,
+    // counted from the moment the pane armed it.
+    const armed = (await pane.records()).at(-1);
+    expect(armed?.state.arming).toMatchObject({ restoreTo: STRONG, cause: "refusal" });
+    expect(waitOf(armed)).toBe(RESUME_COOLDOWN_MS);
+    const dueAt = armed?.state.arming?.dueAt ?? 0;
     const firstLife = pane.served.length;
 
     // The daemon relaunches the worker: a fresh process whose only memory of the fallback is the
-    // transcript it resumes.
+    // transcript it resumes. Its turn asks the gateway until a little past the due time.
     until = dueAt + 2 * 1_000;
     await pane.resume([], "Carry on after the relaunch.");
 
-    const resumed = pane.served.slice(firstLife);
-    expect(resumed.length).toBeGreaterThan(1);
-    // That the arming was restored, and not dropped or started again, is read from where this
-    // life's own turns went. Which half says it depends on whether the relaunch's boot outran the
-    // cooldown, and both are assertions: a filter over the turns before the due time proves
-    // nothing when there are none, which is what a loaded box gives.
-    const beforeDue = resumed.filter((turn) => turn.at < dueAt);
-    if (beforeDue.length > 0) {
-      // The life was serving while the restored wait still ran, so every one of those turns went
-      // to the weaker model.
-      expect(beforeDue.map((turn) => turn.model)).not.toContain("strong-model");
-    } else {
-      // The boot outran the wait, so this life's first turn is already past the due time: it
-      // must be the return itself. A life that had started the wait again would have spent a
-      // whole cooldown on the weaker model first, and a life that had dropped the arming would
-      // never leave it.
-      expect(resumed[0]?.model).toBe("strong-model");
-      expect(pane.returnedAt(dueAt)).toBe(resumed[0]?.at);
-    }
-    // And the return did come, which is what says the arming survived at all: a life that had
-    // restored nothing would have stayed on the weaker model for good.
-    //
-    // Measured from this life's own first served turn rather than from the restored due time: a
-    // relaunched pane pays its whole boot before it serves anything - the process start, a NATS
-    // connect, its subscribes, the claim's registration and the consumer answer that registration
-    // waits on - and under parallel load that boot alone can outlast the cooldown, which would
-    // red this row with nothing wrong behind it. What the bound is for is the return itself: once
-    // this life is serving turns, the restored arming must give the stronger model back inside
-    // one cooldown rather than holding the weaker one for good.
-    const resumedFrom = Math.max(dueAt, resumed[0]?.at ?? 0);
-    const returned = pane.returnedAt(dueAt);
-    expect(returned).toBeDefined();
-    expect((returned ?? 0) - resumedFrom).toBeLessThan(RESUME_COOLDOWN_MS);
+    expect(pane.served.length - firstLife).toBeGreaterThan(1);
+    const records = await pane.records();
+    // The arming was restored, not started again: the resumed life armed nothing of its own, so
+    // the one arming on record is the first life's, and the next record is its return. A life
+    // that had started the wait again would have recorded an arming of its own, whatever its boot
+    // cost, and one that had dropped the arming would record no return.
+    const armings = records.filter((record) => record.state.arming !== undefined);
+    expect(armings).toEqual([armed as CooldownRecord]);
+    // It came back no earlier than the arming says, by the pane's own record of the return.
+    expect(returnAfter(records, armings[0]).at).toBeGreaterThanOrEqual(dueAt);
+    // And the return did come on this life's own turns: a life that had restored nothing would
+    // have stayed on the weaker model for good.
+    expect(() => pane.beforeReturn(firstLife - 1)).not.toThrow();
   }
 );

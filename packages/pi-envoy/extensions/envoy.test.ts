@@ -16218,7 +16218,13 @@ console.log(JSON.stringify(args));
     };
 
     /** Every context frame the session published to its attached viewer, oldest first. */
-    const publishedContext = (): { readonly tokens: number; readonly contextWindow: number }[] =>
+    const publishedContext = (): {
+      readonly tokens: number;
+      readonly contextWindow: number;
+      readonly interval: number;
+      readonly at: number;
+      readonly readAt: number;
+    }[] =>
       natsState.published
         .filter((each) => each.subject === framesSubject)
         .map((each) => JSON.parse(new TextDecoder().decode(each.data)))
@@ -16260,7 +16266,16 @@ console.log(JSON.stringify(args));
       await fixture.handlers.get("message_end")?.({ message }, context);
 
       expect(publishedContext()).toEqual([
-        { contextWindow: 200_000, kind: "context", seq: expect.any(Number), tokens: 50_000, v: 1 },
+        {
+          contextWindow: 200_000,
+          interval: 1,
+          at: expect.any(Number),
+          readAt: expect.any(Number),
+          kind: "context",
+          seq: expect.any(Number),
+          tokens: 50_000,
+          v: 1,
+        },
       ]);
     });
 
@@ -16316,6 +16331,46 @@ console.log(JSON.stringify(args));
 
       await until("the frame the message's reading was owed", () => publishedContext().length > 1);
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 60_000]);
+      // The held reading went out when its interval was up, so it is the next interval's.
+      expect(publishedContext().map((frame) => frame.interval)).toEqual([1, 2]);
+      // The first went out as it was read; the held one went out when its interval was up, no
+      // later than one interval after its reading was taken.
+      const [first, held] = publishedContext();
+      expect(first?.at).toBe(first?.readAt);
+      expect(held?.at).toBe((first?.at ?? 0) + 50);
+      expect((held?.at ?? 0) - (held?.readAt ?? 0)).toBeLessThanOrEqual(50);
+    });
+
+    // An interval that sent nothing is a number no frame carries: the frame that goes out at once
+    // after a quiet spell is numbered on by every whole interval since the last one opened, so a
+    // reader tells a skipped interval from the next one with no clock of its own.
+    test("numbers a frame on by the whole intervals since the last one went out", async () => {
+      process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS = "50";
+      let tokens = 50_000;
+      const { context, fixture } = await bootDirectSession("context-frame-numbered", {
+        contextUsage: () => ({ contextWindow: 200_000, percent: tokens / 2_000, tokens }),
+      });
+      await attachViewer();
+
+      // The publisher reads `Date.now()` itself, so the row holds it on Bun's fake clock.
+      jest.useFakeTimers();
+      await fixture.handlers.get("turn_start")?.({}, context);
+      // Two whole intervals and part of a third go by with nothing read.
+      setSystemTime(new Date(Date.now() + 2 * 50 + 10));
+      tokens = 60_000;
+      await fixture.handlers.get("message_end")?.({ message }, context);
+      // The next interval goes by too, and the reading after it goes out at once again.
+      setSystemTime(new Date(Date.now() + 50));
+      tokens = 70_000;
+      await fixture.handlers.get("message_end")?.({ message }, context);
+
+      expect(
+        publishedContext().map((frame) => [frame.tokens, frame.interval, frame.at - frame.readAt])
+      ).toEqual([
+        [50_000, 1, 0],
+        [60_000, 3, 0],
+        [70_000, 4, 0],
+      ]);
     });
 
     // No older reading may follow a newer one. The trailing frame is due at the interval's end,
@@ -16352,6 +16407,9 @@ console.log(JSON.stringify(args));
       await settle();
       // Nothing older followed the newer reading, and the last frame a viewer draws is that one.
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 70_000]);
+      // The reading that overtook the held one went out at once, past the interval's end: the
+      // next interval's, as the held one would have been.
+      expect(publishedContext().map((frame) => frame.interval)).toEqual([1, 2]);
     });
 
     for (const [name, usage] of [

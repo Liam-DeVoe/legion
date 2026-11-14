@@ -889,6 +889,13 @@ export interface LegionPaneOptions {
   readonly selfCheck?: string;
 }
 
+/** One custom entry of a pane's transcript: when the host wrote it, on the session's own clock
+ *  (epoch ms), and its `data`. */
+export interface TranscriptRecord {
+  readonly at: number;
+  readonly data: unknown;
+}
+
 /** What a settled Legion pane left behind. */
 export interface LegionPane {
   /** Every request the stand-in served: the model gateway's, the daemon's, and the listener's. */
@@ -901,6 +908,9 @@ export interface LegionPane {
   readonly toolResults: () => ToolResult[];
   /** The persisted transcript's entries of `customType`, in order, each its `data`. */
   readonly transcriptEntries: (customType: string) => Promise<unknown[]>;
+  /** The same entries, each with the moment the host wrote it (`at`, epoch ms, read from the
+   *  entry's own `timestamp`): the session's own record of when it acted, on its own clock. */
+  readonly transcriptRecords: (customType: string) => Promise<TranscriptRecord[]>;
   /**
    * Runs omp again over this pane's own transcript (`--resume <session>`), in the same scratch
    * root and against the same stand-in, and settles it as the first life settled: what the
@@ -1130,6 +1140,20 @@ export async function runLegionPane(
     return named[1];
   };
 
+  /** Every entry of `customType` in the pane's transcripts, oldest life first, each as written. */
+  const customEntries = async (customType: string): Promise<object[]> => {
+    const entries: object[] = [];
+    for (const file of await transcripts()) {
+      for (const line of (await readFile(file, "utf8")).split("\n").filter(Boolean)) {
+        const entry: unknown = JSON.parse(line);
+        if (typeof entry !== "object" || entry === null) continue;
+        if (!("customType" in entry) || entry.customType !== customType) continue;
+        entries.push(entry);
+      }
+    }
+    return entries;
+  };
+
   const turns = (): Request[] =>
     requests.filter(
       (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
@@ -1158,18 +1182,16 @@ export async function runLegionPane(
     // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
     // so nothing is still appending and a trailing fragment is a defect that must throw rather
     // than be withheld (dispatch://INFRA-2188).
-    transcriptEntries: async (customType) => {
-      const entries: unknown[] = [];
-      for (const file of await transcripts()) {
-        for (const line of (await readFile(file, "utf8")).split("\n").filter(Boolean)) {
-          const entry: unknown = JSON.parse(line);
-          if (typeof entry !== "object" || entry === null) continue;
-          if (!("customType" in entry) || entry.customType !== customType) continue;
-          entries.push("data" in entry ? entry.data : undefined);
+    transcriptEntries: async (customType) =>
+      (await customEntries(customType)).map((entry) => ("data" in entry ? entry.data : undefined)),
+    transcriptRecords: async (customType) =>
+      (await customEntries(customType)).map((entry) => {
+        const at = "timestamp" in entry ? Date.parse(String(entry.timestamp)) : Number.NaN;
+        if (!Number.isFinite(at)) {
+          throw new Error(`a ${customType} entry carries no timestamp: ${JSON.stringify(entry)}`);
         }
-      }
-      return entries;
-    },
+        return { at, data: "data" in entry ? entry.data : undefined };
+      }),
     resume: async (more, prompt) => {
       scripted.push(...more);
       await live(typeof prompt === "string" ? [prompt] : prompt, ["--resume", await resumeId()]);

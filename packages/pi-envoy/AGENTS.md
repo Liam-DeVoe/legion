@@ -425,6 +425,13 @@ answers 5 two seconds later with the turn over,
 and a ring drawn from that would show a full session as empty.
 The held reading and the frame it is owed go when the session id changes and at shutdown.
 A getter that throws is logged and leaves the reading already kept standing.
+Each frame carries `interval`, the number of the interval it went out in, the session's own record
+of when it published: a frame that goes out at once is numbered on from the interval the last
+publish opened by every whole interval since, so an interval that sent nothing is a number no frame
+carries, and the held reading is the next interval's, numbered from the moment its timer was armed
+for rather than the moment the timer ran.
+No viewer reads it; `session-surface-omp.test.ts` checks a turn's frames by it, with no clock of
+its own.
 The publisher (`setContext`) keeps the frame and publishes it only when it differs from the
 reading last kept and a viewer is attached, and a change of session id resets it with the
 settings.
@@ -1126,7 +1133,7 @@ handler, a subagent reading its parent's id, a Dispatch that answers no list (th
 and one with no answers route (no line, one warning for two requests), and
 `extensions/session-answers-omp.test.ts` the real binary: a new answer in the next turn, after a
 compaction and in a subagent's first request; every kind of item word for word; the cap; a route
-that never answers costing a request under one second, by the median of three readings; a route that answers 404 (no line); the cache
+that never answers holding no request past the session's own deadline (the request goes out while the read is still held, and names the deadline it waited); a route that answers 404 (no line); the cache
 prefix byte for byte with no `cache_control` on the list; a list with nothing new staying after
 the first turn's prompt while later requests end with their own and cache through it; a `/btw` side turn and the handoff
 ending with their own prompts, with no list and no read; a remote compaction request ending at
@@ -1135,9 +1142,12 @@ list (the stand-in model claims `supportsServerCompaction` and `bedrockMessagesA
 binary takes for a first-party endpoint; a test-only extension sends the delivered messages as
 `extensions/envoy.ts` does, since pi-envoy reads deliveries off NATS); and two copies with an
 empty list making one read.
-The timed cases run against a profile whose model catalog is already built: a fresh profile
-builds it beside its first turn, holding the host's event loop for one to two seconds whatever
-the extension does.
+The cases whose read the deadline decides run against a profile whose model catalog is already
+built: a fresh profile builds it beside its first turn, holding the host's event loop for one to
+two seconds whatever the extension does, so a read in flight meets its deadline and Dispatch's
+answer at once.
+No case reads a clock of its own: what each request waited on is the order the stand-in saw the
+requests in and what the request carries.
 
 `before_agent_start` injects nothing into the conversation; a nonempty typed user turn uses its
 open-asks query to arm the run-end nudge, its snapshot `as_of` becoming the period's first window.
