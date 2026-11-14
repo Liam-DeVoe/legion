@@ -89,16 +89,15 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 // would never be found (record.QuietTrees). The moment of the daemon's last answering read
 // (StateReadAt) is left out too: a read that only confirms what is recorded writes that field
 // alone, and it says how old the daemon's knowledge of the head is, never that the pull request
-// moved. Clearing it is no news on its own account either: every write that clears it moves the
-// head, reopens the pull request or replays the head run, and is judged by what else it changes
-// (record.PullRequest.StateReadAt says what stamps, clears and carries it). The daemon's own suites
-// hold that line: a late push webhook is asserted to change nothing of the issue record
-// (internal/daemon's lateWebhookPushDecidesNothing), and a settlement that decides nothing — the
-// listener's redelivery and its settlement of a commit that is not the head while a head run is
-// open, the one that closes that run among them — is asserted to move no issue (internal/admit's
-// TestTheRecordKeepsWhenAnIssueLastMoved, its case of the listener's settlement that decides
-// nothing). The same test holds that a merge-state read that only confirms what is recorded moves
-// no issue either.
+// moved. Clearing it is no news on its own account either: a write that clears it is judged by what
+// else it changes (record.PullRequest.StateReadAt says what stamps, clears and carries it). The
+// daemon's own suites hold that line: a late push webhook is asserted to change nothing of the
+// issue record (internal/daemon's lateWebhookPushDecidesNothing), and a settlement that decides
+// nothing — the listener's redelivery and its settlement of a commit that is not the head while a
+// head run is open, the one that closes that run among them — is asserted to move no issue
+// (internal/admit's TestTheRecordKeepsWhenAnIssueLastMoved, its case of the listener's settlement
+// that decides nothing). The same test holds that a merge-state read that only confirms what is
+// recorded moves no issue either.
 //
 // A field added to record.PullRequest later is not news to this test until it is named here. The
 // direction that costs something is this one — an unnamed field that is news leaves a tree
