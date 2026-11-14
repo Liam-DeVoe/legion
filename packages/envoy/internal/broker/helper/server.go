@@ -737,25 +737,19 @@ func (s *Server) drain() Response {
 // three are the same thing — one round trip to the broker that a person or a launcher is
 // waiting on at the other end of the socket.
 //
-// The number comes from the client's wait, not from the call. `agent-secrets enroll --helper`
-// and `unenroll --helper` give one call 30 s (helper.Call in cmd/agent-secrets/enroll.go), and
-// the reply has to be written inside that: 20 s of call plus replyWriteSlack is 25 s, which
-// leaves the client's dial and the reply itself the 5 s that are left. Nothing else bounded
-// these calls, so until now they ran to the HTTP client's own whole-call timeout
-// (leasetime.RenewClientTimeout, 30 s), which is longer than the client waits at all: the
-// enrollment was made, the reply could not be written, and the client read an empty one
-// (dispatch://INFRA-49/comment/9bf092b6).
+// The number comes from the client's wait, not from the call. `agent-secrets enroll --helper`,
+// `unenroll --helper` and `machine login` give one call 30 s (passThroughCallWait in
+// cmd/agent-secrets), and the reply has to be written inside that: 20 s of call plus
+// replyWriteSlack is 25 s, which leaves the client's dial and the reply itself the 5 s that are
+// left. Nothing else bounded these calls, so until now they ran to the HTTP client's own
+// whole-call timeout (leasetime.RenewClientTimeout, 30 s), which is longer than the client
+// waits at all: the enrollment was made, the reply could not be written, and the client read an
+// empty one (dispatch://INFRA-49/comment/9bf092b6).
 //
 // It is far past a healthy call. An enrollment is one POST the broker answers in a fraction of
 // a second (DefaultFirstConfirmBound's note measures the same round trip), so a call that
 // reaches 20 s is a broker that took the connection and is not answering, and the bound is
 // what turns that into an answer the caller can act on rather than silence.
-//
-// `agent-secrets machine login` waits 10 s for its own call (cmd/agent-secrets/machine.go), so
-// against a broker slower than that it still gives up before the bound. That costs it nothing:
-// the login the helper started goes on, and the next `machine login` reports that pending
-// login's own code (Broker.Login). A bound short enough for that client would be shorter than
-// a slow enrollment that must still answer, which is the call this bound exists for.
 const DefaultBrokerCallBound = 20 * time.Second
 
 // replyWriteSlack is how long past a bounded broker call the connection stays writable, so the

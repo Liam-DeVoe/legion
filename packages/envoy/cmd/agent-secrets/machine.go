@@ -36,7 +36,7 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	sock, _ := helperSocket()
-	resp, err := helper.Call(sock, helper.Request{Op: "login"}, 10*time.Second)
+	resp, err := helper.Call(sock, helper.Request{Op: "login"}, passThroughCallWait)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets machine login: %v\n", err)
 		return 1

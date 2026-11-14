@@ -120,16 +120,17 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.
 }
 
 // enrollDrainWait is how long `enroll --helper` retries a DRAINING answer (a helper install is
-// about to restart the helper): the 30 s it already gives one call, so a box launched inside
-// install's drain-to-restart window enrolls with the restarted helper. Only tests shorten it.
-var enrollDrainWait = 30 * time.Second
+// about to restart the helper): passThroughCallWait, the wait it already gives one call, so a
+// box launched inside install's drain-to-restart window enrolls with the restarted helper. Only
+// tests shorten it.
+var enrollDrainWait = passThroughCallWait
 
 // enrollRetryingDrain asks the helper req, again every 250 ms while it answers DRAINING, until
 // enrollDrainWait has passed; the last answer is returned as it came.
 func enrollRetryingDrain(sock string, req helper.Request) (helper.Response, error) {
 	deadline := time.Now().Add(enrollDrainWait)
 	for {
-		resp, err := helper.Call(sock, req, 30*time.Second)
+		resp, err := helper.Call(sock, req, passThroughCallWait)
 		if err != nil || resp.OK || resp.Code != helper.CodeDraining || !time.Now().Before(deadline) {
 			return resp, err
 		}
@@ -168,7 +169,7 @@ func cmdUnenroll(args []string, stdout, stderr io.Writer) int {
 // Prints nothing on success, matching the exit-code-only unenroll contract.
 func cmdUnenrollHelper(enrollmentID string, stderr io.Writer) int {
 	sock, _ := helperSocket()
-	resp, err := helper.Call(sock, helper.Request{Op: "unenroll-session-key", EnrollmentID: enrollmentID}, 30*time.Second)
+	resp, err := helper.Call(sock, helper.Request{Op: "unenroll-session-key", EnrollmentID: enrollmentID}, passThroughCallWait)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets unenroll: %v\n", err)
 		return 1

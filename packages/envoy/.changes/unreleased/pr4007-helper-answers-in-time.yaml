@@ -7,6 +7,9 @@ body: |-
   seconds left the helper holding an answer it could no longer write: the enrollment was made and
   the launcher that asked for it read an empty reply. Each of those calls now runs under a
   20-second bound, inside the 30 seconds the client waits for one call, and the connection stays
-  writable until the bound has passed, so the answer always reaches the caller. A call that does
-  run out of that time is answered with its own op's code (`LOGIN_FAILED`, `ENROLL_FAILED` or
-  `UNENROLL_FAILED`) and an error saying it timed out, never with an empty reply.
+  writable until the bound has passed, so the answer always reaches the caller. `agent-secrets
+  enroll --helper`, `unenroll --helper` and `machine login` each wait that same 30 seconds, above
+  the bound, so the helper's answer — the broker's result or a timed-out refusal — reaches every
+  one of them. A call that does run out of that time is answered with its own op's code
+  (`LOGIN_FAILED`, `ENROLL_FAILED` or `UNENROLL_FAILED`) and an error saying it timed out, never
+  with an empty reply.
