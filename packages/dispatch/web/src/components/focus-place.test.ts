@@ -2,6 +2,7 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
 
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
+import { CONTROL } from "./control-names";
 import { useFocusRescue } from "./focus-place";
 
 // The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken
@@ -395,5 +396,47 @@ test("a component that already moved the focus is left alone", async () => {
 
     lose(third as HTMLElement);
     await waitFor(() => expect(second).toHaveFocus());
+  });
+});
+
+// (s) A loss inside a dialog that stays open is answered inside that dialog. The reader is in a
+// modal the page behind it cannot be reached from, so a place the dialog no longer draws - two
+// of its controls went with the press, as the search bar's Retry takes its own failure block
+// away - hands the focus to the dialog's own last control, and never to the page's search box
+// behind it, whose next keystroke would be typed into it. Measured in Firefox, INFRA-3135 round
+// 7: the search bar's Retry put the focus outside the open palette in 2 of 12 runs.
+test("a loss in a dialog that stays open hands the focus inside it, never to the page behind", async () => {
+  await withRescue(async () => {
+    const { main } = mainOf("Before");
+    const pageSearch = document.createElement("input");
+    pageSearch.type = "search";
+    pageSearch.setAttribute("aria-label", "Search issues");
+    pageSearch.setAttribute("data-control", CONTROL.searchBox);
+    main.append(pageSearch);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("role", "dialog");
+    const kept = document.createElement("input");
+    kept.type = "search";
+    kept.setAttribute("aria-label", "Search");
+    const filter = document.createElement("button");
+    filter.type = "button";
+    filter.textContent = "Filter";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Retry";
+    dialog.append(kept, filter, retry);
+    document.body.append(dialog);
+    retry.focus();
+    // The retry's answer takes the failure block away, and with it the control counted before
+    // it, so neither the place nor the one under it is a control the dialog still draws.
+    lose(retry, () => {
+      retry.remove();
+      filter.remove();
+    });
+    expect(document.activeElement).toBe(document.body);
+    await settled();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(pageSearch).not.toHaveFocus();
   });
 });
