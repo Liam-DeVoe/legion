@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -653,7 +654,9 @@ func TestAPinnedAskPartShowsTheRevisionItNames(t *testing.T) {
 // and no older one; an unstamped row is invisible to every such read. awaitSinceRead settles
 // which answer of the read after the answer is final.
 func TestAnAnsweredAsksPartEdgesAreListedSince(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	// A clock never moved, so the since-read is never cut at its wait (referencesSinceWait) and
+	// waits out a held-back horizon: awaitSinceRead reads once.
+	handler, database, _ := newTestServer(t, testServerOptions{clock: clocktest.Held()})
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
 	source := createReferenceAPIIssue(t, handler, "OPS")

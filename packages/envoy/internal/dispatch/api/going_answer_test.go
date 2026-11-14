@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // goingModelBearer is the bearer the chat client presents to the fake model. The client under
@@ -67,10 +68,9 @@ type liveGoingFrame struct {
 // reached a reader survives it.
 func readLiveGoingStream(t *testing.T, server *httptest.Server, id, login string) []liveGoingFrame {
 	t.Helper()
-	// Longer than one run's window (contracts.GoingRunWindow) and its grace, so a stream that
-	// never ends fails this read rather than hanging the package.
-	ctx, stop := context.WithTimeout(context.Background(), contracts.GoingRunWindow+2*goingStreamGrace)
-	defer stop()
+	// The shared wait's bound (testwait.Context), so a stream that never ends fails this read
+	// rather than hanging the package.
+	ctx := testwait.Context(t)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/going/requests/"+id+"/stream", nil)
 	if err != nil {
 		t.Fatalf("build the stream request: %v", err)

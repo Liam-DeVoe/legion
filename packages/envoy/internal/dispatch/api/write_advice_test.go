@@ -14,6 +14,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -794,13 +796,15 @@ func TestWriteAdviceOnIdempotentExternalIssueCreate(t *testing.T) {
 	}
 }
 
-func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
+// seedLongIssueHistory is an issue of seededEvents session writes, the history a write's advice
+// counts.
+func seedLongIssueHistory(t *testing.T, seededEvents int) (http.Handler, string) {
+	t.Helper()
 	handler, database := newTestHandlerWithStore(t)
 	createAdviceProject(t, handler, "PERF")
 	spec := "# Performance\n"
 	issue := createAdviceIssue(t, handler, "PERF", "Long event history", &spec)
 
-	const seededEvents = 5000
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin event seed: %v", err)
@@ -828,17 +832,32 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatalf("commit event seed: %v", err)
 	}
+	return handler, issue.Key
+}
 
-	started := time.Now()
-	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
+	const seededEvents = 5000
+	handler, issueKey := seedLongIssueHistory(t, seededEvents)
+	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/messages", map[string]any{
 		"body": "bounded advice", "actor": adviceSessionActor("session-performance"),
 	})
-	elapsed := time.Since(started)
 	advice := adviceFromResponse(t, response.Code, response.Body.String())
 	if advice.SessionWritesSinceHuman != seededEvents+1 {
 		t.Fatalf("session write count = %d, want %d", advice.SessionWritesSinceHuman, seededEvents+1)
 	}
-	if elapsed >= 2*time.Second {
+}
+
+// TestWriteAdviceOnALongIssueHistoryAnswersUnderTwoSeconds is the row above's service level,
+// which only the timing lane reads (benchtime.TimingEnv): a shared runner's clock is its load as
+// much as the advice's work.
+func TestWriteAdviceOnALongIssueHistoryAnswersUnderTwoSeconds(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	handler, issueKey := seedLongIssueHistory(t, 5000)
+	started := time.Now()
+	sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/messages", map[string]any{
+		"body": "bounded advice", "actor": adviceSessionActor("session-performance"),
+	})
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
 		t.Fatalf("advice round trip took %s, want under 2s", elapsed)
 	}
 }
@@ -849,13 +868,11 @@ func TestWriteAdviceFailureDoesNotAbortWrite(t *testing.T) {
 	spec := "# Failure isolation\n"
 	issue := createAdviceIssue(t, handler, "FAIL", "Advice failure", &spec)
 
-	started := time.Now()
+	// The advice query sleeps two seconds and the savepoint's statement_timeout (500 ms) cuts it:
+	// a query that ran to the end would answer, and the advice below would be in the body.
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 		"body": "must still commit", "actor": adviceSessionActor("session-failure"),
 	})
-	if elapsed := time.Since(started); elapsed >= 2*time.Second {
-		t.Fatalf("timed-out advice query held the write for %s, want under 2s", elapsed)
-	}
 	if response.Code != http.StatusCreated {
 		t.Fatalf("message with failed advice: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -934,6 +951,7 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 	s := &server{
 		deps:              deps,
 		lifetime:          t.Context(),
+		clock:             clock.Real(),
 		suggestionTimeout: suggestionTimeout,
 		adviceQueryHook: func(ctx context.Context, tx pgx.Tx, got string) error {
 			if got != query {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An approval request remains one conversation across document versions. A version move keeps its
@@ -678,20 +680,21 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 				t.Fatalf("revise document: %v", err)
 			}
 			waitForArtifactVersion(t, doc.handler, doc.artifactID, 2)
-			deadline := time.After(5 * time.Second)
-			for {
-				select {
-				case event, ok := <-published:
-					if !ok {
-						t.Fatal("the document service closed the subscription before settlement published the moved approval")
+			testwait.Eventually(t, "settlement to publish an ask.edited for "+doc.askID, func() bool {
+				for {
+					select {
+					case event, ok := <-published:
+						if !ok {
+							t.Fatal("the document service closed the subscription before settlement published the moved approval")
+						}
+						if payload, isAsk := event.Payload.(model.AskEditEventPayload); isAsk && event.Type == "ask.edited" && payload.ID == doc.askID {
+							return true
+						}
+					default:
+						return false
 					}
-					if payload, isAsk := event.Payload.(model.AskEditEventPayload); isAsk && event.Type == "ask.edited" && payload.ID == doc.askID {
-						return
-					}
-				case <-deadline:
-					t.Fatalf("settlement published no ask.edited for %s", doc.askID)
 				}
-			}
+			})
 		}, 1, alice, true},
 		{"a named version", time.Hour, func(t *testing.T, doc *document) {
 			if _, err := replaceDocumentText(doc.database, doc.documentService, doc.artifactID, "A revised spec", alice); err != nil {
@@ -941,21 +944,15 @@ func eventDeliveries(t *testing.T, database *store.Store, eventType, id string) 
 		<-stopped
 	}()
 	const about = `from events where type = $1 and payload->>'id' = $2`
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		var unpublished, total int
+	type publishing struct{ unpublished, total int }
+	testwait.Until(t, fmt.Sprintf("the outbox to publish every %s event for %s", eventType, id), func() (publishing, bool) {
+		var read publishing
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) filter (where published_at is null), count(*) `+about,
-			eventType, id).Scan(&unpublished, &total); err != nil {
+			eventType, id).Scan(&read.unpublished, &read.total); err != nil {
 			t.Fatalf("count %s events for %s: %v", eventType, id, err)
 		}
-		if total > 0 && unpublished == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d of %d %s events for %s unpublished", unpublished, total, eventType, id)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return read, read.total > 0 && read.unpublished == 0
+	})
 	rows, err := database.Pool.Query(context.Background(), `select notify, published_destinations `+about+` order by id`, eventType, id)
 	if err != nil {
 		t.Fatalf("read %s deliveries for %s: %v", eventType, id, err)

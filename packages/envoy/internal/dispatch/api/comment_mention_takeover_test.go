@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -87,11 +88,14 @@ func TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce(t *testing.T) 
 // Each mention of a session the listener holds no record of waits out the listener take-over
 // window before it settles "no live session", and the creating request sends its mentions before
 // it answers. Those waits must not stack per mention: a comment mentioning several ended
-// sessions answers within one take-over window, well inside the dispatch CLI's 60 s request
-// abort, which would otherwise fire after the comment committed and make its retry post the
-// comment a second time.
+// sessions answers within one take-over window - read on the clock the server runs on, which
+// this test moves through each wait - well inside the dispatch CLI's 60 s request abort, which
+// would otherwise fire after the comment committed and make its retry post the comment a second
+// time.
 func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t *testing.T) {
+	var calls listenerCalls
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/") {
 			writeSessionRecord(t, w, `[]`, strings.TrimPrefix(r.URL.Path, "/v1/registry/"))
 			return
@@ -99,7 +103,8 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer listener.Close()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, takeoverWindow: listenerTakeoverWindow})
+	clock := clocktest.New(time.Now())
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clock})
 	issue := createInteractionIssue(t, handler, "TEST", "Ended sessions", "before")
 
 	ended := []string{"ended-1", "ended-2"}
@@ -108,21 +113,14 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 		mentions = append(mentions, map[string]any{"target": "session:" + session})
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
-	started := time.Now()
+	started := clock.Now()
 	go func() {
 		responses <- postMentionedComment(t, handler, issue.Key, map[string]any{
 			"body": "Did either of you finish this?", "mentions": mentions,
 		})
 	}()
-	// The dispatch CLI aborts the request at 60 s (packages/envoy-client/src/dispatch-http.ts).
-	const clientAbort = 60 * time.Second
-	var response *httptest.ResponseRecorder
-	select {
-	case response = <-responses:
-	case <-time.After(clientAbort):
-		t.Fatalf("the comment mentioning %d ended sessions had not answered after %v, when the dispatch CLI aborts it", len(ended), clientAbort)
-	}
-	took := time.Since(started)
+	response := answerWhileCallsAreHeld(t, clock, &calls, responses)
+	took := clock.Now().Sub(started)
 	created := decodeMentionedComment(t, response)
 	if len(created.Deliveries) != len(ended) {
 		t.Fatalf("deliveries = %#v, want one per mention", created.Deliveries)
@@ -134,7 +132,7 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 			t.Fatalf("delivery = %#v, want it answered pending: the mention is sent after the response", attempt)
 		}
 	}
-	settled := settledCommentDeliveries(t, database, created.ID)
+	settled := settledCommentDeliveriesOn(t, database, created.ID, clock, &calls)
 	if len(settled) != len(ended) {
 		t.Fatalf("settled deliveries = %#v, want one per mention", settled)
 	}
@@ -144,11 +142,11 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 			t.Fatalf("delivery = %#v, want failed with %q: the mentioned session is ended", attempt, want)
 		}
 	}
-	if limit := listenerTakeoverWindow + 2*time.Second; took > limit {
-		t.Fatalf("the comment mentioning %d ended sessions answered after %v, want within %v: each mention waited out "+
-			"its own %v take-over window one after another before the response, so the wait grows with every "+
-			"mention and the dispatch CLI's %v abort fires after the comment committed",
-			len(ended), took.Round(100*time.Millisecond), limit, listenerTakeoverWindow, clientAbort)
+	if took > listenerTakeoverWindow {
+		t.Fatalf("the comment mentioning %d ended sessions answered %v after its first try, want within one take-over "+
+			"window (%v): each mention waited out a window of its own, one after another, so the wait grows with "+
+			"every mention and the dispatch CLI's 60 s abort fires after the comment committed",
+			len(ended), took, listenerTakeoverWindow)
 	}
 }
 
@@ -388,10 +386,11 @@ func TestACommentDuringAListenerTakeOverReachesThePrimaryDocumentAuthorOnce(t *t
 // mention-failed-follower) waits that long for the row, and the outbox publishes the session's
 // own copy once it is failed.
 func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow(t *testing.T) {
-	const window = 2 * time.Second
+	var calls listenerCalls
 	var mu sync.Mutex
 	var sends []string
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
 			// The registry still holds s1: only its sends are refused.
@@ -411,10 +410,11 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 		}
 	}))
 	defer listener.Close()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, takeoverWindow: window})
+	clock := clocktest.New(time.Now())
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clock})
 	issue := createInteractionIssue(t, handler, "TEST", "Refused sends", "before")
 
-	started := time.Now()
+	started := clock.Now()
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "@s1, the listener will refuse every send of this.", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
@@ -423,7 +423,7 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 			t.Fatalf("the comment answered %#v, want its attempt pending: the mention is sent after the response", attempt)
 		}
 	}
-	settled := settledCommentDeliveries(t, database, created.ID)
+	settled := settledCommentDeliveriesOn(t, database, created.ID, clock, &calls)
 	if len(settled) != 1 || settled[0].State != "failed" ||
 		settled[0].Error == nil || *settled[0].Error != "no live session s1" {
 		t.Fatalf("the refused mention settled %#v, want attempt 1 failed with the listener's own answer", settled)
@@ -438,10 +438,11 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 			"the listener answers \"no live session\" is tried again inside the take-over window", tries, key)
 	}
 	// The sender stops once the next try would start past the window (takeoverRetry.again), so
-	// the settle lands inside it; what it may not do is settle before its first backoff.
-	if waited := time.Since(started); waited < takeoverFirstBackoff {
-		t.Fatalf("the attempt settled %v after the comment, want it to have waited at least the first backoff of "+
-			"%v: its sender settled on the first refusal instead of trying again",
-			waited.Round(time.Millisecond), takeoverFirstBackoff)
+	// the settle lands inside it; what it may not do is settle before its first backoff. Both
+	// are read on the clock its waits run on, the one this test moved through them.
+	if waited := clock.Now().Sub(started); waited < takeoverFirstBackoff || waited > listenerTakeoverWindow {
+		t.Fatalf("the attempt settled %v after the comment, want between the first backoff (%v) and the take-over "+
+			"window (%v): its sender settled on the first refusal instead of trying again, or tried on past the window",
+			waited, takeoverFirstBackoff, listenerTakeoverWindow)
 	}
 }

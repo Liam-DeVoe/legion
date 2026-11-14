@@ -160,11 +160,12 @@ func (h *deliveryHub) readChangeCursor(g *hubGeneration) bool {
 	return true
 }
 
-// catchUp catches the change log up; a read that fails is tried again a second later.
+// catchUp catches the change log up; a read that fails is tried again a second later, on the hub's
+// clock.
 func (h *deliveryHub) catchUp(g *hubGeneration) {
 	if err := h.catchUpChanges(g); err != nil && g.ctx.Err() == nil {
 		slog.Warn("dispatch: delivery live hub could not read the delivery changes; retrying", "error", err)
-		time.AfterFunc(time.Second, func() { signal(g.wakeChanges) })
+		h.clock.AfterFunc(time.Second, func() { signal(g.wakeChanges) })
 	}
 }
 

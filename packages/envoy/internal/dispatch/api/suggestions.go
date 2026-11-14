@@ -129,15 +129,19 @@ func (s *server) relatedAllowance() time.Duration {
 }
 
 // relatedBounds is the context a check's work runs under and the allowance it ends at: ctx
-// bounded by relatedAllowance, ending with errRelatedAllowanceEnded as its cause so that a check
-// whose context is done can tell its own deadline from the request that ran it going away
-// (runRelatedCheck's callerGone). Every site that bounds a check uses it, so a decision block's
-// per-check context inherits the edit's allowance with that same cause. The caller cancels, and
-// names the allowance in what it answers.
+// bounded by relatedAllowance on the server's clock, ending with errRelatedAllowanceEnded as its
+// cause so that a check whose context is done can tell its own deadline from the request that ran
+// it going away (runRelatedCheck's callerGone). Every site that bounds a check uses it, so a
+// decision block's per-check context inherits the edit's allowance with that same cause. The
+// caller cancels, and names the allowance in what it answers.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	allowance := s.relatedAllowance()
-	bounded, cancel := context.WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
-	return bounded, cancel, allowance
+	bounded, end := context.WithCancelCause(ctx)
+	timer := s.clock.AfterFunc(allowance, func() { end(errRelatedAllowanceEnded) })
+	return bounded, func() {
+		timer.Stop()
+		end(context.Canceled)
+	}, allowance
 }
 
 // relatedCheckNotRun answers, and records unless input.record is false, a check its route decided
@@ -356,9 +360,9 @@ type relatedPick struct {
 // request's header asked for decides it, on this path as on every read of the same answer, and
 // the caller resolves its own reader once this returns.
 func (s *server) relatedCheck(ctx context.Context, input relatedInput) *model.Suggestions {
-	started := time.Now()
+	started := s.clock.Now()
 	suggestions, record := s.runRelatedCheck(ctx, input, started)
-	record.totalMS = int(time.Since(started).Milliseconds())
+	record.totalMS = int(s.clock.Now().Sub(started).Milliseconds())
 	if input.record {
 		s.recordRelatedChecks(ctx, relatedCheckRecord{source: input.source, suggestions: suggestions, record: record})
 	}
@@ -435,7 +439,7 @@ func (s *server) runRelatedCheck(
 	}
 	exclusion := relatedExclusion{issueKey: cmp.Or(input.source.issueKey, input.excludeIssue), artifactID: input.source.artifactID}
 	excluded := input.excluded()
-	stagesStarted := time.Now()
+	stagesStarted := s.clock.Now()
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
 	go func() {
@@ -451,14 +455,15 @@ func (s *server) runRelatedCheck(
 		default:
 			stage.response, stage.err = s.relatedSearch(keywordCtx, s.deps.Store.Pool, relatedKeywordStatement, project, pick.terms, excluded)
 		}
-		stage.took = time.Since(stagesStarted)
+		stage.took = s.clock.Now().Sub(stagesStarted)
 		keyword <- stage
 	}()
 
 	// Stage 2 runs on a context of its own ending at relatedMeaningAllowance from the check's
-	// start, so the embedding and the meaning query both stop there and leave the rest of the
-	// allowance to stage 1.
+	// start, on the server's clock, so the embedding and the meaning query both stop there and
+	// leave the rest of the allowance to stage 1.
 	meaningAllowance := min(relatedMeaningAllowance, allowance)
+	meaningDeadline := started.Add(meaningAllowance)
 	var meaning chan relatedStage
 	var meaningDone <-chan struct{}
 	reason := ""
@@ -468,7 +473,7 @@ func (s *server) runRelatedCheck(
 	case s.deps.Embedder == nil:
 		reason = relatedReasonNoEmbedder
 	default:
-		meaningCtx, cancelMeaning := context.WithDeadline(bounded, started.Add(meaningAllowance))
+		meaningCtx, cancelMeaning := s.clock.WithDeadline(bounded, meaningDeadline)
 		defer cancelMeaning()
 		meaningRead, err := store.ForConcurrentRead(meaningCtx)
 		if err != nil {
@@ -506,8 +511,8 @@ func (s *server) runRelatedCheck(
 		meaningDone = meaningCtx.Done()
 		meaning = make(chan relatedStage, 1)
 		go func() {
-			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
-			stage.took = time.Since(stagesStarted)
+			stage := s.relatedMeaningStage(meaningRead, crossRead, meaningDeadline, project, input.text, pick, excluded, input.trees != nil)
+			stage.took = s.clock.Now().Sub(stagesStarted)
 			meaning <- stage
 		}()
 	}
@@ -547,7 +552,7 @@ func (s *server) runRelatedCheck(
 			case stage = <-meaning:
 				got = true
 			default:
-				record.meaningMS = milliseconds(time.Since(stagesStarted))
+				record.meaningMS = milliseconds(s.clock.Now().Sub(stagesStarted))
 				reason = relatedReasonMeaningTimeout
 			}
 		}
@@ -602,8 +607,8 @@ func (s *server) runRelatedCheck(
 
 // relatedMeaningStage is stage 2: the text's embedding, started at once, then, once stage 1 has
 // picked the terms, the meaning query over them, which leaves out the owners excluded names. Its
-// reason is empty when it answered and names why it did not otherwise; ctx ends at the meaning
-// allowance.
+// reason is empty when it answered and names why it did not otherwise; ctx ends at deadline, the
+// meaning allowance's end on the server's clock, which the grace is cut back from.
 //
 // crossRead is the second connection mark runRelatedCheck took for the cross-project leg, which
 // it takes only where the check's own write is a question (relatedInput.question), and nil
@@ -633,7 +638,7 @@ func (s *server) runRelatedCheck(
 // alone, and resolved there before the results are handed over, so an answer that reaches the
 // check carries its trees filled and one the grace left behind is read by nobody.
 func (s *server) relatedMeaningStage(
-	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, trees bool,
+	ctx, crossRead context.Context, deadline time.Time, project, text string, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
 		if ctx.Err() != nil || meaningStatementEnded(err) {
@@ -686,23 +691,22 @@ func (s *server) relatedMeaningStage(
 		return stage
 	}
 	// The grace ends at the earlier of crossProjectGrace from now and crossProjectGraceMargin
-	// before the meaning deadline. Where that second moment has passed, there is no grace at
-	// all and the stage answers at once with no cross-project item.
-	grace := time.Now().Add(crossProjectGrace)
-	if deadline, ok := ctx.Deadline(); ok {
-		if margin := deadline.Add(-crossProjectGraceMargin); margin.Before(grace) {
-			grace = margin
-		}
+	// before the meaning deadline, both on the server's clock. Where that second moment has
+	// passed, there is no grace at all and the stage answers at once with no cross-project item.
+	now := s.clock.Now()
+	grace := now.Add(crossProjectGrace)
+	if margin := deadline.Add(-crossProjectGraceMargin); margin.Before(grace) {
+		grace = margin
 	}
-	left := time.Until(grace)
+	left := grace.Sub(now)
 	if left <= 0 {
 		return stage
 	}
-	timer := time.NewTimer(left)
+	timer := s.clock.NewTimer(left)
 	defer timer.Stop()
 	select {
 	case stage.otherProjects = <-cross:
-	case <-timer.C:
+	case <-timer.C():
 	}
 	return stage
 }

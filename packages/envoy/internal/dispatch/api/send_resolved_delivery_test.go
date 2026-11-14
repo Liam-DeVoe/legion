@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The dashboard reads a failed attempt row that carries an envelope id as one its session answered
@@ -39,8 +41,8 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 			_, _ = w.Write([]byte(`{"event_id":`))
 		}, wantFailure: true},
 		// The send lands and its answer, envelope and all, misses the client's window.
-		{name: "the listener answered too late", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
-			time.Sleep(400 * time.Millisecond)
+		{name: "the listener answered too late", target: live, answer: func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
 			_, _ = w.Write([]byte(`{"event_id":"envelope-late","recipient":"s1"}`))
 		}, wantFailure: true},
 		{name: "the listener published the send", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
@@ -57,12 +59,35 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 				t.Cleanup(listener.Close)
 				url = listener.URL
 			}
-			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithTimeout(150*time.Millisecond))}}
-			envelopeID, duplicate, failure := s.sendResolvedDelivery(
-				context.Background(), tc.target, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`))
-			if (envelopeID != nil) != tc.wantEnvelope || duplicate != tc.wantDup || (failure != "") != tc.wantFailure {
+			// The client's window runs on this clock, which the test moves to each call's end: a
+			// listener that never answers costs the test nothing.
+			clock := clocktest.New(time.Now())
+			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithClock(clock))}, clock: clock}
+			type sent struct {
+				envelopeID *string
+				duplicate  bool
+				failure    string
+			}
+			answered := make(chan sent, 1)
+			go func() {
+				envelopeID, duplicate, failure := s.sendResolvedDelivery(
+					context.Background(), tc.target, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`))
+				answered <- sent{envelopeID, duplicate, failure}
+			}()
+			got := testwait.Until(t, "sendResolvedDelivery to answer", func() (sent, bool) {
+				select {
+				case answer := <-answered:
+					return answer, true
+				default:
+				}
+				if armed := clock.Armed(); len(armed) > 0 {
+					clock.Set(armed[0])
+				}
+				return sent{}, false
+			})
+			if (got.envelopeID != nil) != tc.wantEnvelope || got.duplicate != tc.wantDup || (got.failure != "") != tc.wantFailure {
 				t.Fatalf("sendResolvedDelivery = (envelope %v, duplicate %v, failure %q), want envelope %v, duplicate %v, failure %v",
-					envelopeID, duplicate, failure, tc.wantEnvelope, tc.wantDup, tc.wantFailure)
+					got.envelopeID, got.duplicate, got.failure, tc.wantEnvelope, tc.wantDup, tc.wantFailure)
 			}
 		})
 	}

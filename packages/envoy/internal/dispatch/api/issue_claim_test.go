@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // liveRegistry is the roster the Envoy listener answers from, which a test moves to start or
@@ -90,13 +92,8 @@ func claimHandler(t *testing.T, live *liveRegistry) (http.Handler, *store.Store,
 // awaitLookup waits for the listener lookup a gated test is expecting.
 func awaitLookup(t *testing.T, lookups <-chan int, want int) {
 	t.Helper()
-	select {
-	case got := <-lookups:
-		if got != want {
-			t.Fatalf("listener lookup %d, want lookup %d", got, want)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("the request never took listener lookup %d", want)
+	if got := testwait.Receive(t, fmt.Sprintf("the request to take listener lookup %d", want), lookups); got != want {
+		t.Fatalf("listener lookup %d, want lookup %d", got, want)
 	}
 }
 
@@ -1098,13 +1095,7 @@ func whileTheRowIsHeld(
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the holder change: %v", err)
 	}
-	select {
-	case response := <-answered:
-		return response
-	case <-time.After(10 * time.Second):
-		t.Fatal("the request never answered once the row was free")
-		return nil
-	}
+	return testwait.Receive(t, "the request to answer once the row was free", answered)
 }
 
 // A claim and a release begin their transaction before they take the issue's row, so a write that

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
@@ -522,21 +524,16 @@ func commentDeliveryReceipts(t *testing.T, database *store.Store, commentID, tar
 	return receipts
 }
 
-// awaitCommentDeliveryReceipts waits, at most 10 s, until the attempt carries a comment.delivery
-// receipt - the mention sender appends it in its settle transaction, after the comment's create
-// has answered - and returns the receipts as commentDeliveryReceipts renders them.
+// awaitCommentDeliveryReceipts waits until the attempt carries a comment.delivery receipt - the
+// mention sender appends it in its settle transaction, after the comment's create has answered -
+// and returns the receipts as commentDeliveryReceipts renders them.
 func awaitCommentDeliveryReceipts(t *testing.T, database *store.Store, commentID, target string, attempt int) string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if receipts := commentDeliveryReceipts(t, database, commentID, target, attempt); receipts != "" {
-			return receipts
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("attempt %d of %s for %s carries no comment.delivery receipt", attempt, commentID, target)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return testwait.Until(t, fmt.Sprintf("attempt %d of %s for %s to carry a comment.delivery receipt", attempt, commentID, target),
+		func() (string, bool) {
+			receipts := commentDeliveryReceipts(t, database, commentID, target, attempt)
+			return receipts, receipts != ""
+		})
 }
 
 // commentAttemptRow renders one attempt of one of a comment's mention targets the way a receipt

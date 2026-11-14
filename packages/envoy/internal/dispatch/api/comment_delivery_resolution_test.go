@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -604,7 +605,7 @@ func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	served := &server{deps: Deps{Envoy: envoy.New(listener.URL)}, lifetime: context.Background()}
+	served := &server{deps: Deps{Envoy: envoy.New(listener.URL)}, lifetime: context.Background(), clock: clock.Real()}
 
 	id, title, refusal := served.resolveDeliveryTarget(
 		context.Background(), model.Route{Kind: "role", ID: "reviewer"}, "steer",

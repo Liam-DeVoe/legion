@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -274,7 +274,9 @@ func graphEdges(t *testing.T, handler http.Handler, query url.Values) model.Grap
 // the message.created write. Read from the message, the same edge points out at the ask. Filters
 // narrow it and malformed input is 400.
 func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	// The server's clock is a fake the test never moves, so its since read waits out a held-back
+	// horizon rather than answering short at referencesSinceWait (awaitSinceRead).
+	handler, database, _ := newTestServer(t, testServerOptions{clock: clocktest.Held()})
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
 	legion := createReferenceAPIIssue(t, handler, "LEGION")
@@ -348,10 +350,8 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 		t.Fatalf("since the introducing event kept %#v; want no edges", since.Edges)
 	}
 	// The read waits for an observation taken after it to be proven safe, so it answers the
-	// message committed before it. A read that answered inside referencesSinceWait had that
-	// proof, so its answer is final and a wrong one fails the test at once; awaitSinceRead reads
-	// again only a read held past that wait, which an open transaction elsewhere on the shared
-	// test cluster can cause.
+	// message committed before it: the server's clock never reaches referencesSinceWait, so an open
+	// transaction elsewhere on the shared test cluster only delays the answer (awaitSinceRead).
 	since := awaitSinceRead(t, "since the event before the message, ?to= "+askRef+", wanting the message's backlink",
 		func() model.GraphReferences {
 			return graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})
@@ -381,16 +381,15 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	}
 }
 
-// awaitSinceRead reads again until holds accepts the answer, because a since read answers only
-// the edges at or below the event log's safe horizon, and any transaction holding a transaction
-// id on the Postgres instance holds that horizon back: in this package, storetest's own
-// "create database … template …" and "drop database … with (force)" transactions
-// (storetest.Open and storetest's dropDatabase). Such a read waits out referencesSinceWait and
-// then answers at the horizon it was left with, which may be short of what committed before it,
-// so it is read again, bounded by eventFeedWait. A read that answered within referencesSinceWait
-// was not held back: what it listed is what it owed, so holds failing on it, a missing edge as
-// much as a duplicate or a wrongly stamped one, is a product failure and fails the test at once.
-// The what argument names the read in either failure. It returns the answer holds accepted.
+// awaitSinceRead reads once, and fails the test unless holds accepts the answer. A since read
+// answers only the edges at or below the event log's safe horizon, and any transaction holding a
+// transaction id on the Postgres instance holds that horizon back: in this package, storetest's
+// own "create database … template …" and "drop database … with (force)" transactions
+// (storetest.Open and storetest's dropDatabase). Its caller's server runs on a clocktest.Held fake
+// the test never moves, so the read is never cut at referencesSinceWait: it waits until the
+// horizon passes every event committed before it, and what it lists is every edge it owes, so
+// holds failing on it - a missing edge as much as a duplicate or a wrongly stamped one - is a
+// product failure. The what argument names the read in the failure. It returns the answer.
 func awaitSinceRead(
 	t *testing.T,
 	what string,
@@ -398,23 +397,12 @@ func awaitSinceRead(
 	holds func(model.GraphReferences) bool,
 ) model.GraphReferences {
 	t.Helper()
-	deadline := time.Now().Add(eventFeedWait)
-	for {
-		started := time.Now()
-		answer := read()
-		took := time.Since(started)
-		if holds(answer) {
-			return answer
-		}
-		if took < referencesSinceWait {
-			t.Fatalf("%s answered %#v in %s, inside %s: the horizon held nothing back, so that is every edge it owes",
-				what, answer.Edges, took, referencesSinceWait)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s = %#v after %s, the last read taking %s and every read held past %s",
-				what, answer.Edges, eventFeedWait, took, referencesSinceWait)
-		}
+	answer := read()
+	if !holds(answer) {
+		t.Fatalf("%s answered %#v: the read waited for a horizon past every event before it, so that is every edge it owes",
+			what, answer.Edges)
 	}
+	return answer
 }
 
 // A since read answers every mention committed before it, also on a server where nothing else

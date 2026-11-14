@@ -154,12 +154,6 @@ type Deps struct {
 	// stall warning sees it inside its own patience.
 	HorizonStallAfter time.Duration
 	HorizonWarnEvery  time.Duration
-	// TestHookTimeout replaces how long a test hook waits for every process's acknowledgement
-	// (testHookTimeout, test_hooks_fanout.go). Zero keeps ten seconds; neither
-	// routes.BuildAppContext nor cmd/dispatch sets it, so every deployment with the hooks on and
-	// the browser harness run ten seconds. Only this package's tests set another, so a test
-	// proving a silent process is named does not sleep the full timeout.
-	TestHookTimeout time.Duration
 	// LiveSocketAge is how long a GET /ws/live socket lives before it closes with 4001 (max age),
 	// drawn as it opens. Nil draws it uniformly from [contracts.LiveSocketMinAge,
 	// contracts.LiveSocketMaxAge), so the sockets a deploy opened together do not all end
@@ -181,6 +175,10 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// Clock is the clock every timer of this package that a test asserts runs on: the drain's
+	// deadline, the keyed layer's leases and run bound, the listener lookups' windows. Nil, which
+	// every deployment leaves it, is clock.Real(); a test passes a clocktest.Fake and moves it.
+	Clock clock.Clock
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -201,10 +199,7 @@ type DepsInput struct {
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
-	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
-	// a test exercising a receipt timeout sets a short one rather than waiting that out.
-	EnvoyTimeout time.Duration
-	Docs         docs.API
+	Docs       docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
@@ -244,9 +239,6 @@ type DepsInput struct {
 	// thirty-second repeat of every event-horizon warning; see Deps.HorizonStallAfter.
 	HorizonStallAfter time.Duration
 	HorizonWarnEvery  time.Duration
-	// TestHookTimeout replaces the ten-second test-hook acknowledgement timeout; see
-	// Deps.TestHookTimeout.
-	TestHookTimeout time.Duration
 	// ListenerRosterUncached is for end-to-end test processes only; see
 	// Deps.ListenerRosterUncached.
 	ListenerRosterUncached bool
@@ -254,6 +246,9 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// Clock is the clock the API's timers and the listener client's window run on; see
+	// Deps.Clock. Nil is clock.Real().
+	Clock clock.Clock
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -283,8 +278,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
-		if input.EnvoyTimeout > 0 {
-			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
+		if input.Clock != nil {
+			options = append(options, envoy.WithClock(input.Clock))
 		}
 		envoyClient = envoy.New(envoyURL, options...)
 	}
@@ -332,10 +327,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
 		HorizonStallAfter:      input.HorizonStallAfter,
 		HorizonWarnEvery:       input.HorizonWarnEvery,
-		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		Clock:                  input.Clock,
 	}, nil
 }
 
@@ -375,7 +370,9 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime   context.Context
+	lifetime context.Context
+	// clock is Deps.Clock, clock.Real() where that is nil (register; directServer).
+	clock      clock.Clock
 	routeIndex []routeIndexEntry
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
@@ -422,9 +419,6 @@ type server struct {
 	// liveWriterBeforePick is each live socket's beforePick (live_socket.go): nil outside tests,
 	// and set by a test before the socket it drives opens.
 	liveWriterBeforePick func(socket *liveSocket, takesStream bool)
-	// agentWatchInterval is how often an agent view re-arms its session: agentStreamWatchInterval,
-	// which a test replaces.
-	agentWatchInterval time.Duration
 	// eventRelay is the live feed every events subscription and the delivery hub read (INFRA-66),
 	// on every server register mounts: it starts its listening connection on the first of them to
 	// subscribe and stops it with the last.
@@ -456,17 +450,6 @@ type server struct {
 	// http.Server.Shutdown finishes the requests in flight. A send bound to lifetime instead
 	// was cut off by SIGTERM, which cancels that context before the HTTP drain even begins.
 	detached backgroundWork
-	// requestKeyLease, requestKeyRenewal and requestKeyRunLimit replace a keyed request's lease
-	// (IdempotencyLease, a minute), how often a running handler renews it (keyedLeaseRenewal) and
-	// how long a handler runs (keyedHandlerLimit); zero, which every server the deployment builds
-	// leaves them, keeps those. Only a test sets them, so a handler that outlives its lease or its
-	// limit is the test's choice rather than minutes of wall clock.
-	requestKeyLease, requestKeyRenewal, requestKeyRunLimit time.Duration
-	// drainReadLimit replaces how long a drain waits for the rest of a request's body
-	// (bodyDrainLimit, a minute); zero, which every server the deployment builds leaves it, keeps
-	// that. Only a test sets it, so a body that stalls is the test's choice rather than a minute of
-	// wall clock.
-	drainReadLimit time.Duration
 	// repeatFoundInFlight is called when the keyed layer finds a repeat's key held by a first
 	// request still running, before it reads a byte of the repeat's body; nil, which every server
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
@@ -674,9 +657,12 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
+	s := &server{deps: deps, lifetime: lifetime, clock: deps.Clock, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
+	if s.clock == nil {
+		s.clock = clock.Real()
+	}
 	s.liveKinds = map[string]liveKind{
 		liveEventsView: {resumes: true, start: s.startEventsView},
 		liveAgentView:  {start: s.startAgentView},
@@ -684,7 +670,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	s.eventRelay = newEventStreamRelay(s, lifetime)
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
-	s.deliveryHub = newDeliveryHub(s, lifetime, clock.Real())
+	s.deliveryHub = newDeliveryHub(s, lifetime, s.clock)
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
 	}
@@ -822,13 +808,16 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 		defer closeConnection()
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		go func() {
-			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
+			// The heartbeat runs on the server's clock, so a test that drives a fake decides
+			// when the caller is resolved again rather than shortening the interval.
+			heartbeat := s.clock.NewTimer(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-heartbeat.C:
+				case <-heartbeat.C():
+					heartbeat.Reset(s.deps.StreamHeartbeat)
 					// The check resolves the credential the request was admitted with, from a
 					// detached copy of that request, which for a broker-issued token asks the
 					// broker's answer alone rather than the proof the upgrade already spent

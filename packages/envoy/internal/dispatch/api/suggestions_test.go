@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type testSuggestionOwner struct {
@@ -130,11 +133,12 @@ func TestRelatedCheckReportsNotMadeWhenItsContextIsDone(t *testing.T) {
 	_, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 
-	expired, cancel := context.WithTimeout(context.Background(), 0)
-	defer cancel()
-	<-expired.Done()
+	// The request has ended: a context the test cancels before it calls, which is the input under
+	// test rather than a wait of its own.
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	suggestions := srv.relatedCheck(expired, relatedInput{
+	suggestions := srv.relatedCheck(ended, relatedInput{
 		project: "ANY", text: "a title that would otherwise search",
 		source: suggestionSource{kind: "issue", issueKey: "ANY-1"},
 	})
@@ -236,13 +240,9 @@ func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 	}
 }
 
-// lockedSuggestionAllowance bounds only the time from the call's start to its query queuing
-// behind the test's lock: the project lookup's first statement, or the term picker's statement.
-// The worst whole filing on record under load was 737 ms.
-const lockedSuggestionAllowance = 5 * time.Second
-
 // suggestionsBehindLock locks table in ACCESS EXCLUSIVE mode, runs the related-item check on a
-// server whose allowance is lockedSuggestionAllowance, and answers what it returned. The call
+// server whose clock the test moves past the check's allowance once the call has queued behind
+// the lock, and answers what it returned. The call
 // runs on a one-connection store of its own, so the backend the wait watches
 // (storetest.WaitForQueuedBehind) is the call's and no other. Counting every backend queued
 // behind the lock is not enough: the issue create the tests seed schedules the spec's settlement,
@@ -276,15 +276,16 @@ func suggestionsBehindLock(
 
 	callDeps := deps
 	callDeps.Store = callStore
+	clock := clocktest.New(time.Now())
 	srv := directServer(callDeps)
-	srv.suggestionTimeout = lockedSuggestionAllowance
+	srv.clock = clock
 
 	lockTx, err := deps.Store.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin lock tx: %v", err)
 	}
-	// The call below ends on its own once its allowance does, so the receive that answers it
-	// returns before this rollback releases the lock.
+	// The call below ends once its allowance does, which the move past it reaches, so the receive
+	// that answers it returns before this rollback releases the lock.
 	t.Cleanup(func() { _ = lockTx.Rollback(context.Background()) })
 	// table is a literal from this file's callers, never input.
 	if _, err := lockTx.Exec(context.Background(), "lock table "+table+" in access exclusive mode"); err != nil {
@@ -295,13 +296,14 @@ func suggestionsBehindLock(
 	go func() {
 		answered <- srv.relatedCheck(context.Background(), relatedInput{project: project, text: text, source: source})
 	}()
-	// The call queues within milliseconds, and it ends on its own once its allowance does: the wait
-	// returns at once when it answers. So only a call that neither queued nor answered, one stuck
-	// somewhere other than this lock, holds the wait until the shared wait gives up.
+	// The call queues within milliseconds, and it ends once its allowance does, which only the
+	// move below reaches. So only a call that neither queued nor answered, one stuck somewhere
+	// other than this lock, holds the wait until the shared wait gives up.
 	if s, early := storetest.WaitForQueuedBehind(t, lockTx, callPID, answered); early {
-		t.Fatalf("the related-item check answered %+v before its query waited behind the lock on %s, want the %s allowance to end while it waits", s, table, lockedSuggestionAllowance)
+		t.Fatalf("the related-item check answered %+v before its query waited behind the lock on %s, want its allowance to end while it waits", s, table)
 	}
-	return <-answered
+	clock.Advance(relatedCheckAllowance)
+	return testwait.Receive(t, "the related-item check's answer once its allowance ended", answered)
 }
 
 // TestRelatedCheckRespectsDeadlineUnderLock: a reviewer once measured the decision lookup alone
@@ -606,6 +608,8 @@ func seedWriteSuggestion(
 	`, sourceKind, sourceIssueKey, askID, actorID, suggestedKind, suggestedID, issueKey); err != nil {
 		t.Fatalf("seed write_suggestions: %v", err)
 	}
+	// A write the test makes next must postdate the row on the database's clock.
+	awaitDatabaseClockPastSuggestions(t, srv.deps.Store.Pool)
 }
 
 type suggestionOutcomeRow struct {
@@ -641,8 +645,6 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenSourceCitesTarget(t *testing.T) {
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond) // the citation must postdate the suggestion row
-
 	closing := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+source.Key+"/messages", map[string]any{
 		"body": "Duplicate of dispatch://" + target.Key,
 	}, "alice")
@@ -673,8 +675,6 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenTargetUpdatedDirectly(t *testing.
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond)
-
 	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+target.Key+"/messages", map[string]any{
 		"body": "Adding the new detail here instead.",
 	}, "alice")
@@ -705,8 +705,6 @@ func TestSuggestionOutcomeSweepMarksOverriddenWhenSourceContinuesWithoutCitingTa
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond)
-
 	continued := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+source.Key+"/messages", map[string]any{
 		"body": "This is in fact a separate problem; continuing here.",
 	}, "alice")

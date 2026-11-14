@@ -6,7 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 )
 
 // endMeaningStatementsAt points searchMeaningScan's bound (searchMeaningStatementBound) at `at`
@@ -162,9 +163,11 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 // which is what it says when something broke.
 //
 // The check answers at once rather than at the end of its three-second meaning allowance, which
-// is what tells the two apart: the statement was ended, not waited out. The text shares one word
-// with the issue and means the same thing, so the keyword stage has the item to fall back on and
-// the meaning stage has a reason to be running at all.
+// is what tells the two apart: the statement was ended, not waited out. The check runs on a clock
+// that never moves, so its meaning deadline cannot pass: a keywords-only answer can only be the
+// statement's end. The text shares one word with the issue and means the same thing, so the
+// keyword stage has the item to fall back on and the meaning stage has a reason to be running at
+// all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Nightly snapshots finish late"
@@ -184,18 +187,13 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	}
 
 	endMeaningStatementsAt(t, "1ms")
-	started := time.Now()
+	srv.clock = clocktest.New(checkStart)
 	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
-	elapsed := time.Since(started)
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "meaning search did not answer within 3s" {
 		t.Fatalf("suggestions = %+v, want found by keywords only, the server having ended the meaning statement", suggestions)
 	}
 	if !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
 		t.Fatalf("related = %+v, want %s from the keyword search", suggestions.Related, key)
-	}
-	if elapsed >= relatedMeaningAllowance {
-		t.Fatalf("the check took %s, want it answered when the statement was ended rather than at the end of the "+
-			"%s meaning allowance", elapsed, relatedMeaningAllowance)
 	}
 }

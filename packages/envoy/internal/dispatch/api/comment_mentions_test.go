@@ -8,12 +8,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type commentMentionRead struct {
@@ -58,27 +59,42 @@ func decodeMentionedComment(t *testing.T, response *httptest.ResponseRecorder) m
 // settles each after the create has answered - and returns its attempts by target and attempt.
 func settledCommentDeliveries(t *testing.T, database *store.Store, commentID string) []model.CommentDelivery {
 	t.Helper()
+	return waitForCommentDeliveries(t, database, commentID, "no attempt pending", attemptsSettled)
+}
+
+// settledCommentDeliveriesOn is settledCommentDeliveries for a server on a fake clock whose
+// stand-in listener holds calls it never answers: each pass of the wait first moves that clock
+// through the waits the sender is in - each held call's window, and the take-over's backoff
+// between two tries - so the attempts settle without any of it costing wall clock.
+func settledCommentDeliveriesOn(
+	t *testing.T, database *store.Store, commentID string, fake *clocktest.Fake, calls *listenerCalls,
+) []model.CommentDelivery {
+	t.Helper()
 	return waitForCommentDeliveries(t, database, commentID, "no attempt pending", func(attempts []model.CommentDelivery) bool {
-		for _, attempt := range attempts {
-			if attempt.State == "pending" {
-				return false
-			}
-		}
-		return len(attempts) > 0
+		stepListenerWaits(fake, calls)
+		return attemptsSettled(attempts)
 	})
 }
 
+// attemptsSettled reports whether the comment has attempts and none of them is pending.
+func attemptsSettled(attempts []model.CommentDelivery) bool {
+	for _, attempt := range attempts {
+		if attempt.State == "pending" {
+			return false
+		}
+	}
+	return len(attempts) > 0
+}
+
 // waitForCommentDeliveries reads the comment's attempts, by target and attempt, until done accepts
-// them; want says what done waits for. Its patience covers a whole take-over window and ten
-// seconds past it, because a send on the mention sender's lanes may wait one out after the
-// comment's response - a mention of an ended session does, under a server running the production
-// window (listenerTakeoverWindow) - before its attempt settles.
+// them; want says what done waits for. A send on the mention sender's lanes may wait a take-over
+// window out after the comment's response - a mention of an ended session does, under a server
+// running the production window (listenerTakeoverWindow) - before its attempt settles.
 func waitForCommentDeliveries(
 	t *testing.T, database *store.Store, commentID, want string, done func([]model.CommentDelivery) bool,
 ) []model.CommentDelivery {
 	t.Helper()
-	deadline := time.Now().Add(listenerTakeoverWindow + 10*time.Second)
-	for {
+	return testwait.Until(t, fmt.Sprintf("comment %s's attempts to be %s", commentID, want), func() ([]model.CommentDelivery, bool) {
 		rows, err := database.Pool.Query(context.Background(), `
 			select `+commentDeliveryColumns+` from comment_deliveries where comment_id = $1 order by target, attempt
 		`, commentID)
@@ -91,14 +107,8 @@ func waitForCommentDeliveries(
 		if err != nil {
 			t.Fatalf("read comment %s attempts: %v", commentID, err)
 		}
-		if done(attempts) {
-			return attempts
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("comment %s attempts = %#v, want %s", commentID, attempts, want)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return attempts, done(attempts)
+	})
 }
 
 func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {

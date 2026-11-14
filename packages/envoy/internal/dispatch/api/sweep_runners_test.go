@@ -76,7 +76,7 @@ func sweepHorizon(pool *store.Pool) *events.Horizon {
 }
 
 // runSweep runs run on a goroutine until the test ends, and fails the test if it does not return
-// promptly once its context ends.
+// once its context ends.
 func runSweep(t *testing.T, run func(ctx context.Context)) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -87,20 +87,8 @@ func runSweep(t *testing.T, run func(ctx context.Context)) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the suggestion outcome sweep did not return within 10s of its context ending")
-		}
+		testwait.Receive(t, "the suggestion outcome sweep's return once its context ended", done)
 	})
-}
-
-// waitUntil polls condition until it holds, failing the test after within.
-func waitUntil(t *testing.T, within time.Duration, what string, condition func() bool) {
-	t.Helper()
-	if !testwait.Holds(within, 10*time.Millisecond, condition) {
-		t.Fatalf("timed out after %v waiting for %s", within, what)
-	}
 }
 
 // Two envoy-dispatch processes sweep one database, each through the sweep's woken loop and each
@@ -142,7 +130,7 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 		t.Fatalf("release the cursor: %v", err)
 	}
 
-	waitUntil(t, 30*time.Second, "one runner to judge the page and the other to read the cursor it advanced", func() bool {
+	testwait.Eventually(t, "one runner to judge the page and the other to read the cursor it advanced", func() bool {
 		return countStatements(recorded(), firstPassRead) == 1 && countStatements(recorded(), laterPageRead) >= 1
 	})
 	var cursor *int64
@@ -179,12 +167,14 @@ func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
 
 	const wakes = 5
 	for woken := 0; woken <= wakes; woken++ {
-		waitUntil(t, 10*time.Second, "the pass the last wake earned", func() bool { return passes() == woken+1 })
+		testwait.Eventually(t, "the pass the last wake earned", func() bool { return passes() == woken+1 })
 		if woken < wakes {
 			wake <- struct{}{}
 		}
 	}
-	time.Sleep(4 * sweepRunnerSchedule.minGap)
+	testwait.Span(t, 4*sweepRunnerSchedule.minGap, "a pass no wake earned would start on the loop's own goroutine once "+
+		"its gap passed on the real clock, which no state reports before the pass reads the cursor, the database is "+
+		"real I/O (no synctest), and no later action of the test is ordered after a pass that should not exist")
 	if ran := passes(); ran != wakes+1 {
 		t.Fatalf("a lone runner made %d passes for its start and %d wakes; want %d", ran, wakes, wakes+1)
 	}
