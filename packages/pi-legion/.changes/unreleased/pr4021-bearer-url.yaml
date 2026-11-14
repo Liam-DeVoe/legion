@@ -1,0 +1,7 @@
+kind: Fixed
+custom:
+  Issue: pr4021
+body: |-
+  A capability detail now masks a URL's password after a `Bearer` label: the bearer rule no
+  longer takes a URL's scheme as its value, which left the userinfo rule no scheme to match
+  (`Bearer http://u:SECRET` with a control character before the URL's `@`).

@@ -472,18 +472,23 @@ function truncateUtf8(text: string, max: number): string {
  * `packages/daemon/internal/capabilities` and in its order, which its comment explains; the shared
  * fixture names each with an example. A value class runs across a `HELD_SEQUENCE`, and a separator
  * takes a space or `HELD`. The userinfo rule starts only where a run of scheme characters starts.
- * The JWT rule starts nowhere its first segment's class could have run on from: not after held, a
- * C1 introducer or a value character, and not after a held `[` and its parameters, followed by any
- * final byte or by a `\uXXXX` escape whose backslash is that final byte. Its one lookbehind for the
- * held prefix reads like the daemon's rule, which matches that prefix with `eyJ` and gives it back.
- * It may start after an opener, which its first segment does not run across, and right after a
- * percent or `\u` escape that no held sequence closes. It may also start right after held when its
- * first segment crosses no held character and no opener, only a C1 introducer, and right after a
- * held `[`, its parameters and an optional final byte or `\uXXXX` when its first segment holds a C1
- * introducer and crosses nothing else held, as the daemon's comment explains. These segments stop
- * at the next held character, and a first segment ends at its one dot, so no start reads another's
- * run: JavaScriptCore backtracks, where the daemon's RE2 does not, and a start inside a run its
- * first segment reads through would read that run once per start.
+ * The bearer rule stands back from a URL after its label (`Bearer http://user:pw@host`): its value
+ * takes no `:`, so masking it would mask the scheme the userinfo rule anchors on, since `***://`
+ * is no scheme, and the userinfo would never be masked. Its negative lookahead for a scheme and
+ * `://` reads like the daemon's rule, which has no lookahead and so takes that `://` into its
+ * match and gives such a match back unchanged (`redactBearer`). The JWT rule starts nowhere its
+ * first segment's class could have run on from: not after held, a C1 introducer or a value
+ * character, and not after a held `[` and its parameters, followed by any final byte or by a
+ * `\uXXXX` escape whose backslash is that final byte. Its one lookbehind for the held prefix reads
+ * like the daemon's rule, which matches that prefix with `eyJ` and gives it back. It may start
+ * after an opener, which its first segment does not run across, and right after a percent or `\u`
+ * escape that no held sequence closes. It may also start right after held when its first segment
+ * crosses no held character and no opener, only a C1 introducer, and right after a held `[`, its
+ * parameters and an optional final byte or `\uXXXX` when its first segment holds a C1 introducer
+ * and crosses nothing else held, as the daemon's comment explains. These segments stop at the next
+ * held character, and a first segment ends at its one dot, so no start reads another's run:
+ * JavaScriptCore backtracks, where the daemon's RE2 does not, and a start inside a run its first
+ * segment reads through would read that run once per start.
  */
 const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
   [/(?<![a-z0-9+.-])([0-9+.-]*[a-z][a-z0-9+.-]*:\/\/)[^ /?#]+@/gi, "$1***@"],
@@ -512,7 +517,7 @@ const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
   ],
   [
     new RegExp(
-      String.raw`\b(bearer[ \ufffe\uffff]+)(?:[A-Za-z0-9._~+/=*-]|${HELD_SEQUENCE})+`,
+      String.raw`\b(bearer[ \ufffe\uffff]+)(?![a-z][a-z0-9+.-]*://)(?:[A-Za-z0-9._~+/=*-]|${HELD_SEQUENCE})+`,
       "gi"
     ),
     "$1***",
