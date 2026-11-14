@@ -3125,7 +3125,14 @@ func (kv *historyFailKeyValue) History(string, ...natsgo.WatchOpt) ([]natsgo.Key
 }
 
 // TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+// TestMain sizes the shared NATS server's account pool before the first test asks for an
+// account: this package's tests and subtests took 224 of them at this head, and a pool the run
+// outgrows doubles by a reload that races nats-server's own readers while this package's
+// parallel tests drive the server (testnats.FirstAccounts).
+func TestMain(m *testing.M) {
+	testnats.FirstAccounts = 512
+	os.Exit(testnats.Main(m))
+}
 
 // The registry's clock stamps what it records: an interest's UpdatedAt and a role claim's
 // ClaimedAt come from the clock Open was given, as the grace window does.

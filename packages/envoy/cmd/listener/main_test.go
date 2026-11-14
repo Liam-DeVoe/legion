@@ -5070,7 +5070,15 @@ func setupTestNATS(t *testing.T) *bus.Client {
 }
 
 // TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+// TestMain sizes the shared NATS server's account pool before the first test asks for an
+// account: this package's tests and subtests took 519 of them at this head, measured by reading
+// the server's count at the end of a run, and a pool the run outgrows doubles by a reload that
+// races nats-server's own readers while this package's parallel tests drive the server
+// (testnats.FirstAccounts).
+func TestMain(m *testing.M) {
+	testnats.FirstAccounts = 1024
+	os.Exit(testnats.Main(m))
+}
 
 // endInterestWatcherWhileConnected ends the interest registry's KV watcher while NATS stays
 // connected: deleting the bucket's stream makes the watcher's ordered consumer fail to reset.

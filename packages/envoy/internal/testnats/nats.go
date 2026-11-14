@@ -61,14 +61,23 @@ var (
 	sharedCleanup *sharedTB
 )
 
-// firstAccounts is how many accounts the shared server starts with. Every time a test asks for
+// FirstAccounts is how many accounts the shared server starts with. Every time a test asks for
 // one past them, the server doubles them by a reload: a server's start time grows faster than its
 // account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000). The reload's wait,
 // connectTimeout, caps that growth: at half a CPU, doubling 4,096 accounts took 36 s and 65 s in
-// two measurements, so the test that asks for account 4,097 fails. A package run takes one account
-// for each test and subtest that asks (103 for cmd/listener, 64 for internal/store), so -count=40
-// of cmd/listener in one binary reaches the ceiling.
-const firstAccounts = 256
+// two measurements, so the test that asks for account 4,097 fails.
+//
+// A package whose tests run in parallel sets this above its own demand from its TestMain, before
+// the first URL call, because a reload while another test's client is on the server is a data
+// race inside nats-server: ReloadOptions writes the server's options (server.go:1224) while a
+// client's goroutine reads them (stream.go:6365), which the race detector reports against
+// whichever test is running (run 43640601453, job 132587189318). A package run takes one account
+// for each test and subtest that asks: at this head 519 for cmd/listener, which sets it, 224 for
+// internal/store, 112 for internal/bus and under 100 for each of the six others. A repeat run
+// (-count=N) takes N times as many, because a test's account is freed for its cleanup's delete
+// and never handed out again, so such a run doubles the pool and can meet that race; a package's
+// own CI run, at -count=1, does not.
+var FirstAccounts = 256
 
 // init runs in every test binary that imports this package, whichever helper its tests use. Every
 // server these helpers start has no users unless a test configures some, and nats.go refuses an
@@ -130,7 +139,7 @@ func URL(t testing.TB) string {
 	}
 	sharedOnce.Do(func() {
 		sharedCleanup = &sharedTB{TB: t}
-		shared = startAccountServer(sharedCleanup, firstAccounts)
+		shared = startAccountServer(sharedCleanup, FirstAccounts)
 	})
 	if shared == nil {
 		t.Fatal("testnats: the package's shared NATS server did not start; the test that first asked for it reports why")
