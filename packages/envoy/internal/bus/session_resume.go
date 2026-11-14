@@ -50,42 +50,61 @@ func SessionResumeSubject(sessionID string) string {
 
 // SessionResumeRecord is the body of a session's resume record (SessionResumeSubject): the stream
 // sequence up to which the session's consumer had every message acked when that consumer was
-// deleted (ackFloor), capped at the stream's last sequence (recordResumeFloorAt), and the
-// identity of the stream those sequences belong to (StreamIDMetadataKey). A consumer created
-// again for the session with no start of its own starts at Floor + 1, one created from a caller's
-// start above Floor + 1 starts at Floor + 1 instead (SessionConsumers.create), and a record
-// naming another stream's identity is ignored by both, since its sequences name messages of a
-// stream this one is not.
+// deleted (ackFloor), or the sequence before the stream's first where that floor was past the
+// stream's end (recordResumeFloorAt), and the identity of the stream those sequences belong to
+// (StreamIDMetadataKey). A consumer created again for the session with no start of its own starts
+// at Floor + 1, one created from a caller's start above Floor + 1 starts at Floor + 1 instead
+// (SessionConsumers.create), and a record naming another stream's identity is ignored by both,
+// since its sequences name messages of a stream this one is not.
 type SessionResumeRecord struct {
 	Floor    uint64 `json:"floor"`
 	StreamID string `json:"stream_id"`
 }
 
-// recordResumeFloorAt publishes session sessionID's resume record, floor and the stream's own
+// recordResumeFloorAt publishes session sessionID's resume record, a floor and the stream's own
 // identity, on the session's resume lane (SessionResumeSubject), and returns the floor it
 // recorded. The newest record stands, so the write takes no precondition
 // (Client.publishStoredRaw).
 //
-// The floor recorded is floor capped at the stream's last sequence, as the stream read this call
-// makes reads it (streamState, whose read begins after this call, and so after the read of the
-// consumer the caller took floor from). A floor past the stream's end, which a consumer an
-// earlier build created there holds (ackFloor reads at least the sequence before its start),
-// names no stored message, so recording the last sequence instead loses nothing, and a consumer
-// created from the record (SessionConsumers.create) starts at the sequence after it and skips
-// nothing, even once the stream has grown past the floor asked. So a record this call writes never
-// holds a floor past the stream's end: the cap keeps the floor at or below the last sequence when
-// the record is written, and a loss that later cuts the stream below that floor removes the
-// record too, since the stream stored the record after the floor. Once the record's publish
-// succeeded, and only then, a floor this lowered is logged as a WARN line naming the session
-// (session_id), the floor asked (floor), the stream's last sequence it was recorded at
-// (stream_last_seq) and the stream's identity (stream_id). A call that fails, its stream read or
-// its publish, records nothing, logs nothing and returns 0 with its error.
+// The floor recorded is floor itself unless floor is past the stream's end: above the stream's
+// last sequence, as the stream read this call makes reads it (streamState, whose read begins
+// after this call, and so after the read of the consumer the caller took floor from). A floor
+// past the end is recorded as the sequence before the stream's first (firstStart minus one: the
+// stream's first sequence minus one, and 0 for a stream that has stored nothing), not as the
+// stream's last sequence. Such a floor is the ack floor of a consumer the stream's sequences went
+// back under (ackFloor reads no lower than the floor the server reports, and at least the
+// sequence before the start of a consumer that has acked nothing): one an earlier build created
+// past the end, before create reset every start past the end, or one a one-copy stream's loss of
+// every message left unreconciled (RestartAtFloor); or it is the sequence before the pending
+// start a restart of such a consumer left when its create failed (recordDroppedStart). Every
+// message the stream holds is then at a sequence below that consumer's next one, so none of them
+// was ever handed to it, the ones stored after its start was fixed among them. From the sequence
+// before the stream's first, the next create of the session starts at the stream's first
+// sequence, whether its start is 0, which starts at the record's floor plus one, or a caller's
+// start, which the record rule lowers to that floor plus one (SessionConsumers.create), as
+// create's reset of a start past the end and the relay's restart of a consumer past the end do
+// (RestartAtFloor), and it skips none of those messages. A record of the stream's last sequence
+// would start that create at the sequence after it and skip every one of them. The cost is the
+// reset's own: the session is handed again what it was handed before at the sequences the stream
+// holds, which its plugin's ledger drops within 72 hours (DELIVERY_DUPLICATE_WINDOW_MS) and
+// 20,000 frames (DELIVERY_LEDGER_LIMIT, packages/envoy-client/src/delivery-ledger.ts).
+//
+// So a record this call writes never holds a floor past the stream's end, and a loss that later
+// cuts the stream below a floor it recorded removes the record too, since the stream stored the
+// record after the floor. Once the record's publish succeeded, and only then, a floor past the
+// end is logged as a WARN line naming the session (session_id), the floor asked (floor), the floor
+// recorded (recorded_floor), the stream's last sequence (stream_last_seq) and the stream's
+// identity (stream_id). A call that fails, its stream read or its publish, records nothing, logs
+// nothing and returns 0 with its error.
 func (s *SessionConsumers) recordResumeFloorAt(ctx context.Context, sessionID string, floor uint64) (uint64, error) {
 	state, err := s.streamState(ctx)
 	if err != nil {
 		return 0, err
 	}
-	recorded := min(floor, state.lastSeq)
+	recorded, pastTheEnd := floor, floor > state.lastSeq
+	if pastTheEnd {
+		recorded = state.firstStart() - 1
+	}
 	record, err := json.Marshal(SessionResumeRecord{Floor: recorded, StreamID: state.id})
 	if err != nil {
 		return 0, err
@@ -93,10 +112,11 @@ func (s *SessionConsumers) recordResumeFloorAt(ctx context.Context, sessionID st
 	if _, err := s.client.publishStoredRaw(ctx, SessionResumeSubject(sessionID), record, nil); err != nil {
 		return 0, fmt.Errorf("bus: record the resume floor of session %q: %w", sessionID, err)
 	}
-	if recorded < floor {
-		s.logger.Warn("session resume floor past the stream's end, recorded at the stream's last sequence",
+	if pastTheEnd {
+		s.logger.Warn("session resume floor past the stream's end, recorded at the sequence before the stream's first",
 			slog.String("session_id", sessionID),
 			slog.Uint64("floor", floor),
+			slog.Uint64("recorded_floor", recorded),
 			slog.Uint64("stream_last_seq", state.lastSeq),
 			slog.String("stream_id", state.id))
 	}

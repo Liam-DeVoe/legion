@@ -18,12 +18,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// The WARN lines of a start and of a floor past the stream's end (create, recordResumeFloorAt). A
-// production check reads them by these texts, so the tests name them whole.
-const (
-	clampedStartLine = "session consumer start past the stream's end, created at the stream's first sequence"
-	cappedFloorLine  = "session resume floor past the stream's end, recorded at the stream's last sequence"
-)
+// clampedStartLine is the WARN line of a start past the stream's end, which create resets to the
+// stream's first sequence. A production check reads it by this text, so the tests name it whole.
+const clampedStartLine = "session consumer start past the stream's end, created at the stream's first sequence"
 
 // pastTheEnd is how far past the stream's last sequence a case puts its start: 2^20, far past any
 // sequence a test's stream reaches, so the start is past the end however many messages the case
@@ -177,23 +174,29 @@ func createAsAnEarlierBuild(t *testing.T, consumers *SessionConsumers, sessionID
 
 // A session consumer is never created past the stream's end, whichever source its start came from
 // (create): a caller's start, which consumerFor (cmd/listener) builds from a client's resume past
-// the end that names the stream's identity, and the pending start a restart (RestartAtFloor) left
-// past the end. Each is created at the stream's first sequence and answers that start; each writes
-// one WARN line naming the start create was asked for (asked_start), the last sequence of the read
-// that settled it (stream_last_seq), the stream's identity and the start it was created at, the
-// stream's first sequence (consumer_start); and each is handed every message stored on the
-// session's agent subject before the create, in stream order, and then the next one stored. A
-// consumer created past the end skips all of them, and one created at the sequence after the
-// stream's last skips the ones stored before it. A caller's start inside the stream, or at the
-// sequence after its last, is created where it was asked and writes no line.
+// the end that names the stream's identity; the pending start a restart (RestartAtFloor) left
+// past the end; and the floor of a session's resume record plus one. Each is created at the
+// stream's first sequence and answers that start; each writes one WARN line naming the start
+// create was asked for (asked_start), the last sequence of the read that settled it
+// (stream_last_seq), the stream's identity and the start it was created at, the stream's first
+// sequence (consumer_start); and each is handed every message stored on the session's agent
+// subject before the create, in stream order, and then the next one stored. A consumer created
+// past the end skips all of them, and one created at the sequence after the stream's last skips
+// the ones stored before it. A caller's start inside the stream, or at the sequence after its
+// last, is created where it was asked and writes no line.
 //
-// A session's resume record is no source of a start past the end: a delete records a floor no
-// higher than the stream's last sequence (recordResumeFloorAt), and a loss that cuts the stream
-// below that floor removes the record, which the stream stored after it, too.
+// The record is a source this build no longer writes: a delete whose floor is past the stream's
+// end records the sequence before the stream's first (recordResumeFloorAt), so the floor plus one
+// is the stream's first sequence and no create of this build reads a record past the end from one
+// of its own deletes. The base build's delete recorded the floor its consumer held, past the end
+// and all, so such a record stands through a rollout and after it for the stream's own retention,
+// and the case below publishes one as that build's delete left it. A loss that cuts the stream
+// below a record's floor removes the record, which the stream stored after it, too.
 //
 // The cases share the stream, whose first message is a bystander's at 1, so its first sequence is
 // 1 in every case. Each stores its own messages and then reads the stream's last sequence just
-// before its create, after the publishes of the cases before it.
+// before its create, after the publishes of the cases before it and after its own source's, since
+// the record's source stores a message of its own.
 func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
@@ -207,13 +210,14 @@ func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
 		session string
 		// source gives the case its start past the end, from the stream's last sequence before
 		// it, and returns the start the case passes to Ensure and the start create is then asked
-		// for, before the clamp.
-		source func(session string, lastSeq uint64) (startSeq, asked uint64)
+		// for, before the clamp. A source that stores a message of its own moves the stream's
+		// end, which the case reads again after it.
+		source func(t *testing.T, session string, lastSeq uint64) (startSeq, asked uint64)
 	}{
 		{
 			name:    "a caller's start",
 			session: "ses_past_end_caller",
-			source: func(_ string, lastSeq uint64) (uint64, uint64) {
+			source: func(_ *testing.T, _ string, lastSeq uint64) (uint64, uint64) {
 				// The start consumerFor builds from a resume of lastSeq + 2^20: the resume plus one.
 				return lastSeq + pastTheEnd + 1, lastSeq + pastTheEnd + 1
 			},
@@ -221,13 +225,30 @@ func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
 		{
 			name:    "a pending restart start",
 			session: "ses_past_end_pending",
-			source: func(session string, lastSeq uint64) (uint64, uint64) {
+			source: func(_ *testing.T, session string, lastSeq uint64) (uint64, uint64) {
 				// The start a restart leaves pending is the deleted consumer's floor plus one,
 				// past the end for a consumer an earlier build created there; Ensure creates the
 				// missing consumer at it, whatever its own start.
 				name, _ := SessionConsumerName(session)
 				consumers.setPendingStart(name, lastSeq+pastTheEnd)
 				return 0, lastSeq + pastTheEnd
+			},
+		},
+		{
+			name:    "a resume record past the end",
+			session: "ses_past_end_record",
+			source: func(t *testing.T, session string, lastSeq uint64) (uint64, uint64) {
+				// The record the base build's delete left for a consumer past the stream's end,
+				// whose floor it recorded as the consumer held it: this build records the
+				// sequence before the stream's first instead (recordResumeFloorAt), and such a
+				// record stands through a rollout. A create with no start of its own starts at
+				// its floor plus one, which is past the stream's end.
+				record, err := json.Marshal(SessionResumeRecord{Floor: lastSeq + pastTheEnd, StreamID: id})
+				if err != nil {
+					t.Fatalf("marshal the resume record of %s: %v", session, err)
+				}
+				publishStored(t, owner, SessionResumeSubject(session), string(record))
+				return 0, lastSeq + pastTheEnd + 1
 			},
 		},
 	} {
@@ -244,7 +265,10 @@ func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
 			if first != 1 {
 				t.Fatalf("the stream's first sequence is %d, want 1, the first bystander's: the case needs a first sequence below the messages it stored at %v", first, stored)
 			}
-			startSeq, asked := tc.source(tc.session, lastSeq)
+			startSeq, asked := tc.source(t, tc.session, lastSeq)
+			// A source that stored a message of its own, as the resume record's did, moved the
+			// stream's end, so the end the create reads is read again after it.
+			lastSeq = lastSeqOf(t, consumers)
 			start, err := consumers.Ensure(ctx, tc.session, []string{agent}, startSeq)
 			if err != nil {
 				t.Fatalf("Ensure: %v", err)
@@ -470,56 +494,55 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequen
 	})
 }
 
-// A delete of a consumer an earlier build left past the stream's end records the stream's last
-// sequence as the session's floor and answers it (Delete, recordResumeFloorAt): the consumer's
-// floor, the sequence before its start, names no stored message, and a record of it would start
-// the session's next consumer past every message stored until the stream grows past that floor.
-// The cap writes one WARN line naming the floor asked (floor), the stream's last sequence
-// (stream_last_seq) and the stream's identity, and the consumer created again from the record
-// (Ensure with no start of its own) starts at the sequence after that last one, is no clamp, and
-// writes no clamp line. The record's own publish moves the stream's end by one, so the case
-// compares with the last sequence read just before the consumer's create (createAsAnEarlierBuild),
-// which stores nothing.
-func TestADeleteOfAConsumerPastTheEndRecordsTheStreamsLastSequence(t *testing.T) {
-	owner, consumers, logs := sessionConsumersLogging(t)
+// pastStreamEnd judges a sequence past the end of the read it was handed against a second stream
+// read, and answers past the end only where the sequence is past that newer read's end too, so a
+// sequence that is not past the stream's real end is never read as past it. The read it hands
+// back is the one that settled it, which the caller takes its Gap, its StreamID and, for a start
+// it resets, its first sequence from (create, keepAtFloor).
+//
+// The read a caller holds can trail the sequence it fixed: create's first read can begin before
+// the message its start is then fixed to was stored (Client.NextStoredMessage), and keepAtFloor's
+// read is joined before the consumer's info is read (RestartAtFloor), so it can begin before the
+// consumer's own next sequence was reached. This case is that read: the stream's real state with
+// its last sequence lowered by two, as a read that began two messages ago holds it. Each sequence
+// above that stale end and at or below the sequence after the stream's real last is not past the
+// end, and the read that says so is the real one. A sequence past the stream's real end is the
+// control: it is past the end, from that same second read.
+func TestASequencePastAStaleStreamReadIsJudgedAgainstASecondRead(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
-	const session = "ses_deleted_past_end"
-	agent := contracts.AgentSubject(session)
-	filters := []string{agent}
 	for i := range 3 {
-		publishStored(t, owner, contracts.AgentSubject("ses_deleted_past_end_bystander"), fmt.Sprintf("bystander %d", i))
+		publishStored(t, owner, contracts.AgentSubject("ses_past_stream_end"), fmt.Sprintf("stored %d", i))
 	}
-	id := streamIDOf(t, consumers)
-	lastSeq := createAsAnEarlierBuild(t, consumers, session, filters, pastTheEnd)
+	live := streamStateOf(t, consumers)
+	if live.lastSeq < 3 {
+		t.Fatalf("the stream's last sequence is %d, want at least 3, the messages stored above: the case needs a read it can lower", live.lastSeq)
+	}
+	stale := live
+	stale.lastSeq = live.lastSeq - 2
 
-	floor, err := consumers.Delete(ctx, session, nil)
-	if err != nil {
-		t.Fatalf("delete: %v", err)
+	for _, seq := range []uint64{live.lastSeq, live.lastSeq + 1} {
+		read, past, err := consumers.pastStreamEnd(ctx, stale, seq)
+		if err != nil {
+			t.Fatalf("pastStreamEnd of %d against a read that ends at %d: %v", seq, stale.lastSeq, err)
+		}
+		if past {
+			t.Errorf("pastStreamEnd of %d against a read that ends at %d = past the end; want it judged against the stream's own end %d, which it is not past", seq, stale.lastSeq, live.lastSeq)
+		}
+		if read != live {
+			t.Errorf("pastStreamEnd of %d against a read that ends at %d answered the read %+v; want %+v, the second read it made, whose last sequence is the stream's own", seq, stale.lastSeq, read, live)
+		}
 	}
-	if floor != lastSeq {
-		t.Errorf("the delete of a consumer created at %d answered the floor %d, want %d, the stream's last sequence", lastSeq+pastTheEnd, floor, lastSeq)
-	}
-	if floor, recorded, err := consumers.resumeFloor(ctx, session, id); err != nil || !recorded || floor != lastSeq {
-		t.Errorf("the session's resume record = floor %d, recorded %t, %v; want the floor %d of stream %s, the stream's last sequence, not the floor %d past it", floor, recorded, err, lastSeq, id, lastSeq+pastTheEnd-1)
-	}
-	requireOneLine(t, logs, "WARN", cappedFloorLine, session, map[string]any{
-		"floor":           lastSeq + pastTheEnd - 1,
-		"stream_last_seq": lastSeq,
-		"stream_id":       id,
-	})
 
-	start, err := consumers.Ensure(ctx, session, filters, 0)
+	beyond := live.lastSeq + 2
+	read, past, err := consumers.pastStreamEnd(ctx, stale, beyond)
 	if err != nil {
-		t.Fatalf("ensure after the delete: %v", err)
+		t.Fatalf("pastStreamEnd of %d, past the stream's end: %v", beyond, err)
 	}
-	if !start.Created || start.StartSeq != lastSeq+1 {
-		t.Errorf("Ensure after the delete = %+v; want the consumer created at %d, the sequence after the floor the delete recorded", start, lastSeq+1)
+	if !past {
+		t.Errorf("pastStreamEnd of %d = not past the end, the stream's last sequence being %d; want it past the end", beyond, live.lastSeq)
 	}
-	requireConsumerStart(t, consumers, session, lastSeq+1, "the sequence after the floor the delete recorded")
-	if lines := sessionLines(t, logs, clampedStartLine, session); len(lines) != 0 {
-		t.Errorf("the log holds %v for the create from the record; want no clamp line: the recorded floor is not past the stream's end", lines)
+	if read != live {
+		t.Errorf("pastStreamEnd of %d answered the read %+v; want %+v, the second read it made", beyond, read, live)
 	}
-	written := publishStored(t, owner, agent, "written after the create")
-	requireNext(t, pullSession(t, consumers, session), written,
-		"the first message stored on the session's agent subject after the floor the delete recorded")
 }

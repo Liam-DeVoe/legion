@@ -4602,7 +4602,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   That restart keeps no consumer whose next sequence, its ack floor plus one, is past the sequence after the stream's last: it deletes the consumer and creates it at that next sequence, and the create clamps that start to the stream's first sequence (`bus.SessionConsumers.RestartAtFloor`).
   `keepAtFloor` first holds that next sequence to a second stream read, because its first read can begin before the consumer's info was read and so trail the consumer.
   `KeepListed` answers not kept with no second read, because its one read begins after the list that read the consumer.
-  A delete of such a consumer records the stream's last sequence as its floor ("The resume record each delete writes" below).
+  A delete of such a consumer records the sequence before the stream's first as its floor, so its next consumer starts at the stream's first sequence too ("The resume record each delete writes" below).
   `Ensure` does not check a consumer that exists against the stream's end, because that check would cost a stream read on every registration, so the relay's restart is what repairs it.
 
 - **Data loss:** a stream that lost data can end below a consumer's start.
@@ -4636,8 +4636,8 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   Its keys are `session_id`, `asked_start` (the start before the clamp, after the record rule where that applied; for a restart, the sequence after the ack floor it read), `stream_last_seq` (the last sequence of the read that settled the clamp), `stream_id` and `consumer_start` (the clamped start, the first sequence of that read, at most `stream_last_seq + 1`).
   INFO `session consumer created at its resume record's floor, below the start the caller asked` reports a create that lowered a caller's start to the record's floor plus one.
   Its keys are `session_id`, `asked_start` (the caller's start), `record_floor` and `stream_id`, and its count is how often the record rule lowers a start.
-  WARN `session resume floor past the stream's end, recorded at the stream's last sequence` reports a resume record whose floor was capped at the stream's last sequence.
-  Its keys are `session_id`, `floor` (the floor asked), `stream_last_seq` (the floor recorded) and `stream_id`.
+  WARN `session resume floor past the stream's end, recorded at the sequence before the stream's first` reports a resume record whose floor was past the stream's end and was recorded at the sequence before the stream's first instead.
+  Its keys are `session_id`, `floor` (the floor asked), `recorded_floor` (the floor recorded, the stream's first sequence minus one and 0 for an empty stream), `stream_last_seq` and `stream_id`.
   Each sequence is a JSON number (`slog.Uint64`), and each id is a JSON string (`slog.String`).
   A create line is written only after the server confirmed the create (`upsert(..., "create")` returned no error), so a create that failed writes none, and the retry that succeeds writes one.
   A create whose answer was lost while the server applied it writes no line.
@@ -4661,15 +4661,17 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 
 - **The resume record each delete writes:** before each delete the listener records the consumer's ack floor and the stream's identity on the session's resume lane, `notifications.envoy.resume.<session id>` (`bus.SessionResumeSubject`), one message per session:
   the stream carries that prefix (`bus.StreamCarriedSubjects`) where no consumer filter takes it (`bus.StreamSubjects`, and `consumerFilterSubjects` for a legacy durable's), no session may register a topic reaching it (`bus.ReachesPrivateStreamSubject`), and `POST /v1/messages/publish` refuses a topic under it `400`.
-  The floor recorded is capped at the stream's last sequence, from the stream read the record's write makes (`bus.SessionConsumers.recordResumeFloorAt`), and `Delete` returns the floor it recorded.
-  A consumer an earlier build created past the end holds a floor past the end, which names no stored message, so the record holds the stream's last sequence instead, and a consumer created from it skips nothing, even after the stream grows past the floor asked.
-  The listener logs each floor it capped with the floor WARN line ("The log lines of a start" above).
+  The floor recorded is the consumer's ack floor, from the stream read the record's write makes (`bus.SessionConsumers.recordResumeFloorAt`), and `Delete` returns the floor it recorded.
+  A floor past the stream's end is recorded as the sequence before the stream's first, 0 for an empty stream, and not as the stream's last sequence.
+  Such a floor is a consumer's whose stream's sequences went back: every message the stream holds is below its next sequence and was never handed to it, so the session's next consumer starts at the stream's first sequence, the floor plus one, and skips none of them.
+  The session is handed again what it took at those sequences, which its plugin's ledger drops within 72 hours (`DELIVERY_DUPLICATE_WINDOW_MS`) and the 20,000 frames it holds (`DELIVERY_LEDGER_LIMIT`, `packages/envoy-client/src/delivery-ledger.ts`).
+  The listener logs each such floor with the floor WARN line ("The log lines of a start" above).
   A consumer created for a session that carries no resume point of its own starts at that floor plus one rather than at the stream's end, so the session loses nothing it had not acked;
   a record naming another `envoy_stream_id` is ignored, and a record expires with the stream's own 72-hour retention, by when its floor would name a sequence the stream no longer holds.
   A consumer created from a caller's start reads the record too (the record rule, "Settings" above): a caller's start above the floor plus one starts at the floor plus one, where the record names the stream's current `envoy_stream_id`.
-  The rule lowers every such start, not only one past the stream's end, so the session is given again the messages after the floor up to its resume point, and its plugin's ledger drops them, up to the 20,000 frames the ledger holds (`DELIVERY_LEDGER_LIMIT`, `packages/envoy-client/src/delivery-ledger.ts`).
+  The rule lowers every such start, not only one past the stream's end, so the session is given again the messages after the floor up to its resume point, and its plugin's ledger drops them.
   That is rare: the client raises its resume point in the same step that sends `done`, so the point stands above the floor only where a `done` it sent did not become the server's ack before the delete, or where a frame the server delivered never reached the client.
-  In that second case the rule hands the session a message that a create at its resume point would skip.
+  In that second case the rule hands the session a message a create at its resume point would skip.
   Only `Delete` and `recordDroppedStart` write a record, and a restart's delete writes none, so a consumer that goes without a `Delete` leaves the previous record standing for its 72 hours.
   Two kinds of consumer go that way: one the server removed on its inactive threshold, and one a restart deleted on a listener that then stopped before its create.
   The server's removal of a consumer on its inactive threshold writes no record, so that case keeps today's behaviour, a create at the caller's start, clamped, unless an older record of the same `envoy_stream_id` still stands.
@@ -4679,7 +4681,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   A record read that fails fails the create, for a caller's start as for a start of 0 (`bus.SessionConsumers.resumeFloor`), so no consumer is created that could skip what the record protects.
   A registration is then refused `503 consumer_error`, or `503 no_grant` where the server refused the read for want of a grant, and its next heartbeat tries again.
   A repair logs the failure.
-  A delete whose resume record could not be published deletes nothing and leaves that consumer to the next pass.
+  A delete whose resume record could not be published deletes nothing, leaving it to the next pass.
 
 - **Repairing it:** a consumer delete and a registration of the same session repair each other through the bucket, and every repair writes what the bucket's newest record and row ask for.
   A registration repairs its session's consumer once it has written that entry, through the same path the delete's repair takes: it reads the record and the interest row the bucket then holds and makes the consumer what they ask for, creating it where a delete took it away, at the ack floor its own consumer call read, and setting its filter where the live one is not what that row's topics build (`listenerDeps.registerPass`, which writes the entry, and `sessionDelivery.confirmRegistered` over `repairRegistered`; the call itself judges whether anything changed, `bus.SessionConsumers.Ensure`).

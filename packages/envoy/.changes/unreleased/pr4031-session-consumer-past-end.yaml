@@ -8,18 +8,23 @@ body: |-
   pending restart start), is set to the stream's first sequence, as Kafka's `earliest` reset
   policy does: a client reports only sequences the server handed it, so the messages now at
   those sequences were never handed to the session, and the consumer hands over every one of
-  them. The client's delivery ledger drops by identity any message it was handed before. The
-  registration answer's `consumer_start` gives that start, and the listener writes one WARN line
-  for each such create:
+  them. The client's delivery ledger drops by identity any message it was handed before, within
+  72 hours (`DELIVERY_DUPLICATE_WINDOW_MS`) and the 20,000 frames it holds
+  (`DELIVERY_LEDGER_LIMIT`). The registration answer's `consumer_start` gives that start, and
+  the listener writes one WARN line for each such create:
   `session consumer start past the stream's end, created at the stream's first sequence`.
   A start from a client's resume point or from the repair that is above the session's resume
   record floor + 1 is lowered to that floor + 1 (one INFO line), so a session that comes back
   with the same resume point after a deregistration gets the messages stored while it was away
-  and is not handed again what it acked. A delete records a resume floor no higher than the
-  stream's last sequence (one WARN line). After a one-copy stream lost data, a restart of a
-  consumer starts at the sequence after the ack floor the server reports, so the messages that
-  still wait for an ack are delivered again. A consumer whose ack floor the server reports above
-  the stream's last sequence, because the stream's sequences went back when a one-copy stream
-  lost every message, is restarted at the stream's first sequence at the relay's next restart of
-  the session, through the same reset and its WARN line, so it gets the messages now stored at
-  those sequences. This includes a consumer that an earlier build created past the end.
+  and is not handed again what it acked. A delete whose floor is past the stream's end records
+  the sequence before the stream's first, not the stream's last sequence, with one WARN line:
+  `session resume floor past the stream's end, recorded at the sequence before the stream's first`.
+  So the session's next consumer starts at the stream's first sequence too, through the same
+  reset, and skips none of the messages the stream stored after that consumer's start was fixed.
+  After a one-copy stream lost data, a restart of a consumer starts at the sequence after the
+  ack floor the server reports, so the messages that still wait for an ack are delivered again.
+  A consumer whose ack floor the server reports above the stream's last sequence, because the
+  stream's sequences went back when a one-copy stream lost every message, is restarted at the
+  stream's first sequence at the relay's next restart of the session, through the same reset and
+  its WARN line, so it gets the messages now stored at those sequences. This includes a consumer
+  that an earlier build created past the end.

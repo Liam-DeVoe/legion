@@ -203,8 +203,8 @@ type SessionConsumers struct {
 // INFO line of a caller's start it lowered to the session's resume record, and the WARN line of
 // a start past the stream's end it created at the stream's first sequence instead; and where
 // every resume record it writes logs the WARN line of a floor past the stream's end it recorded
-// at the stream's last sequence (recordResumeFloorAt). slog.Default() stands in for a nil
-// logger. The listener passes its own JSON logger (cmd/listener connectSessionDelivery,
+// at the sequence before the stream's first (recordResumeFloorAt). slog.Default() stands in for
+// a nil logger. The listener passes its own JSON logger (cmd/listener connectSessionDelivery,
 // logging.Logger.Slog), so those lines carry its machine_id as its other session-consumer lines
 // do, and it never sets the default instead (store.WithLogger says why). It is a parameter for
 // the reason inactiveThreshold is: no create or record runs before the logger is set, and
@@ -569,20 +569,29 @@ func (state sessionStreamState) firstStart() uint64 {
 // registered meanwhile creates it at the sequence after this floor
 // (cmd/listener repairRegistered). It is the consumer's ack floor (ackFloor) for a consumer
 // this call deleted, and the sequence before the pending start for a missing consumer whose
-// start this call dropped (recordDroppedStart), each capped at the stream's last sequence
-// (recordResumeFloorAt): a floor past the stream's end, which a consumer an earlier build
-// created there holds, names no stored message, and is recorded and returned as the stream's
-// last sequence instead.
+// start this call dropped (recordDroppedStart); and where that floor is past the stream's end,
+// which a consumer an earlier build created there holds and one a one-copy stream's whole loss
+// left unreconciled holds too, it is recorded and returned as the sequence before the stream's
+// first instead (recordResumeFloorAt), the stream's first sequence minus one and 0 for an empty
+// stream, not as the stream's last sequence. The messages the stream holds at the sequences up
+// to its last were stored after that consumer's start was fixed and were never handed to it, so
+// the next create of the session starts at the stream's first sequence, as create's reset of a
+// start past the end and the relay's restart do, and skips none of them. The session is then
+// handed again what it was handed before at those sequences, which its plugin's ledger drops
+// within 72 hours (DELIVERY_DUPLICATE_WINDOW_MS) and 20,000 frames (DELIVERY_LEDGER_LIMIT,
+// packages/envoy-client/src/delivery-ledger.ts).
 //
 // The floor is 0 where this call recorded nothing, which is each of: a session id that names no
-// consumer; a consumer the stream no longer holds with no pending start behind it; and a floor
-// of 0 recorded for a consumer that had acked nothing, which is the same 0 to the caller and
-// means the same thing to it, since a create at the sequence after 0 is a create at the first
-// sequence the stream holds. A caller reads 0 as "no floor to raise the record's own start
-// to", which is what registeredTarget does with it. A delete whose resume record could not be
-// published returns 0 with its error and deletes nothing: the sweep reaches that session again
-// next pass, so no consumer is deleted with its position unrecorded. A delete whose record
-// landed and whose own call then failed returns that recorded floor with its error.
+// consumer; a consumer the stream no longer holds with no pending start behind it; a floor of 0
+// recorded for a consumer that had acked nothing; and the 0 a floor past the end records for a
+// stream whose first sequence is 1, as a stream that has aged nothing out has. Each of those is
+// the same 0 to the caller and means the same thing to it, since a create at the sequence after
+// 0 is a create at the first sequence the stream holds. A caller reads 0 as "no floor to raise
+// the record's own start to", which is what registeredTarget does with it. A delete whose
+// resume record could not be published returns 0 with its error and deletes nothing: the sweep
+// reaches that session again next pass, so no consumer is deleted with its position unrecorded.
+// A delete whose record landed and whose own call then failed returns that recorded floor with
+// its error.
 //
 // Dropping the consumer's pending start (RestartAtFloor) goes before the delete, and that order
 // is what makes the delete final: a pending start left standing would have the next registration
@@ -618,10 +627,13 @@ func (s *SessionConsumers) Delete(ctx context.Context, sessionID string, listed 
 // start behind it is one a restart (RestartAtFloor) deleted and did not create again, so that
 // pending start - the sequence the restart would have created the consumer at - is the one
 // position anyone holds for the session, and the record this writes holds the sequence before
-// it, the floor that restart read, capped at the stream's last sequence as every record is
-// (recordResumeFloorAt, SessionResumeSubject). Clearing the start with nothing recorded would
-// leave the session's position nowhere, which is what the delete promises never to do, so a
-// publish that failed returns its error and clears nothing, as it does for a consumer that is
+// it, the floor that restart read, or the sequence before the stream's first where that floor is
+// past the stream's end, as every record does (recordResumeFloorAt, SessionResumeSubject): a
+// restart of a consumer past the end leaves such a pending start, and the next create of the
+// session then starts at the stream's first sequence and skips none of the messages the stream
+// holds, which were never handed to that consumer. Clearing the start with nothing recorded
+// would leave the session's position nowhere, which is what the delete promises never to do, so
+// a publish that failed returns its error and clears nothing, as it does for a consumer that is
 // there. A missing consumer with no pending start has no position to record, is no error, and
 // answers the floor of a call that recorded nothing: 0.
 func (s *SessionConsumers) recordDroppedStart(ctx context.Context, sessionID, name string) (uint64, error) {
