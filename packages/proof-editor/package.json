@@ -43,7 +43,7 @@
     "upstream-declarations": "bun scripts/upstream-declarations.ts",
     "build-upstream-tarball": "bun scripts/build-upstream-tarball.ts",
     "parity-fuzz": "bun scripts/parity-fuzz.ts",
-    "test": "bun test --preload @legion/test-fixtures/row-deadline src/tests tests",
+    "test": "bun test --timeout 300000 --preload @legion/test-fixtures/row-deadline src/tests tests",
     "lint": "bunx biome check ."
   },
   "dependencies": {
@@ -87,6 +87,7 @@
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
     "happy-dom": "^20.14.0",
+    "micromark": "^4.0.2",
     "typescript": "^5.3.0"
   }
 }

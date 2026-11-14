@@ -712,6 +712,26 @@ const EXCERPT_SCAN_LIMIT = 64 * 1024;
 const BEARER_PIECE = 8;
 
 /**
+ * The work excerpts have done in this process, counted where it is spent, so a test holds it to
+ * the size of what an excerpt reads rather than to the time it took: each match the bearer
+ * redaction's scans visit (`redactBearer`), and each character a pattern pass of `excerpt` is
+ * handed. A step a regular expression takes inside one pass is not counted, because
+ * JavaScriptCore counts none: a pattern that backtracks within a pass costs more than this says.
+ */
+let bearerMatchesVisited = 0;
+let patternCharactersHanded = 0;
+
+/** How many matches the bearer redaction's scans have visited in this process. */
+export function bearerRedactionMatches(): number {
+  return bearerMatchesVisited;
+}
+
+/** How many characters the pattern passes of excerpts have been handed in this process. */
+export function excerptPatternCharacters(): number {
+  return patternCharactersHanded;
+}
+
+/**
  * The first `EXCERPT_SCAN_LIMIT` characters of `text`, each run of `bearer`'s characters at least
  * `BEARER_PIECE` long replaced with one `REDACTED`. Every piece of that length starting inside the
  * limit is found (one that runs past it reads up to `BEARER_PIECE - 1` characters beyond), so a
@@ -733,6 +753,7 @@ function redactBearer(text: string, bearer: string): string {
   for (const piece of pieces) {
     let found = scanned.indexOf(piece);
     while (found !== -1) {
+      bearerMatchesVisited++;
       covered.fill(1, found, found + length);
       found = scanned.indexOf(piece, found + 1);
     }
@@ -758,17 +779,26 @@ function redactBearer(text: string, bearer: string): string {
  * a tag holds no `<`, and a script or style block left open runs to the end.
  */
 function excerpt(text: string, token: string): string {
-  const plain = redactBearer(text, token.trim())
-    .replace(/<(script|style)\b[^<>]*>(?:[\s\S]*?<\/\1\s*>|[\s\S]*$)/gi, " ")
-    .replace(/<[^<>]*>/g, " ");
-  return textHead(
-    plain
-      .replace(
-        /(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token)\s+)?)[^\s"'<>,;]+/gi,
-        `$1${REDACTED}`
-      )
-      .replace(/(\bbearer\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
+  const withoutBlocks = patternPass(
+    redactBearer(text, token.trim()),
+    /<(script|style)\b[^<>]*>(?:[\s\S]*?<\/\1\s*>|[\s\S]*$)/gi,
+    " "
   );
+  const withoutTags = patternPass(withoutBlocks, /<[^<>]*>/g, " ");
+  const withoutAuthorization = patternPass(
+    withoutTags,
+    /(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token)\s+)?)[^\s"'<>,;]+/gi,
+    `$1${REDACTED}`
+  );
+  return textHead(
+    patternPass(withoutAuthorization, /(\bbearer\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
+  );
+}
+
+/** `text` with `pattern` replaced, counting the characters the pass is handed. */
+function patternPass(text: string, pattern: RegExp, replacement: string): string {
+  patternCharactersHanded += text.length;
+  return text.replace(pattern, replacement);
 }
 
 /**

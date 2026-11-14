@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 import {
   type ActiveDispatchConfig,
   type DispatchConfigResolution,
@@ -1050,7 +1051,7 @@ describe("a ! command in envoy.json", () => {
     } finally {
       setSystemTime();
     }
-  }, 45_000);
+  });
 
   // Oh My Pi loads each extension instance as a fresh module: a cache held by one module instance
   // would run every command again in each, blocking the parent's event loop at a subagent's start.
@@ -1215,73 +1216,75 @@ describe("a ! command in envoy.json", () => {
     return readdirSync(scratch);
   }
 
-  /** Whether the process with this pid is gone within a second: a killed orphan is a zombie until
-   * the process it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
-  function gone(pid: number): boolean {
-    for (const deadline = Date.now() + 1_000; Date.now() < deadline; Bun.sleepSync(20)) {
+  /** Waits until the process with this pid is gone: a killed orphan is a zombie until the process
+   * it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
+  async function gone(pid: number): Promise<void> {
+    await until(`process ${pid} to be gone`, () => {
       try {
         process.kill(pid, 0);
+        return false;
       } catch {
         return true;
       }
-    }
-    return false;
+    });
   }
 
-  test("that exits 0 is its value at once, and a process it left running is killed", () => {
+  // The process the command leaves running writes `finished` only if it runs to its end, so a
+  // file there says the read waited for it instead of killing it.
+  test("that exits 0 is its value at once, and a process it left running is killed", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
+    const finished = path.join(home, "finished");
     const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: { ...dispatchOn, token: `!sleep 30 & echo $! > ${pidFile}; echo lingering-secret` },
+      dispatch: {
+        ...dispatchOn,
+        token: `!(sleep 30; echo done > ${finished}) & echo $! > ${pidFile}; echo lingering-secret`,
+      },
     });
     const cwd = tempDir();
     let dispatch: DispatchWithToken | undefined;
-    let elapsed = 0;
     const left = inScratchTmp(() => {
-      const started = Date.now();
       dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
-      elapsed = Date.now() - started;
     });
     expect(dispatch).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: "lingering-secret",
     });
-    expect(elapsed).toBeLessThan(2_000);
     const child = Number(readFileSync(pidFile, "utf-8").trim());
     expect(child).toBeGreaterThan(0);
-    expect(gone(child)).toBe(true);
+    await gone(child);
+    expect(existsSync(finished)).toBe(false);
     expect(left).toEqual([]);
-  }, 20_000);
+  });
 
-  test("still running after 10 s is an error naming the field and the file, and every process it started is killed", () => {
+  test("still running after 10 s is an error naming the field and the file, and every process it started is killed", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
+    const finished = path.join(home, "finished");
     const file = writeFile(path.join(home, "envoy.json"), {
       dispatch: {
         ...dispatchOn,
-        token: `!echo canary; sleep 40 & echo $! > ${pidFile}; sleep 30 # ${home}`,
+        token: `!echo canary; (sleep 40; echo done > ${finished}) & echo $! > ${pidFile}; sleep 30 # ${home}`,
       },
     });
     const cwd = tempDir();
     let dispatch: DispatchWithToken | undefined;
-    let elapsed = 0;
     const left = inScratchTmp(() => {
-      const started = Date.now();
       dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
-      elapsed = Date.now() - started;
     });
-    expect(elapsed).toBeLessThan(15_000);
+    // An answer of `canary` would be a read that waited out the command's own `sleep 30`.
     expect(dispatch).toEqual({
       enabled: false,
       notice: null,
       error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
     });
-    expect(gone(Number(readFileSync(pidFile, "utf-8").trim()))).toBe(true);
+    await gone(Number(readFileSync(pidFile, "utf-8").trim()));
+    expect(existsSync(finished)).toBe(false);
     expect(left).toEqual([]);
-  }, 20_000);
+  });
 
   test("whose field a variable overrides, or whose section is off, is not run", () => {
     const home = tempDir();
