@@ -1,17 +1,16 @@
 package bus
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A stored-message read returns the first message at or after its sequence on a subject its filter
@@ -35,8 +34,7 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	publish("notifications.dispatch.issue.KEY-1.ask.opened", `{"n":1}`)
 	publish("notifications.agent.ses_a", `{"n":2}`)
 	third := publish("notifications.dispatch.issue.KEY-1.ask.answered", `{"n":3}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	stored, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", 2)
 	if err != nil {
@@ -45,8 +43,12 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	if stored.Sequence != third || stored.Subject != "notifications.dispatch.issue.KEY-1.ask.answered" || string(stored.Data) != `{"n":3}` {
 		t.Fatalf("stored = %+v, want seq %d on the answered subject with its body", stored, third)
 	}
-	if time.Since(stored.Time) > time.Minute || stored.Time.After(time.Now()) {
-		t.Fatalf("stored time %s is not when it was stored", stored.Time)
+	message, err := js.GetMsg(Stream, third)
+	if err != nil {
+		t.Fatalf("read the stored message: %v", err)
+	}
+	if !stored.Time.Equal(message.Time) {
+		t.Fatalf("stored time %s is not the %s the stream stamped the message with", stored.Time, message.Time)
 	}
 
 	if _, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", third+1); !errors.Is(err, nats.ErrMsgNotFound) {

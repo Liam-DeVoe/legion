@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
@@ -299,11 +300,8 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	stop()
 	// A read on the pass's context would end at the cancel: pgx sets the socket's deadline to now,
 	// and the gate returns within milliseconds while duty_passes is still held.
-	select {
-	case <-answered:
-		t.Fatalf("the gate returned while its period read still waited on duty_passes: the cancel ended the read\n%s", logs.String())
-	case <-time.After(500 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the gate's answer while its period read waits on duty_passes", answered, 500*time.Millisecond,
+		"a read the cancel ends shows only as the gate answering: pgx sets its socket's deadline on a goroutine of its own, so no state shows the read about to end, the gate does real Postgres I/O, which synctest cannot hold, and no later action's effect orders against the cancel's")
 	if waiting := storetest.LockWaiters(t, holder); waiting < 1 {
 		t.Fatal("the gate's period read stopped waiting on duty_passes at the cancel")
 	}
@@ -311,13 +309,8 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 		t.Fatalf("release duty_passes: %v", err)
 	}
 
-	select {
-	case ran := <-answered:
-		if ran {
-			t.Error("a gate stopped while it read its period reported a pass that ran")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the gate stopped while it read its period did not return")
+	if ran := testwait.Receive(t, "the gate stopped while it read its period to return", answered); ran {
+		t.Error("a gate stopped while it read its period reported a pass that ran")
 	}
 	if passRan {
 		t.Error("the gate started its pass after shutdown")
@@ -410,59 +403,34 @@ func TestExclusiveDoesNotLockOutALoopWhosePeriodGrows(t *testing.T) {
 	}
 }
 
-// slowLeases is a lease pool whose every Acquire waits delay first, as a loaded process's tick
-// waits for its lease connection.
-type slowLeases struct {
-	duty.Leases
-	delay time.Duration
-}
-
-func (s slowLeases) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
-	time.Sleep(s.delay)
-	return s.Leases.Acquire(ctx)
-}
-
 // A lone loop's ticks come at least one period apart (RunLeased, RunJittered), and each must run:
-// no other process has served either period. Here the first tick is due 200 ms before a period
-// boundary on this process's clock, the clock Exclusive buckets a due time on, and its lease takes
-// 400 ms, so the query that reads its period runs 200 ms into the next one; the second tick is due
-// exactly one period after the first, the least that spacing allows, and takes its lease at once.
-// Read by the moment its query ran, the late first tick serves the second tick's period and the
-// second is refused - an interval of the loop's work that no process did, which is how
-// TestALoneRunnerMakesAPassOnEveryTick lost one tick in ten. Read by when it was due, each tick
-// serves its own period.
+// no other process has served either period. Here the first tick is late: it is due 200 ms before
+// the period this process's clock is in now began, the clock Exclusive buckets a due time on, so
+// the query that reads its period runs in the period after the one it was due in, as a tick whose
+// lease or query was slow runs. The second tick is due exactly one period after the first, the
+// least that spacing allows. Read by the moment its query ran, the late first tick serves the
+// second tick's period and the second is refused - an interval of the loop's work that no process
+// did, which is how TestALoneRunnerMakesAPassOnEveryTick lost one tick in ten. Read by when it was
+// due, each tick serves its own period. The period is an hour, so both queries run inside the one
+// period a reading by the moment of the query would put them both in.
 func TestExclusiveCountsALateTickInThePeriodItWasDueIn(t *testing.T) {
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
 	const name = "suggestion-outcomes"
-	const period = time.Second
-	const early, delay = 200 * time.Millisecond, 400 * time.Millisecond
+	const period = time.Hour
+	const early = 200 * time.Millisecond
 
-	due := beforeNextBoundary(t, period, early)
-	time.Sleep(time.Until(due))
-	if !duty.Exclusive(ctx, slowLeases{Leases: leases, delay: delay}, name, due, period, func(context.Context) {}) {
+	due := duty.PeriodBoundary(time.Now(), period).Add(-early)
+	if !duty.Exclusive(ctx, leases, name, due, period, func(context.Context) {}) {
 		t.Fatal("the first tick did not run, so this row measures nothing")
 	}
 	next := due.Add(period)
-	time.Sleep(time.Until(next))
 	ran := false
 	if !duty.Exclusive(ctx, leases, name, next, period, func(context.Context) { ran = true }) || !ran {
-		t.Errorf("the tick due one period after a late one was refused (first due %s, %v before a boundary, its lease %v late); a lone loop lost that period",
-			due.UTC().Format("15:04:05.000"), early, delay)
+		t.Errorf("the tick due one period after a late one was refused (first due %s, %v before a boundary its query ran after); a lone loop lost that period",
+			due.UTC().Format("15:04:05.000"), early)
 	}
-}
-
-// beforeNextBoundary is the moment on this process's clock that lies before ahead of a period
-// boundary of that clock - the clock Exclusive buckets a tick's due time on (periodBoundary) - the
-// first such moment still at least 100 ms away.
-func beforeNextBoundary(t *testing.T, period, before time.Duration) time.Time {
-	t.Helper()
-	due := duty.PeriodBoundary(time.Now(), period).Add(period - before)
-	for time.Until(due) < 100*time.Millisecond {
-		due = due.Add(period)
-	}
-	return due
 }
 
 // movePassBack moves the boundary recorded for name back by age, which is how a period that has

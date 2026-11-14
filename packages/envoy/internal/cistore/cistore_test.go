@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectNATS connects to the package's shared NATS server, in the JetStream account
@@ -29,33 +29,18 @@ func connectNATS(t testing.TB) (*natsgo.Conn, func()) {
 	return conn, conn.Close
 }
 
-func openStore(t testing.TB, conn *natsgo.Conn) *Store {
+func openStore(t testing.TB, conn *natsgo.Conn, opts ...Option) *Store {
 	t.Helper()
-	st, err := Open(conn, logging.New("test"), WithReplicas(1), WithTTL(time.Hour))
+	st, err := Open(conn, logging.New("test"), append([]Option{WithReplicas(1), WithTTL(time.Hour)}, opts...)...)
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
 	t.Cleanup(func() { forgetTestSummarizer(st) })
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := st.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("cache not ready: %v", err)
 	}
 	return st
-}
-
-// within returns f's error, or an error when f has not returned within 10 s: a record that a
-// broken hand-over leaves waiting on its record's writer fails its test instead of hanging the
-// package until go test's timeout.
-func within(f func() error) error {
-	done := make(chan error, 1)
-	go func() { done <- f() }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(10 * time.Second):
-		return errors.New("did not return within 10 s")
-	}
 }
 
 func recordCheck(s *Store, owner, repo, number, sha, checkName, checkRunID, url, status, conclusion, observedAt string) error {
@@ -63,19 +48,17 @@ func recordCheck(s *Store, owner, repo, number, sha, checkName, checkRunID, url,
 	if err != nil {
 		return err
 	}
-	return within(func() error {
-		return s.Record(context.Background(), contracts.CIObservation{
-			Owner:      owner,
-			Repo:       repo,
-			Number:     number,
-			SHA:        sha,
-			CheckName:  checkName,
-			CheckRunID: id,
-			URL:        url,
-			Status:     status,
-			Conclusion: conclusion,
-			ObservedAt: observedAt,
-		})
+	return s.Record(context.Background(), contracts.CIObservation{
+		Owner:      owner,
+		Repo:       repo,
+		Number:     number,
+		SHA:        sha,
+		CheckName:  checkName,
+		CheckRunID: id,
+		URL:        url,
+		Status:     status,
+		Conclusion: conclusion,
+		ObservedAt: observedAt,
 	})
 }
 
@@ -112,18 +95,16 @@ func maxCheckRunID(runs []CheckRunRef) uint64 {
 }
 
 func recordSuite(s *Store, owner, repo, number, sha, suiteID, status, conclusion, appID, observedAt string) error {
-	return within(func() error {
-		return s.RecordSuite(context.Background(), contracts.CIObservation{
-			Owner:      owner,
-			Repo:       repo,
-			Number:     number,
-			SHA:        sha,
-			SuiteID:    suiteID,
-			AppID:      appID,
-			Status:     status,
-			Conclusion: conclusion,
-			ObservedAt: observedAt,
-		})
+	return s.RecordSuite(context.Background(), contracts.CIObservation{
+		Owner:      owner,
+		Repo:       repo,
+		Number:     number,
+		SHA:        sha,
+		SuiteID:    suiteID,
+		AppID:      appID,
+		Status:     status,
+		Conclusion: conclusion,
+		ObservedAt: observedAt,
 	})
 }
 
@@ -151,8 +132,7 @@ func useKV(t testing.TB, s *Store, kv natsgo.KeyValue) {
 	s.watcher.Stop()
 	s.watcher = kvwatch.New("cistore", bus.NewKeyValue(kv, base.WatchHandle(), base.Streams()), ciCache{s})
 	s.watcher.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := s.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("wait for the rebuilt watcher: %v", err)
 	}
@@ -355,18 +335,10 @@ func TestListReflectsRecords(t *testing.T) {
 	if err := recordCheck(s, "o", "r", "7", "sha7", "build", "1", "", "completed", "success", ""); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	deadline := time.After(5 * time.Second)
-	for {
+	testwait.Eventually(t, "List reflects the recorded commit", func() bool {
 		list := s.List()
-		if len(list) == 1 && list[0].Number == "7" {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("List did not reflect record in time: %+v", s.List())
-		case <-time.After(20 * time.Millisecond):
-		}
-	}
+		return len(list) == 1 && list[0].Number == "7"
+	})
 }
 
 func TestRecordIgnoresStaleCheckRunID(t *testing.T) {
@@ -467,13 +439,7 @@ func TestRewatchRestartsStoppedWatcher(t *testing.T) {
 
 	url := conn.ConnectedUrl()
 	conn.Close()
-	deadline := time.Now().Add(5 * time.Second)
-	for s.WatchErr() == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("stopped watcher did not become unhealthy")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the stopped watcher becomes unhealthy", func() bool { return s.WatchErr() != nil })
 	if err := s.Ping(); err == nil {
 		t.Fatal("stopped watcher should make the CI store unhealthy")
 	}
@@ -506,18 +472,14 @@ func TestRewatchRestartsStoppedWatcher(t *testing.T) {
 	if _, err := kv.Put(Key(state.Owner, state.Repo, state.Number, state.SHA), value); err != nil {
 		t.Fatalf("put replacement state: %v", err)
 	}
-	deadline = time.Now().Add(5 * time.Second)
-	for {
+	testwait.Eventually(t, "the rewatched store receives the replacement state", func() bool {
 		for _, got := range s.List() {
 			if got.Owner == state.Owner && got.Repo == state.Repo && got.Number == state.Number && got.SHA == state.SHA {
-				return
+				return true
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("rewatched store did not receive replacement state: %+v", s.List())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	})
 }
 
 func TestWatchEvictsMalformedState(t *testing.T) {
@@ -539,17 +501,7 @@ func TestWatchEvictsMalformedState(t *testing.T) {
 		t.Fatalf("put malformed state: %v", err)
 	}
 
-	deadline := time.After(5 * time.Second)
-	for {
-		if len(s.List()) == 0 {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("malformed state remained in cache: %+v", s.List())
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+	testwait.Eventually(t, "the malformed state leaves the cache", func() bool { return len(s.List()) == 0 })
 }
 
 // An earlier listener kept each pull request's head as a record of its own kind in the same bucket.

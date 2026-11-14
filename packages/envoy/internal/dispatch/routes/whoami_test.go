@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests that read GET /auth/whoami's event_head off a real event log open a database of their
@@ -411,10 +412,11 @@ func appendOutOfOrder(t *testing.T, database *store.Store, first, second string)
 // holdClusterTransactionID opens a transaction in a second database of the test binary's own on
 // the test cluster (storetest.OtherDatabase) and takes a transaction id, as a job in another
 // database or another package's test does. Snapshots are instance-wide, so until it ends no
-// horizon on the cluster proves an observation taken after it began. It commits when release runs
-// or after hold, whichever comes first, and by the time the test ends; release returns once it
-// has.
-func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
+// horizon on the cluster proves an observation taken after it began. It commits when release
+// runs, and by the time the test ends; release returns once it has. Nothing else ends it, so a
+// whoami that waited on it would wait for ever, which is what the wait for whoami's answer
+// names.
+func holdClusterTransactionID(t *testing.T) (release func()) {
 	t.Helper()
 	conn, err := pgx.Connect(t.Context(), storetest.OtherDatabase(t))
 	if err != nil {
@@ -430,23 +432,12 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 		_ = conn.Close(context.Background())
 		t.Fatalf("take a transaction id: %v", err)
 	}
-	released := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		timer := time.NewTimer(hold)
-		defer timer.Stop()
-		select {
-		case <-released:
-		case <-timer.C:
-		}
-		_ = tx.Commit(context.Background())
-		_ = conn.Close(context.Background())
-	}()
 	var once sync.Once
 	release = func() {
-		once.Do(func() { close(released) })
-		<-done
+		once.Do(func() {
+			_ = tx.Commit(context.Background())
+			_ = conn.Close(context.Background())
+		})
 	}
 	t.Cleanup(release)
 	return release
@@ -493,15 +484,16 @@ func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
 	createProject(t, handler, "ONE")
 	newest := newestEventID(t, database)
 
-	holdClusterTransactionID(t, 30*time.Second)
-	began := time.Now()
-	answer := askWhoami(t, handler)
-	if waited := time.Since(began); waited > time.Second {
-		t.Fatalf("whoami answered %s after a transaction in another database took a transaction id, want no wait on it", waited)
-	}
+	// The transaction stands until release, so a whoami that waited on it would never answer:
+	// the wait for its answer is what says it waited on nothing.
+	release := holdClusterTransactionID(t)
+	answered := make(chan whoamiAnswer, 1)
+	go func() { answered <- askWhoami(t, handler) }()
+	answer := testwait.Receive(t, "whoami's answer while another database's transaction is open", answered)
 	if head := eventHeadID(t, answer); head != newest {
 		t.Fatalf("whoami answered event_head %d while another database's transaction was open, want the log's newest id %d", head, newest)
 	}
+	release()
 }
 
 // TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen: a page's load waits on whoami, and at load
@@ -516,12 +508,12 @@ func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
 	createProject(t, handler, "TWO")
 	earlier := eventHeadID(t, askWhoami(t, handler))
 
+	// The write below stays open to the end of the test, so a whoami that waited on it would
+	// never answer: the wait for its answer is what says it answered from the mark it holds.
 	low, high, _ := appendOutOfOrder(t, database, "ONE", "TWO")
-	began := time.Now()
-	head := eventHeadID(t, askWhoami(t, handler))
-	if waited := time.Since(began); waited > 500*time.Millisecond {
-		t.Fatalf("whoami answered %s after a write of this database took its transaction id, want no wait on it", waited)
-	}
+	answered := make(chan whoamiAnswer, 1)
+	go func() { answered <- askWhoami(t, handler) }()
+	head := eventHeadID(t, testwait.Receive(t, "whoami's answer while a write of this database is open", answered))
 	if head >= low || head < earlier {
 		t.Fatalf("whoami answered event_head %d while event %d was open below the committed %d, want an id below it and at or above the earlier answer %d", head, low, high, earlier)
 	}
@@ -589,19 +581,16 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	newest := newestEventID(t, database)
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	testwait.Eventually(t, fmt.Sprintf("a horizon of %d to be persisted", newest), func() bool {
 		if _, err := before.Safe(ctx); err != nil {
 			t.Fatalf("observe the horizon: %v", err)
 		}
-		if persisted, err := before.Persisted(ctx); err != nil {
+		persisted, err := before.Persisted(ctx)
+		if err != nil {
 			t.Fatalf("read the persisted horizon: %v", err)
-		} else if persisted >= newest {
-			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no horizon of %d persisted within 30s", newest)
-		}
-	}
+		return persisted >= newest
+	})
 
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -620,11 +609,11 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	}
 
 	handler := storeRouter(t, database)
-	began := time.Now()
-	head := eventHeadID(t, askWhoami(t, handler))
-	if waited := time.Since(began); waited > time.Second {
-		t.Fatalf("whoami answered %s after boot while an event insert from before boot was open, want at once from the persisted horizon", waited)
-	}
+	// The insert stays open to the end of the test, so a whoami that waited on it would never
+	// answer: the wait for its answer is what says it answered from the persisted horizon.
+	answered := make(chan whoamiAnswer, 1)
+	go func() { answered <- askWhoami(t, handler) }()
+	head := eventHeadID(t, testwait.Receive(t, "whoami's answer while an event insert from before boot is open", answered))
 	if head < newest || head >= open {
 		t.Fatalf("whoami answered event_head %d, want the persisted horizon %d or above, and below the open event %d", head, newest, open)
 	}

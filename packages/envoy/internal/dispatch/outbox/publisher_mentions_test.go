@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // mentionsOf is a payload's mentions as the scan decodes them from JSON, each resolved to its
@@ -419,6 +420,18 @@ func nextAttempt(t *testing.T, database *store.Store, eventID int64) (attempts i
 	return attempts, due
 }
 
+// requireBlockedByPass fails t unless due is mentionPendingDelay after the moment the pass that
+// blocked the event recorded it: a moment between before and after, read around that pass on the
+// clock this test shares with the database. Load can only widen the two, never put a correct due
+// outside them.
+func requireBlockedByPass(t *testing.T, what string, due *time.Time, before, after time.Time) {
+	t.Helper()
+	if due == nil || due.Before(before.Add(mentionPendingDelay)) || due.After(after.Add(mentionPendingDelay)) {
+		t.Fatalf("%s: next_attempt_at = %v, want mentionPendingDelay = %s after the pass that ran from %s to %s, the wait a blocked event takes",
+			what, due, mentionPendingDelay, before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+	}
+}
+
 // TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent drives the scan itself: a new comment
 // mentioning the claimant is published to its issue topic at once, and its claimant copy waits
 // for the mention's send to settle - without counting a failed attempt - and then follows it: a
@@ -454,7 +467,9 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			publisher := &recordingPublisher{}
 			outbox := holding(t, Deps{Store: database, Publisher: publisher})
 
+			before := time.Now()
 			outbox.scan(ctx, unfenced{})
+			after := time.Now()
 			if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, []string{issueTopic}) {
 				t.Fatalf("topics while the mention is pending = %#v, want the issue topic alone", got)
 			}
@@ -465,9 +480,7 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			if attempts != 0 {
 				t.Fatalf("attempt_count = %d after a deferral, want 0", attempts)
 			}
-			if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-				t.Fatalf("next_attempt_at = %v, want about %v from now", due, mentionPendingDelay)
-			}
+			requireBlockedByPass(t, "the deferred event", due, before, after)
 			if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, []string{issueTopic}) {
 				t.Fatalf("published_destinations = %#v, want the issue topic alone", destinations)
 			}
@@ -531,7 +544,9 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 
 	publisher := &recordingPublisher{}
 	outbox := holding(t, Deps{Store: database, Publisher: publisher})
+	before := time.Now()
 	outbox.scan(ctx, unfenced{})
+	after := time.Now()
 
 	want := []string{issueTopic, claimantTopic}
 	if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, want) {
@@ -544,9 +559,7 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d after a deferral, want 0", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now", due, mentionPendingDelay)
-	}
+	requireBlockedByPass(t, "the deferred event", due, before, after)
 	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, want) {
 		t.Fatalf("published_destinations = %#v, want %#v", destinations, want)
 	}
@@ -846,7 +859,7 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 				}
 				published := make(chan error, 1)
 				go func() { published <- publishing() }()
-				waitFor(t, 10*time.Second, "the outbox waiting on the owner lock to settle the attempt", func() bool {
+				testwait.Eventually(t, "the outbox waiting on the owner lock to settle the attempt", func() bool {
 					var waiting int
 					if err := database.Pool.QueryRow(context.Background(), `
 						select count(*) from pg_stat_activity

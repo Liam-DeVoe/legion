@@ -114,9 +114,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 			rows)
 	}
 
-	waitFor(t, 10*time.Second, "the comment's forward and the owner's later event at the holder",
-		func() bool { return len(recv.received()) > 1 })
-	time.Sleep(time.Second)
+	recv.settle(t)
 	copies := recv.received()
 	if len(copies) != 2 {
 		t.Fatalf("%s was sent %+v, want two copies: the comment's forward under its own mention's key and the owner's later event behind it. The copy bound for the holder's own topic is left to the mention that delivered the comment (destinations.leftToMention)",
@@ -192,8 +190,10 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 		},
 	})
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
+	after := time.Now()
+	recv.settle(t)
 
 	failedKey := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, holderTarget, "steer"))
 	if got := recv.received(); len(got) != 0 {
@@ -211,9 +211,7 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on the comment's unpinned mentions, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
-	}
+	requireBlockedByPass(t, "the comment whose forward waits", due, before, after)
 	if rows := heldDestinations(t, rig.database, commentID); slices.Contains(rows, roleTopic) {
 		t.Fatalf("the comment holds fallback rows %v, want %s among them nowhere: the forward waits in the event's list while the bound holds, a row taking it over only past it (holdsTheForwardAsARow)",
 			rows, roleTopic)

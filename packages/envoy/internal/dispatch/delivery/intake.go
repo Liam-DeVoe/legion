@@ -26,6 +26,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -60,6 +61,9 @@ type Intake struct {
 	// throttle is this intake's own bind-poll state: how recently it reconciled its durable and
 	// how recently it said it was standing by for it (bindThrottle).
 	throttle *bindThrottle
+	// clock is the time this intake's stops run on (intakeStopBudget): clock.Real, which newIntake
+	// gives it, and a test's clocktest.Fake, set before Run, as boundHook is.
+	clock clock.Clock
 
 	mu sync.Mutex
 	// delivering is the latest subscription subscribe made, which StopDelivering stops.
@@ -72,7 +76,7 @@ type Intake struct {
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
 // reconciling its durable under a lease it takes on leases and routing by settings.
 func newIntake(natsClient *bus.Client, pool *store.Pool, leases duty.Leases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
-	return &Intake{nats: natsClient, pool: pool, github: github, events: broker, settings: settings, leases: leases, throttle: &bindThrottle{}}
+	return &Intake{nats: natsClient, pool: pool, github: github, events: broker, settings: settings, leases: leases, throttle: &bindThrottle{}, clock: clock.Real()}
 }
 
 // Run binds the durable consumer and processes GitHub events until ctx is cancelled, then stops
@@ -113,7 +117,7 @@ func newIntake(natsClient *bus.Client, pool *store.Pool, leases duty.Leases, git
 func (in *Intake) Run(ctx context.Context) {
 	// Armed before the first bind, so a bind under way as ctx ends -- a standby's poll, whose
 	// JetStream calls take their own time -- spends the stop's budget rather than starting it late.
-	stopping, release := stopContext(ctx)
+	stopping, release := stopContext(ctx, in.clock)
 	defer release()
 	binds := time.NewTicker(durableBindInterval)
 	defer binds.Stop()
@@ -171,7 +175,7 @@ func (in *Intake) Run(ctx context.Context) {
 // handed back with the rest (StopDelivering).
 func (in *Intake) giveUpOnConnectionChange(ctx context.Context) {
 	slog.Info(intakeConnectionChangedMessage, "name", bus.DispatchDeliveryDurable)
-	stopping, cancel := context.WithTimeout(context.WithoutCancel(ctx), intakeStopBudget)
+	stopping, cancel := in.clock.WithTimeout(context.WithoutCancel(ctx), intakeStopBudget)
 	defer cancel()
 	in.StopDelivering(stopping)
 }
@@ -498,7 +502,11 @@ func consumerHeldElsewhere(err error) bool {
 // durable has never had and never create it, and would stand by silently for a durable it has
 // said nothing about.
 type bindThrottle struct {
-	mu sync.Mutex
+	// clock is the time this intake's binds read: the throttle's windows and the bind's wait for
+	// the server's confirmation (awaitDurablePushBound). Nil is clock.Real, which every intake
+	// runs on; a test gives a clocktest.Fake to drive the confirmation to its bound.
+	clock clock.Clock
+	mu    sync.Mutex
 	// reconciled is when this intake's last reconciliation pass over its durable was recorded.
 	reconciled time.Time
 	// standby is when the last standby line was logged and standbyReason the message it carried,
@@ -506,6 +514,14 @@ type bindThrottle struct {
 	// -- is said at once rather than waiting out the window of the line before it.
 	standby       time.Time
 	standbyReason string
+}
+
+// clockOrReal is the throttle's clock, clock.Real when it was given none.
+func (t *bindThrottle) clockOrReal() clock.Clock {
+	if t.clock == nil {
+		return clock.Real()
+	}
+	return t.clock
 }
 
 // consumerReconcileInterval is the least time between two reconciliations of one durable's
@@ -525,7 +541,7 @@ const consumerReconcileInterval = 30 * time.Second
 func (t *bindThrottle) reconcileDue() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.reconciled.IsZero() || time.Since(t.reconciled) >= consumerReconcileInterval
+	return t.reconciled.IsZero() || t.clockOrReal().Now().Sub(t.reconciled) >= consumerReconcileInterval
 }
 
 // recordReconcile records a pass over this durable, which throttles the next
@@ -533,18 +549,19 @@ func (t *bindThrottle) reconcileDue() bool {
 func (t *bindThrottle) recordReconcile() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.reconciled = time.Now()
+	t.reconciled = t.clockOrReal().Now()
 }
 
 // reportStandby logs message at INFO -- this durable is not this process's to bind yet, for the
 // reason message names -- unless this intake logged that same message within standbyLogEvery.
 func (t *bindThrottle) reportStandby(name, message string) {
 	t.mu.Lock()
-	if t.standbyReason == message && time.Since(t.standby) < standbyLogEvery {
+	now := t.clockOrReal().Now()
+	if t.standbyReason == message && now.Sub(t.standby) < standbyLogEvery {
 		t.mu.Unlock()
 		return
 	}
-	t.standby, t.standbyReason = time.Now(), message
+	t.standby, t.standbyReason = now, message
 	t.mu.Unlock()
 	slog.Info(message, "name", name)
 }
@@ -748,7 +765,7 @@ func bindLeasedDurable(ctx, stopping context.Context, client *bus.Client, thrott
 		slog.Error("dispatch delivery: bind NATS consumer", "name", name, "subject", subject, "error", err)
 		return nil, bindFailed
 	}
-	bound, confirmErr := awaitDurablePushBound(stopping, client.JS(), name)
+	bound, confirmErr := awaitDurablePushBound(stopping, throttle.clockOrReal(), client.JS(), name)
 	if !bound {
 		// The lease is about to go back, and with it the only thing keeping another process out of
 		// this durable, so a binding the server does not report is given up whole rather than left
@@ -768,19 +785,20 @@ func bindLeasedDurable(ctx, stopping context.Context, client *bus.Client, thrott
 }
 
 // awaitDurablePushBound waits for the server to report the durable push-bound, reading it at once
-// and then every consumerBindConfirmInterval until it does, consumerBindConfirmTimeout has passed,
-// or ctx ends. A read that fails is left for the next read to settle: the only answer it acts on
-// is the true one, and a bound it never gets is its caller's to give the subscription up for.
+// and then every consumerBindConfirmInterval until it does, consumerBindConfirmTimeout has passed
+// on c, or ctx ends. A read that fails is left for the next read to settle: the only answer it
+// acts on is the true one, and a bound it never gets is its caller's to give the subscription up
+// for.
 //
 // Beside the bool it hands back the last error a read failed with, so the caller giving the
 // subscription up can say what the reads met rather than only that they never said bound. It is
 // nil when every read answered "not bound" with no error of its own, and never the confirming
 // context's own expiry: an error read once that context is done is this function's own bound
 // arriving, not something the durable's lookup met.
-func awaitDurablePushBound(ctx context.Context, js natsgo.JetStreamContext, name string) (bool, error) {
-	confirming, cancel := context.WithTimeout(ctx, consumerBindConfirmTimeout)
+func awaitDurablePushBound(ctx context.Context, c clock.Clock, js natsgo.JetStreamContext, name string) (bool, error) {
+	confirming, cancel := c.WithTimeout(ctx, consumerBindConfirmTimeout)
 	defer cancel()
-	reads := time.NewTicker(consumerBindConfirmInterval)
+	reads := c.NewTimer(consumerBindConfirmInterval)
 	defer reads.Stop()
 	var last error
 	for {
@@ -794,7 +812,8 @@ func awaitDurablePushBound(ctx context.Context, js natsgo.JetStreamContext, name
 		select {
 		case <-confirming.Done():
 			return false, last
-		case <-reads.C:
+		case <-reads.C():
+			reads.Reset(consumerBindConfirmInterval)
 		}
 	}
 }

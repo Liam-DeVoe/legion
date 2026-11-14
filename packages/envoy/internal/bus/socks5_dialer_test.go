@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // proxiedLookup is a connect's environment that names the proxy at address.
@@ -55,21 +57,21 @@ func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
 		t.Fatalf("read the proxy setting: %v", err)
 	}
 
-	started := time.Now()
+	// The one-second deadline is the subject, and the dial it bounds runs on a real socket, so it
+	// stays a real context. What the row reads is the order of two facts, not how long either
+	// took: the proxy's connection was closed by the time the connect returned. A dial that held
+	// the connection to its own five-second timeout instead closes it after that.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	conn, err := connectWithContext(ctx, "deadline-test", []string{"nats://nats.example.test:4222"}, nil, dialer, nil, nil, nil, nil, nil)
+	returned := time.Now()
 	if err == nil {
 		conn.Close()
 		t.Fatal("a connect through a proxy that never answers succeeded")
 	}
-	select {
-	case at := <-closed:
-		if held := at.Sub(started); held > 2500*time.Millisecond {
-			t.Fatalf("the proxied dial held the proxy's connection %s, past the connect's one-second deadline", held)
-		}
-	case <-time.After(4 * time.Second):
-		t.Fatalf("the proxied dial still held the proxy's connection %s after the connect's one-second deadline", time.Since(started))
+	at := testwait.Receive(t, "the proxied dial to let go of the proxy's connection", closed)
+	if at.After(returned) {
+		t.Fatalf("the proxied dial held the proxy's connection %s past the connect's return, which came at its one-second deadline", at.Sub(returned))
 	}
 }
 

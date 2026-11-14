@@ -187,7 +187,7 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	}
 	last := stream.State.LastSeq
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.AckFloor.Stream >= last && info.NumAckPending == 0
 	}, func() string {
@@ -226,20 +226,10 @@ func pathBaseForTest(workflowPath string) string {
 	return workflowPath
 }
 
-// shrinkIntakeFlowControl shrinks the intake's own timing so a test exercises its real flow
-// control in test time. intakeMaxAckPending is deliberately left alone: it is the bound under
-// test.
-func shrinkIntakeFlowControl(t *testing.T) {
-	t.Helper()
-	messageTimeout := intakeMessageTimeout
-	intakeMessageTimeout = 5 * time.Second
-	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
-}
-
-// capHeadWriteDeliveriesAt shrinks headWriteMaxDeliveries to deliveries for one test, the way
-// shrinkIntakeFlowControl shrinks the message timeout: the shipped cap of thirty, at
-// headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a test of the
-// cap measures is that there is one at all, which two deliveries show as well as thirty.
+// capHeadWriteDeliveriesAt shrinks headWriteMaxDeliveries to deliveries for one test: the shipped
+// cap of thirty, at headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what
+// a test of the cap measures is that there is one at all, which two deliveries show as well as
+// thirty. It caps a count, not an interval, so it stays a variable a test sets.
 func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	t.Helper()
 	was := headWriteMaxDeliveries
@@ -297,9 +287,9 @@ func publishWorkflowEnvelope(t *testing.T, natsClient *bus.Client, owner, repo, 
 }
 
 // startIntake runs intake until the test ends, and waits for Run to return before the test's own
-// cleanups go on. Cancelling alone does not: Run reads the intake flow-control vars, and the next
-// test's shrinkIntakeFlowControl writes them, so a Run still unwinding from the previous test is a
-// data race on them.
+// cleanups go on. Cancelling alone does not: Run reads the intake's package variables, and the
+// next test's capHeadWriteDeliveriesAt writes one, so a Run still unwinding from the previous test
+// is a data race on it.
 func startIntake(t *testing.T, intake *Intake) {
 	t.Helper()
 	runCtx, cancel := context.WithCancel(t.Context())
@@ -330,7 +320,7 @@ func intakeTestClient(t *testing.T) *bus.Client {
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
 	var err error
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		var info *natsgo.ConsumerInfo
 		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
@@ -343,26 +333,32 @@ func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 // stream's message count and the consumer's whole state when it does not -- the numbers that say
 // whether a shortfall is a consumer that stopped being given messages or messages that never
 // reached the stream.
-func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *bus.Client, want int, within time.Duration) {
+func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *bus.Client, want int) {
 	t.Helper()
 	stored := 0
-	waitFor(t, within, func() bool {
+	waitFor(t, func() bool {
 		stored = countRuns(t, ctx, pool)
 		return stored >= want
 	}, func() string {
-		return fmt.Sprintf("delivery_runs rows = %d, want %d after %s\n%s", stored, want, within, intakeStateReport(t, natsClient))
+		return fmt.Sprintf("delivery_runs rows = %d, want %d\n%s", stored, want, intakeStateReport(t, natsClient))
 	})
 }
 
-// waitFor polls done until it reports true, and fails the test once within has passed with the
-// message failure builds at that moment -- so the message carries the state the wait gave up on,
-// not the state it started from.
-func waitFor(t *testing.T, within time.Duration, done func() bool, failure func() string) {
+// waitFor waits through the shared wait until done reports true. Should the wait give up, its
+// last reading is the text failure builds at that moment -- so the message carries the state the
+// wait gave up on, not the state it started from.
+func waitFor(t *testing.T, done func() bool, failure func() string) {
 	t.Helper()
-	if !testwait.Holds(within, 50*time.Millisecond, done) {
-		t.Fatal(failure())
-	}
+	testwait.Until(t, "the condition whose failure the last reading names", func() (failureText, bool) {
+		return failure, done()
+	})
 }
+
+// failureText is a wait's failure text, built only when the wait prints it (fmt calls String),
+// since some (intakeStateReport) ask NATS for what they say.
+type failureText func() string
+
+func (f failureText) String() string { return f() }
 
 // intakeStateReport is the stream's message count per subject and the consumer's delivery state,
 // one line each.

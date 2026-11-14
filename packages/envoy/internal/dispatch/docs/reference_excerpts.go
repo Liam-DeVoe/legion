@@ -306,13 +306,17 @@ func (s *Service) ReconcileReferenceExcerpts(ctx context.Context) (documents int
 // full reports a full batch at least one of whose documents left the drift a batch reads - recorded
 // or deferred - so the next batch reads documents this one did not.
 func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time.Duration) (documents int, full bool, err error) {
-	drifted, err := refs.DriftedExcerpts(ctx, s.store.Pool, referenceExcerptBatch)
+	// One moment for the pass, read from the service's clock: what this pass leaves out as not yet
+	// due (DriftedExcerpts) and what it defers to (DeferExcerpts) are the same clock's readings, so
+	// a test drives both with a fake.
+	at := s.clock.Now()
+	drifted, err := refs.DriftedExcerpts(ctx, s.store.Pool, referenceExcerptBatch, at)
 	if err != nil {
 		return 0, false, err
 	}
 	moved := 0
 	deferDocument := func(document refs.ExcerptDrift) {
-		if err := refs.DeferExcerpts(ctx, s.store.Pool, document.FromID, document.Version, retryBase, referenceExcerptRetryCeiling); err != nil {
+		if err := refs.DeferExcerpts(ctx, s.store.Pool, document.FromID, document.Version, retryBase, referenceExcerptRetryCeiling, at); err != nil {
 			if ctx.Err() == nil {
 				slog.Error("dispatch: reference excerpt reconciliation could not defer a document; the next batch reads it again",
 					"artifact", document.FromID, "error", err)

@@ -10,8 +10,10 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -19,15 +21,15 @@ const (
 	deniedRole  = "notifications.role.denied"
 )
 
-// grantedClient connects a bus client as a user NATS lets publish only to the granted role topic
-// and to inboxes, and returns it with a plain connection of the same user that the tests subscribe
-// through.
-func grantedClient(t *testing.T) (*bus.Client, *natsgo.Conn) {
+// grantedClient connects a bus client, under options, as a user NATS lets publish only to the
+// granted role topic and to inboxes, and returns it with a plain connection of the same user that
+// the tests subscribe through.
+func grantedClient(t *testing.T, options ...bus.ConnectOption) (*bus.Client, *natsgo.Conn) {
 	t.Helper()
 	seed, public := testnats.User(t)
 	uri := testnats.StartNkeyGranted(t, public, grantedRole, "_INBOX.>").URL
 	t.Setenv("NATS_NKEY_SEED", seed)
-	client, err := bus.Connect([]string{uri})
+	client, err := bus.Connect([]string{uri}, options...)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -76,7 +78,7 @@ func TestPublishReportsACorePublishNATSDenies(t *testing.T) {
 	if err := client.Publish(roleEnvelope(grantedRole)); err != nil {
 		t.Fatalf("granted publish after a denial returned %v", err)
 	}
-	if _, err := received.NextMsg(5 * time.Second); err != nil {
+	if _, err := received.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("granted publish was not delivered: %v", err)
 	}
 }
@@ -133,34 +135,30 @@ func TestPublishReportsAJetStreamPublishNATSDenies(t *testing.T) {
 }
 
 // A role-lane forward the server denies returns the denial at once, before any wait: the listener
-// reports it delivery_failed rather than holding the role send open for its whole window.
+// reports it delivery_failed rather than holding the role send open for its whole window. The
+// window is on the client's clock, which stands still, so a forward that waited it out would never
+// return.
 func TestStartRequestStoredToReportsAForwardNATSDenies(t *testing.T) {
-	client, _ := grantedClient(t)
-	started := time.Now()
-	_, err := client.StartRequestStoredTo(deniedRole, roleEnvelope(deniedRole), bus.ForwardMsgID("denied-forward", deniedRole), 2*time.Second)
-	if !errors.Is(err, bus.ErrPublishDenied) {
+	client, _ := grantedClient(t, bus.WithClock(clocktest.New(fakeStart)))
+	started := make(chan error, 1)
+	go func() {
+		_, err := client.StartRequestStoredTo(deniedRole, roleEnvelope(deniedRole), bus.ForwardMsgID("denied-forward", deniedRole), 2*time.Second)
+		started <- err
+	}()
+	if err := testwait.Receive(t, "the denied forward's answer with its window's clock standing still", started); !errors.Is(err, bus.ErrPublishDenied) {
 		t.Fatalf("denied forward returned %v, want ErrPublishDenied", err)
-	}
-	if elapsed := time.Since(started); elapsed >= 2*time.Second {
-		t.Fatalf("denied forward waited %s, the whole forward window", elapsed)
 	}
 }
 
 // A window's Request the server denies answers the denial at once, not as a Request nobody
-// answered.
+// answered: its timeout is on the client's clock, which stands still, so a Request that waited it
+// out would never be answered.
 func TestAWindowRequestReportsAForwardNATSDenies(t *testing.T) {
-	client, _ := grantedClient(t)
-	started := time.Now()
-	select {
-	case err := <-client.WindowUntil(nil).Request(deniedRole, roleEnvelope(deniedRole), bus.RequestOptions{MsgID: bus.ForwardMsgID("denied", deniedRole), Timeout: 2 * time.Second}):
-		if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, bus.ErrNotAcknowledged) {
-			t.Fatalf("denied Request answered %v, want ErrPublishDenied", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the denied Request was never answered")
-	}
-	if elapsed := time.Since(started); elapsed >= 2*time.Second {
-		t.Fatalf("denied Request waited %s, the whole timeout", elapsed)
+	client, _ := grantedClient(t, bus.WithClock(clocktest.Held()))
+	err := testwait.Receive(t, "the denied Request's answer with its timeout's clock standing still",
+		client.WindowUntil(nil).Request(deniedRole, roleEnvelope(deniedRole), bus.RequestOptions{MsgID: bus.ForwardMsgID("denied", deniedRole)}))
+	if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, bus.ErrNotAcknowledged) {
+		t.Fatalf("denied Request answered %v, want ErrPublishDenied", err)
 	}
 }
 
@@ -201,7 +199,7 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 	}
 
 	server.Restart(t, testnats.SubscribeGrantConfig(public, "_INBOX.>"))
-	waitFor(t, 30*time.Second, "CoreSubOK to read the restarted server's refusal of the re-sent subscription", func() bool {
+	testwait.Eventually(t, "CoreSubOK to read the restarted server's refusal of the re-sent subscription", func() bool {
 		return client.Connected() && !client.CoreSubOK()
 	})
 	if !held.IsValid() {
@@ -212,7 +210,7 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 	}
 
 	server.Restart(t, granted)
-	waitFor(t, 30*time.Second, "CoreSubOK once a server that grants the subscription has it again", func() bool {
+	testwait.Eventually(t, "CoreSubOK once a server that grants the subscription has it again", func() bool {
 		return client.Connected() && client.CoreSubOK()
 	})
 	// The flush returns once the server has handled every protocol line the client sent before it,
@@ -231,13 +229,8 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush the publish: %v", err)
 	}
-	select {
-	case got := <-received:
-		if got != topic {
-			t.Fatalf("the subscription received %s, want %s", got, topic)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the subscription the server granted again received nothing")
+	if got := testwait.Receive(t, "the subscription the server granted again to receive the publish", received); got != topic {
+		t.Fatalf("the subscription received %s, want %s", got, topic)
 	}
 	if !client.CoreSubOK() {
 		t.Fatal("CoreSubOK is false after the server accepted the subscription and delivered to it")
@@ -278,7 +271,7 @@ func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 	if err := server.Reload(t, testnats.SubscribeGrantConfig(public, "_INBOX.>")); err != nil {
 		t.Fatalf("reload without the grant: %v", err)
 	}
-	waitFor(t, 30*time.Second, "CoreSubOK to read the reload's revocation of the subscription", func() bool {
+	testwait.Eventually(t, "CoreSubOK to read the reload's revocation of the subscription", func() bool {
 		return !client.CoreSubOK()
 	})
 	if !client.Connected() {
@@ -296,7 +289,7 @@ func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 	}
 
 	server.Restart(t, granted)
-	waitFor(t, 30*time.Second, "CoreSubOK once a restarted server that grants the subscription has it again", func() bool {
+	testwait.Eventually(t, "CoreSubOK once a restarted server that grants the subscription has it again", func() bool {
 		return client.Connected() && client.CoreSubOK()
 	})
 }

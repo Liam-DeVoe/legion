@@ -153,7 +153,7 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 	}
 	if bytes > p.foldBuffer() {
 		if p.beforeFold != nil {
-			p.beforeFold(room)
+			p.beforeFold(room, true)
 		}
 		if err := use(storedUpdates(ctx, tx, room, version)); err != nil {
 			return err
@@ -177,7 +177,7 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 		return err
 	}
 	if p.beforeFold != nil {
-		p.beforeFold(room)
+		p.beforeFold(room, false)
 	}
 	return use(memoryUpdates(ctx, updates))
 }

@@ -239,9 +239,9 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
-	if _, ok := ctx.Deadline(); !ok {
+	if _, ok := timeLeft(ctx); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
+		ctx, cancel = c.armBound(ctx, storedMessageWait)
 		defer cancel()
 	}
 	if err := c.ensureConnWithContext(ctx); err != nil {

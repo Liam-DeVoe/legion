@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/testwait"
 	"golang.org/x/sys/unix"
 )
 
@@ -80,8 +81,7 @@ type promptRead struct {
 
 // typeAtPrompt starts readHidden at a fresh terminal and, once it has turned echo off, writes typed
 // to the controller as a terminal emulator does for a person's keys or a paste. It answers the
-// pseudo-terminal and the reader's answer, failing t if the reader has not answered within two
-// seconds.
+// pseudo-terminal and the reader's answer.
 func typeAtPrompt(t *testing.T, typed string) (*os.File, int, promptRead) {
 	t.Helper()
 	return typeAtPromptInWrites(t, 0, typed)
@@ -106,24 +106,14 @@ func typeAtPromptInWrites(t *testing.T, gap time.Duration, writes ...string) (*o
 			t.Fatal(err)
 		}
 	}
-	select {
-	case got := <-answer:
-		return controller, terminal, got
-	case <-time.After(2 * time.Second):
-		t.Fatalf("the reader did not return within 2s of %q being typed", writes)
-		return nil, 0, promptRead{}
-	}
+	return controller, terminal, testwait.Receive(t, fmt.Sprintf("the reader's answer to %q", writes), answer)
 }
 
-// awaitEchoOff waits until the prompt has turned the terminal's echo off, failing t after ten
-// seconds: a prompt in a process of its own may take a while to start on a loaded machine.
+// awaitEchoOff waits until the prompt has turned the terminal's echo off: a prompt in a process
+// of its own may take a while to start on a loaded machine.
 func awaitEchoOff(t *testing.T, terminal int) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); lflag(t, terminal)&unix.ECHO != 0; time.Sleep(5 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the reader never turned echo off")
-		}
-	}
+	testwait.Eventually(t, "the reader to turn echo off", func() bool { return lflag(t, terminal)&unix.ECHO == 0 })
 }
 
 // unread is how many bytes the terminal holds unread, which the shell would read once the form
@@ -206,13 +196,8 @@ func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
 	if _, err := controller.Write([]byte("value\r")); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case got := <-answer:
-		if got.err != nil || string(got.line) != "value" {
-			t.Fatalf("readHidden = %q, %v; want %q", got.line, got.err, "value")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the reader did not return within 2s")
+	if got := testwait.Receive(t, "the reader's answer", answer); got.err != nil || string(got.line) != "value" {
+		t.Fatalf("readHidden = %q, %v; want %q", got.line, got.err, "value")
 	}
 	if lflag(t, terminal)&unix.IEXTEN == 0 {
 		t.Fatal("IEXTEN is off after the prompt returned")
@@ -361,22 +346,13 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 			if _, err := controller.Write([]byte(tc.paste)); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case <-consumed:
-			case <-time.After(2 * time.Second):
-				t.Fatal("the reader did not read the paste within 2s")
-			}
+			testwait.Receive(t, "the reader to read the paste", consumed)
 			if err := controller.Close(); err != nil {
 				t.Fatal(err)
 			}
 			close(hungUp)
-			select {
-			case got := <-answer:
-				if !errors.Is(got.err, tc.want) || got.line != nil {
-					t.Fatalf("readHidden = %q, %v; want no value and %v", got.line, got.err, tc.want)
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("the reader did not return within 2s of the hang-up")
+			if got := testwait.Receive(t, "the reader's answer to the hang-up", answer); !errors.Is(got.err, tc.want) || got.line != nil {
+				t.Fatalf("readHidden = %q, %v; want no value and %v", got.line, got.err, tc.want)
 			}
 		})
 	}
@@ -423,18 +399,14 @@ func TestPromptCtrlCEndsTheProcessBySIGINT(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = cmd.Process.Kill() })
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
 			awaitEchoOff(t, terminal)
 			if _, err := controller.Write([]byte{0x03}); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				_ = cmd.Process.Kill()
-				t.Fatalf("the process did not end within 10s of Ctrl-C; the terminal showed %q", shown(t, controller))
-			}
+			testwait.Receive(t, "the process to end on Ctrl-C", done)
 			status := cmd.ProcessState.Sys().(syscall.WaitStatus)
 			out := shown(t, controller)
 			if tc.name == "the prompt alone" && (!status.Signaled() || status.Signal() != syscall.SIGINT) {
@@ -475,18 +447,14 @@ func TestPromptQuitEndsTheProcessBySIGQUITWithNoCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	tty.Close()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	awaitEchoOff(t, terminal)
 	if _, err := controller.Write([]byte{0x1c}); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatal("the process did not quit within 10s of Ctrl-\\")
-	}
+	testwait.Receive(t, "the process to quit on Ctrl-\\", done)
 	status := cmd.ProcessState.Sys().(syscall.WaitStatus)
 	out := shown(t, controller)
 	if !status.Signaled() || status.Signal() != syscall.SIGQUIT {

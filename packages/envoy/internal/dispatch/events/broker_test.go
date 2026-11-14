@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestPublishDisconnectsOverflowedSubscriber(t *testing.T) {
@@ -367,12 +368,10 @@ func TestChildAndParentPatchesCompleteWithoutDeadlock(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed parent and child: %v", err)
 	}
-	// The deadline bounds only the two patches, started once the database is provisioned and
-	// seeded, which on a loaded machine can take longer than the patches ever should. It is a
-	// ceiling on a hang, not a measure of speed: an inverted lock order ends in Postgres's
-	// deadlock error, and a patch that waits on the other for good never ends.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// The two patches run within the shared wait's bound, started once the database is
+	// provisioned and seeded: an inverted lock order ends in Postgres's deadlock error, and a
+	// patch that waits on the other for good never ends.
+	ctx := testwait.Context(t)
 	broker := NewBroker()
 	childEvent := model.Event{
 		IssueKey: new("PP-2"), Type: "issue.updated", Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{},
@@ -423,13 +422,8 @@ func TestChildAndParentPatchesCompleteWithoutDeadlock(t *testing.T) {
 	if err := childTx.Commit(ctx); err != nil {
 		t.Fatalf("commit child patch: %v", err)
 	}
-	select {
-	case err := <-parentDone:
-		if err != nil {
-			t.Fatalf("complete parent patch: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("child and parent patches deadlocked")
+	if err := testwait.Receive(t, "the parent patch to complete beside the child's", parentDone); err != nil {
+		t.Fatalf("complete parent patch: %v", err)
 	}
 }
 
@@ -800,11 +794,9 @@ func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
 		t.Fatalf("append on PP-1: %v", err)
 	}
 
-	// The deadline is a ceiling on a hang, not a measure of speed: a write that waits for the
-	// open one waits until that one ends, which is only after this test gives up on it.
-	const writeDeadline = 5 * time.Second
-	writeCtx, cancel := context.WithTimeout(ctx, writeDeadline)
-	defer cancel()
+	// The write runs within the shared wait's bound: a write that waits for the open one waits
+	// until that one ends, which is only after this test gives up on it.
+	writeCtx := testwait.Context(t)
 	// The second write runs on one connection it holds for its whole transaction, so every lock
 	// Append takes is taken on that backend and the watch below sees each of them.
 	backends := make(chan uint32, 1)
@@ -836,9 +828,8 @@ func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
 	// waiter was not PP-2 waiting on PP-1 is certain rather than likely: the count was only
 	// read out after PP-2's write had committed, and PP-2 cannot commit while PP-1's write
 	// holds a lock it waits on. The watch samples at the shared wait's pace and runs until the
-	// write answers: a write that queued behind PP-1 stays queued while PP-1's write is open, or
-	// its own deadline ends it with an error, so the write's answer, not the watch, is what ends
-	// it.
+	// write answers or its backend queues behind PP-1, whichever comes first: a write that
+	// queued behind PP-1 stays queued while PP-1's write is open, so the watch sees it there.
 	pid := <-backends
 	answer, answered := storetest.WaitForQueuedBehind(t, open, pid, written)
 	if !answered {
@@ -883,9 +874,7 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 		}},
 	} {
 		t.Run(owner.name, func(t *testing.T) {
-			// A ceiling on a hang, not a measure of speed.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			open, err := database.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatalf("begin the first write: %v", err)

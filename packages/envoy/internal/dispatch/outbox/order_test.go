@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holding returns an outbox on deps whose instance holds the publisher hold's row for the next
@@ -126,25 +127,27 @@ func tracedStore(t *testing.T, database *store.Store, tracer pgx.QueryTracer) *s
 	return &store.Store{Pool: pool}
 }
 
-// sendClock is a bus client whose windows record when the first envelope was sent.
-type sendClock struct {
+// probeGate is a bus client whose windows report the first probe of their connection, which a
+// batch makes once a send of it went unanswered (scanBatch): a test thaws a frozen server there,
+// so the probe is answered and the unanswered send is the batch's finding.
+type probeGate struct {
 	*bus.Client
-	once  sync.Once
-	first chan struct{}
+	once    sync.Once
+	probing chan struct{}
 }
 
-func (c *sendClock) WindowUntil(deadline func() time.Time) bus.Sender {
-	return sendClockSender{Sender: c.Client.WindowUntil(deadline), clock: c}
+func (c *probeGate) WindowUntil(deadline func() time.Time) bus.Sender {
+	return probeGateSender{Sender: c.Client.WindowUntil(deadline), gate: c}
 }
 
-type sendClockSender struct {
+type probeGateSender struct {
 	bus.Sender
-	clock *sendClock
+	gate *probeGate
 }
 
-func (s sendClockSender) PublishAsync(item contracts.Envelope) <-chan error {
-	s.clock.once.Do(func() { close(s.clock.first) })
-	return s.Sender.PublishAsync(item)
+func (s probeGateSender) Probe(timeout time.Duration) error {
+	s.gate.once.Do(func() { close(s.gate.probing) })
+	return s.Sender.Probe(timeout)
 }
 
 // An issue's events each go to its topic family and to session S. S's destination fails for the
@@ -197,7 +200,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	first := write("first")
 	stop := runOutbox(t, database, client, broker)
 	defer stop()
-	waitFor(t, 10*time.Second, "the first event backed off for S's subject", func() bool {
+	testwait.Eventually(t, "the first event backed off for S's subject", func() bool {
 		_, attempts := publishedDestinations(t, database, first.ID)
 		return attempts > 0
 	})
@@ -206,7 +209,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	}
 	second, third := write("second"), write("third")
 
-	waitFor(t, 30*time.Second, "all three events published", func() bool {
+	testwait.Eventually(t, "all three events published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil &&
 			publishedAt(t, database, third.ID) != nil
 	})
@@ -288,14 +291,14 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 	stop := runOutbox(t, rig.database, rig.client, rig.broker)
 	defer stop()
-	waitFor(t, 15*time.Second, "the first event backed off for S", func() bool {
+	testwait.Eventually(t, "the first event backed off for S", func() bool {
 		_, attempts := publishedDestinations(t, rig.database, first.ID)
 		return attempts > 0
 	})
 	second, third := write("second"), write("third")
 
 	topic := "notifications.dispatch.issue.T-1.message.created"
-	waitFor(t, 10*time.Second, "the later events on the topic family", func() bool {
+	testwait.Eventually(t, "the later events on the topic family", func() bool {
 		bySubject, _ := streamOrder(t, rig.conn)
 		return slices.Contains(bySubject[topic], second.ID) && slices.Contains(bySubject[topic], third.ID)
 	})
@@ -311,7 +314,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 
 	capturing()
-	waitFor(t, 45*time.Second, "all three events published", func() bool {
+	testwait.Eventually(t, "all three events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil &&
 			publishedAt(t, rig.database, third.ID) != nil
 	})
@@ -422,19 +425,18 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		t.Cleanup(client.Close)
 		database := storetest.Open(t)
 		event := seed(t, database)
-		clock := &sendClock{Client: client, first: make(chan struct{})}
+		gate := &probeGate{Client: client, probing: make(chan struct{})}
 		thaw := server.Freeze(t)
 		thawed := make(chan struct{})
 		go func() {
 			defer close(thawed)
-			<-clock.first
-			// Past the five seconds the window waits for an acknowledgement, and well inside
-			// the flush probe that follows, so the connection answers that probe.
-			time.Sleep(5*time.Second + 300*time.Millisecond)
+			// The batch probes its connection once its send went unanswered past the window's wait
+			// for an acknowledgement, and the connection answers that probe once the server thaws.
+			<-gate.probing
 			thaw()
 		}()
-		holding(t, Deps{Store: database, Publisher: clock}).scan(context.Background(), unfenced{})
-		<-thawed
+		holding(t, Deps{Store: database, Publisher: gate}).scan(context.Background(), unfenced{})
+		testwait.Receive(t, "the server thawed for the batch's probe", thawed)
 		backedOff(t, database, event, bus.ErrNotAcknowledged.Error())
 	})
 
@@ -449,7 +451,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		database := storetest.Open(t)
 		event := seed(t, database)
 		proxy.Cut()
-		waitFor(t, 5*time.Second, "the client noticing the cut", func() bool { return !client.Connected() })
+		testwait.Eventually(t, "the client noticing the cut", func() bool { return !client.Connected() })
 		outbox := holding(t, Deps{Store: database, Publisher: client})
 		outbox.scan(context.Background(), unfenced{})
 		var attempts int
@@ -464,7 +466,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 				attempts, nextAttempt, failure)
 		}
 		proxy.Restore()
-		waitFor(t, 10*time.Second, "the client reconnecting", client.Connected)
+		testwait.Eventually(t, "the client reconnecting", client.Connected)
 		outbox.scan(context.Background(), unfenced{})
 		if publishedAt(t, database, event.ID) == nil {
 			t.Fatal("the released event was not published once NATS was back")
@@ -706,18 +708,19 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 				}
 				return count
 			}
-			// A backend reports its statistics within a second of going idle: read the count once
-			// it has held still that long.
+			// A backend reports its statistics when it goes idle and is forced to: each idle
+			// connection of the pool flushes at the end of a statement of its own, before it answers
+			// that statement, so the count read after holds every update those connections made.
+			// Nothing else holds a connection of this pool while the row reads it.
 			settled := func() int64 {
-				last := updates()
-				for {
-					time.Sleep(1500 * time.Millisecond)
-					now := updates()
-					if now == last {
-						return now
+				for _, conn := range database.Pool.AcquireAllIdle(ctx) {
+					_, err := conn.Exec(ctx, `select pg_stat_force_next_flush()`)
+					conn.Release()
+					if err != nil {
+						t.Fatalf("flush a backend's statistics: %v", err)
 					}
-					last = now
 				}
+				return updates()
 			}
 			before := settled()
 			holding(t, withHeldRoles(Deps{Store: database, Publisher: &recordingPublisher{}})).scan(ctx, unfenced{})
@@ -729,7 +732,6 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 					t.Fatalf("event %d reached %v, want %d destinations", event.ID, destinations, tc.destinations)
 				}
 			}
-			waitFor(t, 15*time.Second, "the scan's updates reported", func() bool { return updates()-before >= published })
 			if written := settled() - before; written != published {
 				t.Fatalf("publishing %d events of %d destinations each updated events %d times, want %d: one write per event",
 					published, tc.destinations, written, published)

@@ -93,10 +93,12 @@ const (
 // jobClock is the time JobIntake schedules by, a narrowing of clock.Clock: clock.Real in
 // production and a test's clocktest.Fake. A read is armed for a moment as the wait from the clock's
 // present at the arm, so a clock that moved between the read and the arm fires the timer at that
-// moment all the same (api's hubClock has the same shape).
+// moment all the same (api's hubClock has the same shape). A read's deadline is the clock's too
+// (fire), so a test moves time past it rather than waiting it out.
 type jobClock interface {
 	Now() time.Time
 	AfterFunc(d time.Duration, f func()) clock.Timer
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 // newJobIntake builds a JobIntake on natsClient, a connected client StartIntakes opens for it alone,
@@ -131,7 +133,7 @@ func newJobIntake(natsClient *bus.Client, pool *store.Pool, leases duty.Leases, 
 func (j *JobIntake) Run(ctx context.Context) {
 	j.ctx = ctx
 	defer j.stopPending()
-	stopping, release := stopContext(ctx)
+	stopping, release := stopContext(ctx, j.clock)
 	defer release()
 	binds := time.NewTicker(durableBindInterval)
 	defer binds.Stop()
@@ -317,7 +319,8 @@ func (j *JobIntake) schedule(key runKey, production Production) {
 
 // fire ends a run's burst and reads its jobs once a read slot is free (reads). An event that
 // arrives during the read starts the next burst; two reads of one run that overlap are safe, since
-// a read never undoes a later one (UpsertRunJobs). The read's deadline starts once it has its slot.
+// a read never undoes a later one (UpsertRunJobs). The read's deadline, on the intake's clock,
+// starts once it has its slot.
 func (j *JobIntake) fire(key runKey, run *pendingRun) {
 	j.mu.Lock()
 	if j.pending[key] != run {
@@ -332,7 +335,7 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 		return
 	}
 	defer func() { <-j.reads }()
-	ctx, cancel := context.WithTimeout(j.ctx, intakeMessageTimeout)
+	ctx, cancel := j.clock.WithTimeout(j.ctx, intakeMessageTimeout)
 	defer cancel()
 	j.read(ctx, key, run.production)
 }

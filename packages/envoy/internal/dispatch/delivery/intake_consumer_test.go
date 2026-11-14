@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,10 +21,13 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft holds what bind does to the
@@ -71,7 +75,7 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 	// replacement, so a read can land between the two and find no durable at all; that is "not
 	// yet", not a failure.
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		read, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if errors.Is(err, natsgo.ErrConsumerNotFound) {
 			return false
@@ -83,10 +87,10 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 		return info.Config.MaxAckPending == intakeMaxAckPending && info.Config.AckWait == intakeAckWait()
 	}, func() string {
 		if info == nil {
-			return fmt.Sprintf("no durable named %s after %s", bus.DispatchDeliveryDurable, 20*time.Second)
+			return fmt.Sprintf("no durable named %s", bus.DispatchDeliveryDurable)
 		}
-		return fmt.Sprintf("durable ack_wait/max_ack_pending = %s/%d after %s, want %s/%d (bind must correct an earlier release's flow control)",
-			info.Config.AckWait, info.Config.MaxAckPending, 20*time.Second, intakeAckWait(), intakeMaxAckPending)
+		return fmt.Sprintf("durable ack_wait/max_ack_pending = %s/%d, want %s/%d (bind must correct an earlier release's flow control)",
+			info.Config.AckWait, info.Config.MaxAckPending, intakeAckWait(), intakeMaxAckPending)
 	})
 	if info.Config.FilterSubject != githubIntakeSubject || len(info.Config.FilterSubjects) > 0 {
 		t.Fatalf("durable filter = %q / %v, want %q", info.Config.FilterSubject, info.Config.FilterSubjects, githubIntakeSubject)
@@ -164,8 +168,8 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 		t.Cleanup(func() { deleteProbeConsumer(t, natsClient, durable) })
 	}
 	// fetch creates a fresh pull durable carrying filters -- as the one FilterSubject when plural
-	// is false, as FilterSubjects when it is true -- fetches up to want messages from it by name,
-	// and counts by kind what arrives.
+	// is false, as FilterSubjects when it is true -- fetches want messages from it by name, the
+	// fetch bounded by the shared wait's context, and counts by kind what arrives.
 	fetches := 0
 	fetch := func(t *testing.T, name string, plural bool, want int, filters ...string) (runs, prs int) {
 		t.Helper()
@@ -184,7 +188,7 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 			return 0, 0
 		}
 		deleteOnCleanup(config.Durable)
-		batch, err := consumer.Fetch(want, jetstream.FetchMaxWait(3*time.Second))
+		batch, err := consumer.Fetch(want, jetstream.FetchContext(testwait.Context(t)))
 		if err != nil {
 			t.Logf("fetch %s: %v", name, err)
 			return 0, 0
@@ -249,7 +253,7 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 	// the same way, separates the empty subject from the filter set.
 	pushed := func(name, consumer, subject string, want int) {
 		t.Helper()
-		got := drain(t, natsClient, consumer, subject)
+		got := drain(t, natsClient, consumer, subject, want)
 		t.Logf("%s: %d of %d arrived", name, got, stored)
 		if got != want {
 			t.Errorf("%s: %d of %d arrived, want %d", name, got, stored, want)
@@ -313,9 +317,9 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 	}
 }
 
-// drain binds a push subscription to consumer on subject, the way this package's bind does, and
-// reports how many messages reach its handler within a short window.
-func drain(t *testing.T, natsClient *bus.Client, consumer, subject string) int {
+// drain binds a push subscription to consumer on subject, the way this package's bind does, waits
+// through the shared wait for want messages to reach its handler, and reports how many have.
+func drain(t *testing.T, natsClient *bus.Client, consumer, subject string, want int) int {
 	t.Helper()
 	var mu sync.Mutex
 	arrived := 0
@@ -328,7 +332,7 @@ func drain(t *testing.T, natsClient *bus.Client, consumer, subject string) int {
 		}
 	}, natsgo.Bind(bus.Stream, consumer), natsgo.ManualAck())
 	if err != nil {
-		t.Logf("subscribe to %s on subject %q: %v", consumer, subject, err)
+		t.Errorf("subscribe to %s on subject %q: %v", consumer, subject, err)
 		return 0
 	}
 	defer func() {
@@ -336,10 +340,11 @@ func drain(t *testing.T, natsClient *bus.Client, consumer, subject string) int {
 			t.Logf("unsubscribe from %s: %v", consumer, err)
 		}
 	}()
-	time.Sleep(3 * time.Second)
-	mu.Lock()
-	defer mu.Unlock()
-	return arrived
+	return testwait.Until(t, fmt.Sprintf("%d messages to reach the subscription bound to %s on subject %q", want, consumer, subject), func() (int, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		return arrived, arrived >= want
+	})
 }
 
 // TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor holds the cutover from the durable
@@ -348,7 +353,6 @@ func drain(t *testing.T, natsClient *bus.Client, consumer, subject string) int {
 // replacement delivers exactly the messages the old durable had not acknowledged -- none of the
 // acknowledged ones come back, and none of the unacknowledged ones are skipped.
 func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	natsClient := intakeTestClient(t)
@@ -382,7 +386,7 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("look up the plural-filter durable: %v", err)
 	}
-	batch, err := legacy.Fetch(acknowledged, jetstream.FetchMaxWait(10*time.Second))
+	batch, err := legacy.Fetch(acknowledged, jetstream.FetchContext(testwait.Context(t)))
 	if err != nil {
 		t.Fatalf("fetch from the plural-filter durable: %v", err)
 	}
@@ -420,9 +424,11 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
 	startIntake(t, intake)
 
-	awaitRuns(t, ctx, pool, natsClient, unacknowledged, 30*time.Second)
-	// Time for an acknowledged message the replacement wrongly replayed to arrive too.
-	time.Sleep(2 * time.Second)
+	awaitRuns(t, ctx, pool, natsClient, unacknowledged)
+	// deliver handles a message before it acknowledges it, so once the replacement has
+	// acknowledged every message the stream holds, an acknowledged message it wrongly replayed has
+	// been fetched too: nothing is left for it to deliver.
+	awaitAcknowledged(t, natsClient)
 	t.Log(intakeStateReport(t, natsClient))
 
 	after, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
@@ -445,6 +451,14 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 	}
 }
 
+// burstFetchLatency is what the fake GitHub takes to answer each run in the burst below: a stand-in
+// for the time a GitHub REST call takes in production, as intake_burst_test.go's
+// burstGitHubLatency is. It opens no race and it is not a wait the test reads - the counts below
+// are read once every message is acknowledged - so it stays a sleep: with every fetch answered at
+// once, a burst would never leave more messages outstanding than the consumer's bound allows,
+// which is the case this row exists for.
+const burstFetchLatency = 20 * time.Millisecond
+
 // TestIntakeKeepsUpWithABurstOfDeliveryEvents publishes more events at once than the consumer may
 // have outstanding and holds the whole path end to end: every one is stored, each costs exactly
 // one GitHub fetch, nothing is redelivered and nothing is left outstanding. A burst larger than
@@ -452,7 +466,6 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 // consumer -- an acknowledgement that never reaches the server, a credit never given back --
 // fails here.
 func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 
@@ -468,7 +481,7 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 		mu.Lock()
 		fetches[id]++
 		mu.Unlock()
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(burstFetchLatency)
 		mustEncode(t, w, smallRun(id, time.Now().UTC()))
 	})
 
@@ -486,12 +499,13 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 	if duplicates > 0 {
 		t.Fatalf("%d of %d publishes were duplicates the stream already held, so the burst never reached the consumer", duplicates, burst)
 	}
-	awaitRuns(t, ctx, pool, natsClient, burst, 60*time.Second)
+	awaitRuns(t, ctx, pool, natsClient, burst)
 	t.Log(intakeStateReport(t, natsClient))
 
-	// A redelivery, which flow control that did not fit the handler would cause, arrives within
-	// the ack wait; give one time to land before reading the consumer's state.
-	time.Sleep(2 * time.Second)
+	// A redelivery, which flow control that did not fit the handler would cause, comes only for a
+	// message still outstanding: once every message the stream holds is acknowledged and none is
+	// pending, none can come, and the counts read then are final.
+	awaitAcknowledged(t, natsClient)
 	info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 	if err != nil {
 		t.Fatalf("read consumer info: %v", err)
@@ -518,7 +532,6 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 // intakeMaxAckPending drains in full once the intake comes up, with nothing waiting on the ack
 // wait to be redelivered.
 func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 
@@ -540,7 +553,7 @@ func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
 	startIntake(t, intake)
 
-	awaitRuns(t, ctx, pool, natsClient, backlog, 60*time.Second)
+	awaitRuns(t, ctx, pool, natsClient, backlog)
 	t.Log(intakeStateReport(t, natsClient))
 }
 
@@ -592,7 +605,7 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 	}
 	var taken *natsgo.Subscription
 	var outcomes []bindOutcome
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		taken, outcome = bindDurableConsumer(ctx, ctx, standby, leases, standbyThrottle, deliveryConsumerConfig(), subscribeIdle(standby))
 		outcomes = append(outcomes, outcome)
 		return outcome == bindBound
@@ -700,7 +713,12 @@ const standbyTakeOverBound = 10 * time.Second
 // durable's consumer lease -- so that the bind, which now holds that lease until the server
 // confirms PushBound, is measured against the speed the standby had then and not only against
 // the exclusion it was given.
+//
+// The bound is a service level read off the wall clock, so the row runs only in benchtime's timing
+// lane (benchtime.Timing), on a quiet machine and never in CI. That the standby takes the durable
+// over at all is TestASecondProcessStandsByForADurableAnotherHolds's, which the suite runs.
 func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
 	pool, ctx := deliveryTestPool(t)
 	leases := deliveryTestLeases(t, pool)
 	holder := intakeTestClient(t)
@@ -722,7 +740,7 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	var taken *natsgo.Subscription
 	var outcomes []bindOutcome
 	var polled time.Time
-	waitFor(t, standbyTakeOverBound, func() bool {
+	waitFor(t, func() bool {
 		// At the standby's own period and no faster: Intake.Run retries an unbound durable every
 		// durableBindInterval, so a tighter loop here would measure a hand-over no process gets.
 		if !polled.IsZero() && time.Since(polled) < durableBindInterval {
@@ -736,9 +754,14 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 		return fmt.Sprintf("the standby did not bind the durable the holder let go %s ago; its attempts, one every %s: %v",
 			time.Since(stopped), durableBindInterval, outcomes)
 	})
+	tookOver := time.Since(stopped)
 	t.Cleanup(func() { _ = taken.Unsubscribe() })
 	t.Logf("the standby took the durable over %s after the holder stopped, on attempt %d of one every %s",
-		time.Since(stopped), len(outcomes), durableBindInterval)
+		tookOver, len(outcomes), durableBindInterval)
+	if tookOver > standbyTakeOverBound {
+		t.Errorf("the standby took the durable over %s after the holder stopped, past standbyTakeOverBound (%s); its attempts, one every %s: %v",
+			tookOver, standbyTakeOverBound, durableBindInterval, outcomes)
+	}
 	awaitPushBound(t, standby, "the durable the standby took over is bound to neither process")
 }
 
@@ -856,11 +879,7 @@ func TestABindWhoseLeaseIsHeldElsewhereReconcilesNothing(t *testing.T) {
 			<-release
 		})
 	}()
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatalf("the other caller never took the %s lease", consumerLease(bus.DispatchDeliveryDurable))
-	}
+	testwait.Receive(t, fmt.Sprintf("the other caller to take the %s lease", consumerLease(bus.DispatchDeliveryDurable)), taken)
 
 	sub, outcome := bindDurableConsumer(ctx, ctx, natsClient, leases, &bindThrottle{}, deliveryConsumerConfig(), subscribeIdle(natsClient))
 	if outcome != bindStandby || sub != nil {
@@ -921,9 +940,10 @@ func TestABindWhoseLeaseIsHeldElsewhereReconcilesNothing(t *testing.T) {
 //
 // The server here does confirm; what never reports it is durablePushBound, overridden for this
 // test, which is the one read the confirmation goes through. The real ConsumerInfo is read
-// afterwards, past the override, to prove the subscription was in fact given up. This pays the
-// whole consumerBindConfirmTimeout, which is why it is a test of its own and not a subtest of a
-// loop.
+// afterwards, past the override, to prove the subscription was in fact given up. The bind's clock
+// is a fake the test moves (bindThrottle.clock): the bind arms its confirmation's deadline
+// consumerBindConfirmTimeout from when it began, is still confirming, its next read armed, once
+// the fake stands one read short of that deadline, and gives up only once the fake reaches it.
 func TestABindTheServerNeverConfirmsIsUnsubscribedAndFails(t *testing.T) {
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
@@ -942,16 +962,35 @@ func TestABindTheServerNeverConfirmsIsUnsubscribedAndFails(t *testing.T) {
 		return server(ctx, js, name)
 	}
 
-	began := time.Now()
-	sub, outcome := bindDurableConsumer(ctx, ctx, natsClient, leases, &bindThrottle{}, deliveryConsumerConfig(), subscribeIdle(natsClient))
-	if sub != nil {
-		t.Cleanup(func() { _, _ = natsClient.DrainSubscription(sub) })
+	confirm := clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
+	deadline := confirm.Now().Add(consumerBindConfirmTimeout)
+	type answer struct {
+		sub     *natsgo.Subscription
+		outcome bindOutcome
 	}
-	if outcome != bindFailed || sub != nil {
-		t.Fatalf("a bind the server never confirmed = %v (subscription returned: %t), want bindFailed and no subscription", outcome, sub != nil)
+	answered := make(chan answer, 1)
+	go func() {
+		sub, outcome := bindDurableConsumer(ctx, ctx, natsClient, leases, &bindThrottle{clock: confirm}, deliveryConsumerConfig(), subscribeIdle(natsClient))
+		answered <- answer{sub: sub, outcome: outcome}
+	}()
+	// Two timers are armed while the bind confirms -- its next read and its deadline -- and the
+	// bind disarms both as it gives up, so both armed is a bind still confirming.
+	confirming := func(what string) {
+		t.Helper()
+		if armed := confirm.AwaitArmed(t, what, 2); !slices.Contains(armed, deadline) {
+			t.Fatalf("the bind's confirmation is armed to end at one of %v, want %v: consumerBindConfirmTimeout from when it began", armed, deadline)
+		}
 	}
-	if waited := time.Since(began); waited < consumerBindConfirmTimeout {
-		t.Fatalf("the bind gave up %s in, inside its %s bound: it did not wait the confirmation out", waited, consumerBindConfirmTimeout)
+	confirming("the bind's confirmation deadline and its next read")
+	confirm.Advance(consumerBindConfirmTimeout - consumerBindConfirmInterval)
+	confirming("the bind still confirming one read short of its deadline")
+	confirm.Advance(consumerBindConfirmInterval)
+	got := testwait.Receive(t, "the answer of the bind whose confirmation deadline the fake clock reached", answered)
+	if got.sub != nil {
+		t.Cleanup(func() { _, _ = natsClient.DrainSubscription(got.sub) })
+	}
+	if got.outcome != bindFailed || got.sub != nil {
+		t.Fatalf("a bind the server never confirmed = %v (subscription returned: %t), want bindFailed and no subscription", got.outcome, got.sub != nil)
 	}
 	var warned bool
 	for _, record := range logs() {
@@ -969,7 +1008,7 @@ func TestABindTheServerNeverConfirmsIsUnsubscribedAndFails(t *testing.T) {
 	// server a moment after the call that asked for it returns.
 	var info *natsgo.ConsumerInfo
 	var err error
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && !info.PushBound
 	}, func() string {
@@ -986,7 +1025,7 @@ func awaitPushBound(t *testing.T, client *bus.Client, failure string) *natsgo.Co
 	t.Helper()
 	var info *natsgo.ConsumerInfo
 	var err error
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err = client.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound
 	}, func() string {

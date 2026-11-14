@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // promptShell gives the prompt a parent interactive shell in the same session, so
@@ -89,16 +91,16 @@ func (s *promptShell) send(text string) {
 
 func (s *promptShell) wait(want string) {
 	s.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	buf := make([]byte, 4096)
-	for !strings.Contains(s.out.String(), want) {
-		if time.Now().After(deadline) {
-			s.t.Fatalf("waiting for %q; terminal showed %q", want, s.out.String())
-		}
+	testwait.Until(s.t, fmt.Sprintf("the terminal to show %q", want), func() (string, bool) {
+		// The read deadline is how a pty read is made to come back at all, not a bound on
+		// the wait: what it does not find this time the next read finds.
 		_ = s.controller.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
 		n, _ := s.controller.Read(buf)
 		s.out.Write(buf[:n])
-	}
+		shown := s.out.String()
+		return shown, strings.Contains(shown, want)
+	})
 }
 
 func (s *promptShell) start(wrapper bool, background bool) {
@@ -156,18 +158,13 @@ func termiosKey(t *unix.Termios) string {
 
 func (s *promptShell) waitForeground(pid int) {
 	s.t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+	testwait.Until(s.t, fmt.Sprintf("the terminal's foreground group to be %d", pid), func() (int, bool) {
 		foreground, err := unix.IoctlGetInt(s.ctlFd, unix.TIOCGPGRP)
 		if err != nil {
 			s.t.Fatal(err)
 		}
-		if foreground == pid {
-			return
-		}
-		if time.Now().After(deadline) {
-			s.t.Fatalf("terminal foreground group = %d, want %d", foreground, pid)
-		}
-	}
+		return foreground, foreground == pid
+	})
 }
 
 func (s *promptShell) noShellValue(markers ...string) {
@@ -239,30 +236,21 @@ func TestPromptJobHelper(t *testing.T) {
 		// Started with &: start the prompt only once bash's line editor holds the
 		// terminal (canonical mode off), which a prompt in the background must
 		// neither take as its baseline nor show its label over.
-		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		testwait.Eventually(t, "bash's line editor to take the terminal", func() bool {
 			tio, err := unix.IoctlGetTermios(0, unix.TCGETS)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tio.Lflag&unix.ICANON == 0 {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("bash's line editor never took the terminal")
-			}
-		}
+			return tio.Lflag&unix.ICANON == 0
+		})
 		fmt.Println("PROMPT_STARTING")
 		if os.Getenv("AGENT_SECRETS_JOB_AFTER_SHELL_EXIT") != "" {
 			// Reach the prompt only once the shell's exit has taken the terminal from the
 			// session, as a prompt descheduled that long on a loaded machine would.
-			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-				if _, err := unix.IoctlGetInt(0, unix.TIOCGPGRP); errors.Is(err, unix.ENOTTY) {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("the shell's exit never took the terminal")
-				}
-			}
+			testwait.Eventually(t, "the shell's exit to take the terminal", func() bool {
+				_, err := unix.IoctlGetInt(0, unix.TIOCGPGRP)
+				return errors.Is(err, unix.ENOTTY)
+			})
 		}
 	}
 	real := readTerminal
@@ -328,11 +316,7 @@ func TestPromptJobStopBeforeTheLabelKeepsTheEntry(t *testing.T) {
 	s.start(false, true)
 	// Go leaves SIGTSTP at its default action until the prompt's watcher asks
 	// for it, so a stop sent once the watcher catches it is the prompt's to handle.
-	for deadline := time.Now().Add(5 * time.Second); !catches(t, s.pid, syscall.SIGTSTP); time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the prompt never caught SIGTSTP")
-		}
-	}
+	testwait.Eventually(t, "the prompt to catch SIGTSTP", func() bool { return catches(t, s.pid, syscall.SIGTSTP) })
 	s.send("kill -TSTP %1\r")
 	// The job is in the background, so bash never takes the terminal back for it, and
 	// fg does not resume a job bash has not yet seen stop: wait for its job table.
@@ -350,17 +334,13 @@ func TestPromptJobStopBeforeTheLabelKeepsTheEntry(t *testing.T) {
 // job bash has already seen stop.
 func (s *promptShell) jobStopped() {
 	s.t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	testwait.Until(s.t, "bash's job table to show job 1 stopped", func() (string, bool) {
 		s.out.Reset()
 		s.send("jobs %1\r")
 		s.wait("PROMPT$ ")
-		if strings.Contains(s.out.String(), "Stopped") {
-			return
-		}
-		if time.Now().After(deadline) {
-			s.t.Fatalf("bash never saw the job stop: %q", s.out.String())
-		}
-	}
+		shown := s.out.String()
+		return shown, strings.Contains(shown, "Stopped")
+	})
 }
 
 // A prompt whose process group is orphaned (the subshell that started it has exited) can
@@ -408,15 +388,10 @@ func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
 			s.out.Reset()
 			s.send("kill -" + tc.signal + " %1\r")
 			// bash reaps a job that ends; one a restore stopped stays in /proc in state T.
-			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+			testwait.Until(t, fmt.Sprintf("the prompt to be gone after SIG%s in the background", tc.signal), func() (string, bool) {
 				stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", s.pid))
-				if os.IsNotExist(err) {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("the prompt was still there 5 s after SIG%s in the background: %q; terminal: %q", tc.signal, stat, s.out.String())
-				}
-			}
+				return fmt.Sprintf("%s; terminal: %q", stat, s.out.String()), os.IsNotExist(err)
+			})
 			s.pid = 0
 			// bash prints a background job's end before its next prompt.
 			s.send("printf 'SHELL_%s\\n' ALIVE\r")
@@ -499,11 +474,10 @@ func TestPromptJobFastForegroundDoesNotRestopOrExposeValue(t *testing.T) {
 			s.send("\x1a")
 			// Queue fg at the first stopped thread, without waiting for all of the
 			// job's threads or bash to reclaim the terminal.
-			for deadline := time.Now().Add(5 * time.Second); processState(t, s.pid) != "T"; time.Sleep(time.Millisecond) {
-				if time.Now().After(deadline) {
-					t.Fatal("prompt did not stop")
-				}
-			}
+			testwait.Until(t, "the prompt to stop", func() (string, bool) {
+				state := processState(t, s.pid)
+				return state, state == "T"
+			})
 			if background {
 				s.send("bg\r")
 			}
@@ -548,7 +522,9 @@ func TestPromptJobInheritedIgnoredStopStaysIgnored(t *testing.T) {
 	s := newPromptShell(t)
 	s.start(true, false)
 	s.send("head\x1a")
-	time.Sleep(100 * time.Millisecond)
+	testwait.Span(t, 100*time.Millisecond, "a Ctrl-Z the wrapper's trap left ignored makes the prompt do nothing at all: "+
+		"no state of its own marks a signal it never saw, the prompt runs over a real pty so synctest does not reach it, "+
+		"and a later action's effect cannot tell a prompt that kept the terminal from one that took it back before reading the rest")
 	if lflag(t, s.terminal)&unix.ECHO != 0 {
 		t.Fatal("ignored Ctrl-Z restored echo")
 	}
@@ -864,18 +840,13 @@ func TestPromptJobExternalStopKeepsTheValueHidden(t *testing.T) {
 	s.send("head")
 	// The prompt must have read the bytes first: the shell would read any still queued.
 	s.wait("READ_SOME")
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+	testwait.Until(t, "the prompt to read what was typed at it", func() (int, bool) {
 		queued, err := unix.IoctlGetInt(s.terminal, unix.TIOCINQ)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if queued == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the prompt left %d bytes unread", queued)
-		}
-	}
+		return queued, queued == 0
+	})
 	if err := syscall.Kill(s.pid, syscall.SIGSTOP); err != nil {
 		t.Fatal(err)
 	}
@@ -936,20 +907,11 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 					}
 				}
 			}()
-			exitWithin := 10 * time.Second
-			if sig == syscall.SIGABRT {
-				// Go's GOTRACEBACK=crash relays SIGQUIT between threads. A
-				// SIGQUIT subscriber can make that relay wait for its 10s
-				// watchdog before the runtime raises the fatal SIGABRT.
-				exitWithin = 30 * time.Second
-			}
-			select {
-			case <-done:
-			case <-time.After(exitWithin):
-				_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-				state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
-				t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)
-			}
+			// Go's GOTRACEBACK=crash relays SIGQUIT between threads, and a SIGQUIT subscriber
+			// can make that relay wait for its own 10 s watchdog (the Go runtime's timer, which
+			// no clock of ours reaches) before the runtime raises the fatal SIGABRT; the wait
+			// below outlasts it rather than racing it.
+			testwait.Receive(t, fmt.Sprintf("the prompt to end on %s", sig), done)
 			if err := controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
 				t.Fatal(err)
 			}

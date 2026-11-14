@@ -10,6 +10,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // KeyValue is a KV handle that checks a key before nats.go builds a subject from it, since nats.go
@@ -93,19 +95,19 @@ const (
 
 // awaitBucketApplied is read, a read of the bucket a start has just created, taken again every
 // bucketAppliedInterval while the member answering reports the bucket missing (missing) and no
-// longer than bucketAppliedDeadline. It returns the first answer that is not that, and the last
-// miss as it is once the deadline passes, so its caller wraps one error however the wait ended.
-// Any other error, a refusal included, is returned at once: only a member that has not caught up
-// is waited out. The first miss is logged, as bindListenerDurable logs its first refusal, so a
-// start that waited says which bucket it waited for.
-func awaitBucketApplied[T any](bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
-	start := time.Now()
+// longer than bucketAppliedDeadline, both on c (ensureKeyValue). It returns the first answer that
+// is not that, and the last miss as it is once the deadline passes, so its caller wraps one error
+// however the wait ended. Any other error, a refusal included, is returned at once: only a member
+// that has not caught up is waited out. The first miss is logged, as bindListenerDurable logs its
+// first refusal, so a start that waited says which bucket it waited for.
+func awaitBucketApplied[T any](c clock.Clock, bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
+	start := c.Now()
 	for attempt := 1; ; attempt++ {
 		value, err := read()
 		if err == nil || !missing(err) {
 			return value, err
 		}
-		if time.Since(start) >= bucketAppliedDeadline {
+		if c.Now().Sub(start) >= bucketAppliedDeadline {
 			return value, err
 		}
 		if attempt == 1 {
@@ -115,7 +117,7 @@ func awaitBucketApplied[T any](bucket string, missing func(error) bool, read fun
 				slog.String("retry_in", bucketAppliedInterval.String()),
 				slog.String("deadline", bucketAppliedDeadline.String()))
 		}
-		time.Sleep(bucketAppliedInterval)
+		_ = c.Sleep(context.Background(), bucketAppliedInterval)
 	}
 }
 
@@ -217,6 +219,14 @@ func namedRequest(request string, err error) error {
 // next pass. A caller that waits on a budget of its own, such as a request or a watcher's
 // repair, opens a bucket through OpenKeyValue or WrapKeyValue instead, which send it once.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+	return ensureKeyValue(clock.Real(), conn, js, config)
+}
+
+// ensureKeyValue is EnsureKeyValue on the clock c, which its waits for a member that has not
+// applied a create (awaitBucketApplied) and for the copies a raise added (awaitReplicasCurrent)
+// read and sleep on: clock.Real for every caller but a test of those waits, which passes a
+// clocktest.Fake and moves it.
+func ensureKeyValue(c clock.Clock, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
 	create := stream + " create"
@@ -281,7 +291,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// are two different answers, and each is waited out in its own way: the first is read
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
-			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, lookUpBucket)
+			kv, err = awaitBucketApplied(c, config.Bucket, bucketMissing, lookUpBucket)
 		} else {
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
@@ -298,13 +308,13 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// (the webhook redelivery sweep reads its cursor and its index), and a stale miss
 			// there asks GitHub for a delivery it has already redelivered, so the start waits for
 			// the copies and fails rather than reading early.
-			err = awaitReplicasCurrent(js, config.Bucket, config.Replicas)
+			err = awaitReplicasCurrent(c, js, config.Bucket, config.Replicas)
 		}
 	}
 	if err != nil {
 		return KeyValue{}, err
 	}
-	return wrapKeyValue(conn, kv, created, startSendsAgain)
+	return wrapKeyValue(c, conn, kv, created, startSendsAgain)
 }
 
 // raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
@@ -353,10 +363,10 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 // moment this call answers, and a stale miss there asks GitHub for a redelivery it already made.
 //
 // A read that fails is returned as it is, since the stream is there: this runs only after a raise
-// of it answered.
-func awaitReplicasCurrent(js nats.JetStreamContext, bucket string, replicas int) error {
+// of it answered. The reads are spaced and the deadline read on c (ensureKeyValue).
+func awaitReplicasCurrent(c clock.Clock, js nats.JetStreamContext, bucket string, replicas int) error {
 	stream := "KV_" + bucket
-	start := time.Now()
+	start := c.Now()
 	for attempt := 1; ; attempt++ {
 		info, err := js.StreamInfo(stream)
 		if err != nil {
@@ -366,7 +376,7 @@ func awaitReplicasCurrent(js nats.JetStreamContext, bucket string, replicas int)
 		if behind == "" {
 			return nil
 		}
-		if time.Since(start) >= bucketAppliedDeadline {
+		if c.Now().Sub(start) >= bucketAppliedDeadline {
 			return fmt.Errorf("raise %s: %d copies were not current within %s: %s", stream, replicas, bucketAppliedDeadline, behind)
 		}
 		if attempt == 1 {
@@ -377,7 +387,7 @@ func awaitReplicasCurrent(js nats.JetStreamContext, bucket string, replicas int)
 				slog.String("retry_in", bucketAppliedInterval.String()),
 				slog.String("deadline", bucketAppliedDeadline.String()))
 		}
-		time.Sleep(bucketAppliedInterval)
+		_ = c.Sleep(context.Background(), bucketAppliedInterval)
 	}
 }
 
@@ -455,7 +465,7 @@ func OpenKeyValue(conn *nats.Conn, js nats.JetStreamContext, bucket string) (Key
 // on it has had an answer for it already. A start opens its handles through EnsureKeyValue
 // instead, which sends its handle open again (wrapKeyValue).
 func WrapKeyValue(conn *nats.Conn, kv nats.KeyValue) (KeyValue, error) {
-	return wrapKeyValue(conn, kv, false, oneSend)
+	return wrapKeyValue(clock.Real(), conn, kv, false, oneSend)
 }
 
 // startSendsAgain and oneSend are wrapKeyValue's sendAgain, named at the call so the two readings
@@ -466,7 +476,8 @@ const (
 	oneSend         = false
 )
 
-// wrapKeyValue is WrapKeyValue, with two things its callers choose.
+// wrapKeyValue is WrapKeyValue, with two things its callers choose, and the clock c a created
+// bucket's wait reads (ensureKeyValue).
 //
 // created says this start has just created the bucket, so the STREAM.INFO that opens the
 // jetstream handle is taken again until the member answering has applied that create
@@ -489,7 +500,7 @@ const (
 // caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again under
 // its own lock, on a request whose budget is two seconds, and a read that kept it waiting three
 // times as long would stop every role and session read of the process rather than save a start.
-func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
+func wrapKeyValue(c clock.Clock, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
 		return KeyValue{}, err
@@ -506,7 +517,7 @@ func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (K
 	}
 	var watch jetstream.KeyValue
 	if created {
-		watch, err = awaitBucketApplied(kv.Bucket(), bucketMissing, open)
+		watch, err = awaitBucketApplied(c, kv.Bucket(), bucketMissing, open)
 	} else {
 		watch, err = open()
 	}

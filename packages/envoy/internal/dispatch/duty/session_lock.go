@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // ErrSessionClosed is FreeSessionLock's answer for a connection that was closed before its unlock
@@ -38,13 +40,14 @@ var errLockNotHeld = errors.New("the unlock reports this session did not hold th
 //
 // The answer is nil once the unlock answered true, ErrSessionClosed when conn was closed before
 // the unlock, and otherwise what failed, for the caller to log beside what the lock was for. conn
-// is released or closed whatever the answer, so the caller does not use it again.
-func FreeSessionLock(conn *pgxpool.Conn, unlock string, args ...any) error {
+// is released or closed whatever the answer, so the caller does not use it again. Both bounds run
+// on c (LeaseCall).
+func FreeSessionLock(c clock.Clock, conn *pgxpool.Conn, unlock string, args ...any) error {
 	if conn.Conn().IsClosed() {
 		conn.Release()
 		return ErrSessionClosed
 	}
-	ctx, cancel := LeaseCall()
+	ctx, cancel := LeaseCall(c)
 	defer cancel()
 	freed := false
 	err := conn.QueryRow(ctx, unlock, args...).Scan(&freed)
@@ -56,7 +59,7 @@ func FreeSessionLock(conn *pgxpool.Conn, unlock string, args ...any) error {
 		return nil
 	}
 	dead := conn.Hijack()
-	closeCtx, closeCancel := LeaseCall()
+	closeCtx, closeCancel := LeaseCall(c)
 	defer closeCancel()
 	if closeErr := dead.Close(closeCtx); closeErr != nil {
 		return fmt.Errorf("%w; close its connection: %v", err, closeErr)

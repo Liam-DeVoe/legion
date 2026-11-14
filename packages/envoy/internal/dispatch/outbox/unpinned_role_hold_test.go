@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The second road to one host, which TestACommentAnUnansweredRoleMentionNotYetPinnedReachesThatSessionOnce
@@ -68,8 +69,11 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	// because only the sender's own resolution learns which session holds the role.
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	after := time.Now()
 
+	recv.settle(t)
 	if forwards := recv.received(); len(forwards) > 0 {
 		t.Fatalf("the batch forwarded %s %d copies of the comment, the first under %q, while the mention of %s was live and pinned to no session yet, want none: that mention is on its way to the same host, so this copy shows it the comment twice",
 			holder, len(forwards), forwards[0].DedupeKey, target)
@@ -86,9 +90,7 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on a mention, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
-	}
+	requireBlockedByPass(t, "the comment whose forward waits", due, before, after)
 
 	// The sender's own resolution lands: it pins the session on the row and settles the attempt
 	// sent, as one does within the lease (coalesce(session_id, $6) in
@@ -170,7 +172,7 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 		t.Fatalf("the comment reached %v, want %s among them: no mention of this comment names the thread root's author, and the hold an unpinned mention puts on the role's holder delays no other session's copy",
 			reached, authorSubject)
 	}
-	waitFor(t, 10*time.Second, "the author's copy", func() bool { return len(wrote.received()) > 0 })
+	testwait.Eventually(t, "the author's copy", func() bool { return len(wrote.received()) > 0 })
 	copies := wrote.received()
 	if len(copies) != 1 || copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", comment.ID) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key",

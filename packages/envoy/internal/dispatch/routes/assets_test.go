@@ -495,7 +495,9 @@ func TestStaticHandlerReleasesRetainedBytesWhenTheStoreFails(t *testing.T) {
 }
 
 // latentStore answers as a store across a network does: each object arrives after a delay, or the
-// read fails with its context's error when that ends first.
+// read fails with its context's error when that ends first. The delay is a stand-in's own, the
+// round trip to the object store the handler reads through (Context.AssetStore), which the
+// handler bounds with retainedAssetFetchTimeout; it is not a bound of the test's.
 type latentStore struct {
 	delay  time.Duration
 	object []byte

@@ -16,6 +16,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -212,7 +213,8 @@ func TestSessionRegistry_GetNotFound(t *testing.T) {
 
 func TestSessionRegistry_TTLExpiry(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
+	clk := clocktest.Held()
+	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second), WithSessionClock(clk))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -221,19 +223,18 @@ func TestSessionRegistry_TTLExpiry(t *testing.T) {
 	if err := reg.Put("ses_expiry", entry); err != nil {
 		t.Fatalf("put failed: %v", err)
 	}
-
 	if _, err := reg.Get("ses_expiry"); err != nil {
 		t.Fatalf("expected entry to exist immediately: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(500 * time.Millisecond)
-		if _, err := reg.Get("ses_expiry"); err != nil {
-			return
-		}
-	}
-	t.Fatal("session entry did not expire within 5s (TTL was 2s)")
+	// Past the row's deadline on the registry's own clock: the entry leaves with no wall-clock
+	// wait. The 1 s over the TTL covers the server's stamp of the record's Created, which the
+	// deadline is one TTL past.
+	clk.Advance(3 * time.Second)
+	testwait.Eventually(t, "the entry to expire past its TTL", func() bool {
+		_, err := reg.Get("ses_expiry")
+		return err != nil
+	})
 }
 
 func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
@@ -248,11 +249,16 @@ func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
 		t.Fatalf("put failed: %v", err)
 	}
 
+	// A row's deadline is one TTL past the record's Created, which nats-server stamps on its own
+	// clock; a refresh resets it only because the second write's Created is later. No clock of
+	// ours reaches that stamp, so these spans are real: the first moves the server's Created to
+	// halfway through the TTL before the refresh, the second takes real time past the first
+	// write's deadline, where the refreshed row must still be here. The registry reads the same
+	// real clock, so its local expiry judges the row against the same moments.
 	time.Sleep(1500 * time.Millisecond)
 	if err := reg.Put("ses_refresh", entry); err != nil {
 		t.Fatalf("refresh put failed: %v", err)
 	}
-
 	time.Sleep(1500 * time.Millisecond)
 
 	if _, err := reg.Get("ses_refresh"); err != nil {
@@ -441,9 +447,10 @@ func TestSessionRegistryDeleteIf_DeletesAMalformedValueThatNamesAnotherInstance(
 	if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
+	testwait.Eventually(t, "observable state", func() bool {
 		return strings.Contains(logs.String(), "session registry deleting a malformed value under a conditional delete")
 	})
+
 }
 
 // Both conditional deletes lose to a write that lands under them, and the answer says only that:
@@ -544,8 +551,7 @@ func openRegistryForInstanceDelete(t *testing.T) *SessionRegistry {
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
@@ -598,15 +604,14 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := registry.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("wait for initial cache: %v", err)
 	}
 
 	url := client.Conn.ConnectedUrl()
 	client.Close()
-	waitFor(t, 5*time.Second, func() bool { return registry.WatchErr() != nil })
+	testwait.Eventually(t, "observable state", func() bool { return registry.WatchErr() != nil })
 	if err := registry.Ping(); err == nil {
 		t.Fatal("stopped watcher should make the registry unhealthy")
 	}
@@ -639,10 +644,11 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 	if _, err := kv.Put("ses_after_rewatch", value); err != nil {
 		t.Fatalf("put replacement entry: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
+	testwait.Eventually(t, "observable state", func() bool {
 		got, err := registry.Get("ses_after_rewatch")
 		return err == nil && reflect.DeepEqual(got, entry)
 	})
+
 }
 
 func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
@@ -652,8 +658,7 @@ func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
@@ -666,16 +671,17 @@ func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put malformed value: %v", err)
 	}
-	waitForSessionEviction(t, reg, sessionID, 5*time.Second)
+	waitForSessionEviction(t, reg, sessionID)
 
 	for _, want := range []string{
 		"level=WARN",
 		"key=" + sessionID,
 		"revision=" + strconv.FormatUint(revision, 10),
 	} {
-		waitFor(t, 5*time.Second, func() bool {
+		testwait.Eventually(t, "observable state", func() bool {
 			return strings.Contains(logs.String(), want)
 		})
+
 	}
 	t.Logf("session watcher malformed-value warning: %s", strings.TrimSpace(logs.String()))
 }
@@ -686,8 +692,7 @@ func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
@@ -705,10 +710,11 @@ func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 			if _, err := raw.Put(sessionID, buf); err != nil {
 				t.Fatalf("put remote entry: %v", err)
 			}
-			waitFor(t, 5*time.Second, func() bool {
+			testwait.Eventually(t, "observable state", func() bool {
 				got, err := reg.Get(sessionID)
 				return err == nil && got.Port == remote.Port
 			})
+
 		},
 	})
 	if err := reg.Put(sessionID, SessionEntry{Port: 13381, MachineID: "local-host", Dir: "/local"}); err != nil {
@@ -730,8 +736,7 @@ func TestSessionRegistryDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *test
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
@@ -769,8 +774,7 @@ func TestSessionRegistryDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *test
 // the only writer there is.
 func useKV(t *testing.T, r *SessionRegistry, kv natsgo.KeyValue) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	r.mu.RLock()
 	previous := r.watcher
 	r.mu.RUnlock()
@@ -855,14 +859,11 @@ func (kv *historyFailSessionKeyValue) History(string, ...natsgo.WatchOpt) ([]nat
 	return nil, kv.err
 }
 
-func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
+// waitForSessionEviction waits until the registry answers nothing for sessionID and lists no
+// session at all.
+func waitForSessionEviction(t *testing.T, reg *SessionRegistry, sessionID string) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, testwait.Poll, "observable state", condition)
-}
-
-func waitForSessionEviction(t *testing.T, reg *SessionRegistry, sessionID string, timeout time.Duration) {
-	t.Helper()
-	waitFor(t, timeout, func() bool {
+	testwait.Eventually(t, "the eviction of "+sessionID, func() bool {
 		_, getErr := reg.Get(sessionID)
 		entries, listErr := reg.List()
 		return getErr != nil && listErr == nil && len(entries) == 0

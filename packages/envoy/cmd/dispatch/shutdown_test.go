@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
@@ -48,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // promptShutdown bounds a SIGTERM's whole ordered shutdown with a dashboard open. Closing the
@@ -170,23 +172,18 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 	storetest.WaitForLockWaiters(t, holder, 1)
 
 	signalled := process.Terminate(t)
-	select {
-	case <-process.Exited:
-		t.Errorf("Dispatch exited %v after SIGTERM, with the write still waiting on the lock", time.Since(signalled))
-	case <-time.After(time.Until(signalled.Add(lockHeldAfterSIGTERM))):
-	}
+	testwait.Quiet(t, "Dispatch's exit while the write still waits on the lock", process.Exited,
+		time.Until(signalled.Add(lockHeldAfterSIGTERM)),
+		"the row is about a write held in PostgreSQL across the whole stop: the process writes nothing that says "+
+			"'I am still waiting', it is a child process so synctest does not reach it, and the only later action "+
+			"there is - releasing the lock - is what ends the wait this span measures")
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
 	process.WaitExit(t, "SIGTERM")
 	t.Logf("exited %v after SIGTERM", time.Since(signalled))
-	select {
-	case got := <-answered:
-		if got.err != nil || got.status != http.StatusOK {
-			t.Errorf("the title change answered %d (%v), want 200", got.status, got.err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Errorf("the title change had no answer 5s after Dispatch exited")
+	if got := testwait.Receive(t, "the title change's answer once Dispatch exited", answered); got.err != nil || got.status != http.StatusOK {
+		t.Errorf("the title change answered %d (%v), want 200", got.status, got.err)
 	}
 	var title string
 	if err := database.Pool.QueryRow(context.Background(), `select title from issues where key = $1`, key).Scan(&title); err != nil {
@@ -257,18 +254,12 @@ func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T)
 			`{"body":"Ship it once the checks are green.","delivery":"steer"}`, asKeyed(dispatchTestLogin, "press-1"))
 		answered <- answer{httpAnswer: sent, err: err}
 	}()
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the send never reached the listener:\n%s", process.Output.String())
-	}
+	testwait.Receive(t, "the send to reach the listener", held)
 
 	signalled := process.Terminate(t)
-	select {
-	case <-process.Exited:
-		t.Fatalf("Dispatch exited %v after SIGTERM with the send still at the listener:\n%s", time.Since(signalled), process.Output.String())
-	case <-time.After(time.Second):
-	}
+	testwait.Quiet(t, "Dispatch's exit with the send still at the listener", process.Exited, time.Second,
+		"a process that has not exited records nothing that says so, it is a child process so synctest does not "+
+			"reach it, and the later action this row takes - releasing the listener's answer - is what lets it exit")
 	releaseOnce()
 	t.Logf("the listener answered the send %v after SIGTERM", time.Since(signalled))
 	process.WaitExit(t, "the listener's answer")
@@ -277,12 +268,7 @@ func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T)
 		t.Errorf("Dispatch exited %d after SIGTERM, want 0", code)
 	}
 
-	var got answer
-	select {
-	case got = <-answered:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the send had no answer 5s after Dispatch exited:\n%s", process.Output.String())
-	}
+	got := testwait.Receive(t, "the send's answer once Dispatch exited", answered)
 	var message struct {
 		ID         string `json:"id"`
 		Deliveries []struct {
@@ -392,18 +378,12 @@ func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *te
 		asKeyed(dispatchTestLogin, "press-1")); answer.status != http.StatusCreated {
 		t.Fatalf("broadcast: status %d, want 201", answer.status)
 	}
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the broadcast never reached the listener:\n%s", process.Output.String())
-	}
+	testwait.Receive(t, "the broadcast to reach the listener", held)
 
 	signalled := process.Terminate(t)
-	select {
-	case <-process.Exited:
-		t.Fatalf("Dispatch exited %v after SIGTERM with a recipient still at the listener:\n%s", time.Since(signalled), process.Output.String())
-	case <-time.After(time.Second):
-	}
+	testwait.Quiet(t, "Dispatch's exit with a recipient still at the listener", process.Exited, time.Second,
+		"a process that has not exited records nothing that says so, it is a child process so synctest does not "+
+			"reach it, and the later action this row takes - releasing the listener's answer - is what lets it exit")
 	releaseOnce()
 	t.Logf("the listener answered the held recipient %v after SIGTERM", time.Since(signalled))
 	process.WaitExit(t, "the listener's answer")
@@ -492,20 +472,12 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 			background.Wait()
 		}, func() {}, func() {}, nil)
 	}()
-	select {
-	case <-entered:
-	case <-time.After(15 * time.Second):
-		t.Fatal("shutdown never waited for delivery work")
-	}
+	testwait.Receive(t, "shutdown to wait for delivery work", entered)
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
 		t.Fatalf("the pool closed while shutdown waited for delivery work: %v", err)
 	}
 	close(release)
-	select {
-	case <-done:
-	case <-time.After(15 * time.Second):
-		t.Fatal("shutdown did not return after delivery work ended")
-	}
+	testwait.Receive(t, "shutdown to return once delivery work ended", done)
 	if _, _, err := conn.ReadMessage(); !gws.IsCloseError(err, gws.CloseServiceRestart) {
 		t.Fatalf("the live socket ended with %v, want 1012", err)
 	}
@@ -580,13 +552,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 		defer close(outboxStopped)
 		box.Run(lifetime)
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for !box.Publishing() {
-		if time.Now().After(deadline) {
-			t.Fatal("the outbox did not take the publisher hold within 10s")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the outbox to take the publisher hold", box.Publishing)
 
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
@@ -611,11 +577,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the event: %v", err)
 	}
-	select {
-	case <-publisher.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the outbox did not send the event within 10s")
-	}
+	testwait.Receive(t, "the outbox to send the event", publisher.entered)
 
 	stop()
 	done := make(chan struct{})
@@ -623,20 +585,15 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 		defer close(done)
 		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped)
 	}()
-	select {
-	case <-done:
-		t.Fatal("shutdown returned while the outbox was still inside its batch")
-	case <-time.After(time.Second):
-	}
+	testwait.Quiet(t, "shutdown's return while the outbox is still inside its batch", done, time.Second,
+		"a shutdown that has not returned writes nothing a test can read, the outbox's batch is held in this "+
+			"process behind a real socket so synctest does not reach it, and the later action this row takes - "+
+			"releasing the send - is what lets the shutdown return")
 	if _, err := database.Pool.Exec(ctx, "select 1"); err != nil {
 		t.Fatalf("the pool closed while the outbox was still stopping: %v", err)
 	}
 	released()
-	select {
-	case <-done:
-	case <-time.After(15 * time.Second):
-		t.Fatal("shutdown did not return after the outbox stopped")
-	}
+	testwait.Receive(t, "shutdown to return once the outbox stopped", done)
 	var holds int
 	if err := observer.Pool.QueryRow(ctx, `select count(*) from duty_holds where name = 'dispatch-outbox'`).Scan(&holds); err != nil {
 		t.Fatalf("read the publisher hold: %v", err)
@@ -733,10 +690,11 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		}
 		return info
 	}
-	waitUntil(t, 30*time.Second, "the intake's durable to be bound", func() bool {
+	testwait.Eventually(t, "the intake's durable to be bound", func() bool {
 		info := consumer()
 		return info != nil && info.PushBound
 	})
+
 	payload, err := json.Marshal(map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})
@@ -749,11 +707,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("publish the merged pull request: %v", err)
 	}
-	select {
-	case <-entered:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the intake never fetched the merged pull request")
-	}
+	testwait.Receive(t, "the intake to fetch the merged pull request", entered)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -768,13 +722,8 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 			database.Pool, func() {}, stopIntakes, func() {}, nil, nil)
 	}()
 	cancel()
-	select {
-	case err := <-served:
-		if err != nil {
-			t.Fatalf("serveUntilStopped: %v", err)
-		}
-	case <-time.After(stopGrace):
-		t.Fatal("the shutdown did not end within stopGrace")
+	if err := testwait.Receive(t, "the shutdown to end", served); err != nil {
+		t.Fatalf("serveUntilStopped: %v", err)
 	}
 
 	reader, err := pgx.Connect(context.Background(), database.Pool.Config().ConnString())
@@ -789,10 +738,11 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	// GitHub answers well inside the intakes' stop, so the handler finishes rather than being given
 	// up. Its acknowledgement is on its way to the server once the stop returns.
 	var info *natsgo.ConsumerInfo
-	waitUntil(t, 10*time.Second, "the message to be acknowledged", func() bool {
+	testwait.Eventually(t, "the message to be acknowledged", func() bool {
 		info = consumer()
 		return info != nil && info.AckFloor.Consumer >= 1 && info.NumAckPending == 0
 	})
+
 	if recorded == nil {
 		t.Fatalf("the message was acknowledged but its handler's writes never landed (last_event_at null): the pool closed "+
 			"under the handler; consumer delivered=%d ack_floor=%d", info.Delivered.Consumer, info.AckFloor.Consumer)
@@ -850,13 +800,8 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 		defer stopIntakesOnExit(cancel, stopIntakes)
 		panic(boot)
 	}()
-	select {
-	case got := <-recovered:
-		if got != boot {
-			t.Fatalf("the panic that reached the top of the stack = %v, want %q", got, boot)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("a panic after the intakes started never got past their deferred stop: it waited for intakes nothing had stopped")
+	if got := testwait.Receive(t, "the panic to get past the intakes' deferred stop", recovered); got != boot {
+		t.Fatalf("the panic that reached the top of the stack = %v, want %q", got, boot)
 	}
 	if ctx.Err() == nil {
 		t.Fatal("the deferred stop returned with the process context still live")
@@ -912,12 +857,8 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 	signalled := process.Terminate(t)
 	process.WaitExit(t, "SIGTERM")
 	t.Logf("exited %v after SIGTERM", time.Since(signalled))
-	select {
-	case <-editor.Ended:
-		t.Logf("the editor's connection ended %v after SIGTERM", editor.EndedAt().Sub(signalled))
-	case <-time.After(5 * time.Second):
-		t.Errorf("the editor's connection was still open 5s after Dispatch exited")
-	}
+	testwait.Receive(t, "the editor's connection to end once Dispatch exited", editor.Ended)
+	t.Logf("the editor's connection ended %v after SIGTERM", editor.EndedAt().Sub(signalled))
 	process.checkSettledAtShutdown(t, database, artifactID)
 	number, markdown, authors := latestVersion(t, database, artifactID)
 	if number != 2 || markdown != "after\n" || !strings.Contains(authors, `"`+dispatchTestLogin+`"`) {
@@ -939,7 +880,34 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 // it would create has none yet. Dispatch then gives up on the connection when silentProbes health
 // probes in a row have failed with no connection taken back meanwhile, so it exits well inside a
 // runtime's grace period instead of being killed, and says why.
+func TestSIGTERMWithTheDatabaseUnansweringExits(t *testing.T) {
+	exited := exitAfterSIGTERMWithTheDatabaseUnanswering(t)
+	t.Logf("exited %v after SIGTERM", exited)
+}
+
+// TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget is the service level that
+// stop promises: the process is gone well inside a runtime's grace period rather than killed.
+// The budget is spent by timers inside the child process - its HTTP drain, and silentProbes
+// health probes each with its own two seconds and poll interval - which no clock of ours
+// reaches, so the reading is of the machine's clock and the row runs only in benchtime's timing
+// lane. That it exits at all, saying why, is the row above, which every run proves.
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	exited := exitAfterSIGTERMWithTheDatabaseUnanswering(t)
+	// The request in flight holds the HTTP drain for its whole share, then the document service
+	// returns at once with no room to settle, and each failed probe takes its two seconds and a
+	// poll interval. The slack is a loaded box's jitter on this real binary.
+	if bound := httpDrainBeforeDocuments + silentProbes*(2*time.Second+drainPollInterval) + 5*time.Second; exited > bound {
+		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
+	}
+}
+
+// exitAfterSIGTERMWithTheDatabaseUnanswering runs the row above's scene - a request in flight,
+// waiting in Postgres behind another writer's lock, when the relay in front of the database
+// stops forwarding - signals the process, and answers how long after the signal it exited. It
+// fails t unless the process said both of the things this scene is about.
+func exitAfterSIGTERMWithTheDatabaseUnanswering(t *testing.T) time.Duration {
+	t.Helper()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
@@ -966,13 +934,6 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	signalled := process.Terminate(t)
 	process.WaitExit(t, "SIGTERM with the database unanswering")
 	exited := time.Since(signalled)
-	t.Logf("exited %v after SIGTERM", exited)
-	// The request in flight holds the HTTP drain for its whole share, then the document service
-	// returns at once with no room to settle, and each failed probe takes its two seconds and a
-	// poll interval. The slack is a loaded box's jitter on this real binary.
-	if bound := httpDrainBeforeDocuments + silentProbes*(2*time.Second+drainPollInterval) + 5*time.Second; exited > bound {
-		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
-	}
 	output := process.Output.String()
 	if !strings.Contains(output, `msg="dispatch: settle documents with requests still in flight"`) {
 		t.Errorf("the issue create was not in flight when the document service started")
@@ -985,6 +946,7 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 			t.Logf("Dispatch logged: %s", line)
 		}
 	}
+	return exited
 }
 
 // A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
@@ -1025,20 +987,13 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 		}
 		taken <- err
 	}()
-	for deadline := time.Now().Add(10 * time.Second); pool.Use().InUse == 0; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the late taker never took the idle shared connection")
-		}
-	}
+	testwait.Eventually(t, "the late taker to take the idle shared connection", func() bool { return pool.Use().InUse > 0 })
 
 	logged := capturedLog(t)
 	started := time.Now()
 	closePool(pool)
 	took := time.Since(started)
 	t.Logf("closePool returned %v after it began", took)
-	if bound := silentProbes*(drainPollInterval+2*time.Second) + 3*time.Second; took > bound {
-		t.Errorf("closePool returned %v after it began with the database unanswering, want within %v", took, bound)
-	}
 	select {
 	case err := <-taken:
 		t.Errorf("the late taker's connection came back (%v), want it held by the frozen database", err)
@@ -1046,6 +1001,14 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	}
 	if !strings.Contains(logged.String(), "once the database stopped answering") {
 		t.Errorf("closePool did not say it gave up because the database stopped answering:\n%s", logged.String())
+	}
+	// How long the give-up takes is a reading of this machine's clock against closePool's own
+	// probe timers, so only the opt-in timing lane holds it to a figure; what every run proves
+	// is that closePool returns at all and says why.
+	if os.Getenv(benchtime.TimingEnv) != "" {
+		if bound := silentProbes*(drainPollInterval+2*time.Second) + 3*time.Second; took > bound {
+			t.Errorf("closePool returned %v after it began with the database unanswering, want within %v", took, bound)
+		}
 	}
 }
 
@@ -1179,15 +1142,15 @@ func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) 
 	}
 
 	lost := process(`level=ERROR msg="dispatch: listen" `+address+` error="DISPATCH_LISTEN_FD=3: serve on the inherited socket: bad file descriptor"`, true)
-	if err := lost.healthyWithin(5 * time.Second); err == nil || !strings.Contains(err.Error(), "exited before it became healthy") {
+	if err := lost.healthy(t); err == nil || !strings.Contains(err.Error(), "exited before it became healthy") {
 		t.Errorf("a process that exited on its listen passed as healthy on a port another server holds: %v", err)
 	}
 	gone := process(listening+"\n"+`level=INFO msg="dispatch: shutting down"`, true)
-	if err := gone.healthyWithin(5 * time.Second); err == nil || !strings.Contains(err.Error(), "exited before it became healthy") {
+	if err := gone.healthy(t); err == nil || !strings.Contains(err.Error(), "exited before it became healthy") {
 		t.Errorf("a process that logged it serves and then exited passed as healthy on a port another server holds: %v", err)
 	}
 	bound := process(listening, false)
-	if err := bound.healthyWithin(5 * time.Second); err != nil {
+	if err := bound.healthy(t); err != nil {
 		t.Errorf("a running process that logged it serves, on a port that answers, was not healthy: %v", err)
 	}
 }
@@ -1396,23 +1359,24 @@ func (p *dispatchProcess) listeningLine() string {
 	return `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(p.port)
 }
 
-// waitHealthy waits up to 30 s for the process to be healthy (healthyWithin), and fails the test
-// when it is not.
+// waitHealthy waits for the process to be healthy (healthy), and fails the test when it is not.
 func (p *dispatchProcess) waitHealthy(t *testing.T) {
 	t.Helper()
-	if err := p.healthyWithin(30 * time.Second); err != nil {
+	if err := p.healthy(t); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// healthyWithin waits up to within for the process to log that it serves on its own port and for
-// /healthz there to answer 200 while the process still runs, and says why it did not, with the
-// process's output. The socket the process inherited is not readiness: the kernel queues
-// connections on it from before the process starts, and only the process's listening line says it
-// serves them. Nor is an answer once the process has exited, which released the port to whatever
-// took it next. The process serves after the SIGTERM handler is installed, so a server that
-// answers is one a signal stops in order.
-func (p *dispatchProcess) healthyWithin(within time.Duration) error {
+// healthy waits for the process to log that it serves on its own port and for /healthz there to
+// answer 200 while the process still runs, and says why it did not, with the process's output.
+// The socket the process inherited is not readiness: the kernel queues connections on it from
+// before the process starts, and only the process's listening line says it serves them. Nor is
+// an answer once the process has exited, which released the port to whatever took it next. The
+// process serves after the SIGTERM handler is installed, so a server that answers is one a
+// signal stops in order. A process that exits first ends the wait with that error, which is
+// what the rows about a process that never serves read.
+func (p *dispatchProcess) healthy(t *testing.T) error {
+	t.Helper()
 	listening := p.listeningLine()
 	exited := func() bool {
 		select {
@@ -1422,50 +1386,48 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 			return false
 		}
 	}
-	deadline := time.Now().Add(within)
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
-	for time.Now().Before(deadline) && !exited() {
-		if strings.Contains(p.Output.String(), listening) {
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
-			if err != nil {
-				return err
-			}
-			response, err := http.DefaultClient.Do(request)
-			if err == nil {
-				// A body read to its end puts its connection back in the client's pool before the
-				// caller's next request asks for one. Closed unread, Go's transport drains it after
-				// Close returns (since Go 1.27), so a request sent at once dials a second
-				// connection and is then handed the first: the second joins the pool and never
-				// carries a request. Server.Shutdown counts a connection that has sent nothing as
-				// busy until it is more than 5 s old, so that one would hold a SIGTERM's HTTP
-				// drain for 5 to 6 s.
-				_, _ = io.Copy(io.Discard, response.Body)
-				_ = response.Body.Close()
-				if response.StatusCode == http.StatusOK && !exited() {
-					return nil
-				}
-			}
+	ctx := testwait.Context(t)
+	var failed error
+	testwait.Eventually(t, "Dispatch to serve on its own port", func() bool {
+		if exited() {
+			failed = fmt.Errorf("Dispatch exited before it became healthy:\n%s", p.Output.String())
+			return true
 		}
-		select {
-		case <-p.Exited:
-		case <-time.After(200 * time.Millisecond):
+		if !strings.Contains(p.Output.String(), listening) {
+			return false
 		}
-	}
-	if exited() {
-		return fmt.Errorf("Dispatch exited before it became healthy:\n%s", p.Output.String())
-	}
-	return fmt.Errorf("Dispatch never became healthy:\n%s", p.Output.String())
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
+		if err != nil {
+			failed = err
+			return true
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return false
+		}
+		// A body read to its end puts its connection back in the client's pool before the
+		// caller's next request asks for one. Closed unread, Go's transport drains it after
+		// Close returns (since Go 1.27), so a request sent at once dials a second connection
+		// and is then handed the first: the second joins the pool and never carries a request.
+		// Server.Shutdown counts a connection that has sent nothing as busy until it is more
+		// than 5 s old, so that one would hold a SIGTERM's HTTP drain for 5 to 6 s.
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+		return response.StatusCode == http.StatusOK && !exited()
+	})
+	return failed
 }
 
-// waitPromptExit waits for Dispatch to exit after the SIGTERM sent at signalled, and requires it to
-// have exited within promptShutdown.
+// waitPromptExit waits for Dispatch to exit after the SIGTERM sent at signalled. How soon it
+// exits is a service level its stop promises, measured on this machine's clock against timers
+// inside the child process, so the figure is held only in benchtime's timing lane; that it exits
+// at all is held on every run.
 func (p *dispatchProcess) waitPromptExit(t *testing.T, signalled time.Time) {
 	t.Helper()
 	p.WaitExit(t, "SIGTERM")
 	exited := time.Since(signalled)
 	t.Logf("exited %v after SIGTERM", exited)
-	if exited >= promptShutdown {
+	if os.Getenv(benchtime.TimingEnv) != "" && exited >= promptShutdown {
 		t.Errorf("Dispatch exited %v after SIGTERM, want under %v", exited, promptShutdown)
 	}
 }
@@ -1657,7 +1619,7 @@ func (p *dispatchProcess) openEditor(t *testing.T, artifactID, want string) *doc
 func (p *dispatchProcess) openEditorAs(t *testing.T, login, artifactID, want string) *docstest.Peer {
 	t.Helper()
 	editor := docstest.Dial(t, p.documentURL(artifactID), http.Header{"X-Dispatch-User": []string{login}}, artifactID, crdt.New())
-	if err := editor.WaitForText(markdown, want, 10*time.Second); err != nil {
+	if err := editor.WaitForText(t, markdown, want); err != nil {
 		t.Fatalf("%v:\n%s", err, p.Output.String())
 	}
 	return editor
@@ -1738,26 +1700,17 @@ func settlementMarkedAt(t *testing.T, database *store.Store, artifactID string) 
 
 func waitForSettlementMarkedAfter(t *testing.T, database *store.Store, artifactID string, before time.Time) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !settlementMarkedAt(t, database, artifactID).After(before) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the editor's durable update did not advance the pending settlement marker within 10s")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, "the editor's durable update to advance the pending settlement marker", func() (time.Time, bool) {
+		marked := settlementMarkedAt(t, database, artifactID)
+		return marked, marked.After(before)
+	})
 }
 
-// waitForSettlementOwed waits up to 10 s for the document's pending-settlement row to be there, or
-// gone.
+// waitForSettlementOwed waits for the document's pending-settlement row to be there, or gone.
 func waitForSettlementOwed(t *testing.T, database *store.Store, artifactID string, owed bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for settlementOwed(t, database, artifactID) != owed {
-		if time.Now().After(deadline) {
-			t.Fatalf("the document's pending-settlement row was not %s within 10s", map[bool]string{true: "there", false: "gone"}[owed])
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the document's pending-settlement row to be "+map[bool]string{true: "there", false: "gone"}[owed],
+		func() bool { return settlementOwed(t, database, artifactID) == owed })
 }
 
 // latestVersion is the number, markdown and authors (JSON) of the document's latest version.

@@ -12,6 +12,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -27,6 +28,8 @@ type intakeDelivery struct {
 	// gives up the handlers still running when its context ends.
 	handling context.Context
 	abandon  context.CancelFunc
+	// clock is the intake's (Intake.clock): the stop's wait for a live connection runs on it.
+	clock    clock.Clock
 	stopping atomic.Bool
 	stopped  sync.Once
 
@@ -76,7 +79,7 @@ type heldMessage struct {
 // replaced it.
 func (in *Intake) subscribe(deliverSubject string) (*natsgo.Subscription, error) {
 	handling, abandon := context.WithCancel(context.Background())
-	delivery := &intakeDelivery{nats: in.nats, handling: handling, abandon: abandon}
+	delivery := &intakeDelivery{nats: in.nats, handling: handling, abandon: abandon, clock: in.clock}
 	delivery.keys = newKeyedRunner(func(message intakeMessage) { in.deliver(delivery, message) })
 	wanted := deliveryConsumerConfig()
 	sub, err := subscribeDurable(in.nats, wanted, deliverSubject, delivery.receive)
@@ -114,19 +117,17 @@ func (in *Intake) subscribe(deliverSubject string) (*natsgo.Subscription, error)
 // 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so an ordinary handler finishes and
 // is acknowledged rather than redone. A call GitHub does not answer holds one attempt for up to
 // githubapp.RequestTimeout (20 s), and is then asked again, which no budget inside stopGrace could
-// wait out. A var so a test can shrink it.
-var intakeStopBudget = 15 * time.Second
+// wait out. It runs on the intake's clock (Intake.clock), so a test moves a fake past it rather
+// than shrinking it.
+const intakeStopBudget = 15 * time.Second
 
 // stopContext returns the stop deadline of an intake whose Run runs until ctx ends: a context that
-// ends intakeStopBudget after ctx does, armed by ctx's end, so everything of the stop -- a bind
+// ends intakeStopBudget after ctx does on c, armed by ctx's end, so everything of the stop -- a bind
 // under way at that moment, the handler wait, the drain's wait -- runs under one deadline counted
 // from it. release frees it, for Run to defer.
-func stopContext(ctx context.Context) (stopping context.Context, release func()) {
-	// Read now rather than as ctx ends, so a test restoring intakeStopBudget after Run has
-	// returned never races the read.
-	budget := intakeStopBudget
+func stopContext(ctx context.Context, c jobClock) (stopping context.Context, release func()) {
 	stopping, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	disarm := context.AfterFunc(ctx, func() { time.AfterFunc(budget, cancel) })
+	disarm := context.AfterFunc(ctx, func() { c.AfterFunc(intakeStopBudget, cancel) })
 	return stopping, func() {
 		disarm()
 		cancel()
@@ -262,7 +263,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 // messages the stop has to answer, for the line a wait the budget ends writes: its caller waits
 // at all only while there are messages or a drain that may yet deliver one.
 func (d *intakeDelivery) awaitLiveConnection(ctx context.Context, holding int) {
-	waiting, cancel := context.WithTimeout(ctx, intakeStopBudget)
+	waiting, cancel := d.clock.WithTimeout(ctx, intakeStopBudget)
 	defer cancel()
 	waitedFrom := time.Now()
 	for {

@@ -392,8 +392,7 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 			}
 		}
 		attemptDialer := dialer
-		if deadline, ok := ctx.Deadline(); ok {
-			remaining := time.Until(deadline)
+		if remaining, ok := timeLeft(ctx); ok {
 			if remaining <= 0 {
 				// Not ctx.Err(): the deadline can pass before the context's timer marks it done,
 				// and a nil error here would hand the caller a nil connection to use.

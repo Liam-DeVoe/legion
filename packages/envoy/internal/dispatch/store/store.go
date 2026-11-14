@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -264,7 +265,7 @@ func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, 
 // the cancelled context, and the session's end releases the key. Every other error is an ERROR,
 // because the key may still be held by a session the unlock could not reach.
 func unlockMigrations(conn *pgxpool.Conn) {
-	err := duty.FreeSessionLock(conn, "select pg_advisory_unlock($1)", migrationLockKey)
+	err := duty.FreeSessionLock(clock.Real(), conn, "select pg_advisory_unlock($1)", migrationLockKey)
 	switch {
 	case err == nil:
 	case errors.Is(err, duty.ErrSessionClosed):

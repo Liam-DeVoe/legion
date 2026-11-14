@@ -3,12 +3,17 @@ package docs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stopSettlementShort makes each settlement of room that writes a version stop short before its
@@ -59,9 +64,28 @@ func TestSettlingAnIssuesDocumentsRetriesASettlementThatStoppedShort(t *testing.
 // A settlement that stops short every time is given up after issueSettleAttempts attempts, well
 // within issueSettleBudget, so the close waiting on it goes ahead; the document keeps its debt
 // for the room's next load or the resumption, and its block is no ask yet.
+//
+// The budget and the pause between attempts run on the service's clock (Deps.Clock), a fake here
+// that moves only as the test moves it: the test moves it past each pause once that pause alone
+// is armed, issueSettleRetryPause on, and the call returns with the clock far short of the
+// budget, having armed nothing else it waits on.
 func TestSettlingAnIssuesDocumentsGivesUpOnASettlementThatNeverLands(t *testing.T) {
-	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	fake := clocktest.New(time.Now())
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First")
+	service := New(Deps{
+		Store:     database,
+		Events:    events.NewBroker(),
+		Identity:  headerIdentity(database),
+		ServerURL: "https://dispatch.example",
+		Settle:    time.Hour,
+		Clock:     fake,
+	})
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	writeThroughLedger(t, service, artifactID, model.Actor{Kind: "session", ID: "stalled-session"}, freshBlock, withoutVersion)
 
@@ -72,9 +96,19 @@ func TestSettlingAnIssuesDocumentsGivesUpOnASettlementThatNeverLands(t *testing.
 		}
 	}
 	stopSettlementShort(service, artifactID, func() bool { return true })
-	started := time.Now()
-	err := service.SettleIssueDocuments(store.WithTransactionTracking(context.Background()), "DOC-1")
-	elapsed := time.Since(started)
+	settled := make(chan error, 1)
+	go func() {
+		settled <- service.SettleIssueDocuments(store.WithTransactionTracking(context.Background()), "DOC-1")
+	}()
+	for pause := 1; pause < issueSettleAttempts; pause++ {
+		due := fake.Now().Add(issueSettleRetryPause)
+		testwait.Until(t, fmt.Sprintf("the pause after attempt %d, and nothing else, to be armed on the service's clock at %v", pause, due), func() ([]time.Time, bool) {
+			armed := fake.Armed()
+			return armed, len(armed) == 1 && armed[0].Equal(due)
+		})
+		fake.Advance(issueSettleRetryPause)
+	}
+	err := testwait.Receive(t, "settling the issue's documents to give up after its last attempt", settled)
 	service.afterSettleVersionWrite, service.afterSettleWarm = nil, nil
 	if err == nil {
 		t.Fatal("settling a document whose settlement never lands succeeded")
@@ -82,8 +116,8 @@ func TestSettlingAnIssuesDocumentsGivesUpOnASettlementThatNeverLands(t *testing.
 	if got := attempts.Load(); got != issueSettleAttempts {
 		t.Fatalf("the document's settlement ran %d times, want %d", got, issueSettleAttempts)
 	}
-	if limit := issueSettleBudget + 500*time.Millisecond; elapsed >= limit {
-		t.Fatalf("settling the issue's documents took %v, want less than %v", elapsed, limit)
+	if armed := fake.Armed(); len(armed) != 0 {
+		t.Fatalf("settling the issue's documents returned leaving %v armed on the service's clock", armed)
 	}
 	owed, pendingErr := settlementPending(context.Background(), service.store.Pool, artifactID)
 	if pendingErr != nil || !owed {

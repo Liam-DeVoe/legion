@@ -52,6 +52,13 @@ const (
 // consumerLease). A pool that cannot open those connections is returned as the error, with
 // neither intake started: an intake that could not take its lease would reconcile nothing.
 func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}) (stop func(), err error) {
+	return startIntakes(ctx, connect, pool, github, broker, settingsWake, clock.Real())
+}
+
+// startIntakes is StartIntakes with the clock both intakes run on (Intake.clock, JobIntake.clock):
+// clock.Real from StartIntakes, and a test's clocktest.Fake, which moves the intakes' stop
+// deadlines only when the test moves it.
+func startIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, c clock.Clock) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -71,10 +78,11 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	}
 	settings := newSettingsCache(pool, settingsWake)
 	intake := newIntake(intakeClient, pool, leases, github, broker, settings)
+	intake.clock = c
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
 	running.Go(func() { intake.Run(ctx) })
-	running.Go(func() { newJobIntake(jobClient, pool, leases, github, clock.Real(), settings).Run(ctx) })
+	running.Go(func() { newJobIntake(jobClient, pool, leases, github, c, settings).Run(ctx) })
 	var stopped sync.Once
 	return func() {
 		stopped.Do(func() {

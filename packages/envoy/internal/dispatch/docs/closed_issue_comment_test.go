@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A closed issue still takes a comment, so its document still takes that comment's anchor under
@@ -108,17 +109,13 @@ func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 	if service.roomHeld(artifactID) {
 		t.Fatal("the cold comment write loaded a room of the document")
 	}
-	select {
-	case <-started:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the cold write armed no settlement, so this test no longer covers the settlement its publish arms")
-	}
-	// The third refusal failed the room, three settle delays after the first; this watches ten,
-	// and the failure count below catches even the first refusal taken as a fault.
-	deadline := time.Now().Add(10 * settle)
-	for time.Now().Before(deadline) && !failed.Load() {
-		time.Sleep(settle / 5)
-	}
+	testwait.Receive(t, "the cold write's settlement to start: one that never does means this test no longer covers the settlement its publish arms", started)
+	// The third refusal failed the room, each refusal arming a retry (retrySettleLocked): once no
+	// settlement of the service is armed, running or settling, nothing is left to refuse again, so
+	// the room's failure count read below is final.
+	waitFor(t, "the closed issue's settlement to be neither armed, running nor retried", func() bool {
+		return settlementsIdle(service, artifactID)
+	})
 	state := service.lockState(artifactID)
 	failures := state.settleFailures
 	service.unlockState(artifactID, state)
@@ -459,9 +456,18 @@ func holdOneRoomUpdate(t *testing.T, held *heldStore, write func()) {
 	t.Helper()
 	held.armed.Store(true)
 	write()
-	select {
-	case <-held.entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's own append of the browser's update never reached the store")
-	}
+	testwait.Receive(t, "the room's own append of the browser's update to reach the store", held.entered)
+}
+
+// settlementsIdle reports whether service holds no settlement timer, armed or with its settlement
+// running (timers, which a timer leaves only once its settlement has returned, any retry it armed
+// registered first), and room's state counts no settlement running on it (settling).
+func settlementsIdle(service *Service, room string) bool {
+	service.timerMu.Lock()
+	timers := len(service.timers)
+	service.timerMu.Unlock()
+	state := service.lockState(room)
+	settling := state.settling
+	service.unlockState(room, state)
+	return timers == 0 && settling == 0
 }

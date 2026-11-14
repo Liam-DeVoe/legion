@@ -56,14 +56,15 @@
 // limit, which GitHub shares between an installation's REST calls and its queries, is recorded
 // under that installation's own scope and holds both (githubapp.GraphQLRateLimit).
 //
-// One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout), so it always
-// ends before the pass after it is due and always logs its one line. The pass walks one stable
-// order -- the mapped repositories, and within each its open pull requests by number -- from the
-// first repository to the last page of the last one, and keeps a cursor in it. A pass cut off by
-// its bound or by a rate limit leaves the cursor at the first page or REST head it did not
-// finish and the pass after it takes up there; a pass that reaches the end of the order ends
-// there rather than beginning again, and leaves the cursor at the start of the order for the
-// pass after it. No head starves behind the heads the order holds before it.
+// One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout, Interval when
+// the caller sets none), so it always ends before the pass after it is due and always logs its
+// one line. The pass walks one stable order -- the mapped repositories, and within each its open
+// pull requests by number -- from the first repository to the last page of the last one, and
+// keeps a cursor in it. A pass cut off by its bound or by a rate limit leaves the cursor at the
+// first page or REST head it did not finish and the pass after it takes up there; a pass that
+// reaches the end of the order ends there rather than beginning again, and leaves the cursor at
+// the start of the order for the pass after it. No head starves behind the heads the order holds
+// before it.
 //
 // One sweep from the start of the order to the end of it is a cycle, which takes as many passes
 // as their bounds leave them, and what the Reconciler keeps of a head is forgotten only where a
@@ -81,6 +82,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -131,8 +133,15 @@ type Reconciler struct {
 	Pace time.Duration
 	// PassTimeout is how long one pass may run, which its caller sets to the interval its loop
 	// runs the pass on. A pass that has not covered every head by then ends where it stands,
-	// logs its one line and leaves the next pass the cursor it reached. Zero is unbounded.
+	// logs its one line and leaves the next pass the cursor it reached. Zero is Interval, the
+	// period the loop runs the pass on in every deployment.
 	PassTimeout time.Duration
+	// Clock is the time a pass's bound (PassTimeout), the gap it leaves between two REST
+	// requests (Pace) and the wait each query earns (graphQLPace) run on: clock.Real when nil,
+	// and a test's clocktest.Fake, which ends the pass's bound or a wait only when the test moves
+	// it. A rate limit's end stays on the wall clock, since it is GitHub's own reset, which the
+	// ledger every process shares holds.
+	Clock clock.Clock
 	// Instance answers this process's row in the registry of live server processes, the id
 	// processes.Register gave it, and "" while the process holds none yet. It is what each pass
 	// records its row under (beginPass), and the registry row it names is what says later
@@ -180,6 +189,23 @@ type Reconciler struct {
 	seenRows         map[string]struct{}
 	seenRepositories map[int64]struct{}
 	seenHeads        map[string]struct{}
+}
+
+// clock is the time the pass's bound and its waits run on: Clock, or the wall clock when the
+// caller set none.
+func (r *Reconciler) clock() clock.Clock {
+	if r.Clock == nil {
+		return clock.Real()
+	}
+	return r.Clock
+}
+
+// bound is how long one pass may run: PassTimeout, or Interval when the caller set none.
+func (r *Reconciler) bound() time.Duration {
+	if r.PassTimeout <= 0 {
+		return Interval
+	}
+	return r.PassTimeout
 }
 
 // stop is the rate limit that ended a pass: the scope it was found or answered under, and when

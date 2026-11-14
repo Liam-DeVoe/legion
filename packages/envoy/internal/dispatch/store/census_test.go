@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 var censusBase = fstest.MapFS{
@@ -538,7 +539,9 @@ func TestCensusRefusesAWALSenderHoldingALockInATransaction(t *testing.T) {
 	if backendType != "walsender" || state != "idle in transaction" || !noStart {
 		t.Fatalf("the holder reads as backend_type %q, state %q, xact_start null %v; want a walsender idle in transaction with no xact_start", backendType, state, noStart)
 	}
-	time.Sleep(1100 * time.Millisecond)
+	// The sender's age is not what refuses it: Postgres records no transaction start for a WAL
+	// sender, so the census refuses it whatever the bound, and the bound below only names itself
+	// in the refusal.
 	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
 	if err != nil {
 		t.Fatalf("census: %v", err)
@@ -894,20 +897,13 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 		done <- result{report, err}
 	}()
 	// Wait until the census is queued on blocker, which it reaches only after reading others' holders.
-	deadline := time.Now().Add(pgmigrate.LockTimeout - time.Second)
-	for {
+	testwait.Eventually(t, "the census to queue on blocker", func() bool {
 		var waiting bool
 		if err := store.Pool.QueryRow(ctx, "select exists (select from pg_locks where relation = 'blocker'::regclass and not granted)").Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
-		if waiting {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the census never queued on blocker")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return waiting
+	})
 	held, err := holder.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -919,7 +915,7 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 	if err := blocked.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	got := <-done
+	got := testwait.Receive(t, "the census to finish", done)
 	if got.err != nil {
 		t.Fatalf("census: %v", got.err)
 	}
@@ -1152,6 +1148,17 @@ func holdLock(t *testing.T, store *Store, table, mode string) uint32 {
 	return holder.PgConn().PID()
 }
 
+// censusHolderAge is the "open for longer than the bound" age the tests below give the census,
+// where what they set up is a holder old enough to refuse. It is short rather than a second so
+// that no test waits out the database's clock: the age the census judges is clock_timestamp() -
+// xact_start, read in SQL, which no clock of this process reaches, and the census opens a
+// connection of its own and runs its statements before it reads pg_stat_activity, so a
+// transaction the test opened before it began is older than this by the time it is read. The
+// other side of the comparison, a holder younger than the bound, is
+// TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCensus, which runs
+// under the census's own CensusLongTransaction.
+const censusHolderAge = time.Millisecond
+
 // A session that has held a lock on a touched table for longer than the bound refuses, naming the
 // session; the same hold on a table no pending migration touches does not.
 func TestCensusRefusesALockHeldOnATouchedTableByAnOldTransaction(t *testing.T) {
@@ -1161,8 +1168,7 @@ func TestCensusRefusesALockHeldOnATouchedTableByAnOldTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	holdLock(t, store, "untouched", "access share")
-	options := pgmigrate.CensusOptions{LongTransaction: time.Second}
-	time.Sleep(1100 * time.Millisecond)
+	options := pgmigrate.CensusOptions{LongTransaction: censusHolderAge}
 	report, err := census(ctx, url, withCheck("select 0"), options)
 	if err != nil {
 		t.Fatalf("census: %v", err)
@@ -1174,7 +1180,6 @@ func TestCensusRefusesALockHeldOnATouchedTableByAnOldTransaction(t *testing.T) {
 		t.Errorf("long transactions = %v, want the holder reported", report.LongTransactions)
 	}
 	pid := holdLock(t, store, "things", "access share")
-	time.Sleep(1100 * time.Millisecond)
 	report, err = census(ctx, url, withCheck("select 0"), options)
 	if err != nil {
 		t.Fatalf("census: %v", err)
@@ -1204,8 +1209,7 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 	if _, err := held.Exec(ctx, "select count(*) from things where kind = '"+sentinel+"'"); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1100 * time.Millisecond)
-	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
+	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: censusHolderAge})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
@@ -1258,8 +1262,7 @@ func TestCensusFollowsAForeignKeyAnEarlierPendingMigrationAdds(t *testing.T) {
 				"migrations/0003_parent_purge.up.sql":  {Data: []byte("delete from parent where id < 0")},
 			}
 			pid := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "things", "access share")), 10)
-			time.Sleep(1100 * time.Millisecond)
-			report, err := census(ctx, url, set, pgmigrate.CensusOptions{LongTransaction: time.Second})
+			report, err := census(ctx, url, set, pgmigrate.CensusOptions{LongTransaction: censusHolderAge})
 			if err != nil {
 				t.Fatalf("census: %v", err)
 			}
@@ -1335,8 +1338,7 @@ func TestCensusChecksTheTablesAForeignKeyReachesFromARowTheMigrationWrites(t *te
 	if _, err := held.Exec(ctx, "update ask_followers set since = now()"); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1100 * time.Millisecond)
-	report, err := census(ctx, url, set, pgmigrate.CensusOptions{LongTransaction: time.Second})
+	report, err := census(ctx, url, set, pgmigrate.CensusOptions{LongTransaction: censusHolderAge})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}

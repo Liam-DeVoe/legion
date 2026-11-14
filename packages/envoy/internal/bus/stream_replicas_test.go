@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests here run on an in-process three-server cluster (testnats.StartCluster), one per test
@@ -70,12 +71,7 @@ func deployedClusterStream(change func(*nats.StreamConfig)) nats.StreamConfig {
 	return deployed
 }
 
-// keptValueWait is a hang guard on awaitKeptValue's read, not a budget: a copy a raise adds
-// catches up with a one-message stream in milliseconds.
-const keptValueWait = 30 * time.Second
-
-// awaitKeptValue reads key through kv until the bucket answers with want, and fails the test if
-// no read does within keptValueWait.
+// awaitKeptValue reads key through kv until the bucket answers with want.
 //
 // A KV read is a direct get, and nats-server hands a copy the direct-get queue group as soon as
 // that copy is 90% caught up with its leader, rather than when it is current
@@ -85,17 +81,13 @@ const keptValueWait = 30 * time.Second
 // on no copy, and no read answers with it.
 func awaitKeptValue(t *testing.T, kv KeyValue, key, want string) {
 	t.Helper()
-	deadline := time.Now().Add(keptValueWait)
-	for {
+	testwait.Until(t, fmt.Sprintf("the bucket to answer %s with %q", key, want), func() (string, bool) {
 		entry, err := kv.Get(key)
-		if err == nil && string(entry.Value()) == want {
-			return
+		if err != nil {
+			return err.Error(), false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("get %s after the raise = %v, %v within %s; want %q", key, entry, err, keptValueWait, want)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return string(entry.Value()), string(entry.Value()) == want
+	})
 }
 
 // On an existing three-copy stream with a byte limit, DiscardOld and an id, a start that changes

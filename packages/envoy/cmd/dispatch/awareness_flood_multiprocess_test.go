@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // One tab on A sends a single awareness frame that names 2,048 clients, then leaves. A reader who
@@ -29,22 +31,24 @@ func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 	if err := announceAwarenessClients(flood, artifactID, 500_000, invented, 1, inventedState(500_000)); err != nil {
 		t.Fatalf("send the flooding frame: %v", err)
 	}
-	if err := bob.WaitForAwareness(5*time.Second, func(states map[uint64]json.RawMessage) bool { return len(states) > 0 }); err != nil {
+	if err := bob.WaitForAwareness(t, func(states map[uint64]json.RawMessage) bool { return len(states) > 0 }); err != nil {
 		t.Fatalf("none of the flooding frame's clients reached bob on B: %v", err)
 	}
 	flood.Close()
-	time.Sleep(time.Second)
+	testwait.Span(t, time.Second, "the flood's socket is closed and its clients must age out of A's room before "+
+		"alice joins: nothing the room writes marks that, both processes are children so synctest does not reach "+
+		"them, and a later action of the test's would add clients rather than settle these")
 
 	alice := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "x\n")
 	if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 0)); err != nil {
 		t.Fatalf("announce alice's cursor: %v", err)
 	}
-	if err := carol.WaitForAwareness(liveWithin, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
-		t.Fatalf("carol on A did not see alice, who joined A after the flood, within %v: %v", liveWithin, err)
+	if err := carol.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
+		t.Fatalf("carol on A did not see alice, who joined A after the flood: %v", err)
 	}
-	if err := bob.WaitForAwareness(liveWithin, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
-		t.Fatalf("alice, who opened the document on A a second after one tab's %d-client awareness frame, was seen at once by carol on A but not by bob on B within %v: B's room still counts the frame's clients, the tombstones of the ones that left included, against its bound, and drops every client it has not seen before",
-			invented, liveWithin)
+	if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
+		t.Fatalf("alice, who opened the document on A a second after one tab's %d-client awareness frame, was seen by carol on A but not by bob on B: B's room still counts the frame's clients, the tombstones of the ones that left included, against its bound, and drops every client it has not seen before",
+			invented)
 	}
 }
 
@@ -85,18 +89,20 @@ func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testi
 			}
 		}
 	}()
-	time.Sleep(time.Second)
+	testwait.Span(t, time.Second, "the flooding sockets must be announcing into A's room before alice joins, and "+
+		"a flood in flight writes nothing that says it has begun: both processes are children so synctest does "+
+		"not reach them, and alice's own join is the later action this span makes meaningful")
 
 	alice := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "x\n")
 	if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 0)); err != nil {
 		t.Fatalf("announce alice's cursor: %v", err)
 	}
-	if err := carol.WaitForAwareness(liveWithin, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
-		t.Fatalf("carol on A did not see alice within %v: %v", liveWithin, err)
+	if err := carol.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
+		t.Fatalf("carol on A did not see alice: %v", err)
 	}
-	if err := bob.WaitForAwareness(liveWithin, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
-		t.Fatalf("alice, who opened the document on A while one tab there kept %d invented awareness clients alive, was seen at once by carol on A but not by bob on B within %v: A's room is full of that tab's clients and never relays hers",
-			invented, liveWithin)
+	if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
+		t.Fatalf("alice, who opened the document on A while one tab there kept %d invented awareness clients alive, was seen by carol on A but not by bob on B: A's room is full of that tab's clients and never relays hers",
+			invented)
 	}
 }
 

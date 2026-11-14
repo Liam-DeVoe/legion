@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testTokensPerMinute is a quota far past anything one test's prompts cost, so every test but the
@@ -456,29 +457,33 @@ func TestRunTellsTheModelACallFailedInTheResultsOwnText(t *testing.T) {
 	}
 }
 
-// TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers: a model that holds its response open past
-// the caller's deadline ends the run with the issue's one deadline code, and the run takes the
-// time the caller gave it rather than ending early.
+// TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers: a model that holds its response open until
+// the caller's context ends ends the run with the issue's one deadline code, and the run waits on
+// that model rather than ending before it.
 func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
-	const window = 250 * time.Millisecond
 	model := goingtest.NewModel(t, goingtest.Reply{Silent: true})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
-	ctx, cancel := context.WithTimeout(t.Context(), window)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	start := time.Now()
-	err := answerer.Run(ctx, testReads().request("who owns the broadcast order"), stream.emit)
-	elapsed := time.Since(start)
+	ran := make(chan error, 1)
+	go func() { ran <- answerer.Run(ctx, testReads().request("who owns the broadcast order"), stream.emit) }()
+	// The model counts the call as it arrives and then holds its response, so the run is waiting
+	// on it here: a run that ended before its caller's context would have ended by now.
+	testwait.Eventually(t, "the model to take the run's call", func() bool { return model.Calls() == 1 })
+	select {
+	case err := <-ran:
+		t.Fatalf("Run returned %v while the model still held its response, before its caller ended the context", err)
+	default:
+	}
 
-	if err != nil {
+	cancel()
+	if err := testwait.Receive(t, "the run to end once its caller's context has", ran); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if got := stream.code(t); got != contracts.GoingErrorAnswerDidNotArrive {
 		t.Errorf("error code = %s, want %s", got, contracts.GoingErrorAnswerDidNotArrive)
-	}
-	if elapsed < window {
-		t.Errorf("the run ended %s in, before its %s deadline", elapsed, window)
 	}
 }
 

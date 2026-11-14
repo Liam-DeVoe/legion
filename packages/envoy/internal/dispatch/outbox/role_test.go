@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleHolder is the session heldRoles names as every role's holder.
@@ -200,20 +201,16 @@ func (r *roleRig) waitForExpiredSessionKey(t *testing.T, sessionID string) {
 	if err != nil {
 		t.Fatalf("open the session bucket: %v", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.Eventually(t, sessionID+"'s record dropped from the session bucket past its maximum age", func() bool {
 		_, err := kv.Get(sessionID)
 		if errors.Is(err, natsgo.ErrKeyNotFound) {
-			return
+			return true
 		}
 		if err != nil {
 			t.Fatalf("read %s's record: %v", sessionID, err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's record is still in the session bucket well past its maximum age", sessionID)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return false
+	})
 }
 
 // roleClaim is role's claim as the role bucket holds it now.
@@ -289,33 +286,93 @@ func (r *roleRig) silent(t *testing.T, subject string) {
 // receiver is a role holder's own subscription to its agent subject: it records every forward it
 // receives and answers nothing, as a session does now that the stream's acknowledgement is a
 // forward's whole answer.
+//
+// Its subscription and a marker subscription of its own deliver into one channel, which nats.go
+// fills in the order the connection read them and one goroutine reads in that order, so settle
+// can prove a forward was not sent: see settle.
 type receiver struct {
+	holder   string
 	mu       sync.Mutex
 	forwards []contracts.Envelope
 	arrived  chan contracts.Envelope
+	// via is the outbox's own connection (roleRig.client), which settle sends its marker on, to
+	// marker, a subject no stream captures; markers is where the reader reports each marker read.
+	via     *natsgo.Conn
+	marker  string
+	markers chan struct{}
 }
 
 func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 	t.Helper()
-	recv := &receiver{arrived: make(chan contracts.Envelope, 64)}
-	sub, err := r.conn.Subscribe(contracts.AgentSubject(holder), func(msg *natsgo.Msg) {
-		var item contracts.Envelope
-		if err := json.Unmarshal(msg.Data, &item); err != nil {
-			return
-		}
-		recv.mu.Lock()
-		recv.forwards = append(recv.forwards, item)
-		recv.mu.Unlock()
-		recv.arrived <- item
-	})
+	recv := &receiver{holder: holder, arrived: make(chan contracts.Envelope, 1024), via: r.client.Connection(),
+		marker: natsgo.NewInbox(), markers: make(chan struct{}, 1)}
+	messages := make(chan *natsgo.Msg, 4096)
+	sub, err := r.conn.ChanSubscribe(contracts.AgentSubject(holder), messages)
 	if err != nil {
 		t.Fatalf("subscribe to %s: %v", holder, err)
 	}
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	markerSub, err := r.conn.ChanSubscribe(recv.marker, messages)
+	if err != nil {
+		t.Fatalf("subscribe to %s's marker: %v", holder, err)
+	}
+	done := make(chan struct{})
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		for {
+			var msg *natsgo.Msg
+			select {
+			case msg = <-messages:
+			case <-done:
+				return
+			}
+			if msg.Subject == recv.marker {
+				select {
+				case recv.markers <- struct{}{}:
+				case <-done:
+					return
+				}
+				continue
+			}
+			var item contracts.Envelope
+			if err := json.Unmarshal(msg.Data, &item); err != nil {
+				continue
+			}
+			recv.mu.Lock()
+			recv.forwards = append(recv.forwards, item)
+			recv.mu.Unlock()
+			select {
+			case recv.arrived <- item:
+			case <-done:
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		_ = sub.Unsubscribe()
+		_ = markerSub.Unsubscribe()
+		close(done)
+		<-read
+	})
 	if err := r.conn.Flush(); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	return recv
+}
+
+// settle waits until every forward the outbox's connection sent this holder before the call has
+// been recorded: it sends a marker on that connection and waits for the reader to read it. NATS
+// delivers one connection's messages to another in the order they were sent, the holder's
+// subscription and the marker's fill one channel in the order they were read, and one goroutine
+// records them in that order, so a forward sent before the marker is recorded before it. A row
+// that has run a pass to its end calls this before it reads that the pass sent the holder
+// nothing.
+func (recv *receiver) settle(t *testing.T) {
+	t.Helper()
+	if err := recv.via.Publish(recv.marker, nil); err != nil {
+		t.Fatalf("send the marker after the outbox's sends to %s: %v", recv.holder, err)
+	}
+	testwait.Receive(t, "the marker sent after the outbox's sends to "+recv.holder, recv.markers)
 }
 
 // narrowAgentCapture has the stream capture the agent subjects of holders alone, in place of every
@@ -429,12 +486,7 @@ func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAck
 
 	holding(t, rig.deps()).scan(context.Background(), unfenced{})
 
-	var forward contracts.Envelope
-	select {
-	case forward = <-recv.arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the holder received no forward")
-	}
+	forward := testwait.Receive(t, "the holder's forward", recv.arrived)
 	if forward.Topic != contracts.RoleTopicPrefix+role || forward.DedupeKey != contracts.RoleForwardDedupePrefix+fmt.Sprintf("dispatch-%d", event.ID) ||
 		forward.EventID != fmt.Sprintf("dispatch-%d", event.ID) {
 		t.Fatalf("the holder received topic %q dedupe key %q event id %q, want the role forward of event %d",
@@ -1519,7 +1571,9 @@ func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
 	t.Run("a live mention holds the keep until it settles", func(t *testing.T) {
 		database, publisher, commentID, event, deps := keptFor(t, "pending")
 
+		before := time.Now()
 		holding(t, deps).scan(ctx, unfenced{})
+		after := time.Now()
 
 		if kept := publisher.keeps(); len(kept) > 0 {
 			t.Fatalf("the outbox kept %d copies while the comment's mentions were still being sent, the first on %s under %q carrying mention_dedupe_keys %v, want none kept yet: a copy naming no mentioned session shows the comment a second time to whichever of them claims the role",
@@ -1532,9 +1586,7 @@ func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
 		if attempts != 0 {
 			t.Fatalf("attempt_count = %d while the keep waits on a mention, want 0: a wait is no failure", attempts)
 		}
-		if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-			t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
-		}
+		requireBlockedByPass(t, "the event whose keep waits", due, before, after)
 
 		// Both sends land and their senders settle the attempts, as they do within the lease.
 		if _, err := database.Pool.Exec(ctx,
@@ -1618,7 +1670,9 @@ func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T)
 		t.Fatalf("the later event does not notify, so it takes no role route and proves nothing: %#v", update)
 	}
 
+	before := time.Now()
 	holding(t, deps).scan(ctx, unfenced{})
+	after := time.Now()
 
 	if kept := publisher.keeps(); len(kept) > 0 {
 		t.Fatalf("the outbox kept %d copies while the comment's copy waited on its mention, the first of event %s under %q, want none: the role's next holder would be handed the issue's later event first",
@@ -1633,10 +1687,7 @@ func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T)
 			t.Fatalf("event %d (%s) counts attempt_count = %d while a copy waits on a mention, want 0: a wait is no failure",
 				event.ID, event.Type, attempts)
 		}
-		if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-			t.Fatalf("event %d (%s) is due at %v, want about %v from now, the wait a blocked event takes",
-				event.ID, event.Type, due, mentionPendingDelay)
-		}
+		requireBlockedByPass(t, fmt.Sprintf("event %d (%s)", event.ID, event.Type), due, before, after)
 	}
 
 	// The mention's send lands and its sender settles the attempt, as one does within the lease.
@@ -1711,7 +1762,9 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID, event := heldBy(t, "pending")
 
+		before := time.Now()
 		holding(t, deps).scan(ctx, unfenced{})
+		after := time.Now()
 
 		if forwards := recv.received(); len(forwards) > 0 {
 			t.Fatalf("the batch sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
@@ -1724,9 +1777,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		if attempts != 0 {
 			t.Fatalf("attempt_count = %d while the forward waits on a mention, want 0: a wait is no failure", attempts)
 		}
-		if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-			t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
-		}
+		requireBlockedByPass(t, "the event whose forward waits", due, before, after)
 
 		// The holder's send lands and its sender settles the attempt, as one does within the
 		// lease.
@@ -1849,7 +1900,9 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 			comment.Notify, edit.Notify)
 	}
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	after := time.Now()
 
 	// The defect's own signature: an event held by a blocker carrying itself reads an outcome
 	// settleEvent has not written, whose zero state holdBack takes for a released one.
@@ -1876,9 +1929,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on a mention, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
-	}
+	requireBlockedByPass(t, "the comment whose forward waits", due, before, after)
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v while the role forward waits on the holder's own mention", at)
 	}
@@ -1901,9 +1952,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("the edit counts attempt_count = %d while it waits behind the comment's forward, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("the edit is due at %v, want about %v from now, the wait its blocker takes", due, mentionPendingDelay)
-	}
+	requireBlockedByPass(t, "the edit behind the comment's forward", due, before, after)
 
 	// The holder's own mention lands and its sender settles the attempt, as one does within the
 	// lease.
@@ -2045,7 +2094,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the other owner's comment reached %v, want %s among them: a session no attempt of that comment names takes its claimant copy as if it had not been mentioned",
 				reached, contracts.AgentSubject(bystander))
 		}
-		waitFor(t, 10*time.Second, "the other owner's claimant copy", func() bool {
+		testwait.Eventually(t, "the other owner's claimant copy", func() bool {
 			return len(other.received()) > 0
 		})
 		copies := other.received()
@@ -2095,7 +2144,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the comment reached %v, want %s among them: the mention of %s failed, so the session it was pinned to is owed the outbox's copy and nothing else delivers it",
 				reached, holderSubject, target)
 		}
-		waitFor(t, 10*time.Second, "the copy owed to the session whose mention failed", func() bool {
+		testwait.Eventually(t, "the copy owed to the session whose mention failed", func() bool {
 			return len(pinned.received()) > 0
 		})
 		for _, item := range pinned.received() {

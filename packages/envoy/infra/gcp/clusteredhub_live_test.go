@@ -513,42 +513,41 @@ func (p *loopbackPorts) draw(t *testing.T, n int) []int {
 	return ports
 }
 
-// startBound starts the process build makes and waits up to 30 s for ready to return nil. A
-// process that exits because a port it binds is taken is started again, from a new build, up to
-// 10 times, since another program, or an outgoing connection's ephemeral port, can hold a drawn
-// port when the process binds it: a build that may move its ports draws new ones (an exporter, a
-// server's first start), and one that may not (a server's restart) waits out the holder.
+// startBound starts the process build makes and waits for ready to return nil. A process that
+// exits because a port it binds is taken is started again, from a new build, since another
+// program, or an outgoing connection's ephemeral port, can hold a drawn port when the process
+// binds it: a build that may move its ports draws new ones (an exporter, a server's first start),
+// and one that may not (a server's restart) waits out the holder.
 func startBound(t *testing.T, name string, build func() *exec.Cmd, ready func(*cmdtest.Process) error) *cmdtest.Process {
 	t.Helper()
-	for attempt := 1; ; attempt++ {
+	var started *cmdtest.Process
+	testwait.Until(t, "a start of "+name+" that takes its port", func() (string, bool) {
 		p := startLogged(t, name, build())
-		err := awaitReady(p, ready)
+		err := awaitReady(t, name, p, ready)
 		if err == nil {
-			return p
+			started = p
+			return "started", true
 		}
-		if attempt == 10 || !strings.Contains(p.Output.String(), "address already in use") {
-			t.Fatalf("%s did not start (attempt %d): %v\n%s", name, attempt, err, p.Output.String())
+		if !strings.Contains(p.Output.String(), "address already in use") {
+			t.Fatalf("%s did not start: %v\n%s", name, err, p.Output.String())
 		}
-		time.Sleep(500 * time.Millisecond)
-	}
+		return err.Error(), false
+	})
+	return started
 }
 
-// awaitReady waits up to 30 s for ready to return nil while p runs, and returns ready's last error
-// otherwise.
-func awaitReady(p *cmdtest.Process, ready func(*cmdtest.Process) error) error {
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+// awaitReady waits for ready to return nil while p runs, and returns an error once p exits first.
+func awaitReady(t *testing.T, name string, p *cmdtest.Process, ready func(*cmdtest.Process) error) error {
+	t.Helper()
+	return testwait.Until(t, name+" to be ready", func() (error, bool) {
 		select {
 		case <-p.Exited:
-			return errors.New("the process exited")
+			return errors.New("the process exited"), true
 		default:
 		}
 		err := ready(p)
-		if err == nil || time.Now().After(deadline) {
-			return err
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return err, err == nil
+	})
 }
 
 // kill sends the server SIGKILL and waits for it to exit.
@@ -565,6 +564,8 @@ func (s *hubServer) monitorJSON(path string, into any) error {
 	return getJSON(fmt.Sprintf("http://127.0.0.1:%d%s", s.monitor, path), into)
 }
 
+// monitorClient bounds one read of a server's monitoring endpoint: net/http's own timer, a hang
+// guard on a loopback read that the waits here make again when it runs out.
 var monitorClient = &http.Client{Timeout: 2 * time.Second}
 
 func getJSON(url string, into any) error {
@@ -658,18 +659,15 @@ func (s *hubServer) authorizedUser(t *testing.T, conn *natsgo.Conn) string {
 // count is how often the server's output holds text.
 func (s *hubServer) count(text string) int { return strings.Count(s.proc.Output.String(), text) }
 
-// within calls check every 100 ms until it returns nil, and returns how long that took, failing
-// the test with check's last error when timeout passes first.
-func within(t *testing.T, timeout time.Duration, what string, check func() error) time.Duration {
+// within calls check until it returns nil, and returns how long that took; a check that never
+// returns nil fails the test with its last error when every wait of this binary gives up.
+func within(t *testing.T, what string, check func() error) time.Duration {
 	t.Helper()
 	start := time.Now()
-	var err error
-	if !testwait.Holds(timeout, 100*time.Millisecond, func() bool {
-		err = check()
-		return err == nil
-	}) {
-		t.Fatalf("%s: not within %s: %v", what, timeout, err)
-	}
+	testwait.Until(t, what, func() (error, bool) {
+		err := check()
+		return err, err == nil
+	})
 	return time.Since(start)
 }
 
@@ -723,11 +721,14 @@ func seedOption(t *testing.T, seed string) natsgo.Option {
 }
 
 // connectHub connects to urls as the user whose seed is seed, reconnecting to any of them without
-// limit, closed when the test ends.
+// limit, closed when the test ends. The wait between its reconnect attempts is nats.go's own,
+// shortened from its two seconds so a test that waits for a reconnect is not held by it; the one
+// check here that reads a reconnect count requires none, which a shorter wait can only make more
+// likely to be seen.
 func connectHub(t *testing.T, urls []string, seed string, opts ...natsgo.Option) *natsgo.Conn {
 	t.Helper()
 	conn, err := natsgo.Connect(strings.Join(urls, ","), append([]natsgo.Option{
-		seedOption(t, seed), natsgo.Timeout(time.Second), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(100 * time.Millisecond),
+		seedOption(t, seed), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(100 * time.Millisecond),
 	}, opts...)...)
 	require.NoError(t, err)
 	t.Cleanup(conn.Close)
@@ -735,17 +736,13 @@ func connectHub(t *testing.T, urls []string, seed string, opts ...natsgo.Option)
 }
 
 // awaitViolation requires the next error the server sent conn to be its permissions violation for
-// want, within 5 s.
+// want.
 func awaitViolation(t *testing.T, conn *natsgo.Conn, errs <-chan error, want string) {
 	t.Helper()
 	require.NoError(t, conn.Flush())
-	select {
-	case err := <-errs:
-		require.ErrorIs(t, err, natsgo.ErrPermissionViolation)
-		require.EqualError(t, err, "nats: permissions violation: Permissions Violation for "+want)
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the server reported no permissions violation within 5s, want one for %s", want)
-	}
+	err := testwait.Receive(t, "the server's permissions violation for "+want, errs)
+	require.ErrorIs(t, err, natsgo.ErrPermissionViolation)
+	require.EqualError(t, err, "nats: permissions violation: Permissions Violation for "+want)
 }
 
 // writeAtomically replaces the file at path with text by a rename, as Kubernetes swaps a
@@ -834,12 +831,12 @@ func lastSeqs(series []promSeries) map[string]float64 {
 	return out
 }
 
-// awaitLastSeqs waits up to 30 s for the exporters on ports to report want last_seq series of
-// stream, each value, and returns them.
+// awaitLastSeqs waits for the exporters on ports to report want last_seq series of stream, each
+// value, and returns them.
 func awaitLastSeqs(t *testing.T, ports []int, stream string, want int, value float64) map[string]float64 {
 	t.Helper()
 	var got map[string]float64
-	within(t, 30*time.Second, fmt.Sprintf("%d %s series of %s at %v", want, lastSeqMetric, stream, value), func() error {
+	within(t, fmt.Sprintf("%d %s series of %s at %v", want, lastSeqMetric, stream, value), func() error {
 		series, err := streamSeries(ports, stream)
 		if err != nil {
 			return err
@@ -919,7 +916,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 
 	// (a) One cluster with a JetStream meta leader, serving the hub's users.
 	var metaLeader string
-	formed := within(t, 60*time.Second, "the three servers form one cluster with a meta leader", func() error {
+	formed := within(t, "the three servers form one cluster with a meta leader", func() error {
 		leaders := map[string]bool{}
 		for _, s := range servers {
 			var varz struct {
@@ -1008,7 +1005,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	operator := connectHub(t, urls, r.keys.operatorSeed)
 	js, err := operator.JetStream(natsgo.MaxWait(2 * time.Second))
 	require.NoError(t, err)
-	within(t, 30*time.Second, "the R3 stream is created", func() error {
+	within(t, "the R3 stream is created", func() error {
 		_, err := js.AddStream(&natsgo.StreamConfig{Name: r3, Subjects: []string{"live.r3"}, Replicas: 3, Storage: natsgo.FileStorage})
 		return err
 	})
@@ -1027,7 +1024,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 		return info.Cluster.Leader, nil
 	}
 	awaitCurrent := func(what string) time.Duration {
-		return within(t, 30*time.Second, what, func() error {
+		return within(t, what, func() error {
 			info, err := js.StreamInfo(r3)
 			if err != nil {
 				return err
@@ -1055,9 +1052,9 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 
 	// forceCoLocated moves the stream's leadership onto the server that leads the JetStream meta
 	// group, so that one SIGKILL takes both groups from the cluster at once.
-	forceCoLocated := func(bound time.Duration, what string) (meta string) {
+	forceCoLocated := func(what string) (meta string) {
 		var first, answer string
-		took := within(t, bound, what, func() error {
+		took := within(t, what, func() error {
 			var err error
 			meta, err = agreedMetaLeader(servers)
 			if err != nil {
@@ -1094,19 +1091,30 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 			what, first, r3, meta, r3, stepdown, took.Round(time.Millisecond))
 		return meta
 	}
-	// 30 s holds several stepdown attempts at the 56-109 ms leadership transfer measured on a
-	// scratch cluster of this server version, and it matches awaitCurrent's 30 s.
-	forceCoLocated(30*time.Second, "the JetStream meta leader leads "+r3+" before the publisher starts")
+	forceCoLocated("the JetStream meta leader leads " + r3 + " before the publisher starts")
 
 	publisher := connectHub(t, urls, r.keys.operatorSeed)
 	pubJS, err := publisher.JetStream()
 	require.NoError(t, err)
 	var acked, retries atomic.Int64
 	published := make(chan error, 1)
+	// resume releases the publisher past the message it pauses at; the test closes it once the
+	// stream's leader has been killed, so the kill lands mid-run however long the steps before it
+	// take, and no reading of the clock decides that.
+	resume := make(chan struct{})
+	const pauseAt = 200
+	ctx := testwait.Context(t)
 	go func() {
 		for i := 1; i <= messages; i++ {
+			if int64(i) == pauseAt+1 {
+				select {
+				case <-resume:
+				case <-ctx.Done():
+					published <- fmt.Errorf("the publisher was never released past message %d", pauseAt)
+					return
+				}
+			}
 			id := strconv.Itoa(i)
-			deadline := time.Now().Add(30 * time.Second)
 			for {
 				msg := natsgo.NewMsg("live.r3")
 				msg.Data = []byte(id)
@@ -1114,30 +1122,31 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 				if err == nil {
 					break
 				}
-				if time.Now().After(deadline) {
-					published <- fmt.Errorf("message %s unacknowledged for 30s: %w", id, err)
+				if ctx.Err() != nil {
+					published <- fmt.Errorf("message %s was unacknowledged when this binary ran out of time: %w", id, err)
 					return
 				}
 				retries.Add(1)
+				// The pace of this publisher's own retries, as a producer under a hub outage
+				// retries, not a wait for a fact.
 				time.Sleep(50 * time.Millisecond)
 			}
 			acked.Store(int64(i))
+			// The spacing of the run's load, about 6 ms a message.
 			time.Sleep(5 * time.Millisecond)
 		}
 		published <- nil
 	}()
-	within(t, 30*time.Second, "the publisher's first 200 acknowledgements", func() error {
-		if acked.Load() < 200 {
+	within(t, fmt.Sprintf("the publisher's first %d acknowledgements", pauseAt), func() error {
+		if acked.Load() < pauseAt {
 			return fmt.Errorf("%d acknowledged", acked.Load())
 		}
 		return nil
 	})
-	// One pass is the ordinary cost here, three /jsz reads and one StreamInfo, about 10 ms,
-	// because nothing between this call and the one above it stops a server; the call is here so
-	// the co-location holds at the instant of the kill rather than 1.5 s before it. About 5 s of
-	// publishing is left when the 200-acknowledgement wait returns (795 messages at about 6 ms
-	// each), so a longer bound would let the require.Less below fail for an unrelated reason.
-	meta := forceCoLocated(3*time.Second, "the JetStream meta leader still leads "+r3+" at the kill")
+	// Nothing between this call and the one above it stops a server, so one pass is the ordinary
+	// cost here, three /jsz reads and one StreamInfo; the call is here so the co-location holds at
+	// the instant of the kill rather than seconds before it.
+	meta := forceCoLocated("the JetStream meta leader still leads " + r3 + " at the kill")
 	leader, err := streamLeader()
 	require.NoError(t, err)
 	require.Equal(t, meta, leader, "the server about to be killed leads both %s and the JetStream meta group", r3)
@@ -1152,8 +1161,8 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	// twelve measured runs. So the wait below requires the line as well as the agreement, rather
 	// than reading the log once after it. A raft group reaches a new leader only through a term
 	// that has none, so counting the line proves the leaderless state happened. Sampling /jsz for
-	// an empty leader would not: that state lasted 18-49 ms in five of six measured runs, and
-	// within polls every 100 ms.
+	// an empty leader would not: that state lasted 18-49 ms in five of six measured runs, and a
+	// wait asks its question no faster than every 10 ms.
 	const selfElected = "Self is new JetStream cluster metadata leader"
 	survivors := make([]*hubServer, 0, len(servers)-1)
 	elections := map[string]int{}
@@ -1167,7 +1176,10 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	killed.kill(t)
 	killedAt := time.Now()
 	atKill := acked.Load()
-	require.Less(t, atKill, int64(messages), "the leader dies mid-run")
+	require.EqualValues(t, pauseAt, atKill, "the publisher is held at its %dth message while its leader is killed", pauseAt)
+	// Every message after this one is published into the outage and the elections that follow,
+	// whatever either costs on the day.
+	close(resume)
 	for _, s := range survivors {
 		l, _, err := s.metaCluster()
 		since := time.Since(killedAt).Round(time.Millisecond)
@@ -1180,8 +1192,8 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	var newLeader string
 	// nats-server v2.15.1's Raft waits a random 4-9 s without the leader's heartbeat before a
 	// follower campaigns (server/raft.go, minElectionTimeoutDefault and maxElectionTimeoutDefault),
-	// so 15 s holds the slowest draw and its vote with room for a loaded runner.
-	within(t, 15*time.Second, "a new stream leader after the SIGKILL", func() error {
+	// which this wait sits through.
+	within(t, "a new stream leader after the SIGKILL", func() error {
 		l, err := streamLeader()
 		if err != nil {
 			return err
@@ -1201,9 +1213,8 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	// server/jetstream_cluster.go:1481-1497), and it decides that before it decides which server
 	// leads the stream. The meta election is an independent random 4-9 s draw (server/raft.go,
 	// minElectionTimeoutDefault and maxElectionTimeoutDefault), so the stream election above is no
-	// sign that it finished, and 30 s holds the slowest draw and its vote with room for a loaded
-	// runner.
-	within(t, 30*time.Second, "a new JetStream meta leader after the SIGKILL, with its own election in its log", func() error {
+	// sign that it finished, and this waits that draw and its vote out however long they take.
+	within(t, "a new JetStream meta leader after the SIGKILL, with its own election in its log", func() error {
 		name, err := agreedMetaLeader(survivors)
 		if err != nil {
 			return err
@@ -1224,12 +1235,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	t.Logf("(b) SIGKILL of %s (pid %d), which led both %s and the JetStream meta group, after %d of %d messages acknowledged; %s leads %s %s later, and %s leads the meta group %s after the kill",
 		leader, killed.proc.Cmd.Process.Pid, r3, atKill, messages, newLeader, r3, elected.Round(time.Millisecond),
 		newMeta.name, metaElected.Round(time.Millisecond))
-	select {
-	case err := <-published:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Minute):
-		t.Fatalf("the publisher did not finish within 2m: %d acknowledged", acked.Load())
-	}
+	require.NoError(t, testwait.Receive(t, "the publisher to finish its run", published))
 	info, err := js.StreamInfo(r3)
 	require.NoError(t, err)
 	require.EqualValues(t, messages, info.State.Msgs)
@@ -1301,7 +1307,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	awaitLastSeqs(t, exporterPorts, r3, 3, float64(messages))
 
 	const r1 = "LIVE_R1"
-	within(t, 30*time.Second, "the R1 stream is created", func() error {
+	within(t, "the R1 stream is created", func() error {
 		_, err := js.AddStream(&natsgo.StreamConfig{Name: r1, Subjects: []string{"live.r1"}, Replicas: 1, Storage: natsgo.FileStorage})
 		return err
 	})
@@ -1349,7 +1355,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	}})
 	before := writeAll(liveAuthConf(t, withAdded))
 	for i, s := range servers {
-		took := within(t, 30*time.Second, "the added user connects to "+s.name, func() error {
+		took := within(t, "the added user connects to "+s.name, func() error {
 			if s.count(reloaded) == before[i] {
 				return errors.New("no reload yet")
 			}
@@ -1365,7 +1371,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	}
 	before = writeAll(r.authConf)
 	for i, s := range servers {
-		took := within(t, 30*time.Second, "the removed user is refused by "+s.name, func() error {
+		took := within(t, "the removed user is refused by "+s.name, func() error {
 			if s.count(reloaded) == before[i] {
 				return errors.New("no reload yet")
 			}
@@ -1415,7 +1421,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	}
 	before = writeAll(liveAuthConf(t, withNewSession))
 	for i, s := range servers {
-		within(t, 30*time.Second, s.name+" refuses the session-user change", func() error {
+		within(t, s.name+" refuses the session-user change", func() error {
 			if s.count(refusal) == refusals[i] {
 				return errors.New("no refusal yet")
 			}
@@ -1445,7 +1451,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	restarted.proc.WaitExit(t, "SIGTERM")
 	restarted.start(t)
 	var user string
-	within(t, 30*time.Second, restarted.name+" admits a client with no credential after its restart", func() error {
+	within(t, restarted.name+" admits a client with no credential after its restart", func() error {
 		conn, err := testnats.ConnectSeed(t, restarted.url(), "")
 		if err != nil {
 			return err
@@ -1477,7 +1483,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	// The server's own SIGHUP, as the reloader sends it: the reloader may still name the pid the
 	// server had before (e)'s restart.
 	require.NoError(t, restarted.proc.Cmd.Process.Signal(syscall.SIGHUP))
-	within(t, 30*time.Second, restarted.name+" refuses the lower max_file_store", func() error {
+	within(t, restarted.name+" refuses the lower max_file_store", func() error {
 		if restarted.count(storeRefusal) == storeRefusals {
 			return errors.New("no refusal yet")
 		}
@@ -1492,7 +1498,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	restarted.proc.Terminate(t)
 	restarted.proc.WaitExit(t, "SIGTERM")
 	restarted.start(t)
-	within(t, 30*time.Second, restarted.name+" admits live-added after its restart", func() error {
+	within(t, restarted.name+" admits live-added after its restart", func() error {
 		conn, err := testnats.ConnectSeed(t, restarted.url(), addedSeed)
 		if err != nil {
 			return err

@@ -18,7 +18,10 @@ import (
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m.Run)) }
@@ -47,7 +50,7 @@ func TestRetryStreamStoreFailureRetriesOnlyTheStoreFailure(t *testing.T) {
 	storeFailure := &natsgo.APIError{Code: 500, ErrorCode: streamCreateErrorCode, Description: streamStoreFailed}
 	t.Run("store failure", func(t *testing.T) {
 		attempts := 0
-		err := retryStreamStoreFailure(func() error {
+		err := retryStreamStoreFailure(t, func() error {
 			attempts++
 			if attempts < 3 {
 				return storeFailure
@@ -61,7 +64,7 @@ func TestRetryStreamStoreFailureRetriesOnlyTheStoreFailure(t *testing.T) {
 	t.Run("any other error", func(t *testing.T) {
 		other := &natsgo.APIError{Code: 500, ErrorCode: streamCreateErrorCode, Description: "insufficient storage resources available"}
 		attempts := 0
-		err := retryStreamStoreFailure(func() error {
+		err := retryStreamStoreFailure(t, func() error {
 			attempts++
 			return other
 		})
@@ -112,6 +115,7 @@ func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
 func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	const burst = 20000
 	config := &natsgo.StreamConfig{Name: "BURST", Subjects: []string{"burst.>"}}
+	var publisher uint64
 	t.Run("publishes a burst and ends", func(t *testing.T) {
 		conn := Connect(t, URL(t))
 		defer conn.Close()
@@ -122,6 +126,11 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 		if _, err := js.AddStream(config); err != nil {
 			t.Fatalf("add stream: %v", err)
 		}
+		cid, err := conn.GetClientID()
+		if err != nil {
+			t.Fatalf("read the burst connection's client id: %v", err)
+		}
+		publisher = cid
 		payload := []byte(strings.Repeat("x", 64))
 		for i := range burst {
 			if err := conn.Publish(fmt.Sprintf("burst.%d", i%16), payload); err != nil {
@@ -130,24 +139,58 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 		}
 	})
 	t.Run("recreates the stream and finds none of it", func(t *testing.T) {
+		if publisher == 0 {
+			t.Fatal("this subtest reads what the burst the subtest before it published left behind; the two run together")
+		}
 		conn := Connect(t, URL(t))
 		defer conn.Close()
 		js, err := conn.JetStream()
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Every byte of the burst has been routed once the server has let its connection go: the
+		// server routes what a client sends from that client's own read loop, and closes the
+		// connection after the last of it.
+		testwait.Eventually(t, fmt.Sprintf("the shared server to let the burst's connection (cid %d) go", publisher), func() bool {
+			return openConnections(t, publisher) == 0
+		})
 		if _, err := js.AddStream(config); err != nil {
 			t.Fatalf("add stream: %v", err)
 		}
-		time.Sleep(time.Second)
+		// A message of this test's own, published once the burst was routed, is stored after
+		// anything the burst left for this stream: one stream appends what reaches it in order.
+		ack, err := js.Publish("burst.0", []byte("marker"))
+		if err != nil {
+			t.Fatalf("publish this test's own message: %v", err)
+		}
+		if ack.Sequence != 1 {
+			t.Errorf("this test's own message is at sequence %d, so %d of the previous test's %d messages reached the recreated stream before it",
+				ack.Sequence, ack.Sequence-1, burst)
+		}
 		info, err := js.StreamInfo(config.Name)
 		if err != nil {
 			t.Fatalf("stream info: %v", err)
 		}
-		if info.State.Msgs != 0 {
-			t.Errorf("the recreated stream holds %d of the previous test's %d messages", info.State.Msgs, burst)
+		if info.State.Msgs != 1 {
+			t.Errorf("the recreated stream holds %d messages, want only this test's own: %d of the previous test's %d reached it",
+				info.State.Msgs, info.State.Msgs-1, burst)
 		}
 	})
+}
+
+// openConnections is how many connections the shared server still holds open under cid, read from
+// the server object in this process.
+func openConnections(t *testing.T, cid uint64) int {
+	t.Helper()
+	srv := shared.srv.natsServer()
+	if srv == nil {
+		t.Fatal("the package's shared NATS server is not running")
+	}
+	connections, err := srv.Connz(&natsserver.ConnzOptions{CID: cid, State: natsserver.ConnOpen})
+	if err != nil {
+		t.Fatalf("read the shared server's connections: %v", err)
+	}
+	return len(connections.Conns)
 }
 
 // fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
@@ -245,13 +288,8 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 	if _, err := kv.Put("after-the-reload", []byte("1")); err != nil {
 		t.Fatalf("put after the reload: %v", err)
 	}
-	select {
-	case entry := <-watcher.Updates():
-		if entry == nil || entry.Key() != "after-the-reload" {
-			t.Fatalf("the watcher delivered %v after the reload, want the put", entry)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the watcher of an account in use delivered nothing after the reload")
+	if entry := testwait.Receive(t, "the watcher of an account in use to deliver the put made after the reload", watcher.Updates()); entry == nil || entry.Key() != "after-the-reload" {
+		t.Fatalf("the watcher delivered %v after the reload, want the put", entry)
 	}
 	if status := live.Status(); status != natsgo.CONNECTED {
 		t.Fatalf("the connection of an account in use is %v after the reload, want CONNECTED", status)
@@ -270,11 +308,7 @@ func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
 		defer close(done)
 		awaitAuth(wait, uri, false)
 	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the readiness wait is still waiting on a server that admits anyone")
-	}
+	testwait.Receive(t, "the readiness wait on a server that admits anyone to end", done)
 	if want := "admitted a client with no credential"; !strings.Contains(wait.message, want) {
 		t.Errorf("the readiness wait ended with %q, want it to say %q", wait.message, want)
 	}
@@ -390,7 +424,7 @@ func TestTerminateEndsTheServerAndGivesUpItsPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse %s: %v", uri, err)
 	}
-	if conn, err := net.DialTimeout("tcp", u.Host, dialTimeout); err == nil {
+	if conn, err := net.Dial("tcp", u.Host); err == nil {
 		conn.Close()
 		t.Fatalf("%s still answers after the server was terminated", u.Host)
 	}
@@ -520,6 +554,18 @@ func TestStartConfigRunsTheArgumentsItWasGivenAndNoOther(t *testing.T) {
 	}
 }
 
+const (
+	// requestAnswer is how long a request of these tests waits for its answer: nats.go's own
+	// request timer, a hang guard on a round trip to a server in this process, which no verdict
+	// waits out.
+	requestAnswer = 10 * time.Second
+	// frozenRequest is how long a request to a frozen server waits before it counts as unanswered:
+	// nats.go's own request timer is the span that proves the freeze held the bytes, since an
+	// answer the server never sent leaves no state to read and nothing the test does later orders
+	// against it.
+	frozenRequest = time.Second
+)
+
 // A frozen server stops the bytes in either direction without dropping anything: the request times
 // out while its connection is still CONNECTED, as a server that has stopped answering leaves it,
 // and the traffic resumes when the test thaws it.
@@ -532,12 +578,12 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 		t.Fatalf("subscribe: %v", err)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
-	if _, err := conn.Request("echo", nil, connectTimeout); err != nil {
+	if _, err := conn.Request("echo", nil, requestAnswer); err != nil {
 		t.Fatalf("request before the freeze: %v", err)
 	}
 
 	thaw := server.Freeze(t)
-	if _, err := conn.Request("echo", nil, time.Second); !errors.Is(err, natsgo.ErrTimeout) {
+	if _, err := conn.Request("echo", nil, frozenRequest); !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("a request to a frozen server: %v, want %v", err, natsgo.ErrTimeout)
 	}
 	if status := conn.Status(); status != natsgo.CONNECTED {
@@ -545,7 +591,7 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 	}
 
 	thaw()
-	answer, err := conn.Request("echo", nil, connectTimeout)
+	answer, err := conn.Request("echo", nil, requestAnswer)
 	if err != nil {
 		t.Fatalf("request after the thaw: %v", err)
 	}
@@ -577,17 +623,17 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 			second()
 			first()
 			second()
-			if _, err := conn.Request("echo", nil, connectTimeout); err != nil {
+			if _, err := conn.Request("echo", nil, requestAnswer); err != nil {
 				t.Fatalf("request after every thaw: %v", err)
 			}
 
 			later := server.Freeze(t)
 			first()
-			if _, err := conn.Request("echo", nil, time.Second); !errors.Is(err, natsgo.ErrTimeout) {
+			if _, err := conn.Request("echo", nil, frozenRequest); !errors.Is(err, natsgo.ErrTimeout) {
 				t.Fatalf("a request after a stale thaw of an earlier freeze: %v, want %v", err, natsgo.ErrTimeout)
 			}
 			later()
-			if _, err := conn.Request("echo", nil, connectTimeout); err != nil {
+			if _, err := conn.Request("echo", nil, requestAnswer); err != nil {
 				t.Fatalf("request after the later thaw: %v", err)
 			}
 		})
@@ -606,11 +652,7 @@ func TestTheAnonymousWaitRefusesAServerThatRefusesAnyone(t *testing.T) {
 		defer close(done)
 		awaitAuth(wait, uri, true)
 	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the anonymous wait is still waiting on a server that refuses anyone")
-	}
+	testwait.Receive(t, "the anonymous wait on a server that refuses anyone to end", done)
 	if want := "refused a client with no credential"; !strings.Contains(wait.message, want) {
 		t.Errorf("the anonymous wait ended with %q, want it to say %q", wait.message, want)
 	}

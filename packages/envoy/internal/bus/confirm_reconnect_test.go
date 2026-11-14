@@ -15,6 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // denyThenDrop serves a NATS client: it answers the handshake, then answers the first publish's
@@ -104,11 +105,7 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 	}
 	// nats.go queues the disconnect callback after the reconnect has cleared the last error
 	// (doReconnect), so once it runs the violation is gone and the reconnect has not counted.
-	select {
-	case <-disconnected:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the client never saw the server drop the connection")
-	}
+	testwait.Receive(t, "the client to see the server drop the connection", disconnected)
 	if err := confirmPublished(conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
 		t.Fatalf("a denied publish read as %v, want unconfirmed: last error %v, reconnecting %t",
 			err, conn.LastError(), conn.IsReconnecting())
@@ -140,11 +137,7 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the reconnect callback once the new connection is marked connected.
-	select {
-	case <-reconnected:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the client never reconnected")
-	}
+	testwait.Receive(t, "the client's reconnect", reconnected)
 	if err := confirmPublished(conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
 		t.Fatalf("a denied publish read as %v, want unconfirmed: before %+v, after %+v", err, before, observe(conn))
 	}
@@ -256,7 +249,10 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 		return conn.Flush()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// publishConfirmed flushes within its context's deadline and reads a context with none as a
+	// window already spent, so the test gives it the deadline PublishCoreContext gives it in
+	// production, publishBound, under the shared wait's own context.
+	ctx, cancel := context.WithTimeout(testwait.Context(t), publishBound)
 	defer cancel()
 	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
 	if !errors.Is(err, ErrPublishDenied) {

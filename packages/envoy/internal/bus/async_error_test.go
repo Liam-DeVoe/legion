@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A KV watcher's ordered consumer reports nats.ErrConsumerNotActive only while its connection is
@@ -105,14 +107,11 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 		}
 		return out
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for len(lines()) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the client never reported the handshake the server closed")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if got, want := lines()[0], "WARN envoy nats reconnect attempt failed"; got != want {
+	first := testwait.Until(t, "the client's report of the handshake the server closed", func() ([]string, bool) {
+		found := lines()
+		return found, len(found) > 0
+	})
+	if got, want := first[0], "WARN envoy nats reconnect attempt failed"; got != want {
 		t.Fatalf("a reconnect handshake the server closed logged %q, want %q", got, want)
 	}
 	for _, line := range lines() {

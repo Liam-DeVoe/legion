@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // tableRows splits a table the CLI printed into its header's columns and each row's fields.
@@ -47,13 +48,9 @@ func loggedInElsewhere(t *testing.T, rig *brokertest.Rig, host string) (*helper.
 		t.Fatalf("log %s in: %v", host, err)
 	}
 	id := rig.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(20 * time.Second)
-	for !b.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's login never issued: %+v", host, b.LoginStatus())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.Until(t, host+"'s login to issue", func() (any, bool) {
+		return b.LoginStatus(), b.HasCredential()
+	})
 	return b, id
 }
 

@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // signInEnvironment is a cookie-identity boot environment with all four sign-in settings.
@@ -758,15 +759,12 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	}
 
 	first := start(database)
-	deadline := time.Now().Add(10 * time.Second)
-	for !probe(first) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the only outbox publishing")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "healthz to report the only process publishing", func() bool { return probe(first) })
 	second := start(storetest.SecondProcess(t, database))
-	time.Sleep(time.Second)
+	testwait.Span(t, time.Second, "the standby must not report itself publishing while the first holds the hold: "+
+		"a process that has not taken the hold writes nothing of its own to read, both run in this test process "+
+		"behind real HTTP so synctest does not reach them, and the later action this row takes - stopping the "+
+		"holder - is what hands the hold over")
 	if probe(second) || !probe(first) {
 		t.Fatalf("outbox_publisher: first %t, second %t, want only the first, which holds the publisher hold", probe(first), probe(second))
 	}
@@ -775,13 +773,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	if probe(first) {
 		t.Fatal("healthz reported a stopped outbox publishing")
 	}
-	deadline = time.Now().Add(10 * time.Second)
-	for !probe(second) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the standby publishing once the holder stopped")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "healthz to report the standby publishing once the holder stopped", func() bool { return probe(second) })
 }
 
 // /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the agents' client

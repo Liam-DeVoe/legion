@@ -73,7 +73,7 @@ func (pair processPair) runRoomSync(t *testing.T) {
 func (pair processPair) openReader(t *testing.T, server *httptest.Server, login string) *docstest.Peer {
 	t.Helper()
 	reader := connectPeer(t, server.URL, pair.artifactID, login)
-	if err := reader.WaitForText(peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID), roomWait(t)); err != nil {
+	if err := reader.WaitForText(t, peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID)); err != nil {
 		t.Fatalf("%s's reader never received the document: %v", login, err)
 	}
 	return reader
@@ -86,7 +86,7 @@ func (pair processPair) heldEditOnB(t *testing.T, connection uint64, actor model
 	pair.gateB.hold()
 	pair.taskB.addConnection(pair.artifactID, connection, actor)
 	editAsPeer(t, pair.taskB, pair.artifactID, edit)
-	waitFor(t, roomWait(t), "task B's append of the edit to wait at the gate", func() bool { return pair.gateB.waiting.Load() == 1 })
+	waitFor(t, "task B's append of the edit to wait at the gate", func() bool { return pair.gateB.waiting.Load() == 1 })
 }
 
 // leaveTaskABehind loads task A's room, then has a browser on task B edit the document: task A's

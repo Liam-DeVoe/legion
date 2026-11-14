@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests here hold the reuse of renderings (renderedReplica.changedBy, warmFork's forkMarkdown,
@@ -692,13 +693,7 @@ func (sh *renderShadow) check(t *testing.T) {
 		if replica == nil {
 			t.Fatal("the room has no replica")
 		}
-		deadline := time.Now().Add(5 * time.Second)
-		for replica.hold() == nil {
-			if time.Now().After(deadline) {
-				t.Fatal("the replica never stood at the room's latest commit")
-			}
-			time.Sleep(time.Millisecond)
-		}
+		heldReplica(t, replica)
 		if !sameRendering(replicaMarkdown(replica), room.markdown) {
 			t.Errorf("the replica renders %s and the shadow %s", describeRendering(replicaMarkdown(replica)), describeRendering(room.markdown))
 		}
@@ -1221,11 +1216,7 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	}
 	loaded := make(chan error, 1)
 	go func() { loaded <- service.warmLiveDocument(context.Background(), artifactID) }()
-	select {
-	case <-entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's load never reached the window it is held in")
-	}
+	testwait.Receive(t, "the room's load to reach the window it is held in", entered)
 	m := sh.measure()
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -1558,16 +1549,12 @@ func forceRecover(replica *renderedReplica) {
 // replica's lock held for the caller to release (renderedReplica.hold).
 func heldReplica(t *testing.T, replica *renderedReplica) *crdt.Doc {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if doc := replica.hold(); doc != nil {
-			return doc
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the replica never stood at the room's latest commit")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	var doc *crdt.Doc
+	testwait.Eventually(t, "the replica to stand at the room's latest commit", func() bool {
+		doc = replica.hold()
+		return doc != nil
+	})
+	return doc
 }
 
 // heldReplicaMarkdown is the markdown of the rendering the replica keeps once it holds every
@@ -1676,6 +1663,14 @@ func insertBlocksAfter(t *testing.T, prefix, markdown string) func(*pmdoc.Node) 
 func TestRenderReuseABrowserTypingScript(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	// Only to keep ygo's idle sweep away: the browser applies its updates to the room's document
+	// directly, never through a ygo connection or Server.Apply, so the sweep counts the room idle
+	// from its load and would retire it after roomIdleTimeout (a minute), which the script can
+	// outlast on a loaded machine (it ran 98 s under -race beside eight busy loops), leaving the
+	// browser no room (stormRound says the same). The sweep reads the wall clock inside ygo
+	// (provider/websocket/idle_sweep.go), so no clock of the test's reaches it; it reads the
+	// timeout when the first room starts it, so it is set before any room loads.
+	service.srv.RoomIdleTimeout = time.Hour
 	sh := watchRenders(t, service, artifactID)
 	document := typingDocument()
 	if len(document) < 390<<10 {

@@ -2,11 +2,14 @@ package testnats
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"net/url"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // Proxy relays a client's TCP connections to a NATS server, so a test can take one client off
@@ -19,8 +22,12 @@ type Proxy struct {
 	target   string
 	url      string
 	delay    time.Duration
-	done     chan struct{}
-	closing  sync.Once
+	// clock is the clock the delay runs on: clock.Real for a test that takes the latency as it
+	// comes, and a clocktest.Fake for one that asserts what the proxy holds back.
+	clock   clock.Clock
+	ctx     context.Context
+	stop    context.CancelFunc
+	closing sync.Once
 
 	mu sync.Mutex
 	// conns are both ends of every connection the proxy is relaying.
@@ -37,9 +44,16 @@ type ProxyOption func(*Proxy)
 
 // ProxyLatency holds every chunk read from either side for half of rtt before writing it on, in
 // the order it was read, so a connection through the proxy sees rtt added to each round trip and
-// nothing else.
+// nothing else. The holding runs on the proxy's clock (ProxyClock).
 func ProxyLatency(rtt time.Duration) ProxyOption {
 	return func(p *Proxy) { p.delay = rtt / 2 }
+}
+
+// ProxyClock is the clock the proxy's latency runs on, clock.Real by default: a test that asserts
+// what a round trip through the proxy costs hands it a clocktest.Fake, whose armed deadlines are
+// the chunks the proxy is holding and which moves only when the test moves it.
+func ProxyClock(c clock.Clock) ProxyOption {
+	return func(p *Proxy) { p.clock = c }
 }
 
 // StartProxy relays to the NATS server at target, a client URL such as Start returns, on a
@@ -56,11 +70,14 @@ func StartProxy(t testing.TB, target string, options ...ProxyOption) *Proxy {
 	}
 	proxied := *server
 	proxied.Host = listener.Addr().String()
+	ctx, stop := context.WithCancel(context.Background())
 	p := &Proxy{
 		listener: listener,
 		target:   server.Host,
 		url:      proxied.String(),
-		done:     make(chan struct{}),
+		clock:    clock.Real(),
+		ctx:      ctx,
+		stop:     stop,
 		conns:    map[net.Conn]struct{}{},
 	}
 	for _, option := range options {
@@ -129,7 +146,7 @@ func (p *Proxy) join(client net.Conn) {
 	if !p.track(client) {
 		return
 	}
-	server, err := net.DialTimeout("tcp", p.target, dialTimeout)
+	server, err := net.Dial("tcp", p.target)
 	if err != nil || !p.track(server) {
 		if err == nil {
 			_ = server.Close()
@@ -147,7 +164,7 @@ func (p *Proxy) track(conn net.Conn) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	select {
-	case <-p.done:
+	case <-p.ctx.Done():
 		_ = conn.Close()
 		return false
 	default:
@@ -169,8 +186,8 @@ func (p *Proxy) untrack(conns ...net.Conn) {
 	}
 }
 
-// relay copies src to dst, each chunk written the proxy's delay after it was read, until either
-// ends; then it closes both, which ends the other direction too.
+// relay copies src to dst, each chunk written the proxy's delay after it was read, on the proxy's
+// clock, until either ends; then it closes both, which ends the other direction too.
 func (p *Proxy) relay(dst, src net.Conn) {
 	defer p.untrack(dst, src)
 	type chunk struct {
@@ -185,7 +202,7 @@ func (p *Proxy) relay(dst, src net.Conn) {
 			p.pass()
 			read, err := src.Read(buffer)
 			if read > 0 {
-				queue <- chunk{data: bytes.Clone(buffer[:read]), due: time.Now().Add(p.delay)}
+				queue <- chunk{data: bytes.Clone(buffer[:read]), due: p.clock.Now().Add(p.delay)}
 			}
 			if err != nil {
 				return
@@ -193,7 +210,12 @@ func (p *Proxy) relay(dst, src net.Conn) {
 		}
 	}()
 	for c := range queue {
-		time.Sleep(time.Until(c.due))
+		// A proxy with no latency arms no timer: its chunks are due as they are read.
+		if p.delay > 0 {
+			if err := p.clock.Sleep(p.ctx, c.due.Sub(p.clock.Now())); err != nil {
+				break
+			}
+		}
 		p.pass()
 		if _, err := dst.Write(c.data); err != nil {
 			// The reader ends once src is closed below.
@@ -215,14 +237,14 @@ func (p *Proxy) pass() {
 	}
 	select {
 	case <-gate:
-	case <-p.done:
+	case <-p.ctx.Done():
 	}
 }
 
 // close stops listening, closes every relayed connection and releases every copy a freeze holds.
 func (p *Proxy) close() {
 	p.closing.Do(func() {
-		close(p.done)
+		p.stop()
 		_ = p.listener.Close()
 		p.mu.Lock()
 		defer p.mu.Unlock()

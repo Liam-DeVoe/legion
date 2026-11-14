@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeHelperWithPids answers one canned line per connection and records the peer pid of each
@@ -72,13 +73,8 @@ func TestRegisterExecRunsTheCommandAsTheRegisteredPid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sh must print its pid, got %q", out)
 	}
-	select {
-	case registered := <-pids:
-		if registered != printed {
-			t.Fatalf("the pid the helper pinned (%d) must be the pid the command runs as (%d)", registered, printed)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the helper saw no register")
+	if registered := testwait.Receive(t, "the helper to see the register", pids); registered != printed {
+		t.Fatalf("the pid the helper pinned (%d) must be the pid the command runs as (%d)", registered, printed)
 	}
 }
 
@@ -121,10 +117,9 @@ func serveRealHelper(t *testing.T, brokerURL, operator string) (*helper.Server, 
 	served := make(chan struct{})
 	go func() { defer close(served); _ = srv.Serve(ctx, ln) }()
 	t.Cleanup(func() {
-		deadline := time.Now().Add(10 * time.Second)
-		for len(srv.Registry.List()) > 0 && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-		}
+		testwait.Eventually(t, "every session the helper registered to be retired", func() bool {
+			return len(srv.Registry.List()) == 0
+		})
 		cancel()
 		<-served
 		srv.Registry.Close()

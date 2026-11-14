@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A comment with two unpinned mentions, both past the lease the outbox waits a send out for and
@@ -72,8 +73,10 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "resumed")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "resumed")
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
+	after := time.Now()
+	recv.settle(t)
 
 	if got := recv.received(); len(got) != 0 {
 		t.Fatalf("the route holder was forwarded %v past the lease while both unnamed mentions are owed a resend, want nothing: one key serves one mention, so neither copy can carry the key the mention a resend pins here would repeat",
@@ -86,9 +89,7 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on the comment's unpinned mentions, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
-	}
+	requireBlockedByPass(t, "the comment whose forward waits", due, before, after)
 	_, _, reached := eventState(t, rig.database, comment.ID)
 	if !slices.Contains(reached, issueTopic) {
 		t.Fatalf("the comment reached %v, want %s among them: the forward's wait is the one copy it holds, and costs the comment's own response nothing",
@@ -115,7 +116,7 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 		t.Fatalf("the comment was not published once both mentions settled: attempt_count %d, publish_error %s, reached %v",
 			attempts, publishFailure(failure), reached)
 	}
-	waitFor(t, 10*time.Second, "the copy both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
+	testwait.Eventually(t, "the copy both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
 }
 
 // The one unpinned mention of a comment keys the forward past its lease as it does while its
@@ -162,7 +163,7 @@ func TestAForwardCarriesTheKeyOfAnUnnamedMentionPastItsLease(t *testing.T) {
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
 	want := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
-	waitFor(t, 5*time.Second, "the forward the mention's key covers", func() bool { return len(recv.received()) > 0 })
+	recv.settle(t)
 	forwards := recv.received()
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q, the key the mention of %s carries wherever a resend pins it: the one-target forward waits for no owed resend, the key standing for that mention",
@@ -184,7 +185,7 @@ func TestAForwardCarriesTheKeyOfAnUnnamedMentionPastItsLease(t *testing.T) {
 	dueNow(t, rig.database, comment.ID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
+	recv.settle(t)
 
 	if copies := recv.received(); len(copies) != 1 {
 		t.Fatalf("%s was sent %+v once the resend was pinned and sent, want the one copy it already has: the copy carries that mention's own key, so the session is shown the comment once",

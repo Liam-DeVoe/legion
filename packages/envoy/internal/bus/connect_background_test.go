@@ -3,7 +3,10 @@ package bus_test
 import (
 	"context"
 	"errors"
+	"net"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,12 +44,12 @@ func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnect
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the client's first connection", client.Connected)
+	testwait.Eventually(t, "the client's first connection", client.Connected)
 	js, err := testnats.Connect(t, uri).JetStream()
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
-	waitFor(t, 15*time.Second, "the stream the client owns", func() bool {
+	testwait.Eventually(t, "the stream the client owns", func() bool {
 		_, err := js.StreamInfo(bus.Stream)
 		return err == nil
 	})
@@ -73,7 +76,7 @@ func TestHookedConnectionEventsCountsTheFirstReconcileOfABackgroundClient(t *tes
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the client's hooks to cover a connection event", func() bool {
+	testwait.Eventually(t, "the client's hooks to cover a connection event", func() bool {
 		return client.HookedConnectionEvents() >= 1
 	})
 	if _, err := client.JS().StreamInfo(bus.Stream); err != nil {
@@ -113,28 +116,25 @@ func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
 		_, err := client.SubscribeCore(lane, func(*natsgo.Msg) { core.Add(1) })
 		subscribed <- err
 	}()
-	select {
-	case err := <-subscribed:
-		if err != nil {
-			t.Fatalf("a core subscription before the first connection: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("SubscribeCore waited for a connection the server cannot give")
+	// SubscribeCore that waited for a connection would wait for ever: the server starts only once
+	// it has returned.
+	if err := testwait.Receive(t, "SubscribeCore to return while the server is down", subscribed); err != nil {
+		t.Fatalf("a core subscription before the first connection: %v", err)
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the client's first connection", client.Connected)
+	testwait.Eventually(t, "the client's first connection", client.Connected)
 	publisher, err := bus.Connect([]string{uri})
 	if err != nil {
 		t.Fatalf("connect the publisher: %v", err)
 	}
 	t.Cleanup(publisher.Close)
 	publishOnce(t, publisher, "before-the-first-connection")
-	waitFor(t, 15*time.Second, "the JetStream subscription's delivery", func() bool { return streamed.Load() > 0 })
+	testwait.Eventually(t, "the JetStream subscription's delivery", func() bool { return streamed.Load() > 0 })
 	// Core NATS keeps nothing for a subscriber the server has not seen yet, and nats.go reports the
 	// connection CONNECTED a moment before the server has read the subscriptions it re-sent, so the
 	// lane is published to until the subscription has received one.
-	waitFor(t, 15*time.Second, "the core subscription's delivery", func() bool {
+	testwait.Eventually(t, "the core subscription's delivery", func() bool {
 		_ = publisher.Publish(contracts.Envelope{
 			EventID: "evt-core", Source: "agent", SourceEventID: "src-core", Topic: lane,
 			DedupeKey: "core-before-the-first-connection", IssuedAt: contracts.NowMillis(),
@@ -175,9 +175,9 @@ func TestAPublishBeforeTheFirstConnectionFailsWithinItsOwnDeadline(t *testing.T)
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the client's first connection", client.Connected)
+	testwait.Eventually(t, "the client's first connection", client.Connected)
 	// The stream is reconciled by the first connection's hook, which may still be running.
-	waitFor(t, 15*time.Second, "a publish after the first connection", func() bool {
+	testwait.Eventually(t, "a publish after the first connection", func() bool {
 		return client.Publish(envelope) == nil
 	})
 }
@@ -202,9 +202,9 @@ func TestDialInTheBackgroundRelaysACoreSubscriptionMadeBeforeItConnects(t *testi
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the connection's first connection", conn.IsConnected)
+	testwait.Eventually(t, "the connection's first connection", conn.IsConnected)
 	publisher := testnats.Connect(t, uri)
-	waitFor(t, 15*time.Second, "the relayed message", func() bool {
+	testwait.Eventually(t, "the relayed message", func() bool {
 		_ = publisher.Publish(subject, []byte("frame"))
 		_ = publisher.Flush()
 		return relayed.Load() > 0
@@ -213,10 +213,13 @@ func TestDialInTheBackgroundRelaysACoreSubscriptionMadeBeforeItConnects(t *testi
 
 // A configuration error still fails each constructor with WithConnectInBackground, before any
 // dial: a seed that is not one, a server that is not this machine's, a SOCKS5 setting that is not
-// an address. Only an unreachable or refusing server waits for the background.
+// an address. Only an unreachable or refusing server waits for the background. Every case names a
+// server of the test's own first (an acceptRecorder), which nats.go dials first, so a constructor
+// that dialled before it refused shows on the recorder.
 func TestConfigurationErrorsStillFailTheConstructorInTheBackground(t *testing.T) {
 	unsetNkeyEnvironment(t)
-	local := []string{"nats://127.0.0.1:1"}
+	recorder := startAcceptRecorder(t)
+	local := []string{recorder.url()}
 	cases := []struct {
 		name        string
 		urls        []string
@@ -224,7 +227,7 @@ func TestConfigurationErrorsStillFailTheConstructorInTheBackground(t *testing.T)
 		want        string
 	}{
 		{"an unusable seed", local, map[string]string{"NATS_NKEY_SEED": "hunter2"}, "NATS_NKEY_SEED does not hold a valid nkey seed"},
-		{"another machine's server", []string{"nats://nats.example.test:4222"}, nil, bus.ErrRemoteNATS.Error()},
+		{"another machine's server", []string{recorder.url(), "nats://nats.example.test:4222"}, nil, bus.ErrRemoteNATS.Error()},
 		{"a proxy that is not an address", local, map[string]string{bus.SOCKS5ProxyEnvVar: "127.0.0.1", bus.AllowRemoteEnvVar: "1"}, bus.SOCKS5ProxyEnvVar},
 	}
 	constructors := map[string]func(urls []string, environment func(string) (string, bool)) error{
@@ -252,16 +255,71 @@ func TestConfigurationErrorsStillFailTheConstructorInTheBackground(t *testing.T)
 	}
 	for _, tc := range cases {
 		for name, construct := range constructors {
-			started := time.Now()
 			err := construct(tc.urls, lookupOf(tc.environment))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("%s with %s: %v, want a refusal naming %q", name, tc.name, err, tc.want)
 			}
-			if elapsed := time.Since(started); elapsed >= time.Second {
-				t.Fatalf("%s with %s took %s to fail: it dialled", name, tc.name, elapsed)
-			}
+			recorder.requireNoDialBefore(t, name+" with "+tc.name)
 		}
 	}
+}
+
+// acceptRecorder listens on loopback and records the remote address of each connection it
+// accepts, closing each at once, as a port with no NATS behind it looks to a dial.
+type acceptRecorder struct {
+	listener net.Listener
+	mu       sync.Mutex
+	accepted []string
+}
+
+func startAcceptRecorder(t *testing.T) *acceptRecorder {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for dials: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	r := &acceptRecorder{listener: listener}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			r.mu.Lock()
+			r.accepted = append(r.accepted, conn.RemoteAddr().String())
+			r.mu.Unlock()
+			_ = conn.Close()
+		}
+	}()
+	return r
+}
+
+func (r *acceptRecorder) url() string { return "nats://" + r.listener.Addr().String() }
+
+// requireNoDialBefore fails t when anything dialled the recorder since the last call, before what
+// returned. It dials the recorder itself and waits for that marker's accept: the listener hands
+// out the connections dialled before the marker ahead of it, so a marker accepted alone shows that
+// no dial came first.
+func (r *acceptRecorder) requireNoDialBefore(t *testing.T, what string) {
+	t.Helper()
+	marker, err := net.Dial("tcp", r.listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial the recorder after %s: %v", what, err)
+	}
+	defer marker.Close()
+	at := marker.LocalAddr().String()
+	accepted := testwait.Until(t, "the recorder to accept the marker dialled after "+what, func() ([]string, bool) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return slices.Clone(r.accepted), slices.Contains(r.accepted, at)
+	})
+	if len(accepted) != 1 {
+		t.Fatalf("%s dialled before it refused: the recorder accepted %v, the marker being %s", what, accepted, at)
+	}
+	r.mu.Lock()
+	r.accepted = nil
+	r.mu.Unlock()
 }
 
 // A server that refuses the client's credential does not fail the constructor with
@@ -276,7 +334,7 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 	uri := testnats.StartNkeyAuthorized(t, allowed)
 	logs := captureBusLogs(t)
 	const refusal = "envoy nats authorization refused"
-	clock := &reconnectErrClock{now: time.Now()}
+	clock := newReconnectErrClock()
 	name := "refusal-test-" + t.Name()
 	client, err := bus.Connect([]string{uri},
 		bus.WithName(name),
@@ -288,12 +346,14 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 
-	waitFor(t, 15*time.Second, "the refusal's line", func() bool { return logs.count(name, refusal) > 0 })
+	testwait.Eventually(t, "the refusal's line", func() bool { return logs.count(name, refusal) > 0 })
 	if line := logs.lineAt("ERROR", refusal); line == "" || !strings.Contains(strings.ToLower(line), "authorization violation") {
 		t.Fatalf("the refusal is not an ERROR naming the server's answer:\n%s", logs.String())
 	}
-	// nats.go retries about once a second: three more attempts, and still one line.
-	time.Sleep(3500 * time.Millisecond)
+	// nats.go retries about once a second and the client reads each refusal off the connection,
+	// judging it on the throttle, which reads the clock once for each: three more judged, with the
+	// clock standing still, and still one line.
+	clock.awaitJudged(t, "three more refusals", clock.reads.Load(), 3)
 	if got := logs.count(name, refusal); got != 1 {
 		t.Fatalf("%d refusal lines within a minute, want 1:\n%s", got, logs.String())
 	}
@@ -301,7 +361,7 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 		t.Fatal("the client gave its connection up over a refused credential")
 	}
 	clock.Advance(time.Minute)
-	waitFor(t, 15*time.Second, "the next minute's refusal line", func() bool { return logs.count(name, refusal) == 2 })
+	testwait.Eventually(t, "the next minute's refusal line", func() bool { return logs.count(name, refusal) == 2 })
 	if client.Connected() {
 		t.Fatal("a client whose credential is refused reports itself connected")
 	}
@@ -310,7 +370,9 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 // A connection whose server stops answering without closing it (packets dropped, no reset) is
 // declared lost within seconds with WithSilentCutDetection, and reconnects once the traffic
 // moves again. With nats.go's defaults (a ping every two minutes, two outstanding) the client
-// would read connected for minutes into the cut.
+// would read connected for minutes into the cut. nats.go times the pings on its own clock, which
+// no clock of the test reaches, so the seconds are read off the pings the connection runs with:
+// it declares itself lost on the interval that would put one ping more than MaxPingsOut out.
 func TestASilentCutIsNoticedWithinSecondsAndHealsWhenTrafficResumes(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	client, err := bus.Connect([]string{uri}, bus.WithSilentCutDetection())
@@ -318,20 +380,18 @@ func TestASilentCutIsNoticedWithinSecondsAndHealsWhenTrafficResumes(t *testing.T
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	waitFor(t, 15*time.Second, "the client's connection", client.Connected)
+	testwait.Eventually(t, "the client's connection", client.Connected)
+	interval, out := client.Conn.Opts.PingInterval, client.Conn.Opts.MaxPingsOut
+	if noticedWithin := interval * time.Duration(out+1); noticedWithin >= 5*time.Second {
+		t.Fatalf("pings every %s with %d out notice a silent cut only %s into it, past the 5 s envoy-dispatch's /healthz has to report it in",
+			interval, out, noticedWithin)
+	}
 
 	thaw := srv.Freeze(t)
 	// Cleanups run last-in first-out, so this thaw precedes the server's shutdown.
 	t.Cleanup(thaw)
-	cut := time.Now()
-	for client.Connected() {
-		if time.Since(cut) > 5*time.Second {
-			t.Fatalf("the client still reads connected %s into a silent cut", time.Since(cut))
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Logf("the cut was noticed %s after it began", time.Since(cut))
+	testwait.Eventually(t, "the client to notice the silent cut", func() bool { return !client.Connected() })
 
 	thaw()
-	waitFor(t, 15*time.Second, "the client to reconnect once the traffic moves again", client.Connected)
+	testwait.Eventually(t, "the client to reconnect once the traffic moves again", client.Connected)
 }
