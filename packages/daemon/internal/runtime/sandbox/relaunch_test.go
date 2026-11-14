@@ -28,11 +28,13 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -187,8 +189,7 @@ func TestSpawnOverAnExistingSandbox(t *testing.T) {
 		g := newRig(t, []k8sruntime.Object{
 			sandboxObject(t, name, "uid-sandbox-kept", modeRunning, labels),
 			podObject(name, "uid-pod-old", "uid-sandbox-kept", labels, runningStatus()),
-		})
-		g.suspendDelay.Store(int64(50 * time.Millisecond))
+		}, withTerminationLag(50*time.Millisecond))
 		loc := g.spawn(workerSpec(t))
 		expectSteps(t, steps(t, g.writes(), name), "suspend", "create secret", "run", "record addresses")
 		if loc.Sandbox.PodUID == "uid-pod-old" || loc.Sandbox.PodUID != string(g.pod(name).UID) {
@@ -201,15 +202,20 @@ func TestSpawnOverAnExistingSandbox(t *testing.T) {
 		deleting.SetDeletionTimestamp(&now)
 		deleting.SetFinalizers([]string{"foregroundDeletion"})
 		g := newRig(t, []k8sruntime.Object{deleting})
-		var deletedAt time.Time
-		go func() {
-			time.Sleep(150 * time.Millisecond)
-			deletedAt = time.Now()
-			_ = g.dyn.Tracker().Delete(sandboxGVR, testNamespace, name)
-		}()
+		// The deletion completes at the launch's second read of the Sandbox: the first finds it
+		// being deleted, the second is the first check of the launch's wait for it to go. A launch
+		// that acted on what its first read found would act on a Sandbox still there.
+		var reads atomic.Int32
+		var deleted atomic.Bool
+		g.dyn.PrependReactor("get", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
+			if a.(k8stesting.GetAction).GetName() == name && reads.Add(1) == 2 {
+				deleted.Store(g.dyn.Tracker().Delete(sandboxGVR, testNamespace, name) == nil)
+			}
+			return false, nil, nil
+		})
 		loc := g.spawn(workerSpec(t))
 		expectSteps(t, steps(t, g.writes(), name), "create sandbox", "create secret", "run", "record addresses")
-		if s := g.sandbox(name); s.UID == "uid-sandbox-going" || deletedAt.IsZero() {
+		if s := g.sandbox(name); s.UID == "uid-sandbox-going" || !deleted.Load() {
 			t.Fatalf("spawned into sandbox %s, before the old one was deleted", s.UID)
 		}
 		if loc.Sandbox.PodUID != string(g.pod(name).UID) {
@@ -385,12 +391,10 @@ func supersededIssue(t *testing.T, options ...rigOption) *rig {
 	t.Helper()
 	name := SandboxName(workerToken)
 	labels := claimLabels(claim.RoleTester)
-	g := newRig(t, []k8sruntime.Object{
+	return newRig(t, []k8sruntime.Object{
 		withSupersededDisk(t, sandboxObject(t, name, "uid-sandbox-superseded", modeRunning, labels)),
 		podObject(name, "uid-pod-old", "uid-sandbox-superseded", labels, runningStatus()),
-	}, options...)
-	g.suspendDelay.Store(int64(50 * time.Millisecond))
-	return g
+	}, append([]rigOption{withTerminationLag(50 * time.Millisecond)}, options...)...)
 }
 
 // A sibling role of the pod a migrating launch replaces may be evaluated while that launch is
@@ -408,7 +412,6 @@ func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testi
 	var g *rig
 	var inGap runtime.Observation
 	var gapErr error
-	storeHeldIt := true
 	hooks := &sandboxHooks{
 		beforeDelete: func(n string) {
 			if n == name {
@@ -425,12 +428,11 @@ func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testi
 			// The launch has seen the delete through and has yet to send its create. The probe's own
 			// confirming read comes through this hook too, so it is marked first.
 			probed.Store(true)
-			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if s, _ := g.r.storedSandbox(name); s == nil {
-					storeHeldIt = false
-					break
-				}
-			}
+			// The hook runs on the test goroutine, inside the launch's own confirming read.
+			testwait.Eventually(t, "the Sandbox store to lose the deleted Sandbox, so the sibling's probe reads the gap", func() bool {
+				s, _ := g.r.storedSandbox(name)
+				return s == nil
+			})
 			inGap, gapErr = g.r.Probe(g.ctx, sibling)
 		},
 	}
@@ -438,9 +440,6 @@ func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testi
 	g.spawn(workerSpec(t))
 	if !probed.Load() {
 		t.Fatal("the launch never reached the gap between deleting the superseded Sandbox and creating its replacement")
-	}
-	if storeHeldIt {
-		t.Fatal("the Sandbox store still held the deleted Sandbox when the sibling was probed, so the probe proves nothing about the gap")
 	}
 	if gapErr != nil {
 		t.Fatal(gapErr)
@@ -465,7 +464,6 @@ func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *tes
 	var g *rig
 	var inGap runtime.Observation
 	var gapErr error
-	storeHeldIt := true
 	hooks := &sandboxHooks{
 		beforeDelete: func(n string) {
 			if n == name {
@@ -480,12 +478,10 @@ func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *tes
 				return
 			}
 			probed.Store(true)
-			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if s, _ := g.r.storedSandbox(name); s == nil {
-					storeHeldIt = false
-					break
-				}
-			}
+			testwait.Eventually(t, "the Sandbox store to lose the deleted Sandbox, so the older pod's role's probe reads the gap", func() bool {
+				s, _ := g.r.storedSandbox(name)
+				return s == nil
+			})
 			inGap, gapErr = g.r.Probe(g.ctx, older)
 		},
 	}
@@ -493,9 +489,6 @@ func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *tes
 	g.spawn(workerSpec(t))
 	if !probed.Load() {
 		t.Fatal("the launch never reached the gap between deleting the superseded Sandbox and creating its replacement")
-	}
-	if storeHeldIt {
-		t.Fatal("the Sandbox store still held the deleted Sandbox when the older pod's role was probed, so the probe proves nothing about the gap")
 	}
 	if gapErr != nil {
 		t.Fatal(gapErr)
@@ -669,8 +662,7 @@ func TestResumeAfterAFailedPod(t *testing.T) {
 			Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(workerContainer, 137, "Error")},
 		}),
 		oldSecret,
-	})
-	g.suspendDelay.Store(int64(50 * time.Millisecond))
+	}, withTerminationLag(50*time.Millisecond))
 	g.launcher(workerToken)
 	spec := workerSpec(t)
 	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-g2", resumeSession
@@ -974,13 +966,10 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 		_, err := g.r.Spawn(g.ctx, childSpec(t))
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the child issue's launch waited on the root's workspace-init")
+	// A launch that waited on the root's workspace-init would end only at its boot timeout, with
+	// an error, since the root's pod never leaves Pending here.
+	if err := testwait.Receive(t, "the child issue's launch, which waits on no other pod's workspace-init", done); err != nil {
+		t.Fatal(err)
 	}
 	if pod := g.pod(root); pod == nil || pod.Status.Phase != corev1.PodPending {
 		t.Fatalf("the root's pod is %+v, want it still Pending in workspace-init", pod)
@@ -1041,9 +1030,19 @@ func TestAPatchIsFencedToTheSandboxItRead(t *testing.T) {
 func TestALaunchReturnsOnlyOnceTheSandboxStoreHoldsItsRunningPatch(t *testing.T) {
 	for _, launches := range []int{1, 2} {
 		t.Run(fmt.Sprintf("launch %d", launches), func(t *testing.T) {
-			g := newRig(t, nil, withLaggingSandboxInformer(300*time.Millisecond))
+			g := newRig(t, nil, withLaggingSandboxInformer())
 			name := SandboxName(workerToken)
-			var loc runtime.Locator
+			// launchReturn carries what the launch returned and the Sandbox store as it stood the
+			// moment it returned, read on the launch's own goroutine: a launch that returned before
+			// the store held its Running patch shows the store stale here, whatever the feed does
+			// after.
+			type launchReturn struct {
+				loc       runtime.Locator
+				stored    *sandbox
+				storedErr error
+				err       error
+			}
+			var last launchReturn
 			for launch := range launches {
 				spec := workerSpec(t)
 				if launch > 0 {
@@ -1054,21 +1053,47 @@ func TestALaunchReturnsOnlyOnceTheSandboxStoreHoldsItsRunningPatch(t *testing.T)
 					g.eventually("the store to see the pod fail", func() bool { return terminal(g.r.storedPod(name)) })
 					spec.Generation = uint64(launch + 1)
 				}
-				loc = g.spawn(spec)
+				// Hold the Sandbox feed so the launch's new pod reaches its store before the Running
+				// patch does; the launch must wait for the Sandbox store to hold that patch.
+				g.sandboxFeed.hold()
+				g.launcher(spec.Claim)
+				returned := make(chan launchReturn, 1)
+				go func() {
+					loc, err := g.r.Spawn(g.ctx, spec)
+					stored, storedErr := g.r.storedSandbox(name)
+					returned <- launchReturn{loc, stored, storedErr, err}
+				}()
+				// The new pod reaches the store with the Running patch still held from the Sandbox
+				// store behind it.
+				g.eventually("the new pod to reach the store before its Sandbox", func() bool {
+					pod := g.r.storedPod(name)
+					return pod != nil && pod.DeletionTimestamp == nil && pod.Status.Phase == corev1.PodRunning
+				})
+				// The launch must not return while that patch is held: a launch that returned seeing
+				// the pod but not its Running Sandbox would yield here. Its blocking is an absence no
+				// state or later action shows, and the rig's informers keep a synctest bubble from
+				// ending, so a held span proves it.
+				testwait.Quiet(t, "the launch to return before the Sandbox store holds its Running patch", returned, 200*time.Millisecond,
+					"the launch's blocking is an absence no state or later action reaches, and the rig's informers do not exit when a synctest bubble's root returns")
+				// Released, the Sandbox store catches up and a correct launch returns with it current.
+				g.sandboxFeed.release()
+				last = testwait.Receive(t, "the launch to return once the Sandbox store caught up", returned)
+				if last.err != nil {
+					t.Fatalf("spawn %s: %v", spec.Claim, last.err)
+				}
 			}
-			stored, err := g.r.storedSandbox(name)
-			if err != nil || stored == nil {
-				t.Fatalf("the Sandbox store right after Spawn holds no Sandbox (%v)", err)
+			if last.storedErr != nil || last.stored == nil {
+				t.Fatalf("the Sandbox store when Spawn returned holds no Sandbox (%v)", last.storedErr)
 			}
 			api := g.sandbox(name)
 			if api.Generation == 0 {
 				t.Fatal("the rig's Sandbox patches bumped no generation, so this table cannot tell the Running patch from an earlier copy")
 			}
-			if stored.Generation != api.Generation || stored.mode() != modeRunning {
-				t.Fatalf("the Sandbox store right after Spawn shows it %s at generation %d; the API holds generation %d, Running",
-					stored.mode(), stored.Generation, api.Generation)
+			if last.stored.Generation != api.Generation || last.stored.mode() != modeRunning {
+				t.Fatalf("the Sandbox store when Spawn returned shows it %s at generation %d; the API holds generation %d, Running",
+					last.stored.mode(), last.stored.Generation, api.Generation)
 			}
-			if obs, err := g.r.Probe(g.ctx, loc); err != nil || obs.Kind != runtime.Alive {
+			if obs, err := g.r.Probe(g.ctx, last.loc); err != nil || obs.Kind != runtime.Alive {
 				t.Fatalf("Probe right after Spawn: %s %q, %v; want Alive", obs.Kind, obs.Detail, err)
 			}
 		})
@@ -1149,10 +1174,8 @@ func TestBootRefusesWhenTheAPIServerRefusesTheConnection(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	address := dead.URL
 	dead.Close()
-	boot, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
-	_, err := New(boot, &rest.Config{Host: address}, testOptions())
+	_, err := New(testwait.Context(t), &rest.Config{Host: address}, testOptions())
 
 	if err == nil {
 		t.Fatal("New returned a runtime though every list its informers made was refused")
@@ -1241,9 +1264,7 @@ func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
 			if err := failedLaunch(t, g, spec); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Spawn = %v, want the failure of %s", err, name)
 			}
-			taking, cancel := context.WithTimeout(g.ctx, time.Second)
-			defer cancel()
-			unlock, err := g.r.lockPod(taking, SandboxName(spec.Claim))
+			unlock, err := g.r.lockPod(testwait.Context(t), SandboxName(spec.Claim))
 			if err != nil {
 				t.Fatalf("the pod's launch turn is still held after the failed launch: %v", err)
 			}
@@ -1253,20 +1274,16 @@ func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
 	}
 }
 
-// failedLaunch is a launch of spec expected to fail within a second, its panic turned into the
-// test's failure, so a launch that panics fails its own subtest by name rather than the binary.
+// failedLaunch is a launch of spec expected to fail, bounded only by the shared wait's deadline
+// (testwait.Context), its panic turned into the test's failure, so a launch that panics fails its
+// own subtest by name rather than the binary.
 func failedLaunch(t *testing.T, g *rig, spec runtime.SpawnSpec) error {
 	t.Helper()
-	launching, cancel := context.WithTimeout(g.ctx, time.Second)
-	defer cancel()
-	return failedLaunchOn(t, g, launching, spec)
+	return failedLaunchOn(t, g, testwait.Context(t), spec)
 }
 
-// failedLaunchOn is failedLaunch for a row whose launch no wall clock bounds: it runs on
-// launching, the context the row cancels once what it waits on has happened, and turns a panic
-// into the test's failure the same way. A launch whose failure lies past the waits of a replacing
-// try — a suspend, a wait for the previous pod, provision, the wait for the new pod — takes a
-// loaded machine longer than failedLaunch's second, and is this helper's rather than its.
+// failedLaunchOn is failedLaunch on launching, a context the row cancels itself once what it
+// waits on has happened, and turns a panic into the test's failure the same way.
 func failedLaunchOn(t *testing.T, g *rig, launching context.Context, spec runtime.SpawnSpec) error {
 	t.Helper()
 	defer func() {
@@ -1834,13 +1851,8 @@ func (g *rig) scriptedStartLauncher(
 func (d *scriptedStartLauncher) start(t *testing.T, generation uint64) shimwire.LauncherStart {
 	t.Helper()
 	for {
-		select {
-		case command := <-d.starts:
-			if command.Generation == generation {
-				return command
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("no generation-%d Start", generation)
+		if command := testwait.Receive(t, fmt.Sprintf("a generation-%d Start", generation), d.starts); command.Generation == generation {
+			return command
 		}
 	}
 }
@@ -1848,13 +1860,8 @@ func (d *scriptedStartLauncher) start(t *testing.T, generation uint64) shimwire.
 func (d *scriptedStartLauncher) stop(t *testing.T, generation uint64) shimwire.LauncherStop {
 	t.Helper()
 	for {
-		select {
-		case command := <-d.stops:
-			if command.Generation == generation {
-				return command
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("no generation-%d Stop", generation)
+		if command := testwait.Receive(t, fmt.Sprintf("a generation-%d Stop", generation), d.stops); command.Generation == generation {
+			return command
 		}
 	}
 }
@@ -1889,7 +1896,7 @@ func loggedSandboxMachine(
 	store := &supervisedSandboxStore{claim: c}
 	specs := &sandboxMachineSpecs{spec: spec}
 	machine, err := supervise.NewMachine(g.ctx, supervise.Deps{
-		Runtime: g.r, Conns: g.conns, Store: store, Specs: specs, Clock: sandboxMachineClock{},
+		Runtime: g.r, Conns: g.conns, Store: store, Specs: specs, Clock: sandboxMachineClock{clocktest.New(rigNow)},
 		Log:    slog.New(slog.NewTextHandler(w, nil)),
 		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 1, PromptRetires: 1},
 		Timeouts: supervise.Timeouts{
@@ -1920,19 +1927,13 @@ func (s *sandboxMachineSpecs) SpawnSpec(context.Context, supervise.Claim) (runti
 	return s.spec, nil
 }
 
-type sandboxMachineClock struct{}
-
-func (sandboxMachineClock) Now() time.Time { return rigNow }
-
-func (sandboxMachineClock) AfterFunc(time.Duration, func()) supervise.Cancel {
-	return sandboxMachineCancel{}
-}
+// sandboxMachineClock is the machine's time: a clocktest.Fake standing at rigNow that nothing
+// moves, so its timers never fire. Its Sleep returns at once, because the machine backs off inside
+// the decision the test drives on its own goroutine, where a wait for a move nobody makes would
+// never end.
+type sandboxMachineClock struct{ *clocktest.Fake }
 
 func (sandboxMachineClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-
-type sandboxMachineCancel struct{}
-
-func (sandboxMachineCancel) Stop() bool { return true }
 
 type supervisedSandboxStore struct{ claim supervise.Claim }
 

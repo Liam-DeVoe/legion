@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The probe Sandbox testImage gets in testProject: the project, then the digest's first 12 hex.
@@ -1039,33 +1041,28 @@ func TestProbeImageFindsAFailedMountOnTheRecheck(t *testing.T) {
 	})
 	g.waits("ContainerCreating")
 	message := `MountVolume.SetUp failed for volume "operator-route" : configmap "legion-operator-route" not found`
-	stop := make(chan struct{})
-	t.Cleanup(func() { close(stop) })
-	go func() {
-		// The kubelet's turn: after the first read, the event, then time passes.
-		for eventReads.Load() == 0 {
-			select {
-			case <-stop:
-				return
-			case <-time.After(5 * time.Millisecond):
-			}
-		}
-		time.Sleep(50 * time.Millisecond) // a few passes of the wait loop with the clock still
-		if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
-			ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
-			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
-			Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: message,
-		}, metav1.CreateOptions{}); err != nil {
-			t.Error(err)
-			return
-		}
-		g.advance(mountRecheck)
-		if pod := g.pod(probeSandboxName); pod != nil {
-			g.update(pod, func(*corev1.Pod) {}) // nudge the wait loop rather than waiting on its tick
-		}
-	}()
+	probed := make(chan error, 1)
+	go func() { probed <- g.probe(probeOptions(t)) }()
 
-	err := g.probe(probeOptions(t))
+	// The kubelet's turn, once the probe has read the pod's events once and found no FailedMount,
+	// so the event lands after that first read: the first read sets the recheck's clock (mountRead),
+	// and until the clock moves past mountRecheck the probe reads no events again (stuck), so the
+	// event cannot be found before the recheck. That first read is the gate, not a span waited out;
+	// the event and a clock move then make the recheck read find it.
+	testwait.Eventually(t, "the probe's first read of the pod's events", func() bool { return eventReads.Load() >= 1 })
+	if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
+		Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: message,
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	g.advance(mountRecheck)
+	if pod := g.pod(probeSandboxName); pod != nil {
+		g.update(pod, func(*corev1.Pod) {}) // nudge the wait loop rather than waiting on its tick
+	}
+
+	err := testwait.Receive(t, "the probe to finish", probed)
 
 	wantContains(t, err, `cannot mount volume "operator-route"`, `ConfigMap "legion-operator-route"`, message)
 	if err != nil && strings.Contains(err.Error(), "never completed within its retry budget") {
@@ -1545,72 +1542,87 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 // the recheck interval; a budget shorter than that delay can never observe the jump.
 func TestProbeImagesCapacityStopNeedsTheBudgetToOutliveTheBootTimeout(t *testing.T) {
 	const bootTimeout = 600 * time.Millisecond
-	ageOutAfter := func(t *testing.T, g *probeRig, delay time.Duration) {
-		t.Helper()
-		stop := make(chan struct{})
-		t.Cleanup(func() { close(stop) })
-		go func() {
-			select {
-			case <-stop:
-				return
-			case <-time.After(delay):
-			}
-			g.advance(bootTimeout + time.Second)
-			if pod := g.pod(probeSandboxName); pod != nil {
-				g.update(pod, func(*corev1.Pod) {})
-			}
-		}()
+	// capacityResult is what the probe returns, carried off the goroutine the subtests run it on so
+	// the bubble's clock can reach the boot timeout's worth of wall-clock while the probe waits.
+	type capacityResult struct {
+		report bootprobe.ImageReport
+		err    error
+	}
+	// ageOut jumps the rig's clock past the boot timeout and nudges the pod, so the probe's wait
+	// notices the pod has been Unschedulable that long without waiting on the recheck interval: the
+	// capacity stop (stuck) that an attempt whose budget outlives the boot timeout's wall-clock cost
+	// can witness, and one whose budget is shorter cannot.
+	ageOut := func(g *probeRig) {
+		g.advance(bootTimeout + time.Second)
+		if pod := g.pod(probeSandboxName); pod != nil {
+			g.update(pod, func(*corev1.Pod) {})
+		}
 	}
 
 	t.Run("a budget that outlives the boot timeout ends the attempt waiting on capacity", func(t *testing.T) {
-		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged); o.BootTimeout = bootTimeout }))
-		g.with(func() { g.log = okLine(3) + "\n" })
-		var pods atomic.Int32
-		g.finishes(func(p *corev1.Pod) {
-			if pods.Add(1) == 1 {
-				unschedulable(0)(p)
-				return
+		synctest.Test(t, func(t *testing.T) {
+			logged := &lockedLog{}
+			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged); o.BootTimeout = bootTimeout }))
+			g.with(func() { g.log = okLine(3) + "\n" })
+			var pods atomic.Int32
+			g.finishes(func(p *corev1.Pod) {
+				if pods.Add(1) == 1 {
+					unschedulable(0)(p)
+					return
+				}
+				p.Status = corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{{
+					Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
+				}}}
+			})
+			p := probeOptions(t)
+			p.Budget = bootTimeout + time.Second // ProbeBudget's shape: the boot timeout plus a margin that outlasts the rig's recheckInterval.
+			p.Retry.Attempts = 1
+
+			probed := make(chan capacityResult, 1)
+			go func() { report, err := g.r.ProbeImage(g.ctx, p); probed <- capacityResult{report, err} }()
+			// The bubble's clock reaches the boot timeout's worth of wall-clock, every goroutine of
+			// the probe blocked, before the pod ages out; the attempt's budget, a bubble timer, is a
+			// second past that, so the attempt is still waiting and witnesses the capacity stop.
+			time.Sleep(bootTimeout)
+			ageOut(g)
+			res := <-probed
+
+			if res.err != nil {
+				t.Fatalf("ProbeImage = %v, want the pass after one capacity wait", res.err)
 			}
-			p.Status = corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{{
-				Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
-			}}}
+			if res.report.CapacityWaits != 1 {
+				t.Errorf("report = %d capacity waits, want 1", res.report.CapacityWaits)
+			}
+			if got := strings.Count(logged.String(), "boot probe is waiting on capacity; running it again"); got != 1 {
+				t.Errorf("logged %d capacity waits, want 1:\n%s", got, logged.String())
+			}
 		})
-		ageOutAfter(t, g, bootTimeout)
-		p := probeOptions(t)
-		p.Budget = bootTimeout + time.Second // ProbeBudget's shape: the boot timeout plus a margin that outlasts the rig's recheckInterval.
-		p.Retry.Attempts = 1
-
-		report, err := g.r.ProbeImage(g.ctx, p)
-
-		if err != nil {
-			t.Fatalf("ProbeImage = %v, want the pass after one capacity wait", err)
-		}
-		if report.CapacityWaits != 1 {
-			t.Errorf("report = %d capacity waits, want 1", report.CapacityWaits)
-		}
-		if got := strings.Count(logged.String(), "boot probe is waiting on capacity; running it again"); got != 1 {
-			t.Errorf("logged %d capacity waits, want 1:\n%s", got, logged.String())
-		}
 	})
 
 	t.Run("a budget below the boot timeout never sees the capacity wait", func(t *testing.T) {
-		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged); o.BootTimeout = bootTimeout }))
-		g.finishes(unschedulable(0))
-		// The pod ages out exactly as above, but the one attempt's budget has run out by then.
-		ageOutAfter(t, g, bootTimeout)
-		p := probeOptions(t)
-		p.Budget = 300 * time.Millisecond // slow_command_timeout_seconds's old shape: below the boot timeout.
-		p.Retry.Attempts = 1
+		synctest.Test(t, func(t *testing.T) {
+			logged := &lockedLog{}
+			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged); o.BootTimeout = bootTimeout }))
+			g.finishes(unschedulable(0))
+			p := probeOptions(t)
+			p.Budget = 300 * time.Millisecond // slow_command_timeout_seconds's old shape: below the boot timeout.
+			p.Retry.Attempts = 1
 
-		err := g.probe(p)
+			probed := make(chan capacityResult, 1)
+			go func() { _, err := g.r.ProbeImage(g.ctx, p); probed <- capacityResult{err: err} }()
+			// The budget, a bubble timer, runs out at 300ms; the pod ages out only once the bubble's
+			// clock reaches the boot timeout at 600ms, by when the one attempt has already ended, so
+			// it never witnesses the capacity stop.
+			time.Sleep(bootTimeout)
+			ageOut(g)
+			err := (<-probed).err
 
-		wantContains(t, err, "the worker image probe never completed within its retry budget (1 attempts)",
-			"probe pod "+probeSandboxName+" did not start within 300ms (phase Pending)")
-		if strings.Contains(logged.String(), "waiting on capacity") {
-			t.Errorf("a budget below the boot timeout read a capacity wait it never had time to see:\n%s", logged.String())
-		}
+			wantContains(t, err, "the worker image probe never completed within its retry budget (1 attempts)",
+				"probe pod "+probeSandboxName+" did not start within 300ms (phase Pending)")
+			if strings.Contains(logged.String(), "waiting on capacity") {
+				t.Errorf("a budget below the boot timeout read a capacity wait it never had time to see:\n%s", logged.String())
+			}
+		})
 	})
 }
 

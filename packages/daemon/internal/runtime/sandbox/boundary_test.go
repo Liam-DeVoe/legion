@@ -3,7 +3,6 @@ package sandbox
 import (
 	"archive/tar"
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -36,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -483,9 +483,7 @@ func (rig *initRig) runContainer(podDir string, volumes map[string]string, c cor
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	command := exec.CommandContext(testwait.Context(rig.t), argv[0], argv[1:]...)
 	command.Env = env
 	command.Dir = remap(c.WorkingDir)
 	output, err := command.CombinedOutput()

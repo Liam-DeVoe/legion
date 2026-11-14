@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const (
@@ -591,17 +592,10 @@ func TestAFailingWatchMakesTheStoreUncertainUntilItRecovers(t *testing.T) {
 	pods.fail()
 	waitFor := func(what string, kind runtime.ObservationKind) runtime.Observation {
 		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		return testwait.Until(t, what+" to read "+string(kind), func() (runtime.Observation, bool) {
 			obs := probe()
-			if obs.Kind == kind {
-				return obs
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: still %s %q", what, obs.Kind, obs.Detail)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+			return obs, obs.Kind == kind
+		})
 	}
 	obs := waitFor("the pod watch failing", runtime.Uncertain)
 	if !strings.Contains(obs.Detail, "connection refused") || !strings.Contains(obs.Detail, "pod store") {

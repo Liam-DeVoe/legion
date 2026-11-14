@@ -343,13 +343,8 @@ func TestLaunchesInFlightAtARestartOutwaitTheReconnectingLaunchersReads(t *testi
 		go func() { launched <- machines[i].Handle(g.ctx, supervise.RequestSpawn{Claim: spec.Claim}) }()
 	}
 	for range specs {
-		select {
-		case err := <-launched:
-			if err != nil {
-				t.Errorf("a launch in flight failed: %v", err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("the launches in flight did not end")
+		if err := testwait.Receive(t, "a launch in flight to end", launched); err != nil {
+			t.Errorf("a launch in flight failed: %v", err)
 		}
 	}
 	for i, spec := range specs {

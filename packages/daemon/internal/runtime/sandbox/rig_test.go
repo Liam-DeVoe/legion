@@ -457,18 +457,26 @@ type rig struct {
 	actions []action
 	// feeds, when set, are the informers' feeds withBreakableFeeds serves.
 	feeds *breakableFeeds
-	uids  atomic.Int64
+	// sandboxFeed, when set, is the gate withLaggingSandboxInformer holds the Sandbox informer's
+	// watch events behind until the test releases it: the pod informer, undelayed, runs ahead.
+	sandboxFeed *laggingSandboxFeed
+	uids        atomic.Int64
 
 	// hold stops the controller creating pods; autoStart makes a pod it creates scheduled on a
 	// node, past workspace-init, and Running at once.
 	hold      atomic.Bool
 	autoStart atomic.Bool
-	// suspendDelay is how long a pod the controller deletes stays terminating first, in
-	// nanoseconds. It is atomic because a test may shorten it while control() is running, to ask
-	// for a pod it has been holding terminating to end now: g.suspendDelay.Store(0) in
-	// TestPodDriftTellsTheRoundsOwnReplacementFromALaunchs (drift_test.go) ends the pod its
-	// replacement is waiting out, as the cluster would.
-	suspendDelay atomic.Int64
+	// terminationLag is how long a pod the controller deletes stays terminating before it ends:
+	// the stand-in's copy of the kubelet stopping the pod's containers, which a cluster gives up to
+	// the pod's terminationGracePeriodSeconds (Options.TerminationGrace) to finish. Zero, the
+	// default, ends it at the controller's next pass. withTerminationLag sets it before the
+	// controller starts.
+	terminationLag time.Duration
+	// holdTerminating keeps every pod the controller has marked terminating there, whatever
+	// terminationLag says, until the test stores false: a gate the test releases, for a test that
+	// reads the window between a suspension landing and its pod ending, as
+	// TestPodDriftTellsTheRoundsOwnReplacementFromALaunchs (drift_test.go) does.
+	holdTerminating atomic.Bool
 	// noController leaves every object as the test wrote it.
 	noController bool
 	// hooks, when set, sees the runtime's Sandbox gets and deletes (withSandboxHooks).
@@ -514,6 +522,12 @@ type rig struct {
 type rigOption func(*rig, *Options)
 
 func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options) { edit(o) } }
+
+// withTerminationLag has the controller stand-in leave each pod it deletes terminating for lag
+// before it ends, as a cluster's kubelet takes a while to stop a pod's containers (terminationLag).
+func withTerminationLag(lag time.Duration) rigOption {
+	return func(g *rig, _ *Options) { g.terminationLag = lag }
+}
 
 // withoutController runs no controller stand-in: the objects stay as the test wrote them.
 func withoutController() rigOption { return func(g *rig, _ *Options) { g.noController = true } }
@@ -812,6 +826,8 @@ func (g *rig) clearActions() {
 func (g *rig) control() {
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
+	// terminating is when each pod the controller marked terminating ends: the moment it was
+	// marked, plus terminationLag.
 	terminating := map[types.UID]time.Time{}
 	services := map[string]types.UID{}
 	for {
@@ -856,12 +872,12 @@ func (g *rig) control() {
 				// going to create. That is what red this package's pod-drift row about 4 times in
 				// 100 under load, at every bound it was given, with the controller reading
 				// `generation 3, Running, pod uid-pod-13 terminating` for ever (INFRA-985).
-				if started, ok := terminating[pod.UID]; ok && time.Since(started) >= time.Duration(g.suspendDelay.Load()) {
+				if ends, ok := terminating[pod.UID]; ok && !g.holdTerminating.Load() && !time.Now().Before(ends) {
 					_ = g.kube.Tracker().Delete(podsGVR, testNamespace, pod.Name)
 				}
 			case s.mode() == modeSuspended && owned:
 				if _, ok := terminating[pod.UID]; !ok {
-					terminating[pod.UID] = time.Now()
+					terminating[pod.UID] = time.Now().Add(g.terminationLag)
 					g.update(pod, func(p *corev1.Pod) { now := metav1.Now(); p.DeletionTimestamp = &now })
 				}
 			case s.mode() == modeRunning && pod == nil && !g.hold.Load():
@@ -1007,10 +1023,10 @@ func (g *rig) secret(name string) *corev1.Secret {
 	return object.(*corev1.Secret)
 }
 
-// eventually fails the test unless ok holds within a second.
+// eventually waits, through the shared wait, until ok holds.
 func (g *rig) eventually(what string, ok func() bool) {
 	g.t.Helper()
-	testwait.WithinPolling(g.t, time.Second, 5*time.Millisecond, what, ok)
+	testwait.Eventually(g.t, what, ok)
 }
 
 // spawn launches spec and fails the test on an error.
@@ -1328,10 +1344,61 @@ func modePatched(t *testing.T, body, mode string) bool {
 	return false
 }
 
-// withLaggingSandboxInformer delays every watch event the Sandbox informer receives, as a store
-// that has not caught up with an API write: the pod informer, undelayed, then runs ahead of it.
-func withLaggingSandboxInformer(delay time.Duration) rigOption {
+// laggingSandboxFeed is the gate withLaggingSandboxInformer holds the Sandbox informer's watch
+// events behind: a test opens the race the pod informer, undelayed, wins — the pod store ahead of
+// the Sandbox store, the two informers nothing orders as production's are — by holding the feed
+// (hold), and closes it when it chooses (release). It replaces a wall-clock lag, which only opened
+// that race for a while; the gate holds it open until the test ends it. A fresh feed flows, so a
+// launch the test does not lag runs as any does; hold arms the lag for the launch that follows, and
+// may arm it again for the next, for a test that drives more than one.
+type laggingSandboxFeed struct {
+	mu   sync.Mutex
+	open chan struct{}
+}
+
+func newLaggingSandboxFeed() *laggingSandboxFeed {
+	flowing := make(chan struct{})
+	close(flowing)
+	return &laggingSandboxFeed{open: flowing}
+}
+
+// gate is the channel a forwarder waits on before it passes an event: closed while the feed flows,
+// open while it is held.
+func (f *laggingSandboxFeed) gate() chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.open
+}
+
+// release lets every held Sandbox event through, and every event after, until hold re-arms it.
+func (f *laggingSandboxFeed) release() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	select {
+	case <-f.open:
+	default:
+		close(f.open)
+	}
+}
+
+// hold re-arms the gate so the Sandbox events of the next launch wait again, for a test that drives
+// more than one. A feed already held is left as it is.
+func (f *laggingSandboxFeed) hold() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	select {
+	case <-f.open:
+		f.open = make(chan struct{})
+	default:
+	}
+}
+
+// withLaggingSandboxInformer holds every watch event the Sandbox informer receives behind a gate
+// the test releases (laggingSandboxFeed), as a store that has not caught up with an API write: the
+// pod informer, undelayed, then runs ahead of it until the test lets the Sandbox feed through.
+func withLaggingSandboxInformer() rigOption {
 	return func(g *rig, _ *Options) {
+		g.sandboxFeed = newLaggingSandboxFeed()
 		g.dyn.PrependWatchReactor("sandboxes", func(a k8stesting.Action) (bool, watch.Interface, error) {
 			var opts metav1.ListOptions
 			if w, ok := a.(k8stesting.WatchActionImpl); ok {
@@ -1345,7 +1412,7 @@ func withLaggingSandboxInformer(delay time.Duration) rigOption {
 			go func() {
 				defer close(events)
 				for ev := range upstream.ResultChan() {
-					time.Sleep(delay)
+					<-g.sandboxFeed.gate()
 					events <- ev
 				}
 			}()

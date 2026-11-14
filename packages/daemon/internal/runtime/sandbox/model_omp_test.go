@@ -3,7 +3,6 @@ package sandbox
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,10 +16,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // runOmp runs one Oh My Pi command to its end on the frames given, and returns what it wrote. The
@@ -28,9 +27,7 @@ import (
 // profile the measurement is of.
 func runOmp(t *testing.T, argv []string, dir string, environ []string, stdin string) (stdout, stderr string, err error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.CommandContext(testwait.Context(t), argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env, cmd.Stdin = dir, environ, strings.NewReader(stdin)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
@@ -221,9 +218,7 @@ func TestMeasuredNoDefaultRoleLaunchesOnABuiltInModel(t *testing.T) {
 // turn is answered.
 func promptOnce(t *testing.T, argv []string, dir string, environ []string, message string) ([]testbin.OMPFrame, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.CommandContext(testwait.Context(t), argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env = dir, environ
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
