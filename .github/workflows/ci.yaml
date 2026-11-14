@@ -2148,6 +2148,8 @@ jobs:
               - '.github/scripts/mirror-ci-tools.sh'
               - '.github/scripts/check-ci-tools.sh'
               - '.github/scripts/ci-tools-proof.sh'
+              # The rig's wait for the port file of each server it starts.
+              - '.github/scripts/test-lib.sh'
               - '.github/scripts/ci-fault-proxy.py'
               # The two jobs read the machine they run on with it.
               - '.github/scripts/disk_watch.py'

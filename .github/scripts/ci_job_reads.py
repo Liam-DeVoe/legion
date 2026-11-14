@@ -1569,6 +1569,8 @@ GATES = [
                                               "of this job that drives the proof does; tool-fallback-arm drives it "
                                               "too, and the test job runs its ladder-report verb over logs of its "
                                               "own"),
+        (".github/scripts/test-lib.sh", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig sources it for wait_for, "
+                                        "which waits for the fault proxy's port file as it waits for the origin's"),
         (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
                                               "of GitHub's release assets"),
         (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} refuses a row that script has "
@@ -1616,6 +1618,8 @@ GATES = [
                                         "make"),
         (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback-arm', TOOL_ARM_READ_STEP)} runs it, as the fault "
                                               "and probe steps of this job do"),
+        (".github/scripts/test-lib.sh", f"{at('tool-fallback-arm', TOOL_FAULT_STEP)}: the rig sources it for "
+                                        "wait_for, which waits for the fault proxy's port file"),
         (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback-arm', TOOL_FAULT_STEP)}: the rig starts it in "
                                               "front of GitHub's release assets"),
         (".github/scripts/disk_watch.py", f"{at('tool-fallback-arm', TOOL_ARM_WATCH_STEP)} runs it, and "

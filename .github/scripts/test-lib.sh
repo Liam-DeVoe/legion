@@ -6,7 +6,8 @@
 # A harness sources this, runs its cases with `check <description> <true|false>`, and ends with
 # `summary <what was tested>`, which prints the tally and exits non-zero if anything failed. A
 # fact the harness cannot make happen itself, such as a line a detached process writes, it waits
-# for through `wait_for`, never through a loop of its own that counts tries or seconds.
+# for through `wait_for`, never through a loop of its own that counts tries or seconds; so does
+# ci-tools-proof.sh, the rig of the tool-fallback jobs, which sources this for `wait_for` alone.
 #
 # Not executable: `source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"`.
 
