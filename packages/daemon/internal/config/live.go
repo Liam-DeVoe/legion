@@ -283,8 +283,11 @@ func (l *Live) OnChange(fn func(cfg *Config, applied []Change)) {
 // a key reaches the next boot is true of the snapshot itself rather than of each reader's
 // discipline. The file arm names every path it pinned in refused, with that path's own reason,
 // since the file is where such an edit comes from. The route arm names only what its caller
-// asked for — it refuses a fixed path before resolving, and a path pinned there is a file edit
-// the file arm reports at the settle the watcher makes of it.
+// asked for: a fixed path it refuses before resolving, and a fixed member of a keyed map the
+// caller set whole, which the pin takes back and askedFor names, since the diff compares such
+// a map whole and the change the caller reads would otherwise carry a member the daemon did
+// not take. A path pinned under neither is a file edit this resolution read beside the
+// request, which the file arm reports at the settle the watcher makes of it.
 //
 // A reading that names a runtime other than the one the daemon booted on settles nothing at
 // all, whichever arm asked: both arms answer *OtherRuntime, with the paths refused on their own
@@ -351,6 +354,8 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 	pinned := pinFixed(settled, &next)
 	if source == SourceFile {
 		refused = append(refused, pinned...)
+	} else {
+		refused = append(refused, askedFor(overlay, pinned)...)
 	}
 	applied = diff(l.reading, reading, source, by)
 	// A fixed path is never a change of the daemon's, whatever the reading carries: it holds the
@@ -366,6 +371,36 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 		observe(&next, applied)
 	}
 	return applied, refused, nil
+}
+
+// askedFor is the refusals of pinned that the caller's own request made and the answer can say
+// no other way: a path under a keyed map the request set whole (Row.Keyed), whose value
+// replaces the file's own mapping entire (overlayDocument), so every entry under it, dropped
+// or written, is that request's doing.
+//
+// It is the route arm's filter, and it is narrow because the answer already says the rest.
+// A fixed path the caller named is refused before this resolution, and a fixed member of a
+// block is a path of its own the diff compares, so the answer carries no change of it at all
+// — `github_apps.review` beside an implement App a caller sets through the `github_apps`
+// block. A keyed map is the one value where silence would be false instead of quiet: the diff
+// compares it whole, so the one change the caller reads carries the member the pin took back,
+// with the value the request gave it. What this filter leaves out of a route answer is every
+// path pinned under no requested path, which is a file edit this resolution read beside the
+// request and the file arm names at the settle the watcher makes of it (Apply).
+func askedFor(requested map[string]any, pinned []Refusal) []Refusal {
+	var asked []Refusal
+	for _, refusal := range pinned {
+		for path := range requested {
+			if row, known := ClassOf(path); !known || !row.Keyed {
+				continue
+			}
+			if strings.HasPrefix(refusal.Path, path+".") {
+				asked = append(asked, refusal)
+				break
+			}
+		}
+	}
+	return asked
 }
 
 // resolve reads the file again, lays overlay over its document, runs the whole of it through the
@@ -559,18 +594,30 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 //
 // Which paths are fixed is Classes and no second list, and the walk descends by Row.Block as
 // WalkSettings does, so a row the table makes fixed is pinned with nothing else edited and the
-// pin and the diff can never disagree about which paths the configuration holds. The one kind
-// of fixed path it does not reach is a value the table holds inside another: the fixed rows
-// under `projects` (`projects.<KEY>.memory.mode` and `.instructions`), because the table makes
-// `projects` one value compared whole — Config.Projects is no Block row — and pinning it would
-// pin the whole rebuild-class block with it.
+// pin and the diff can never disagree about which paths the configuration holds. It descends
+// one step further than WalkSettings, by Row.Keyed: into the entries of a map whose names the
+// file chooses, which is `projects` and nothing else today, so the fixed rows the table holds
+// under `projects.<KEY>` — `memory.mode` and `memory.instructions` — are pinned per project
+// key and refused by the path that key makes of the template (pinKeyed, Row.PathAt).
+//
+// Pinning a member of that map pins no block, and a member's class is its own whatever the
+// class of the value around it: `projects` is one rebuild-class value the diff compares whole,
+// and what this walk writes is the member alone, so the project's Slack channels, its commit
+// trailer repositories, its production check and its memory overlays settle from a reading
+// that moves a fixed member beside them. What the diff reports of such a reading is the
+// reading's own `projects` block, taken before this walk (Apply), so the rebuild of the launch
+// specs and the runtime still happens and the refusal beside it is what says which member of
+// the block the daemon did not take. So a fixed member is refused whatever named it: its own
+// path on the route, the block around it, or the file.
 func pinFixed(settled, next *Config) []Refusal {
-	return pinBlock(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), nil)
+	return pinBlock(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), "", nil)
 }
 
 // pinBlock pins every fixed value of one block of the configuration — was as boot settled it,
 // now as this resolution read it — and descends into the blocks it holds, appending each path
-// it pinned to pinned.
+// it pinned to pinned. key is the name the file gave the keyed map's entry this block sits
+// inside, "" for a block of the configuration itself, and is what a refusal writes into the
+// row's template (Row.PathAt).
 //
 // A fixed member keeps its boot value whether or not either reading carries its block, because
 // a block a reading does not carry is that reading holding every member of it at its zero
@@ -586,7 +633,7 @@ func pinFixed(settled, next *Config) []Refusal {
 // stays exactly as the reading left it, dropped included, which is the file that drops
 // `runtime.tmux` under a boot that took over on nothing: its members are launch keys an
 // operator is entitled to change (TestABlockTheFileDropsReadsAsUnset).
-func pinBlock(was, now reflect.Value, pinned []Refusal) []Refusal {
+func pinBlock(was, now reflect.Value, key string, pinned []Refusal) []Refusal {
 	typ := now.Type()
 	for i, row := range settingFields(typ) {
 		fieldType := typ.Field(i).Type
@@ -597,16 +644,20 @@ func pinBlock(was, now reflect.Value, pinned []Refusal) []Refusal {
 			boot = reflect.Zero(fieldType)
 		}
 		value := now.Field(i)
+		if row.Keyed {
+			pinned = pinKeyed(boot, value, pinned)
+			continue
+		}
 		if !row.Block {
 			if row.Class != ClassFixed || Render(value) == Render(boot) {
 				continue
 			}
 			value.Set(boot)
-			pinned = append(pinned, Refusal{Path: row.Path, Reason: row.Why})
+			pinned = append(pinned, Refusal{Path: row.PathAt(key), Reason: row.Why})
 			continue
 		}
 		if fieldType.Kind() != reflect.Pointer {
-			pinned = pinBlock(boot, value, pinned)
+			pinned = pinBlock(boot, value, key, pinned)
 			continue
 		}
 		if boot.IsNil() {
@@ -615,7 +666,7 @@ func pinBlock(was, now reflect.Value, pinned []Refusal) []Refusal {
 			boot = boot.Elem()
 		}
 		if !value.IsNil() {
-			pinned = pinBlock(boot, value.Elem(), pinned)
+			pinned = pinBlock(boot, value.Elem(), key, pinned)
 			continue
 		}
 		if !boot.IsValid() {
@@ -628,11 +679,81 @@ func pinBlock(was, now reflect.Value, pinned []Refusal) []Refusal {
 		// a reading.
 		carried := reflect.New(fieldType.Elem())
 		pinnedBefore := len(pinned)
-		pinned = pinBlock(boot, carried.Elem(), pinned)
+		pinned = pinBlock(boot, carried.Elem(), key, pinned)
 		if len(pinned) == pinnedBefore {
 			continue
 		}
 		value.Set(carried)
+	}
+	return pinned
+}
+
+// pinKeyed pins every fixed member of every entry of one keyed map — `projects`, whose entries
+// the file names itself (Row.Keyed) — reading the boot's entry of a name against this
+// reading's, and names each path it pinned with that name written in, so a refusal says
+// `projects.DEMO.memory.mode` and never the template. The entries are read in name order, so
+// two readings that disagree about several projects are refused in one order every time.
+//
+// A map is three cases a plain block is not, and each is read as pinBlock reads a block: an
+// entry one reading does not carry is that reading holding every member of it at its zero
+// value, and not that reading saying nothing about it.
+//
+//   - An entry this reading drops keeps its boot's fixed members, carried in an entry of this
+//     reading's own holding them and nothing else, as a dropped block is: the boot drew every
+//     tree of that project under the mode it read, and a project the file takes away cannot
+//     take that mode back from the trees running under it. Every other member of the entry
+//     goes with the entry, since those are the operator's to change, and an entry no fixed
+//     member of which moved stays dropped.
+//   - An entry this reading adds, which the boot never had, has its fixed members pinned back
+//     to the zero value the boot held them at, as a block the boot had none of does: boot read
+//     no mode and no instructions file for a project it did not have, so the mode nothing was
+//     given is off and the instructions nothing read are none. The rest of the entry settles
+//     under its own class.
+//   - An entry whose `memory` block one side carries and the other does not is that side
+//     holding every member of the block at its zero value, and there is no third state to
+//     read: Project.Memory is a value and not a pointer, so a project that names no block is a
+//     project whose block says `off` and names no file. So a reading that drops the block is
+//     pinned back to the mode boot read, and a reading that brings one the boot had none of is
+//     pinned back to "", each refused by name with the overlays beside it left as the reading
+//     has them.
+//
+// A map value is not addressable, so each entry is pinned in a copy of its own and written
+// back only where something was pinned in it: an entry this walk changes nothing of is left
+// exactly as the reading has it, dropped included.
+func pinKeyed(was, now reflect.Value, pinned []Refusal) []Refusal {
+	names := map[string]bool{}
+	for _, reading := range []reflect.Value{was, now} {
+		if !reading.IsValid() {
+			continue
+		}
+		for _, name := range reading.MapKeys() {
+			names[name.String()] = true
+		}
+	}
+	entryType := now.Type().Elem()
+	for _, name := range slices.Sorted(maps.Keys(names)) {
+		// The name as the map holds it, so a keyed map whose key is a string type of its own
+		// reads the same as `projects`, whose key is the string itself.
+		key := reflect.ValueOf(name).Convert(now.Type().Key())
+		boot := reflect.Zero(entryType)
+		if was.IsValid() {
+			if entry := was.MapIndex(key); entry.IsValid() {
+				boot = entry
+			}
+		}
+		carried := reflect.New(entryType).Elem()
+		if entry := now.MapIndex(key); entry.IsValid() {
+			carried.Set(entry)
+		}
+		pinnedBefore := len(pinned)
+		pinned = pinBlock(boot, carried, name, pinned)
+		if len(pinned) == pinnedBefore {
+			continue
+		}
+		if now.IsNil() {
+			now.Set(reflect.MakeMap(now.Type()))
+		}
+		now.SetMapIndex(key, carried)
 	}
 	return pinned
 }

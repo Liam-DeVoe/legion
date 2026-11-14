@@ -1233,3 +1233,135 @@ func TestAMemoryChangeInsideTheProjectsBlockIsRefusedByName(t *testing.T) {
 		})
 	}
 }
+
+// projectsFile is minimalFile with blocks written after the daemon's own DEMO, each line one
+// project of its own. Every keyed case below is about a project that is not the one `project:`
+// names, since the loader refuses a reading that drops that one (resolveStage3), so a carrier
+// of the daemon's own project is a configuration no file can ask for.
+func projectsFile(blocks string) string {
+	return strings.Replace(minimalFile, "  DEMO: {}\n", "  DEMO: {}\n"+blocks, 1)
+}
+
+// `projects` is one value the diff compares whole and the pin descends into, key by key
+// (pinKeyed), which is three readings a block of the configuration cannot be: a project the
+// reading adds, a project it drops, and a project whose `memory` block one side carries and
+// the other does not. Each is read as pinBlock reads a block — an entry one reading does not
+// carry is that reading holding every member of it at its zero value — so `memory.mode` and
+// `memory.instructions` keep the value boot settled and are refused under the key the file
+// chose, while `commit_issue_trailer_repos`, `production_check` and `memory.config_files`
+// settle from the same reading under their own classes.
+//
+// The block is still one change of `projects`, whatever of it the pin took back: the diff
+// compares the value whole and reads it before the pin (Apply), so the launch specs and the
+// runtime are built again and the refusal beside the change is what says which member of the
+// block the daemon did not take. The last row is that case alone — a reading that moves the
+// mode and nothing else.
+func TestThePinReadsAProjectAddedDroppedAndHalfCarried(t *testing.T) {
+	instructions := filepath.Join(t.TempDir(), "memory.md")
+	if err := os.WriteFile(instructions, []byte("remember\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const overlay = "/etc/legion/memory.json"
+	memory := `{mode: "on", config_files: [` + overlay + `], instructions: "` + instructions + `"}`
+	widgets := []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}
+	refusedBoth := []Refusal{
+		{Path: "projects.OTHER.memory.mode", Reason: whyMemory},
+		{Path: "projects.OTHER.memory.instructions", Reason: whyMemory},
+	}
+	for _, tc := range []struct {
+		name, booted, reading string
+		refused               []Refusal
+		want                  Project
+		gone                  []string
+	}{
+		{
+			name:    "the reading adds a project the boot never had",
+			booted:  minimalFile,
+			reading: projectsFile("  OTHER: {memory: " + memory + ", commit_issue_trailer_repos: [acme/widgets], production_check: \"off\"}\n"),
+			refused: refusedBoth,
+			// Boot read no mode and no instructions file for a project it did not have, so
+			// both are pinned to the zero value it held them at: the mode nothing was given is
+			// off, and the instructions nothing read are none. The rest of the entry settles.
+			want: Project{CommitIssueTrailerRepos: widgets, Memory: Memory{ConfigFiles: []string{overlay}}},
+		},
+		{
+			name: "the reading drops a project the boot had",
+			booted: projectsFile("  OTHER: {memory: " + memory + ", commit_issue_trailer_repos: [acme/widgets]}\n" +
+				"  PLAIN: {commit_issue_trailer_repos: [acme/gadgets]}\n"),
+			reading: minimalFile,
+			refused: refusedBoth,
+			// The entry comes back carrying the two fixed members and nothing else, as a
+			// dropped block does: its overlays, its trailer repositories and its production
+			// check are the operator's to drop. PLAIN, whose entry holds no fixed member that
+			// moved, stays dropped.
+			want: Project{Memory: Memory{Mode: MemoryOn, InstructionsPath: instructions}},
+			gone: []string{"PLAIN"},
+		},
+		{
+			name:    "the reading drops the memory block the boot carried",
+			booted:  projectsFile("  OTHER: {memory: " + memory + ", commit_issue_trailer_repos: [acme/widgets]}\n"),
+			reading: projectsFile("  OTHER: {commit_issue_trailer_repos: [acme/gadgets]}\n"),
+			refused: refusedBoth,
+			// Project.Memory is a value and not a pointer, so a project naming no block is a
+			// project whose block holds every member at its zero value: the mode and the
+			// instructions are pinned back to the boot's, and the overlays the reading dropped
+			// are dropped.
+			want: Project{
+				CommitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/gadgets")},
+				Memory:                  Memory{Mode: MemoryOn, InstructionsPath: instructions},
+				ProductionCheck:         "tester",
+			},
+		},
+		{
+			name:    "the reading brings a memory block the boot had none of",
+			booted:  projectsFile("  OTHER: {commit_issue_trailer_repos: [acme/widgets]}\n"),
+			reading: projectsFile("  OTHER: {memory: " + memory + ", commit_issue_trailer_repos: [acme/widgets]}\n"),
+			refused: refusedBoth,
+			want: Project{
+				CommitIssueTrailerRepos: widgets,
+				Memory:                  Memory{ConfigFiles: []string{overlay}},
+				ProductionCheck:         "tester",
+			},
+		},
+		{
+			name:    "the reading moves a fixed member alone",
+			booted:  projectsFile(`  OTHER: {memory: {mode: "off", config_files: [` + overlay + "]}}\n"),
+			reading: projectsFile(`  OTHER: {memory: {mode: "on", config_files: [` + overlay + "]}}\n"),
+			refused: []Refusal{{Path: "projects.OTHER.memory.mode", Reason: whyMemory}},
+			want: Project{
+				Memory:          Memory{Mode: MemoryOff, ConfigFiles: []string{overlay}},
+				ProductionCheck: "tester",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, tc.booted, nil)
+			booted := live.Snapshot().Projects["DEMO"]
+
+			rewrite(t, path, tc.reading)
+			applied, refused, err := live.Apply(SourceFile, "", nil)
+
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if !slices.Equal(refused, tc.refused) {
+				t.Fatalf("the settle refused %+v, want exactly %+v: a fixed member is refused under the key the file chose", refused, tc.refused)
+			}
+			if paths := appliedPaths(applied); !slices.Equal(paths, []string{"projects"}) {
+				t.Fatalf("the settle applied %v, want projects alone: the block the pin took a member back from is still the block that moved", paths)
+			}
+			settled := live.Snapshot().Projects
+			if got := settled["OTHER"]; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("projects.OTHER = %+v, want %+v", got, tc.want)
+			}
+			for _, key := range tc.gone {
+				if entry, held := settled[key]; held {
+					t.Errorf("projects.%s = %+v, want the project gone: the pin adds back the entries it pinned a member in and no others", key, entry)
+				}
+			}
+			if got := settled["DEMO"]; !reflect.DeepEqual(got, booted) {
+				t.Errorf("projects.DEMO = %+v, want the boot's %+v: the pin reads one key of the map at a time", got, booted)
+			}
+		})
+	}
+}

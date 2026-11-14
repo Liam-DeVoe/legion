@@ -112,12 +112,39 @@ type Row struct {
 	// compares: the paths that change are the block's own members'. Path is still the block's own
 	// key, which ClassOf answers for a caller that sets the whole block.
 	Block bool
+	// Keyed is whether the field is a map of blocks under names the file chooses itself, each
+	// name the `<KEY>` segment of its members' paths. The diff compares such a field whole, as
+	// it compares any field that is no Block row, so one path names a change of any member of
+	// any entry; the pin of the fixed paths descends into it instead, entry by entry, and
+	// refuses a fixed member by its own path with the file's name written into it (live.go's
+	// pinKeyed). A row is Keyed or Block and never both: Block is one block the diff descends
+	// into, Keyed a map of blocks it does not.
+	Keyed bool
 	// Secret is whether the value is a credential, the source of one, the path of a file holding
 	// one, or an address whose userinfo or query may carry one. Such a value renders as
 	// "(withheld)" in a Change, never as itself: the judgement is api.SettingsOf's, which leaves
 	// each of them out of the unauthenticated state (api/settings.go, api/settings_test.go's
 	// settingsExcluded).
 	Secret bool
+}
+
+// PathAt is this row's path with the name the file chose written into the one `<name>` segment
+// a row under a keyed map carries: `projects.<KEY>.memory.mode` at the key DEMO is
+// `projects.DEMO.memory.mode`, which is the path a refusal of that project's member names,
+// since no operator can act on a template. The path itself for an empty key and for a row that
+// carries no such segment.
+func (r Row) PathAt(key string) string {
+	if key == "" {
+		return r.Path
+	}
+	segments := strings.Split(r.Path, ".")
+	for i, segment := range segments {
+		if strings.HasPrefix(segment, "<") && strings.HasSuffix(segment, ">") {
+			segments[i] = key
+			return strings.Join(segments, ".")
+		}
+	}
+	return r.Path
 }
 
 // The reasons the fixed paths are refused, named here because the loader's own refusals quote
@@ -397,8 +424,13 @@ var Classes = []Row{
 	// (sandbox.Options.ControllerSlackChannels). The operator is told the launch specs were
 	// rebuilt, and the runtime is built again with them, so the next launch reads the project the
 	// daemon is running on.
+	//
+	// It is the one keyed row: the file names the entries itself, and the pin of the fixed paths
+	// descends into them, project by project, so the two fixed rows below (`memory.mode` and
+	// `memory.instructions`) are pinned and refused under the key the file chose while every
+	// other member of the entry settles under its own class (live.go's pinKeyed).
 	{Field: "Config.Projects", Path: "projects", Class: ClassRebuild, Holder: HolderLaunchSpecs,
-		Also: []string{HolderRuntime}},
+		Also: []string{HolderRuntime}, Keyed: true},
 	{Field: "Project.SlackChannels", Path: "projects.<KEY>.slack_channels", Class: ClassRebuild, Holder: HolderLaunchSpecs,
 		Also: []string{HolderRuntime}},
 	// The repositories whose commits a pane stamps the issue key into: a pane reads the key from
