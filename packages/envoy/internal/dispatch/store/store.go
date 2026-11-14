@@ -169,6 +169,30 @@ func MigrationsFingerprint() (string, error) {
 	return pgmigrate.Fingerprint(migrations), nil
 }
 
+// templatePoolSize bounds the pool MigrateTemplate opens. A migration run holds the advisory key
+// on a connection that serves nothing else while it is held and applies the migration on
+// another, so two is its floor; sixteen is the size every store the test harnesses open takes
+// (storetest's testPoolSize).
+const templatePoolSize = 16
+
+// MigrateTemplate applies every migration to the database url names and closes every connection
+// it opened, which is what internal/testpg/pgtemplate.New asks of its migrate: the build renames
+// that database next, and Postgres refuses to rename a database another session is connected to.
+// It migrates under production's discipline, a zero Locking.
+//
+// All three harnesses on Dispatch's template build it through this one function - storetest's,
+// this package's own tests' and internal/testpg/pgtemplate's own - because whichever test
+// process builds the template first decides what every other process clones. Nothing in
+// production reads it.
+func MigrateTemplate(ctx context.Context, url string) error {
+	database, err := Open(ctx, url, WithMaxConns(templatePoolSize))
+	if err != nil {
+		return fmt.Errorf("open the template database: %w", err)
+	}
+	defer database.Pool.Close()
+	return database.Migrate(ctx)
+}
+
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	if s == nil || s.Pool == nil {
 		return fmt.Errorf("migrate: store pool required")

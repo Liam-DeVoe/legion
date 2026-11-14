@@ -2335,8 +2335,8 @@ orphan_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl
 # patch the heartbeat made is in the first count. What the second count is for is a renewer
 # still alive: one in the heartbeat's group, which the wait outlasts, or one restarted under a
 # fresh setsid, which no wait on that group sees. So the second count comes a fixed second after
-# the wait, the window the counts had before it: under FAKE_FAST_SLEEP=60 a live renewer's cycle
-# costs nothing, so it patches many times in that second.
+# the wait: under FAKE_FAST_SLEEP=60 a live renewer's cycle costs nothing, so it patches many
+# times in that second.
 for ((i = 0; i < 500; i++)); do
   kill -0 -- "-$orphan_hb" 2>/dev/null || break
   sleep 0.02
@@ -2430,7 +2430,7 @@ sampler_lines=$(wc -l <"$sampler_dir/cgroup.jsonl" 2>/dev/null || echo 0)
 # own. Nor is it the end of a loop restarted under a fresh setsid, which no wait on that group
 # sees. A loop that is still alive appends an error line every 5 s - its sleep is a real one
 # here, since FAKE_FAST_SLEEP names 60 alone - so the second count comes a fixed 6 s after the
-# wait, the window the counts had before it, which holds at least one append of such a loop.
+# wait, which holds at least one append of such a loop.
 for ((i = 0; i < 500; i++)); do
   kill -0 -- "-$sampler_pid" 2>/dev/null || break
   sleep 0.02
@@ -3729,7 +3729,7 @@ unreach_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubect
 # the backstop for a group that never empties, and every patch the heartbeat made is in the
 # first count already. A renewer still alive, in that group or restarted under a fresh setsid,
 # patches many times a second here (the step's heartbeat sleeps its 60 s as a fast sleep), so
-# the second count comes a fixed second after the wait, the window the counts had before it.
+# the second count comes a fixed second after the wait.
 for ((i = 0; i < 500; i++)); do
   kill -0 -- "-$unreach_hb" 2>/dev/null || break
   sleep 0.02

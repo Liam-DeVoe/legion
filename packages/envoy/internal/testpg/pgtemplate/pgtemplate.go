@@ -78,7 +78,7 @@ type Harness struct {
 	fingerprint func() (string, error)
 	migrate     func(ctx context.Context, url string) error
 
-	// main is set by Main before the package's tests run: only Main waits for the drops.
+	// main is set before the package's tests run (MainWith): only MainWith waits for the drops.
 	main bool
 
 	adminOnce sync.Once
@@ -111,8 +111,17 @@ func New(template Template, fingerprint func() (string, error), migrate func(ctx
 // server (prepare), so a process that dropped it would take it from the processes still cloning
 // it.
 func (h *Harness) Main(m *testing.M) int {
+	return h.MainWith(m, func(m *testing.M) int { return m.Run() })
+}
+
+// MainWith is Main for a package whose tests need another harness's Main as well: it runs the
+// package's tests through run - another harness's Main, which owns m.Run - and waits for this
+// harness's drops once run returns. Only one harness can own m.Run, and both harnesses' cleanups
+// must run after it; this is how a package whose tests take a database from each gets both
+// (internal/dispatch/api, which drives a real broker).
+func (h *Harness) MainWith(m *testing.M, run func(*testing.M) int) int {
 	h.main = true
-	code := m.Run()
+	code := run(m)
 	if h.admin == nil {
 		return code
 	}
@@ -127,23 +136,32 @@ func (h *Harness) Main(m *testing.M) int {
 	return code
 }
 
-// InMain reports whether Main runs this process's tests. Clone and Unmigrated fail a test without
-// it, since only Main waits for the drops they start.
+// InMain reports whether Main or MainWith runs this process's tests. Clone and Unmigrated fail a
+// test without one, since only they wait for the drops those calls start.
 func (h *Harness) InMain() bool { return h.main }
 
 // Clone returns the URL of a new database of t's own on the server raw names, a file copy of the
 // migrated template, dropped once t ends. Its name is prefix and sixteen random hex digits: random
-// because every test of every package sharing the server takes a name there. raw's database path
-// is not used, since every statement here runs on the server's postgres database (openAdmin), and
-// its query is kept. The first call finds the template, or builds it when no process has.
+// because every test of every package sharing the server takes a name there. Only the harness's
+// first call reads raw, which opens the one admin pool every call after it uses (open); raw's
+// database path is not used, since every statement here runs on the server's postgres database
+// (openAdmin), and its query is kept.
 func (h *Harness) Clone(t testing.TB, raw, prefix string) string {
+	t.Helper()
+	return h.copyOf(t, h.templateName(t, raw), prefix)
+}
+
+// templateName is the migrated template Clone copies: found on the server, or built there when
+// no process has built it (prepare). Only the first call does that work, and raw is read only by
+// that call, which opens the admin pool the rest use.
+func (h *Harness) templateName(t testing.TB, raw string) string {
 	t.Helper()
 	h.open(t, raw)
 	h.templateOnce.Do(func() { h.name, h.templateErr = h.prepare() })
 	if h.templateErr != nil {
 		t.Fatalf("prepare the migrated template database: %v", h.templateErr)
 	}
-	return h.copyOf(t, h.name, prefix)
+	return h.name
 }
 
 // Unmigrated is Clone of template1 rather than of the template: a database carrying no migration,
@@ -154,7 +172,8 @@ func (h *Harness) Unmigrated(t testing.TB, raw, prefix string) string {
 	return h.copyOf(t, "template1", prefix)
 }
 
-// open opens the admin pool on the server raw names, once.
+// open opens the admin pool on the server raw names. Only the first call reads raw: a harness
+// holds one pool, on the one server its package's tests run against (adminOnce).
 func (h *Harness) open(t testing.TB, raw string) {
 	t.Helper()
 	if !h.main {

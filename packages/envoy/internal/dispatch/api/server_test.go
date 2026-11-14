@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	brokerstoretest "github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -58,11 +59,15 @@ import (
 // storetest.Main calls after this.
 const apiTestParallelism = 24
 
+// TestMain installs both harnesses: the broker's wraps Dispatch's, which owns m.Run. The
+// contract tests drive a real broker (contract_test.go), so each of them takes a broker database
+// as well; with the broker harness installed, each is a clone of the broker's migrated template
+// rather than a database of its own this process migrates (brokerstoretest.URL).
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(brokerstoretest.MainWith(m, storetest.Main))
 }
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.

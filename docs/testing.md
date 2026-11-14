@@ -459,9 +459,9 @@ A since read answers only the edges at or below the event log's safe horizon (`g
 that wait it answers at the horizon it has and leaves the rest to a later read: the route defers,
 it never loses an edge. The horizon is instance-wide,
 so any transaction holding a transaction id on the Postgres instance holds it back, and in
-`packages/envoy/internal/dispatch/api` the holder is the test process itself: `storetest.Open`'s
-`create database … template … strategy file_copy` and `storetest`'s
-`drop database … with (force)` (`packages/envoy/internal/dispatch/store/storetest/storetest.go`).
+`packages/envoy/internal/dispatch/api` the holder is the test process itself: `Harness.Clone`'s
+`create database … template … strategy file_copy` and `Harness.drop`'s
+`drop database … with (force)` (`packages/envoy/internal/testpg/pgtemplate/pgtemplate.go`).
 
 So a read that answered within `referencesSinceWait` was not held back: what it listed is what it
 owed, and a wrong answer fails the test at once. Only a read held past that wait is read again,

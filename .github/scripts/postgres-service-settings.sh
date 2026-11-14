@@ -5,20 +5,17 @@
 # service starts on the lane's disposable settings - the test job, envoy-go (one step for each of
 # its five services), envoy-go-race, envoy-go-race-api, envoy-go-race-docs,
 # envoy-go-docs-finalizers, dispatch-memory, dispatch-multiprocess, broker-multiprocess and
-# envoy-session-stall. Thirteen of those fourteen steps were one eleven-line loop written out
-# thirteen times, envoy-go's second, third and fourth differing in the service they named and the
-# error they printed, until a review read them together (dispatch://INFRA-1075); envoy-go's fifth
-# came after, as one line calling this. dispatch-browser-postgres.sh's head records this
-# repository's rule for a step body repeated across jobs, and this follows it: the five settings
-# are written once, here, and each step is one line calling this.
+# envoy-session-stall: fourteen steps of one body. dispatch-browser-postgres.sh's head records
+# this repository's rule for a step body repeated across jobs, and this follows it: the five
+# settings are written once, here, and each step is one line calling this.
 #
 #   .github/scripts/postgres-service-settings.sh <container id> <label>
 #
 # <container id> is the service's `${{ job.services.<service id>.id }}`. The runner sets it for a
 # service the job declares and leaves it empty for a service id the job does not have, so an
 # empty one is refused by name rather than handed to docker. <label> is that service id, and
-# every line this prints starts with it, so a red step of a job with five services says which of
-# them it read.
+# every line this prints names it but the usage error, so a red step of a job with five services
+# says which of them it read.
 #
 # Why the settings are read back: they are the service's command: line, which makes the server
 # start with them. A command: the runner did not pass through would leave the server up on the

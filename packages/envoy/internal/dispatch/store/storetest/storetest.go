@@ -15,7 +15,6 @@ package storetest
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"testing"
 
@@ -44,20 +43,12 @@ const DatabaseURLEnv = "DISPATCH_TEST_DATABASE_URL"
 // reading that test with it.
 const testPoolSize = 16
 
-// harness clones every database Open hands out from Dispatch's template. The store package's own
-// tests hold a harness of their own on the same template (pgtemplate.Dispatch), since they cannot
-// import this package, which imports theirs.
-var harness = pgtemplate.New(pgtemplate.Dispatch, store.MigrationsFingerprint, migrate)
-
-// migrate applies every migration to the database a build of the template runs in.
-func migrate(ctx context.Context, url string) error {
-	database, err := store.Open(ctx, url, store.WithMaxConns(testPoolSize))
-	if err != nil {
-		return fmt.Errorf("open the template database: %w", err)
-	}
-	defer database.Pool.Close()
-	return database.Migrate(ctx)
-}
+// harness clones every database Open hands out from Dispatch's template, which
+// store.MigrateTemplate builds. The store package's own tests hold a harness of their own on the
+// same template (pgtemplate.Dispatch), since they cannot import this package, which imports
+// theirs, and internal/testpg/pgtemplate's own tests hold a third: all three build through that
+// one function, so whichever process builds the template first builds what the rest clone.
+var harness = pgtemplate.New(pgtemplate.Dispatch, store.MigrationsFingerprint, store.MigrateTemplate)
 
 // Open returns a store on a new database carrying every migration, dropped after t ends. It skips
 // t when DISPATCH_TEST_DATABASE_URL is unset.

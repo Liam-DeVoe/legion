@@ -344,7 +344,7 @@ RULES = {
     f"{ENVOY}/cmd/dispatch/settings_test.go": reads(
         (f"{ENVOY}/cmd/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files"),
         (f"{ENVOY}/internal/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files")),
-    f"{ENVOY}/cmd/listener/api_test.go": reads((f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:191,436,480")),
+    f"{ENVOY}/cmd/listener/api_test.go": reads((f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:177,427,472")),
     f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
         (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:18"),
         (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:19"),
@@ -355,8 +355,8 @@ RULES = {
         (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "internal/broker/config/config_test.go:573")),
-    f"{ENVOY}/internal/broker/oauth/claims_doc_test.go": reads(("docs/kubernetes.md", "internal/broker/oauth/claims_doc_test.go:161")),
-    f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:56")),
+    f"{ENVOY}/internal/broker/oauth/claims_doc_test.go": reads(("docs/kubernetes.md", "internal/broker/oauth/claims_doc_test.go:211")),
+    f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:57")),
     f"{ENVOY}/internal/contracts/dedupe_test.go": reads((f"{FIX}/dedupe-keys.json", "internal/contracts/dedupe_test.go:14")),
     f"{ENVOY}/internal/contracts/golden_test.go": reads(
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/golden_test.go:47"),
@@ -366,7 +366,7 @@ RULES = {
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/normalize_test.go:2379")),
     f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:263 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],
-    f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:982,1011")),
+    f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:1007,1027")),
     f"{ENVOY}/internal/dispatch/api/delivery_measures_test.go": reads(
         (f"{ENVOY}/internal/dispatch/delivery/measures/testdata/dora-fixture.json", "internal/dispatch/api/delivery_measures_test.go:82")),
     f"{ENVOY}/internal/dispatch/api/delivery_test.go": reads(
@@ -381,7 +381,7 @@ RULES = {
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
-        (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:478")),
+        (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:535")),
     f"{ENVOY}/internal/dispatch/pmdoc/update_test.go": [
         Read(g, "internal/dispatch/pmdoc/update_test.go:316-320 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
@@ -698,16 +698,25 @@ UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration"] + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages]
     + [f"/{ROUTES_PACKAGE}$", f"/{PGMIGRATE_PACKAGE}$", f"/{EVENTS_PACKAGE}$"])
+
+
+def service_dsn(port):
+    """The DSN of one of the envoy-go job's Postgres services, which differ in their port alone:
+    every service of that job starts from the same image with the same superuser, password and
+    postgres database (ci.yaml's services:)."""
+    return f"postgres://postgres:ci@localhost:{port}/postgres?sslmode=disable"
+
+
 # The routes call's own DSN, the envoy-go job's second Postgres service: it names 5433 on that
 # one call and nowhere else, which is what keeps the event log's safe horizon off the other
 # calls' transactions (ci.yaml's postgres_routes service). It is on the call rather than in the
 # step's env:, where it would reach the other eight.
-ROUTES_DSN = "postgres://postgres:ci@localhost:5433/postgres?sslmode=disable"
+ROUTES_DSN = service_dsn(5433)
 # The third service, 5434, and the one untagged test of cmd/dispatch that reads a live event
 # feed: it waits on events_start as the routes package does, and the horizon is instance-wide, so
 # it runs where no other test opens a transaction. The name is unique in the module, so the
 # package list below skips it by that one name (dispatch://INFRA-1075).
-SHUTDOWN_DSN = "postgres://postgres:ci@localhost:5434/postgres?sslmode=disable"
+SHUTDOWN_DSN = service_dsn(5434)
 SHUTDOWN_PACKAGE = "cmd/dispatch"
 SHUTDOWN_TESTS = ["TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument"]
 SHUTDOWN_PATTERN = "^(" + "|".join(sorted(SHUTDOWN_TESTS)) + ")$"
@@ -717,13 +726,13 @@ SHUTDOWN_PATTERN = "^(" + "|".join(sorted(SHUTDOWN_TESTS)) + ")$"
 # load is the service's queue rather than the package's own arithmetic - and that queue is one
 # every other package of this job waits in too (ci.yaml's postgres_pgmigrate service,
 # dispatch://INFRA-1075).
-PGMIGRATE_DSN = "postgres://postgres:ci@localhost:5435/postgres?sslmode=disable"
+PGMIGRATE_DSN = service_dsn(5435)
 # The fifth service, 5436, and internal/dispatch/events: its horizon tests wait for the event
 # log's safe horizon as the routes package does, and the horizon is instance-wide, so on the
 # shared service one of them took 27.07 s and 53.94 s and then failed at its one-minute give-up
 # (run 43596122521). Its own tests hold transaction ids on purpose, so it shares no other call's
 # service either (ci.yaml's postgres_events service, dispatch://INFRA-1075).
-EVENTS_DSN = "postgres://postgres:ci@localhost:5436/postgres?sslmode=disable"
+EVENTS_DSN = service_dsn(5436)
 # -p 8 and -parallel 12, the nine calls the step starts in the background, and the streams
 # and logs they write, are ci.yaml's own comments' to explain. The text itself is
 # UNIT_TEST_SCRIPT, built below the walk the race-impossible call's -run comes from.
@@ -1026,9 +1035,10 @@ DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 11m .
 pgmigrate=$!
 # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
 # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
-# its own tests'. It is on the call rather than on the step because each call names
-# its own server, and the package list runs against 5432. -timeout 2m, from this package's largest reading and the run
-# it came from, which are in the table on this job.
+# its own tests'. It is on the call rather than in the step's env:, which would reach
+# every call; the calls that name no server of their own run against 5432. -timeout
+# 2m, from this package's largest reading and the run it came from, which are in the
+# table on this job.
 DISPATCH_TEST_DATABASE_URL={ROUTES_DSN} go test -json -count=1 -timeout 2m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
 routes=$!
 # internal/dispatch/events, on the fifth Postgres service, for the reason the routes

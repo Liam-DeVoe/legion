@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"net/url"
 	"os"
 	"reflect"
@@ -41,21 +40,10 @@ func testDatabaseURL(t *testing.T) string {
 // storetest, which imports it, so it holds a harness of its own on storetest's template
 // (pgtemplate.Dispatch), which whichever test process gets there first builds and every other
 // clones.
-var templates = pgtemplate.New(pgtemplate.Dispatch, MigrationsFingerprint, migrateTemplate)
+var templates = pgtemplate.New(pgtemplate.Dispatch, MigrationsFingerprint, MigrateTemplate)
 
 // TestMain runs the package's tests and waits for their databases to drop.
 func TestMain(m *testing.M) { os.Exit(templates.Main(m)) }
-
-// migrateTemplate applies every migration to the database a build of the template runs in, under
-// production's discipline (a zero Locking), as storetest's build does: the two build one template.
-func migrateTemplate(ctx context.Context, url string) error {
-	database, err := Open(ctx, url, WithMaxConns(testPoolSize))
-	if err != nil {
-		return fmt.Errorf("open the template database: %w", err)
-	}
-	defer database.Pool.Close()
-	return database.Migrate(ctx)
-}
 
 // eventWait is how long a test here waits FOR AN EVENT: a statement joining a lock queue, a
 // listener answering, a transaction reaching an age. It is where the test gives up, never a
@@ -108,28 +96,20 @@ var testLocking = pgmigrate.Locking{Timeout: 500 * time.Millisecond, Attempts: 3
 
 // testPoolSize bounds the shared pool of every store these tests open, in place of
 // production's sharedPoolSize, for the reason storetest bounds its own at the same number: the
-// tests of this package run beside each other now, against one Postgres every package of the run
+// tests of this package run beside each other, against one Postgres every package of the run
 // shares (its max_connections is 500 on the services of .github/workflows/ci.yaml), and a test
 // that fully acquires a 64-connection pool (TestListenerIsServedWhileTheSharedPoolIsFullyAcquired)
 // would hold that many of the server's connections while the tests beside it open their own. The
 // pools Pool.separate opens keep their own sizes.
 const testPoolSize = 16
 
+// randomDatabaseSuffix is sixteen random hex digits, for a database, a login or an address no
+// other test of this package takes. crypto/rand.Read never returns an error, so it cannot fail.
 func randomDatabaseSuffix(t *testing.T) string {
 	t.Helper()
-	suffix, err := randomSuffix()
-	if err != nil {
-		t.Fatalf("random database suffix: %v", err)
-	}
-	return suffix
-}
-
-func randomSuffix() (string, error) {
 	var bytes [8]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes[:]), nil
+	rand.Read(bytes[:]) // crypto/rand's Read never returns an error
+	return hex.EncodeToString(bytes[:])
 }
 
 // A connection string that asks for a pool size is refused rather than quietly overridden,

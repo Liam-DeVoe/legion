@@ -5,9 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
-	"github.com/sjawhar/envoy/internal/testpg/pgtemplate"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -15,9 +13,10 @@ func TestMain(m *testing.M) { os.Exit(Main(m)) }
 // Open hands each test a database of its own carrying this build's whole migration set, cloned
 // from the template named after that set. The harness's own mechanics - the file copy, the drop,
 // the lock and the build - are internal/testpg/pgtemplate's tests; this is the part that is
-// Dispatch's: the set it migrates and the name it fingerprints. Broken, Dispatch's tests run on a
-// schema that is not this build's.
+// Dispatch's: the set it migrates. Broken, Dispatch's tests run on a schema that is not this
+// build's.
 func TestOpenHandsEachTestThisBuildsWholeSchema(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	first := Open(t) // finds or builds the template, or skips
 	second := Open(t)
@@ -42,18 +41,5 @@ func TestOpenHandsEachTestThisBuildsWholeSchema(t *testing.T) {
 	}
 	if recorded != len(migrations) {
 		t.Errorf("the database records %d migrations, want the set's %d", recorded, len(migrations))
-	}
-
-	fingerprint, err := store.MigrationsFingerprint()
-	if err != nil {
-		t.Fatalf("fingerprint the migration set: %v", err)
-	}
-	template := pgtemplate.Dispatch.Prefix + fingerprint
-	var kept bool
-	if err := first.Pool.QueryRow(ctx, "select exists(select 1 from pg_database where datname = $1)", template).Scan(&kept); err != nil {
-		t.Fatalf("look for %s: %v", template, err)
-	}
-	if !kept {
-		t.Errorf("%s, the template of this build's set, is not on the server, so the next process would migrate one of its own", template)
 	}
 }

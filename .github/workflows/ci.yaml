@@ -5290,37 +5290,25 @@ jobs:
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
-      # The settings the service's command: asks for, read back from the server itself, because a
+      # The settings each service's command: asks for, read back from the server itself, because a
       # command the runner does not pass through leaves the server up on the image's defaults
       # rather than failing: the job would then refuse connections under load, skip the event
       # log's floor test, and pay for the forced checkpoints it meant to make cheap. A setting the
-      # server itself refuses never reaches this step - postgres exits and the service's health
+      # server itself refuses never reaches these steps - postgres exits and the service's health
       # check fails the job before its first step. .github/scripts/postgres-service-settings.sh
-      # holds the five settings and reads them, for this step and every step like it in this
-      # file; its head says why it is a script.
+      # holds the five settings and reads them, for these steps and every step like them in this
+      # file; its head says why it is a script. There is a step for each of this job's five
+      # services, because each is a server of its own started from a command: line of its own,
+      # and a runner that dropped one of those lines would leave that one server on the image's
+      # defaults with nothing else saying so.
       - name: Read the disposable service's settings back
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
-      # The same five settings, read back from the routes package's own instance: it is a second
-      # server, started from a second command: line, so a runner that dropped that one would
-      # leave this one on the image's defaults with nothing else saying so.
       - name: Read the routes service's settings back
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_routes.id }}" postgres_routes
-      # The same five settings, read back from the shutdown feed test's own instance, for the
-      # reason the step above gives: it is a third server, started from a third command: line,
-      # and a runner that dropped that one would leave it on the image's defaults with nothing
-      # else saying so.
       - name: Read the shutdown service's settings back
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_shutdown.id }}" postgres_shutdown
-      # The same five settings, read back from internal/pgmigrate's own instance, for the reason
-      # the step above gives: it is a fourth server, started from a fourth command: line, and a
-      # runner that dropped that one would leave it on the image's defaults with nothing else
-      # saying so.
       - name: Read the pgmigrate service's settings back
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_pgmigrate.id }}" postgres_pgmigrate
-      # The same five settings, read back from internal/dispatch/events' own instance, for the
-      # reason the step above gives: it is a fifth server, started from a fifth command: line,
-      # and a runner that dropped that one would leave it on the image's defaults with nothing
-      # else saying so.
       - name: Read the events service's settings back
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_events.id }}" postgres_events
       # Every image the tests here start: testnats.Image and testnats.HubImage, which the
@@ -5508,9 +5496,10 @@ jobs:
           pgmigrate=$!
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
-          # its own tests'. It is on the call rather than on the step because each call names
-          # its own server, and the package list runs against 5432. -timeout 2m, from this package's largest reading and the run
-          # it came from, which are in the table on this job.
+          # its own tests'. It is on the call rather than in the step's env:, which would reach
+          # every call; the calls that name no server of their own run against 5432. -timeout
+          # 2m, from this package's largest reading and the run it came from, which are in the
+          # table on this job.
           DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 2m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
           routes=$!
           # internal/dispatch/events, on the fifth Postgres service, for the reason the routes

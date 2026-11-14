@@ -13,16 +13,10 @@ import (
 )
 
 // dispatch is the harness these tests run, made as internal/dispatch/store/storetest makes its
-// own: its template is the one every Dispatch test process on the server shares, so these tests
-// build nothing a Dispatch run would not build, and leave nothing it would not leave.
-var dispatch = New(Dispatch, store.MigrationsFingerprint, func(ctx context.Context, url string) error {
-	database, err := store.Open(ctx, url, store.WithMaxConns(16))
-	if err != nil {
-		return err
-	}
-	defer database.Pool.Close()
-	return database.Migrate(ctx)
-})
+// own: its template is the one every Dispatch test process on the server shares, built through
+// the same store.MigrateTemplate, so these tests build nothing a Dispatch run would not build,
+// and leave nothing it would not leave.
+var dispatch = New(Dispatch, store.MigrationsFingerprint, store.MigrateTemplate)
 
 func TestMain(m *testing.M) { os.Exit(dispatch.Main(m)) }
 
@@ -52,7 +46,8 @@ func connect(t *testing.T, databaseURL string) *pgx.Conn {
 // write-ahead log of the one backend that runs a clone (pg_stat_get_backend_wal, Postgres 18), so
 // what other sessions on the server write does not count.
 func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
-	dispatch.Clone(t, serverURL(t), "dispatch_test_") // finds or builds the template
+	t.Parallel()
+	template := dispatch.templateName(t, serverURL(t)) // finds or builds the template
 	ctx := context.Background()
 	conn, err := dispatch.admin.Acquire(ctx)
 	if err != nil {
@@ -60,13 +55,13 @@ func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
 	}
 	defer conn.Release()
 	var templateBytes int64
-	if err := conn.QueryRow(ctx, "select pg_database_size($1)", dispatch.name).Scan(&templateBytes); err != nil {
+	if err := conn.QueryRow(ctx, "select pg_database_size($1)", template).Scan(&templateBytes); err != nil {
 		t.Fatalf("read the template's size: %v", err)
 	}
 
 	name := randomName("dispatch_test_")
 	before := backendWALBytes(t, conn)
-	if _, err := conn.Exec(ctx, cloneStatement(name, dispatch.name)); err != nil {
+	if _, err := conn.Exec(ctx, cloneStatement(name, template)); err != nil {
 		t.Fatalf("clone the template: %v", err)
 	}
 	dispatch.drop(name)
@@ -82,6 +77,8 @@ func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
 // wrote, and that database leaves the server when the test ends. Broken, a test reads another
 // test's rows, or a run leaves its databases behind on a server the next run has to share.
 func TestEachTestIsHandedADatabaseOfItsOwnWhichIsDroppedAfterwards(t *testing.T) {
+	// Serial: it waits on the harness's shared drops WaitGroup, which a parallel test's drop
+	// would add to while this one waited.
 	ctx := context.Background()
 	raw := serverURL(t)
 	first := connect(t, dispatch.Clone(t, raw, "dispatch_test_"))
@@ -97,8 +94,7 @@ func TestEachTestIsHandedADatabaseOfItsOwnWhichIsDroppedAfterwards(t *testing.T)
 		t.Fatalf("two tests were handed the same database %s", firstName)
 	}
 
-	// Every project names a default assignee since main's 20261111210103 migration, so the row
-	// this writes names one too.
+	// projects.default_assignee is not null, so the row this writes names one.
 	if _, err := first.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TEST', 'Test', 'alice@d.example')`); err != nil {
 		t.Fatalf("write a row in the first database: %v", err)
 	}
@@ -136,9 +132,11 @@ func TestEachTestIsHandedADatabaseOfItsOwnWhichIsDroppedAfterwards(t *testing.T)
 
 // The template is the migration set's, whole, and left on the server: that is what lets the next
 // test process clone it instead of applying every migration again, which is most of the Postgres
-// work a package used to do. Broken, either every process migrates a template of its own again,
-// or - worse - a process clones a database that is not this build's schema.
+// work a test run does. Broken, either every process migrates a template of its own again, or -
+// worse - a process clones a database that is not this build's schema.
 func TestTheTemplateIsTheMigrationSetsAndStaysForTheNextProcess(t *testing.T) {
+	// Serial: it takes the server-wide template lock, which every Dispatch test process waiting
+	// on its first clone queues behind.
 	ctx := context.Background()
 	clone := connect(t, dispatch.Clone(t, serverURL(t), "dispatch_test_")) // finds or builds the template
 
@@ -150,8 +148,23 @@ func TestTheTemplateIsTheMigrationSetsAndStaysForTheNextProcess(t *testing.T) {
 		t.Fatalf("the template is %s, want %s: a process whose set differs would clone this one", dispatch.name, want)
 	}
 
+	// The clone carries the whole set, which is what a second process is promised by finding the
+	// template already named.
+	migrations, err := pgmigrate.Load(os.DirFS("../../dispatch/store"), "migrations")
+	if err != nil {
+		t.Fatalf("load the migration set: %v", err)
+	}
+	var recorded int
+	if err := clone.QueryRow(ctx, "select count(*) from schema_migrations").Scan(&recorded); err != nil {
+		t.Fatalf("count the clone's recorded migrations: %v", err)
+	}
+	if recorded != len(migrations) {
+		t.Errorf("the clone records %d migrations, want the set's %d", recorded, len(migrations))
+	}
+
 	// What a process arriving second does: it takes the lock, finds the template already there,
-	// and builds nothing.
+	// and builds nothing. It comes last, and nothing of this test runs under the lock but the
+	// two reads below, because the lock is the server's.
 	unlock, err := dispatch.lock(ctx)
 	if err != nil {
 		t.Fatalf("take the template lock a second time: %v", err)
@@ -170,20 +183,6 @@ func TestTheTemplateIsTheMigrationSetsAndStaysForTheNextProcess(t *testing.T) {
 	}
 	if halfBuilt != 0 {
 		t.Errorf("%d database(s) named %s* are still on the server: a build left its scratch behind", halfBuilt, dispatch.buildingPrefix())
-	}
-
-	// The clone carries the whole set, which is what a second process is promised by finding the
-	// template already named.
-	migrations, err := pgmigrate.Load(os.DirFS("../../dispatch/store"), "migrations")
-	if err != nil {
-		t.Fatalf("load the migration set: %v", err)
-	}
-	var recorded int
-	if err := clone.QueryRow(ctx, "select count(*) from schema_migrations").Scan(&recorded); err != nil {
-		t.Fatalf("count the clone's recorded migrations: %v", err)
-	}
-	if recorded != len(migrations) {
-		t.Errorf("the clone records %d migrations, want the set's %d", recorded, len(migrations))
 	}
 }
 

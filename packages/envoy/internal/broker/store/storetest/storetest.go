@@ -16,9 +16,9 @@
 //
 // A package whose tests call URL or Open uses Main as its TestMain:
 // func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }. Main waits for the tests' drops. A
-// package that installs none still works: each call makes a database of its own, migrates it and
-// drops it with the test, a whole migration run per test, as each test's own schema cost before
-// this harness.
+// package whose tests also take a database from another harness chains the two with MainWith. A
+// package that installs neither still works: each call makes a database of its own, migrates it
+// and drops it with the test, a whole migration run per test.
 package storetest
 
 import (
@@ -46,11 +46,13 @@ const DatabaseURLEnv = "BROKER_TEST_DATABASE_URL"
 // harness clones every database URL hands out from the broker's template.
 var harness = pgtemplate.New(pgtemplate.Broker, store.MigrationsFingerprint, migrate)
 
-// migrate applies every migration to the database a build of the template runs in.
+// migrate applies every migration to the database url names and closes every connection it
+// opened: what a template build needs (pgtemplate.New), and what a test with no template gets
+// (ownMigratedURL).
 func migrate(ctx context.Context, url string) error {
 	st, err := store.Open(ctx, url)
 	if err != nil {
-		return fmt.Errorf("open the template database: %w", err)
+		return fmt.Errorf("open the database: %w", err)
 	}
 	defer st.Close()
 	return st.Migrate(ctx)
@@ -75,8 +77,8 @@ func URL(t testing.TB, params ...string) string {
 	t.Helper()
 	raw := serverURL(t)
 	if !harness.InMain() {
-		// Only Main waits for a clone's drop, so a package that installs none migrates a
-		// database of its own instead.
+		// Only Main and MainWith wait for a clone's drop, so a package that installs neither
+		// migrates a database of its own instead.
 		return ownMigratedURL(t, raw, params)
 	}
 	return withParams(harness.Clone(t, raw, "broker_test_"), params...)
@@ -96,19 +98,12 @@ func Open(t testing.TB, params ...string) *store.Store {
 }
 
 // ownMigratedURL is what a package with no Main gets: a database of its own (testpg.DatabaseOn),
-// migrated, and dropped with the test - a whole migration run per test, as each test's own schema
-// cost before this harness.
+// migrated, and dropped with the test - a whole migration run per test.
 func ownMigratedURL(t testing.TB, raw string, params []string) string {
 	t.Helper()
 	// The database is a file copy of template1 (docs/testing.md, "A database a Go test creates").
 	dsn := withParams(testpg.DatabaseOn(t, raw, "broker_test"), params...)
-	ctx := context.Background()
-	st, err := store.Open(ctx, dsn)
-	if err != nil {
-		t.Fatalf("open the test database: %v", err)
-	}
-	defer st.Close()
-	if err := st.Migrate(ctx); err != nil {
+	if err := migrate(context.Background(), dsn); err != nil {
 		t.Fatalf("migrate the test database: %v", err)
 	}
 	return dsn
@@ -116,6 +111,13 @@ func ownMigratedURL(t testing.TB, raw string, params []string) string {
 
 // Main runs the package's tests and waits for their databases to drop (pgtemplate.Harness.Main).
 func Main(m *testing.M) int { return harness.Main(m) }
+
+// MainWith is Main for a package whose tests also take a database from another harness: it runs
+// the package's tests through run - that harness's Main, which owns m.Run - and waits for this
+// harness's drops once run returns (pgtemplate.Harness.MainWith). A package driving both a
+// broker and a Dispatch database writes
+// func TestMain(m *testing.M) { os.Exit(brokerstoretest.MainWith(m, storetest.Main)) }.
+func MainWith(m *testing.M, run func(*testing.M) int) int { return harness.MainWith(m, run) }
 
 // withParams is dsn carrying params as extra connection parameters, each given as key=value.
 func withParams(dsn string, params ...string) string {

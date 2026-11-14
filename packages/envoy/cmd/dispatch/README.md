@@ -4162,7 +4162,7 @@ Each item below names a status and code, then its meaning.
 cd packages/envoy
 ./scripts/dev-postgres.sh --throwaway   # prints DATABASE_URL=postgres://postgres@127.0.0.1:55433/dispatch?sslmode=disable
 export DISPATCH_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55433/dispatch?sslmode=disable'
-go test -timeout 20m -skip '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/routes$' | grep -v '/internal/dispatch/events$')
+go test -timeout 20m -skip '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -Ev '/internal/dispatch/(routes|events)$')
 go test ./internal/dispatch/routes/
 go test ./internal/dispatch/events/
 go test -run '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' ./cmd/dispatch/
@@ -4174,7 +4174,9 @@ It no longer runs first or by itself: its independent tests run in parallel, as 
 
 The commands run against the throwaway server `./scripts/dev-postgres.sh --throwaway` starts, not the `dispatch-pg` container on 55432:
 that container keeps the image's default `max_connections` of 100, which several of these packages at once exhaust, and its durability, which makes every test's clone slower (`docs/testing.md`, "A test Postgres's five settings").
+`--throwaway` runs this host's own PostgreSQL binaries rather than a container, so that PostgreSQL must carry pgvector: migration `0072_embeddings_core` runs `create extension if not exists vector`, and without it no database migrates.
 `go test` runs as many package binaries at once, and as many parallel tests of each, as the machine has cores (`-p`, `-parallel`);
 on a machine of more than eight cores pass `-p 8 -parallel 12`, the shape of CI's unit call against the same 500 connections.
-The routes package and the shutdown feed test run after the rest rather than beside it, for the reason CI gives each of them a Postgres service of its own:
+The routes package, the events package and the shutdown feed test run after the rest rather than beside it, for the reason CI gives each of them a Postgres service of its own:
 their tests wait on the event log's safe horizon, which every transaction on the server holds back, other packages' clones included (`docs/testing.md`, "A test that calls `t.Parallel()`").
+The events package shares neither of the other two servers either, because its own tests hold transaction ids on purpose.
