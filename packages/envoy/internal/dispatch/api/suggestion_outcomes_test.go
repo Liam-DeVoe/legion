@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -116,19 +118,21 @@ func awaitDatabaseClockPastSuggestions(t *testing.T, pool *store.Pool) {
 }
 
 // idleSweep is a sweep running as the server runs it - its woken loop on a real pglisten.Hub's
-// wake on EventsChannel - with a short gap between passes and the settle it is given, on a counted
-// pool, once its boot pass and the pass the hub's signal after its LISTEN earned have both run and
-// it has gone quiet.
+// wake on EventsChannel, at the server's own gap - with its gaps and due times on clock, a fake
+// the test moves, and the settle it is given, which the database's clock judges; on a counted
+// pool, once its boot pass and the pass the hub's signal after its LISTEN earned have both run
+// and it has gone quiet.
 type idleSweep struct {
 	handler        http.Handler
 	server         *server
 	counter        *storetest.StatementCounter
+	clock          *clocktest.Fake
 	target, source string
 }
 
-// idleSweepGap is the idle sweep's gap between passes, far shorter than the server's minute so
-// the window a test watches holds many of them.
-const idleSweepGap = 200 * time.Millisecond
+// idleSweepSettle is the settle of the rows that judge an event as soon as it may be: the
+// database's clock passes it before the row moves the sweep's own.
+const idleSweepSettle = 200 * time.Millisecond
 
 func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSweep {
 	t.Helper()
@@ -155,44 +159,80 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	srv := directServer(deps)
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	schedule := suggestionSchedule{minGap: idleSweepGap, settle: settle, page: suggestionOutcomePage}
+	schedule := suggestionSchedule{minGap: suggestionOutcomeSchedule.minGap, settle: settle, page: suggestionOutcomePage}
+	fake := clocktest.Held()
 	// The sweep reads through the counted pool and observes the horizon through the server's own
 	// (store.Pool.Horizon), so the counter sees the sweep's own statements alone.
-	runSweep(t, func(ctx context.Context) { runSuggestionOutcomeSweep(ctx, counted.Pool, srv.horizon(), wake, schedule) })
+	runSweep(t, func(ctx context.Context) {
+		runSuggestionOutcomeSweep(ctx, fake, counted.Pool, srv.horizon(), wake, schedule)
+	})
+	sweep := idleSweep{handler: handler, server: srv, counter: counter, clock: fake, target: target, source: source}
 	testwait.Receive(t, "the hub's connection", connected)
 	testwait.Eventually(t, "the boot pass to set the cursor", func() bool { return outcomeCursor(t, database) != nil })
-	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the boot
-	// pass began; after it the loop is idle.
-	storetest.AwaitQuiet(t, counter, idleSweepGap+300*time.Millisecond, idleSweepWhy)
-	return idleSweep{handler: handler, server: srv, counter: counter, target: target, source: source}
+	// The hub's signal after its LISTEN earns one more pass, held to the gap after the boot pass
+	// began on the sweep's clock; after it the loop is idle.
+	sweep.pass(t, "the pass the hub's signal after its LISTEN earned")
+	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, idleSweepWhy)
+	return sweep
 }
 
-// idleSweepWhy is why a test of the idle sweep holds a span: the loop's passes run on its own
-// goroutine, paced by its gap on the real clock, and nothing it keeps says it is idle.
-const idleSweepWhy = "the sweep's woken loop passes on its own goroutine, paced by its gap on the real clock, and " +
-	"keeps no state that says it is idle, the database is real I/O (no synctest), and no later action of the " +
-	"test is ordered after a pass that does not come"
+// pass moves the sweep's clock to the one timer its loop holds - the pass a wake earned, held to
+// the gap, or a due time - and so runs the pass the loop was waiting for.
+func (s idleSweep) pass(t *testing.T, what string) {
+	t.Helper()
+	s.clock.Set(s.clock.AwaitArmed(t, what, 1)[0])
+}
 
-// With no event written, the sweep makes no statement at all - no pass on a timer, no lease
-// attempt - over a window fifteen times its gap between passes, though a suggestion is pending.
+// passesUntil runs the passes the loop waits for, moving the sweep's clock to each timer it holds
+// in turn - the pass a wake earned, a horizon still behind the event's commit asking again a gap
+// later, a due time - until holds.
+func (s idleSweep) passesUntil(t *testing.T, what string, holds func() bool) {
+	t.Helper()
+	testwait.Eventually(t, what, func() bool {
+		if holds() {
+			return true
+		}
+		if armed := s.clock.Armed(); len(armed) > 0 {
+			s.clock.Set(armed[0])
+		}
+		return false
+	})
+}
+
+// idleSweepWhy is why a test of the idle sweep holds a span: a pass runs on the loop's own
+// goroutine once its timer fires, and nothing the loop keeps says that pass has ended.
+const idleSweepWhy = "the sweep's woken loop passes on its own goroutine and keeps no state that says a pass " +
+	"has ended, the database is real I/O (no synctest), and no later action of the test is ordered after a " +
+	"pass that does not come"
+
+// With no event written, the sweep holds no timer, so no pass is due on any clock however far
+// its own moves, and it makes no statement at all - no pass, no lease attempt - though a
+// suggestion is pending.
 func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
-	sweep := startIdleSweep(t, "OIDLE", idleSweepGap)
+	sweep := startIdleSweep(t, "OIDLE", idleSweepSettle)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
-	storetest.RequireNoStatements(t, sweep.counter, 15*idleSweepGap, "the sweep with no event written", idleSweepWhy)
+	if armed := sweep.clock.Armed(); len(armed) != 0 {
+		t.Fatalf("the idle sweep holds timers for %v with no event written; want none", armed)
+	}
+	sweep.clock.Advance(15 * suggestionOutcomeSchedule.minGap)
+	storetest.RequireNoStatements(t, sweep.counter, 3*time.Second, "the sweep with no event written", idleSweepWhy)
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "ignored" {
 		t.Fatalf("outcome = %+v with no event written; want ignored", row)
 	}
 }
 
 // An event the suggestion's actor writes on the suggested issue wakes the idle sweep through its
-// notification on a real pglisten.Hub, and the suggestion is marked acted_on within seconds.
+// notification on a real pglisten.Hub, and the pass that wake earns marks the suggestion
+// acted_on.
 func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *testing.T) {
-	sweep := startIdleSweep(t, "OWAKE", idleSweepGap)
+	sweep := startIdleSweep(t, "OWAKE", idleSweepSettle)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
-	testwait.Eventually(t, "the suggestion to be marked acted_on", func() bool {
+	pool := sweep.server.deps.Store.Pool
+	awaitDatabaseAge(t, pool, "the message", newestEventAt(t, pool, sweep.target), idleSweepSettle)
+	sweep.passesUntil(t, "the suggestion to be marked acted_on", func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome == "acted_on"
 	})
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Detail != "the suggested issue was updated directly" {
@@ -201,19 +241,23 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 }
 
 // An agent that comments on what it filed and, moments later, updates the suggested issue acted
-// on the suggestion. The comment wakes the sweep at once, but an event is judged by only once it
-// is settle old, by which time the update is written too, so the rules see both and the acted_on
-// rules run before the overridden one: the comment is not judged alone as an override.
+// on the suggestion. The comment wakes the sweep, but an event is judged by only once it is
+// settle old, by which time the update is written too, so the rules see both and the acted_on
+// rules run before the overridden one: the comment is not judged alone as an override. The
+// pass the comment earned waits on the sweep's clock, which the row moves only once both writes
+// are settle old by the database's clock, so how long the second write takes decides nothing.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	const settle = 1500 * time.Millisecond
 	sweep := startIdleSweep(t, "OTOGETHER", settle)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
+	pool := sweep.server.deps.Store.Pool
 
 	postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
 	// Moments later by the database's clock, the one the sweep judges settle by.
-	awaitDatabaseAge(t, sweep.server.deps.Store.Pool, "the comment", newestEventAt(t, sweep.server.deps.Store.Pool, sweep.source), 300*time.Millisecond)
+	awaitDatabaseAge(t, pool, "the comment", newestEventAt(t, pool, sweep.source), 300*time.Millisecond)
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
-	testwait.Eventually(t, "the suggestion to be judged", func() bool {
+	awaitDatabaseAge(t, pool, "the update", newestEventAt(t, pool, sweep.target), settle)
+	sweep.passesUntil(t, "the suggestion to be judged", func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome != "ignored"
 	})
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "acted_on" {
@@ -598,7 +642,7 @@ func TestTheSuggestionSweepTrailsTheSafeHorizon(t *testing.T) {
 	schedule := suggestionSchedule{minGap: time.Second, page: suggestionOutcomePage}
 	low, _, commitLow := appendOutOfOrder(t, database, deps.Events, target, other)
 	started := time.Now()
-	next, err := suggestionOutcomePass(ctx, database.Pool, srv.horizon(), schedule)
+	next, err := suggestionOutcomePass(ctx, clock.Real(), database.Pool, srv.horizon(), schedule)
 	if err != nil {
 		t.Fatalf("the pass run while the lower id is still open: %v", err)
 	}
@@ -620,7 +664,7 @@ func TestTheSuggestionSweepTrailsTheSafeHorizon(t *testing.T) {
 	if safe := safeHorizon(t, srv); safe < low {
 		t.Fatalf("the safe horizon is %d once event %d has committed; want it at or above that id", safe, low)
 	}
-	if _, err := suggestionOutcomePass(ctx, database.Pool, srv.horizon(), schedule); err != nil {
+	if _, err := suggestionOutcomePass(ctx, clock.Real(), database.Pool, srv.horizon(), schedule); err != nil {
 		t.Fatalf("the pass run once the lower id has committed: %v", err)
 	}
 	if row := readSuggestionOutcome(t, srv, source, target); row.Outcome != "acted_on" || row.Detail != "the suggested issue was updated directly" {
@@ -633,7 +677,7 @@ func TestTheSuggestionSweepTrailsTheSafeHorizon(t *testing.T) {
 		t.Fatalf("cursor = %d after the pass that read event %d; want it at or above that id", *cursor, low)
 	}
 	judged := suggestionOutcomeAt(t, srv, source, target)
-	if _, err := suggestionOutcomePass(ctx, database.Pool, srv.horizon(), schedule); err != nil {
+	if _, err := suggestionOutcomePass(ctx, clock.Real(), database.Pool, srv.horizon(), schedule); err != nil {
 		t.Fatalf("the pass after the suggestion was judged: %v", err)
 	}
 	if again := suggestionOutcomeAt(t, srv, source, target); judged == nil || again == nil || !again.Equal(*judged) {
@@ -661,7 +705,7 @@ func TestTheFirstPassOfAJustStartedProcessStartsAtTheNewestEvent(t *testing.T) {
 
 	newest := lastEventID(t, database)
 	schedule := suggestionSchedule{minGap: time.Second, settle: time.Minute, page: suggestionOutcomePage}
-	if _, err := suggestionOutcomePass(t.Context(), database.Pool, srv.horizon(), schedule); err != nil {
+	if _, err := suggestionOutcomePass(t.Context(), clock.Real(), database.Pool, srv.horizon(), schedule); err != nil {
 		t.Fatalf("the first pass of a just-started process: %v", err)
 	}
 	switch cursor := outcomeCursor(t, database); {

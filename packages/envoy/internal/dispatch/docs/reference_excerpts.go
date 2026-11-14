@@ -185,7 +185,7 @@ const (
 // the next one's, whatever woke it (duty.WokenLoop.MinGap), and also how long a pass waits when
 // another process holds the lease; retryBase is how long a document whose read or record failed
 // waits before its first retry, doubling with each failure after (refs.DeferExcerpts), and how
-// long a pass whose own read failed waits before the next. A test runs the loop faster.
+// long a pass whose own read failed waits before the next.
 type excerptSchedule struct {
 	minGap    time.Duration
 	retryBase time.Duration
@@ -222,10 +222,6 @@ const referenceExcerptLease = "reference-excerpts"
 // marking per process is enough. A mention owed an excerpt is answered with the document's name
 // until this stores one.
 func (s *Service) RunReferenceExcerptReconciliation(ctx context.Context, leases duty.Leases, wake <-chan struct{}) {
-	s.runReferenceExcerptReconciliation(ctx, leases, wake, referenceExcerptSchedule)
-}
-
-func (s *Service) runReferenceExcerptReconciliation(ctx context.Context, leases duty.Leases, wake <-chan struct{}, schedule excerptSchedule) {
 	ctx = store.WithTransactionTracking(ctx)
 	// marked is whether a pass of this process has marked the stale excerpts; a marking that
 	// failed is tried again by the next pass that runs.
@@ -234,12 +230,12 @@ func (s *Service) runReferenceExcerptReconciliation(ctx context.Context, leases 
 		Lease:  referenceExcerptLease,
 		Leases: leases,
 		Wake:   wake,
-		MinGap: schedule.minGap,
+		MinGap: referenceExcerptSchedule.minGap,
 		Pass: func(ctx context.Context) time.Time {
 			if !marked {
 				marked = s.markStaleExcerpts(ctx)
 			}
-			return s.reconcileExcerptPass(ctx, schedule)
+			return s.reconcileExcerptPass(ctx, referenceExcerptSchedule)
 		},
 	})
 }

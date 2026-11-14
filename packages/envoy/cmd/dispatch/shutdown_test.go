@@ -610,7 +610,12 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 }
 
 // githubAnswersAfterSignal is how long into the stop the fake GitHub of
-// TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool holds a merged pull request's fetch.
+// TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool holds a merged pull request's fetch: a
+// GitHub call that answers a few seconds into the stop, as a REST call can, well inside the
+// intakes' stop budget (delivery's intakeStopBudget, 15 s), so a stop that waits for the handler
+// sees it finish rather than give up. It is the stand-in's own latency: a stop that closed the
+// pool first would close it inside these seconds, and nothing the product reports marks that
+// moment for a gate.
 const githubAnswersAfterSignal = 3 * time.Second
 
 // An intake handler waiting on GitHub when the signal comes holds no database connection, so on an

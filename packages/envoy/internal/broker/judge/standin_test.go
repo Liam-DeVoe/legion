@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -73,10 +74,12 @@ type dispatchStandIn struct {
 	// bodies it answers with when that status is 200.
 	issueStatus, specStatus int
 	issue, spec             map[string]any
-	// delay holds each answer back, which is how a test spends the Dispatch phase's
-	// bound. A read the judge gave up on ends the handler at once, so a stand-in told to
-	// wait longer than the bound never keeps the server from closing.
+	// delay holds each answer back on clock, the run's own, which is how a test spends the
+	// Dispatch phase's bound: the hold ends only when the test moves that clock past it. A read
+	// the judge gave up on ends the handler at once, so a stand-in told to wait longer than the
+	// bound never keeps the server from closing.
 	delay time.Duration
+	clock clock.Clock
 }
 
 // newDispatch is a Dispatch holding one open issue with a spec document.
@@ -96,14 +99,14 @@ func newDispatch(t *testing.T, status, markdown string) *dispatchStandIn {
 func (d *dispatchStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	d.calls = append(d.calls, dispatchCall{r.Method, r.URL.Path, r.Header.Get("Authorization")})
-	status, body, delay := d.issueStatus, d.issue, d.delay
+	status, body, delay, clk := d.issueStatus, d.issue, d.delay, d.clock
 	if strings.HasSuffix(r.URL.Path, "/artifacts/spec/text") {
 		status, body = d.specStatus, d.spec
 	}
 	d.mu.Unlock()
 	if delay > 0 {
 		select {
-		case <-time.After(delay):
+		case <-clk.After(delay):
 		case <-r.Context().Done():
 			return
 		}
@@ -132,11 +135,12 @@ type modelStandIn struct {
 	// bodies are the request bodies it got, in order.
 	bodies [][]byte
 	// status, when it is not 0 or 200, is answered in place of a reply, and reply is the
-	// assistant content the stream carries. delay holds the answer back, which is how a
-	// test spends a bound.
+	// assistant content the stream carries. delay holds the answer back on clock, the run's
+	// own, which is how a test spends a bound.
 	status int
 	reply  string
 	delay  time.Duration
+	clock  clock.Clock
 	tokens chatTokens
 }
 
@@ -164,11 +168,11 @@ func (m *modelStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	m.mu.Lock()
 	m.bodies = append(m.bodies, body)
-	status, reply, delay, tokens := m.status, m.reply, m.delay, m.tokens
+	status, reply, delay, clk, tokens := m.status, m.reply, m.delay, m.clock, m.tokens
 	m.mu.Unlock()
 	if delay > 0 {
 		select {
-		case <-time.After(delay):
+		case <-clk.After(delay):
 		case <-r.Context().Done():
 			return
 		}
@@ -289,9 +293,11 @@ type fakeRequests struct {
 	stateAsked int
 	// applyErr is what ApplyJudgeDecision answers, and logErr what LogJudged answers.
 	applyErr, logErr error
-	// writeTakes is how long each of the two writes takes before it commits, which is how
-	// a test gives the run's own transaction something to need its remaining budget for.
+	// writeTakes is how long each of the two writes takes on clock, the run's own, before it
+	// commits, which is how a test gives the run's own transaction something to need its
+	// remaining budget for.
 	writeTakes time.Duration
+	clock      clock.Clock
 	// applied and logged are the detail objects of each write, in order.
 	applied, logged []map[string]any
 }
@@ -322,11 +328,11 @@ func (f *fakeRequests) JudgeRequestState(_ context.Context, _ string) (string, e
 // write with none of its budget left writes nothing and says why, as Postgres would.
 func (f *fakeRequests) transact(ctx context.Context) error {
 	f.mu.Lock()
-	takes := f.writeTakes
+	takes, clk := f.writeTakes, f.clock
 	f.mu.Unlock()
 	if takes > 0 {
 		select {
-		case <-time.After(takes):
+		case <-clk.After(takes):
 		case <-ctx.Done():
 		}
 	}

@@ -976,7 +976,12 @@ func streamHead(t *testing.T, js natsgo.JetStreamContext) uint64 {
 const (
 	// takeOverWithin bounds a take-over: from the moment the publisher is killed, cut off NATS or
 	// frozen, the other process takes the publisher hold, publishes its first batch and a session
-	// takes a comment written since, each within it.
+	// takes a comment written since, each within it. It is a service level read off this
+	// machine's clock across two child processes, with 2 s above the hold's own TTL and Margin
+	// (outbox.publisherHoldOptions, 6 s and 2 s), so only benchtime's timing lane holds a
+	// take-over, or a stretch with no publisher, to it; every run holds that the take-over
+	// happens, that no two processes publish at once and that sessions take each event once and
+	// in order.
 	takeOverWithin = 10 * time.Second
 	// outboxDeliveryWithin bounds the wait for what a row wrote to reach every session it is
 	// addressed to.
@@ -1579,8 +1584,8 @@ func (s *outboxScene) framesSince(at time.Time) map[*testSession][]sessionFrame 
 }
 
 // requireTakeOver waits for p to take the publisher hold at or after since, then to log its first
-// batch, and for a session to take a comment written since since; and requires each within
-// takeOverWithin of since, the moment what happened to the publisher before p.
+// batch, and for a session to take a comment written since since; and, in benchtime's timing lane,
+// requires each within takeOverWithin of since, the moment what happened to the publisher before p.
 func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since time.Time, what string) {
 	t.Helper()
 	took := p.waitForOutboxLine(t, tookHold, since)
@@ -1602,7 +1607,7 @@ func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since ti
 		{"the other process logged its first batch", batch.at},
 		{"a session took a comment written since", arrived},
 	} {
-		if after := step.at.Sub(since); after > takeOverWithin {
+		if after := step.at.Sub(since); os.Getenv(benchtime.TimingEnv) != "" && after > takeOverWithin {
 			t.Errorf("%s %v after %s, past the %v bound", step.what, after.Round(time.Millisecond), what, takeOverWithin)
 		}
 	}
@@ -1720,12 +1725,12 @@ func startOutboxPair(t *testing.T) *dispatchPair {
 // 100 ms on both and against each process's own outbox lines:
 //
 //   - never two publishers, at any sample and over the periods the lines show;
-//   - no stretch without a publisher longer than takeOverWithin, the bound the kill and NATS rows
-//     hold a take-over to;
-//   - the run ends with exactly one publisher, waited for up to takeOverWithin after the last
-//     sample rather than demanded of that sample, and that wait counted into a stretch with no
-//     publisher that the last sample was still inside rather than granted on top of it, which is
-//     why it is waited for before the writers are stopped;
+//   - in benchtime's timing lane, no stretch without a publisher longer than takeOverWithin, the
+//     bound the kill and NATS rows hold a take-over to there;
+//   - the run ends with exactly one publisher, waited for after the last sample rather than
+//     demanded of that sample, and that wait counted into a stretch with no publisher that the
+//     last sample was still inside rather than granted on top of it, which is why it is waited
+//     for before the writers are stopped;
 //   - /healthz agrees with the outbox log at every sample it can decide (readBracket);
 //   - each process's lines name its one instance, and every batch either logged was started and
 //     finished inside one of its own periods.
@@ -1854,7 +1859,7 @@ func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
 	if len(sampled) == 0 {
 		t.Fatalf("the sampler read /healthz not once in %v", samplingSpan)
 	}
-	if reached := sampled[len(sampled)-1].after; reached < takeOverWithin {
+	if reached := sampled[len(sampled)-1].after; os.Getenv(benchtime.TimingEnv) != "" && reached < takeOverWithin {
 		t.Fatalf("the %d reads of /healthz reached only %v in, short of the %v take-over bound the row judges gaps against",
 			len(sampled), reached.Round(time.Millisecond), takeOverWithin)
 	}
@@ -1892,7 +1897,7 @@ func requireOnePublisherOverTheSamples(t *testing.T, pair *dispatchPair,
 		}
 		first := run[0]
 		length := end.Sub(first.at())
-		if length >= takeOverWithin {
+		if length >= takeOverWithin && os.Getenv(benchtime.TimingEnv) != "" {
 			t.Errorf("no process reported outbox_publisher true from %v to %v in (%v, at or past the %v take-over bound):\n%s",
 				first.after.Round(time.Millisecond), (first.after + length).Round(time.Millisecond),
 				length.Round(time.Millisecond), takeOverWithin,
@@ -3758,7 +3763,9 @@ func waitOutABucketBoundary(t *testing.T, period time.Duration) {
 		return
 	}
 	t.Logf("waiting %v for the next bucket of the %v period, so both processes tick inside one", left, period)
-	time.Sleep(left + time.Second)
+	testwait.Span(t, left+time.Second, "each process buckets a tick by floor(epoch / period) on its own wall clock, "+
+		"inside a child process no clock of the test reaches, and nothing either process reports marks the next "+
+		"bucket's start: the row needs both processes' first ticks inside one bucket, so it waits the boundary out")
 }
 
 // ───── a sign-in across the processes ───────────────────────────────────────
@@ -4576,25 +4583,36 @@ func awaitDocument(t *testing.T, editor *docstest.Peer) error {
 }
 
 // reconnectEditor connects login's tab to the document on this process again, as the dashboard's
-// provider does once its socket closed: it dials again after a refusal, up to twenty times a
-// tenth of a second apart (a browser backs off too), and returns once the room has sent the tab
-// a document. It answers an error rather than failing the test, so a row counting disconnects
-// can report what it counted.
-func (p *dispatchProcess) reconnectEditor(t *testing.T, login, artifactID string) (*docstest.Peer, error) {
+// provider does once its socket closed: it dials again after a refusal, with no limit on its tries
+// (@hocuspocus/provider's maxAttempts is 0), and returns once the room has sent the tab a
+// document. A tab that never gets back fails the test through the shared wait, which prints the
+// last refusal and this process's output.
+func (p *dispatchProcess) reconnectEditor(t *testing.T, login, artifactID string) *docstest.Peer {
 	t.Helper()
-	var last error
-	for range 20 {
-		editor, err := dialEditor(t, p.documentURL(artifactID), login, artifactID)
+	var editor *docstest.Peer
+	testwait.Until(t, fmt.Sprintf("%s's tab to reconnect to the document and be sent it", login), func() (reconnectRefused, bool) {
+		dialed, err := dialEditor(t, p.documentURL(artifactID), login, artifactID)
 		if err == nil {
-			if err = awaitDocument(t, editor); err == nil {
-				return editor, nil
+			if err = awaitDocument(t, dialed); err == nil {
+				editor = dialed
+				return reconnectRefused{}, true
 			}
-			editor.Close()
+			dialed.Close()
 		}
-		last = err
-		time.Sleep(100 * time.Millisecond)
-	}
-	return nil, fmt.Errorf("reconnect %s's tab: %w", login, last)
+		return reconnectRefused{err: err, process: p}, false
+	})
+	return editor
+}
+
+// reconnectRefused is what reconnectEditor last read: the refusal, and the process that refused,
+// whose output a failure prints whole.
+type reconnectRefused struct {
+	err     error
+	process *dispatchProcess
+}
+
+func (r reconnectRefused) String() string {
+	return fmt.Sprintf("%v; that process's output:\n%s", r.err, r.process.Output.String())
 }
 
 // openSyncedEditor is openEditorAs that also checks that the tab's sync left the durable head
@@ -4721,7 +4739,15 @@ func rewriteDocument(editor *docstest.Peer, change func(*pmdoc.Node) error) erro
 // selecting the paragraph and pressing delete does.
 func deleteParagraph(t *testing.T, editor *docstest.Peer, word string) {
 	t.Helper()
-	if err := rewriteDocument(editor, func(tree *pmdoc.Node) error {
+	if err := removeParagraph(editor, word); err != nil {
+		t.Fatalf("delete the paragraph holding %q: %v", word, err)
+	}
+}
+
+// removeParagraph is deleteParagraph answering its error, for a row that reads a send on a
+// closed socket as the state it is.
+func removeParagraph(editor *docstest.Peer, word string) error {
+	return rewriteDocument(editor, func(tree *pmdoc.Node) error {
 		for index, block := range tree.Children {
 			if strings.Contains(pmdoc.TextContent(block), word) {
 				tree.Children = slices.Delete(tree.Children, index, index+1)
@@ -4729,9 +4755,7 @@ func deleteParagraph(t *testing.T, editor *docstest.Peer, word string) {
 			}
 		}
 		return fmt.Errorf("no paragraph holds %q", word)
-	}); err != nil {
-		t.Fatalf("delete the paragraph holding %q: %v", word, err)
-	}
+	})
 }
 
 // appendMarkdown appends the blocks markdown parses to at the end of the editor's document, as a
@@ -4842,18 +4866,14 @@ func (typing *typist) disconnected() string {
 // keystroke types the typist's text once and waits until the store has moved past where it stood
 // before the keystroke, or until the typist's socket closed, which is a browser's lot when the
 // room it typed into was closed. A closed socket is noted and reconnected before the next
-// keystroke. It answers an error when the typist cannot be reconnected or the keystroke goes
-// nowhere at all.
+// keystroke; a typist that never gets back fails the test through reconnectEditor's shared wait.
+// It answers an error when the keystroke goes nowhere at all.
 func (p *dispatchPair) keystroke(t *testing.T, artifactID string, typing *typist) error {
 	t.Helper()
 	for attempt := 1; ; attempt++ {
 		if peerEnded(typing.editor) {
 			typing.disconnects = append(typing.disconnects, typing.editor.CloseCode())
-			editor, err := typing.process.reconnectEditor(t, typing.login, artifactID)
-			if err != nil {
-				return fmt.Errorf("%s: %w", typing.who, err)
-			}
-			typing.editor = editor
+			typing.editor = typing.process.reconnectEditor(t, typing.login, artifactID)
 			// The tab hands the room the state of its own copy, which holds the keystroke the
 			// room that closed may never have stored. The room appends whatever of it the room
 			// lacks, and nothing at all where that sync changes nothing (ygo calls no update
@@ -4861,7 +4881,7 @@ func (p *dispatchPair) keystroke(t *testing.T, artifactID string, typing *typist
 			// waited for here is the store holding what the tab holds: an append of the tab's
 			// state left in flight would pass the wait below on its own and the keystroke would
 			// be taken for stored.
-			if err := p.storedCaughtUpWith(t, artifactID, editor, typing.who+"'s reconnected tab"); err != nil {
+			if err := p.storedCaughtUpWith(t, artifactID, typing.editor, typing.who+"'s reconnected tab"); err != nil {
 				return err
 			}
 		}
@@ -5199,10 +5219,7 @@ func requireEndsWithin(t *testing.T, editor *docstest.Peer, what string, process
 // dashboard does, and requires the scope the room grants it.
 func reconnectWithScope(t *testing.T, process *dispatchProcess, login, artifactID, scope, what string) *docstest.Peer {
 	t.Helper()
-	editor, err := process.reconnectEditor(t, login, artifactID)
-	if err != nil {
-		t.Fatalf("%s: %v", what, err)
-	}
+	editor := process.reconnectEditor(t, login, artifactID)
 	if granted := authenticateEditor(t, editor); granted != scope {
 		t.Fatalf("%s: the room granted %q, want %q", what, granted, scope)
 	}
@@ -5617,47 +5634,68 @@ func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T) {
 	// The write that is judged here first commits and then publishes, so B learns of its commit
 	// before bob deletes. An earlier agent write through A, which this case does not judge, is
 	// what makes that hold at this row's first commit too: a commit on A closes B's room there
-	// unless an eviction of that room inside the last two seconds holds it off, so where the
-	// earlier write closes B's room, bob's tabs reconnect as a browser's do, and the judged write
-	// lands inside the window that close opened - B's room stays open, and behind.
+	// unless an eviction of that room shortly before holds it off, so where the earlier write
+	// closes B's room, bob's tabs reconnect as a browser's do, and the judged write lands inside
+	// the window that close opened - B's room stays open, and behind.
+	//
+	// The case measures something only while B's room stays open with bob's delete in it until
+	// the write is judged. A run whose own setup outlasted that window finds B's room closed,
+	// which ends bob's tabs; that run is let go and the case set up again on a fresh document,
+	// through the shared wait, so the state itself, read as the write is released to be judged,
+	// decides the row and no reading of this host's clock does.
 	t.Run("after the commit: a delete on the other process is reported in lost_ops", func(t *testing.T) {
-		artifactID, bob, bobsOtherTab := open(t, "Deleted before the agent publishes")
 		const earlier = "Intro, first.\n\nThe pear is ripe.\n\nOutro.\n"
-		if answer := pair.a.send(t, http.MethodPost, editPath(artifactID), editBody(t, "Intro.", "Intro, first.", "", true), asAgent()); answer.status != http.StatusOK {
-			t.Fatalf("the agent's earlier write through A: %v", answer)
-		}
-		var evicted time.Time
-		if err := bobsOtherTab.WaitForText(t, markdown, earlier); err != nil {
-			if !peerEnded(bobsOtherTab) {
-				t.Fatalf("the agent's earlier write through A reached neither bob's tab on B nor closed it: %v", err)
+		runs := 0
+		judgedWhileOpen := func() (httpAnswer, string, bool) {
+			runs++
+			artifactID, bob, bobsOtherTab := open(t, fmt.Sprintf("Deleted before the agent publishes, run %d", runs))
+			if answer := pair.a.send(t, http.MethodPost, editPath(artifactID), editBody(t, "Intro.", "Intro, first.", "", true), asAgent()); answer.status != http.StatusOK {
+				t.Fatalf("the agent's earlier write through A: %v", answer)
 			}
-			evicted = time.Now()
-			t.Logf("the earlier write closed B's room (bob's tab: close code %d); bob's tabs reconnect", bobsOtherTab.CloseCode())
-			bob = pair.reconnectSynced(t, pair.b, "bob", artifactID)
-			bobsOtherTab = pair.reconnectSynced(t, pair.b, "bob", artifactID)
-			// The judged write is to fork the store, as a cold write does, so the room the
-			// earlier write's publish left on A has to be gone before it runs.
-			testwait.Eventually(t, "A to let go of the room the earlier write's publish loaded, so the judged write forks cold",
-				func() bool { return !pair.a.holdsRoom(t, artifactID) })
-		}
-		pair.a.armLiveWritePause(t, artifactID, docs.PauseAfterCommit)
-		write := pair.a.requestInBackground(http.MethodPost, editPath(artifactID), editBody(t, "pear", "pear tart", "", true), asAgent())
-		pair.a.awaitLiveWriteParked(t, artifactID, docs.PauseAfterCommit)
-		// The write is committed; bob's delete reaches B's room now, and B stores it 300 ms on.
-		pair.b.holdPersistence(t, artifactID, 300*time.Millisecond)
-		deleteP(t, artifactID, bob, bobsOtherTab, "Intro, first.\n\nOutro.\n")
-		if !evicted.IsZero() {
-			// A validity guard on this case's own setup, not on the product: the steps above run
-			// on this host's clock, and B's eviction window is two seconds, so a run that spent
-			// most of it before the write was judged measured nothing and says so.
-			if spent := time.Since(evicted); spent >= 1500*time.Millisecond {
-				t.Fatalf("the judged write and bob's delete took %v of B's two-second eviction window, so B's room may close before the write is judged; this case measured nothing", spent)
+			if err := bobsOtherTab.WaitForText(t, markdown, earlier); err != nil {
+				if !peerEnded(bobsOtherTab) {
+					t.Fatalf("the agent's earlier write through A reached neither bob's tab on B nor closed it: %v", err)
+				}
+				t.Logf("the earlier write closed B's room (bob's tab: close code %d); bob's tabs reconnect", bobsOtherTab.CloseCode())
+				bob = pair.reconnectSynced(t, pair.b, "bob", artifactID)
+				bobsOtherTab = pair.reconnectSynced(t, pair.b, "bob", artifactID)
+				// The judged write is to fork the store, as a cold write does, so the room the
+				// earlier write's publish left on A has to be gone before it runs.
+				testwait.Eventually(t, "A to let go of the room the earlier write's publish loaded, so the judged write forks cold",
+					func() bool { return !pair.a.holdsRoom(t, artifactID) })
 			}
+			pair.a.armLiveWritePause(t, artifactID, docs.PauseAfterCommit)
+			write := pair.a.requestInBackground(http.MethodPost, editPath(artifactID), editBody(t, "pear", "pear tart", "", true), asAgent())
+			pair.a.awaitLiveWriteParked(t, artifactID, docs.PauseAfterCommit)
+			// The write is committed; bob's delete reaches B's room now, and B stores it 300 ms on.
+			pair.b.holdPersistence(t, artifactID, 300*time.Millisecond)
+			roomOpen := !peerEnded(bob) && !peerEnded(bobsOtherTab)
+			if roomOpen {
+				if err := removeParagraph(bob, "pear"); err != nil && !peerEnded(bob) {
+					t.Fatalf("delete the paragraph holding %q: %v", "pear", err)
+				}
+				if err := bobsOtherTab.WaitForText(t, markdown, "Intro, first.\n\nOutro.\n"); err != nil && !peerEnded(bobsOtherTab) {
+					t.Fatalf("B's room never showed bob's delete of P to his other tab: %v; %s", err, pair.roomCloses(t, artifactID))
+				}
+				// The state the case needs, read as the write is released to be judged: B's room
+				// still open, so bob's tabs still connected, with his delete in it.
+				roomOpen = !peerEnded(bob) && !peerEnded(bobsOtherTab)
+			}
+			if !pair.a.releaseLiveWritePause(t, artifactID, docs.PauseAfterCommit) {
+				t.Fatalf("the release found no write parked")
+			}
+			answer := write.await(t, "the agent's edit through A, after its release", pair.a)
+			if !roomOpen {
+				return answer, fmt.Sprintf("run %d: B closed its room of the document before the write was judged; %s", runs, pair.roomCloses(t, artifactID)), false
+			}
+			return answer, "", true
 		}
-		if !pair.a.releaseLiveWritePause(t, artifactID, docs.PauseAfterCommit) {
-			t.Fatalf("the release found no write parked")
-		}
-		answer := write.await(t, "the agent's edit through A, after its release", pair.a)
+		var answer httpAnswer
+		testwait.Until(t, "a run of the case whose write is judged while B's room still holds bob's delete", func() (string, bool) {
+			judged, reading, held := judgedWhileOpen()
+			answer = judged
+			return reading, held
+		})
 		if answer.status != http.StatusOK {
 			t.Fatalf("the agent's committed write answered %v, want 200 with lost_ops", answer)
 		}
@@ -5679,10 +5717,7 @@ func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T) {
 func (p *dispatchPair) reconnectSynced(t *testing.T, process *dispatchProcess, login, artifactID string) *docstest.Peer {
 	t.Helper()
 	before := storedHead(t, p, artifactID)
-	editor, err := process.reconnectEditor(t, login, artifactID)
-	if err != nil {
-		t.Fatalf("%v:\n%s", err, process.Output.String())
-	}
+	editor := process.reconnectEditor(t, login, artifactID)
 	if head := storedHead(t, p, artifactID); head != before {
 		t.Fatalf("the document moved from update %d to %d while %s's tab reconnected on %s: a sync that changes nothing stores nothing, so something else wrote the document",
 			before, head, login, p.name(process))
@@ -6749,7 +6784,10 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 			message.Deliveries[0].Error == nil || *message.Deliveries[0].Error != "no live session never-known" {
 			t.Fatalf("deliveries = %#v, want attempt 1 failed with %q", message.Deliveries, "no live session never-known")
 		}
-		if took > 15*time.Second {
+		// How soon the send answers is a reading of this machine's clock against the take-over
+		// window's timer inside the child process, so only benchtime's timing lane holds it to a
+		// figure; that the send settles failed, one attempt with one receipt, is held on every run.
+		if os.Getenv(benchtime.TimingEnv) != "" && took > 15*time.Second {
 			t.Fatalf("the send to a session the listener never knows answered %v after it was made, want within 15s: "+
 				"it waits out the %v take-over window and settles failed", took, quickTakeoverWindow)
 		}
@@ -6897,13 +6935,19 @@ func TestAWebhookRedeliveryWhoseProcessDiedAfterItsClaimIsRequestedAgain(t *test
 	binary := cmdtest.Build(t, "envoy-dispatch")
 
 	first := startRedeliverWebhooks(t, binary, env)
-	select {
-	case <-proxy.held:
-	case <-first.Exited:
-		t.Fatalf("the first run exited before it asked GitHub for the delivery:\n%s", first.Output.String())
-	case <-time.After(60 * time.Second):
-		t.Fatalf("the first run asked GitHub for no delivery within a minute:\n%s", first.Output.String())
-	}
+	testwait.Until(t, "the first run to ask GitHub for the delivery", func() (string, bool) {
+		select {
+		case <-proxy.held:
+			return "", true
+		default:
+		}
+		select {
+		case <-first.Exited:
+			t.Fatalf("the first run exited before it asked GitHub for the delivery:\n%s", first.Output.String())
+		default:
+		}
+		return "the first run has asked GitHub for nothing; its output:\n" + first.Output.String(), false
+	})
 	if err := first.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the first run: %v", err)
 	}
@@ -7561,10 +7605,13 @@ func TestEveryTestHookActsOnBothProcesses(t *testing.T) {
 	pair.a.call(t, http.MethodPost, "/api/v1/live/_test/disconnect", "", http.StatusOK)
 	waited := time.Since(called)
 	t.Logf("the disconnect hook on A answered %v after B was killed", waited)
-	// The hook's timeout is ten seconds, inside the killed process; an answer inside it is one
-	// that did not wait for B. Nothing either process records says "this answer did not wait",
-	// so this reading of the test's own clock over one call is what tells the two apart.
-	if waited >= 10*time.Second {
+	// The hook's timeout is ten seconds, on A's clock inside a child process. A call that waited
+	// for B to that timeout would answer 504 TEST_HOOK_TIMEOUT, which the 200 the call requires
+	// already refuses, and internal/dispatch/api's TestATestHookStopsWaitingForAProcessWhoseLockIsGone
+	// proves on a fake clock that never reaches the timeout that the call stops waiting once B's
+	// lock is gone. How far inside the timeout the answer came is a reading of this machine's
+	// clock, so only benchtime's timing lane holds it to a figure.
+	if os.Getenv(benchtime.TimingEnv) != "" && waited >= 10*time.Second {
 		t.Fatalf("the disconnect hook on A answered %v after B was killed, want well inside the 10s timeout", waited)
 	}
 	requireSocketClosed(t, survivor, gws.CloseServiceRestart,

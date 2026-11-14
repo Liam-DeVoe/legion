@@ -332,10 +332,21 @@ func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
 	ctx := context.Background()
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 
+	// Whether a touch loaded the room is read from ygo's load hook, never from the room still being
+	// resident after it: the shortened sweep may retire a room idle for two seconds, and how soon
+	// the test reads after the touch is the machine's to decide.
+	var loads atomic.Int64
+	load := service.srv.OnLoadDocument
+	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
+		if room == artifactID {
+			loads.Add(1)
+		}
+		return load(ctx, room, doc)
+	}
 	resident := func() bool { return slices.Contains(service.srv.Rooms(), artifactID) }
 	leaves := func(touch string) {
 		t.Helper()
-		if !resident() {
+		if loads.Load() == 0 {
 			t.Fatalf("the %s did not load the document's room", touch)
 		}
 		waitFor(t, fmt.Sprintf("ygo's idle sweep to evict the document's room after the %s, the API's last touch (idle timeout %v)", touch, service.srv.RoomIdleTimeout), func() bool {
@@ -347,7 +358,7 @@ func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent edit: %v", err)
 	}
-	if resident() {
+	if loads.Load() != 0 || resident() {
 		t.Fatal("the agent's edit of a document no room held loaded its room")
 	}
 

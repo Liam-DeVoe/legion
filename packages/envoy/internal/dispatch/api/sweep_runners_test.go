@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -120,10 +121,10 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 	}
 
 	runSweep(t, func(ctx context.Context) {
-		runSuggestionOutcomeSweep(ctx, firstPool, sweepHorizon(firstPool), nil, sweepRunnerSchedule)
+		runSuggestionOutcomeSweep(ctx, clock.Real(), firstPool, sweepHorizon(firstPool), nil, sweepRunnerSchedule)
 	})
 	runSweep(t, func(ctx context.Context) {
-		runSuggestionOutcomeSweep(ctx, secondPool, sweepHorizon(secondPool), nil, sweepRunnerSchedule)
+		runSuggestionOutcomeSweep(ctx, clock.Real(), secondPool, sweepHorizon(secondPool), nil, sweepRunnerSchedule)
 	})
 	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
@@ -161,7 +162,7 @@ func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
 	pool, statements := recordedPool(t, database)
 	wake := make(chan struct{}, 1)
 	runSweep(t, func(ctx context.Context) {
-		runSuggestionOutcomeSweep(ctx, pool, sweepHorizon(pool), wake, sweepRunnerSchedule)
+		runSuggestionOutcomeSweep(ctx, clock.Real(), pool, sweepHorizon(pool), wake, sweepRunnerSchedule)
 	})
 	passes := func() int { return countStatements(statements.Statements(), cursorHeld) }
 

@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
@@ -912,15 +913,19 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 		t.Fatalf("query through the proxy before the outage: %v", err)
 	}
 
-	// The load balancer's own timeout: a poll it has not heard back from in five seconds is a
-	// failure, and three consecutive failures replace the task.
-	client := &http.Client{Timeout: 5 * time.Second}
-
+	// The load balancer's own timeout is five seconds: a poll it has not heard back from in that
+	// long is a failure, and three consecutive failures replace the task. Whether this answer
+	// came inside it is a reading of this machine's clock against store.healthProbeTimeout's
+	// timer, so only benchtime's timing lane holds it to that figure; every run requires the
+	// answer, and the 503 below, through the shared wait's own bound.
 	blackholed.Store(true)
 	started := time.Now()
-	response, err := client.Get(server.URL + "/healthz")
+	response, err := healthzWithin(t, server.URL)
 	if err != nil {
 		t.Fatalf("health probe with Postgres unreachable: %v (after %s)", err, time.Since(started))
+	}
+	if took := time.Since(started); os.Getenv(benchtime.TimingEnv) != "" && took >= 5*time.Second {
+		t.Fatalf("health probe with Postgres unreachable answered after %s, past the load balancer's five seconds", took)
 	}
 	defer response.Body.Close()
 	var health map[string]any
@@ -947,7 +952,9 @@ func (unansweringBucket) Healthy(ctx context.Context) error {
 // /healthz still answers inside the tightest prober's three seconds when Postgres and the
 // file store's bucket both stop answering. Each probe is bounded at two seconds on its own, so
 // run one after the other they took four, and the compose healthcheck and the deploy script
-// read that silence as a dead process; run side by side they take two.
+// read that silence as a dead process; run side by side they take two. That figure is a reading
+// of this machine's clock against the two probes' timers, so only benchtime's timing lane holds
+// it; every run requires the answer and its 503.
 func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) {
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
@@ -968,12 +975,14 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}))
 	defer server.Close()
 
-	client := &http.Client{Timeout: 3 * time.Second}
 	blackholed.Store(true)
 	started := time.Now()
-	response, err := client.Get(server.URL + "/healthz")
+	response, err := healthzWithin(t, server.URL)
 	if err != nil {
 		t.Fatalf("health probe with Postgres and the bucket unreachable: %v (after %s)", err, time.Since(started))
+	}
+	if took := time.Since(started); os.Getenv(benchtime.TimingEnv) != "" && took >= 3*time.Second {
+		t.Fatalf("health probe with Postgres and the bucket unreachable answered after %s, past the tightest prober's three seconds", took)
 	}
 	defer response.Body.Close()
 	var health map[string]any
@@ -984,6 +993,17 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 		t.Fatalf("health probe with Postgres and the bucket unreachable = %d %#v, want 503 with db and files false",
 			response.StatusCode, health)
 	}
+}
+
+// healthzWithin is one GET of /healthz at serverURL under the shared wait's context, which ends
+// only near the test binary's deadline: a probe that never answers fails there.
+func healthzWithin(t *testing.T, serverURL string) (*http.Response, error) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, serverURL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("build the health probe: %v", err)
+	}
+	return http.DefaultClient.Do(request)
 }
 
 // blackholePostgres puts a proxy in front of upstream and returns its address. While blackholed

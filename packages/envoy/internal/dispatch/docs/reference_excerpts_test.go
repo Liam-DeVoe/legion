@@ -326,14 +326,13 @@ func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) 
 	failing, last := documents[:referenceExcerptBatch], documents[referenceExcerptBatch]
 	persistence := newUnreadableDocumentStore(database, failing...)
 	// A fake the test never moves is the service's clock, so no failing document's retry can fall
-	// due while the test runs (refs.DeferExcerpts writes next_attempt_at from that clock), and the
-	// loop's gap is shortened so the pass the wake earns comes at once.
+	// due while the test runs (refs.DeferExcerpts writes next_attempt_at from that clock). The loop
+	// runs at the server's own schedule: the pass the wake earns comes within its two-second gap,
+	// which the waits below wait out.
 	service := newExcerptServiceOn(t, database, persistence, clocktest.Held())
 	leases := excerptLeases(t, database)
 	wake := make(chan struct{}, 1)
-	runExcerpts(t, func(ctx context.Context) {
-		service.runReferenceExcerptReconciliation(ctx, leases, wake, excerptSchedule{minGap: 100 * time.Millisecond, retryBase: referenceExcerptSchedule.retryBase})
-	})
+	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, wake) })
 
 	waitFor(t, "the twenty-first document's excerpt", func() bool { return !isOwed(t, database, last) })
 	later := owedDocuments(t, database, 1)[0]

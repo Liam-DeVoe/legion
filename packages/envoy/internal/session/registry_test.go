@@ -245,21 +245,25 @@ func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
 	}
 
 	entry := SessionEntry{Port: 13381, MachineID: "test-machine", Dir: "/test"}
-	if err := reg.Put("ses_refresh", entry); err != nil {
-		t.Fatalf("put failed: %v", err)
+	// ses_control is written beside the first write and never refreshed, so its expiry marks the
+	// first write's deadline on the clocks that judge both: nats-server's Created stamp and the
+	// registry's local expiry over it.
+	for _, sessionID := range []string{"ses_refresh", "ses_control"} {
+		if err := reg.Put(sessionID, entry); err != nil {
+			t.Fatalf("put %s failed: %v", sessionID, err)
+		}
 	}
 
-	// A row's deadline is one TTL past the record's Created, which nats-server stamps on its own
-	// clock; a refresh resets it only because the second write's Created is later. No clock of
-	// ours reaches that stamp, so these spans are real: the first moves the server's Created to
-	// halfway through the TTL before the refresh, the second takes real time past the first
-	// write's deadline, where the refreshed row must still be here. The registry reads the same
-	// real clock, so its local expiry judges the row against the same moments.
-	time.Sleep(1500 * time.Millisecond)
+	// A refresh resets the row's deadline only because the second write's Created is later.
+	testwait.Span(t, 1500*time.Millisecond, "nats-server stamps Created on its own clock, which no clock of the "+
+		"test moves; the refresh must carry a stamp halfway through the TTL, and only real time passing gives it one")
 	if err := reg.Put("ses_refresh", entry); err != nil {
 		t.Fatalf("refresh put failed: %v", err)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	testwait.Eventually(t, "the control record, written beside the first write, to expire", func() bool {
+		_, err := reg.Get("ses_control")
+		return err != nil
+	})
 
 	if _, err := reg.Get("ses_refresh"); err != nil {
 		t.Fatalf("expected entry to still exist after TTL refresh, got: %v", err)

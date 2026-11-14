@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"net"
@@ -268,8 +267,7 @@ func TestServerClosesConnectionsAfterShutdownBegins(t *testing.T) {
 	}()
 
 	<-entered
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- server.Config.Shutdown(ctx) }()
 
