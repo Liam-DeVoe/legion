@@ -4,9 +4,9 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 
 // loopback-dsn.py's tests: the helper reads each DSN with the real libpq of this host, so every
 // case asserts the answer libpq gave the helper rather than a pattern of the DSN's text. The
-// last block drives lib/loopback-dsn.sh's run_database_url, which the proofs call and lib/rig.sh
-// sources, and pins the connection string it answers with. A host with no python3 or no libpq
-// skips them, naming what it lacks.
+// last two blocks drive lib/loopback-dsn.sh's run_database_url and run_database_uri, which the
+// proofs call and lib/rig.sh sources, and pin the connection string and the URI they answer
+// with. A host with no python3 or no libpq skips them, naming what it lacks.
 
 const root = join(import.meta.dir, "..", "..", "..");
 const helper = join(import.meta.dir, "loopback-dsn.py");
@@ -29,9 +29,9 @@ function guard(dsn: string): { code: number; host: string; refusal: string } {
   };
 }
 
-/** The shell a run_database_url case runs: the rig as a proof sources it, with the note and the
- *  fail every proof defines, and the `|| fail` each caller of the function writes. $1 is the
- *  checkout, and $2 to $5 are the function's own arguments. */
+/** The shell a run_database_url or run_database_uri case runs: the rig as a proof sources it,
+ *  with the note and the fail every proof defines, and the `|| fail` each caller of the function
+ *  writes. $1 is the checkout, $2 the function, and $3 to $6 are the function's own arguments. */
 const rig = `set -euo pipefail
 note() { :; }
 fail() { echo "$*" >&2; exit 1; }
@@ -40,14 +40,19 @@ evidence=''
 work=''
 timeout_hook=''
 . "$root/scripts/e2e/lib/rig.sh"
-run_database_url url "$2" "$3" "$4" "$5" || fail "$url"
+"$2" url "$3" "$4" "$5" "$6" || fail "$url"
 printf '%s\\n' "$url"
 `;
 
-/** What run_database_url answered for dsn and database: its exit status, the connection string
- *  it assigned, and the line it failed with. */
-function rewrite(dsn: string, database: string): { code: number; url: string; refusal: string } {
-  const run = Bun.spawnSync(["bash", "-c", rig, "rig", root, variable, dsn, database, what], {
+/** What run_database_url (or, with `uri`, run_database_uri) answered for dsn and database: its
+ *  exit status, the connection string it assigned, and the line it failed with. */
+function rewrite(
+  dsn: string,
+  database: string,
+  uri = false
+): { code: number; url: string; refusal: string } {
+  const fn = uri ? "run_database_uri" : "run_database_url";
+  const run = Bun.spawnSync(["bash", "-c", rig, "rig", root, fn, variable, dsn, database, what], {
     stderr: "pipe",
     stdout: "pipe",
   });
@@ -388,3 +393,88 @@ describe.skipIf(skip)("lib/loopback-dsn.sh's run_database_url names the run's ow
     );
   });
 });
+
+describe.skipIf(skip)(
+  "lib/loopback-dsn.sh's run_database_uri names the run's own database as a URI",
+  () => {
+    const database = "ppd_7_head_1_1";
+    // The rows of the block above and two more, each with the URI the function answers with and
+    // the host a URL parser reads from that URI, which is the host libpq reads from the DSN. A
+    // consumer that takes the URI reads it with a URL parser (Go's net/url under pgx, the WHATWG
+    // `URL` here), so a `?` or `=` of the user name is percent-encoded and ends nothing there, and
+    // ::1 is written in brackets. The port `5432@10.1.2.3` libpq reads in the fifth reaches the URI
+    // percent-encoded, where libpq reads it back the same and a URL parser refuses the URI whole
+    // (null), so a consumer of either kind connects nowhere else. The last row's password holds a
+    // space, a single quote and an `@`, each encoded.
+    const rows: [string, string, string | null][] = [
+      [
+        "postgres://u?x:p@localhost:5433/db",
+        `postgres://u%3Fx:p@localhost:5433/${database}`,
+        "localhost",
+      ],
+      [
+        "postgres://evil.example?x=@localhost",
+        `postgres://evil.example%3Fx%3D@localhost/${database}`,
+        "localhost",
+      ],
+      ["postgres://localhost/db?", `postgres://localhost/${database}`, "localhost"],
+      [
+        "postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable",
+        `postgres://legion_test@127.0.0.1:5433/${database}?sslmode=disable`,
+        "127.0.0.1",
+      ],
+      [
+        "postgres://u@localhost:5432@10.1.2.3/db",
+        `postgres://u@localhost:5432%4010.1.2.3/${database}`,
+        null,
+      ],
+      [
+        "postgres://evil.example?@localhost/db",
+        `postgres://evil.example%3F@localhost/${database}`,
+        "localhost",
+      ],
+      [
+        "postgres://u@127.0.0.1:5433/postgres?dbname=other&sslmode=disable",
+        `postgres://u@127.0.0.1:5433/${database}?sslmode=disable`,
+        "127.0.0.1",
+      ],
+      ["postgres://u:p@[::1]:5432/db", `postgres://u:p@[::1]:5432/${database}`, "[::1]"],
+      [
+        `postgres://u:${spacedPassword}@localhost/db`,
+        `postgres://u:${spacedPassword}@localhost/${database}`,
+        "localhost",
+      ],
+    ];
+    for (const [dsn, uri, host] of rows) {
+      test(`${dsn} is rewritten to that database as ${uri}`, () => {
+        expect(rewrite(dsn, database, true)).toEqual({ code: 0, url: uri, refusal: "" });
+        expect(URL.canParse(uri) ? new URL(uri).hostname : null).toBe(host);
+      });
+    }
+
+    test("a DSN the guard refuses is refused by name, and no URI is printed", () => {
+      const answer = rewrite(
+        `postgres://legion_test:${password}@db.prod.example/db`,
+        database,
+        true
+      );
+      expect(answer.code).toBe(1);
+      expect(answer.url).toBe("");
+      expect(answer.refusal).toBe(
+        `${variable} must name 127.0.0.1, localhost or ::1: libpq reads the host db.prod.example,` +
+          ` and ${what}`
+      );
+    });
+
+    test("a percent-encoded newline in the password is refused by its keyword", () => {
+      const answer = rewrite(`postgres://u:${newlinePassword}@localhost/db`, database, true);
+      expect(answer.code).toBe(1);
+      expect(answer.url).toBe("");
+      expect(answer.refusal).toBe(
+        `${variable} gives password U+000A, a character that does not print: it reaches the` +
+          " rewritten connection string, where a caller writes that string into a file, and this" +
+          " refusal prints no value that holds one"
+      );
+    });
+  }
+);

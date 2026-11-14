@@ -17,20 +17,21 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Nine call sites read a DSN with this guard before they start anything, because the server must
-# be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
+# Ten call sites read a DSN with this guard before they start anything, because the server must
+# be this machine's. Eight are proofs of their own: plan-pointer-drive.sh,
 # verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
-# envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
-# eighth is lib/two-builds.sh, the harness the two two-builds proofs share, which reads
-# DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. The ninth is
-# lib/live-daemon-proof.sh, whose prerequisites check
+# envoy-session-states.sh, envoy-session-delivery.sh, dispatch-session-settings.sh and
+# stage1-skeleton.sh. The ninth is lib/two-builds.sh, the harness the two two-builds proofs
+# share, which reads DATABASE_URL once for dispatch-two-builds.sh and
+# dispatch-search-two-builds.sh. The tenth is lib/live-daemon-proof.sh, whose prerequisites check
 # reads LEGION_TEST_PG_DSN for each of the nine proofs that make that run: behind-entry-fence.sh,
 # child-adoption.sh, claim-compaction.sh, conflict-no-takeover.sh, handoff-records.sh,
 # late-completion.sh, phase-entry-converge.sh, provider-error-retry.sh and role-prompt-rule.sh.
-# Seven of the nine call sites call this function.
+# Seven of the ten call sites call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
-# run_database_url alone, which begins with this guard's own check. Every proof that writes a
-# server its caller's DSN names reads that DSN with this guard before it starts anything.
+# run_database_url alone, and stage1-skeleton.sh with run_database_uri alone, each of which
+# begins with this guard's own check. Every proof that writes a server its caller's DSN names
+# reads that DSN with this guard before it starts anything.
 #
 # libpq's own parser answers which host the DSN names, because libpq and a URL parser read
 # different text as the host. libpq ends the user name at the first `@` and starts no query
@@ -43,20 +44,18 @@
 #
 # So the client the run connects with must be this one. A proof that reads the DSN with a second
 # parser decides the host twice, and the host it connects to is the second answer. Each of the
-# nine proofs those eight call sites serve reaches that server with psql, which is libpq. Five
-# of them give every server
-# they start the connection string run_database_url below rebuilds, which libpq read back inside
-# the helper.
+# ten proofs those nine call sites serve reaches that server with psql, which is libpq. Eight of
+# them give every server they start a database of the run's own, in the connection string
+# run_database_url or run_database_uri below rebuilds, which libpq read back inside the helper.
 #
-# The other four read the DSN a second time, with pgx. lib/two-builds.sh:289, which starts both
-# servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh,
-# verification-results.sh:206 and dispatch-claimant-delivery.sh:169 give Dispatch the caller's
-# raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
-# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those four safe. The
+# The other two read the DSN a second time, with pgx. lib/two-builds.sh:289, which starts both
+# servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh, gives Dispatch the
+# caller's raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
+# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those two safe. The
 # pinned pgx reads these shapes as libpq does, because pgx v5.11.0's own pgconn/parse_url.go is
-# written to match libpq's URI parser and says so in its first comment. And all four run
-# Dispatch with DISPATCH_DEV_SIGNIN=1, whose boot reads the host again with pgx and refuses one
-# that is not loopback (loopbackDatabase, packages/envoy/cmd/dispatch/main.go:1270-1284).
+# written to match libpq's URI parser and says so in its first comment. And both run Dispatch
+# with DISPATCH_DEV_SIGNIN=1, whose boot reads the host again with pgx and refuses one that is
+# not loopback (loopbackDatabase, packages/envoy/cmd/dispatch/main.go:1270-1284).
 #
 # Nothing enforces that pin. The pin is `github.com/jackc/pgx/v5 v5.11.0` in
 # packages/envoy/go.mod:31 and packages/daemon/go.mod:13, with its checksum in each go.sum.
@@ -65,12 +64,12 @@
 # version is in use. dispatch://INFRA-2338 tracks that gap. A raise is a deliberate edit of those
 # files, and this comment is the one text that says what such a raise moves:
 # scripts/e2e/README.md and packages/daemon/internal/testpg/testdb/testdb_test.go point here
-# rather than write it again. Whoever raises pgx moves the safety of those four proofs, and of
+# rather than write it again. Whoever raises pgx moves the safety of those two proofs, and of
 # the rewrite check the next paragraph names, and must drive this guard's own cases
 # (lib/loopback-dsn.test.ts) and that check's own cases
 # (packages/daemon/internal/testpg/testdb/testdb_test.go) again.
 #
-# The ninth call site's binary rewrites that DSN itself, and this guard reaches no further than
+# The tenth call site's binary rewrites that DSN itself, and this guard reaches no further than
 # the shell. That rewrite, and the check that keeps it on the host this guard read, are written
 # once, on DatabaseURL in packages/daemon/internal/testpg/testdb/testdb.go. The two frames divide
 # this way: this guard reads the caller's DSN with libpq in the shell, before anything starts,
@@ -119,10 +118,21 @@ run_database_url() {
   _loopback_dsn "$1" "$2" "$3" "$5" --dbname "$4"
 }
 
-# _loopback_dsn VAR NAME DSN WHAT [--dbname DATABASE] assigns VAR what lib/loopback-dsn.py
-# printed for the DSN, which is the host, the rebuilt connection string or the one refusal line,
-# and returns that helper's own status. The two helpers above share this one call to it. The
-# locals' names are ones no caller passes: printf -v would otherwise assign the local.
+# run_database_uri VAR NAME DSN DATABASE WHAT is run_database_url for a consumer that reads a
+# URL: it assigns VAR the same keywords as a connection URI, `postgres://…/DATABASE?…`, which
+# libpq read back as it reads the keyword/value string, and refuses what that function refuses
+# (lib/loopback-dsn.py's --uri). verification-results.sh and dispatch-claimant-delivery.sh hand
+# it to Dispatch and their drivers, and stage1-skeleton.sh writes it into the daemon's
+# configuration, whose settings check reads a DSN that leaks there by its `postgres://`.
+run_database_uri() {
+  _loopback_dsn "$1" "$2" "$3" "$5" --dbname "$4" --uri
+}
+
+# _loopback_dsn VAR NAME DSN WHAT [--dbname DATABASE [--uri]] assigns VAR what
+# lib/loopback-dsn.py printed for the DSN, which is the host, the rebuilt connection string or
+# URI, or the one refusal line, and returns that helper's own status. The three helpers above
+# share this one call to it. The locals' names are ones no caller passes: printf -v would
+# otherwise assign the local.
 #
 # The DSN goes to the helper through the environment of this command substitution's own subshell.
 # `env NAME=$DSN python3 …` would put the password in env(1)'s argument list, which

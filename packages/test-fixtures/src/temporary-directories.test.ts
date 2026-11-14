@@ -178,7 +178,7 @@ describe("a pathological prefix", () => {
     const made = trimmed();
     expect(basename(made)).toStartWith("prefix-");
     expect(basename(made)).not.toContain("--");
-  }, 5_000);
+  });
 });
 
 /**

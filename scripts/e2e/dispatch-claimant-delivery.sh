@@ -15,8 +15,10 @@
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/dispatch-claimant-delivery.sh
 #
-# DATABASE_URL is required and must name a loopback host: the run drops and recreates its `public`
-# schema before the server migrates it, and leaves what the run wrote there for inspection.
+# DATABASE_URL is required and must name a loopback host: the run makes a database of its own on
+# that server (lib/loopback-dsn.sh's run_database_uri), which the server migrates, and hands
+# Dispatch that database alone, never the one DATABASE_URL names. A run that passes drops it; one
+# that fails keeps it for inspection and names it.
 # DISPATCH_BIN names a prebuilt envoy-dispatch (the negative control runs one built from the base
 # commit); unset, the script builds ./cmd/dispatch from this checkout. The ports are
 # CLAIMANT_E2E_DISPATCH_PORT (19051) and CLAIMANT_E2E_ENVOY_PORT (19053), each refused when
@@ -33,12 +35,15 @@ begin() { check=$1; echo "== $check"; }
 note() { echo "   $*"; }
 pass() { echo "ok $check"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
-# What lib/rig.sh reads of its caller: start_process and await_start log under $evidence/logs, the
-# work directory's once the build makes it.
+# What lib/rig.sh reads of its caller: start_process and wait_for log under $evidence/logs and
+# $work, the work directory's once the build makes it.
 evidence=''
 timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# Twice the longest green run on record, rounded up to the minute: 20 green e2e.yaml jobs (7 of
+# them in green runs) up to 2026-11-14, the longest proof step 159 s (run 42820092892).
+proof_guard 360
 
 # DISPATCH_BIN is this script's input, read before the sweep below drops every DISPATCH_* variable.
 dispatch_bin=${DISPATCH_BIN:-}
@@ -59,6 +64,9 @@ done
 
 # The work directory is made once the prerequisites hold, so a refused run leaves nothing behind.
 work=''
+# The run's own database on DATABASE_URL's server, once made, and the URI Dispatch is given.
+database=''
+dispatch_database_url=''
 nats_pid=''
 fake_envoy_pid=''
 dispatch_pid=''
@@ -72,6 +80,12 @@ cleanup() {
   stop_pid "$dispatch_pid"
   stop_pid "$fake_envoy_pid"
   stop_pid "$nats_pid"
+  if [ -n "$database" ] && [ "$rc" -eq 0 ]; then
+    psql "$database_url" -X -q -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+      echo "could not drop the run's database $database; drop it by hand" >&2
+  elif [ -n "$database" ]; then
+    echo "the run's database $database is kept on DATABASE_URL's server for inspection" >&2
+  fi
   if [ -z "$work" ]; then
     echo "dispatch claimant delivery e2e: FAIL at $check after $((SECONDS - started))s" >&2
   elif [ "$rc" -eq 0 ]; then
@@ -89,7 +103,7 @@ trap 'cleanup 143' TERM
 
 begin prerequisites
 [ -n "$database_url" ] ||
-  fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
+  fail "DATABASE_URL is required: it names a loopback PostgreSQL server this run makes a database of its own on (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
 for tool in go bun curl psql openssl python3; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
@@ -97,7 +111,7 @@ case "$database_url" in
   postgres://* | postgresql://*) ;;
   *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
 esac
-require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
+require_loopback_dsn db_host DATABASE_URL "$database_url" "this run creates a database there" || fail "$db_host"
 if [ -n "$dispatch_bin" ]; then
   [ -x "$dispatch_bin" ] || fail "DISPATCH_BIN=$dispatch_bin is not an executable file"
 fi
@@ -127,18 +141,23 @@ go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/
   fail "./internal/testnats/cmd/natsd did not build"
 pass
 
-begin reset-database
-# Empty, migrations included: the server migrates the new schema at boot, so a base binary and this
-# checkout's each start from a database of their own migrations.
-psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c 'set client_min_messages = warning' \
-  -c 'drop schema if exists public cascade' -c 'create schema public' >/dev/null ||
-  fail "could not reset the database's public schema"
+begin database
+# Empty, migrations included: the server migrates the new database at boot, so a base binary and
+# this checkout's each start from a database of their own migrations, and no run writes the
+# database DATABASE_URL names.
+run_db=dispatch_claimant_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+run_database_uri dispatch_database_url DATABASE_URL "$database_url" "$run_db" \
+  "this run creates a database there" || fail "$dispatch_database_url"
+psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c "create database \"$run_db\"" >/dev/null ||
+  fail "could not create database $run_db on DATABASE_URL's server"
+database=$run_db
+note "the run's database is $database"
 pass
 
 begin nats
 # The port is the kernel's pick (`-p -1`), read back from the line the server logs once it listens.
 start_process nats "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
-await_start nats "$nats_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$work/logs/nats.log"
+wait_for "natsd to be ready" serving nats "$nats_pid" grep -q 'Server is ready' "$work/logs/nats.log"
 nats_port=$(sed -n 's/.*Listening for client connections on .*:\([0-9][0-9]*\)$/\1/p' "$work/logs/nats.log" | sed -n 1p)
 [ -n "$nats_port" ] || fail "natsd logged no client port; see $work/logs/nats.log"
 nats_url=nats://127.0.0.1:$nats_port
@@ -147,7 +166,7 @@ pass
 
 begin fake-envoy
 FAKE_ENVOY_PORT=$envoy_port start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
-await_start fake_envoy "$fake_envoy_pid" 60 "the fake Envoy listener to answer /healthz" \
+wait_for "the fake Envoy listener to answer /healthz" serving fake_envoy "$fake_envoy_pid" \
   curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
 note "fake Envoy listener on http://127.0.0.1:$envoy_port"
 pass
@@ -166,7 +185,7 @@ start_process dispatch env -i \
   XDG_CACHE_HOME=/nonexistent \
   XDG_CONFIG_HOME=/nonexistent \
   XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="$database_url" \
+  DATABASE_URL="$dispatch_database_url" \
   DISPATCH_AGENT_TOKEN="$agent_token" \
   DISPATCH_DEV_SIGNIN=1 \
   DISPATCH_IDENTITY=cookie \
@@ -178,7 +197,7 @@ start_process dispatch env -i \
   ENVOY_URL="http://127.0.0.1:$envoy_port" \
   NATS_URLS="$nats_url" \
   "$dispatch_bin"
-await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
+wait_for "envoy-dispatch to answer /healthz" serving dispatch "$dispatch_pid" \
   curl -fsS --max-time 2 "$dispatch_url/healthz"
 note "envoy-dispatch on $dispatch_url, NATS on, outbox publishing to $nats_url"
 pass

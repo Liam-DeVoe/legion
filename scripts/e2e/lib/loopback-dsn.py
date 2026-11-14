@@ -4,6 +4,7 @@
 usage:
   loopback-dsn.py NAME WHAT
   loopback-dsn.py NAME WHAT --dbname DATABASE
+  loopback-dsn.py NAME WHAT --dbname DATABASE --uri
 
 NAME is the environment variable that holds the DSN. WHAT is what the run does on that server,
 in a few words, and a refusal that is about the host ends with it. The DSN is read from the
@@ -37,6 +38,12 @@ a line break in a string the caller writes into a file, and a byte that is no UT
 surrogate (U+DCFF for the byte 0xFF) that no file can carry back to psql. A refusal names the
 database, the host, and every keyword libpq does not read back as the DSN sets it.
 
+`--uri` after `--dbname DATABASE` prints the same keywords as a connection URI instead,
+`postgres://user:password@host:port/DATABASE?key=value`, for a consumer that reads a URL: every
+value percent-encoded, ::1 in brackets, and each keyword but the user, the password, the host,
+the port and the database in the query, in name order. libpq reads the URI back as it reads the
+keyword/value string, and this form refuses what that one refuses.
+
 libpq's own parser reads the DSN (PQconninfoParse, through ctypes), because a shell pattern and
 libpq disagree about which text is the host:
 
@@ -61,6 +68,7 @@ import ctypes
 import ctypes.util
 import os
 import sys
+import urllib.parse
 
 USAGE = __doc__.split("\n\n", 2)[1]
 
@@ -169,6 +177,31 @@ def connection_string(read):
     return " ".join(f"{keyword}={quoted(read[keyword])}" for keyword in sorted(read))
 
 
+def connection_uri(read):
+    """Return the connection URI libpq reads as the keywords read holds: the user and the
+    password in its userinfo, the host and the port in its authority, the database as its path,
+    and every other keyword in its query, each value percent-encoded."""
+    rest = dict(read)
+
+    def encoded(value):
+        return urllib.parse.quote(value, safe="")
+
+    user, password = rest.pop("user", None), rest.pop("password", None)
+    userinfo = ""
+    if user is not None:
+        userinfo = encoded(user) + ("" if password is None else ":" + encoded(password)) + "@"
+    elif password is not None:
+        rest["password"] = password
+    host = rest.pop("host")
+    authority = f"[{host}]" if ":" in host else host
+    port = rest.pop("port", None)
+    if port is not None:
+        authority += f":{encoded(port)}"
+    path = encoded(rest.pop("dbname"))
+    query = "&".join(f"{encoded(keyword)}={encoded(rest[keyword])}" for keyword in sorted(rest))
+    return f"postgres://{userinfo}{authority}/{path}" + (f"?{query}" if query else "")
+
+
 def host_and_keywords(dsn, what):
     """Return the one loopback host libpq reads from dsn and every keyword it reads, or raise
     the Refusal dsn earns."""
@@ -216,9 +249,10 @@ def host_and_keywords(dsn, what):
     return host, read
 
 
-def rewritten(dsn, what, database):
-    """Return the connection string that names database on the host dsn names, or raise the
-    Refusal it earns. libpq reads the string back: the check is libpq's answer, not the rebuild.
+def rewritten(dsn, what, database, as_uri=False):
+    """Return the connection string that names database on the host dsn names, as a keyword/value
+    string or, with as_uri, as a connection URI, or raise the Refusal it earns. libpq reads the
+    string back: the check is libpq's answer, not the rebuild.
     """
     host, read = host_and_keywords(dsn, what)
     # Every value the DSN sets reaches the rebuilt string, and libpq decodes a percent sign, so
@@ -232,7 +266,7 @@ def rewritten(dsn, what, database):
                 " and this refusal prints no value that holds one"
             )
     want = dict(read, dbname=database)
-    string = connection_string(want)
+    string = connection_uri(want) if as_uri else connection_string(want)
     got = parsed(libpq(), string.encode("utf-8", "surrogateescape"))
     lost = sorted(keyword for keyword in want if got.get(keyword) != want[keyword])
     if lost:
@@ -247,9 +281,10 @@ def main(argv):
     if argv[:1] in (["-h"], ["--help"]):
         print(__doc__, end="")
         return 0
-    mode, database, rest = "host", "", argv
-    if len(argv) == 4 and argv[2] == "--dbname" and argv[3] != "":
-        mode, database, rest = "dbname", argv[3], argv[:2]
+    mode, database, as_uri, rest = "host", "", False, argv
+    dbname = len(argv) in (4, 5) and argv[2] == "--dbname" and argv[3] != ""
+    if dbname and argv[4:] in ([], ["--uri"]):
+        mode, database, as_uri, rest = "dbname", argv[3], argv[4:] == ["--uri"], argv[:2]
     if len(rest) != 2:
         print(USAGE, file=sys.stderr)
         return 2
@@ -260,7 +295,7 @@ def main(argv):
         return 1
     try:
         if mode == "dbname":
-            print(rewritten(dsn, what, database))
+            print(rewritten(dsn, what, database, as_uri))
         else:
             print(host_and_keywords(dsn, what)[0])
     except Refusal as refusal:
