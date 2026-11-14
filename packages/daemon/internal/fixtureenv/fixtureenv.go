@@ -177,6 +177,9 @@ func RequireGuarded(t testing.TB) {
 //   - GIT_*, JJ_*, HOME, XDG_CONFIG_HOME: GIT_DIR and GIT_WORK_TREE name another repository
 //     whatever directory a command runs in, a pod hands every process a GIT_CONFIG_* block of its
 //     own, and a home carries configuration and an identity.
+//   - XDG_STATE_HOME: a pod's state home holds what its tools kept, and leakguard's visibility
+//     cache (Guard.Visibility, under $XDG_STATE_HOME/legion-gh/visibility) answered a test's gh
+//     read from the pod's own kept answer, so the stand-in gh the test put on PATH never ran.
 //   - GH_*, GITHUB_*, SSH_AUTH_SOCK, SSH_ASKPASS: a credential git could push with.
 //   - OMP_SESSION_SQL_DSN_FILE, OMP_SESSION_STORAGE, OMP_SESSION_SQL_DSN: the session store Oh My
 //     Pi places a session in, which in a Legion pod is the deployment's own, holding every agent's
@@ -189,7 +192,7 @@ func RequireGuarded(t testing.TB) {
 func Isolated(home string) []string {
 	env := slices.DeleteFunc(os.Environ(), func(entry string) bool {
 		key, _, _ := strings.Cut(entry, "=")
-		return guarded(key) || key == "HOME" || key == "XDG_CONFIG_HOME"
+		return guarded(key) || key == "HOME" || key == "XDG_CONFIG_HOME" || key == "XDG_STATE_HOME"
 	})
 	env = append(env, Home(home)...)
 	return append(env,
@@ -202,13 +205,15 @@ func Isolated(home string) []string {
 }
 
 // Home is the home Isolated gives a command, as KEY=value entries: HOME, the config home under it
-// (XDG_CONFIG_HOME, where jj keeps each repository's own configuration), and a JJ_CONFIG naming a
-// file that does not exist, so jj reads no user configuration. A test whose code under test reads
-// the process's own environment sets these on the process, so that code and its fixtures under
-// Isolated of the same home read the same jj repository configuration.
+// (XDG_CONFIG_HOME, where jj keeps each repository's own configuration), the state home under it
+// (XDG_STATE_HOME, which starts empty, so nothing a tool kept outside the test answers in it), and
+// a JJ_CONFIG naming a file that does not exist, so jj reads no user configuration. A test whose
+// code under test reads the process's own environment sets these on the process, so that code and
+// its fixtures under Isolated of the same home read the same jj repository configuration.
 func Home(home string) []string {
 	return []string{
 		"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
 		"JJ_CONFIG=" + filepath.Join(home, "no-jj-config.toml"),
 	}
 }

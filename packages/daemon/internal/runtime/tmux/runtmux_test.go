@@ -17,7 +17,9 @@ import (
 // pipeDrainDelay, so the run always returns past it, while the client still has 900 ms to exit
 // under load; a runTmux that read a timeout from the deadline having passed would report the
 // client's own exit 3 as a timeout. In the second the client exits 0 well inside its timeout; a
-// runTmux that took exec.ErrWaitDelay for a failure would report that success as an error.
+// runTmux that took exec.ErrWaitDelay for a failure would report that success as an error. What
+// proves the pipes were held when the run returned is the holder itself, a backgrounded sleep
+// still running then, not a reading of the clock.
 func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		exit    int
@@ -33,19 +35,18 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 			client := fakeTmuxClient(t, dir, "echo answered; sleep 30 & echo $! >"+pidFile+"; exit "+strconv.Itoa(testCase.exit))
 			r := &Runtime{tmuxPath: client, commandTimeout: testCase.timeout, environ: []string{"PATH=" + os.Getenv("PATH")}}
 
-			started := time.Now()
 			res, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
-			elapsed := time.Since(started)
+			holding := holderRuns(pidFile)
 
 			if err != nil {
-				t.Fatalf("runTmux = %v after %s, want the client's own exit %d", err, elapsed, testCase.exit)
+				t.Fatalf("runTmux = %v, want the client's own exit %d", err, testCase.exit)
 			}
-			if elapsed < pipeDrainDelay {
-				t.Fatalf("runTmux returned after %s, inside pipeDrainDelay: nothing held the pipe, so this run proves nothing", elapsed)
+			if !holding {
+				t.Fatalf("runTmux returned with nothing holding the client's pipes: the backgrounded sleep that holds them no longer ran, so this run proves nothing")
 			}
 			if res.timedOut != 0 || res.exitCode != testCase.exit || strings.TrimSpace(res.stdout) != "answered" {
-				t.Errorf("runTmux = exit %d, timed out %s, stdout %q after %s; want exit %d, no timeout, and the answer: the client exited on its own inside its %s timeout",
-					res.exitCode, res.timedOut, res.stdout, elapsed, testCase.exit, testCase.timeout)
+				t.Errorf("runTmux = exit %d, timed out %s, stdout %q; want exit %d, no timeout, and the answer: the client exited on its own inside its %s timeout",
+					res.exitCode, res.timedOut, res.stdout, testCase.exit, testCase.timeout)
 			}
 		})
 	}
@@ -73,16 +74,27 @@ func fakeTmuxClient(t *testing.T, dir, body string) string {
 	return path
 }
 
+// pidFromFile is the PID pidFile holds, and false when it holds none.
+func pidFromFile(pidFile string) (int, bool) {
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	return pid, err == nil
+}
+
+// holderRuns reports whether the process pidFile names still runs: a backgrounded sleep standing
+// in for what holds a client's pipes, which holds them for as long as it runs.
+func holderRuns(pidFile string) bool {
+	pid, ok := pidFromFile(pidFile)
+	return ok && syscall.Kill(pid, 0) == nil
+}
+
 // killPIDFile kills the process named by the PID pidFile holds, left running past a test's own
 // assertions by design (a backgrounded sleep standing in for what holds a client's pipes).
 func killPIDFile(pidFile string) {
-	raw, err := os.ReadFile(pidFile)
-	if err != nil {
-		return
+	if pid, ok := pidFromFile(pidFile); ok {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		return
-	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
 }

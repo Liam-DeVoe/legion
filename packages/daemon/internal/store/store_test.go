@@ -2,77 +2,41 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
-// testDSN is the devbox and CI Postgres the store tests run against. Without it
-// there is nothing to test: the store has no in-memory mode by design.
+// testDSN is an empty database of this test's own, on the devbox and CI Postgres
+// internal/testpg/testdb makes it on. Without that server there is nothing to test — the store
+// has no in-memory mode by design — and the fixture skips the test, naming what to start.
 //
 // These tests name no internal/testpg helper, and the file imports that package nowhere: testpg
 // imports this one, to migrate the template its Clone copies, so an import of it here would be a
-// cycle in this package's test binary. internal/testpg's own skip message holds the pinned
-// Postgres image to start, and testdb.Drop, which waits an autovacuum worker out, is the one
-// copy of that wait: internal/testpg/testdb imports nothing of this module, so this package's own
-// tests can take it where they cannot take internal/testpg.
+// cycle in this package's test binary. internal/testpg/testdb imports nothing of this module but
+// internal/testwait, so this package's own tests take the same fixture every other package's
+// tests take, where they cannot take internal/testpg at all.
 func testDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against: start one and set it as internal/testpg's own skip message says, which holds the whole recipe and the image to run.")
-	}
-	return dsn
+	return testdb.Database(t, "legion_store_test")
 }
 
 // emptyStore opens a store on a database of its own, so "an empty database" in a
 // test means one, and tests never see each other's rows.
 func emptyStore(t *testing.T) *Store {
 	t.Helper()
-	ctx := context.Background()
-
-	base, err := url.Parse(testDSN(t))
+	store, err := Open(context.Background(), testDSN(t))
 	if err != nil {
-		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", err)
-	}
-	adminURL := *base
-	adminURL.Path = "/postgres"
-	admin, err := pgxpool.New(ctx, adminURL.String())
-	if err != nil {
-		t.Fatalf("connect to the admin database: %v", err)
-	}
-	t.Cleanup(admin.Close)
-
-	name := "legion_store_test_" + randomSuffix(t)
-	// A file copy of template1 (docs/testing.md, "A database a Go test creates").
-	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
-		t.Fatalf("create %s: %v", name, err)
-	}
-	t.Cleanup(func() {
-		if err := testdb.Drop(context.Background(), admin, name); err != nil {
-			t.Errorf("drop %s: %v", name, err)
-		}
-	})
-
-	testURL := *base
-	testURL.Path = "/" + name
-	store, err := Open(ctx, testURL.String())
-	if err != nil {
-		t.Fatalf("open %s: %v", name, err)
+		t.Fatalf("open the test database: %v", err)
 	}
 	t.Cleanup(store.Close)
 	return store
@@ -86,15 +50,6 @@ func migratedStore(t *testing.T) *Store {
 		t.Fatalf("migrate: %v", err)
 	}
 	return store
-}
-
-func randomSuffix(t *testing.T) string {
-	t.Helper()
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		t.Fatalf("random suffix: %v", err)
-	}
-	return hex.EncodeToString(b[:])
 }
 
 func TestOpenNamesTheUnreachableAddressAndNotThePassword(t *testing.T) {

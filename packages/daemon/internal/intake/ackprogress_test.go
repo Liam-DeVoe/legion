@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -382,17 +383,19 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSign
 // terminal call so a nak keeps the retry it asked for, and a handler that never ends is cut at
 // HandlerLimit with its message naked and delivered again.
 
-// progressEvery is the keeper's interval in the row that drives it directly. It is short because
-// that row waits out three of them and nothing else: the interval the daemon uses is a third of
+// progressEvery is the keeper's interval in the row that drives it directly. That row runs in a
+// synctest bubble, so the interval costs no time: the interval the daemon uses is a third of
 // AckWait, which is the one caller's business, not this function's.
 const progressEvery = 20 * time.Millisecond
 
-// countedProgress is a delivery that counts the progress signals made for it and passes each one
-// to the message it wraps, so a row can tell a tick the keeper made before stop() returned from
-// one it made after. It holds every signal inside InProgress until blocks is closed, which is how
-// its one row puts a tick in flight and keeps it there for as long as it has questions to ask
-// about one. Every countedProgress is made with a blocks channel, so a row that wants none closes
-// it before the keeper starts.
+// countedProgress is a delivery that counts the progress signals made for it, so a row can tell a
+// tick the keeper made before stop() returned from one it made after. It holds every signal inside
+// InProgress until blocks is closed, which is how its one row puts a tick in flight and keeps it
+// there for as long as it has questions to ask about one, and then answers it as a server that
+// took the signal does. It reaches no server, so its row runs in a synctest bubble; the Msg it
+// embeds is nil, so a keeper that called anything of the delivery but InProgress would panic.
+// Every countedProgress is made with a blocks channel, so a row that wants none closes it before
+// the keeper starts.
 type countedProgress struct {
 	jetstream.Msg
 	mu      sync.Mutex
@@ -407,7 +410,7 @@ func (c *countedProgress) InProgress() error {
 	// The signal is counted before the wait, so a row watching reported() sees the tick it is
 	// holding while it still holds it.
 	<-c.blocks
-	return c.Msg.InProgress()
+	return nil
 }
 
 func (c *countedProgress) reported() int {
@@ -419,64 +422,62 @@ func (c *countedProgress) reported() int {
 // The first claim, on keepInProgress itself: stop() returns only once the keeper's goroutine has
 // ended, so once it has returned no tick is in flight. The row drives the keeper directly rather
 // than through a consumer loop, since that is all the function needs — a delivery, an interval
-// and the stop it hands back. The delivery is real, and fetched rather than consumed, so each
-// signal countedProgress passes on has a reply subject to go to.
+// and the stop it hands back. The delivery is countedProgress, which does no network I/O, so the
+// row runs in a synctest bubble: the keeper's ticker runs on the bubble's clock, and
+// synctest.Wait says when the keeper and stop() have gone as far as they will, which is what
+// proves that stop() did not return.
 func TestTheProgressSignalStopsWhenItsHandlerEnds(t *testing.T) {
-	js, stream := testJetStream(t)
-	publishIssueEvent(t, js, "CAPTURE-310", 1)
-	// A window far longer than the row runs: a redelivery would hand the row a second message and
-	// say nothing about the keeper.
-	consumer := issueConsumer(t, stream, "progress-stop", time.Minute)
-	message, err := consumer.Next()
-	if err != nil {
-		t.Fatalf("fetch the row's message: %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		// The keeper's first tick is held inside InProgress until the row frees it, so the row asks
+		// its question of a stop() that has a tick in flight for certain rather than of one that
+		// happens to have caught a tick.
+		counted := &countedProgress{blocks: make(chan struct{})}
+		stop := keepInProgress(context.Background(), counted, progressEvery, slog.New(slog.NewTextHandler(&lockedBuffer{}, nil)))
+		free := sync.OnceFunc(func() { close(counted.blocks) })
+		// A row that fails leaves the keeper running on a tick nothing freed, so the row frees the
+		// tick first and ends the keeper after it: stop() waits for the goroutine that tick holds,
+		// and the defers run in that order.
+		defer stop()
+		defer free()
+		time.Sleep(progressEvery)
+		synctest.Wait()
+		if got := counted.reported(); got != 1 {
+			t.Fatalf("the keeper reported the message in progress %d times one interval after it started, want once, its first tick, held in flight", got)
+		}
 
-	// The keeper's first tick is held inside InProgress until the row frees it, so the row asks
-	// its question of a stop() that has a tick in flight for certain rather than of one that
-	// happens to have caught a tick.
-	counted := &countedProgress{Msg: message, blocks: make(chan struct{})}
-	stop := keepInProgress(context.Background(), counted, progressEvery, slog.New(slog.NewTextHandler(&lockedBuffer{}, nil)))
-	free := sync.OnceFunc(func() { close(counted.blocks) })
-	// A wait that fails leaves the keeper running on a tick nothing freed, so the row frees the
-	// tick first and ends the keeper after it: stop() waits for the goroutine that tick holds, and
-	// the defers run in that order.
-	defer stop()
-	defer free()
-	testwait.Eventually(t, "the keeper has reported the message in progress", func() bool { return counted.reported() > 0 })
-
-	// stop() runs in a goroutine because what the row asks of it first is that it does not return.
-	returned := make(chan struct{})
-	go func() {
-		stop()
-		close(returned)
-	}()
-	// Three intervals: a stop() that waited for nothing would have returned many times over by
-	// now, and the tick it would be leaving behind is still inside InProgress.
-	select {
-	case <-returned:
-		t.Fatalf("stop() returned while a progress signal was still in flight, want it to wait for it: it returns only once the keeper's goroutine has ended, which is what lets its caller nak the message after it")
-	case <-time.After(3 * progressEvery):
-	}
-
-	free()
-	testwait.Eventually(t, "stop() returned once the signal it was waiting on was freed", func() bool {
+		// stop() runs in a goroutine because what the row asks of it first is that it does not
+		// return. Once every goroutine of the bubble is blocked, a stop() that waited for nothing
+		// has returned, and the tick it would be leaving behind is still inside InProgress.
+		returned := make(chan struct{})
+		go func() {
+			stop()
+			close(returned)
+		}()
+		synctest.Wait()
 		select {
 		case <-returned:
-			return true
+			t.Fatalf("stop() returned while a progress signal was still in flight, want it to wait for it: it returns only once the keeper's goroutine has ended, which is what lets its caller nak the message after it")
 		default:
-			return false
+		}
+
+		free()
+		synctest.Wait()
+		select {
+		case <-returned:
+		default:
+			t.Fatalf("stop() did not return once the signal it was waiting on was freed")
+		}
+
+		stopped := counted.reported()
+		// Three intervals: a keeper still running would have ticked three times over by now, and
+		// one tick is enough to fail the row.
+		time.Sleep(3 * progressEvery)
+		synctest.Wait()
+		if after := counted.reported(); after != stopped {
+			t.Errorf("the keeper reported the message in progress %d more times after stop() returned, want none: stop returns only once its goroutine has ended, so no tick can still be in flight",
+				after-stopped)
 		}
 	})
-
-	stopped := counted.reported()
-	// Three intervals again: a keeper still running would have ticked three times over by now, and
-	// one tick is enough to fail the row.
-	time.Sleep(3 * progressEvery)
-	if after := counted.reported(); after != stopped {
-		t.Errorf("the keeper reported the message in progress %d more times after stop() returned, want none: stop returns only once its goroutine has ended, so no tick can still be in flight",
-			after-stopped)
-	}
 }
 
 // progressSignal is the acknowledgement-protocol payload a progress signal carries, the

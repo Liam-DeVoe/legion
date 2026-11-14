@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A gh call that carries its body in a file publishes the file's text, not the file's name, and
@@ -42,7 +43,7 @@ func TestAGhCallsBodyFileIsRead(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			_, err := guard.GhCall(bound(t), GhRequest{Args: tc.args, Repo: "invented-org/invented-repo"})
+			_, err := guard.GhCall(testwait.Context(t), GhRequest{Args: tc.args, Repo: "invented-org/invented-repo"})
 			if err == nil {
 				t.Fatal("the call was cleared, so the file's text reaches GitHub unread")
 			}
@@ -89,7 +90,7 @@ func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			_, err := guard.GhCall(bound(t), GhRequest{Args: tc.args, Repo: "invented-org/invented-repo"})
+			_, err := guard.GhCall(testwait.Context(t), GhRequest{Args: tc.args, Repo: "invented-org/invented-repo"})
 			failed := setupFailure(t, err)
 			if !strings.Contains(failed.Error(), tc.want) {
 				t.Fatalf("the failure is %q, want it to name the option in %q", failed, tc.want)
@@ -103,7 +104,7 @@ func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 // that name to open, and a guard that tried would turn every such call into a setup failure.
 func TestAGhCallsBodyFileOfStandardInputOpensNoFile(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	if _, err := guard.GhCall(bound(t), GhRequest{
+	if _, err := guard.GhCall(testwait.Context(t), GhRequest{
 		Args: []string{"pr", "comment", "1", "--body-file", "-"},
 		Repo: "invented-org/invented-repo",
 	}); err != nil {
@@ -119,7 +120,7 @@ func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {
 		t.Fatal(err)
 	}
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	if _, err := guard.GhCall(bound(t), GhRequest{
+	if _, err := guard.GhCall(testwait.Context(t), GhRequest{
 		Args: []string{"pr", "comment", "1", "--body-file", body},
 		Repo: "invented-org/invented-repo",
 	}); err != nil {
@@ -231,7 +232,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 		// The shape the table misses and the parse does not: `-dF <path>` is `--draft
 		// --body-file <path>` to gh, and the caller hands the file it read out of that.
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-		_, err := guard.GhCall(bound(t), GhRequest{
+		_, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args:  []string{"pr", "create", "-dF", unnamed},
 			Repo:  "invented-org/invented-repo",
 			Files: []GhFile{{Option: "--body-file", Path: unnamed}},
@@ -242,7 +243,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	})
 	t.Run("a caller that parsed no file reads none", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-		if _, err := guard.GhCall(bound(t), GhRequest{
+		if _, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args:  []string{"pr", "comment", "1", "--body-file", named},
 			Repo:  "invented-org/invented-repo",
 			Files: []GhFile{},
@@ -252,7 +253,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	})
 	t.Run("a caller that parsed nothing gets the table", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-		_, err := guard.GhCall(bound(t), GhRequest{
+		_, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args: []string{"pr", "comment", "1", "--body-file", named},
 			Repo: "invented-org/invented-repo",
 		})
@@ -280,7 +281,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 			t.Fatal(err)
 		}
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-		_, err := guard.GhCall(bound(t), GhRequest{
+		_, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "--method", "PATCH", "--input", body},
 			Repo: "invented-org/invented-repo",
 		})
@@ -292,7 +293,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 	})
 	t.Run("the buffered standard input", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
-		_, err := guard.GhCall(bound(t), GhRequest{
+		_, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args:  []string{"api", "repos/invented-org/invented-repo/pulls/1", "--method", "PATCH", "--input", "-"},
 			Stdin: strings.NewReader(escaped),
 			Repo:  "invented-org/invented-repo",
@@ -309,7 +310,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 			t.Fatal(err)
 		}
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-		if _, err := guard.GhCall(bound(t), GhRequest{
+		if _, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "--input", body},
 			Repo: "invented-org/invented-repo",
 		}); err != nil {
@@ -323,7 +324,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 // never a truncated buffer handed to gh as though the guard had read the whole.
 func TestStandardInputPastTheBoundIsASetupFailure(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
-	buffered, err := guard.GhCall(bound(t), GhRequest{
+	buffered, err := guard.GhCall(testwait.Context(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
 		Stdin: bytes.NewReader(bytes.Repeat([]byte("a"), maxGhFile+1)),
 		Repo:  "invented-org/invented-repo",

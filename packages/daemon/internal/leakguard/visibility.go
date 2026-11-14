@@ -14,31 +14,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 const rateLimitWaitBound = 2 * time.Minute
 
-// Clock supplies the time and waits visibility reads use. Tests replace it so retrying a near
-// rate-limit reset does not sleep for wall-clock time.
+// Clock supplies the time and waits visibility reads use, and the time a child the guard stopped
+// is said to have run (stoppedError): a narrowing of clock.Clock, clock.Real unless Options.Clock
+// names a test's clocktest.Fake, so retrying a near rate-limit reset does not sleep for wall-clock
+// time and a stopped child's time is the test's.
 type Clock interface {
 	Now() time.Time
 	Sleep(context.Context, time.Duration) error
-}
-
-type wallClock struct{}
-
-func (wallClock) Now() time.Time { return time.Now() }
-
-func (wallClock) Sleep(ctx context.Context, wait time.Duration) error {
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 // VisibilitySource says whether a guard's answer read GitHub or used the role's kept answer.
@@ -97,7 +85,7 @@ func (g *Guard) clock() Clock {
 	if g.opts.Clock != nil {
 		return g.opts.Clock
 	}
-	return wallClock{}
+	return clock.Real()
 }
 
 func (g *Guard) readVisibility(ctx context.Context, slug string) (Visibility, error) {

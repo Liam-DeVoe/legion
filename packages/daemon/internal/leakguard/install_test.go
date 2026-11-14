@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // theTag is the pin these tests install, spelled as the worker image spells one.
@@ -125,7 +126,7 @@ func leftovers(t *testing.T, dir string) []string {
 func install(t *testing.T, dir, tag string, body []byte) ([]string, error) {
 	t.Helper()
 	var logged []string
-	err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Log: func(format string, args ...any) {
+	err := InstallServed(testwait.Context(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Log: func(format string, args ...any) {
 		logged = append(logged, format)
 	}})
 	return logged, err

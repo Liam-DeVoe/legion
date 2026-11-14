@@ -10,19 +10,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
+// visibilityTestClock is a clocktest.Fake that a wait moves on by its length at once, recording
+// it: Visibility waits on the test's own goroutine, where the Fake's own Sleep would wait for a move
+// nobody makes.
 type visibilityTestClock struct {
-	now   time.Time
+	*clocktest.Fake
 	waits []time.Duration
 }
 
-func (c *visibilityTestClock) Now() time.Time { return c.now }
+func newVisibilityTestClock() *visibilityTestClock {
+	return &visibilityTestClock{Fake: clocktest.New(time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC))}
+}
 
 func (c *visibilityTestClock) Sleep(ctx context.Context, wait time.Duration) error {
 	c.waits = append(c.waits, wait)
-	c.now = c.now.Add(wait)
+	c.Advance(wait)
 	return ctx.Err()
 }
 
@@ -101,7 +108,7 @@ func TestKeptVisibilityRejectsUntrustedEntries(t *testing.T) {
 // A rate limit reset close enough to the call's bound is waited out once, then the visibility is
 // read again rather than treating an unchecked call as safe.
 func TestVisibilityRetriesRateLimitAtNearReset(t *testing.T) {
-	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+	clock := newVisibilityTestClock()
 	reset := clock.Now().Add(time.Minute)
 	var reads int
 	visibility, err := New(Options{
@@ -114,7 +121,7 @@ func TestVisibilityRetriesRateLimitAtNearReset(t *testing.T) {
 			}
 			return Public, nil
 		},
-	}).Visibility(bound(t), "invented-org/invented-repo")
+	}).Visibility(testwait.Context(t), "invented-org/invented-repo")
 	if err != nil || visibility != Public {
 		t.Fatalf("read visibility = %q, %v; want public after the reset", visibility, err)
 	}
@@ -129,7 +136,7 @@ func TestVisibilityRetriesRateLimitAtNearReset(t *testing.T) {
 // A reset beyond the two-minute limit refuses at once and tells the role when the installation's
 // limit resets, instead of waiting through a call it cannot clear.
 func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
-	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+	clock := newVisibilityTestClock()
 	reset := clock.Now().Add(10 * time.Minute)
 	var reads int
 	_, err := New(Options{
@@ -139,7 +146,7 @@ func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
 			reads++
 			return "", &rateLimitError{reset: reset}
 		},
-	}).Visibility(bound(t), "invented-org/invented-repo")
+	}).Visibility(testwait.Context(t), "invented-org/invented-repo")
 	if err == nil {
 		t.Fatal("the rate-limited visibility read passed")
 	}

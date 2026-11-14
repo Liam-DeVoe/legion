@@ -31,6 +31,10 @@ func TestMain(m *testing.M) {
 		if err := json.Unmarshal([]byte(encoded), &cfg); err != nil {
 			panic(err)
 		}
+		// The child is a process of its own, which no wait of the parent's test reaches, so it keeps
+		// a bound of its own on the sign-in, as `legion model-token` bounds one at its
+		// modelTokenTimeout (cmd/legion): it is what ends a sign-in to an endpoint nothing answers
+		// (TestTokenTakesNoProxyFromTheEnvironment), and the child reports that end as its answer.
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		token, err := Token(ctx, cfg)
 		cancel()

@@ -22,8 +22,16 @@ import (
 
 	"cloud.google.com/go/cloudsqlconn"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
+
+// Clock is the time Start's proof bound and Close's drain are measured on: a narrowing of
+// clock.Clock, which clock.Real and the tests' clocktest.Fake both satisfy.
+type Clock interface {
+	NewTimer(d time.Duration) clock.Timer
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
+}
 
 // Dialer is the upstream the proxy dials for each accepted connection: the Cloud SQL connector in
 // a pod, a fake over a local listener in a test. Close releases the dialer's own background work,
@@ -60,6 +68,8 @@ type Config struct {
 	// accept loop that stopped on its own, connections Close closed once the drain was over. Nil
 	// logs nothing.
 	Log io.Writer
+	// Clock measures ProofTimeout and Drain. Nil is the wall clock (clock.Real).
+	Clock Clock
 }
 
 // Proxy is a started session database proxy: a bound socket, a dialer whose credential path has
@@ -80,6 +90,8 @@ type Proxy struct {
 	inFlight sync.WaitGroup
 	// drain is Config.Drain: how long Close waits for established connections before closing them.
 	drain time.Duration
+	// clock is Config.Clock, the wall clock when that is nil: what the drain is measured on.
+	clock Clock
 
 	// connsMu guards closing and conns. closing is set once Close has begun, after which a pair
 	// serve would register is closed at once instead; conns maps every client the proxy is copying
@@ -133,6 +145,10 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	if newDialer == nil {
 		newDialer = newConnectorDialer
 	}
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.Real()
+	}
 	// The serving context outlives ctx: it carries ctx's values and nothing of its cancellation, and
 	// only Close ends it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -142,7 +158,7 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 		_ = listener.Close()
 		return nil, fmt.Errorf("sessionproxy: build the dialer for %s: %w", cfg.Instance, err)
 	}
-	proofCtx, cancelProof := context.WithTimeout(ctx, cfg.ProofTimeout)
+	proofCtx, cancelProof := clk.WithTimeout(ctx, cfg.ProofTimeout)
 	proof, err := dialer.Dial(proofCtx, cfg.Instance)
 	// proofCtx's own error is read before cancelProof, which would set it either way.
 	timedOut := errors.Is(proofCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
@@ -171,6 +187,7 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 		dialer:   dialer,
 		cancel:   cancel,
 		drain:    cfg.Drain,
+		clock:    clk,
 		conns:    make(map[net.Conn]net.Conn),
 		log:      cfg.Log,
 	}
@@ -206,11 +223,11 @@ func (p *Proxy) Close() error {
 			p.inFlight.Wait()
 			close(drained)
 		}()
-		timer := time.NewTimer(p.drain)
+		timer := p.clock.NewTimer(p.drain)
 		defer timer.Stop()
 		select {
 		case <-drained:
-		case <-timer.C:
+		case <-timer.C():
 			if n := p.closeConns(); n > 0 {
 				p.logf("sessionproxy: closed %d connections to %s still open after %s", n, p.instance, p.drain)
 			}

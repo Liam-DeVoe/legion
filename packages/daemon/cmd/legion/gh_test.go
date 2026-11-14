@@ -1604,17 +1604,15 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	if err := command.Process.Signal(syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}
-	// The run is given a second to end on that hangup before gh is released. Where the hangup
-	// is forwarded, gh catches it and ends the run inside that second, and the failure says so;
-	// where it stays ignored, nothing happens in it, which is what the rest of this reads.
+	// The run is held quiet for a second before gh is released. Where the hangup is forwarded, gh
+	// catches it and ends the run inside that second, and the failure says so.
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
-	select {
-	case waited := <-done:
-		t.Fatalf("legion gh ended on a hangup it was started ignoring: %v; gh recorded %q, printed %q",
-			waited, readRecord(t, ghRecord), readRecord(t, printed.Name()))
-	case <-time.After(time.Second):
-	}
+	testwait.Quiet(t, "legion gh's run", done, time.Second,
+		"what this row denies is a hangup reaching gh, and no state of legion gh says whether it armed a "+
+			"handler for one; the run is a real child process, which no synctest bubble holds; and the one "+
+			"later action here, the release below, lets gh exit on its own before a forwarded hangup could "+
+			"reach it, which is the race this span covers")
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -176,13 +176,13 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	killed := procgroup.Configure(cmd)
 	var printed bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &printed, &printed
-	started := time.Now()
+	started := g.clock().Now()
 	err := procgroup.Err(cmd.Run())
 	switch {
 	case killed():
 		stopped := &stoppedError{
 			program:   filepath.Base(c.argv[0]),
-			ran:       time.Since(started),
+			ran:       g.clock().Now().Sub(started),
 			cancelled: errors.Is(ctx.Err(), context.Canceled),
 		}
 		if deadline, ok := ctx.Deadline(); ok {

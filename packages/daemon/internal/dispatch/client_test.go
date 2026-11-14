@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const dispatchToken = "dispatch-test-token"
@@ -727,6 +730,8 @@ func TestClientReturnsDispatchErrorFor5xx(t *testing.T) {
 	}
 }
 
+// Every call is bounded at requestTimeout on the client's clock: a call Dispatch holds unanswered
+// ends with the deadline once the clock reaches it.
 func TestClientBoundsEveryCall(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -735,16 +740,21 @@ func TestClientBoundsEveryCall(t *testing.T) {
 	}))
 	defer server.Close()
 
+	clock := clocktest.New(time.Now())
 	client := New(server.URL, dispatchToken)
-	client.timeout = 20 * time.Millisecond
-	_, err := client.GetIssue(context.Background(), "LEGION-11")
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("get issue error = %v, want context deadline exceeded", err)
+	client.clock = clock
+	answered := make(chan error, 1)
+	go func() {
+		_, err := client.GetIssue(context.Background(), "LEGION-11")
+		answered <- err
+	}()
+	testwait.Receive(t, "the server to receive the bounded request", started)
+	if armed, want := clock.Armed(), []time.Time{clock.Now().Add(requestTimeout)}; !slices.Equal(armed, want) {
+		t.Fatalf("armed %v, want the call's own bound alone, at %v", armed, want)
 	}
-	select {
-	case <-started:
-	default:
-		t.Fatal("server never received the bounded request")
+	clock.Advance(requestTimeout)
+	if err := testwait.Receive(t, "the call to end at its bound", answered); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("get issue error = %v, want context deadline exceeded", err)
 	}
 }
 

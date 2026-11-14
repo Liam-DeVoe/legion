@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fakeWindows is the countingReader's window in a test: the watch asks for one window after
@@ -28,16 +30,11 @@ func (w *fakeWindows) window(time.Duration) <-chan time.Time {
 	return opened
 }
 
-// waiting is the window the watch waits on now, failing the test when it asked for none.
+// waiting is the window the watch waits on now, once the watch has asked for one.
 func (w *fakeWindows) waiting(t *testing.T) chan time.Time {
 	t.Helper()
 	if w.pending == nil {
-		select {
-		case opened := <-w.asked:
-			w.pending = opened
-		case <-time.After(testTimeout):
-			t.Fatal("the low-speed watch waited on no window")
-		}
+		w.pending = testwait.Receive(t, "the low-speed watch to wait on a window", w.asked)
 	}
 	opened := w.pending
 	w.pending = nil
@@ -50,13 +47,17 @@ func (w *fakeWindows) waiting(t *testing.T) chan time.Time {
 func (w *fakeWindows) pass(t *testing.T, ctx context.Context) {
 	t.Helper()
 	w.waiting(t) <- time.Time{}
-	select {
-	case opened := <-w.asked:
-		w.pending = opened
-	case <-ctx.Done():
-	case <-time.After(testTimeout):
-		t.Fatal("the low-speed watch neither opened another window nor ended the stream")
-	}
+	testwait.Eventually(t, "the low-speed watch to open another window or end the stream", func() bool {
+		select {
+		case opened := <-w.asked:
+			w.pending = opened
+			return true
+		case <-ctx.Done():
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 // A stream that keeps delivering more than CacheStreamLowSpeedBytes in every

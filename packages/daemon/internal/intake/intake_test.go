@@ -1127,11 +1127,23 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", envelopeJSON(t, "dispatch-poison", "dispatch", `{"id":1,"issue_key":"CAPTURE-208","seq":1,"notify":true,"type":"issue.updated","payload":{"key":"CAPTURE-999","status":"todo","title":"wrong key"}}`))
 	testwait.Eventually(t, "two poison logs", func() bool { return strings.Count(logs.String(), "poison JetStream message") == 2 })
-	time.Sleep(3 * spec.AckWait)
-	if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
-		t.Fatalf("poison logs after ack wait = %d, want 2", got)
+	// A poison message comes back only while the consumer still holds it: delivered and not yet
+	// ended (NumAckPending), or not yet delivered (NumPending). Once neither holds one, a terminated
+	// message has nothing left that could deliver it again, and the consumer's delivered count says
+	// whether one already was. A third poison log is a delivery again, and fails the wait at once.
+	info := testwait.Until(t, "the Dispatch consumer to hold neither poison message", func() (*jetstream.ConsumerInfo, bool) {
+		if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
+			t.Fatalf("poison logs = %d, want 2: a terminated poison message was delivered again", got)
+		}
+		info := consumerInfo(t, stream, dispatchConsumerName(spec.Project))
+		return info, info.NumPending == 0 && info.NumAckPending == 0
+	})
+	if info.Delivered.Consumer != 2 {
+		t.Fatalf("the Dispatch consumer delivered %d messages for the 2 poison ones, want each delivered once and terminated", info.Delivered.Consumer)
 	}
-	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
+	if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
+		t.Fatalf("poison logs once neither message is held = %d, want 2", got)
+	}
 }
 
 // One NATS stream carries every Dispatch project's issue events. A daemon acts only on its own

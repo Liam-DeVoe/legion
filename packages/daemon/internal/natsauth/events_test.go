@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // signalled is the option, after natsauth.LogEvents, that sends on each channel once the handler
@@ -57,14 +58,17 @@ func notify(ch chan<- struct{}) {
 // lockedBuffer is a log destination the connection's callback goroutine writes while the test reads.
 type lockedBuffer = testlog.Buffer
 
-// wait fails t unless ch receives within 10s.
+// wait waits until ch receives, the report of what; a wait that gives up prints the log.
 func wait(t *testing.T, ch <-chan struct{}, what string, out *lockedBuffer) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s was not reported within 10s; log: %s", what, out.String())
-	}
+	testwait.Until(t, what+" reported", func() (string, bool) {
+		select {
+		case <-ch:
+			return "", true
+		default:
+			return out.String(), false
+		}
+	})
 }
 
 // A subscription and a publish the server refuses the connection are each logged at error naming
@@ -73,7 +77,7 @@ func wait(t *testing.T, ch <-chan struct{}, what string, out *lockedBuffer) {
 func TestAPermissionTheServerRefusesIsLoggedAtError(t *testing.T) {
 	seed, public := testnats.User(t)
 	const denied, deniedPublish = "notifications.envoy.exceptions.notifications.role.>", "notifications.role.denied"
-	_, url := testnats.StartNkeyAuthorizedUsers(t, testnats.Image, testnats.NkeyUser{
+	url := testnats.StartNkeyAuthorizedUsers(t, testnats.NkeyUser{
 		Public:      public,
 		Permissions: `{ subscribe: { deny: ["` + denied + `"] }, publish: { deny: ["` + deniedPublish + `"] } }`,
 	})
@@ -174,10 +178,10 @@ func TestAFatalServerErrorIsNamedFromTheConnection(t *testing.T) {
 // Close afterwards logs no close.
 func TestTheDaemonsOwnCloseAfterARefusalLogsNoClose(t *testing.T) {
 	var out lockedBuffer
-	refused, closed := make(chan struct{}, 1), make(chan struct{}, 1)
+	refused := make(chan struct{}, 1)
 	conn, err := natsauth.Connect([]string{fakeServer(t, "-ERR 'Permissions Violation for Subscription to \"legion.denied\"'\r\n")}, "", t.Name(), nats.Timeout(5*time.Second),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
-		signalled(refused, make(chan struct{}, 1), make(chan struct{}, 1), closed))
+		signalled(refused, make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1)))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -189,12 +193,14 @@ func TestTheDaemonsOwnCloseAfterARefusalLogsNoClose(t *testing.T) {
 	if got := natsauth.WithLastError(stopped, conn); got != stopped {
 		t.Errorf("WithLastError on the live connection = %q, want %q alone", got, stopped)
 	}
-	conn.Close()
-	// A close callback, when there is one, is dispatched at once; a second is ample.
-	select {
-	case <-closed:
-	case <-time.After(time.Second):
+	// The close is logged only from the close handler, and the connection runs none after the
+	// daemon's own Close: nats.go queues no close handler for a Close under
+	// NoCallbacksAfterClientClose, which LogEvents sets. So once that holds, the Close below has
+	// nothing left that could log it.
+	if !conn.Opts.NoCallbacksAfterClientClose {
+		t.Fatal("the connection runs its handlers after the daemon's own Close, so that close would be logged as the connection's end")
 	}
+	conn.Close()
 	if logged := out.String(); strings.Contains(logged, "NATS connection closed") {
 		t.Errorf("the daemon's own close was logged:\n%s", logged)
 	}

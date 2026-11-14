@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // syncBuffer is a bytes.Buffer the launcher writes from its role goroutines while a test reads it.
@@ -40,8 +40,11 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
-		t.Fatal(err)
+	// The accepts below wait as every wait here does, until the shared wait's deadline.
+	if deadline, ok := testwait.Context(t).Deadline(); ok {
+		if err := listener.(*net.TCPListener).SetDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("POD_UID", "pod-7")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -84,21 +87,13 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 			t.Fatalf("role %s hello = %#v, want its own token, the sandbox and POD_UID's pod", role, hello)
 		}
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(stderr.String(), "tester: launcher: connected") || !strings.Contains(stderr.String(), "reviewer: launcher: connected") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher logged %q, want each role's acknowledged hello behind its role's name", stderr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the launcher to log each role's acknowledged hello behind its role's name", func() bool {
+		logged := stderr.String()
+		return strings.Contains(logged, "tester: launcher: connected") && strings.Contains(logged, "reviewer: launcher: connected")
+	})
 	cancel()
-	select {
-	case code := <-exited:
-		if code != 0 {
-			t.Fatalf("exit %d at the container's stop; stderr: %s", code, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the launcher did not leave at the container's stop")
+	if code := testwait.Receive(t, "the launcher to leave at the container's stop", exited); code != 0 {
+		t.Fatalf("exit %d at the container's stop; stderr: %s", code, stderr.String())
 	}
 }
 
@@ -122,8 +117,7 @@ func TestTheLauncherCommandRefusesAMixOfItsTwoForms(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// A launcher that took the mixture would dial the unreachable daemon until its
 			// context ends; the bound makes that a failure of this test, not a hung run.
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			var stdout, stderr bytes.Buffer
 			args := append([]string{"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p"}, tc.args...)
 			if code := run(ctx, args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), tc.want) {

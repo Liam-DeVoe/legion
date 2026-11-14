@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"os"
@@ -24,10 +25,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
-
-// winitWait bounds every wait a workspace-init test makes on another process, so a hung init
-// container fails the test instead of hanging it.
-const winitWait = 30 * time.Second
 
 const winitRepo = "acme/widgets"
 
@@ -576,9 +573,7 @@ func TestWorkspaceInitProvisionsThroughACheckoutLongerThanTheBudget(t *testing.T
 	provisionBudget = 5 * time.Second
 	t.Cleanup(func() { provisionBudget = workspace.CommandTimeout })
 
-	started := time.Now()
 	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
-	elapsed := time.Since(started)
 	if code != 0 {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
@@ -590,13 +585,10 @@ func TestWorkspaceInitProvisionsThroughACheckoutLongerThanTheBudget(t *testing.T
 		t.Fatalf("the workspace after provisioning: %v, want the tree the checkout writes", err)
 	}
 	// The delay is the point of the case, so the run proves it ran: the stub records the sleep it
-	// finished, and the whole provisioning took at least as long as it.
+	// finished, which is the checkout's own record of how long it held.
 	slept := " slept 8s before sparse reset -R " + provisionedWorkspace
 	if calls := strings.Join(v.jjCalls(t), "\n"); !strings.Contains(calls, slept) {
 		t.Fatalf("the volume's jj recorded %q, want a checkout holding %q", calls, slept)
-	}
-	if elapsed < delay {
-		t.Fatalf("provisioning took %s, want at least the checkout's own %s", elapsed, delay)
 	}
 }
 
@@ -862,18 +854,20 @@ func (v *issueVolume) start(t *testing.T, tag, issue string, env ...string) *ini
 // wait is the process's exit status and the rest of its stdout, once it exits.
 func (p *initProcess) wait(t *testing.T) (code int, rest []string) {
 	t.Helper()
-	deadline := time.After(winitWait)
-	for done := false; !done; {
-		select {
-		case line, ok := <-p.lines:
-			if !ok {
-				done = true
-				break
+	for more := true; more; {
+		testwait.Until(t, "workspace-init's next line, or the end of its output as it exits", func() (string, bool) {
+			select {
+			case line, ok := <-p.lines:
+				if !ok {
+					more = false
+					return "workspace-init's output ended", true
+				}
+				rest = append(rest, line)
+				return line, true
+			default:
+				return fmt.Sprintf("workspace-init has printed %q and not exited", rest), false
 			}
-			rest = append(rest, line)
-		case <-deadline:
-			t.Fatalf("workspace-init did not exit within %s", winitWait)
-		}
+		})
 	}
 	p.waited = true
 	err := p.cmd.Wait()
@@ -925,13 +919,15 @@ func (v *issueVolume) holder(t *testing.T) *initProcess {
 }
 
 // fifo opens one end of a fifo — which blocks until the holder opens the other — reads it to EOF
-// when reading, and closes it, bounded by winitWait and by the holder's staying alive and silent.
+// when reading, and closes it, waiting for that open and failing where the holder prints a line
+// or exits before it.
 func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 	t.Helper()
 	type opened struct {
 		read []byte
 		err  error
 	}
+	var read string
 	done := make(chan opened, 1)
 	go func() {
 		var result opened
@@ -945,18 +941,22 @@ func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 		result.err = err
 		done <- result
 	}()
-	select {
-	case result := <-done:
-		if result.err != nil {
-			t.Fatalf("%s: %v", path, result.err)
+	testwait.Until(t, "the holder to open the other end of "+path, func() (string, bool) {
+		select {
+		case result := <-done:
+			if result.err != nil {
+				t.Fatalf("%s: %v", path, result.err)
+			}
+			read = string(result.read)
+			return read, true
+		case line, ok := <-holder.lines:
+			t.Fatalf("the holder printed %q (open: %v) before reaching %s; stderr %q", line, ok, path, holder.stderr.String())
+			return "", true
+		default:
+			return "nothing has opened the other end of " + path, false
 		}
-		return string(result.read)
-	case line, ok := <-holder.lines:
-		t.Fatalf("the holder printed %q (open: %v) before reaching %s; stderr %q", line, ok, path, holder.stderr.String())
-	case <-time.After(winitWait):
-		t.Fatalf("nothing opened the other end of %s within %s", path, winitWait)
-	}
-	return ""
+	})
+	return read
 }
 
 // The provisioning token is the implement App's installation token, and every container of an

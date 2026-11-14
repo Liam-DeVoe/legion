@@ -8,9 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // reportingRig is a rig whose pane names a daemon: every turn the bridge ends is reported to the
@@ -65,13 +65,7 @@ func newReportingRig(t *testing.T, args ...string) *reportingRig {
 // reported is the next turn the bridge reported.
 func (r *reportingRig) reported() claim.TurnOutcomeRequest {
 	r.t.Helper()
-	select {
-	case report := <-r.reports:
-		return report
-	case <-time.After(10 * time.Second):
-		r.t.Fatal("the bridge reported no turn within 10s")
-		return claim.TurnOutcomeRequest{}
-	}
+	return testwait.Receive(r.t, "the bridge's next turn report", r.reports)
 }
 
 // untilTurnEnds reads the bridge's frames up to and including the turn's end, and the

@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -157,9 +158,10 @@ type ConsumerSpec struct {
 	//     server/consumer.go).
 	HandlerLimit time.Duration
 	Logger       *slog.Logger
-	// Now is the clock Consumers reads when it records a consumer opened or a message handled,
-	// and when Lag measures a stall and the oldest waiting message's age; nil is time.Now.
-	Now func() time.Time
+	// Clock is the clock Consumers reads when it records a consumer opened or a message handled,
+	// and when Lag measures a stall and the oldest waiting message's age, and the one Lag's reads
+	// are bounded on (consumerLagBound, consumerOldestBound); nil is clock.Real.
+	Clock Clock
 	// ReviewPermission answers whether review's author has write access or higher to its
 	// repository, which is what lets a review decide a review round
 	// (PullRequestReview.AuthorCanWrite). The workflow decides inside a transaction and performs no
@@ -291,7 +293,7 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	}
 	consumers := &Consumers{spec: spec, pool: pool, stream: stream, dispatch: dispatch, github: github, wake: wake,
 		repos: slices.Clone(spec.Repositories)}
-	opened := spec.Now()
+	opened := spec.Clock.Now()
 	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: opened}
 	consumers.progress.github = &consumerProgress{name: githubConsumerName(spec.Project), opened: opened}
 	consumers.progress.wake = &consumerProgress{name: wakeConsumerName(spec.Project), opened: opened}
@@ -428,6 +430,13 @@ func positionOf(info *jetstream.ConsumerInfo) DispatchConsumerPosition {
 	}
 }
 
+// Clock is the time Consumers reads and the bounds Lag's reads run under (ConsumerSpec.Clock): a
+// narrowing of clock.Clock, clock.Real unless a test names a clocktest.Fake.
+type Clock interface {
+	Now() time.Time
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
+}
+
 const (
 	// consumerLagBound bounds one consumer's Lag read: the state route waits on it, so a NATS server
 	// that does not answer costs a state read two seconds and an unavailable line, not the
@@ -519,7 +528,7 @@ func (c *Consumers) Lag(ctx context.Context) []ConsumerLag {
 // lagOf reads one consumer's lag (Lag) within consumerLagBound, its oldest waiting message within
 // consumerOldestBound of the info's answer.
 func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) ConsumerLag {
-	ctx, cancel := context.WithTimeout(ctx, consumerLagBound)
+	ctx, cancel := c.spec.Clock.WithTimeout(ctx, consumerLagBound)
 	defer cancel()
 	handled := progress.lastHandled()
 	lag := ConsumerLag{Name: progress.name, LastHandledAt: handled}
@@ -533,13 +542,13 @@ func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) Consu
 	if lag.Waiting == 0 {
 		return lag
 	}
-	now := c.spec.Now()
+	now := c.spec.Clock.Now()
 	since := handled
 	if since.IsZero() {
 		since = progress.opened
 	}
 	lag.Stalled = now.Sub(since) >= consumerStallAfter
-	read, cancelRead := context.WithTimeout(ctx, consumerOldestBound)
+	read, cancelRead := c.spec.Clock.WithTimeout(ctx, consumerOldestBound)
 	defer cancelRead()
 	oldest, err := c.oldestWaiting(read, info)
 	if err != nil {
@@ -610,13 +619,13 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 // consumeConsumer works through one durable consumer's messages, asking JetStream for
 // consumerFetchBatch of them at a time (jetstream.PullMaxMessages), which is what leaves each
 // message's acknowledgement window to that message's own work; the constant says why. Each
-// message handled is recorded in progress at spec.Now.
+// message handled is recorded in progress at spec.Clock's time.
 func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Consumer, progress *consumerProgress, handlers []Handler) error {
 	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: time.Now}
 	consuming, err := consumer.Consume(func(message jetstream.Msg) {
 		lag.observe(message)
 		if consumeMessage(ctx, message, c.spec, c.repositories(), c.pool, handlers) {
-			progress.handle(c.spec.Now())
+			progress.handle(c.spec.Clock.Now())
 		}
 	}, jetstream.PullMaxMessages(consumerFetchBatch))
 	if err != nil {
@@ -1084,8 +1093,8 @@ func normalizedSpec(spec ConsumerSpec) (ConsumerSpec, error) {
 	if spec.Logger == nil {
 		spec.Logger = slog.Default()
 	}
-	if spec.Now == nil {
-		spec.Now = time.Now
+	if spec.Clock == nil {
+		spec.Clock = clock.Real()
 	}
 	return spec, nil
 }

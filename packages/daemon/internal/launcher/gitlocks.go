@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -28,12 +29,13 @@ import (
 // a lock some process still holds must never be removed, since two writers would then replace one
 // file.
 
-// gitLockInterval is how often a pass runs. A minute is short against the hours a wedged clone
-// would otherwise cost the issue — nothing else removes such a lock while the pod runs — and long
-// against one pass, which walks the clone's git directory once and reads the container's /proc
-// only where that walk found a lock: once for the locks it found, and a second time on a clock
-// pass that reaches the recheck before it removes any of them (holders).
-var gitLockInterval = time.Minute
+// gitLockInterval is how often a pass runs, on the launcher's clock (Config.Clock). A minute is
+// short against the hours a wedged clone would otherwise cost the issue — nothing else removes
+// such a lock while the pod runs — and long against one pass, which walks the clone's git
+// directory once and reads the container's /proc only where that walk found a lock: once for the
+// locks it found, and a second time on a clock pass that reaches the recheck before it removes any
+// of them (holders).
+const gitLockInterval = time.Minute
 
 // gitLockGuard is the age under which a lock is kept: a lock younger than this is taken for one
 // a live writer made, whatever /proc said. It is Gitaly's, GitLab's git service, which removes a
@@ -44,12 +46,11 @@ var gitLockInterval = time.Minute
 // own guard field rather than here.
 const gitLockGuard = 15 * time.Minute
 
-// gitLockRecheck is the wait between the two reads of a lock a clock pass is about to remove. The
-// holder read and the age read are two instants of one clone that is being written: a second read
-// of the same file, with no holder and the same mtime, is how a pass tells a lock nothing is
-// using from one a writer took between the pass's reads. A test shortens it, because this
-// package's tests run under the race detector.
-var gitLockRecheck = 2 * time.Second
+// gitLockRecheck is the wait between the two reads of a lock a clock pass is about to remove, on
+// the launcher's clock. The holder read and the age read are two instants of one clone that is
+// being written: a second read of the same file, with no holder and the same mtime, is how a pass
+// tells a lock nothing is using from one a writer took between the pass's reads.
+const gitLockRecheck = 2 * time.Second
 
 // gitLockRemove is the removal newGitLockSweep gives the sweep (gitLockSweep.remove): os.Remove.
 // It is a variable for the row that holds a real launcher's pass inside a role start, which
@@ -85,10 +86,11 @@ const gitLockFirstPassBound = 30 * time.Second
 // ws is the jj workspace the clone is swept through and the clone itself, which the launcher
 // derives from its own working directory and otherwise learns from the first role start it
 // serves (learn), and fromWorkDir says which of the two it was. proc is the container's /proc,
-// which the holder read walks. guard, interval and recheck are the package's three numbers, read
-// once by whoever builds the sweep. remove and now are the removal (os.Remove, through
-// gitLockRemove) and the clock, each a field because a test answers them itself: one to refuse or
-// hold a removal, one to pin a line's age. The walk (workspace.GitLocksOf) is called outright,
+// which the holder read walks. guard is the age under which a lock is kept, the package's
+// gitLockGuard, which a test varies. remove and clock are the removal (os.Remove, through
+// gitLockRemove) and the launcher's clock, each a field because a test answers them itself: one
+// to refuse or hold a removal, one to pin a line's age and to move the sweep past its interval
+// and its recheck. The walk (workspace.GitLocksOf) is called outright,
 // since every caller of the sweep, test or not, wants the real one; it is the layout guard and
 // the walk of the clone in one call, so every pass of this sweep holds the rule the init
 // container's own sweep holds, from the same helper. The workspace is derived once, by whoever
@@ -98,13 +100,11 @@ const gitLockFirstPassBound = 30 * time.Second
 // mu serializes the passes and the learning, so the pod's roles never sweep one clone twice at
 // once and a role start that arrives while the first pass runs waits for it.
 type gitLockSweep struct {
-	proc     string
-	guard    time.Duration
-	interval time.Duration
-	recheck  time.Duration
-	remove   func(string) error
-	now      func() time.Time
-	log      func(format string, args ...any)
+	proc   string
+	guard  time.Duration
+	remove func(string) error
+	clock  clock.Clock
+	log    func(format string, args ...any)
 
 	// fromWorkDir says the launcher's own working directory gave the sweep its workspace. It is
 	// settled before the launcher serves any role and never written again, so learn reads it
@@ -186,16 +186,15 @@ type gitLockSweep struct {
 // person reading the pod's log sees which clone every pass of the pod walks, or which one it
 // would not walk and why.
 //
-// The two numbers a test shortens, the interval and the recheck, and the removal a test holds are
-// read here, in the caller's own goroutine, and never inside the ticker's: they are package
-// variables, and a goroutine still reading one after the test restored it is a data race the race
-// detector fails the test for (serveTestPG reads its interval the same way). The guard and the
-// first pass's bound are constants nothing writes; a test that varies the guard writes the
-// sweep's own field.
-func newGitLockSweep(log func(format string, args ...any)) *gitLockSweep {
+// The removal a test holds is read here, in the caller's own goroutine, and never inside the
+// ticker's: it is a package variable, and a goroutine still reading it after the test restored it
+// is a data race the race detector fails the test for. The guard, the interval, the recheck and
+// the first pass's bound are constants nothing writes; a test that varies the guard writes the
+// sweep's own field, and a test moves clk, the launcher's clock, past the interval and the
+// recheck.
+func newGitLockSweep(log func(format string, args ...any), clk clock.Clock) *gitLockSweep {
 	s := &gitLockSweep{
-		proc: "/proc", guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
-		remove: gitLockRemove, now: time.Now, log: log,
+		proc: "/proc", guard: gitLockGuard, remove: gitLockRemove, clock: clk, log: log,
 	}
 	dir, err := os.Getwd()
 	if err != nil {
@@ -226,7 +225,6 @@ func newGitLockSweep(log func(format string, args ...any)) *gitLockSweep {
 // serve its roles; a pass that took longer than the bound and finished all the same writes
 // nothing, since it left nothing undecided.
 func (s *gitLockSweep) serve(ctx context.Context) <-chan struct{} {
-	interval := s.interval
 	bounded, cancel := context.WithTimeout(ctx, gitLockFirstPassBound)
 	stopped := s.pass(bounded, true)
 	cancel()
@@ -236,13 +234,13 @@ func (s *gitLockSweep) serve(ctx context.Context) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
 		for {
+			tick := s.clock.NewTimer(gitLockInterval)
 			select {
 			case <-ctx.Done():
+				tick.Stop()
 				return
-			case <-ticker.C:
+			case <-tick.C():
 				s.pass(ctx, false)
 			}
 		}
@@ -366,7 +364,7 @@ func (s *gitLockSweep) decide(ctx context.Context, first bool, paths []string) (
 	if len(paths) == 0 {
 		return "", false
 	}
-	now := s.now()
+	now := s.clock.Now()
 	found := s.read(paths)
 	if len(found) == 0 {
 		return "", false
@@ -398,13 +396,15 @@ func (s *gitLockSweep) decide(ctx context.Context, first bool, paths []string) (
 		return "", false
 	}
 	// The second read of the locks this pass would remove: at least the recheck wait after the
-	// first, one more walk of /proc, and the same file by device, inode and mtime. A writer that
-	// took one of them between the two reads is what this catches, and the next pass decides it
-	// again.
+	// first, on the sweep's clock, one more walk of /proc, and the same file by device, inode and
+	// mtime. A writer that took one of them between the two reads is what this catches, and the
+	// next pass decides it again.
+	recheck := s.clock.NewTimer(gitLockRecheck)
 	select {
 	case <-ctx.Done():
+		recheck.Stop()
 		return "", true
-	case <-time.After(s.recheck):
+	case <-recheck.C():
 	}
 	later, err := s.holders(again)
 	if err != nil {

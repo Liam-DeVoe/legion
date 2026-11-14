@@ -23,12 +23,14 @@ import (
 //
 // What the consumer's own ack floor reads there is the server's business and not the daemon's,
 // and the two servers this repository runs answer differently for exactly this consumer: on
-// nats-server 2.10.22, which `.github/ci-images.yaml` pins for CI, it stands at 0, behind the two
-// messages the consumer can never deliver; on 2.15.1, which `skill://legion-worker/references/
-// tools.md` tells a pod to run, it is initialised at the stream's last sequence, 2, level with the
-// target. Both readings carry the same facts — nothing pending and nothing awaiting an ack — so a
-// test that asserted the floor stood short of the target measured the server rather than this
-// code, and was red on the documented pod route while green in CI (dispatch://INFRA-3027).
+// nats-server 2.10.22, the published nats:2.10 image (`.github/ci-images.yaml`) the daemon's tests
+// ran in a container before they ran their server in the test process, it stands at 0, behind the
+// two messages the consumer can never deliver; on 2.15.1, which the hub runs and internal/testnats
+// runs in the test process for this test, it is initialised at the stream's last sequence, 2,
+// level with the target. Both readings carry the same facts — nothing pending and nothing awaiting
+// an ack — so a test that asserted the floor stood short of the target measured the server rather
+// than this code, and was red on a pod running 2.15.1 while green in CI on 2.10.22
+// (dispatch://INFRA-3027).
 //
 // So the precondition is stated as what both servers hold: the consumer has delivered none of the
 // messages published before it and has none to deliver, which is the state idle is read from.

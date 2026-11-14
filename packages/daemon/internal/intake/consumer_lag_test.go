@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -28,9 +28,9 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
-	clock := &lagClock{now: time.Now()}
+	clock := clocktest.New(time.Now())
 	spec := consumerSpec(&lockedBuffer{})
-	spec.Now = clock.Now
+	spec.Clock = clock
 	github, dispatch := githubConsumerName(spec.Project), dispatchConsumerName(spec.Project)
 	consumers, err := OpenConsumers(ctx, js, pool, spec)
 	if err != nil {
@@ -56,11 +56,11 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 			got, stored[0], clock.Now().Sub(stored[0]))
 	}
 
-	clock.advance(consumerStallAfter - time.Second)
+	clock.Advance(consumerStallAfter - time.Second)
 	if got := lagNamed(t, consumers.Lag(ctx), github); got.Stalled {
 		t.Fatalf("GitHub consumer 59 seconds after it opened = %+v, want not stalled yet", got)
 	}
-	clock.advance(2 * time.Second)
+	clock.Advance(2 * time.Second)
 	if got := lagNamed(t, consumers.Lag(ctx), github); !got.Stalled || got.Waiting != 3 {
 		t.Fatalf("GitHub consumer 61 seconds after it opened with none handled = %+v, want 3 waiting and stalled", got)
 	}
@@ -89,7 +89,7 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 		t.Fatalf("GitHub consumer after two acknowledgements = %+v, want pr-2 waiting, oldest at its %s, last handled at %s, not stalled", got, stored[1], handledAt)
 	}
 
-	clock.advance(consumerStallAfter + time.Second)
+	clock.Advance(consumerStallAfter + time.Second)
 	nakedBefore := naks.Load()
 	testwait.Eventually(t, "pr-2 naked again after the clock moved", func() bool { return naks.Load() > nakedBefore })
 	if got := lagNamed(t, consumers.Lag(ctx), github); !got.Stalled || got.Waiting != 1 || !got.LastHandledAt.Equal(handledAt) {
@@ -106,21 +106,22 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 // What NATS does not answer, or refuses, is named in the consumer's unavailable, and Lag still
 // returns every consumer: a CONSUMER.INFO that fails leaves waiting and stalled unknown; a
 // STREAM.MSG.GET that fails or never answers leaves only the oldest unknown, the never-answered
-// read cut at its own bound, before the consumer's.
+// read cut at its own bound, before the consumer's. Both bounds run on the test's clock, so the
+// test sees each armed and moves the clock past the read's alone.
 func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 	ctx := context.Background()
 	served, stream := testJetStream(t)
 	standIn := &lagStandIn{JetStream: served}
-	clock := &lagClock{now: time.Now()}
+	clock := clocktest.New(time.Now())
 	spec := consumerSpec(&lockedBuffer{})
-	spec.Now = clock.Now
+	spec.Clock = clock
 	github := githubConsumerName(spec.Project)
 	consumers, err := OpenConsumers(ctx, standIn, migratedPool(t), spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 	publishStored(t, served, stream, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
-	clock.advance(consumerStallAfter + time.Second)
+	clock.Advance(consumerStallAfter + time.Second)
 
 	t.Run("the consumer's info refused", func(t *testing.T) {
 		refused := errors.New("nats: permissions violation")
@@ -155,11 +156,20 @@ func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		}
-		started := time.Now()
-		lags := consumers.Lag(ctx)
-		if took := time.Since(started); took < consumerOldestBound || took >= consumerLagBound {
-			t.Fatalf("Lag took %s against a read that never answers, want it cut at the oldest message's %s bound, before the consumer's %s", took, consumerOldestBound, consumerLagBound)
-		}
+		started := clock.Now()
+		answered := make(chan []ConsumerLag, 1)
+		go func() { answered <- consumers.Lag(testwait.Context(t)) }()
+		// The GitHub consumer, the one with a message waiting, is inside its read of that message
+		// while both its bounds are armed, and they are all that is armed once the Dispatch and
+		// wake consumers, with nothing waiting, have returned and ended theirs. A read context
+		// still pending is a Lag that has not answered, since lagOf ends it as it returns.
+		want := []time.Time{started.Add(consumerOldestBound), started.Add(consumerLagBound)}
+		testwait.Until(t, fmt.Sprintf("the GitHub consumer's read armed at the oldest message's %s bound inside the consumer's %s, %v", consumerOldestBound, consumerLagBound, want), func() ([]time.Time, bool) {
+			armed := clock.Armed()
+			return armed, slices.Equal(armed, want)
+		})
+		clock.Advance(consumerOldestBound)
+		lags := testwait.Receive(t, "Lag's answer once the clock passed the oldest message's bound and not the consumer's", answered)
 		got := lagNamed(t, lags, github)
 		if got.Waiting != 1 || !got.Stalled || !got.OldestAt.IsZero() || got.Unavailable != "read the oldest waiting message: "+context.DeadlineExceeded.Error() {
 			t.Fatalf("GitHub consumer = %+v, want 1 waiting and stalled kept, the oldest unknown and the deadline named", got)
@@ -174,21 +184,21 @@ func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 // messages waiting, so each one's get waits consumerOldestBound out inside its own
 // consumerLagBound while the others' infos answer all the same. Each consumer whose oldest
 // message could not be read keeps its waiting count and stalled flag and names that read, and Lag
-// as a whole stays within one consumerLagBound.
+// as a whole answers once the clock passes consumerOldestBound, inside one consumerLagBound.
 func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *testing.T) {
 	ctx := context.Background()
 	daemonSeed, daemonPublic := testnats.User(t)
 	adminSeed, adminPublic := testnats.User(t)
-	_, uri := testnats.StartNkeyAuthorizedUsers(t, testnats.Image,
+	uri := testnats.StartNkeyAuthorizedUsers(t,
 		testnats.NkeyUser{Public: daemonPublic, Permissions: `{ publish: { deny: ["$JS.API.STREAM.MSG.GET.>"] } }`},
 		testnats.NkeyUser{Public: adminPublic})
 	admin := jetStreamAs(t, uri, adminSeed, "admin")
 	if _, err := admin.CreateStream(ctx, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}}); err != nil {
 		t.Fatalf("create the notification stream: %v", err)
 	}
-	clock := &lagClock{now: time.Now()}
+	clock := clocktest.New(time.Now())
 	spec := consumerSpec(&lockedBuffer{})
-	spec.Now = clock.Now
+	spec.Clock = clock
 	consumers, err := OpenConsumers(ctx, jetStreamAs(t, uri, daemonSeed, "the daemon's user"), migratedPool(t), spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers as the daemon's user: %v", err)
@@ -199,13 +209,21 @@ func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *t
 	}
 	publish(t, admin, legionWakeSubject, envelopeJSON(t, "wake-1", "envoy",
 		fmt.Sprintf(`{"kind":"listener_ready","at":%d}`, clock.Now().UnixMilli())))
-	clock.advance(consumerStallAfter + time.Second)
+	clock.Advance(consumerStallAfter + time.Second)
 
-	started := time.Now()
-	lags := consumers.Lag(ctx)
-	if took := time.Since(started); took > consumerLagBound+time.Second {
-		t.Fatalf("Lag took %s, want it within its %s bound", took, consumerLagBound)
-	}
+	started := clock.Now()
+	answered := make(chan []ConsumerLag, 1)
+	go func() { answered <- consumers.Lag(testwait.Context(t)) }()
+	// All three consumers are inside their reads of the oldest message at once when all six bounds
+	// are armed together: a Lag that read them one after another would never hold three reads.
+	oldest, whole := started.Add(consumerOldestBound), started.Add(consumerLagBound)
+	armed := []time.Time{oldest, oldest, oldest, whole, whole, whole}
+	testwait.Until(t, fmt.Sprintf("every consumer's read armed at once at the oldest message's %s bound inside the consumer's %s, %v", consumerOldestBound, consumerLagBound, armed), func() ([]time.Time, bool) {
+		got := clock.Armed()
+		return got, slices.Equal(got, armed)
+	})
+	clock.Advance(consumerOldestBound)
+	lags := testwait.Receive(t, "Lag's answer once the clock passed the oldest message's bound and not the consumer's", answered)
 	refused := "read the oldest waiting message: " + context.DeadlineExceeded.Error()
 	want := []ConsumerLag{
 		{Name: dispatchConsumerName(spec.Project), Waiting: 1, Stalled: true, Unavailable: refused},
@@ -231,24 +249,6 @@ func jetStreamAs(t *testing.T, uri, seed, who string) jetstream.JetStream {
 		t.Fatalf("open JetStream: %v", err)
 	}
 	return js
-}
-
-// lagClock is a clock a test moves by hand (ConsumerSpec.Now).
-type lagClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *lagClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *lagClock) advance(by time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(by)
 }
 
 // lagStandIn is the test's NATS server whose notification stream refuses or never answers what a

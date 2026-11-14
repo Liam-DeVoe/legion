@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 var liveStates = []ClaimState{StateLaunching, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle}
@@ -743,14 +744,11 @@ func TestAstraSuspensionNotYetComplete(t *testing.T) {
 
 	suspended := make(chan error, 1)
 	go func() { suspended <- h.m.Handle(h.ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator}) }()
-	select {
-	case <-gated.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("suspend never reached the runtime")
-	}
+	testwait.Receive(t, "the suspension to reach the runtime", gated.entered)
 	delivered := make(chan error, 1)
 	go func() { delivered <- h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the steer"}) }()
-	time.Sleep(50 * time.Millisecond)
+	testwait.Span(t, 50*time.Millisecond, "the steer waits on the machine's sync.Mutex, which records nothing a test can read, "+
+		"which a synctest bubble does not count as durably blocked, and behind which every later request queues too")
 	if resumes := h.calls("Resume"); len(resumes) != 0 {
 		t.Fatal("resumed while the suspension was still in the runtime")
 	}

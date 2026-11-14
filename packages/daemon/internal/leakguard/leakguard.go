@@ -57,7 +57,8 @@ type Options struct {
 	// Visibility reads what GitHub reports a repository slug ("owner/name"). Nil is the ordinary
 	// case, the gh read the shared check itself makes (Guard.ghVisibility).
 	Visibility func(ctx context.Context, slug string) (Visibility, error)
-	// Clock supplies the time and bounded wait of a rate-limited visibility read. Nil is wall time.
+	// Clock supplies the time and bounded wait of a rate-limited visibility read, and the time a
+	// stopped child ran. Nil is wall time.
 	Clock Clock
 	// OnVisibility observes the source of a successful visibility answer. A caller uses it for
 	// audit logging and leaves it nil when it has no audit record of its own.

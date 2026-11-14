@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -39,19 +40,16 @@ const (
 	operatorRoutes      = "/legion/v1/operator/"
 )
 
-// stillTime never moves: a machine's timers are armed and never fire, so a test sees only what
-// its own requests did.
-type stillTime struct{}
+// stillTime is a clocktest.Fake nothing moves: a machine's timers are armed and never fire, so a
+// test sees only what its own requests did. Its Sleep returns at once: a machine backs off inside
+// the decision a request drives, where a wait for a move nobody makes would never end.
+type stillTime struct{ *clocktest.Fake }
 
-func (stillTime) Now() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC) }
-
-func (stillTime) AfterFunc(time.Duration, func()) supervise.Cancel { return neverFires{} }
+func newStillTime() stillTime {
+	return stillTime{clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))}
+}
 
 func (stillTime) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-
-type neverFires struct{}
-
-func (neverFires) Stop() bool { return true }
 
 // anyLaunch is a launch the fake runtime accepts: the machine fills in who it is for.
 type anyLaunch struct{}
@@ -215,7 +213,7 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 	tokens := api.NewBootTokens(claims)
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	claims.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: tokens.Recording(claims), Specs: anyLaunch{}, Clock: stillTime{}, Log: quiet,
+		Runtime: rt, Conns: conns, Store: tokens.Recording(claims), Specs: anyLaunch{}, Clock: newStillTime(), Log: quiet,
 		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
 		Timeouts: supervise.Timeouts{
 			Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,

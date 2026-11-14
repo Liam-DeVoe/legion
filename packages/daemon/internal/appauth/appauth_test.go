@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 func testAppKey(t *testing.T) (*rsa.PrivateKey, string) {
@@ -932,6 +933,9 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 		http.Error(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`, http.StatusForbidden)
 	}
 	installed := func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`) }
+	// endCaller ends the running subtest's caller's context: the request GitHub holds and never
+	// answers is cut there, the moment the test chooses, as a caller's deadline cuts it.
+	var endCaller context.CancelFunc
 	for _, tc := range []struct {
 		name      string
 		discovery http.HandlerFunc
@@ -945,7 +949,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 		{name: "discovery 403", discovery: status(http.StatusForbidden, "X-RateLimit-Remaining", "4999")},
 		{name: "discovery 403 for a secondary rate limit", discovery: secondaryLimit, transient: true},
 		{name: "discovery 401", discovery: status(http.StatusUnauthorized)},
-		{name: "discovery never answers", discovery: func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }, transient: true},
+		{name: "discovery never answers", discovery: func(_ http.ResponseWriter, r *http.Request) { endCaller(); <-r.Context().Done() }, transient: true},
 		{name: "discovery body cut off mid-read", discovery: func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Length", "1000")
 			fmt.Fprint(w, `[{"id":77,`)
@@ -966,6 +970,9 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 		{name: "exchange 403 for a secondary rate limit", discovery: installed, exchange: secondaryLimit, transient: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(testwait.Context(t))
+			defer cancel()
+			endCaller = cancel
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/app/installations":
@@ -986,8 +993,6 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 			defer server.Close()
 			tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM}},
 				Options{BaseURL: server.URL, HTTPClient: server.Client()})
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
 
 			_, err := tokens.Token(ctx, Implement, ghrepo.MustParse("acme/legion"))
 			if err == nil {

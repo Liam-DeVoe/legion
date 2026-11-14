@@ -31,6 +31,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -650,25 +651,14 @@ type Specs interface {
 	SpawnSpec(ctx context.Context, c Claim) (runtime.SpawnSpec, error)
 }
 
-// Clock is time as a machine sees it.
+// Clock is time as a machine sees it: a narrowing of clock.Clock, which clock.Real and
+// clocktest.Fake both fit.
 type Clock interface {
 	Now() time.Time
-	AfterFunc(d time.Duration, f func()) Cancel
+	AfterFunc(d time.Duration, f func()) clock.Timer
 	// Sleep waits d, or returns ctx's error once ctx ends first.
 	Sleep(ctx context.Context, d time.Duration) error
 }
-
-// Cancel stops a scheduled callback.
-type Cancel interface{ Stop() bool }
-
-// RealClock is the wall clock.
-type RealClock struct{}
-
-func (RealClock) Now() time.Time { return time.Now() }
-
-func (RealClock) AfterFunc(d time.Duration, f func()) Cancel { return time.AfterFunc(d, f) }
-
-func (RealClock) Sleep(ctx context.Context, d time.Duration) error { return backoff.Sleep(ctx, d) }
 
 // Timeouts are every wait a machine times.
 type Timeouts struct {
@@ -1211,7 +1201,7 @@ type sending struct {
 type armed struct {
 	seq        uint64
 	deliveryID string
-	cancel     Cancel
+	cancel     clock.Timer
 	due        time.Time
 }
 

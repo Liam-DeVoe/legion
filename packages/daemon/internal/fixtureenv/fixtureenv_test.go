@@ -144,8 +144,10 @@ func mustRun(t *testing.T, dir string, env []string, argv ...string) string {
 }
 
 // A process environment that names another repository (GIT_DIR, GIT_WORK_TREE), a workspace
-// (LEGION_WORKSPACE) and a credential (GH_TOKEN), as a Legion issue pod's can, reaches no command
-// run under Isolated: a commit in the test's own repository leaves the decoy repository as it was.
+// (LEGION_WORKSPACE), a credential (GH_TOKEN) and a state home of its own (XDG_STATE_HOME), as a
+// Legion issue pod's can, reaches no command run under Isolated: a commit in the test's own
+// repository leaves the decoy repository as it was, and the state home is one under the test's
+// home.
 func TestIsolatedDropsTheProcesssRepositoryWorkspaceAndCredential(t *testing.T) {
 	decoy := t.TempDir()
 	clean := fixtureenv.Isolated(t.TempDir())
@@ -160,7 +162,9 @@ func TestIsolatedDropsTheProcesssRepositoryWorkspaceAndCredential(t *testing.T) 
 	t.Setenv("OMP_SESSION_SQL_DSN_FILE", "/legion/secrets/session-dsn")
 	t.Setenv("OMP_SESSION_STORAGE", "sql")
 	t.Setenv("OMP_SESSION_SQL_DSN", "postgres://legion@postgres.legion:5432/sessions")
-	env := fixtureenv.Isolated(t.TempDir())
+	t.Setenv("XDG_STATE_HOME", filepath.Join(decoy, "state"))
+	home := t.TempDir()
+	env := fixtureenv.Isolated(home)
 	for _, entry := range env {
 		key, _, _ := strings.Cut(entry, "=")
 		if slices.Contains([]string{
@@ -169,6 +173,15 @@ func TestIsolatedDropsTheProcesssRepositoryWorkspaceAndCredential(t *testing.T) 
 		}, key) {
 			t.Errorf("Isolated holds %s, want none of the process's", entry)
 		}
+	}
+	var states []string
+	for _, entry := range env {
+		if key, value, _ := strings.Cut(entry, "="); key == "XDG_STATE_HOME" {
+			states = append(states, value)
+		}
+	}
+	if want := []string{filepath.Join(home, ".local", "state")}; !slices.Equal(states, want) {
+		t.Errorf("Isolated's XDG_STATE_HOME entries = %q, want one, under the test's home: %q", states, want)
 	}
 	work := t.TempDir()
 	mustRun(t, work, env, fixturegit.InitWorkTree("", "main")...)
