@@ -1,4 +1,4 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
 import {
   focusManager,
@@ -83,35 +83,51 @@ async function refuseBroadcast(): Promise<never> {
 // fixture frozen at an absolute date would age out of every retry assertion.
 const recentAttemptAt = new Date(Date.now() - 60_000).toISOString();
 
-const now = Date.now();
-const agents = [
-  {
-    capabilities: ["aside", "btw"],
-    dir: "/workspaces/planner",
-    host: "build-host",
-    last_activity: new Date(now - 60_000).toISOString(),
-    last_seen: now - 30_000,
-    machine_id: "build-host",
-    open_asks: 2,
-    roles: ["planner"],
-    session_id: "planner-session",
-    state: "running",
-    title: "Planner",
-  },
-  {
-    capabilities: ["aside"],
-    dir: "/workspaces/reviewer",
-    host: "review-host",
-    last_activity: new Date(now - 10 * 60_000).toISOString(),
-    last_seen: now - 5 * 60_000,
-    machine_id: "review-host",
-    open_asks: 0,
-    roles: [],
-    session_id: "reviewer-session",
-    state: "running",
-    title: "Reviewer",
-  },
-] satisfies Agent[];
+/**
+ * When the row running now began, which the sessions and asks below count back from. The page
+ * groups a session by its own clock as it draws (`agentGroup`: Active is Dispatch activity inside
+ * two minutes), so a fixture dated once, as this file loads, ages while the file runs: a loaded
+ * run reaches some rows more than a minute in, where the Planner's activity "a minute ago" is
+ * past two minutes and the Planner reads as Idle. So each row dates them again: `agents` here,
+ * and `inbox`, `stale` and `deployer` in hooks of their own beside them, which run after this one.
+ */
+let now: number;
+let agents: ReturnType<typeof datedAgents>;
+beforeEach(() => {
+  now = Date.now();
+  agents = datedAgents();
+});
+
+function datedAgents() {
+  return [
+    {
+      capabilities: ["aside", "btw"],
+      dir: "/workspaces/planner",
+      host: "build-host",
+      last_activity: new Date(now - 60_000).toISOString(),
+      last_seen: now - 30_000,
+      machine_id: "build-host",
+      open_asks: 2,
+      roles: ["planner"],
+      session_id: "planner-session",
+      state: "running",
+      title: "Planner",
+    },
+    {
+      capabilities: ["aside"],
+      dir: "/workspaces/reviewer",
+      host: "review-host",
+      last_activity: new Date(now - 10 * 60_000).toISOString(),
+      last_seen: now - 5 * 60_000,
+      machine_id: "review-host",
+      open_asks: 0,
+      roles: [],
+      session_id: "reviewer-session",
+      state: "running",
+      title: "Reviewer",
+    },
+  ] satisfies Agent[];
+}
 
 /** The agent list as a plan reads it after a read that succeeded: it says who is absent. */
 function currentList(listed: readonly Agent[]): BroadcastRoster {
@@ -121,44 +137,47 @@ function currentList(listed: readonly Agent[]): BroadcastRoster {
 // The signed-in reader is `alice`, and a card's first number is their own work: these rows wait
 // on them, which is what the server answers in `waiting_on_person` for an ask nobody has handed
 // on whose issue is theirs.
-const inbox: InboxRow[] = [1, 2].map((number) => ({
-  anchor: null,
-  answer: null,
-  artifact_id: null,
-  asked_of: null,
-  asked_of_at: null,
-  asked_of_by: null,
-  author: { id: "planner-session", kind: "session" },
-  block_id: null,
-  created_at: new Date(now - 60_000).toISOString(),
-  edited_at: null,
-  id: `ask-${number}`,
-  issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
-  issue_key: "CORE-1",
-  waiting_on_person: "alice",
-  kind: "question",
-  last_reply: null,
-  multiple: false,
-  opened_event_id: number,
-  options: [],
-  thread: {
-    answers: [],
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-  },
-  priority: null,
-  snoozed_until: null,
-  question: "What should happen next?",
-  state: "open",
-  waiting_on: "human",
-  urgency: "med",
-}));
+let inbox: InboxRow[];
+beforeEach(() => {
+  inbox = [1, 2].map((number) => ({
+    anchor: null,
+    answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "planner-session", kind: "session" },
+    block_id: null,
+    created_at: new Date(now - 60_000).toISOString(),
+    edited_at: null,
+    id: `ask-${number}`,
+    issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
+    issue_key: "CORE-1",
+    waiting_on_person: "alice",
+    kind: "question",
+    last_reply: null,
+    multiple: false,
+    opened_event_id: number,
+    options: [],
+    thread: {
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
+    },
+    priority: null,
+    snoozed_until: null,
+    question: "What should happen next?",
+    state: "open",
+    waiting_on: "human",
+    urgency: "med",
+  }));
+});
 
 function message(body: string, overrides: Partial<Message> = {}): Message {
   return {
@@ -963,13 +982,16 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
 });
 
 /** Heard from eleven minutes ago, its last Dispatch activity half an hour old: Quiet. */
-const stale: Agent = {
-  ...agents[1],
-  last_activity: new Date(now - 30 * 60_000).toISOString(),
-  last_seen: now - 11 * 60_000,
-  session_id: "stale-session",
-  title: "Stale",
-};
+let stale: Agent;
+beforeEach(() => {
+  stale = {
+    ...agents[1],
+    last_activity: new Date(now - 30 * 60_000).toISOString(),
+    last_seen: now - 11 * 60_000,
+    session_id: "stale-session",
+    title: "Stale",
+  };
+});
 
 test("Agents puts a session unseen for ten minutes in Quiet, which collapses and opens", async () => {
   const user = userEvent.setup();
@@ -1185,6 +1207,8 @@ test("Agents sends without an issue through the agent message route", async () =
 });
 
 const coreIssue: IssueSummary = {
+  advances: [],
+  advances_revision: 0,
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
@@ -4017,15 +4041,18 @@ test("a link naming a machine opens the page filtered to it, and the filter can 
 });
 
 /** A session on its own machine, so the machine filter has more than two rows to narrow. */
-const deployer: Agent = {
-  ...agents[1],
-  host: "deploy-host",
-  last_activity: new Date(now - 60_000).toISOString(),
-  last_seen: now - 10_000,
-  roles: ["deployer"],
-  session_id: "deploy-session",
-  title: "Deployer",
-};
+let deployer: Agent;
+beforeEach(() => {
+  deployer = {
+    ...agents[1],
+    host: "deploy-host",
+    last_activity: new Date(now - 60_000).toISOString(),
+    last_seen: now - 10_000,
+    roles: ["deployer"],
+    session_id: "deploy-session",
+    title: "Deployer",
+  };
+});
 
 /** The three filters of the row, by the concept each picks from. */
 const FILTER_LABELS = { group: "Group", machine: "Machine", role: "Role" } as const;

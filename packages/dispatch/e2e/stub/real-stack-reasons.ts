@@ -228,6 +228,8 @@ export const realStackReasons: Record<string, string> = {
   "post-corrections.e2e.ts":
     "each mark is the server's record of an edit or a delete, written through the API and then read back on four pages",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
+  "priorities.e2e.ts":
+    "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
   "project-default-assignee.e2e.ts":

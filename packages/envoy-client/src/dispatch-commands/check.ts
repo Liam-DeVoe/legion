@@ -59,6 +59,7 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_issues: true,
   dispatch_project: true,
   dispatch_projects: true,
+  dispatch_priorities: true,
   dispatch_open_asks: true,
   dispatch_answers: true,
   dispatch_whoami: true,
@@ -550,6 +551,14 @@ export async function resolveOwnerArguments(
   // A read by `message` names a conversation, which a direct message's has no issue to own; the
   // `dispatch_read` case reads it through GET /api/v1/messages/{id}.
   if (tool === "dispatch_read" && typeof args.message === "string") {
+    return { args, ref, owner: null };
+  }
+  // A message to one session goes into that session's own conversation, which stands on no issue:
+  // the tool takes no `issue` argument, and its description tells the caller to name the issue in
+  // the body because the message carries none. LEGION_ISSUE must not fill one in here: the strict
+  // schema refuses `issue` as an unknown field, and an issue filled in would claim work this
+  // message does not carry.
+  if (tool === "dispatch_send_to_agent") {
     return { args, ref, owner: null };
   }
   // A retraction names one stored result by its id, and the server reads that result's issue for
