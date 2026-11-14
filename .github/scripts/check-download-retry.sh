@@ -290,8 +290,8 @@
 #      that runs it, which is where the figure is asked for.
 #
 #      The job's own `timeout-minutes` is held above that same arithmetic, because a job
-#      ceiling under one of its steps' attempts cuts the step before the step's own budget can
-#      name the site, and the step's margin then buys nothing. A job writing no
+#      ceiling at or under one of its steps' attempts cuts the step before the step's own budget
+#      can name the site, and the step's margin then buys nothing. A job writing no
 #      `timeout-minutes` is held at GitHub's own default of 360 minutes (JOB_DEFAULT_MINUTES).
 #
 #      A CEILING WRITTEN AS AN EXPRESSION IS A CEILING THIS CHECK DOES NOT READ, and it is
@@ -320,9 +320,10 @@
 #      measured duration plus the arithmetic of its slowest retried step — read here as the
 #      half a check can make, which is the arithmetic and not the measurement.
 #      That half is read twice, because one reading of it left a whole class green. A job is
-#      refused when its ceiling sits under a step's RETRY ARITHMETIC, and refused again when its
-#      ceiling is not above that step's OWN `timeout-minutes`: the second is what catches a job
-#      whose steps each fit their own budgets while the job holds all of them together, and
+#      refused when its ceiling sits at or under a step's RETRY ARITHMETIC, and refused again
+#      when its ceiling is not above that step's OWN `timeout-minutes`: the second is what
+#      catches a job whose steps each fit their own budgets while the job holds all of them
+#      together, and
 #      twenty-two job keys of this repository stood below their own documented derivation,
 #      under a green check, until it was added (dispatch://INFRA-1545, round 27). The measured
 #      term stays out of both readings, so a job's comment still carries arithmetic no program
@@ -628,17 +629,25 @@
 # "a step R1 names". A site an exception or a scoping above removes is not on the list, by the
 # same reasoning that leaves it unretried.
 #
+# `--jobs` prints the jobs rule 8 holds to a priced key, one per line: each job that writes its own
+# `timeout-minutes` and holds a retried step costing more than 0 s, as six tab-separated columns —
+# the file, the job, the key's line, its minutes, the seconds of the job's slowest retried step and
+# that step's name — sorted by file and then by the key's line, with the count on standard error.
+# Over a tree with a problem it prints the problems and exits 1, as `--list` does. The harness's
+# real-tree case reads it.
+#
 # Run from anywhere: .github/scripts/check-download-retry.sh
 #                    .github/scripts/check-download-retry.sh --list
+#                    .github/scripts/check-download-retry.sh --jobs
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
 case "$#:${1:-}" in
-  0: | 1:--list) ;;
+  0: | 1:--list | 1:--jobs) ;;
   *)
-    echo "::error file=.github/scripts/check-download-retry.sh::this check takes no argument, or \`--list\` to print the sites it holds to the floor. Run \`.github/scripts/check-download-retry.sh\` or \`.github/scripts/check-download-retry.sh --list\`." >&2
+    echo "::error file=.github/scripts/check-download-retry.sh::this check takes no argument, or \`--list\` to print the sites it holds to the floor, or \`--jobs\` to print the jobs rule 8 prices. Run \`.github/scripts/check-download-retry.sh\`, \`.github/scripts/check-download-retry.sh --list\` or \`.github/scripts/check-download-retry.sh --jobs\`." >&2
     exit 2
     ;;
 esac
@@ -658,7 +667,8 @@ import yaml
 
 from workflow_paths import walk
 
-LIST_MODE = os.environ.get("DOWNLOAD_RETRY_MODE") == "--list"
+# The mode the argument chose: "" for the check, "--list" for its sites, "--jobs" for its jobs.
+MODE = os.environ.get("DOWNLOAD_RETRY_MODE")
 
 
 class LineLoader(yaml.SafeLoader):
@@ -2262,7 +2272,8 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        ".github/scripts/ci-tools-proof.sh's `stage` calls ci_tools_fetch once "
                        "per row of its STAGED_ROWS, which is a call of a function this file "
                        "defines and not a call of this file, so the loop around it multiplies "
-                       "nothing (WHAT IT COUNTS ONCE OR MISCOUNTS, in rule 8 above): the "
+                       "nothing (WHAT IT COUNTS ONCE OR MISCOUNTS, under rule 8 in the header "
+                       "of .github/scripts/check-download-retry.sh): the "
                        "twelve ladders those five rows make are budgeted by hand on ci.yaml's "
                        "staging step, which derives them from this entry's figures"),
 ]
@@ -2438,6 +2449,11 @@ def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, Mappin
     return found
 
 
+# The 1-based lines of each workflow's job ids, by file. The priced-comment clause of rule 8 stops
+# a block's reach at another job's id, so a step comment at the end of one job never prices the
+# next job's key.
+JOB_ID_LINES: dict[str, set[int]] = {}
+
 for path in workflows + actions:
     DUPLICATE_KEYS.clear()
     try:
@@ -2455,6 +2471,8 @@ for path in workflows + actions:
                 "Delete one of them, and say in the comment which figure survived and why.")
     if not isinstance(document, Mapping):
         continue
+    if isinstance(document.get("jobs"), Mapping):
+        JOB_ID_LINES[path] = set(document["jobs"].lines.values())
     credentialed = credentialed_jobs(path, document)
     for job, name, step, shell, holder in steps_of(path, document):
         cost: int | None = 0
@@ -3158,7 +3176,7 @@ for budget in budgets:
         problem(budget.path, budget.job_line,
                 f"{job_carries}, and its step '{step_name(budget)}' holds retries taking {cost} s to "
                 "exhaust, which that budget does not strictly exceed. A job whose ceiling sits "
-                "under one of its own steps' arithmetic cuts that step before the step's own "
+                "at or under one of its own steps' arithmetic cuts that step before the step's own "
                 "budget can name the site that failed, so the step's `timeout-minutes` buys "
                 "nothing: a job carries its measured duration plus the arithmetic of its "
                 "slowest retried step, which is the rule ci-budgets.md's Budgets note writes out. "
@@ -3173,13 +3191,15 @@ for budget in budgets:
         problem(budget.path, budget.job_line,
                 f"{job_carries}, and its step '{step_name(budget)}' carries "
                 f"`timeout-minutes: {budget.minutes}`, which that job budget does not strictly "
-                "exceed. The step's retries fit inside the step's own budget here, so the clause "
-                "above says nothing; what cuts the step is the job, because the job holds that "
+                "exceed. The step's retries fit inside the step's own budget here, so this "
+                "rule's step-budget refusal, which refuses a step whose `timeout-minutes` does "
+                "not strictly exceed its own retries, says nothing; what cuts the step is the "
+                "job, because the job holds that "
                 "step AND everything else it runs. A job ceiling at or below one of its steps' "
                 "ceilings therefore ends the run mid-ladder and reports GitHub's bare "
                 "`The job running on runner … has exceeded the maximum execution time` instead "
-                "of the step naming the site that failed, which is the same loss the clause "
-                "above refuses by another road. The Budgets note derives a job budget as its "
+                "of the step naming the site that failed, which is the same loss the step-budget "
+                "refusal refuses by another road. The Budgets note derives a job budget as its "
                 "measured duration plus its slowest retried step's whole ladder, and a program "
                 "cannot read a measurement, so this is the half of that rule a check can hold: "
                 f"write `timeout-minutes: {budget.minutes + 1}` or more on this job, or the "
@@ -3200,25 +3220,48 @@ for budget in budgets:
 # green in all nine. The two clauses together are mechanical — THE SENTENCE AGREES WITH THE
 # KEY, AND THE KEY CARRIES THE SUM THE SENTENCE STATES.
 PRICED = re.compile(r"->\s*(\d+)\s*min")
-KEY_LINE = re.compile(r"^\s*timeout-minutes:\s*(\d+)\s*$")
-# Every key line a priced block is paired with below, as (file, 1-based line). The pricing
-# clause after the job-derivation clause refuses a retried job whose own key is not in it, so
-# what "a job prices itself" means is exactly what this loop pairs: no window, no distance, and
-# no arrow counting for a job whose key it does not sit above (dispatch://INFRA-1545, review
-# round 27, where `typecheck` lowered to 20 was priced by `tool-fallback-arm`'s step comment 28
-# lines above it).
+# A key line, bare or carrying a trailing YAML comment: `timeout-minutes: 28  # the sum above` is
+# key 28, as YAML reads it, while `timeout-minutes: 28 junk` is no key line, since YAML reads that
+# value as a string and written_minutes takes no string.
+KEY_LINE = re.compile(r"^\s*timeout-minutes:\s*(\d+)(?:\s+#.*|\s*)$")
+
+
+def indent_of(text: str) -> int:
+    """How deep a line is indented: the blank before its first character."""
+    return len(text) - len(text.lstrip())
+
+
+# Who owns each key a step or a job writes, as (file, 1-based line), so a refusal of a key names
+# the job or the step it belongs to. A Budget's `line` and `job_line` are the key's line only
+# where that key is written: a step or a job writing none holds a fallback line there, and gets
+# no entry.
+KEY_OWNERS: dict[tuple[str, int], str] = {}
+for budget in budgets:
+    if budget.job_minutes is not None:
+        KEY_OWNERS[(budget.path, budget.job_line)] = f"job '{budget.job}'"
+    if budget.minutes is not None:
+        KEY_OWNERS[(budget.path, budget.line)] = (f"step '{step_name(budget)}' of job "
+                                                  f"'{budget.job}'")
+# Every key line a priced block is paired with, as (file, 1-based line). The pricing clause after
+# the job-derivation clause refuses a retried job whose own key is not in it, so what "a job
+# prices itself" means is exactly what this loop pairs. A block's keys are the `timeout-minutes`
+# lines below it, at most one per figure it states, read down to the first comment line or to the
+# first job id, except a job id on the line directly below the block whose last line is indented
+# no deeper than that id: that block is the comment the job's own id carries. There is no window
+# and no distance, and an arrow never reaches past another comment or into a job its block does
+# not head or sit inside (dispatch://INFRA-1545, review round 27, where `typecheck` lowered to 20
+# was priced by `tool-fallback-arm`'s step comment 28 lines above it).
 PAIRED: set[tuple[str, int]] = set()
 for path in sorted(set(budget.path for budget in budgets)):
     lines = Path(path).read_text().split("\n")
+    job_ids = JOB_ID_LINES.get(path, set())
     number = 0
     while number < len(lines):
-        # A line that is not a comment is stepped over, and the block read next starts after
-        # it: empty when that line is not a comment either, and an empty block holds no figure,
-        # so the pairing below takes no key for it (it takes one key per figure). That is why
-        # nothing here skips an empty block: a skip would be a statement no input can tell from
-        # its absence (dispatch://INFRA-1545, round 32's mutation pass).
+        # A line that is not a comment is stepped over: only a comment block prices a key, so
+        # the walk moves to the next line and reads a block only where one starts.
         if not lines[number].lstrip().startswith("#"):
             number += 1
+            continue
         # A comment block is read whole, because its figures are spread over its lines: one site
         # writes a step's own arithmetic on one line and the floor that overrides it on the next.
         first = number
@@ -3234,21 +3277,30 @@ for path in sorted(set(budget.path for budget in budgets)):
         # never to the last figure or the first: a `first key within N lines` pairing refuses
         # that correct site, and a gate that refuses a correct job is one the next author
         # silences. Three hand readers of this class each got that pairing wrong.
-        keys: list[int] = []
+        keys: list[tuple[int, int]] = []
         for below in range(number, len(lines)):
             if lines[below].lstrip().startswith("#") or len(keys) == len(figures):
                 break
+            # Another job's id ends the block's reach, so a step comment at the end of one job
+            # prices nothing in the next. The one id it passes is the job's own, written directly
+            # below a block indented no deeper than it.
+            if below + 1 in job_ids and not (
+                    below == number and indent_of(lines[number - 1]) <= indent_of(lines[below])):
+                break
             found = KEY_LINE.match(lines[below])
             if found:
-                keys.append(int(found.group(1)))
+                keys.append((int(found.group(1)), below + 1))
                 PAIRED.add((path, below + 1))
-        for key in keys:
+        for key, key_line in keys:
             if key in figures:
                 continue
+            owner = KEY_OWNERS.get((path, key_line))
             problem(path, first + 1,
                     "this comment prices what it sits above at "
                     + " and ".join(f"{one} min" for one in figures)
-                    + f", and the `timeout-minutes: {key}` below it carries {key}. A budget "
+                    + f", and the `timeout-minutes: {key}` below it"
+                    + (f", the key of {owner}," if owner else "")
+                    + f" carries {key}. A budget "
                     "comment that names a figure its key does not is how every drift of this "
                     "class has looked: the bound moved, the sentence kept the old arithmetic, "
                     "and the key was raised from a refusal while the sentence beside it was "
@@ -3295,11 +3347,11 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
     lines = Path(path).read_text().split("\n")
     # The comment block this job's own key carries, and nothing else: upwards from the key line
     # while the lines are comments. A figure outside the block belongs to another job or another
-    # step and is never read here. The walk needs no lower bound: the job's own id line is
-    # written above its key and is not a comment, so it always stops there, above line 0.
+    # step and is never read here. The walk also stops at line 0, though the job's own id line,
+    # written above its key and not a comment, ends it before it gets there.
     index = row["line"] - 2
     block: list[str] = []
-    while lines[index].lstrip().startswith("#"):
+    while index >= 0 and lines[index].lstrip().startswith("#"):
         block.append(lines[index].lstrip().lstrip("#").strip())
         index -= 1
     stated = None
@@ -3317,7 +3369,7 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
                 f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
                 f"own comment derives {measured} + {term} = {total} s, which that key does not strictly exceed. A job "
                 "is its measured duration plus the arithmetic of its slowest retried step "
-                "(ci-budgets.md's Budgets note), so a key under the sum the comment itself "
+                "(ci-budgets.md's Budgets note), so a key at or under the sum the comment itself "
                 "states reports GitHub's bare timeout line part way through a step that is still "
                 f"inside its own budget. Write `timeout-minutes: {total // 60 + 1}` or more, or "
                 "correct the derivation.")
@@ -3346,14 +3398,20 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
 # (dispatch://INFRA-1545): `download-retry` — the very job whose cancellation this issue exists
 # to prevent — could be put back to its old key and every clause stayed silent, because its
 # derivation names its minutes in words rather than as `-> N min`. A key nothing measures is a
-# key that drifts, so a job holding a retried step must price itself.
+# key that drifts, so a job holding a retried step must price itself. That holds a job that
+# writes its own `timeout-minutes`, which is the only kind JOB_SLOWEST enters: a job that writes
+# no key gets GitHub's 360 minutes, the job-ceiling refusals of the step-budget loop hold its
+# steps under that, and there is no key for a comment to price.
 #
 # A job prices itself when the priced-comment clause pairs one of its blocks with that job's own
-# key: a comment block holding `-> N min` whose keys below it, one per figure, include this key,
-# wherever the block sits above it and however far up. Nothing else is asked — not the shape of
-# the sum, not the distance — and another job's arrow never counts, because the pairing hands
-# that arrow to the key it sits above (review round 27: a 40-line window took
-# `tool-fallback-arm`'s step comment as `typecheck`'s price).
+# key: a comment block holding `-> N min` whose keys, one per figure, include this key. A block's
+# keys are the `timeout-minutes` lines below it, read down to the first comment line, or to the
+# first job id other than one directly below a block indented no deeper than it. So the block
+# sits inside this job — directly above its id, or below the id and above its key — with no
+# comment line between it and the key, however many lines of other YAML lie between them.
+# Nothing else is asked — not the shape of the sum, not the distance — and another job's arrow
+# never counts, because the pairing stops at the next job's id (review round 27: a 40-line
+# window took `tool-fallback-arm`'s step comment as `typecheck`'s price).
 for (path, job), row in sorted(JOB_SLOWEST.items()):
     if row["cost"] <= 0:
         continue
@@ -3369,8 +3427,10 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
             "from 240 to the 221 it carried before this issue raised it, and every rule here "
             "stayed green, because its own derivation ends `takes the whole minute above it: "
             "240` rather than `-> 240 min` (dispatch://INFRA-1545). Write this job's own figure "
-            "as `-> N min` in a comment block above this key, with no other `timeout-minutes` "
-            "between them, which is what those clauses read.")
+            "as `-> N min` in a comment block inside this job, either directly above the "
+            "job's id at that id's own indentation or below the id and above this key, with no "
+            "comment line and no other `timeout-minutes` between that block and this key, "
+            "and the priced-comment clause pairs that block with this key.")
 
 for entry in EXEMPTIONS:
     if entry.used:
@@ -3416,13 +3476,22 @@ for entry in DECLARED_LOOPS:
             "drop it, or point it at where that call moved. It said the budgets reaching it "
             f"are written for {entry.figure()}, because {entry.why}.")
 
-if LIST_MODE and not problems:
-    # A reader of this list pipes it (`| head`, `| cut`), so a closed pipe ends this the way any
-    # other tool ends: on the signal, with no traceback.
+if MODE in ("--list", "--jobs") and not problems:
+    # A reader of these lists pipes them (`| head`, `| cut`), so a closed pipe ends this the way
+    # any other tool ends: on the signal, with no traceback.
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-    for site in sorted(sites, key=lambda site: (site.path, site.line)):
-        print(f"{site.path}\t{site.line}\t{site.verb}\t{site.step}")
-    print(f"{len(sites)} site(s)", file=sys.stderr)
+    if MODE == "--list":
+        for site in sorted(sites, key=lambda site: (site.path, site.line)):
+            print(f"{site.path}\t{site.line}\t{site.verb}\t{site.step}")
+        print(f"{len(sites)} site(s)", file=sys.stderr)
+        raise SystemExit(0)
+    # The jobs the job-that-prices-nothing clause holds to a priced key, as that clause reads
+    # them: the rows of JOB_SLOWEST whose slowest retried step costs more than 0 s.
+    priced = sorted(((path, job, row) for (path, job), row in JOB_SLOWEST.items()
+                     if row["cost"] > 0), key=lambda item: (item[0], item[2]["line"]))
+    for path, job, row in priced:
+        print(f"{path}\t{job}\t{row['line']}\t{row['minutes']}\t{row['cost']}\t{row['step']}")
+    print(f"{len(priced)} job(s)", file=sys.stderr)
     raise SystemExit(0)
 
 if problems:

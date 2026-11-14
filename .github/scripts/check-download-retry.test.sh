@@ -2214,7 +2214,7 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the figure the comment prices and the key beneath it" \
-  "$(contains "$out" "this comment prices what it sits above at 38 min, and the .timeout-minutes: 30. below it carries 30")"
+  "$(contains "$out" "this comment prices what it sits above at 38 min, and the .timeout-minutes: 30. below it, the key of job 'build', carries 30")"
 check "points at the comment's first line, where a reader rewrites the sentence" \
   "$(contains "$out" "file=.github/workflows/case.yaml,line=6::this comment prices")"
 
@@ -2307,7 +2307,7 @@ check "says no comment block prices that key" \
   "$(contains "$out" "no comment block prices that key")"
 check "names the two clauses that read a price, by what they are and where" \
   "$(contains "$out" "rule 8's priced-comment and job-derivation clauses in .github/scripts/check-download-retry.sh")"
-check "says what to write" "$(contains "$out" 'as .-> N min. in a comment block above this key')"
+check "says what to write" "$(contains "$out" 'as .-> N min. in a comment block inside this job')"
 
 echo "case: the same job priced as -> N min passes, wherever the block sits"
 root=$(fixture job-priced-above-its-id)
@@ -2448,7 +2448,7 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names both figures and the key between them" \
-  "$(contains "$out" "this comment prices what it sits above at 9 min and 69 min, and the .timeout-minutes: 50. below it carries 50")"
+  "$(contains "$out" "this comment prices what it sits above at 9 min and 69 min, and the .timeout-minutes: 50. below it, the key of job 'build', carries 50")"
 
 echo "case: a job whose comment derives its key another way is passed over"
 root=$(fixture job-derivation-construction)
