@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -44,7 +42,7 @@ import (
 // message at 1.
 //
 // The rig runs on a server of its own (testnats.Start), since the test stops it and changes its
-// store (testnats.Server.StoreDir), and on a one-copy stream, which has no other copy for the
+// store (testnats.Server.CutStream), and on a one-copy stream, which has no other copy for the
 // server to recover the cut block from.
 func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSequence(t *testing.T) {
 	srv, url := testnats.Start(t)
@@ -95,16 +93,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 		t.Fatalf("the session's resume record after its deregistration holds floor %d, %v; want %d, the last message it acked", floor, err, resume)
 	}
 
-	srv.Stop(t)
-	messages := filepath.Join(srv.StoreDir(), "jetstream", "$G", "streams", bus.Stream, "msgs")
-	block, index := filepath.Join(messages, "1.blk"), filepath.Join(messages, "index.db")
-	if err := os.Truncate(block, 0); err != nil {
-		t.Fatalf("cut the stream's first message block: %v", err)
-	}
-	if err := os.Remove(index); err != nil {
-		t.Fatalf("remove the stream's index: %v", err)
-	}
-	srv.Start(t)
+	srv.CutStream(t, bus.Stream, func(int64) int64 { return 0 })
 
 	// Each of the rig's connections reconnects on its own: the listener's bus, its
 	// session-consumer connection and the test's view of the session consumers.

@@ -3,8 +3,6 @@ package bus
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -77,16 +75,7 @@ func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMess
 	waitForAckFloor(t, consumers, session, before+acked)
 	waitForAckPending(t, consumers, session, 0)
 
-	srv.Stop(t)
-	messages := filepath.Join(srv.StoreDir(), "jetstream", "$G", "streams", Stream, "msgs")
-	block, index := filepath.Join(messages, "1.blk"), filepath.Join(messages, "index.db")
-	if err := os.Truncate(block, 0); err != nil {
-		t.Fatalf("cut the stream's first message block: %v", err)
-	}
-	if err := os.Remove(index); err != nil {
-		t.Fatalf("remove the stream's index: %v", err)
-	}
-	srv.Start(t)
+	srv.CutStream(t, Stream, func(int64) int64 { return 0 })
 
 	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
 		return owner.Connected() && consumers.client.Connected()

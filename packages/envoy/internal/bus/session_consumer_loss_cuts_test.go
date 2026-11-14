@@ -3,8 +3,6 @@ package bus
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -97,25 +95,12 @@ func runLossCut(t *testing.T, cut lossCut) {
 	waitForAckFloor(t, consumers, cut.session, uint64(before+cut.acked))
 	waitForAckPending(t, consumers, cut.session, 0)
 
-	srv.Stop(t)
-	messages := filepath.Join(srv.StoreDir(), "jetstream", "$G", "streams", Stream, "msgs")
-	block, index := filepath.Join(messages, "1.blk"), filepath.Join(messages, "index.db")
-	stat, err := os.Stat(block)
-	if err != nil {
-		t.Fatalf("the stream's first message block: %v", err)
-	}
-	size := stat.Size()/2 + 1
+	keep := func(size int64) int64 { return size/2 + 1 }
 	if cut.whole {
-		size = 0
+		keep = func(int64) int64 { return 0 }
 	}
-	if err := os.Truncate(block, size); err != nil {
-		t.Fatalf("cut the stream's first message block: %v", err)
-	}
-	if err := os.Remove(index); err != nil {
-		t.Fatalf("remove the stream's index: %v", err)
-	}
-	t.Logf("cut %s from %d bytes to %d and removed %s", block, stat.Size(), size, index)
-	srv.Start(t)
+	size, kept := srv.CutStream(t, Stream, keep)
+	t.Logf("cut the stream's first message block from %d bytes to %d and removed the stream's index", size, kept)
 
 	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
 		return owner.Connected() && consumers.client.Connected()

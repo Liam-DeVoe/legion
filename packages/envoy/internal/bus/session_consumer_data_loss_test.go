@@ -3,8 +3,6 @@ package bus
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +29,7 @@ import (
 // the stream's first message block is cut to half its size plus one byte and the stream's index
 // (index.db) is removed, so the restarted server rebuilds the stream from what the block still
 // holds. The test has a server of its own for that (testnats.Start), since it stops it and changes
-// its store (testnats.Server.StoreDir). The messages stored before the consumer's start are most
+// its store (testnats.Server.CutStream). The messages stored before the consumer's start are most
 // of the block, so the cut falls below that start, at most at its sequence less 3. A restart at
 // OptStartSeq is then either at L + 3, past both messages stored after the loss, so it delivers
 // neither, or past the stream's end, where create clamps it to the stream's first sequence; neither
@@ -84,24 +82,8 @@ func TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgai
 	t.Logf("before the loss the server reports the ack floor as %d, the last delivery as %d and the start sequence as %d",
 		info.AckFloor.Stream, info.Delivered.Stream, info.Config.OptStartSeq)
 
-	srv.Stop(t)
-	messages := filepath.Join(srv.StoreDir(), "jetstream", "$G", "streams", Stream, "msgs")
-	block, index := filepath.Join(messages, "1.blk"), filepath.Join(messages, "index.db")
-	stat, err := os.Stat(block)
-	if err != nil {
-		t.Fatalf("the stream's first message block: %v", err)
-	}
-	if _, err := os.Stat(index); err != nil {
-		t.Fatalf("the stream's index: %v", err)
-	}
-	if err := os.Truncate(block, stat.Size()/2+1); err != nil {
-		t.Fatalf("cut the stream's first message block: %v", err)
-	}
-	if err := os.Remove(index); err != nil {
-		t.Fatalf("remove the stream's index: %v", err)
-	}
-	t.Logf("cut %s from %d bytes to %d and removed %s", block, stat.Size(), stat.Size()/2+1, index)
-	srv.Start(t)
+	size, kept := srv.CutStream(t, Stream, func(size int64) int64 { return size/2 + 1 })
+	t.Logf("cut the stream's first message block from %d bytes to %d and removed the stream's index", size, kept)
 
 	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
 		return owner.Connected() && consumers.client.Connected()
