@@ -328,3 +328,20 @@ test("with the security token service refusing, a person's trade fails naming it
   expect(broker.trades).toHaveLength(0);
   expect(iam.posted).toHaveLength(0);
 });
+
+test("with generateIdToken refusing, a person's trade fails naming it and the broker is asked nothing", async () => {
+  const reason = '{"error":{"code":403,"message":"Permission denied"}}';
+  const sts = stubService(federating);
+  const iam = stubService(() => ({ status: 403, body: reason }));
+  const broker = stubBroker(() => ({ body: accepted("never", 600) }));
+  stops.push(broker.stop);
+  const { client } = await personOnPoolMachine(sts.url, iam.url, broker.url);
+  const refusal = await refusalOf(() => client.token());
+  expect(refusal?.message).toContain(
+    `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403: ${reason}`
+  );
+  // The security token service answered and generateIdToken refused: no trade reaches the broker
+  // without the machine token that vouches for the person.
+  expect(sts.posted).toHaveLength(1);
+  expect(broker.trades).toHaveLength(0);
+});
