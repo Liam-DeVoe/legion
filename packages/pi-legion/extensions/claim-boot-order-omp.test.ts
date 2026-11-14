@@ -371,6 +371,13 @@ function conversation(request: Request): string {
 // registration on, so the card that finds the session idle starts no turn. The session's first
 // turn is the task's, taken once its host is idle, and the kept message is woken after that
 // turn's end.
+//
+// The take's text is the assignment, so the phase reminder (`@legion/pi-shared/phase-stall`)
+// reads the task's turn as an open phase's: a turn that ends with neither `handoff_complete` nor a
+// WAITING line is continued in the same run by the reminder, and a reply after the task's turn
+// has ended counts as the held card's reading (pi-envoy's `unreadCards`), so no wake follows it.
+// The task's turn here ends on a WAITING line, which buys the quiet wait rather than the
+// reminder, so the run ends with the task's own reply and the wake is the next turn.
 test.skipIf(skip)(
   "the task the worker takes is the session's first turn, and the message kept for its role is held for it and woken after it",
   async () => {
@@ -384,7 +391,7 @@ test.skipIf(skip)(
     expect(worker.claimedAfterReadyMs()).toBeGreaterThanOrEqual(0);
     // The host wrote the card as one held while the task's turn was pending.
     expect(await worker.handOverOf(worker.kept)).toBe("task-pending");
-    task.reply("Task done.");
+    task.reply("WAITING on the review of the change.");
 
     const wake = await worker.nextTurn("the held message's wake");
     expect(conversation(wake.request)).toContain("1 Envoy message above arrived with no turn");

@@ -837,11 +837,14 @@ export interface LegionPaneOptions {
   readonly issue: string;
   /** The daemon's assignment, a task the pane takes. Several are given one after another, each
    * once the run the one before it started has settled: a turn a refusal ended starts no
-   * continuation of its own, so a case that needs a second turn names a second assignment. */
+   * continuation of its own, so a case that needs a second turn names a second assignment. An
+   * ordinary session (`legion: false`) takes no task, so each is what a person types there: the
+   * RPC `prompt`. */
   readonly prompt: string | readonly string[];
   /**
    * False drops every `LEGION_*` variable, so the pane is an ordinary session: the Legion
-   * extension stays inert and the Envoy extension's run-end ask nudge is not excluded.
+   * extension stays inert, the Envoy extension's run-end ask nudge is not excluded, and each
+   * `prompt` is sent as the RPC `prompt`.
    */
   readonly legion?: boolean;
   /** Configures Dispatch against the stand-in: `DISPATCH_URL` is its base, `DISPATCH_TOKEN` the
@@ -913,8 +916,9 @@ export interface LegionPane {
  * saying so, and its Legion claim fails with it (INFRA-771). The daemon's assignment is a task the
  * pane takes (`./task-stand-in`): the stand-in holds it as the claim's value, the registration
  * answers it, and the take is answered its text; each later one is relayed to the session as a
- * task frame once the run before it has settled. Nothing in a pane runs `legion` from bash
- * (LEGION-631), so no stand-in `legion` is on its PATH: `bin` holds what `prepare` put there.
+ * task frame once the run before it has settled. An ordinary session (`legion: false`) is sent
+ * each one as the RPC `prompt` instead. Nothing in a pane runs `legion` from bash (LEGION-631),
+ * so no stand-in `legion` is on its PATH: `bin` holds what `prepare` put there.
  */
 export async function runLegionPane(
   binary: string,
@@ -923,6 +927,7 @@ export async function runLegionPane(
   cleanup: Cleanup
 ): Promise<LegionPane> {
   const { name, role, tree, issue } = options;
+  const legion = options.legion ?? true;
   const claimToken = `legion-${name}-${issue.toLowerCase()}-${role}`;
   // The daemon's golden registration answer (`packages/daemon/internal/api`), so a field the
   // daemon adds to it reaches the stand-in's `claims/register`.
@@ -1041,16 +1046,17 @@ export async function runLegionPane(
   /**
    * One life of the pane: omp started with `args` on its command line, given each task of
    * `prompts` once the run the one before it started has settled, and left once the last has
-   * settled. The first is the value the registration answers; each later one is relayed. A run
-   * has settled when the RPC stream reports its terminal agent_end: a continuation the host
-   * scheduled (the follow-up) starts its turn before that, under the same run. A steer the
-   * extension sends from `agent_end` instead starts its continuation after that frame, so
-   * `quietMs` waits for the gateway to fall silent rather than for the frame.
+   * settled. The first is the value the registration answers; each later one is relayed. An
+   * ordinary session's are each its RPC `prompt`, as a person types one. A run has settled when
+   * the RPC stream reports its terminal agent_end: a continuation the host scheduled (the
+   * follow-up) starts its turn before that, under the same run. A steer the extension sends from
+   * `agent_end` instead starts its continuation after that frame, so `quietMs` waits for the
+   * gateway to fall silent rather than for the frame.
    */
   const live = async (prompts: readonly string[], args: readonly string[]): Promise<void> => {
     let settled = Promise.withResolvers<void>();
     const [first] = prompts;
-    if (first !== undefined) tasks.give(first);
+    if (legion && first !== undefined) tasks.give(first);
     const rpc = spawnRpc(
       binary,
       {
@@ -1071,7 +1077,7 @@ export async function runLegionPane(
           ...(options.dispatch
             ? { DISPATCH_URL: base, DISPATCH_TOKEN: `${name}-dispatch-token` }
             : {}),
-          ...((options.legion ?? true)
+          ...(legion
             ? {
                 LEGION_DAEMON_URL: base,
                 LEGION_ROLE: role,
@@ -1101,7 +1107,8 @@ export async function runLegionPane(
       if (index > 0) settled = Promise.withResolvers<void>();
       lastAnsweredAt = Date.now();
       const started = served;
-      if (index > 0) await relayTask(prompt);
+      if (!legion) rpc.send({ type: "prompt", message: prompt });
+      else if (index > 0) await relayTask(prompt);
       if (options.quietMs === undefined) {
         await Promise.race([settled.promise, rpc.closed]);
       } else {

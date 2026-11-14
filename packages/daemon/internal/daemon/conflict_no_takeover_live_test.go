@@ -89,15 +89,6 @@ const (
 	conflictThirdHead  = "h3"
 )
 
-// The two handoffs the tester writes: the one its first assignment's turn wrote, whose completion
-// the fence refuses, and the one it writes for the work the second assignment's task names. They
-// are two commits because the second assignment is for the head the implementer's fix pushed, so
-// the verdict of the turn before it answers for nothing there.
-const (
-	conflictFirstTesterHandoff  = "t1"
-	conflictSecondTesterHandoff = "t2"
-)
-
 // conflictNoTakeoverLive is one run of the proof: the booted daemon, the one issue it drives, the
 // stand-ins the steps read the daemon's own writes back from, and the two roles the driver acts
 // as over the worker stream.
@@ -175,16 +166,16 @@ func (c *liveClaimant) silent(within time.Duration) {
 	}
 }
 
-// Step 1. The seeded implementer completes implementing, which hands the testing phase to the
-// tester with an assignment of its own and starts it. The tester registers, takes that task and
-// works it: a claim working a delivery it confirmed, which is the turn the red of step 2 must
-// leave alone.
+// Step 1. The seeded implementer completes implementing at its first head, naming the implement
+// handoff record it wrote, which hands the testing phase to the tester with an assignment of its
+// own and starts it. The tester registers, takes that task and works it: a claim working a
+// delivery it confirmed, which is the turn the red of step 2 must leave alone.
 func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 	t := r.t
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch")
 	r.imp.startTurn()
-	if status, failure := r.imp.complete("implemented it", conflictFirstHead, "", ""); status != http.StatusOK {
+	if status, failure := r.imp.complete("implemented it", conflictFirstHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.imp.endTurn()
@@ -284,14 +275,15 @@ func (r *conflictNoTakeoverLive) testerIsToldItsPhaseEnded() {
 
 // Step 4. The implementer fixes and completes, which hands testing out again with a phase entry of
 // its own. The tester's first turn is still running and still serving the entry before it, so
-// the completion it reports from that turn is refused HANDOFF_STALE_ENTRY and records
-// nothing, and the refusal sends it to the new task's own work: the completion of the handoff that
-// task's turn writes, at a commit of its own, is taken.
+// the completion it reports from that turn — its verdict on the head before the fix, in the record
+// that turn wrote — is refused HANDOFF_STALE_ENTRY and records nothing, and the refusal sends it to
+// the new task's own work: the completion naming the record that task's turn writes, at the head
+// the fix pushed, is taken.
 func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	t := r.t
 	r.push(conflictFirstHead, conflictSecondHead, "fix the red")
 	r.note("drove the implementer's push of %s onto %s and GitHub's synchronize of #%d to it", conflictSecondHead, conflictFirstHead, r.number)
-	if status, failure := r.imp.complete("fixed the red", conflictSecondHead, "", ""); status != http.StatusOK {
+	if status, failure := r.imp.complete("fixed the red", conflictSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.imp.endTurn()
@@ -300,12 +292,13 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	r.note("read back: %s is in %s again — a second testing phase, with a second assignment for the tester", r.key, got.Phase)
 
 	// The tester's first turn has run throughout, and still serves the assignment the first testing
-	// phase handed it: its completion is of that assignment, not this one.
+	// phase handed it: its completion is of that assignment, not this one — the verdict on the head
+	// that assignment named, in the handoff record that turn wrote.
 	stale := r.d.claim(r.test.token)
 	if stale.State != string(supervise.StateWorking) {
 		t.Fatalf("the tester is %s, want it still working the turn it began in step 1", stale.State)
 	}
-	status, failure := r.test.complete("tested it", conflictFirstTesterHandoff, "pass", "")
+	status, failure := r.test.complete("tested it", conflictFirstHead, "pass", r.test.handoff("test"))
 	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ENTRY" {
 		t.Fatalf("the completion from the tester's old turn = %d %s %s, want 409 HANDOFF_STALE_ENTRY", status, failure.Code, failure.Error)
 	}
@@ -316,18 +309,20 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	r.note("read back: %s is still in testing — the refusal recorded nothing", r.key)
 
 	// The turn ends; the task of the new assignment, waiting for it, is sent. That task is work of
-	// its own — the head the fix pushed — so the tester completes it at the handoff it wrote for
-	// that work, never at the commit the refused completion named, and it is taken.
+	// its own — the head the fix pushed — so the tester completes it with a handoff record it
+	// writes for that work, at that head, never with the record or the head the refused completion
+	// named, and it is taken.
 	r.test.endTurn()
 	prompt := r.test.takeTask("Phase: testing")
 	r.note("read back: the tester's first turn ended and it took the second assignment's task (%s)", firstLine(prompt.Text))
-	if status, failure := r.test.complete("tested the fix", conflictSecondTesterHandoff, "pass", ""); status != http.StatusOK {
+	second := r.test.handoff("test")
+	if status, failure := r.test.complete("tested the fix", conflictSecondHead, "pass", second); status != http.StatusOK {
 		t.Fatalf("the completion from the tester's new turn = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.test.endTurn()
 	moved := r.waitFor("the issue in reviewing", func(got api.Issue) bool { return got.Phase == phase.Reviewing })
-	r.note("read back: the completion of the second assignment's own handoff (%s), in the turn its task started, was taken: %s is in %s",
-		conflictSecondTesterHandoff, r.key, moved.Phase)
+	r.note("read back: the completion naming the second assignment's own handoff record (%s, at %s), in the turn its task started, was taken: %s is in %s",
+		second, conflictSecondHead, r.key, moved.Phase)
 }
 
 // Step 5. The reviewer's claim was started by the tester's pass and nothing registered it, so no
