@@ -29,6 +29,8 @@ const artifact: NonNullable<IssueDetails["artifacts"]>[number] = {
 };
 
 const issue: IssueDetails = {
+  advances: [],
+  advances_revision: 0,
   artifacts: [artifact],
   assignee: null,
   blocked_by: [],

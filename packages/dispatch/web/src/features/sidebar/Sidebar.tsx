@@ -3,7 +3,12 @@ import { type ReactNode, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { inboxQuery, projectsQuery, userAgentStateQuery } from "../../api/queries";
+import {
+  inboxQuery,
+  prioritySummaryQuery,
+  projectsQuery,
+  userAgentStateQuery,
+} from "../../api/queries";
 import type { AuthenticatedUser } from "../../api/types";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { PinButton } from "../../components/PinButton";
@@ -26,6 +31,7 @@ import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "../agents/unread";
 import { AfterTheFirstBatch } from "../doc/AfterTheFirstBatch";
 import { useInboxCount } from "../inbox/useInboxCount";
+import { PRIORITIES_PATH } from "../priorities/priority-routes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import {
   buildIssuePath,
@@ -219,6 +225,17 @@ function SidebarNavigation({
     queryFn: () => api.listIssues({ pinned: true }),
   });
   const projects = useQuery(projectsQuery());
+  // The number beside Priorities (INFRA-2947, R8): the two faults added - the work in flight
+  // under no priority and the priority work parked in `backlog` or `icebox` - read from the
+  // summary call alone, which answers neither list. An event that moves a relation, a status or
+  // a parent refreshes it with the page (`api/event-refresh.ts`). A deployment that has written
+  // no priority answers `empty` and no number is drawn, since nothing is yet off a list that
+  // does not exist; a read that failed draws none either, rather than a zero it did not read.
+  const prioritySummary = useQuery(prioritySummaryQuery()).data;
+  const priorityFaults =
+    prioritySummary === undefined || (prioritySummary.empty ?? "") !== ""
+      ? undefined
+      : prioritySummary.work_under_no_priority.count + prioritySummary.priority_work_parked.count;
   // One number on Inbox, composed in one place (`useInboxCount.ts`): the work waiting on
   // the reader plus the threads they have not read, which the Inbox lists beside those asks now.
   const inboxCount = useInboxCount();
@@ -331,6 +348,19 @@ function SidebarNavigation({
       </section>
       <section>
         <ul className="mt-1 space-y-0.5">
+          <RailRow
+            badge={priorityFaults}
+            detail="Every project's priorities, and the work on none"
+            label="Priorities"
+            onNavigate={onNavigate}
+            // The entry stands for the whole of the priorities, so it stays lit on one
+            // priority's own page (`/priorities/<id>`) as well as on the list.
+            selected={
+              location.pathname === PRIORITIES_PATH ||
+              location.pathname.startsWith(`${PRIORITIES_PATH}/`)
+            }
+            to={PRIORITIES_PATH}
+          />
           <RailRow
             badge={undefined}
             detail="Deploys, merges, and pipeline failures"

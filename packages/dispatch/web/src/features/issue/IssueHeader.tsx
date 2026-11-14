@@ -59,6 +59,7 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ReaderIsHere, useAfterTheFirstBatch } from "../doc/first-batch";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
+import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
@@ -654,6 +655,7 @@ export function IssueHeader({
               {whoseTurn}
             </span>
           )}
+          <IssuePriorityLine disabled={isClosed} issue={issue} />
           {issue.created_by == null ? null : (
             <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
               <span className="font-medium">Opened by:</span>

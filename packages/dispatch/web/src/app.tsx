@@ -142,6 +142,14 @@ const DocumentPage = chunkComponent(
   () => importDocumentPage().then((module) => module.DocumentPage),
   <IssuePageFallback />
 );
+const PrioritiesPage = lazy(() =>
+  import("./features/priorities/PrioritiesPage").then((module) => ({
+    default: module.PrioritiesPage,
+  }))
+);
+const PriorityPage = lazy(() =>
+  import("./features/priorities/PriorityPage").then((module) => ({ default: module.PriorityPage }))
+);
 
 /**
  * The tab panel an issue address opens, where the page keeps that panel in a chunk of its own
@@ -960,6 +968,8 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePageInATransition />} path="/issues/:key/*" />
+                <Route element={<PrioritiesPage />} path="/priorities" />
+                <Route element={<PriorityPage />} path="/priorities/:id" />
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />

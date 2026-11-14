@@ -72,6 +72,8 @@ const notesArtifact: Artifact = {
 };
 
 const issue: IssueDetails = {
+  advances: [],
+  advances_revision: 0,
   artifacts: [specArtifact, notesArtifact],
   assignee: null,
   blocked_by: [],
