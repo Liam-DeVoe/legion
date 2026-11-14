@@ -58,6 +58,16 @@ export const ISSUE_TITLE_MAX = 1000;
 export const MAX_ISSUE_BLOCKERS = 20;
 
 /**
+ * Maximum entries in an issue's `advances` input, before duplicate ids are removed: the most
+ * priorities one issue states it advances. It counts the issue's own relations alone, never what
+ * a child inherits from the issues above it, which is read-side: an issue five deep would
+ * otherwise pass the cap without writing anything. Generated into Go as
+ * `contracts.MaxIssueAdvances`, which `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}`
+ * enforce as `400 ADVANCES_INPUT` naming the limit.
+ */
+export const MAX_ISSUE_ADVANCES = 20;
+
+/**
  * The most issues one page of `GET /api/v1/issues` holds: `limit` is 1 to this. Generated into Go
  * as `contracts.MaxIssuePageLimit`, which the server enforces, and the `dispatch_issues` tool's
  * `limit` takes the same bound, so the two ends agree.

@@ -256,6 +256,23 @@ export function preloadRouteChunk(pathname: string): void {
 // failed while the entry's prefetch of another chunk was still out was read as that prefetch's
 // and reloaded nothing, leaving the reader in front of a page that could not draw
 // (dispatch://INFRA-1109).
+
+const PrioritiesPage = lazy(() =>
+  renderChunk(() =>
+    import("./features/priorities/PrioritiesPage").then((module) => ({
+      default: module.PrioritiesPage,
+    }))
+  )
+);
+
+const PriorityPage = lazy(() =>
+  renderChunk(() =>
+    import("./features/priorities/PriorityPage").then((module) => ({
+      default: module.PriorityPage,
+    }))
+  )
+);
+
 const AgentsPage = lazy(() =>
   renderChunk(() =>
     import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
@@ -1049,6 +1066,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
+                <Route element={<PrioritiesPage />} path="/priorities" />
+                <Route element={<PriorityPage />} path="/priorities/:id" />
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
