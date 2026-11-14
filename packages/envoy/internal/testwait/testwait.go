@@ -4,7 +4,9 @@
 // Envoy's through its replace), so a change to one is made to the other.
 //
 // A test that drives real processes, a real database or a real socket waits for something it
-// cannot make happen on its own: a delivery, the transaction that answers it, a line in a log.
+// cannot make happen on its own: a delivery, the transaction that answers it, a line in a log. Such
+// a wait goes through this package, and R2 of "The design of this repository's tests" in
+// docs/testing.md says why it takes no bound of the caller's.
 //
 // # The one bound
 //

@@ -148,14 +148,17 @@ go -C packages/daemon test ./...                     # the Legion daemon
 go -C packages/envoy test ./...                      # Envoy, Dispatch's server and the Secrets Broker
 ```
 
-Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read its address from the
-environment (`LEGION_TEST_PG_DSN` for the daemon's). On a host without Docker, the daemon's NATS
-tests use a running nats-server with JetStream instead when `LEGION_TEST_NATS_URL` (its client URL)
-and `LEGION_TEST_NATS_MONITOR_URL` (its monitoring endpoint) are both set, one package at a time
-(`go test -p 1`); that server, and any nats-server an Envoy of your own runs against, must be 2.12
-or later, since an older one answers a retry of a publish its full stream refused as a duplicate
-it does not hold. The repository's conventions and each part's commands are in `AGENTS.md` at the
-root and in the `AGENTS.md` beside most packages; `skills/AGENTS.md` covers the skills. The
+The Go tests of both modules start their NATS servers in the test process (the daemon's, one for
+each test), so they need no NATS server of yours.
+The tests that need a Postgres read its address from the environment (`LEGION_TEST_PG_DSN` for the
+daemon's) and make databases of their own there.
+The `-omp` suites of `packages/pi-envoy` and `packages/pi-legion` read a NATS server from
+`LEGION_TEST_NATS_URL`; start it without JetStream (`docs/testing.md`, "The design of this
+repository's tests").
+A nats-server an Envoy of your own runs against must be 2.12 or later, since an older one answers
+a retry of a publish its full stream refused as a duplicate it does not hold.
+The repository's conventions and each part's commands are in `AGENTS.md` at the root and in the
+`AGENTS.md` beside most packages; `skills/AGENTS.md` covers the skills. The
 documentation site's [contributing page](https://cybermonklabs.github.io/legion/contributing/) covers
 writing its pages.
 

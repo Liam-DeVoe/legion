@@ -7,7 +7,8 @@
 // runtime and no server named in its environment, and nothing of one test reaches another: no
 // stream, consumer or message of an earlier test is on a later test's server, and no publish an
 // earlier test left in flight lands there, because no server outlives the test that started it.
-// Main fails the run when one does.
+// Main fails the run when one does. R1 of "The design of this repository's tests" in
+// docs/testing.md says why, and its "A Go test that opens a NATS client" says the rest.
 //
 // The end of the test's server is its leak check (leakcheck.go): a client still connected to the
 // server when the test ends fails that test, by name and CID.

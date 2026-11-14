@@ -807,4 +807,6 @@ closed.
 `bunx tsc --noEmit`, `bun run test`, `bunx biome check extensions/ src/`, each from this directory;
 `LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=<nats> bun test ./extensions/claim-boot-order-omp.test.ts ./extensions/controller-start-omp.test.ts ./extensions/legion-phase-stall-omp.test.ts ./extensions/legion-role-tools-omp.test.ts ./extensions/legion-stall-watchdog-omp.test.ts`
 for the real binary: every pane registers against a real NATS server, since a session with no relay subject takes no consumer and its claim boot ends it (INFRA-771).
+Pass these files the flags of the `test` script's second `bun test` command (`--preload @legion/test-fixtures/row-deadline` and its `--timeout`), since a bare `bun test` gives each row and hook 5,000 ms.
+Start that NATS server without JetStream, as the "No Docker" item of `skills/legion-worker/references/tools.md` does: the `-omp` suites share it, and a server without JetStream keeps no state between them.
 The phase reminder's own unit tests live beside the machine, in `packages/pi-shared` (`bun test` there).

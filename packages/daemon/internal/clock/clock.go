@@ -9,7 +9,8 @@
 // defaults to Real, and a test hands it a clocktest.Fake. There is one Clock and one fake for the
 // whole module: a package that needs only some of Clock's methods declares a narrowing of it, an
 // interface of its own whose methods have Clock's signatures, so Real and the fake fit every one
-// and no package keeps a clock or a fake of its own.
+// and no package keeps a clock or a fake of its own. The rule this serves is R4 of "The design of
+// this repository's tests" in docs/testing.md: no test passes or fails because it read a clock.
 //
 // # The fake tells the test when a timer is armed
 //
