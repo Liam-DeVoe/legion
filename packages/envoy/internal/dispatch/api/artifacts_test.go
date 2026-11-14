@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/fixtureenv"
 )
 
 func createArtifactIssue(t *testing.T, handler http.Handler) model.Issue {
@@ -159,15 +161,31 @@ func TestUploadArtifactJSONCreatesNextVersion(t *testing.T) {
 	}
 }
 
+// A body whose content is blank makes a new document holding nothing, so under the name of a
+// document that already exists it is refused: it would store a version holding nothing over the
+// text that document has. Blank is blank whatever its spaces.
 func TestUploadArtifactJSONRejectsBlankContent(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
+	owner := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+		"name": "architect-spec.md", "content": "# Spec\n",
+	}, "alice")
+	if owner.Code != http.StatusCreated {
+		t.Fatalf("create architect-spec.md: status=%d body=%s", owner.Code, owner.Body.String())
+	}
+	want := `"architect-spec.md" names artifact architect-spec-md (architect-spec.md), which exists; ` +
+		`a write with no content makes no document and writes no version: edit it with dispatch doc-edit, ` +
+		`or give the new document another name`
 	for _, content := range []string{"", " \n\t "} {
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 			"name": "architect-spec.md", "content": content,
 		}, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"ARTIFACT_INPUT"`) {
-			t.Fatalf("blank JSON content %q: status=%d body=%s", content, response.Code, response.Body.String())
+		body := decodeBody[struct {
+			Code  string `json:"code"`
+			Error string `json:"error"`
+		}](t, response)
+		if response.Code != http.StatusBadRequest || body.Code != "ARTIFACT_INPUT" || body.Error != want {
+			t.Fatalf("blank JSON content %q: status=%d body=%s, want 400 ARTIFACT_INPUT %q", content, response.Code, response.Body.String(), want)
 		}
 	}
 }
@@ -539,6 +557,113 @@ func TestMissingIssueDocumentRouteListsItsSlugsAndNames(t *testing.T) {
 	}
 }
 
+// TestMissingDocumentOnABusyOwnerNamesTheClosestAndCountsTheRest holds the hint for an owner with
+// more documents than it lists: the documents whose slug or filename is nearest the missing
+// reference come first, the newest fill the rest, and the hint says how many the owner holds and
+// which route lists them all.
+func TestMissingDocumentOnABusyOwnerNamesTheClosestAndCountsTheRest(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createArtifactIssue(t, handler)
+	names := []string{"prediction-P1.md"}
+	for index := range 10 {
+		names = append(names, fmt.Sprintf("notes-%d.md", index))
+	}
+	for _, name := range names {
+		created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+			"name": name, "content": "# " + name + "\n",
+		}, "alice")
+		if created.Code != http.StatusCreated {
+			t.Fatalf("create %s: status=%d body=%s", name, created.Code, created.Body.String())
+		}
+	}
+	for index := range 11 {
+		createProjectDocument(t, handler, "TEST", fmt.Sprintf("runbook-%d.md", index), "# Runbook\n")
+	}
+
+	newest := func(prefix string, from, to int) string {
+		var labels []string
+		for index := from; index >= to; index-- {
+			labels = append(labels, fmt.Sprintf("%s-%d-md (%s-%d.md)", prefix, index, prefix, index))
+		}
+		return strings.Join(labels, ", ")
+	}
+	for _, test := range []struct {
+		target string
+		want   string
+	}{
+		{
+			target: "/api/v1/issues/" + issue.Key + "/artifacts/prediction-P1-md",
+			want: `document "prediction-P1-md" not found by slug; this issue's 12 documents include: ` +
+				"prediction-p1-md (prediction-P1.md), " + newest("notes", 9, 3) +
+				"; GET /api/v1/issues/" + issue.Key + "/artifacts lists them all",
+		},
+		{
+			target: "/api/v1/projects/TEST/artifacts/Runbook-2-md",
+			want: `document "Runbook-2-md" not found by slug; this project's 11 documents include: ` +
+				"runbook-2-md (runbook-2.md), " + newest("runbook", 9, 3) +
+				"; GET /api/v1/projects/TEST/artifacts?unlinked=true lists them all",
+		},
+	} {
+		response := dispatchRequest(t, handler, http.MethodGet, test.target, nil, "alice")
+		raw := response.Body.String()
+		body := decodeBody[struct {
+			Error string `json:"error"`
+		}](t, response)
+		if response.Code != http.StatusNotFound || body.Error != test.want {
+			t.Fatalf("missing document %s: status=%d body=%s\nwant 404 %q", test.target, response.Code, raw, test.want)
+		}
+	}
+}
+
+// TestDocumentsNearestRanksByExactDistanceAndFoldsOnlyASCII holds the ranking envoy-client's
+// documentsNearest repeats (its test of the same cases): a name holding the reference ranks by
+// how much longer it is, so an old short match is not lost behind newer long ones, and only ASCII
+// letters fold, so İ is not i in either ranker.
+func TestDocumentsNearestRanksByExactDistanceAndFoldsOnlyASCII(t *testing.T) {
+	documents := func(names ...string) []model.Artifact {
+		var out []model.Artifact
+		for _, name := range names {
+			out = append(out, model.Artifact{Slug: strings.ReplaceAll(name, ".", "-"), Name: name})
+		}
+		return out
+	}
+	for _, test := range []struct {
+		reference string
+		documents []model.Artifact
+		want      []string
+	}{
+		{
+			reference: "Plan",
+			documents: documents("plan.md", "plan-alpha-archive.md", "plan-beta-archive.md", "plan-gamma-archive.md",
+				"plan-delta-archive.md", "plan-omega-archive.md", "plan-kappa-archive.md", "plan-sigma-archive.md", "plan-theta-archive.md"),
+			want: []string{"plan.md", "plan-beta-archive.md", "plan-theta-archive.md", "plan-sigma-archive.md", "plan-kappa-archive.md",
+				"plan-omega-archive.md", "plan-delta-archive.md", "plan-gamma-archive.md", "plan-alpha-archive.md"},
+		},
+		{
+			// Only the filename holds "plan.", and the slug is far: the slug's capped distance
+			// must not tie the old match with the newer, longer ones.
+			reference: "Plan.",
+			documents: documents("plan.v1.md", "plan.alpha-archive.md", "plan.beta-archive.md", "plan.gamma-archive.md",
+				"plan.delta-archive.md", "plan.omega-archive.md", "plan.kappa-archive.md", "plan.sigma-archive.md", "plan.theta-archive.md"),
+			want: []string{"plan.v1.md", "plan.beta-archive.md", "plan.theta-archive.md", "plan.sigma-archive.md", "plan.kappa-archive.md",
+				"plan.omega-archive.md", "plan.delta-archive.md", "plan.gamma-archive.md", "plan.alpha-archive.md"},
+		},
+		{
+			reference: "İİİİ-md",
+			documents: documents("iiii.md", "notes-0.md", "notes-1.md", "notes-2.md", "notes-3.md", "notes-4.md", "notes-5.md", "notes-6.md", "notes-7.md"),
+			want:      []string{"notes-7.md", "notes-6.md", "notes-5.md", "notes-4.md", "notes-3.md", "notes-2.md", "notes-1.md", "notes-0.md", "iiii.md"},
+		},
+	} {
+		var got []string
+		for _, document := range documentsNearest(test.reference, test.documents) {
+			got = append(got, document.Name)
+		}
+		if strings.Join(got, ",") != strings.Join(test.want, ",") {
+			t.Errorf("documentsNearest(%q) = %v, want %v", test.reference, got, test.want)
+		}
+	}
+}
+
 func TestDocumentRoutesRejectAmbiguousFilenameWithSlugChoices(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createArtifactIssue(t, handler)
@@ -585,7 +710,8 @@ func TestDocumentRoutesRejectAmbiguousFilenameWithSlugChoices(t *testing.T) {
 // An upload whose name is an existing artifact's slug on the same owner is that artifact's next
 // version, for an issue's, a project's and an agent's conversation's uploads alike. Minting a
 // second artifact there (`plan-md-2`, named `plan-md`) would leave `plan-md` naming two documents,
-// one by its slug and one by its name, and nothing deletes a document.
+// one by its slug and one by its name, and a removal takes only a document that holds nothing
+// (removeArtifact), so once either held writing the two would stand for good.
 func TestAnUploadNamedAfterAnArtifactsSlugIsItsNextVersion(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := createArtifactIssue(t, handler)
@@ -894,7 +1020,12 @@ func sendUpload(t *testing.T, handler http.Handler, issueKey, key string, file [
 
 // unspooled runs send with the temporary directory gone, where a request that spooled a body past
 // a megabyte - the keyed layer's spool, the multipart parser's - is answered 500
-// (TestAnUploadTheServerCannotSpoolIsItsOwnFailure), and puts it back after.
+// (TestAnUploadTheServerCannotSpoolIsItsOwnFailure), and puts it back once send has answered:
+// TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses sends a second keyed
+// upload of four megabytes after this one, which spools in its turn and would be answered 500
+// rather than the replay it asserts. Go's own restore, which t.Setenv registers, comes too late
+// for that, since it runs when the test ends; the absent case goes through fixtureenv.Unset
+// rather than a bare os.Unsetenv, which docs/testing.md refuses.
 func unspooled(t *testing.T, send func()) {
 	t.Helper()
 	previous, had := os.LookupEnv("TMPDIR")
@@ -902,9 +1033,9 @@ func unspooled(t *testing.T, send func()) {
 	send()
 	if had {
 		t.Setenv("TMPDIR", previous)
-	} else {
-		os.Unsetenv("TMPDIR")
+		return
 	}
+	fixtureenv.Unset(t, "TMPDIR")
 }
 
 // closeArtifactIssue closes the issue as alice.

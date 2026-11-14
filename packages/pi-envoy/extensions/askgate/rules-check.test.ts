@@ -2,6 +2,7 @@
 // request renders, and `runRulesCheck` with the walk and the Dispatch the core lends it. The gate
 // tests of the same check — a refusal, the breaker, the notice — are in `askgate.test.ts`.
 import { describe, expect, test } from "bun:test";
+import { bearerCredential } from "@legion/envoy-client/bearer";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
 import {
   describeAsks,
@@ -246,8 +247,7 @@ describe("runRulesCheck: which asks a call opens", () => {
         });
       const read = /^\/api\/v1\/artifacts\/doc-brief\/(text|blocks)$/.exec(url.pathname);
       if (read === null) return body({ code: "NOT_FOUND", error: "not found" }, 404);
-      if (read[1] === "text") return body({ markdown: BRIEF, version: 1, token: "sha256:d" });
-      return body([
+      const blocks = [
         {
           id: "window",
           type: "ask",
@@ -256,10 +256,25 @@ describe("runRulesCheck: which asks a call opens", () => {
           token: "sha256:0",
           references: { comments: 0, asks: 0 },
         },
-      ]);
+      ];
+      // The text route carries the blocks whose ranges index its markdown when the caller asks
+      // for them, as Dispatch does.
+      if (read[1] === "text")
+        return body({
+          markdown: BRIEF,
+          version: 1,
+          token: "sha256:d",
+          ...(url.searchParams.get("blocks") === "true" ? { blocks } : {}),
+        });
+      return body(blocks);
     }) as typeof fetch;
     return (_directory: string, signal: AbortSignal) => ({
-      client: new DispatchClient("https://dispatch.example", "token", fetchImpl, signal),
+      client: new DispatchClient(
+        "https://dispatch.example",
+        bearerCredential("token"),
+        fetchImpl,
+        signal
+      ),
       serverUrls: ["https://dispatch.example"],
     });
   };

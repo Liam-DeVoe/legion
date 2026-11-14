@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -34,42 +35,42 @@ const KnownSessionRefreshAge = 10 * time.Minute
 // knownSessionSweepInterval is how often the store drops the records that have aged out of
 // KnownSessionRetention. One periodic pass is the whole expiry machinery here, rather than a timer
 // per record as the session registry arms (expiry.go): that registry holds the live sessions, a
-// few thousand at most, each with a 5-minute deadline a read must not overshoot, while this store
-// holds up to ~100,000 records whose deadline is 30 days away and whose only reader is a publish
-// count. 100,000 armed timers would cost more than the records do; a read filters a record past
-// its deadline out on its own (Get, MatchEach), so the pass is only there to give the memory
-// back, and an hour's delay in doing that changes no answer.
+// few thousand at most, each with a deadline a read must not overshoot, while this store holds up
+// to ~100,000 records whose deadline is 30 days away and whose only readers are a publish count
+// and a send to a stopped session. 100,000 armed timers would cost more than the records do; a
+// read filters a record past its deadline out on its own (Get, MatchEach), so the pass is only
+// there to give the memory back, and an hour's delay in doing that changes no answer.
 const knownSessionSweepInterval = time.Hour
 
-// knownBucketOpenWait bounds every JetStream request one attempt to open the bucket makes, and so
-// the whole attempt: a bucket this listener's NATS user may not open is refused by the server
-// dropping the request, which costs the wait in full. The listener opens /v1 behind this attempt,
-// so the wait is what a start pays for a bucket it cannot open; 2 seconds is far past a healthy
-// open, whose leader has already answered the JetStream requests of every bucket opened before
-// this one (cmd/listener/main.go opens the stream, the interest, role, session and CI buckets
-// first), and far below the 10 seconds every other store of the listener waits, which no start
-// can afford for a store no delivery depends on. An attempt this wait gives up on costs nothing
-// but a retry.
+// knownBucketOpenWait bounds the one JetStream request that tells an attempt to open the bucket
+// whether this listener may open it, and so the whole of an attempt it may not: a bucket this
+// listener's NATS user may not open is refused by the server dropping the request, which costs the
+// wait in full (openKnownBucket). The listener's start can wait on this attempt, so the wait is
+// what a start pays for a bucket it cannot open; 2 seconds is far past a healthy open, whose
+// leader has already answered the JetStream requests of every bucket opened before this one, and
+// far below the 10 seconds every other store of the listener waits, which no start can afford for
+// a store no delivery depends on. An attempt this wait gives up on costs nothing but a retry.
 const knownBucketOpenWait = 2 * time.Second
 
-// knownBucketServeWait is the wait every bucket call made after the open gets: the cache
-// watcher's, and a write's (RecordWithin), which its caller's own context bounds besides
-// (bus.Bounded). It is the 10 seconds the listener's other stores give their bucket calls
-// (store.Open, OpenSessionRegistry, cistore.Open): the short wait above is for the attempt a
-// start waits on, and giving a write or a watch that wait would make a cluster that is merely
-// slow look like one that refuses.
+// knownBucketServeWait is the wait every bucket call made after the open gets: the handle the
+// cache watcher reads and a write (RecordWithin) goes through, which its caller's own context
+// bounds besides (bus.Bounded). It is the 10 seconds the listener's other stores give their bucket
+// calls (store.Open, OpenSessionRegistry, kvwatch.Watcher.Rewatch): the short wait above is for
+// the attempt a start waits on, and giving a write or a watch that wait would make a cluster that
+// is merely slow look like one that refuses.
 const knownBucketServeWait = 10 * time.Second
 
 // knownBucketRetryFirst and knownBucketRetryMax are the waits between the attempts the store's
 // one background repair makes (repairUntilStopped), of a bucket that did not open and of a move
 // to a recovered connection that failed: the first, then twice the one before it up to the cap,
-// until an attempt leaves nothing to repair or the store is stopped. The grant that lets a
-// listener open this bucket is applied after the image that reads it, so a listener started
-// before the grant picks the bucket up within the cap of the grant arriving, with no restart.
-// Past the cap a denied listener asks 12 times an hour, for as long as it runs: one dropped
-// request and one permissions violation in the server's log each, and nothing in its own, since
-// only the first failure is logged (OpenKnownSessions) and only a success after it
-// (repairUntilStopped).
+// until an attempt leaves nothing to repair or the store is stopped. A connection event starts the
+// waits over and makes an attempt at once (Rewatch). A listener started before its hub's grant
+// carries this bucket picks the bucket up within the cap of the grant arriving, with no restart.
+// Past the cap a denied listener asks 12 times an hour, for as long as it runs: each is one
+// dropped request and one permissions violation in the server's log, and in the listener's own
+// the `envoy nats async error` ERROR its connection writes for that violation
+// (internal/bus/connect.go) and no line of the store's, since the store logs only the first
+// failure (OpenKnownSessions) and a success after it (awaitOpened, attemptRepair).
 const (
 	knownBucketRetryFirst = time.Second
 	knownBucketRetryMax   = 5 * time.Minute
@@ -77,15 +78,13 @@ const (
 
 // KnownSession is one record of the envoy_known_sessions bucket, keyed by session id: a session
 // that registered within KnownSessionRetention, whether it is registered now or not. Its Topics
-// are the topics the registration stored (store.Interest.Topics), not the session consumer's
-// filter: that filter keeps only the agent subject and the topics the stream captures
-// (cmd/listener/session_delivery.go, sessionConsumerFilter), so a record built from it would count
-// no subscriber of notifications.team.<name>, which no stream subject captures.
+// are the topics the session's interest row stores (store.Interest.Topics), which are the topics
+// its session consumer's filter holds: a registration drops every topic that reaches no session,
+// one no stream subject captures and no role lane (splitUncapturedTopics, cmd/listener/api.go),
+// so a record counts exactly the sessions a stored publish reaches.
 //
-// The record holds nothing else: not whether the session declared the presence check - a session
-// with no entry in the session registry is stopped without being asked, so nothing would read
-// such a field - and not the client instance id, which only a role claim's arbitration reads
-// (cmd/listener/role_holder.go), and that reads the live session entry.
+// The record holds nothing else, and not the client instance id in particular, which only a role
+// claim's arbitration reads (cmd/listener/role_holder.go), and that reads the live session entry.
 type KnownSession struct {
 	SessionID    string   `json:"session_id"`
 	Title        string   `json:"title"`
@@ -96,28 +95,26 @@ type KnownSession struct {
 	LastSeen int64 `json:"last_seen"`
 }
 
-// cachedKnown is one cached record and the bucket revision it came from, so a watch event the
-// store's own write already applied does not put an older value back.
-type cachedKnown struct {
-	record   KnownSession
-	revision uint64
-}
-
 type KnownSessionsOption func(*knownSessionsOpts)
 
 type knownSessionsOpts struct {
 	replicas int
 	log      *slog.Logger
 	now      func() time.Time
-	// retryFirst and retryMax are the waits between the attempts to open a bucket that did not
-	// open, knownBucketRetryFirst and knownBucketRetryMax unless a test shortens them
+	// retryFirst and retryMax are the waits between the background repair's attempts,
+	// knownBucketRetryFirst and knownBucketRetryMax unless a test shortens them
 	// (withKnownSessionRetry, export_test.go).
 	retryFirst time.Duration
 	retryMax   time.Duration
+	// watch is what a test adds to the options the store's watcher is built with
+	// (withKnownSessionWatch, export_test.go): a clock to move past the stale bound, or a short
+	// scan idle timeout. No deployment sets it.
+	watch []kvwatch.Option
 }
 
-// WithKnownSessionReplicas sets the copies the bucket is created with, and raised to, as the
-// deployment's replica count says (bus.EnsureKeyValue).
+// WithKnownSessionReplicas sets the copies the bucket is created with, as the deployment's replica
+// count says (bus.EnsureKeyValue). The listener's keeper raises an existing bucket's copies
+// (bus.ListenerBuckets).
 func WithKnownSessionReplicas(n int) KnownSessionsOption {
 	return func(o *knownSessionsOpts) { o.replicas = n }
 }
@@ -132,45 +129,56 @@ func WithKnownSessionLogger(log *slog.Logger) KnownSessionsOption {
 // WithKnownSessionClock sets the clock the store stamps each record's last_seen with and reads
 // both the refresh age and the retention against; time.Now unless a test sets it. One clock drives
 // all three, so a test that drives heartbeats through the listener's own write path controls the
-// throttle with it.
+// throttle with it. The cache watcher's stale bound is measured on its own clock (kvwatch.WithNow).
 func WithKnownSessionClock(now func() time.Time) KnownSessionsOption {
 	return func(o *knownSessionsOpts) { o.now = now }
 }
 
 // KnownSessions is a cache-backed view of the envoy_known_sessions bucket: every session that
 // registered through any listener within KnownSessionRetention, keyed by session id. A long-lived
-// watcher (kvwatch) keeps the records in memory with a subject index of their topics
-// (store.TopicMatcher), so every read - one record by id, or the records whose topics match a
-// published topic - answers from memory and makes no JetStream call. A publish counts its
-// recipients per request against up to ~100,000 records, which neither a per-key Get nor a
-// linear scan can serve.
+// watcher (kvwatch) keeps the records in memory (kvwatch.Copy) with a subject index of their
+// topics (store.TopicMatcher), so every read - one record by id, or the records whose topics match
+// a published topic - answers from memory and makes no JetStream call. A publish counts its
+// recipients per request against up to ~100,000 records, which neither a per-key Get nor a linear
+// scan can serve.
+//
+// The store answers only while its copy can be served (Opened): once the watcher's first read of
+// the bucket has delivered every record, and for as long as the copy follows the bucket or
+// stopped following it no longer ago than the watcher's stale bound, two minutes
+// (kvwatch.Watcher.Servable), the rule every cache of the listener answers by. Past that bound,
+// and before the bucket opens, it answers no record and no match, so a publish leaves its counts
+// out and a send to a session with no entry answers 404, as on a listener that has no bucket.
 //
 // A store whose bucket is not open is the degraded listener: one whose NATS user may not open the
-// bucket keeps the store, which answers no record and no match and whose writes do nothing, and
-// opens the bucket as soon as an attempt of its own succeeds (repairUntilStopped). A nil
-// *KnownSessions answers the same way, for a listener that could not build a JetStream context at
-// all and for a test that builds the handlers without a store, so every method here is safe on a
-// nil receiver and no call site carries a nil check.
+// bucket keeps the store, which answers nothing and whose writes do nothing, and opens the bucket
+// as soon as an attempt of its own succeeds (repairUntilStopped). A nil *KnownSessions answers the
+// same way, for a listener that could not build a JetStream context at all and for a test that
+// builds the handlers without a store, so every method here is safe on a nil receiver and no call
+// site carries a nil check.
 type KnownSessions struct {
 	now func() time.Time
 	log *slog.Logger
 	// replicas is the copies the bucket is created with, kept for the attempts that follow a
-	// bucket that did not open, and retryFirst and retryMax are the waits between them.
-	replicas   int
-	retryFirst time.Duration
-	retryMax   time.Duration
+	// bucket that did not open; retryFirst and retryMax are the waits between them, and
+	// watchOptions what a test adds to the watcher's options.
+	replicas     int
+	retryFirst   time.Duration
+	retryMax     time.Duration
+	watchOptions []kvwatch.Option
 
+	// mu guards records and topics, which are kept in step: every record the copy stores or
+	// removes for the bucket's sake is indexed or unindexed through its rows (newKnownSessions),
+	// and the sweep removes from both.
 	mu      sync.RWMutex
-	records map[string]cachedKnown
+	records kvwatch.Copy[KnownSession]
 	topics  *store.TopicMatcher
 
-	// openMu guards conn, watcher, asked and covered. The first two are written when the bucket
+	// openMu guards conn, watcher, asked and covered. The watcher is installed when the bucket
 	// opens, which is at OpenKnownSessions for a listener whose user may open it and at a later
-	// attempt for one whose grant arrives while it runs, and when the store moves to a connection
-	// the listener recovered (Rewatch).
+	// attempt for one whose grant arrives while it runs.
 	openMu sync.RWMutex
 	// conn is the connection the bucket is opened on, the one the store was opened with until a
-	// Rewatch moves the store to another.
+	// connection event moves the store to another (Rewatch).
 	conn *nats.Conn
 	// watcher feeds the records from the bucket and holds the handle the store writes through,
 	// nil until the bucket opens.
@@ -187,29 +195,69 @@ type KnownSessions struct {
 
 	// repairMu serializes the attempts to repair the store, a reconnect hook's own (Rewatch) and
 	// the background retry's, so the watcher is never moved by two callers at once; and it guards
-	// repairing, whether that retry is running. Exactly one of them runs, or none: it is armed
-	// only under this lock and only while none runs (armRepair), and only the goroutine itself
-	// retires it, in the same hold as the attempt that found nothing left to repair.
+	// repairing and moveFailed. Exactly one retry runs, or none: it is armed only under this lock
+	// and only while none runs (armRepair), and only the goroutine itself retires it, in the same
+	// hold as the attempt that found nothing left to repair.
 	repairMu  sync.Mutex
 	repairing bool
+	// moveFailed is set by a move to a recovered connection that failed and cleared by the next
+	// that succeeds, whichever caller makes it, which is the move that logs the store back
+	// (attemptRepair).
+	moveFailed bool
 
-	// stopped ends the sweep goroutine and the background repair; stopOnce closes it
-	// once, whichever of StopWatch and EndWatch comes first.
+	// wake makes the retry attempt at once, from its first wait again, after a connection event
+	// that found no bucket open (Rewatch), as the legion agent registry's retry is woken
+	// (cmd/listener/legion_agents.go).
+	wake chan struct{}
+	// stopped ends the sweep goroutine and the background repair; stopOnce closes it once,
+	// whichever of StopWatch and EndWatch comes first.
 	stopped  chan struct{}
 	stopOnce sync.Once
+}
+
+// newKnownSessions is a store with no bucket open yet: no watcher, an empty copy and index, and
+// the background goroutines not started.
+func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
+	s := &KnownSessions{
+		now:          opts.now,
+		log:          opts.log,
+		replicas:     opts.replicas,
+		retryFirst:   opts.retryFirst,
+		retryMax:     opts.retryMax,
+		watchOptions: opts.watch,
+		topics:       store.NewTopicMatcher(),
+		conn:         conn,
+		wake:         make(chan struct{}, 1),
+		stopped:      make(chan struct{}),
+	}
+	s.records = kvwatch.NewCopy(kvwatch.Rows[KnownSession]{
+		Decode:  decodeKnownSession,
+		Stored:  func(key string, record KnownSession) { s.topics.Set(key, record.Topics) },
+		Removed: func(key string, _ KnownSession) { s.topics.Remove(key) },
+	})
+	return s
+}
+
+// decodeKnownSession is the record a put of the bucket leaves in the copy.
+func decodeKnownSession(entry kvwatch.Entry) (KnownSession, bool, error) {
+	var record KnownSession
+	if err := json.Unmarshal(entry.Value, &record); err != nil {
+		return KnownSession{}, false, err
+	}
+	return record, true, nil
 }
 
 // OpenKnownSessions opens the envoy_known_sessions bucket, creating it with a 30-day TTL
 // (KnownSessionRetention) on file storage, and starts the watcher that keeps its records in
 // memory and the sweep that gives back the memory of the records that aged out.
 //
-// A bucket that does not open within knownBucketOpenWait - a listener whose NATS user may not
-// open it, which is what production runs between the image that reads these records and the grant
-// that allows them - is no error and stops no start: the store is returned, logs the one WARN
-// below, answers no record and writes nothing, and goes on attempting the bucket in the
-// background until one succeeds (repairUntilStopped). The error is the JetStream context's alone,
-// which leaves no store to open anything with; the caller then runs on a nil *KnownSessions,
-// which answers as this store does and never opens.
+// A bucket that does not open - a listener whose NATS user may not open it, on a hub whose grant
+// does not carry the bucket - is no error and stops no start: the store is returned, logs the one
+// WARN below, answers no record and writes nothing, and goes on attempting the bucket in the
+// background until one succeeds (repairUntilStopped), at once after each connection event
+// (Rewatch). The error is the JetStream context's alone, which leaves no store to open anything
+// with; the caller then runs on a nil *KnownSessions, which answers as this store does and never
+// opens.
 func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownSessions, error) {
 	opts := knownSessionsOpts{
 		replicas:   1,
@@ -226,17 +274,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 	if _, err := knownJetStream(conn); err != nil {
 		return nil, err
 	}
-	s := &KnownSessions{
-		now:        opts.now,
-		log:        opts.log,
-		replicas:   opts.replicas,
-		retryFirst: opts.retryFirst,
-		retryMax:   opts.retryMax,
-		records:    map[string]cachedKnown{},
-		topics:     store.NewTopicMatcher(),
-		conn:       conn,
-		stopped:    make(chan struct{}),
-	}
+	s := newKnownSessions(conn, opts)
 	kv, err := openKnownBucket(conn, opts.replicas)
 	if err != nil {
 		s.logger().Warn("the known-session bucket is not open; this listener answers no session's 30-day record and writes none until an attempt of its own opens the bucket",
@@ -249,41 +287,49 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 	return s, nil
 }
 
-// knownJetStream is the JetStream context one attempt to open the bucket makes its requests
-// through: every one of them waits knownBucketOpenWait rather than the 10 seconds nats.go gives
-// its own by default.
+// knownJetStream is the JetStream context one attempt to open the bucket asks through: its
+// requests wait knownBucketOpenWait rather than the 10 seconds nats.go gives its own by default.
 func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
 	return conn.JetStream(nats.MaxWait(knownBucketOpenWait))
 }
 
 // openKnownBucket makes one attempt to open the bucket on conn, creating it with the retention
-// and the copies the deployment asks for when it is not there. The attempt waits
-// knownBucketOpenWait, so one whose requests the server drops - a user whose grant does not carry
-// the bucket - costs that and no more.
+// and the copies the deployment asks for when it is not there.
 //
-// The handle it returns is opened again on a context with the wait every other store of the
-// listener gives its bucket calls, since the store's writes and its cache watcher go through that
-// handle and must not give up on a cluster that is merely slow: a write is bounded by its
-// caller's own context (RecordWithin, bus.Bounded), and the open's short wait is for the attempt
-// a start waits on, not for the work that follows it.
+// The attempt asks for the bucket with one request first, waiting knownBucketOpenWait, and only a
+// bucket the server says it does not hold goes through bus.EnsureKeyValue's create. That function
+// sends a lookup the server leaves unanswered up to three times (its sentAgain) and reads a
+// refusal only on a connection a bus.Client owns, so a user whose grant does not carry the bucket
+// would cost an attempt three waits, or more, rather than one; the one request costs a denied
+// attempt what it costs, the wait, and a granted one an answer.
+//
+// The handle it returns is opened on a context with the wait every other store of the listener
+// gives its bucket calls, since the store's writes and its cache watcher go through that handle
+// and must not give up on a cluster that is merely slow: a write is bounded by its caller's own
+// context (RecordWithin, bus.Bounded), and the open's short wait is for the attempt a start waits
+// on, not for the work that follows it.
 func openKnownBucket(conn *nats.Conn, replicas int) (bus.KeyValue, error) {
 	opening, err := knownJetStream(conn)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
-	if _, err := bus.EnsureKeyValue(opening, &nats.KeyValueConfig{
-		Bucket:   bus.KnownSessionBucket,
-		TTL:      KnownSessionRetention,
-		Replicas: replicas,
-		Storage:  nats.FileStorage,
-	}); err != nil {
+	if _, err := opening.KeyValue(bus.KnownSessionBucket); errors.Is(err, nats.ErrBucketNotFound) {
+		if _, err := bus.EnsureKeyValue(conn, opening, &nats.KeyValueConfig{
+			Bucket:   bus.KnownSessionBucket,
+			TTL:      KnownSessionRetention,
+			Replicas: replicas,
+			Storage:  nats.FileStorage,
+		}); err != nil {
+			return bus.KeyValue{}, err
+		}
+	} else if err != nil {
 		return bus.KeyValue{}, err
 	}
 	serving, err := conn.JetStream(nats.MaxWait(knownBucketServeWait))
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
-	return bus.OpenKeyValue(serving, bus.KnownSessionBucket)
+	return bus.OpenKeyValue(conn, serving, bus.KnownSessionBucket)
 }
 
 // startWatch installs the watcher of the bucket kv is a handle on, and starts it: the watcher
@@ -293,11 +339,9 @@ func openKnownBucket(conn *nats.Conn, replicas int) (bus.KeyValue, error) {
 // and EndWatch take openMu to read the watcher, so one installed here is theirs to stop and one
 // installed after them is not installed at all.
 //
-// It scans the bucket again after a first scan nats.go's idle timer ended (kvwatch.WithRescan),
-// as the role claim watcher does (store.Registry.newRoleWatcher), because this store answers only
-// from a complete view: Opened reads kvwatch.Watcher.Complete, which such a scan never sets, so
-// without the rescan one timed-out scan would leave the store reporting its bucket shut until the
-// next Rewatch, and every publish's recipient count left out for that long.
+// A read whose scan timed out completes nothing, so it leaves the store not open (Opened), and the
+// watcher reads the bucket again itself (kvwatch.Watcher.readAgainLater): no rescan of the
+// store's own is needed for a scan that stalled.
 func (s *KnownSessions) startWatch(kv bus.KeyValue) {
 	s.openMu.Lock()
 	defer s.openMu.Unlock()
@@ -306,7 +350,8 @@ func (s *KnownSessions) startWatch(kv bus.KeyValue) {
 		return
 	default:
 	}
-	s.watcher = kvwatch.New("known session store", kv, s.applyWatched, s.resetCache, kvwatch.WithLogger(s.log), kvwatch.WithRescan())
+	options := append([]kvwatch.Option{kvwatch.WithLogger(s.log)}, s.watchOptions...)
+	s.watcher = kvwatch.New("known session store", kv, knownCache{s}, options...)
 	s.watcher.Start()
 }
 
@@ -329,7 +374,8 @@ const (
 // repairUntilStopped is the store's one background repair: it attempts the store again, waiting
 // retryFirst and then twice the wait before it up to retryMax, until an attempt finds nothing
 // left to repair or the store is stopped. An attempt that repaired something starts the waits
-// over, so a move that fails after a long denial is not left waiting out the cap.
+// over, so a move that fails after a long denial is not left waiting out the cap, and so does a
+// connection event that found no bucket open (wake), which is attempted at once.
 //
 // It repairs both of the states the store can be left in - a bucket that never opened, and a
 // watcher a failed move left on a connection the listener has left - because they are one
@@ -339,19 +385,24 @@ const (
 // another move for the attempt it is already making or for the next one, not a retry of its own,
 // and a stop ends it wherever it is.
 //
+// The store repairs a failed move itself, in this loop and nowhere else: it is kept out of the
+// listener's self-health rebuild, so this loop is the whole repair.
+//
 // It goes on past the attempt that repaired the store rather than ending there, so a move asked
 // for while that attempt ran - whose connection the attempt never saw - is repaired too. The
 // attempt after it finds nothing to repair and ends the retry.
 //
 // A bucket that opens is not the end of it: the watcher it installs fills the records in the
-// background, and until it has, the store holds a cache that answers for none of the sessions
-// the bucket knows. So the loop waits for a complete first scan before it reports that one
-// (awaitOpened), outside repairMu, where no reconnect hook's own attempt waits behind it.
+// background, and until it has, the store answers for none of the sessions the bucket knows. So
+// the loop waits for the copy to become servable before it reports that one (awaitOpened),
+// outside repairMu, where no reconnect hook's own attempt waits behind it.
 //
-// The only lines it writes are the two repairs, and none for an attempt that failed: the first
-// failure is logged where it happened (OpenKnownSessions, and the listener's reconnect hook),
-// and a line per attempt would be one every five minutes for the life of a listener whose grant
-// never arrives.
+// The only lines it writes are the repairs (awaitOpened, attemptRepair), and none for an attempt
+// that failed: the first failure is logged where it happened (OpenKnownSessions, and the
+// listener's reconnect hook), and a line per attempt would be one every five minutes for the life
+// of a listener whose grant never arrives. The connection still logs each attempt the server
+// refuses, as one `envoy nats async error` at ERROR for the permissions violation
+// (internal/bus/connect.go); this loop writes nothing beside it.
 func (s *KnownSessions) repairUntilStopped() {
 	for wait := s.retryFirst; ; {
 		timer := time.NewTimer(wait)
@@ -360,6 +411,9 @@ func (s *KnownSessions) repairUntilStopped() {
 			timer.Stop()
 			s.retireRepair()
 			return
+		case <-s.wake:
+			timer.Stop()
+			wait = s.retryFirst
 		case <-timer.C:
 		}
 		result, err := s.retryRepair()
@@ -374,8 +428,6 @@ func (s *KnownSessions) repairUntilStopped() {
 		case repairOpened:
 			s.awaitOpened()
 		case repairMoved:
-			s.logger().Info("the known-session cache is back on this listener's NATS connection; its records and a publish's recipient count are answered from the bucket again",
-				slog.String("bucket", bus.KnownSessionBucket))
 		}
 	}
 }
@@ -406,10 +458,17 @@ func (s *KnownSessions) repairOnce() (repairResult, error) {
 
 // attemptRepair makes one attempt to make the store current on the connection it holds now: it
 // opens the bucket while that has never opened, and otherwise moves the watcher and the handle
-// the store writes through to that connection, while a move is owed (covered, asked). Callers
-// hold repairMu, so the connection it reads is the one the store holds for the whole attempt and
-// no other attempt is moving the watcher meanwhile: the watcher cannot be put back onto a
-// connection the store has already left.
+// the store writes through to that connection, while a move is owed (covered, asked) or the
+// watcher has ended without one (kvwatch.Watcher.Err), which the listener's self-health rebuild
+// repairs for every other cache and nothing repairs for this one. Callers hold repairMu, so the
+// connection it reads is the one the store holds for the whole attempt and no other attempt is
+// moving the watcher meanwhile: the watcher cannot be put back onto a connection the store has
+// already left.
+//
+// A move that succeeds after one that failed says so in one line, whichever caller makes it: the
+// background retry, or the next connection event's own move (Rewatch). The line is the store's
+// report that it is back, so it is written for every such repair and only for one: a move that
+// follows a connection event with nothing failed before it is the ordinary path, and says nothing.
 func (s *KnownSessions) attemptRepair() (repairResult, error) {
 	s.openMu.RLock()
 	conn, watcher, asked, covered := s.conn, s.watcher, s.asked, s.covered
@@ -423,11 +482,17 @@ func (s *KnownSessions) attemptRepair() (repairResult, error) {
 		s.startWatch(kv)
 		s.cover(asked)
 		return repairOpened, nil
-	case covered < asked:
+	case covered < asked || watcher.Err() != nil:
 		if err := watcher.Rewatch(conn); err != nil {
+			s.moveFailed = true
 			return repairNothing, err
 		}
 		s.cover(asked)
+		if s.moveFailed {
+			s.moveFailed = false
+			s.logger().Info("the known-session cache is back on this listener's NATS connection; it answers its records and a publish's recipient count from the bucket again once its read of it completes",
+				slog.String("bucket", bus.KnownSessionBucket))
+		}
 		return repairMoved, nil
 	default:
 		return repairNothing, nil
@@ -470,23 +535,24 @@ func (s *KnownSessions) retireRepair() {
 	s.repairMu.Unlock()
 }
 
-// awaitOpened waits for the first scan of the watcher an attempt installed to deliver every
-// record, and logs the one line that says the store reads and writes the bucket from now on.
-// Until that scan the store holds a cache that answers for none of the sessions the bucket
-// knows, which is what Opened keeps to itself (kvwatch.Watcher.WaitComplete, the state Opened
-// reads): the listener's start gates exactly this hazard with WaitForCacheReady before it opens
-// /v1, and nothing gates the attempt that opens the bucket later. The line is written after the
-// wait, so it means what it says.
+// awaitOpened waits for the watcher an attempt installed to complete its first read, the state
+// Opened reports, and logs the one line that says the store reads and writes the bucket from now
+// on. Until that read the store answers for none of the sessions the bucket knows: the listener's
+// start gates exactly this hazard with WaitForCacheReady before it serves, and nothing gates the
+// attempt that opens the bucket later. The line is written after the wait, so it means what it
+// says.
 func (s *KnownSessions) awaitOpened() {
 	watcher := s.watch()
 	if watcher == nil {
 		// The store stopped while the attempt ran, so startWatch installed nothing.
 		return
 	}
-	if err := watcher.WaitComplete(s.untilStopped()); err != nil {
-		// The store stopped, or the watch ended before it had delivered the bucket. Opened stays
-		// false, which leaves a publish's count out rather than answering it from a cache that
-		// holds part of it.
+	ctx, cancel := s.untilStopped()
+	defer cancel()
+	if err := watcher.WaitComplete(ctx); err != nil {
+		// The store stopped, or the watch ended before it had read the bucket. Opened stays false,
+		// which leaves a publish's count out rather than answering it from a cache that holds part
+		// of it; the retry's next attempt moves a watcher that ended (attemptRepair).
 		return
 	}
 	s.logger().Info("the known-session bucket is open; this listener writes and reads the 30-day records from now on",
@@ -494,8 +560,9 @@ func (s *KnownSessions) awaitOpened() {
 }
 
 // untilStopped is a context that ends when the store does, for a background wait that must not
-// outlive a shutdown. Its goroutine ends with either.
-func (s *KnownSessions) untilStopped() context.Context {
+// outlive a shutdown, and its cancel, which the waiter calls once it is done. Its goroutine ends
+// with either.
+func (s *KnownSessions) untilStopped() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		select {
@@ -504,7 +571,7 @@ func (s *KnownSessions) untilStopped() context.Context {
 		case <-ctx.Done():
 		}
 	}()
-	return ctx
+	return ctx, cancel
 }
 
 // watch is the store's watcher, or nil while its bucket is not open. A nil store has none either,
@@ -518,32 +585,28 @@ func (s *KnownSessions) watch() *kvwatch.Watcher {
 	return s.watcher
 }
 
-// Opened reports whether the store's bucket is open and its cache holds what the bucket held,
-// so its answers are the bucket's. A store whose NATS user may not open the bucket answers false
-// until an attempt of its own opens it and the watcher's first pass has filled the records, and
-// a nil store for good; both answer no record and write nothing meanwhile. A caller whose own
-// answer would mean something narrower than it names then - a publish's recipient count, which
-// these records are half of - leaves that answer out instead of sending the live sessions alone
-// (cmd/listener/recipients.go).
+// Opened reports whether the store answers: its bucket is open and its copy can be served
+// (kvwatch.Watcher.Servable). A copy can be served once the watcher's first read of the bucket has
+// delivered every record, and for as long as it follows the bucket or stopped following it - a
+// disconnect, a move to a recovered connection that failed - no longer ago than the watcher's
+// stale bound, two minutes, the rule every cache of the listener answers by. A store whose NATS
+// user may not open the bucket answers false until an attempt of its own opens it and that read
+// completes, and a nil store for good.
 //
-// The completeness is half of this on purpose. A bucket is opened in one request and read in a
-// pass over every key it holds, and between the two the store answers for no session the bucket
-// knows: a send would be refused `404 no live session` for a session Envoy does know, and a
-// publish would count its recipients low, which are the two failures this store exists to
-// remove. It is kvwatch.Watcher.Complete that says the pass delivered every key, not Ready:
-// readiness is released by a first scan nats.go's idle timer ended and by a watcher's own end
-// too, each of which leaves a part of the bucket unread, so a cache that answers only from a
-// complete view reads Complete (kvwatch.Watcher.WaitComplete's own doc, and
-// store.Registry.RolesHeldBy). Completeness is not one-way: a Rewatch, a rescan or a recreated
-// bucket's reset takes it away until that watcher's own scan delivers every key, and the counts
-// stay out for that long rather than being answered from a cache being refilled.
+// Get and MatchEach answer nothing while this is false, so a caller whose answer would mean
+// something narrower than it names - a publish's recipient count, which these records are half of
+// - reads this and leaves that answer out instead of sending the live sessions alone, and a send
+// to a session with no entry answers 404 as it does on a listener with no bucket.
+//
+// The completed read is half of this on purpose. A bucket is opened in one request and read in a
+// pass over every key it holds, and between the two the store holds no record of a session the
+// bucket knows: a send would be refused `404 no live session` for a session Envoy does know, and a
+// publish would count its recipients low, which are the two failures this store exists to remove.
+// A scan that timed out completes nothing, and neither does one a disconnect overlapped, so the
+// store reports itself open only once a read has delivered every record.
 func (s *KnownSessions) Opened() bool {
 	watcher := s.watch()
-	if watcher == nil {
-		return false
-	}
-	_, complete := watcher.Complete()
-	return complete
+	return watcher != nil && watcher.Servable() == nil
 }
 
 // logger is the logger WithKnownSessionLogger set, or the default one.
@@ -555,39 +618,51 @@ func (s *KnownSessions) logger() *slog.Logger {
 }
 
 // Get returns sessionID's record, and whether the store holds one that has not aged out of
-// KnownSessionRetention. It reads memory alone and makes no bucket call, so a caller on a request
-// path pays nothing for it; a record past the retention answers as no record, whether or not the
-// sweep has dropped it yet.
+// KnownSessionRetention while it answers at all (Opened). It reads memory alone and makes no
+// bucket call, so a caller on a request path pays nothing for it; a record past the retention
+// answers as no record, whether or not the sweep has dropped it yet.
 func (s *KnownSessions) Get(sessionID string) (KnownSession, bool) {
-	if s == nil {
+	if !s.Opened() {
 		return KnownSession{}, false
 	}
+	return s.cached(sessionID)
+}
+
+// cached is the record the copy holds for sessionID within the retention, whether or not the
+// store answers: what a write compares against and a clean stop rewrites. Callers hold no lock.
+func (s *KnownSessions) cached(sessionID string) (KnownSession, bool) {
 	cutoff := s.cutoff()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	held, ok := s.records[sessionID]
-	if !ok || held.record.LastSeen < cutoff {
+	record, ok := s.records.Get(sessionID)
+	if !ok || record.LastSeen < cutoff {
 		return KnownSession{}, false
 	}
-	return held.record, true
+	return record, true
 }
 
 // MatchEach calls visit with each record whose topics match topic (routing.Match's rules), once
-// per record and in no order, looked up in the store's subject index. A record past the retention
-// is left out, as Get leaves it out. visit runs under the store's read lock, so it must not call
-// back into the store or block. A publish's recipient count reads the store this way, the only
-// read of the matching records there is: it holds a set of the session ids it has counted either
-// way, so a list and a sort of the records would be work it threw away.
+// per record and in no order, looked up in the store's subject index, while the store answers at
+// all (Opened). A record past the retention is left out, as Get leaves it out. visit runs under
+// the store's read lock, so it must not call back into the store or block. A publish's recipient
+// count reads the store this way, the only read of the matching records there is: it holds a set
+// of the session ids it has counted either way, so a list and a sort of the records would be work
+// it threw away.
 func (s *KnownSessions) MatchEach(topic string, visit func(KnownSession)) {
-	if s == nil {
+	if !s.Opened() {
 		return
 	}
+	s.eachMatch(topic, visit)
+}
+
+// eachMatch is MatchEach over the copy, whether or not the store answers.
+func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 	cutoff := s.cutoff()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	s.topics.Match(topic, func(key string) {
-		if held, ok := s.records[key]; ok && held.record.LastSeen >= cutoff {
-			visit(held.record)
+		if record, ok := s.records.Get(key); ok && record.LastSeen >= cutoff {
+			visit(record)
 		}
 	})
 }
@@ -611,9 +686,9 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // skip of an unchanged record younger than the refresh age; TouchWithin passes false, since a
 // clean stop is one write per session lifetime and the whole point of it is to move last_seen.
 //
-// No caller fails its request over what this answers: a registration and an unsubscribe
-// (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the
-// error is for the call site's WARN.
+// No caller fails its request over what this answers: a registration and a subscription change
+// (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the error
+// is for the call site's WARN.
 func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool) error {
 	watcher := s.watch()
 	if watcher == nil || record.SessionID == "" {
@@ -625,7 +700,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	if err != nil {
 		return err
 	}
-	if held, ok := s.Get(record.SessionID); throttled && ok && now.UnixMilli()-held.LastSeen < KnownSessionRefreshAge.Milliseconds() {
+	if held, ok := s.cached(record.SessionID); throttled && ok && now.UnixMilli()-held.LastSeen < KnownSessionRefreshAge.Milliseconds() {
 		// What the skip asks is whether this write would store the record already there, so it
 		// compares the two encodings rather than the fields one by one: a field added to
 		// KnownSession, and the difference between a null and an empty list, are then covered by
@@ -641,7 +716,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 			return nil
 		}
 	}
-	kv := watcher.KV()
+	kv, epoch := watcher.Handle()
 	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(record.SessionID, buf) })
 	if !answered {
 		return fmt.Errorf("write the known-session record of %s: %w", record.SessionID, err)
@@ -651,23 +726,21 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	}
 	// Write through, as the session registry's Put does: the next heartbeat then finds this
 	// record whether or not the watcher has delivered it back yet, so the throttle holds from the
-	// first write rather than from the first watch event. Behind the same revision fence that Put
-	// applies (SessionRegistry.cacheSessionLocked): while this write was in flight the watcher
-	// can have applied a newer revision another listener wrote - a re-registration of the same
-	// session through that listener - and putting this record back over it would answer the older
-	// one until the next write of the key.
+	// first write rather than from the first watch event. The copy takes it behind its revision
+	// fence (kvwatch.Copy.Put): while this write was in flight the watcher can have applied a
+	// newer revision another listener wrote - a re-registration of the same session through that
+	// listener - and putting this record back over it would answer the older one until the next
+	// write of the key. A write through a handle on a bucket since recreated is dropped there too.
 	s.mu.Lock()
-	if held, ok := s.records[record.SessionID]; !ok || revision >= held.revision {
-		s.applyLocked(record.SessionID, record, revision)
-	}
+	s.records.Put(watcher, epoch, record.SessionID, record, revision)
 	s.mu.Unlock()
 	return nil
 }
 
 // TouchWithin moves sessionID's record to now, keeping its content, which is what a clean stop
 // writes: the session stopped, and a publish must still count it as a recipient of the topics it
-// followed. A session the store knows nothing of writes nothing, since a stop carries no topics of
-// its own to record.
+// followed. A session the store holds no record of writes nothing, since a stop carries no topics
+// of its own to record.
 //
 // The write is made whatever the refresh-age throttle would say. A live session rewrites its
 // record at least once per KnownSessionRefreshAge, so at a clean stop the stored record is almost
@@ -678,7 +751,7 @@ func (s *KnownSessions) TouchWithin(ctx context.Context, sessionID string) error
 	if s == nil {
 		return nil
 	}
-	held, ok := s.Get(sessionID)
+	held, ok := s.cached(sessionID)
 	if !ok {
 		return nil
 	}
@@ -686,26 +759,23 @@ func (s *KnownSessions) TouchWithin(ctx context.Context, sessionID string) error
 }
 
 // Rewatch moves the cache's watcher and the handle the store writes through to conn
-// (kvwatch.Watcher.Rewatch), after a reconnect. A store whose bucket is not open has no watcher
-// to move: it keeps conn for the attempts that follow, so the attempt that opens the bucket makes
-// its requests on the connection the listener holds now.
+// (kvwatch.Watcher.Rewatch), after a connection event; the listener calls it from a reconnect
+// hook of its own. A store whose bucket is not open has no watcher to move: it keeps conn for the
+// attempts that follow and wakes the retry to attempt the bucket at once, so a grant applied by a
+// reload that reconnected the listener is taken without waiting out the retry's backoff.
 //
 // A move that failed is retried in the background, on the store's own backoff
-// (repairUntilStopped), and the error is returned for the caller's WARN. Nothing else would
-// repair it: the listener's reconnect hook answers nil over this error, since a cache no
-// delivery reads must not report the listener degraded, so the bus counts that connection event
-// as covered and runs no hook again until the next one, which can be days away
-// (internal/bus/recovery.go); the store is kept out of listenerCaches, so the self-health
-// rebuild passes it by; and the attempts that open a bucket that never opened are not this.
-// Until a move succeeds the watcher is on a connection the listener has left, Opened answers
-// false over it (its end clears kvwatch.Watcher.Complete) and a publish's recipient count is
-// left out.
+// (repairUntilStopped): the store repairs a failed move itself, and the error is returned for the
+// caller's WARN. Until a move succeeds the watcher is on a connection the listener has left: the
+// copy answers for the watcher's stale bound and then Opened answers false over it, so a
+// publish's recipient count is left out. The move that succeeds, this caller's or the retry's,
+// logs the store back (attemptRepair).
 //
 // The move is made under the lock the retry's attempts take, so the hook's move and the retry's
 // never run at once, and each reads the connection the store holds at the moment it runs, so
 // neither can put the watcher back onto a connection the store has already left. A move that
-// succeeds is what ends the retry: its next attempt finds every move the listener asked for
-// made (covered, asked) and retires.
+// succeeds is what ends the retry: its next attempt finds every move the listener asked for made
+// (covered, asked) and retires.
 func (s *KnownSessions) Rewatch(conn *nats.Conn) error {
 	if s == nil {
 		return nil
@@ -716,8 +786,13 @@ func (s *KnownSessions) Rewatch(conn *nats.Conn) error {
 	watcher := s.watcher
 	s.openMu.Unlock()
 	if watcher == nil {
-		// The bucket never opened, so the repair that is already attempting it covers this move
+		// The bucket never opened, so the retry that is already attempting it covers this move
 		// too: it opens on the connection just stored (attemptRepair).
+		select {
+		case s.wake <- struct{}{}:
+		default:
+		}
+		s.armRepair()
 		return nil
 	}
 	if _, err := s.repairOnce(); err != nil {
@@ -727,20 +802,28 @@ func (s *KnownSessions) Rewatch(conn *nats.Conn) error {
 	return nil
 }
 
-// WaitForCacheReady blocks until the watcher's first scan has delivered every existing record
-// (kvwatch.Watcher.WaitComplete), or until ctx is done. It waits for the state Opened reads
-// rather than for readiness, which a scan nats.go's idle timer ended releases too: a caller
-// released on such a scan would open its port over a cache holding part of the bucket, which is
-// the state this gate exists to keep off the port (store.Registry.WaitForCacheReady waits on the
-// role claim view the same way, for the same reason). A scan the idle timer ended is scanned
-// again rather than waited out (startWatch's kvwatch.WithRescan), so this ends on the rescan
-// instead of hanging; a watcher that ends on its own, and a stop, end it at once with their own
-// error rather than at ctx.
+// Disconnected says the connection the cache's watcher reads through was lost
+// (kvwatch.Watcher.Disconnected): the copy stops following its bucket and its stale episode
+// begins, so the store answers for the stale bound and no longer unless a move reads the bucket
+// again. The listener calls it from the bus's disconnect hook (bus.Client.AddDisconnectHook). A
+// store whose bucket is not open has nothing to say it to.
+func (s *KnownSessions) Disconnected() {
+	if watcher := s.watch(); watcher != nil {
+		watcher.Disconnected()
+	}
+}
+
+// WaitForCacheReady blocks until the store answers (Opened), its watcher's first read having
+// delivered every record (kvwatch.Watcher.WaitComplete), or until ctx is done. It waits for that
+// state rather than for readiness, which a read whose scan timed out releases too: a caller
+// released on such a scan would serve over a cache holding part of the bucket, which is the state
+// this gate exists to keep away (store.Registry.WaitForCacheReady waits on the role claim view the
+// same way, for the same reason). A watcher that ends on its own, and a stop, end it at once with
+// their own error rather than at ctx.
 //
-// Callers bound ctx and proceed on error: the store answers from whatever it holds, and the
-// counts it is half of are left out until Opened says the view is whole. A store whose bucket is
-// not open waits for nothing and answers nil: it has no cache to fill, and the listener's start
-// must not spend its caller's budget on a bucket it may not open.
+// Callers bound ctx and proceed on error: the store answers nothing until Opened says the view is
+// whole. A store whose bucket is not open waits for nothing and answers nil: it has no cache to
+// fill, and the listener's start must not spend its caller's budget on a bucket it may not open.
 func (s *KnownSessions) WaitForCacheReady(ctx context.Context) error {
 	watcher := s.watch()
 	if watcher == nil {
@@ -763,7 +846,7 @@ func (s *KnownSessions) StopWatch() {
 
 // EndWatch ends the cache's watcher and the sweep at shutdown, within ctx, while the connection
 // still carries requests (kvwatch.Watcher.End), and stops the background repair
-// (repairUntilStopped).
+// (repairUntilStopped). The listener adds it as a drain hook.
 func (s *KnownSessions) EndWatch(ctx context.Context) {
 	if s == nil {
 		return
@@ -786,48 +869,34 @@ func (s *KnownSessions) cutoff() int64 {
 	return s.now().Add(-KnownSessionRetention).UnixMilli()
 }
 
-// applyWatched applies one entry the watcher delivered. A revision the store already holds, the
-// echo of its own write among them, changes nothing.
-func (s *KnownSessions) applyWatched(entry nats.KeyValueEntry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if held, ok := s.records[entry.Key()]; ok && entry.Revision() <= held.revision {
-		return
-	}
-	if entry.Operation() == nats.KeyValueDelete || entry.Operation() == nats.KeyValuePurge {
-		s.dropLocked(entry.Key())
-		return
-	}
-	var record KnownSession
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		s.dropLocked(entry.Key())
-		s.logger().Warn("known session store evicted a malformed record",
-			slog.String("key", entry.Key()), slog.Uint64("revision", entry.Revision()), slog.String("error", err.Error()))
-		return
-	}
-	s.applyLocked(entry.Key(), record, entry.Revision())
+// knownCache is the store as the cache its watcher feeds (kvwatch.Cache). The hooks are its own
+// type's, not the store's methods, so nothing but the watcher calls them.
+type knownCache struct{ s *KnownSessions }
+
+// BeginRead starts a read of the bucket (kvwatch.Copy.BeginRead). Every record stays through it.
+func (c knownCache) BeginRead(read kvwatch.Read) {
+	c.s.mu.Lock()
+	defer c.s.mu.Unlock()
+	c.s.records.BeginRead(read)
 }
 
-// applyLocked holds key's record and keeps the subject index in step with it. Callers hold s.mu
-// for writing.
-func (s *KnownSessions) applyLocked(key string, record KnownSession, revision uint64) {
-	s.records[key] = cachedKnown{record: record, revision: revision}
-	s.topics.Set(key, record.Topics)
+// Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could
+// not decode, which removed the session's record.
+func (c knownCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
+	c.s.mu.Lock()
+	defer c.s.mu.Unlock()
+	if err := c.s.records.Delivered(entry); err != nil {
+		c.s.logger().Warn("known session store evicted a malformed record",
+			slog.String("key", entry.Key), slog.Uint64("revision", entry.Revision), slog.String("error", err.Error()))
+	}
 }
 
-// dropLocked forgets key. Callers hold s.mu for writing.
-func (s *KnownSessions) dropLocked(key string) {
-	delete(s.records, key)
-	s.topics.Remove(key)
-}
-
-// resetCache empties the records and the index, for a recreated bucket whose revisions start at 1
-// again.
-func (s *KnownSessions) resetCache() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.records = map[string]cachedKnown{}
-	s.topics = store.NewTopicMatcher()
+// CompleteRead removes every record the read found no evidence of, and its topics from the index:
+// the bucket no longer holds that session's record.
+func (c knownCache) CompleteRead(kvwatch.Read) {
+	c.s.mu.Lock()
+	defer c.s.mu.Unlock()
+	c.s.records.CompleteRead()
 }
 
 // sweepUntilStopped runs the one periodic pass until the store is stopped.
@@ -845,16 +914,18 @@ func (s *KnownSessions) sweepUntilStopped() {
 }
 
 // sweep drops every record that has aged out of KnownSessionRetention, giving back the strings and
-// topic lists it held and the index nodes its topics alone kept. A JetStream TTL expiry is
-// delivered as no watch event, so nothing else would ever drop them. The map keeps the buckets it
-// grew to, which the records written next reuse.
+// topic lists it held and the index nodes its topics alone kept. The bucket's TTL removes such a
+// record with no record of the removal a watcher delivers, so nothing else would ever drop it. The
+// copy keeps the key's revision in its fence (kvwatch.Copy.Remove) until a completed read finds
+// the bucket no longer holds the key.
 func (s *KnownSessions) sweep() {
 	cutoff := s.cutoff()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for key, held := range s.records {
-		if held.record.LastSeen < cutoff {
-			s.dropLocked(key)
+	for key, record := range s.records.All() {
+		if record.LastSeen < cutoff {
+			s.records.Remove(key)
+			s.topics.Remove(key)
 		}
 	}
 }

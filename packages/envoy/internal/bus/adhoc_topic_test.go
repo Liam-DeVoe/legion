@@ -12,13 +12,14 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-const grantedTopic = "notifications.team.granted"
+const grantedTopic = "notifications.lxspec.granted"
 
 // Which transport each kind of topic takes: the role lanes and their exception lanes, and every
 // notification topic the stream does not capture, over core NATS; every topic the stream captures,
 // its exception lane included, and every subject outside notifications., through JetStream.
 // An exception lane follows the same rule as any other topic: the stream captures the lane of an
-// agent subject and no other lane, so the lane of a captured non-agent topic takes core NATS.
+// agent subject and of a team topic and no other lane, so the lane of any other captured topic
+// takes core NATS.
 func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCapture(t *testing.T) {
 	for _, tc := range []struct {
 		topic string
@@ -26,12 +27,10 @@ func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCaptur
 	}{
 		{contracts.RoleTopicPrefix + "reviewer", true},
 		{ExceptionTopicPrefix + contracts.RoleTopicPrefix + "reviewer", true},
-		{"notifications.team.deploy-squad", true},
-		{"notifications.team.deploy-squad.all", true},
-		{ExceptionTopicPrefix + "notifications.team.deploy-squad", true},
-		{ExceptionTopicPrefix + "notifications.github.acme.widgets.pr.1.comment", true},
-		{"notifications.githubx.acme", true},
-		{"notifications.github", true},
+		{"notifications.team.deploy-squad", false},
+		{"notifications.team.deploy-squad.all", false},
+		{ExceptionTopicPrefix + "notifications.team.deploy-squad", false},
+		{"notifications.lxspec.probe.all", true},
 		// A `*` or `>` in a published topic is a character of it, not a wildcard: the stream's
 		// literal-prefix subjects capture none of these, so they take core NATS.
 		{"notifications.>", true},
@@ -57,32 +56,10 @@ func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCaptur
 // StreamCaptures reads each stream subject as a literal prefix and `.>`; a subject of any other
 // shape needs a matcher that splits tokens.
 func TestEveryStreamSubjectIsALiteralPrefixAndWildcard(t *testing.T) {
-	for _, subject := range streamSubjects {
+	for _, subject := range streamCarriedSubjects {
 		prefix, ok := strings.CutSuffix(subject, ".>")
 		if !ok || prefix == "" || strings.ContainsAny(prefix, "*>") {
 			t.Errorf("stream subject %q is not a literal prefix followed by .>", subject)
-		}
-	}
-}
-
-// The presence subject (PresenceSubject) must stay a subject the stream does not carry, for as
-// long as presence is asked on it: sjawhar/legion#2603 narrows each session's NATS grant to the
-// subjects it needs, and that grant lets a session subscribe to its own presence subject under
-// notifications. because the prefix lies outside the stream. A stream subject that captured it
-// would also send every presence request through the stream and the live-topics lane, which
-// answers for every session on a machine rather than the one asked. This test is permanent: a new
-// stream subject that fails it is the subject to change, not the test. It walks streamCfg.Subjects,
-// the list the stream is built from, as the role-lane check does, so a subject that reaches the
-// stream by any other name is covered.
-func TestNoStreamSubjectCapturesThePresenceSubject(t *testing.T) {
-	for _, topic := range []string{PresenceSubject("ses_x"), PresenceSubjectPrefix + "a.b"} {
-		if StreamCaptures(topic) {
-			t.Errorf("the stream captures the presence subject %q", topic)
-		}
-	}
-	for _, subject := range streamCfg.Subjects {
-		if subjectsOverlap(subject, PresenceSubjectPrefix+">") {
-			t.Errorf("stream subject %q overlaps the presence prefix %s", subject, PresenceSubjectPrefix)
 		}
 	}
 }
@@ -101,7 +78,7 @@ func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T
 	subscriber := testnats.Connect(t, uri)
 	t.Cleanup(subscriber.Close)
 
-	const topic = "notifications.team.deploy-squad"
+	const topic = "notifications.lxspec.probe.all"
 	received, err := subscriber.SubscribeSync(topic)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -171,7 +148,7 @@ func TestAnAdHocPublishNATSDeniesReturnsTheDenial(t *testing.T) {
 		EventID:        "evt-denied",
 		Source:         "agent",
 		SourceEventID:  "source-denied",
-		Topic:          "notifications.team.denied",
+		Topic:          "notifications.lxspec.denied",
 		DedupeKey:      "publish.denied",
 		IssuedAt:       contracts.NowMillis(),
 		PayloadSummary: "denied",

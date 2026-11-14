@@ -12,16 +12,19 @@ import {
 import { askThreadsIssue, eventRefreshTargets } from "../api/event-refresh";
 import {
   architectureSourcesQuery,
+  askThreadQuery,
   inboxQuery,
+  inboxThreadsQuery,
   issueQuery,
   myRepliesCountQuery,
   projectArchitectureSourcesQuery,
+  projectDefaultAssigneesQuery,
   projectIssuesQuery,
   projectsQuery,
   userStateQuery,
 } from "../api/queries";
 import { refreshQueries } from "../api/query-refresh";
-import type { Ask, AskRead, Event, EventType, InboxRow } from "../api/types";
+import type { Ask, AskRead, DispatchEvent, EventType, InboxRow } from "../api/types";
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
 import { issueAsk } from "../features/inbox/inbox-fixture";
 import { useAskAnswerForm } from "../features/inbox/useAskAnswerForm";
@@ -47,6 +50,9 @@ const READS = {
     key: ["references", "to", "dispatch://CORE-9/ask/ask-9"],
   },
   asks: { key: ["asks", "CORE-1"] },
+  // The Conversation tab's list of CORE-1's asks, each with its thread, beneath the issue's.
+  askThreads: { key: ["asks", "CORE-1", "thread"] },
+  collaborators: { key: ["issue", "CORE-1", "collaborators"] },
   comment: { key: commentQuery("comment-1").queryKey },
   // Block b2 of CORE-1's comment-1, read by a link to it and, pinned to the comment's revision 1,
   // by another link.
@@ -84,6 +90,7 @@ const READS = {
   grandparent: { key: issueQuery("CORE-00").queryKey },
   handoffs: { key: ["handoffs", "CORE-1"] },
   inbox: { key: inboxQuery().queryKey },
+  inboxThreads: { key: inboxThreadsQuery().queryKey },
   issuePanel: {
     data: { edges: [], node: { id: "CORE-1", kind: "issue" } },
     key: ["references", "to", "dispatch://CORE-1"],
@@ -111,6 +118,7 @@ const READS = {
   otherDocumentPage: { data: { id: "artifact-2" }, key: ["artifact-ref", "CORE/notes-md"] },
   otherHandoffs: { key: ["handoffs", "CORE-9"] },
   otherIssueMessage: { key: messageQuery("CORE-9", "message-9").queryKey },
+  otherProjectAsks: { key: ["asks", "OTHER-1"] },
   otherProjectList: { key: projectIssuesQuery("OTHER", []).queryKey },
   // Another block of CORE-1's spec, which a link elsewhere on the page names.
   otherSpecBlock: {
@@ -128,13 +136,13 @@ const READS = {
   },
   parentSummary: { key: issueSummaryQuery("CORE-0").queryKey },
   pinned: { key: ["issues", "pinned"] },
+  projectDefaultAssignees: { key: projectDefaultAssigneesQuery().queryKey },
   projectInbox: { key: ["inbox", "CORE"] },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
   projects: { key: projectsQuery().queryKey },
   referencePicker: { key: ["issues", "CORE"] },
   referencesTab: { key: ["issue", "CORE-1", "references"] },
   replies: { key: myRepliesCountQuery().queryKey },
-  repliesPage: { key: ["me", "replies", "page"] },
   rootComment: { key: commentQuery("root-1").queryKey },
   rootMessage: { key: messageQuery("CORE-1", "message-0").queryKey },
   // A block of CORE-1's spec, read by a link to it (its panel shares the key) and, pinned to
@@ -157,6 +165,56 @@ const READS = {
     key: ["references", "to", "dispatch://CORE-1/artifact/spec"],
   },
   summary: { key: issueSummaryQuery("CORE-1").queryKey },
+  // The Reply-thread card's reads (`askThreadQuery`, `GET /asks/{id}`), each cut to the fields
+  // the rules read: an open question on CORE-1 nobody handed on, one handed on, one answered, an
+  // open one on CORE-9, one on another project's issue, and one on a project document of CORE and
+  // of another project.
+  thread: {
+    data: { ask: { asked_of: null, id: "ask-1", issue_key: "CORE-1", state: "open" } },
+    key: askThreadQuery("ask-1").queryKey,
+  },
+  threadAnswered: {
+    data: { ask: { asked_of: null, id: "ask-3", issue_key: "CORE-1", state: "answered" } },
+    key: askThreadQuery("ask-3").queryKey,
+  },
+  threadHandedOn: {
+    data: {
+      ask: { asked_of: "dave@example.com", id: "ask-2", issue_key: "CORE-1", state: "open" },
+    },
+    key: askThreadQuery("ask-2").queryKey,
+  },
+  threadOnDocument: {
+    data: {
+      ask: {
+        anchor_artifact: { name: "plan.md", primary: false, project: "CORE", slug: "plan-md" },
+        asked_of: null,
+        id: "ask-7",
+        issue_key: null,
+        state: "open",
+      },
+    },
+    key: askThreadQuery("ask-7").queryKey,
+  },
+  threadOnOtherDocument: {
+    data: {
+      ask: {
+        anchor_artifact: { name: "notes.md", primary: false, project: "OTHER", slug: "notes-md" },
+        asked_of: null,
+        id: "ask-8",
+        issue_key: null,
+        state: "open",
+      },
+    },
+    key: askThreadQuery("ask-8").queryKey,
+  },
+  threadOnOtherIssue: {
+    data: { ask: { asked_of: null, id: "ask-9", issue_key: "CORE-9", state: "open" } },
+    key: askThreadQuery("ask-9").queryKey,
+  },
+  threadOnOtherProject: {
+    data: { ask: { asked_of: null, id: "ask-6", issue_key: "OTHER-1", state: "open" } },
+    key: askThreadQuery("ask-6").queryKey,
+  },
   unrelatedDetail: { key: issueQuery("CORE-9").queryKey },
   unrelatedPanel: {
     data: { edges: [], node: { id: "CORE-9", kind: "issue" } },
@@ -175,8 +233,12 @@ interface PageOptions {
   /** Where the Architecture page's tree lists CORE-1: in a component's work list, among the
    *  unassigned issues, or nowhere. */
   readonly treeLists: "component" | "unassigned" | "nowhere";
-  /** Whether the Replies page lists a thread on CORE-1. */
-  readonly repliesHold: boolean;
+  /** Whether the Inbox's thread rows hold a thread on CORE-1. */
+  readonly threadsHold: boolean;
+  /** The rows both Inbox reads hold, in place of the two `inboxHolds` names. */
+  readonly inboxRows?: readonly Partial<InboxRow>[];
+  /** The rows every issue's ask list and the project document's hold, in place of their own. */
+  readonly askRows?: readonly Partial<Ask>[];
 }
 
 function dataFor(name: ReadName, page: PageOptions): unknown {
@@ -184,12 +246,19 @@ function dataFor(name: ReadName, page: PageOptions): unknown {
     return page.pinned ? [{ key: "CORE-1" }] : [{ key: "CORE-5" }];
   }
   if (name === "inbox" || name === "projectInbox") {
+    if (page.inboxRows !== undefined) return page.inboxRows;
     return page.inboxHolds
       ? [
           { id: "ask-1", issue_key: "CORE-1" },
           { id: "ask-9", issue_key: "CORE-9" },
         ]
       : [{ id: "ask-5", issue_key: "CORE-5" }];
+  }
+  if (
+    page.askRows !== undefined &&
+    (name === "asks" || name === "askThreads" || name === "otherProjectAsks" || name === "docAsks")
+  ) {
+    return page.askRows;
   }
   if (name === "architecture") {
     const listed = [{ key: page.treeLists === "nowhere" ? "CORE-5" : "CORE-1" }];
@@ -200,11 +269,14 @@ function dataFor(name: ReadName, page: PageOptions): unknown {
       unassigned: page.treeLists === "unassigned" ? listed : [],
     };
   }
-  if (name === "repliesPage") {
-    const key = page.repliesHold ? "CORE-1" : "CORE-5";
+  if (name === "inboxThreads") {
+    const key = page.threadsHold ? "CORE-1" : "CORE-5";
     return {
-      pageParams: [0],
-      pages: [{ rows: [{ issue: { key, title: "Ship the release" }, thread_id: "root-1" }] }],
+      as_of: "2026-10-26T00:00:00Z",
+      limit: 0,
+      offset: 0,
+      rows: [{ issue: { key, title: "Ship the release" }, kind: "comment", thread_id: "root-1" }],
+      total: 1,
     };
   }
   const read: { data?: unknown; key: QueryKey } = READS[name];
@@ -212,11 +284,11 @@ function dataFor(name: ReadName, page: PageOptions): unknown {
 }
 
 /** The reads of the page `event` marks stale, signed in as alice. */
-function refreshedReads(event: Event, page: Partial<PageOptions> = {}): ReadName[] {
+function refreshedReads(event: DispatchEvent, page: Partial<PageOptions> = {}): ReadName[] {
   const options: PageOptions = {
     inboxHolds: true,
     pinned: true,
-    repliesHold: true,
+    threadsHold: true,
     treeLists: "component",
     ...page,
   };
@@ -230,10 +302,10 @@ function refreshedReads(event: Event, page: Partial<PageOptions> = {}): ReadName
 }
 
 function event(
-  type: Event["type"],
+  type: DispatchEvent["type"],
   payload: Record<string, unknown> = {},
-  overrides: Partial<Event> = {}
-): Event {
+  overrides: Partial<DispatchEvent> = {}
+): DispatchEvent {
   return {
     actor: { id: "planner", kind: "session" },
     created_at: "2026-10-26T00:00:00Z",
@@ -245,7 +317,7 @@ function event(
     seq: 4,
     type,
     ...overrides,
-  } as Event;
+  } as DispatchEvent;
 }
 
 /** An `issue.*` payload as the server writes it: the issue after the write, flat. */
@@ -268,7 +340,7 @@ function issue(fields: Record<string, unknown> = {}): Record<string, unknown> {
 const documentOwner = { artifact_id: "artifact-1", issue_key: null, project: "CORE" } as const;
 
 interface Rule {
-  readonly event: Event;
+  readonly event: DispatchEvent;
   readonly page?: Partial<PageOptions>;
   readonly refreshes: readonly ReadName[];
   readonly spares: readonly ReadName[];
@@ -296,7 +368,7 @@ const rules: Record<string, Rule> = {
         "grandparent",
         "referencesTab",
         "architecture",
-        "repliesPage",
+        "inboxThreads",
       ],
       spares: [
         "unrelatedDetail",
@@ -314,12 +386,12 @@ const rules: Record<string, Rule> = {
         "docSummary",
       ],
     },
-  "a retitle leaves the pinned list, the Inbox, the Replies page and the Architecture page alone when none lists the issue":
+  "a retitle leaves the pinned list, the Inbox, its thread rows and the Architecture page alone when none lists the issue":
     {
       event: event("issue.updated", issue({ ancestors: ["CORE-0"], changed: ["title"] })),
-      page: { inboxHolds: false, pinned: false, repliesHold: false, treeLists: "nowhere" },
+      page: { inboxHolds: false, pinned: false, threadsHold: false, treeLists: "nowhere" },
       refreshes: ["summary"],
-      spares: ["pinned", "inbox", "projectInbox", "repliesPage", "architecture", "components"],
+      spares: ["pinned", "inbox", "projectInbox", "inboxThreads", "architecture", "components"],
     },
   "a retitle refreshes the Architecture page that lists the issue as unassigned": {
     event: event("issue.updated", issue({ ancestors: [], changed: ["title"] })),
@@ -448,7 +520,7 @@ const rules: Record<string, Rule> = {
       "inbox",
       "projects",
       "replies",
-      "repliesPage",
+      "inboxThreads",
       "components",
       "architecture",
       "referencesTab",
@@ -456,10 +528,10 @@ const rules: Record<string, Rule> = {
     ],
     spares: ["otherProjectList", "userState"],
   },
-  "a priority change refreshes the Inbox row, the work list showing it, every ancestor's children, and nothing that shows no priority":
+  "a priority change refreshes the Inbox row, the Inbox's thread rows, the work list showing it, every ancestor's children, and nothing that shows no priority":
     {
       event: event("issue.updated", issue({ ancestors: ["CORE-0"], changed: ["priority"] })),
-      refreshes: ["detail", "projectList", "inbox", "parent", "architecture"],
+      refreshes: ["detail", "projectList", "inbox", "inboxThreads", "parent", "architecture"],
       spares: [
         "summary",
         "pinned",
@@ -469,7 +541,6 @@ const rules: Record<string, Rule> = {
         "referencePicker",
         "agentsPicker",
         "components",
-        "repliesPage",
       ],
     },
   "a write of any field refreshes every ancestor's children, which show the subtree's newest activity":
@@ -487,12 +558,36 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail", "parent", "grandparent", "unrelatedDetail"],
     spares: ["summary", "pinned"],
   },
-  "an assignee change leaves an Inbox that does not list the issue alone": {
+  // An assignee write moves the questions nobody has handed on from one person to another, and
+  // every reader's Inbox read holds every open question of the issue, so a test against the rows
+  // she holds finds every list it moves. An Inbox holding no row of the issue has nothing to move
+  // whoever the event names - nobody, as a server mid-deploy writes it, or the reader herself -
+  // and only her thread rows, which the names decide, are read again.
+  "an assignee change naming nobody leaves an Inbox that lists no row of the issue alone": {
     event: event("issue.updated", issue({ ancestors: [], changed: ["assignee"] })),
     page: { inboxHolds: false },
-    refreshes: ["detail"],
-    spares: ["inbox", "projectInbox"],
+    refreshes: ["detail", "replies"],
+    spares: ["inbox", "projectInbox", "summary", "pinned"],
   },
+  "an assignee move naming the viewer leaves an Inbox that lists no row of the issue alone": {
+    event: event(
+      "issue.updated",
+      issue({ ancestors: [], changed: ["assignee"], thread_logins: ["alice"] })
+    ),
+    page: { inboxHolds: false },
+    refreshes: ["detail", "replies"],
+    spares: ["inbox", "projectInbox", "summary", "pinned"],
+  },
+  "an assignee move between two other people leaves an Inbox that lists no row of the issue alone":
+    {
+      event: event(
+        "issue.updated",
+        issue({ ancestors: [], changed: ["assignee"], thread_logins: ["bob", "carol"] })
+      ),
+      page: { inboxHolds: false, threadsHold: false },
+      refreshes: ["detail"],
+      spares: ["inbox", "projectInbox", "replies", "inboxThreads"],
+    },
   "a blocker change refreshes the detail of each blocker it names, whose Referenced by count moved":
     {
       event: event(
@@ -552,14 +647,14 @@ const rules: Record<string, Rule> = {
     refreshes: ["parent", "parentPanel"],
     spares: ["issuePanel", "detail"],
   },
-  "a claim refreshes the issue and its project list only": {
+  "a claim refreshes the issue, its collaborators and its project list only": {
     event: event("issue.claimed", {
       claim: { actor: { id: "planner", kind: "session" }, at: "2026-10-26T00:00:00Z" },
       key: "CORE-1",
       reason: "claimed",
       status: "in_progress",
     }),
-    refreshes: ["detail", "log", "projectList"],
+    refreshes: ["collaborators", "detail", "log", "projectList"],
     spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
   },
   "a person's edit notice refreshes the issue's log only, since each edit's version refreshed the rest":
@@ -976,6 +1071,288 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail", "unrelatedDetail", "projects", "projectList"],
     spares: ["inbox", "pinned"],
   },
+  // The Inbox's thread rows, by the event that moves each of them.
+  "an issue-less message.created naming the viewer refreshes the Inbox's Agent rows": {
+    event: event(
+      "message.created",
+      { id: "message-2", target: "session:planner", thread_logins: ["alice"] },
+      { issue_key: null, project: undefined }
+    ),
+    refreshes: ["inboxThreads", "replies"],
+    spares: ["inbox"],
+  },
+  "an issue-less message.answered naming the viewer refreshes the Inbox's Agent rows": {
+    event: event(
+      "message.answered",
+      { id: "message-2", target: "session:planner", thread_logins: ["alice"] },
+      { issue_key: null, project: undefined }
+    ),
+    refreshes: ["inboxThreads", "replies"],
+    spares: ["inbox"],
+  },
+  "an issue-less message naming somebody else leaves the Inbox's thread rows alone": {
+    event: event(
+      "message.answered",
+      { id: "message-2", target: "session:planner", thread_logins: ["bob"] },
+      { actor: { id: "bob", kind: "user" }, issue_key: null, project: undefined }
+    ),
+    refreshes: [],
+    spares: ["inboxThreads", "replies"],
+  },
+  "a user_agent_state.updated naming the viewer refreshes the Inbox's thread rows": {
+    event: event("user_agent_state.updated", { login: "alice" }, { issue_key: null }),
+    refreshes: ["inboxThreads", "replies"],
+    spares: ["inbox"],
+  },
+  "a user_agent_state.updated naming somebody else refreshes nothing of the viewer's": {
+    event: event("user_agent_state.updated", { login: "bob" }, { issue_key: null }),
+    refreshes: [],
+    spares: ["inboxThreads", "replies"],
+  },
+  "a user_thread_state.updated naming no thread - a Mark all read - refreshes the Inbox's thread rows":
+    {
+      event: event(
+        "user_thread_state.updated",
+        { login: "alice", project: "CORE" },
+        { issue_key: null }
+      ),
+      refreshes: ["inboxThreads", "replies"],
+      spares: ["inbox"],
+    },
+  "an assignee move naming the viewer refreshes the Inbox's thread rows": {
+    event: event(
+      "issue.updated",
+      issue({ ancestors: ["CORE-0"], changed: ["assignee"], thread_logins: ["alice"] })
+    ),
+    refreshes: ["inboxThreads", "replies"],
+    spares: ["summary"],
+  },
+  // The conditional half of the belt: the event names somebody else's threads, so the whole
+  // read does not refresh, and only a thread row already carrying the issue's key does.
+  "an assignee move naming somebody else still refreshes a listed Reply row's issue": {
+    event: event(
+      "issue.updated",
+      issue({ ancestors: ["CORE-0"], changed: ["assignee"], thread_logins: ["bob"] })
+    ),
+    refreshes: ["inboxThreads", "inbox"],
+    spares: ["replies", "summary"],
+  },
+  "an assignee move naming somebody else leaves a thread read holding no row of that issue alone": {
+    event: event(
+      "issue.updated",
+      issue({ ancestors: ["CORE-0"], changed: ["assignee"], thread_logins: ["bob"] })
+    ),
+    page: { threadsHold: false },
+    refreshes: ["inbox"],
+    spares: ["inboxThreads", "replies"],
+  },
+  // The Reply-thread card draws a question's Asked-of badge from its thread, which never goes
+  // stale on its own: an assignee move reads again the thread of each open question of the issue
+  // nobody handed on, and no thread of another issue, a question handed on or one answered.
+  "an assignee move refreshes the Reply-thread reads of the issue's open questions nobody handed on":
+    {
+      event: event(
+        "issue.updated",
+        issue({ ancestors: ["CORE-0"], changed: ["assignee"], thread_logins: ["bob"] })
+      ),
+      refreshes: ["thread"],
+      spares: [
+        "threadOnOtherIssue",
+        "threadHandedOn",
+        "threadAnswered",
+        "threadOnDocument",
+        "threadOnOtherProject",
+      ],
+    },
+  // A project's default assignee is the last step of the chain that decides who a question
+  // reaches, so moving it carries every open ask on an issue of that project nobody holds out
+  // of one person's lists and into the other's. The event names both of them.
+  "a project's default assignee moving to the viewer refreshes their Inbox and thread rows with the Settings table":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "alice", project: "CORE", thread_logins: ["alice", "bob"] },
+        { issue_key: null }
+      ),
+      refreshes: ["projectDefaultAssignees", "inbox", "projectInbox", "inboxThreads", "replies"],
+      spares: ["detail", "projects", "projectList", "summary"],
+    },
+  // A reader the event does not name still holds, in her one unfiltered Inbox read, every open
+  // question she can see with the person it waits on, which her assignee filter and the Asked-of
+  // badge read. A question the default decides - nobody handed it on, and nobody holds its issue
+  // or it is on a project document - changes person in her list too.
+  "a project's default assignee moving between two other people refreshes a reader's Inbox holding a question on an issue nobody holds":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        inboxRows: [
+          {
+            asked_of: null,
+            id: "ask-1",
+            issue: { assignee: null, key: "CORE-1", title: "Ship the release" },
+            issue_key: "CORE-1",
+            state: "open",
+          },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees", "inbox", "projectInbox"],
+      spares: ["inboxThreads", "replies", "detail"],
+    },
+  "a project's default assignee moving between two other people refreshes a reader's Inbox holding a question on one of its documents":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        inboxRows: [
+          {
+            asked_of: null,
+            document: { name: "plan.md", project: "CORE", slug: "plan-md" },
+            id: "ask-7",
+            issue_key: null,
+            state: "open",
+          },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees", "inbox", "projectInbox"],
+      spares: ["inboxThreads", "replies", "detail"],
+    },
+  // Every question here waits on a step above the default, or belongs to another project, so the
+  // move changes none of them.
+  "a project's default assignee moving between two other people leaves alone a reader whose lists hold no question it decides":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        inboxRows: [
+          {
+            asked_of: null,
+            id: "ask-1",
+            issue: { assignee: "alice@example.com", key: "CORE-1", title: "Ship the release" },
+            issue_key: "CORE-1",
+            state: "open",
+          },
+          {
+            asked_of: "dave@example.com",
+            id: "ask-2",
+            issue: { assignee: null, key: "CORE-2", title: "Handed on" },
+            issue_key: "CORE-2",
+            state: "open",
+          },
+          {
+            asked_of: "dave@example.com",
+            document: { name: "plan.md", project: "CORE", slug: "plan-md" },
+            id: "ask-7",
+            issue_key: null,
+            state: "open",
+          },
+          {
+            asked_of: null,
+            id: "ask-8",
+            issue: { assignee: null, key: "OTHER-1", title: "Another project's" },
+            issue_key: "OTHER-1",
+            state: "open",
+          },
+          {
+            asked_of: null,
+            document: { name: "notes.md", project: "OTHER", slug: "notes-md" },
+            id: "ask-9",
+            issue_key: null,
+            state: "open",
+          },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees"],
+      spares: ["inbox", "projectInbox", "inboxThreads", "replies", "detail"],
+    },
+  // The issue page and the document page draw the same Asked-of badge from their own ask lists,
+  // each row with the person the server resolved for it: a list of the project holding a
+  // question nobody handed on reads again. The document list's key and rows do not name its
+  // project, so it reads again whichever project's document it is.
+  "a project's default assignee moving refreshes the issue and document ask lists holding a question nobody handed on":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: { askRows: [{ asked_of: null, id: "ask-1", question: "Ship it?", state: "open" }] },
+      refreshes: ["projectDefaultAssignees", "asks", "askThreads", "docAsks"],
+      spares: ["otherProjectAsks", "docBlocks", "ask", "detail", "inboxThreads"],
+    },
+  "a project's default assignee moving leaves alone the ask lists whose every question was handed on":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        askRows: [
+          { asked_of: "dave@example.com", id: "ask-1", question: "Ship it?", state: "open" },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees"],
+      spares: ["asks", "askThreads", "docAsks", "otherProjectAsks"],
+    },
+  // An answered or closed question's card draws no Asked-of badge, so a list whose every question
+  // nobody handed on is answered holds nothing the move changes.
+  "a project's default assignee moving leaves alone the ask lists whose every question nobody handed on is answered":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        askRows: [{ asked_of: null, id: "ask-1", question: "Ship it?", state: "answered" }],
+      },
+      refreshes: ["projectDefaultAssignees"],
+      spares: ["asks", "askThreads", "docAsks", "otherProjectAsks"],
+    },
+  // The Inbox's Reply-thread card draws the same badge from the question's thread: a thread of
+  // the project's open question nobody handed on reads again, on an issue or on a project
+  // document, and a thread of another project's, of a question handed on or of one answered does
+  // not. A thread does not say who holds its issue, so CORE-9's reads again too.
+  "a project's default assignee moving refreshes the Reply-thread reads of the questions it carries and no other":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      refreshes: ["projectDefaultAssignees", "thread", "threadOnOtherIssue", "threadOnDocument"],
+      spares: ["threadHandedOn", "threadAnswered", "threadOnOtherProject", "threadOnOtherDocument"],
+    },
+  // The project list carries no default assignee, so a new project's is in the defaults read
+  // alone; an update of a project moves no default.
+  "a new project refreshes the defaults read the Settings table reads its default from": {
+    event: event(
+      "project.created",
+      { created_at: "2026-10-26T00:00:00Z", key: "CORE", name: "Core" },
+      { issue_key: null }
+    ),
+    refreshes: ["projects", "projectDefaultAssignees"],
+    spares: ["inbox", "detail"],
+  },
+  "a project's update leaves the defaults read alone": {
+    event: event(
+      "project.updated",
+      { created_at: "2026-10-26T00:00:00Z", key: "CORE", name: "Core" },
+      { issue_key: null }
+    ),
+    refreshes: ["projects"],
+    spares: ["projectDefaultAssignees", "inbox", "detail"],
+  },
 };
 
 test.each(Object.entries(rules))("%s", (_name, rule) => {
@@ -1024,9 +1401,107 @@ test("an architecture event refreshes the source lists and the project's model",
   }
 });
 
+// A recorded result moves two reads and no more: the results of the check's issue, where the
+// event sits, and the results of the issue that recorded it, which lists what it recorded. A
+// result recorded on the check's own issue names one. Each key is the one the Verification tab
+// reads under (`issueResultsQuery`), so a result recorded while that tab is open appears without
+// a reload. event-refresh's switches all have a default, so this pins the decision rather than
+// the compiler.
+test("a recorded result refreshes the results of the check's issue and of the recording issue", () => {
+  const own = event("result.recorded", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-1",
+    role: "implementer",
+    verdict: "pass",
+  });
+  expect(eventRefreshTargets(own, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
+  ]);
+  const child = event("result.recorded", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-9",
+    role: "tester",
+    verdict: "pass",
+  });
+  expect(eventRefreshTargets(child, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
+    ["issue", "CORE-9", "results"],
+  ]);
+});
+
+// A retraction moves exactly the two reads a record moves, for the same reason: the result
+// stays in both listings and stops counting as evidence there. A tab that did not refetch would
+// keep showing a retracted result as proof.
+test("a retracted result refreshes the results of the check's issue and of the recording issue", () => {
+  const retracted = event("result.retracted", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-9",
+    reason: "The run was against the wrong commit.",
+  });
+  expect(eventRefreshTargets(retracted, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
+    ["issue", "CORE-9", "results"],
+  ]);
+});
+
+// A document version moves what the Spec tab's gap pills and the Verification tab's checks
+// read: adding a `check` to verification.md, or a `requirement` to the spec, changes both. Both
+// reads hang under the issue's key, and every issue target is `exact`, so the branch names them
+// itself; without that a mounted page shows the old gaps and the old checks for the rest of the
+// session.
+test("a document version refreshes the issue's coverage and its recorded results", () => {
+  const version = event("artifact.version", { artifact_id: "artifact-3", name: "Verification" });
+  const keys = eventRefreshTargets(version, "alice").map((target) =>
+    JSON.stringify(target.queryKey)
+  );
+  expect(keys).toContain(JSON.stringify(["issue", "CORE-1", "coverage"]));
+  expect(keys).toContain(JSON.stringify(["issue", "CORE-1", "results"]));
+});
+
+// The Collaborators tab's read, and the "Not running" options the composer draws from it, hang
+// under the issue's key, and every issue target is `exact`, so the key needs a rule of its own
+// (`changesCollaborators`). The rule is the server's own list of what makes a collaborator
+// (`collaboratorEventReasons`), plus an assignee move, which makes one with no write of its own.
+// Several branches return before the end of the target list - the claim's among them, and a claim
+// is how a Legion agent arrives on an issue - so the rule sits ahead of them.
+test("an event that makes a collaborator refreshes the issue's collaborators", () => {
+  const refreshesCollaborators = (incoming: DispatchEvent): boolean =>
+    eventRefreshTargets(incoming, "alice").some(
+      (target) =>
+        target.exact === true &&
+        JSON.stringify(target.queryKey) === JSON.stringify(["issue", "CORE-1", "collaborators"])
+    );
+
+  // A write the server counts: the writer is a collaborator from this event on.
+  const posted = event("comment.created", { anchor: null, id: "comment-1" });
+  expect(refreshesCollaborators(posted)).toBe(true);
+  // The assignee is a collaborator the server lists with no write of their own.
+  const reassigned = event("issue.updated", issue({ changed: ["assignee"] }));
+  expect(refreshesCollaborators(reassigned)).toBe(true);
+  expect(refreshesCollaborators(event("issue.claimed", { key: "CORE-1" }))).toBe(true);
+  // A write that makes nobody a collaborator: the priority moved, and the issue's people did not.
+  const reprioritised = event("issue.updated", issue({ changed: ["priority"] }));
+  expect(refreshesCollaborators(reprioritised)).toBe(false);
+});
+
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
  *  until it has a row. */
-const eventsByType: Record<EventType, Event> = {
+const eventsByType: Record<EventType, DispatchEvent> = {
   "architecture.sync_failed": event("architecture.sync_failed", {}, { issue_key: null }),
   "architecture.synced": event("architecture.synced", {}, { issue_key: null }),
   "artifact.approved": event("artifact.approved", { artifact_id: "artifact-3", ask_id: null }),
@@ -1035,6 +1510,13 @@ const eventsByType: Record<EventType, Event> = {
     ask_id: "ask-1",
   }),
   "artifact.created": event("artifact.created", { artifact: { id: "artifact-3" } }),
+  "artifact.renamed": event("artifact.renamed", {
+    artifact: { id: "artifact-3", name: "Launch notes" },
+    previous_name: "Lanuch notes",
+  }),
+  "artifact.removed": event("artifact.removed", {
+    artifact: { id: "artifact-3", name: "Launch notes" },
+  }),
   "artifact.version": event("artifact.version", { artifact_id: "artifact-3" }),
   "artifact.human_edited": event("artifact.human_edited", {
     artifact_id: "artifact-3",
@@ -1043,6 +1525,7 @@ const eventsByType: Record<EventType, Event> = {
   }),
   "ask.anchor_refreshed": event("ask.anchor_refreshed", { anchor: null, id: "ask-1" }),
   "ask.answered": event("ask.answered", { anchor: null, id: "ask-1" }),
+  "ask.asked_of": event("ask.asked_of", { anchor: null, id: "ask-1", asked_of: "bob" }),
   "ask.edited": event("ask.edited", { anchor: null, id: "ask-1" }),
   "ask.follower_added": event("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }),
   "ask.follower_removed": event("ask.follower_removed", { ask_id: "ask-1", session_id: "s1" }),
@@ -1061,6 +1544,11 @@ const eventsByType: Record<EventType, Event> = {
   "comment.edited": event("comment.edited", { anchor: null, id: "comment-1" }),
   "comment.reopened": event("comment.reopened", { anchor: null, id: "comment-1" }),
   "comment.resolved": event("comment.resolved", { anchor: null, id: "comment-1" }),
+  "decision.kept": event("decision.kept", {
+    artifact_id: "artifact-3",
+    block_id: "b-1",
+    changed_version: 2,
+  }),
   "handoff.recorded": event("handoff.recorded", {
     handoff_id: "handoff-1",
     phase: "implement",
@@ -1078,6 +1566,29 @@ const eventsByType: Record<EventType, Event> = {
   "message.delivery": event("message.delivery", { target: "session:planner" }),
   "project.created": event("project.created", {}, { issue_key: null }),
   "project.updated": event("project.updated", {}, { issue_key: null }),
+  "result.recorded": event("result.recorded", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-1",
+    role: "implementer",
+    verdict: "pass",
+  }),
+  "result.retracted": event("result.retracted", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-1",
+    reason: "The run was against the wrong commit.",
+  }),
+  "issue.pull_request_attribution_changed": event("issue.pull_request_attribution_changed", {
+    repo: "acme/widgets",
+    number: 42,
+    url: "https://github.com/acme/widgets/pull/42",
+    from: "CORE-1",
+    to: "CORE-2",
+    source: "branch",
+  }),
   "settings.architecture_source.updated": event(
     "settings.architecture_source.updated",
     {},
@@ -1125,10 +1636,12 @@ test("a feed event prepends a newer event to the loaded log page", () => {
     pages: [[event("message.created", {}, { id: 7, seq: 7 })]],
   });
   prependEventToLog(client, event("message.created", {}, { id: 8, seq: 8 }));
-  expect(client.getQueryData<{ pages: Event[][] }>(["events", "CORE-1"])?.pages[0]).toEqual([
-    event("message.created", {}, { id: 8, seq: 8 }),
-    event("message.created", {}, { id: 7, seq: 7 }),
-  ]);
+  expect(client.getQueryData<{ pages: DispatchEvent[][] }>(["events", "CORE-1"])?.pages[0]).toEqual(
+    [
+      event("message.created", {}, { id: 8, seq: 8 }),
+      event("message.created", {}, { id: 7, seq: 7 }),
+    ]
+  );
 });
 
 test("a log page that predates streamed events keeps them in front of it", () => {
@@ -1163,7 +1676,7 @@ function cacheThread(client: QueryClient, id: string, issueKey: string | null): 
   client.setQueryData(["ask-thread", id], { ask: { id, issue_key: issueKey } });
 }
 
-function refreshedThreads(incoming: Event): string[] {
+function refreshedThreads(incoming: DispatchEvent): string[] {
   const client = new QueryClient();
   cacheThread(client, "ask-1", "CORE-1");
   cacheThread(client, "ask-2", "CORE-2");

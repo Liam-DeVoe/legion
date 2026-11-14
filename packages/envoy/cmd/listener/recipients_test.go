@@ -16,7 +16,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -27,97 +26,33 @@ import (
 const recipientSender = "ses_sender"
 
 // recipientRig is the publish route over one NATS server, with the known-session store the counts
-// read and a clock of its own for it, as main wires the route with every store open.
+// read on a clock of its own (knownSessionRig), as main wires the route with every store open.
 type recipientRig struct {
-	harness listenerDeliveryHarness
-	deps    *listenerDeps
-	known   *session.KnownSessions
-	url     string
-	// clock is what the known-session store stamps each record with; a test moves it.
-	clock time.Time
+	*knownSessionRig
 }
 
 func newRecipientRig(t *testing.T) *recipientRig {
 	t.Helper()
-	harness := newListenerDeliveryHarness(t, nil)
-	waitForRegistry(t, harness.registry)
-	rig := &recipientRig{harness: harness, url: testnats.URL(t), clock: time.Now()}
-	known, err := session.OpenKnownSessions(harness.client.Conn,
-		session.WithKnownSessionReplicas(1),
-		session.WithKnownSessionClock(func() time.Time { return rig.clock }))
-	if err != nil {
-		t.Fatalf("open the known-session store: %v", err)
-	}
-	t.Cleanup(known.StopWatch)
-	if err := known.WaitForCacheReady(context.Background()); err != nil {
-		t.Fatalf("the known-session cache did not become ready: %v", err)
-	}
-	deps := harness.publishDeps(t)
-	deps.known = known
-	rig.deps, rig.known = deps, known
-	return rig
+	return &recipientRig{knownSessionRig: newKnownSessionRig(t)}
 }
 
-// register runs one registration of sessionID on topics through the real route, as a session that
-// holds its own NATS connection does: that writes the interest row, the session entry and the
-// known-session record. A registration that names a serving port instead would write no record
-// here, since this rig wires no session-consumer connection and a port registration whose
-// consumer call failed is not recorded (sessionDeliveryOutcome.recorded).
-//
-// An ad-hoc send confirms its message with every self-subscribed recipient (topicRecipients), so a
-// session registered here and still live when a publish runs needs a stand-in to answer its
-// receipt.
+// register runs one registration of sessionID on topics through the real route, as a plugin in
+// consumer mode sends it: that writes the interest row, the session entry, the session's consumer
+// and the known-session record.
 func (rig *recipientRig) register(t *testing.T, sessionID string, topics []string) {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{
-		"session_id":      sessionID,
-		"topics":          topics,
-		"self_subscribed": true,
-		"title":           "a counted session",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	recorder := httptest.NewRecorder()
-	subscribeHandler(rig.deps, "test-machine", logging.New("test")).ServeHTTP(
-		recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(string(body))))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("register %s: status=%d body=%s", sessionID, recorder.Code, recorder.Body.String())
-	}
+	rig.knownSessionRig.register(t, sessionID, map[string]any{"topics": topics, "title": "a counted session"})
 }
 
 // unsubscribe drops topics from sessionID through the real route, as the envoy_unsubscribe tool
-// does. The route is registered inline on the listener's mux, so this serves it through a mux of
-// its own built over the same dependencies.
+// does.
 func (rig *recipientRig) unsubscribe(t *testing.T, sessionID string, topics []string) {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{"session_id": sessionID, "topics": topics})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux := http.NewServeMux()
-	registerV1Routes(mux, rig.deps, "test-machine", logging.New("test"))
-	recorder := httptest.NewRecorder()
-	mux.ServeHTTP(recorder, httptest.NewRequest(
-		http.MethodPost, "/v1/interests/unsubscribe", strings.NewReader(string(body))))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("unsubscribe %s from %v: status=%d body=%s", sessionID, topics, recorder.Code, recorder.Body.String())
-	}
-}
-
-// stop ends sessionID the way a session that shuts down cleanly does, through the real route: its
-// session entry goes and its known-session record stays, moved to the store's clock.
-func (rig *recipientRig) stop(t *testing.T, sessionID string) {
-	t.Helper()
-	recorder := httptest.NewRecorder()
-	deleteSessionHandler(rig.deps.sessions, rig.known, logging.New("test")).ServeHTTP(
-		recorder, httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID, nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("stop %s: status=%d body=%s", sessionID, recorder.Code, recorder.Body.String())
-	}
-	if _, err := rig.deps.sessions.Get(sessionID); err == nil {
-		t.Fatalf("%s still holds a session entry, so it did not stop", sessionID)
-	}
+	rig.post(t, "/v1/interests/unsubscribe", string(body))
 }
 
 // reapInterest removes sessionID's interest row, as the reaper removes the row of a session that
@@ -130,7 +65,7 @@ func (rig *recipientRig) reapInterest(t *testing.T, sessionID string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := rig.harness.registry.Remove(ctx, sessionID, nil); err != nil {
+	if _, err := rig.harness.registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{}); err != nil {
 		t.Fatalf("remove %s's interest row: %v", sessionID, err)
 	}
 	if _, cached := rig.harness.registry.CachedInterest(sessionID); cached {
@@ -155,6 +90,33 @@ func (rig *recipientRig) publish(t *testing.T, topic, key string) *httptest.Resp
 		t.Fatalf("publish on %s: status %d after %s; body %s", topic, recorder.Code, elapsed, recorder.Body.String())
 	}
 	return recorder
+}
+
+// storeSessionEntryOf writes sessionID's interest row on topic and its session entry, last written
+// at heartbeat, straight into the stores, as a listener of a release older than the known-session
+// records left them: an interest row and an entry, and no record. The entry's age is what the
+// session registry judges it by (session.StateOf), so a heartbeat older than the live window is an
+// unresponsive session.
+func (rig *recipientRig) storeSessionEntryOf(t *testing.T, sessionID, topic string, heartbeat time.Time, want session.State) {
+	t.Helper()
+	if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "other-machine"}, []string{topic}); err != nil {
+		t.Fatalf("register %s's interest: %v", sessionID, err)
+	}
+	storeSessionHeartbeat(t, rig.harness.client, sessionID, heartbeat)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, state := rig.harness.sessions.Lookup(sessionID); state == want {
+			break
+		}
+		if time.Now().After(deadline) {
+			_, state := rig.harness.sessions.Lookup(sessionID)
+			t.Fatalf("%s reads %s in the session cache, want %s", sessionID, state, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if record, known := rig.known.Get(sessionID); known {
+		t.Fatalf("%s has the known-session record %#v, so it is not the older listener's session", sessionID, record)
+	}
 }
 
 // assertCounts fails unless the answer carries both recipient counts, with these values.
@@ -188,14 +150,18 @@ func assertNoCounts(t *testing.T, recorder *httptest.ResponseRecorder) {
 	}
 }
 
-// A publish on an ad-hoc topic answers with the sessions the topic is for and how many of them are
-// connected: every session that follows it, whether it is registered now or stopped, counted once
-// however many stores name it, and never the sender itself.
+// A publish answers with the sessions the topic is for and how many of them are running now:
+// every session that follows it, whether it is registered now, stopped, or registered through a
+// listener older than the known-session records, counted once however many stores name it, and
+// never the sender itself. Running now is a session the registry holds live by its entry's age: an
+// unresponsive session is counted and not running. Every topic a publish reaches a session on is
+// stored, a team topic and a topic of another of the stream's subjects alike, and both carry the
+// counts.
 func TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender(t *testing.T) {
 	rig := newRecipientRig(t)
 	const topic = "notifications.team.recipient-count"
-	if !bus.UsesCoreTransport(topic) {
-		t.Fatalf("%s is captured by a stream subject, so this test no longer covers the core transport's branch", topic)
+	if !bus.StreamCaptures(topic) {
+		t.Fatalf("no stream subject captures %s, so a publish on it is refused and this test covers nothing", topic)
 	}
 
 	// The sender follows the topic too, and no count below includes it.
@@ -203,9 +169,8 @@ func TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender(t *testing.T)
 	assertCounts(t, rig.publish(t, topic, "count-0"), 0, 0)
 
 	// A session registered now: an interest row and a known-session record both name it, and it is
-	// counted once. It holds its own connection, so it answers each send's receipt.
+	// counted once.
 	rig.register(t, "ses_both", []string{topic})
-	startStandIn(t, rig.url, "ses_both", always)
 	if _, known := rig.known.Get("ses_both"); !known {
 		t.Fatal("ses_both has no known-session record, so the count has only one store to dedupe")
 	}
@@ -215,17 +180,12 @@ func TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender(t *testing.T)
 	assertCounts(t, rig.publish(t, topic, "count-1"), 1, 1)
 
 	// A session that registered through a listener of a release older than the known-session
-	// records: an interest row and a live entry, and no record, as that listener left it. It is
-	// served on a port, so this send waits for no receipt from it.
-	if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: "ses_row_only", MachineID: "other-machine"}, []string{topic}); err != nil {
-		t.Fatalf("register ses_row_only's interest: %v", err)
-	}
-	if err := rig.harness.sessions.Put("ses_row_only", session.SessionEntry{MachineID: "other-machine", Port: 9003}); err != nil {
-		t.Fatalf("register ses_row_only: %v", err)
-	}
-	if record, known := rig.known.Get("ses_row_only"); known {
-		t.Fatalf("ses_row_only has the known-session record %#v, so it is not the older listener's session", record)
-	}
+	// records: an interest row and a live entry, and no record, as that listener left it.
+	rig.storeSessionEntryOf(t, "ses_row_only", topic, time.Now(), session.Live)
+
+	// A session that stopped answering: its entry is past the live window and inside the gone
+	// horizon, so it is counted and not running.
+	rig.storeSessionEntryOf(t, "ses_unresponsive", topic, time.Now().Add(-(session.LiveWindow + time.Minute)), session.Unresponsive)
 
 	// A session that stopped cleanly more than 20 minutes ago: its entry is gone and the reaper has
 	// taken its interest row, leaving its record alone to say it follows the topic.
@@ -237,33 +197,26 @@ func TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender(t *testing.T)
 		t.Fatal("the clean stop took ses_stopped's known-session record, so nothing is left to count it by")
 	}
 
-	assertCounts(t, rig.publish(t, topic, "count-3"), 3, 2)
-}
+	assertCounts(t, rig.publish(t, topic, "count-4"), 4, 2)
 
-// A publish on a topic the stream captures carries the counts too: that branch publishes through
-// JetStream and answers once the stream stored the message, and its sender reads the same two
-// numbers as an ad-hoc topic's.
-func TestAPublishOnAStreamCapturedTopicCarriesTheCounts(t *testing.T) {
-	rig := newRecipientRig(t)
-	const topic = "notifications.slack.channel.c-recipient-count"
-	if !bus.StreamCaptures(topic) {
-		t.Fatalf("no stream subject captures %s, so this test no longer covers the stream-captured branch", topic)
+	// A topic of another of the stream's subjects carries the counts the same way.
+	const slack = "notifications.slack.channel.c-recipient-count"
+	if !bus.StreamCaptures(slack) {
+		t.Fatalf("no stream subject captures %s, so this part covers nothing", slack)
 	}
-
-	rig.register(t, recipientSender, []string{topic})
-	rig.register(t, "ses_watcher", []string{topic})
-	assertCounts(t, rig.publish(t, topic, "stream-1"), 1, 1)
+	rig.register(t, recipientSender, []string{topic, slack})
+	rig.register(t, "ses_watcher", []string{slack})
+	assertCounts(t, rig.publish(t, slack, "stream-1"), 1, 1)
 }
 
-// A session that leaves a topic stops being counted as a recipient of it. R1 counts the sessions
-// whose subscriptions match the topic at the publish, so an unsubscribe must take the topic out
-// of the session's known-session record as well as out of its interest row: the record is the
-// count's other store, and a stale one keeps telling a sender that a session gets a message it
-// has stopped following. A session that holds its own NATS connection (self_subscribed, the shape
-// both plugins register with whenever their relay subscription is not open) is the case to cover,
-// since a consumer-delivery session's record is rewritten by its refollow
-// (TestARefollowWritesTheKnownSessionRecord). After a clean stop nothing registers again, so a
-// record left stale here keeps the wrong count for the record's whole 30 days.
+// A session that leaves a topic stops being counted as a recipient of it. A publish counts the
+// sessions whose subscriptions match the topic at the publish, so an unsubscribe must take the
+// topic out of the session's known-session record as well as out of its interest row: the record
+// is the count's other store, and a stale one keeps telling a sender that a session gets a
+// message it has stopped following. The unsubscribe route writes the record whatever the
+// session's entry records (recordFollowedTopics), beside the refollow that sets its consumer's
+// filter (TestARefollowWritesTheKnownSessionRecord). After a clean stop nothing registers again,
+// so a record left stale here keeps the wrong count for the record's whole 30 days.
 func TestASessionThatUnsubscribesStopsBeingCounted(t *testing.T) {
 	rig := newRecipientRig(t)
 	const topic = "notifications.slack.channel.c-unsubscribed-count"
@@ -297,7 +250,13 @@ func TestAPublishToARoleTopicCarriesNeitherCount(t *testing.T) {
 	rig := newRecipientRig(t)
 	const role = "recipient-count-holder"
 	claimRoleFor(t, rig.harness.registry, rig.harness.sessions, "ses_holder", role, nil)
-	startStandIn(t, rig.url, "ses_holder", always)
+	startStandIn(t, rig.url, "ses_holder")
+	// The role topic's holder is the one session following it, and the known-session store
+	// answers, so a count is there to make: its absence below is the role branch's, not the
+	// store's.
+	if !rig.known.Opened() {
+		t.Fatal("the known-session store does not answer, so this test is the one with no store")
+	}
 
 	recorder := rig.publish(t, contracts.RoleTopicPrefix+role, "role-1")
 	var answer publishResponse
@@ -310,56 +269,39 @@ func TestAPublishToARoleTopicCarriesNeitherCount(t *testing.T) {
 	assertNoCounts(t, recorder)
 }
 
-// A listener whose NATS user may not open the known-session bucket runs without the store, and
-// answers every publish with neither count rather than with the live sessions alone: its sender
-// sees the answer this release's listeners sent before the counts existed.
+// A listener with no known-session store answers every publish with neither count rather than
+// with the live sessions alone: its sender sees an answer with no count key at all. The same
+// session, on a listener whose store answers, is counted, so the absence is the store's.
 func TestAListenerWithNoKnownSessionStoreCarriesNeitherCount(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
-	waitForRegistry(t, harness.registry)
-	deps := harness.publishDeps(t)
-	if deps.known != nil {
-		t.Fatal("the deps hold a known-session store, so this test is not the degraded listener's")
-	}
-	if _, err := harness.registry.Upsert(store.Interest{SessionID: "ses_subscriber", MachineID: "other-machine"}, []string{"notifications.team.degraded-count"}); err != nil {
-		t.Fatalf("register ses_subscriber's interest: %v", err)
-	}
-	if err := harness.sessions.Put("ses_subscriber", session.SessionEntry{MachineID: "other-machine", Port: 9021}); err != nil {
-		t.Fatalf("register ses_subscriber: %v", err)
-	}
+	rig := newRecipientRig(t)
+	const topic = "notifications.team.degraded-count"
+	rig.register(t, "ses_subscriber", []string{topic})
+	assertCounts(t, rig.publish(t, topic, "degraded-0"), 1, 1)
 
-	recorder, elapsed := publishThrough(deps, `{"topic":"notifications.team.degraded-count","message":"who is listening","idempotency_key":"degraded-1"}`)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status %d after %s, want 200; body %s", recorder.Code, elapsed, recorder.Body.String())
-	}
-	assertNoCounts(t, recorder)
+	rig.deps.known = nil
+	assertNoCounts(t, rig.publish(t, topic, "degraded-1"))
 }
 
-// Acceptance A8: the counts cost no JetStream API request. 100 publishes over warm caches send
-// none, and the probe proves it is watching by seeing the one call the test makes itself.
+// The counts cost no JetStream API request: 100 publishes over warm caches send none, and the
+// probe proves it is watching by seeing the one call the test makes itself.
 func TestAHundredPublishesSendNoJetStreamAPIRequest(t *testing.T) {
 	rig := newRecipientRig(t)
-	const topic = "notifications.team.recipient-count-a8"
+	const topic = "notifications.team.recipient-count-api-free"
 	rig.register(t, recipientSender, []string{topic})
 	// One session the known-session records alone name, stopped so that it is counted and not
-	// connected, and one the interest rows alone name, served on a port: both matchers are read on
-	// every publish below, and no session holds a connection this send must take a receipt from,
-	// so each of the hundred answers as soon as the topic is published.
+	// running, and one the interest rows alone name, as an older listener left it: both matchers
+	// and the session registry are read on every publish below.
 	rig.register(t, "ses_stopped", []string{topic})
 	rig.stop(t, "ses_stopped")
 	rig.reapInterest(t, "ses_stopped")
-	if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: "ses_port", MachineID: "other-machine"}, []string{topic}); err != nil {
-		t.Fatalf("register ses_port's interest: %v", err)
-	}
-	if err := rig.harness.sessions.Put("ses_port", session.SessionEntry{MachineID: "other-machine", Port: 9041}); err != nil {
-		t.Fatalf("register ses_port: %v", err)
-	}
+	rig.storeSessionEntryOf(t, "ses_row_only", topic, time.Now(), session.Live)
 	// One publish before the probe starts, so anything a first publish would set up is already
 	// set up and the window below holds the steady state.
-	assertCounts(t, rig.publish(t, topic, "a8-warm"), 2, 1)
+	assertCounts(t, rig.publish(t, topic, "api-free-warm"), 2, 1)
 
 	probe := watchJetStreamAPI(t, rig.url, rig.harness.client.Conn, "$JS.API.CONSUMER.>", "$JS.API.STREAM.INFO.>")
 	for i := range 100 {
-		assertCounts(t, rig.publish(t, topic, "a8-"+strconv.Itoa(i)), 2, 1)
+		assertCounts(t, rig.publish(t, topic, "api-free-"+strconv.Itoa(i)), 2, 1)
 	}
 
 	control := "$JS.API.STREAM.INFO." + bus.Stream

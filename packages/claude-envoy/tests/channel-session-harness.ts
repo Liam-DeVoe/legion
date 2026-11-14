@@ -7,28 +7,25 @@
  * the rest of this package's tests do, rather than one file per entry point.
  */
 import { randomBytes } from "node:crypto"
-import { mkdtemp } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import type { DeliveryCapability } from "@legion/contracts"
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
-import type {
-  EnvoyClient,
-  ReplayInput,
-  ReplayResult,
-  SubscribeResult,
-} from "@legion/envoy-client/transport"
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
+import type { EnvoyClient, SubscribeResult } from "@legion/envoy-client/transport"
+import {
+  type TemporaryDirectoryMaker,
+  temporaryDirectories,
+} from "@legion/test-fixtures/temporary-directories"
 import type {
   ChannelBrokerMessage,
+  ChannelConnection,
   ChannelConnectionStatus,
-  ChannelForwarderConnection,
   ChannelTopicSubscription,
-} from "../src/channel-forwarder"
-import {
-  CHANNEL_CAPABILITIES,
-  type ChannelNotification,
-  type ChannelNotifier,
-  type ChannelSessionOptions,
+} from "../src/channel-topics"
+import type {
+  ChannelNotification,
+  ChannelNotifier,
+  ChannelSessionOptions,
 } from "../src/envoy-channel-server"
 import type { SessionIdentity } from "../src/session-identity"
 
@@ -38,11 +35,9 @@ interface Queue {
   waiter: PromiseWithResolvers<ChannelBrokerMessage | null> | undefined
   /** Set by unsubscribe: the iterator ends at its next pull, even when a message was mid-delivery. */
   closed: boolean
-  /** Set by a refusal: the iterator throws it, as nats.js throws a permissions violation. */
-  refusal: Error | undefined
 }
 
-export class FakeNats implements ChannelForwarderConnection {
+export class FakeNats implements ChannelConnection {
   readonly published: Array<{ readonly subject: string; readonly data: Uint8Array }> = []
   readonly order: string[] = []
   readonly unsubscribed: string[] = []
@@ -53,34 +48,10 @@ export class FakeNats implements ChannelForwarderConnection {
 
   constructor(readonly calls: string[] = []) {}
 
-  /**
-   * Subjects this server refuses to subscribe. The refusal lands on the next flush, as a real
-   * one's does: a NATS server answers `-ERR 'Permissions Violation for Subscription to …'`
-   * asynchronously and the client reads it before that flush's PONG, which is why only a flush
-   * tells an accepted subscription from a refused one. nats.js then closes the refused
-   * subscription and throws the refusal out of its iterator (`Subscriptions.handleError`).
-   */
-  readonly refusedSubjects = new Set<string>()
-  /** Refusals waiting for the next flush. */
-  private readonly pendingRefusals: Array<() => void> = []
-
   subscribe(subject: string): ChannelTopicSubscription {
     this.calls.push(`nats.subscribe ${subject}`)
-    const queue: Queue = {
-      subject,
-      messages: [],
-      waiter: undefined,
-      closed: false,
-      refusal: undefined,
-    }
+    const queue: Queue = { subject, messages: [], waiter: undefined, closed: false }
     this.subscriptions.set(subject, queue)
-    if (this.refusedSubjects.has(subject)) {
-      this.pendingRefusals.push(() => {
-        queue.closed = true
-        queue.refusal = new Error(`'Permissions Violation for Subscription to "${subject}"'`)
-        queue.waiter?.resolve(null)
-      })
-    }
     return {
       unsubscribe: () => {
         this.calls.push(`nats.unsubscribe ${subject}`)
@@ -89,10 +60,8 @@ export class FakeNats implements ChannelForwarderConnection {
         queue.closed = true
         queue.waiter?.resolve(null)
       },
-      isClosed: () => queue.closed,
       async *[Symbol.asyncIterator]() {
         for (;;) {
-          if (queue.refusal !== undefined) throw queue.refusal
           if (queue.closed) return
           const message = queue.messages.shift()
           if (message !== undefined) {
@@ -103,7 +72,6 @@ export class FakeNats implements ChannelForwarderConnection {
           queue.waiter = waiter
           const next = await waiter.promise
           queue.waiter = undefined
-          if (queue.refusal !== undefined) throw queue.refusal
           if (next === null) return
           yield next
         }
@@ -112,7 +80,7 @@ export class FakeNats implements ChannelForwarderConnection {
   }
 
   publish(subject: string, data: Uint8Array): void {
-    this.order.push("receipt")
+    this.order.push("publish")
     this.published.push({ subject, data })
   }
 
@@ -120,7 +88,6 @@ export class FakeNats implements ChannelForwarderConnection {
   stallFlush = false
 
   flush(): Promise<void> {
-    for (const refuse of this.pendingRefusals.splice(0)) refuse()
     return this.stallFlush ? new Promise<void>(() => undefined) : Promise.resolve()
   }
 
@@ -156,6 +123,8 @@ export class FakeNats implements ChannelForwarderConnection {
     }
   }
 
+  /** `reply` is the live view's own: a control request on the agent stream's control subject is
+   *  answered there (`src/agent-stream-runner.ts`). No Envoy frame is answered on a reply. */
   emit(subject: string, raw: string, reply?: string): void {
     this.emitOn(subject, subject, raw, reply)
   }
@@ -221,6 +190,32 @@ export class FakeNats implements ChannelForwarderConnection {
     waiter.resolve(message)
   }
 
+  /**
+   * The listener's connection probe on `sessionID`'s relay subject: a core request carrying
+   * `Envoy-Probe: 1` and no body, never a frame's headers. Answers whether a subscription took
+   * it; false is the no-responders a server answers for a subject nothing subscribes, which the
+   * listener reads as stopped.
+   */
+  emitProbe(sessionID: string, reply: string): boolean {
+    const subject = deliverSubject(sessionID)
+    const queue = this.subscriptions.get(subject)
+    if (queue === undefined || queue.closed) return false
+    const message: ChannelBrokerMessage = {
+      subject,
+      data: new Uint8Array(),
+      reply,
+      headers: { get: (name) => (name === RelayHeader.probe ? "1" : undefined) },
+    }
+    if (queue.waiter === undefined) {
+      queue.messages.push(message)
+      return true
+    }
+    const waiter = queue.waiter
+    queue.waiter = undefined
+    waiter.resolve(message)
+    return true
+  }
+
   /** The bodies published on `subject` so far, decoded: a relay frame's replies on its inbox. */
   repliesOn(subject: string): string[] {
     return this.published
@@ -243,27 +238,8 @@ export class FakeNotifier implements ChannelNotifier {
 
 export type FakeClient = Pick<
   EnvoyClient,
-  | "subscribe"
-  | "unsubscribe"
-  | "unregisterSession"
-  | "setRole"
-  | "getRole"
-  | "getInterest"
-  | "replay"
+  "subscribe" | "unsubscribe" | "unregisterSession" | "setRole" | "getRole" | "getInterest"
 >
-
-/** A listener whose stream holds nothing: every subject answers no message, its cursor at 0. */
-export async function emptyReplay(input: ReplayInput): Promise<ReplayResult> {
-  return {
-    stream: { created: "2026-10-20T00:00:00Z", first_seq: 1, last_seq: 0 },
-    subjects: input.subjects.map(({ subject }) => ({
-      subject,
-      messages: [],
-      next_after: 0,
-      more: false,
-    })),
-  }
-}
 
 export function settled(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>()
@@ -354,7 +330,6 @@ export function observedClient(client: FakeClient): {
         }),
       getInterest: (sessionID) =>
         observe(`getInterest ${sessionID}`, () => client.getInterest(sessionID)),
-      replay: (...args) => observe("replay", () => client.replay(...args)),
     },
     describe: () =>
       [
@@ -366,19 +341,33 @@ export function observedClient(client: FakeClient): {
   }
 }
 
-export async function scratchState(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "claude-envoy-state-"))
+/**
+ * Returns the maker of this test file's scratch state directories: each is removed after the test
+ * that made it, so no test writes a removal of its own.
+ *
+ * Every test file that needs one calls this once, at its own module scope, as
+ * `const scratchState = useScratchState()`. The call cannot live in this module's body:
+ * `temporaryDirectories` registers its removal hook where it is called, and Bun evaluates this
+ * module once per process, so a hook here would land in the scope of whichever test file imported
+ * it first and every later file would leave its directories behind.
+ */
+export function useScratchState(): TemporaryDirectoryMaker {
+  return temporaryDirectories("claude-envoy-state")
 }
 
-/** A registration answer with no interest and no consumer delivery, as a listener of an earlier
- *  release leaves it (`parseSubscribeAnswer` fills the core mode in). */
-export function noInterest(): SubscribeResult {
+/**
+ * A registration answer with no interest of its own and the session's own consumer, as the
+ * listener answers every registration it accepts: the relay subject it serves that consumer on,
+ * the stream it is on, and no gap. There is no other mode — a registration the listener can give
+ * no consumer is refused, never answered.
+ */
+export function noInterest(sessionID = "ses_claude"): SubscribeResult {
   return {
-    session_id: "ses_claude",
+    session_id: sessionID,
     machine_id: "devbox",
     dir: "/tmp",
-    topics: [directSubject],
-    delivery: { mode: "core", reason: "not_answered" },
+    topics: [`notifications.agent.${sessionID}`],
+    delivery: consumerDelivery(sessionID),
   }
 }
 
@@ -387,7 +376,7 @@ export function recordingClient(calls: string[], overrides: Partial<FakeClient> 
   return {
     subscribe: async (input) => {
       calls.push(`subscribe ${input.sessionID} [${input.capabilities?.join(",") ?? ""}]`)
-      return noInterest()
+      return noInterest(input.sessionID)
     },
     unsubscribe: async (input) => {
       calls.push(`unsubscribe ${input.sessionID} ${input.topics.join(",")}`)
@@ -401,7 +390,7 @@ export function recordingClient(calls: string[], overrides: Partial<FakeClient> 
       )
       return { claimed: true, interest: noInterest() }
     },
-    getRole: async (role) => ({ role, holder: "ses_claude", last_seen: 1 }),
+    getRole: async (role) => ({ role, holder: "ses_claude", last_seen: 1, state: "live" }),
     getInterest: async (sessionID) => {
       calls.push("getInterest")
       return {
@@ -410,9 +399,18 @@ export function recordingClient(calls: string[], overrides: Partial<FakeClient> 
         topics: [`notifications.agent.${sessionID}`],
       }
     },
-    replay: emptyReplay,
     ...overrides,
   }
+}
+
+/**
+ * What a test session advertises. Which modes a real session advertises is
+ * `runEnvoyChannelServer`'s own rule (nothing until the mod connects, the bridge's two in a
+ * pane), and the tests that drive `startChannelSession` directly only need it to advertise
+ * something.
+ */
+export function testCapabilities(): readonly DeliveryCapability[] {
+  return ["aside", "steer"]
 }
 
 /** Options binding the fakes, with the envoy.json the test's environment picks as they are built:
@@ -428,7 +426,7 @@ export function sessionOptions(
     identity,
     connection: new FakeNats(),
     notifier: new FakeNotifier(),
-    capabilities: CHANNEL_CAPABILITIES,
+    capabilities: testCapabilities,
     client: recordingClient([]),
     heartbeatMs: 60_000,
     configFile: sessionConfigFile("claude", process.env),

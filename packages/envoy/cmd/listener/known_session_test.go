@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,78 +14,38 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
-	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// knownRig is a listener's stores over one NATS server, with the known-session store on a clock
-// the test moves, and the bucket handle a test reads revisions from.
+// knownRig is a listener's routes over one NATS server with the known-session store on a clock the
+// test moves (knownSessionRig), and the bucket handle a test reads revisions from.
 type knownRig struct {
-	deps  *listenerDeps
-	known *session.KnownSessions
-	kv    nats.KeyValue
-	// clock is what the known-session store stamps and throttles against; a test moves it.
-	clock time.Time
+	*knownSessionRig
+	kv nats.KeyValue
 }
 
 func setupKnownRig(t *testing.T) *knownRig {
 	t.Helper()
-	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("connect the bus: %v", err)
-	}
-	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("open the interest registry: %v", err)
-	}
-	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
-	if err != nil {
-		t.Fatalf("open the session registry: %v", err)
-	}
-	rig := &knownRig{clock: time.Now()}
-	known, err := session.OpenKnownSessions(client.Conn,
-		session.WithKnownSessionReplicas(1),
-		session.WithKnownSessionClock(func() time.Time { return rig.clock }))
-	if err != nil {
-		t.Fatalf("open the known-session store: %v", err)
-	}
-	t.Cleanup(known.StopWatch)
-	if err := known.WaitForCacheReady(context.Background()); err != nil {
-		t.Fatalf("the known-session cache did not become ready: %v", err)
-	}
-	kv, err := client.JS().KeyValue(bus.KnownSessionBucket)
+	rig := &knownRig{knownSessionRig: newKnownSessionRig(t)}
+	kv, err := rig.harness.client.JS().KeyValue(bus.KnownSessionBucket)
 	if err != nil {
 		t.Fatalf("open the known-session bucket: %v", err)
 	}
-	rig.deps = &listenerDeps{client: client, registry: registry, sessions: sessions, known: known}
-	rig.known, rig.kv = known, kv
+	rig.kv = kv
 	return rig
 }
 
-// subscribe runs one registration of sessionID on topics through the real route.
+// subscribe runs one registration of sessionID on topics through the real route, as a plugin in
+// consumer mode sends it on every heartbeat.
 func (r *knownRig) subscribe(t *testing.T, sessionID string, topics []string) {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{
-		"session_id":         sessionID,
+	r.register(t, sessionID, map[string]any{
 		"topics":             topics,
-		"self_subscribed":    true,
 		"title":              "a known session",
 		"capabilities":       []string{"aside"},
 		"client_instance_id": "inst_one",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	recorder := httptest.NewRecorder()
-	subscribeHandler(r.deps, "test-machine", logging.New("test")).ServeHTTP(
-		recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(string(body))))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("subscribe %s: status=%d body=%s", sessionID, recorder.Code, recorder.Body.String())
-	}
 }
 
 // revision is the bucket revision of sessionID's record, which counts the writes it has taken, or
@@ -112,9 +71,10 @@ func knownMatchedIDs(known *session.KnownSessions, topic string) []string {
 	return ids
 }
 
-// A registration writes the session's record with the topics the registration stored, the team
-// topic the consumer's filter drops among them: a record built from that filter would count no
-// subscriber of a team topic, which no stream subject captures.
+// A registration writes the session's record with the topics the registration stored, which are
+// the filter of the consumer it gave the session: every topic a registration stores is one a
+// stream subject captures, a team topic among them, so the record counts exactly the sessions a
+// stored publish reaches.
 func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *testing.T) {
 	rig := setupKnownRig(t)
 	team := "notifications.team.deploy-squad"
@@ -124,14 +84,21 @@ func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *test
 	if !ok {
 		t.Fatal("the registration wrote no known-session record")
 	}
+	stored, cached := rig.harness.registry.CachedInterest("ses_registered")
+	if !cached {
+		t.Fatal("the registration stored no interest row")
+	}
+	if !slices.Equal(record.Topics, stored.Topics) {
+		t.Errorf("the record's topics are %v, want the registration's stored topics %v", record.Topics, stored.Topics)
+	}
 	if !slices.Contains(record.Topics, team) {
 		t.Errorf("the record's topics are %v, want the team topic %q the registration stored", record.Topics, team)
 	}
 	if !slices.Contains(record.Topics, contracts.AgentSubject("ses_registered")) {
 		t.Errorf("the record's topics are %v, want the session's own agent subject", record.Topics)
 	}
-	if filter := sessionConsumerFilter("ses_registered", record.Topics); slices.Contains(filter, team) {
-		t.Errorf("the consumer filter %v holds the team topic, so this test no longer proves the record carries what the filter drops", filter)
+	if filter := rig.filters(t, "ses_registered"); !slices.Contains(filter, team) {
+		t.Errorf("the consumer filter %v does not hold the team topic the record counts the session for", filter)
 	}
 	if record.Title != "a known session" || !slices.Equal(record.Capabilities, []string{"aside"}) {
 		t.Errorf("record = %#v, want the registration's title and capabilities", record)
@@ -161,15 +128,7 @@ func TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen(t *testing.T) {
 	}
 
 	rig.clock = rig.clock.Add(time.Minute)
-	recorder := httptest.NewRecorder()
-	deleteSessionHandler(rig.deps.sessions, rig.known, logging.New("test")).ServeHTTP(
-		recorder, httptest.NewRequest(http.MethodDelete, "/v1/sessions/ses_stopping", nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("delete: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	if _, err := rig.deps.sessions.Get("ses_stopping"); err == nil {
-		t.Fatal("the session entry is still there, so this test did not stop the session")
-	}
+	rig.stop(t, "ses_stopping")
 
 	stopped, ok := rig.known.Get("ses_stopping")
 	if !ok {
@@ -189,10 +148,10 @@ func TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen(t *testing.T) {
 	}
 }
 
-// Acceptance A9: 100 heartbeats of a session whose registration never changes, inside the
-// 10-minute refresh age, write the record at most twice. The count is the bucket's own revision,
-// which counts the writes the key took, and the heartbeats run through the registration route
-// itself on a clock this test moves.
+// 100 heartbeats of a session whose registration never changes, inside the 10-minute refresh
+// age, write the record at most twice. The count is the bucket's own revision, which counts the
+// writes the key took, and the heartbeats run through the registration route itself on a clock
+// this test moves.
 func TestAHundredUnchangedHeartbeatsWriteTheRecordAtMostTwice(t *testing.T) {
 	rig := setupKnownRig(t)
 	topics := []string{"notifications.team.deploy-squad"}
@@ -226,43 +185,33 @@ func TestAHundredUnchangedHeartbeatsWriteTheRecordAtMostTwice(t *testing.T) {
 	}
 }
 
-// A subscription change writes the record too, for a session the relay serves a consumer: the
-// unsubscribe route writes it from the topics the registry still stores, beside the refollow that
-// sets the consumer's filter to what is left. Neither waits on the other, so the record is right
-// whatever the consumer call did.
+// A subscription change writes the record too: the unsubscribe route writes it from the topics
+// the interest bucket still holds for the session, beside the refollow that sets its consumer's
+// filter to what is left. Neither waits on the other, so the record is right whatever the consumer
+// call did.
 func TestARefollowWritesTheKnownSessionRecord(t *testing.T) {
-	rig := newSessionConsumerRig(t)
-	clock := time.Now()
-	known, err := session.OpenKnownSessions(rig.deps.client.Conn,
-		session.WithKnownSessionReplicas(1),
-		session.WithKnownSessionClock(func() time.Time { return clock }))
-	if err != nil {
-		t.Fatalf("open the known-session store: %v", err)
-	}
-	t.Cleanup(known.StopWatch)
-	if err := known.WaitForCacheReady(context.Background()); err != nil {
-		t.Fatalf("the known-session cache did not become ready: %v", err)
-	}
-	rig.deps.known = known
-
+	rig := setupKnownRig(t)
 	kept, dropped := "notifications.team.deploy-squad", "notifications.team.other-squad"
-	rig.subscribe(t, `{"session_id":"ses_refollow","topics":["`+kept+`","`+dropped+`"],`+
-		`"delivery":{"consumer":true,"epoch":"e1"}}`)
-	registered, ok := known.Get("ses_refollow")
+	rig.subscribe(t, "ses_refollow", []string{kept, dropped})
+	registered, ok := rig.known.Get("ses_refollow")
 	if !ok {
 		t.Fatal("the registration wrote no known-session record")
 	}
 	if !slices.Contains(registered.Topics, dropped) {
 		t.Fatalf("the registered record's topics are %v, want the topic the unsubscribe will remove", registered.Topics)
 	}
-	if entry, err := rig.deps.sessions.Get("ses_refollow"); err != nil || entry.Delivery != session.DeliveryConsumer {
-		t.Fatalf("ses_refollow's entry is %#v (error %v), want one that records consumer delivery: this test covers the session the relay serves a consumer", entry, err)
+	if entry := rig.entry(t, "ses_refollow"); entry.Delivery != session.DeliveryConsumer {
+		t.Fatalf("ses_refollow's entry is %#v, want one that records consumer delivery", entry)
 	}
 
-	clock = clock.Add(session.KnownSessionRefreshAge + time.Minute)
-	rig.post(t, "/v1/interests/unsubscribe", `{"session_id":"ses_refollow","topics":["`+dropped+`"]}`)
+	rig.clock = rig.clock.Add(session.KnownSessionRefreshAge + time.Minute)
+	body, err := json.Marshal(map[string]any{"session_id": "ses_refollow", "topics": []string{dropped}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.post(t, "/v1/interests/unsubscribe", string(body))
 
-	after, ok := known.Get("ses_refollow")
+	after, ok := rig.known.Get("ses_refollow")
 	if !ok {
 		t.Fatal("the unsubscribe removed the known-session record")
 	}
@@ -272,8 +221,11 @@ func TestARefollowWritesTheKnownSessionRecord(t *testing.T) {
 	if !slices.Contains(after.Topics, kept) {
 		t.Errorf("the record's topics are %v, want the topic the session still follows", after.Topics)
 	}
-	if after.LastSeen != clock.UnixMilli() {
-		t.Errorf("the record's last_seen = %d, want the refollow's clock %d", after.LastSeen, clock.UnixMilli())
+	if after.LastSeen != rig.clock.UnixMilli() {
+		t.Errorf("the record's last_seen = %d, want the unsubscribe's clock %d", after.LastSeen, rig.clock.UnixMilli())
+	}
+	if filter := rig.filters(t, "ses_refollow"); slices.Contains(filter, dropped) {
+		t.Errorf("the consumer filter %v still holds the unsubscribed %q", filter, dropped)
 	}
 }
 
@@ -293,10 +245,8 @@ func TestRemovingASessionsInterestsThroughTheAdminRouteEmptiesItsRecord(t *testi
 	}
 
 	rig.clock = rig.clock.Add(session.KnownSessionRefreshAge + time.Minute)
-	mux := http.NewServeMux()
-	registerV1Routes(mux, rig.deps, "test-machine", logging.New("test"))
 	recorder := httptest.NewRecorder()
-	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_admin_removed", nil))
+	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_admin_removed", nil))
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("DELETE /v1/interests/ses_admin_removed: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -316,42 +266,23 @@ func TestRemovingASessionsInterestsThroughTheAdminRouteEmptiesItsRecord(t *testi
 	}
 }
 
-// A listener whose NATS user may not open the bucket runs on a store that answers no record: the
-// routes that write one carry no check of their own, so a registration and a clean stop answer as
-// they always have, and every read answers no record. A nil store, this test's, is that listener
-// with no JetStream context at all.
+// A listener with no known-session store - one whose connection gave no JetStream context, which
+// runs on a nil store - answers a registration and a clean stop 200: the routes that write a
+// record carry no check of their own for the store.
 func TestTheRoutesServeAListenerWithNoKnownSessionStore(t *testing.T) {
-	registry, sessions := setupSessionsTest(t, nil, nil)
-	deps := &listenerDeps{registry: registry, sessions: sessions}
-
-	recorder := httptest.NewRecorder()
-	subscribeHandler(deps, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(
-		http.MethodPost, "/v1/interests/subscribe",
-		strings.NewReader(`{"session_id":"ses_degraded","topics":["notifications.team.deploy-squad"],"self_subscribed":true}`)))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("subscribe: status=%d body=%s", recorder.Code, recorder.Body.String())
+	rig := newSessionConsumerRig(t)
+	if rig.deps.known != nil {
+		t.Fatal("the deps hold a known-session store, so this test is not the listener without one")
 	}
-
-	stop := httptest.NewRecorder()
-	deleteSessionHandler(sessions, deps.known, logging.New("test")).ServeHTTP(
-		stop, httptest.NewRequest(http.MethodDelete, "/v1/sessions/ses_degraded", nil))
-	if stop.Code != http.StatusOK {
-		t.Fatalf("delete: status=%d body=%s", stop.Code, stop.Body.String())
-	}
-
-	if record, ok := deps.known.Get("ses_degraded"); ok {
-		t.Errorf("a listener with no known-session store answered %#v, want no record", record)
-	}
-	if got := knownMatchedIDs(deps.known, "notifications.team.deploy-squad"); len(got) != 0 {
-		t.Errorf("a listener with no known-session store matched %v, want none", got)
-	}
+	rig.subscribe(t, consumerRegistration("ses_degraded", "e", "notifications.team.deploy-squad"))
+	stopSession(t, rig.mux, "ses_degraded", "")
 }
 
 // A listener whose NATS user may not open the bucket yet carries neither recipient count, as one
 // with no store at all does (TestAListenerWithNoKnownSessionStoreCarriesNeitherCount): the count
 // it could make is the live sessions alone, and the records that make it whole are the ones its
-// grant does not let it read. This is the configuration production runs between this image and
-// the grant, and the store it holds there is open for business in every way but the bucket.
+// grant does not let it read. This is a listener whose hub's grant does not carry the bucket, and
+// the store it holds there is open for business in every way but the bucket.
 func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing.T) {
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, listenerGrantBeforeSessionConsumers()...)
@@ -370,15 +301,17 @@ func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing
 		t.Fatal("the bucket opened under a grant that does not carry it, so this test says nothing about a listener that cannot open it")
 	}
 
-	harness := newListenerDeliveryHarnessOn(t, client, nil)
-	waitForRegistry(t, harness.registry)
+	harness := newListenerDeliveryHarnessOn(t, client)
 	deps := harness.publishDeps(t)
 	deps.known = known
-	recipients, connected := recipientCounts(deps, "notifications.team.deploy-squad", "ses_sender", func() []store.Interest {
-		t.Error("the count walked the interest rows, which it has no answer to put them in")
-		return nil
-	})
+	recipients, connected := recipientCounts(deps, "notifications.team.deploy-squad", "ses_sender")
 	if recipients != nil || connected != nil {
 		t.Errorf("the counts are %v and %v, want both left out while the bucket is not open", recipients, connected)
+	}
+	if _, recorded := known.Get("ses_sender"); recorded {
+		t.Error("a store whose bucket is not open answered a record")
+	}
+	if err := known.RecordWithin(context.Background(), session.KnownSession{SessionID: "ses_sender"}); err != nil {
+		t.Errorf("a write to a store whose bucket is not open answered %v, want nil: it writes nothing and fails nothing", err)
 	}
 }

@@ -42,9 +42,9 @@ import (
 //
 // A sender that never reaches its settle - its process killed, the database refusing the write -
 // leaves the attempt pending under its claim. Whichever process runs the delivery sweep next
-// sends it once the claim lease (claimLapsed) has passed, under the attempt's own number and
-// idempotency key (delivery_sweep.go); only an attempt past the duplicate window waits for a
-// Retry.
+// sends it once the claim lease (model.DeliveryClaimFreeSQL) has passed, under the attempt's own
+// number and idempotency key (delivery_sweep.go); only an attempt past the duplicate window
+// waits for a Retry.
 //
 // Between its first send and its settle a sender may try again (takeoverRetry.retry): a listener
 // being replaced refuses connections, answers 503, or does not hold the session yet for a few
@@ -95,9 +95,9 @@ func resolveThenLock[R, T any](
 	return zero, stale
 }
 
-// resolveDeliveryTarget is the listener read behind every delivery: which session a route names
-// right now, what the listener calls it, and why it cannot receive this mode. It is the resolve
-// half above, so it runs with nothing held.
+// resolveDeliveryTarget is the listener read behind every delivery: which session a route
+// names right now, what the listener calls it, and why it cannot receive this mode. It is the
+// resolve half above, so it runs with nothing held.
 //
 // Both kinds of route resolve by asking the listener about the one thing the route names - the
 // holder of a role, or a session id - and neither reads the whole live-session list. That list
@@ -108,16 +108,22 @@ func resolveThenLock[R, T any](
 // answers that question, and a read the message bus did not answer arrives here as an error
 // instead of as an absence.
 //
-// A session id resolves through SessionIncludingStopped, so a session the listener knows and
-// that is not running is a target like any other: the listener takes a message for it, stores it
-// and hands it over when it runs again, and the attempt that send settles records `queued`
-// (deliveryOutcome). A role resolves through its live holder alone, because a role has no holder
-// while nobody holds it.
+// What the record then says is the session's state, and only a session the registry calls gone
+// is no target. An unresponsive one - past the live window, inside the gone horizon - is
+// resolved like any other, for a role route as much as a session route: the listener stores the
+// frame and hands it over when the session answers again, so a message to a session that missed
+// its heartbeats waits for it rather than being dropped (dispatch://INFRA-392).
 //
-// Only ErrNotFound - the listener knows no session under that id at all - is
-// "no live session <id>", the text comment_delivery.go tests the prefix of and the dashboard
-// prints verbatim. Every other failure takes the error path, so an unreachable listener never
-// reads as an ended session.
+// A session id resolves through SessionIncludingStopped, so a session the listener knows only by
+// its record, one that is not running, is a target like any other too: the listener takes a
+// message for it, stores it and hands it over when it runs again, and the attempt that send
+// settles records `queued` (deliveryOutcome). A role resolves through Role alone, because a
+// stopped session holds no role.
+//
+// Only ErrNotFound - no entry and no record under that id - and a record the registry calls
+// gone are "no live session <id>", the text comment_delivery.go tests the prefix of and the
+// dashboard prints verbatim. Every other failure takes the error path, so an unreachable
+// listener never reads as an ended session.
 func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, delivery string) (string, string, string) {
 	if s.deps.Envoy == nil {
 		return "", "", listenerNotConfiguredText
@@ -135,6 +141,9 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	if err != nil {
 		return "", "", deliveryErrorText(err)
 	}
+	if target.State == dispatchenvoy.StateGone {
+		return target.SessionID, target.Title, "no live session " + target.SessionID
+	}
 	if !advertisesDelivery(target, delivery) {
 		return target.SessionID, target.Title,
 			fmt.Sprintf("session %s (%s) does not advertise %s", target.SessionID, target.Title, delivery)
@@ -145,14 +154,14 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 // advertisesDelivery reports whether target takes this delivery mode, by the rule the listener
 // applies to the same send (cmd/listener/api.go, stoppedDeliveryModeVerdict): its advertised
 // capabilities, except that a stopped session whose record carries none at all is accepted. Such
-// a record is one whose plugin declared none - the listener's record has stored capabilities
+// a record is one whose plugin declared no capabilities - the listener's record has stored them
 // since its first write, so none predates the field - and the same plugin is refused this mode
 // while it runs. It is accepted here because the message is stored and the mode is judged where
 // it can be: by the resumed session, whose next registration declares what it takes. Refusing it
 // here would refuse exactly the sends a queued delivery exists for, on the strength of a field
 // nobody filled in.
 func advertisesDelivery(target dispatchenvoy.Session, delivery string) bool {
-	if target.State == dispatchenvoy.SessionStateStopped && len(target.Capabilities) == 0 {
+	if target.State == dispatchenvoy.StateStopped && len(target.Capabilities) == 0 {
 		return true
 	}
 	return hasCapability(target.Capabilities, delivery)
@@ -200,8 +209,8 @@ func deliveryErrorText(err error) string {
 // send made at its start still reaches the session once the successor answers; the two seconds
 // past that target leave room for the last backoff. A session that is really gone settles
 // "no live session" that much later than its first try. It is the window every deployment runs:
-// Deps.ListenerTakeoverWindow replaces it only when set, and neither routes.BuildAppContext nor
-// cmd/dispatch sets it; only this package's tests do.
+// Deps.ListenerTakeoverWindow replaces it only when set, which routes.BuildAppContext does only
+// for a cmd/dispatch process under the test hooks (DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW).
 const listenerTakeoverWindow = 12 * time.Second
 
 // takeoverFirstBackoff is the wait before a sender's first retry; each later wait doubles it,
@@ -285,7 +294,7 @@ func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func
 	return failure, nil
 }
 
-// resolveThroughTakeover resolves one target as resolveMentionTargets does, with nothing held,
+// resolveThroughTakeover resolves one target as resolveMentionTarget does, with nothing held,
 // and, when wait is set, waits out a listener take-over the way a sender does: a resolution whose
 // outcome is a take-over's (retryableDeliveryFailure) is taken again after takeoverRetry's backoff
 // until the listener answers otherwise or the window closes. A comment resolves this way the
@@ -303,7 +312,7 @@ func (s *server) resolveThroughTakeover(
 	takeover := s.newTakeoverRetry()
 	var resolved ResolvedMention
 	resolve := func() string {
-		resolved = s.resolveMentionTargets(ctx, []string{target}, delivery)[0]
+		resolved = s.resolveMentionTarget(ctx, target, delivery, mentionLookupTimeout)
 		return resolved.ResolveError
 	}
 	if !wait {
@@ -321,8 +330,9 @@ func (s *server) resolveThroughTakeover(
 // when ctx ends during the wait, the sender settles its attempt with failure.
 //
 // A sender that tries again renews its claim before the try and settles on the claim it renewed
-// last, so a claim never ages toward the claimLapsed lease while its sender is still trying: the
-// delivery sweep finds nothing to take, and a person's Retry finds the attempt held.
+// last, so a claim never ages toward the lease model.DeliveryClaimFreeSQL judges while its sender
+// is still trying: the delivery sweep finds nothing to take, and a person's Retry finds the
+// attempt held.
 func (r *takeoverRetry) again(ctx context.Context, failure string) bool {
 	if !retryableDeliveryFailure(failure) || time.Since(r.first)+r.backoff > r.window {
 		return false
@@ -338,29 +348,29 @@ func (r *takeoverRetry) again(ctx context.Context, failure string) bool {
 	return true
 }
 
-// claimLapsed is the predicate a claim transaction selects beside the pending attempt it locks:
-// whether that attempt is free for this sender to take, because nobody holds it or whoever
-// claimed it never came back within the lease, model.DeliveryClaimLapse (a minute), the window
-// the outbox's mention deferral shares. A sender renews its claim before every try
-// (takeoverRetry), and a try is bounded by the listener client's own window (five seconds by
-// default, DepsInput.EnvoyTimeout in a test) and the short transaction that records its outcome,
-// so a claim older than the lease was left by a process that died before its settle. A retry
-// beside a live claim takes an attempt of its own rather than two senders driving one.
-//
-// What a retry beside a lapsed claim does depends on its mode. In the attempt's own mode it
-// resumes that attempt under its original number, and so its original idempotency key, whose
-// repeat of a send that did land is recognised and dropped (DELIVERY_DUPLICATE_WINDOW_MS in
-// packages/contracts). In a different mode it may not: that key is mode-scoped, so riding the
-// same row would publish a second frame under one attempt number. It settles the stranded
-// attempt instead and opens an attempt of its own.
-//
-// Postgres judges it, against the claimed_at Postgres itself wrote. A Dispatch task whose clock
-// ran ahead of the database would otherwise read every live claim as lapsed, and one that ran
-// behind could never resume a stranded attempt.
-var claimLapsed = `(claimed_at is null or claimed_at < now() - ` + model.DeliveryClaimLapseInterval + `)`
-
 // attemptClaim is the attempt one sender owns and the claim it holds on it. The two travel
 // together because every statement of that sender's settle transaction is scoped to the pair.
+//
+// A claim transaction takes a pending attempt only while no sender holds it
+// (model.DeliveryClaimFreeSQL, selected beside the row it locks): nobody claimed it, or whoever
+// did never came back within model.DeliveryClaimLapse. A sender renews its claim before every
+// try (takeoverRetry), and a try is bounded by the listener client's own window (five seconds by
+// default, DepsInput.EnvoyTimeout in a test) and the short transaction that records its outcome,
+// so a claim older than the lease was left by a process that died before its settle. Postgres
+// judges it, against the claimed_at Postgres itself wrote: a Dispatch task whose clock ran ahead
+// of the database would otherwise read every live claim as lapsed, and one that ran behind could
+// never resume a stranded attempt.
+//
+// A retry beside a live claim takes an attempt of its own rather than two senders driving one. A
+// retry beside a lapsed claim resumes that attempt under its original number, and so its
+// original idempotency key, whose repeat of a send that did land is recognised and dropped
+// (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts), and in the mode that attempt's row
+// pinned rather than the one asked for. For a comment mention that is the whole of it: its key
+// names the mention's own mode, not the attempt's (model.CommentMentionIdempotencyKey), so a
+// resumed attempt's frame goes under the key its earlier frame went under whichever mode either
+// was sent in (claimCommentDeliveryAttempt). A targeted message's key is mode-scoped, so a retry
+// there in another mode may not ride that row at all: it settles the stranded attempt and opens
+// an attempt of its own (deliverMessageResuming).
 type attemptClaim struct {
 	attempt   int
 	claimedAt time.Time
@@ -368,7 +378,7 @@ type attemptClaim struct {
 
 // deliveryOutcome maps what a send reported to the state and error an attempt row records.
 // queued is the listener's own word for the target it stored the message for: a session it knows
-// and that is not running (dispatchenvoy.SessionStateStopped on the send's answer). The send's
+// and that is not running (dispatchenvoy.SendStateStopped on the send's answer). The send's
 // answer decides it, not the registry read before it, so a session whose read showed it live and
 // whose process had gone by the send - one that crashed with its registry entry still in place -
 // is recorded queued too.
@@ -400,7 +410,7 @@ func receiptError(failure *string) string {
 // concurrent retries of the same comment or message.
 //
 // Both statements this transaction makes are scoped to the claim this sender took, because two
-// senders can hold one attempt: a claim outlives its sender by the claimLapsed lease, and a
+// senders can hold one attempt: a claim outlives its sender by model.DeliveryClaimLapse, and a
 // sender that comes back after that lease lapsed finds the attempt resumed by someone else.
 // Only the sender the row's claim still names settles it or pays anything on it; the other
 // leaves the row as it found it.
@@ -457,6 +467,6 @@ func settleDeliveryAttempt[T any](
 	if err := tx.Commit(ctx); err != nil {
 		return zero, err
 	}
-	s.publish(event)
+	s.publish(ctx, event)
 	return attempt, nil
 }

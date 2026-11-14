@@ -1,16 +1,12 @@
 package store
 
 // TopicMatcher indexes a key's subscribed topics and reports every key whose topics match a
-// published topic, on any machine. It is the interest rows' own subject index (subjectIndex),
-// exported for the known-session records (internal/session), which are keyed by session id and
-// have no machine: a publish must count up to ~100,000 of them per request, which a linear scan
-// over the records cannot answer, while the index follows the published topic's tokens and the
-// patterns that share them. Its wildcard rules are routing.Match's, as subjectIndex's are.
-//
-// sjawhar/legion#2603 deletes matchAll, the all-machines walk this type calls, and narrows the
-// interest registry to a machine's own tree. Whichever of the two lands second restores that walk
-// here, in this file, rather than in Registry: the known-session records are what need it, and
-// Registry has no caller for it once #2603 lands.
+// published topic. It is the interest rows' own subject index (subjectIndex), exported for the
+// known-session records (internal/session), which are keyed by session id and have no machine: a
+// publish must count up to ~100,000 of them per request, which a linear scan over the records
+// cannot answer, while the index follows the published topic's tokens and the patterns that share
+// them. Its wildcard rules are routing.Match's, as subjectIndex's are. Every key is indexed under
+// the empty machine id, so a match walks that one tree.
 //
 // A TopicMatcher is not safe for concurrent use: its one caller, session.KnownSessions, keeps it
 // in step with its record map under that store's own lock.
@@ -34,16 +30,9 @@ func (m *TopicMatcher) Remove(key string) {
 	m.index.remove(key)
 }
 
-// Match calls visit with each key whose topics match topic, once per key. The index underneath
-// visits a key once per matching topic, and the repeats are dropped here, so a caller that counts
-// keys needs no set of its own (Registry.matchLocked keeps one over its own walk of that index).
+// Match calls visit with each key whose topics match topic, once per key (oncePerKey): the index
+// underneath visits a key once per matching topic, so a caller that counts keys needs no set of
+// its own.
 func (m *TopicMatcher) Match(topic string, visit func(key string)) {
-	seen := map[string]struct{}{}
-	m.index.matchAll(topic, func(key string) {
-		if _, dup := seen[key]; dup {
-			return
-		}
-		seen[key] = struct{}{}
-		visit(key)
-	})
+	m.index.match("", topic, oncePerKey(visit))
 }

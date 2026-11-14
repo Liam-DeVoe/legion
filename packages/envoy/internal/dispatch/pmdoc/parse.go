@@ -21,9 +21,11 @@ var anchorAttribute = regexp.MustCompile(`([a-zA-Z0-9_-]+)="([^"]*)"`)
 // markdownReader is a goldmark configuration Dispatch reads markdown with. Its only way in is
 // parse. Front matter is read apart from it (parseFrontmatterBlock), so an unclosed opener is
 // ordinary markdown. Its list parser opens no empty item that would interrupt a paragraph
-// (emptyItemGuard).
+// (emptyItemGuard). display marks the one reader whose parse is for display alone
+// (displayReader), which refuses nothing a reader must still be shown.
 type markdownReader struct {
-	md goldmark.Markdown
+	md      goldmark.Markdown
+	display bool
 }
 
 // blockReader is the configuration every document is read with, its delimiter runs read by
@@ -108,7 +110,9 @@ func ParseRendering(markdown string) (*Node, error) {
 // starts (startOf): a paragraph's first line, and every other block's recorded position, so a
 // fenced code block starts at its opening fence. Front matter starts at 0. A child converted from
 // no goldmark block (the empty paragraph of a document with no blocks), or from one that records
-// no position, answers -1.
+// no position, answers -1. Each offset counts markdown's own bytes, the U+0000 the parse reads as
+// U+FFFD included (startsInMarkdown), so a caller cutting markdown at them cuts it where its
+// blocks begin (itemblocks.Split).
 func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 	var starts []int
 	doc, err := parseMarkdown(markdown, fromStart, true, NewWriteBudget(), &starts)
@@ -160,8 +164,8 @@ func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
 	if err != nil {
 		return nil, WrittenReadBack{}, err
 	}
-	read, misread, err := documentMisread(doc)
-	if err := refuseMisread(misread, err); err != nil {
+	read, misread, refused, err := documentMisread(doc)
+	if err := refuseMisread(misread, refused, err); err != nil {
 		return nil, WrittenReadBack{}, err
 	}
 	return doc, read, nil
@@ -250,9 +254,21 @@ func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *Wr
 
 // parseMarkdown is parseUnstamped that, given starts, also sets it to where each of the tree's
 // top-level children starts in markdown (sourceStarts).
+//
+// Every U+0000 in markdown is read as U+FFFD (nulAsReplacement) before any parser sees a byte of
+// it, as CommonMark requires of a reader (§2.3 Insecure characters) and the browser editor's parser
+// does. Goldmark keeps the character as it is, while the rendering writes it as U+FFFD
+// (withNulsWritten), so a write holding one was accepted and left the live tree holding a character
+// the markdown it is stored as does not: the tree a read serves and the bytes a version carries
+// then disagreed. The replacement is three bytes where the character was one, so every offset taken
+// after it is an offset into source and never into markdown: a refusal's line number counts
+// source's line feeds, which the replacement neither adds nor removes, at.server measures a
+// prefix the server itself wrote ahead of the caller's text (parseTableRows), which holds no
+// U+0000 and so keeps its length, and starts are offsets into source until startsInMarkdown maps
+// each of them back to the byte of markdown it stands at.
 func parseMarkdown(markdown string, at origin, readFrontmatter bool, budget *WriteBudget, starts *[]int) (doc *Node, err error) {
 	defer recoverPanic(&doc, &err, "reading markdown")
-	source := []byte(markdown)
+	source := []byte(nulAsReplacement(markdown))
 	var front *Node
 	unclosedFrontmatter := false
 	rest := 0
@@ -288,7 +304,7 @@ func parseMarkdown(markdown string, at origin, readFrontmatter bool, budget *Wri
 		return nil, err
 	}
 	if starts != nil {
-		*starts = sourceStarts(doc, root, front != nil, rest)
+		*starts = startsInMarkdown(sourceStarts(doc, root, front != nil, rest), markdown)
 	}
 	return doc, nil
 }
@@ -313,6 +329,37 @@ func sourceStarts(doc *Node, root ast.Node, front bool, offset int) []int {
 			starts[index] = offset + start
 		}
 		block = block.NextSibling()
+	}
+	return starts
+}
+
+// startsInMarkdown is starts, offsets into the source parsed, as offsets into markdown itself,
+// the bytes the caller wrote: the parse reads every U+0000 as U+FFFD (nulAsReplacement), three
+// bytes where the caller wrote one, so a start past one of them stands two bytes further on in
+// the source than in markdown, two bytes past two, and so on. ParseWithSourceStarts promises the
+// caller's own offsets, and itemblocks.Split cuts the caller's body at them, so a start left
+// unmapped would cut a body holding a U+0000 inside a block instead of between two.
+//
+// Markdown holding no U+0000 is answered as it is, which is every document a route carries today
+// (decodeJSON refuses the character), so the mapping costs nothing there.
+func startsInMarkdown(starts []int, markdown string) []int {
+	if strings.IndexByte(markdown, 0) < 0 {
+		return starts
+	}
+	// Where each replacement stands in the source, which is where the U+0000 before it stood plus
+	// the two bytes each earlier replacement added.
+	var replacements []int
+	for index := range len(markdown) {
+		if markdown[index] == 0 {
+			replacements = append(replacements, index+2*len(replacements))
+		}
+	}
+	for index, start := range starts {
+		if start >= 0 {
+			// The replacements before start, which is where the first one at or past it stands.
+			earlier, _ := slices.BinarySearch(replacements, start)
+			starts[index] = start - 2*earlier
+		}
 	}
 	return starts
 }
@@ -414,17 +461,24 @@ func referencedLabels(nodes []*Node) []string {
 
 // ParseInline converts one textblock's worth of inline markdown into inline nodes, spending
 // budget, its caller write's, on the elements it makes. Markdown that forms more than one
-// paragraph, or holds text after its paragraph's last line, is ErrSchema.
+// paragraph, or holds text after its paragraph's last line, is ErrSchema. Every U+0000 in it is
+// read as U+FFFD, as it is in a document's markdown (readInline, parseUnstamped).
 func ParseInline(markdown string, budget *WriteBudget) (nodes []*Node, err error) {
 	return readInline(markdown, inlineMarkdown.run, parser.NewContext(), budget)
 }
 
 // readInline is ParseInline read with inline, one of an inlineReader's parsers, in context, a new
 // parse context its caller may read after the parse (parseInlineWithDefinitions), counting the
-// elements it makes on budget, a caller write's, or none when budget is nil (a read-back).
+// elements it makes on budget, a caller write's, or none when budget is nil (a read-back). Its
+// source is the caller's markdown with its line endings and its U+0000 characters read as the
+// parser of a document's markdown reads them (LineFeeds, nulAsReplacement, parseUnstamped); a
+// read-back's markdown, which the renderer wrote, holds neither, so both leave it as it is. The
+// lines the parse recorded as opening a block of HTML for the browser editor's parser are dropped
+// before the tree is converted (dropHTMLFlowLines), since this markdown opens no block where it
+// lands.
 func readInline(markdown string, inline parser.Parser, context parser.Context, budget *WriteBudget) (nodes []*Node, err error) {
 	defer recoverPanic(&nodes, &err, "reading inline markdown")
-	source := []byte(LineFeeds(markdown))
+	source := []byte(nulAsReplacement(LineFeeds(markdown)))
 	var count *parseCount
 	if budget != nil {
 		context.Set(writeBudgetKey, budget)
@@ -434,6 +488,7 @@ func readInline(markdown string, inline parser.Parser, context parser.Context, b
 	if err != nil {
 		return nil, err
 	}
+	dropHTMLFlowLines(root)
 	count.weigh(root, source)
 	if refusal := count.refusal(source, 1); refusal != nil {
 		return nil, refusal
@@ -699,31 +754,31 @@ func parseBlock(node ast.Node, source []byte, footnotes map[int]string, depth in
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "doc", Children: children}, nil
+		return &Node{Type: blockType(current), Children: children}, nil
 	case *ast.Paragraph:
 		children, err := parseInline(current, source, nil, footnotes)
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "paragraph", Children: children}, nil
+		return &Node{Type: blockType(current), Children: children}, nil
 	case *ast.TextBlock:
 		children, err := parseInline(current, source, nil, footnotes)
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "paragraph", Children: children}, nil
+		return &Node{Type: blockType(current), Children: children}, nil
 	case *ast.Heading:
 		children, err := parseInline(current, source, nil, footnotes)
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "heading", Attrs: Attrs{"level": current.Level, "id": ""}, Children: children}, nil
+		return &Node{Type: blockType(current), Attrs: Attrs{"level": current.Level, "id": ""}, Children: children}, nil
 	case *ast.Blockquote:
 		children, err := parseBlocks(current, source, footnotes, depth)
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "blockquote", Children: emptyParagraphFirst(children, false)}, nil
+		return &Node{Type: blockType(current), Children: emptyParagraphFirst(children, false)}, nil
 	case *ast.List:
 		return parseList(current, source, footnotes, depth)
 	case *ast.ListItem:
@@ -735,32 +790,78 @@ func parseBlock(node ast.Node, source []byte, footnotes map[int]string, depth in
 			value = language
 		}
 		return &Node{
-			Type:     "code_block",
+			Type:     blockType(current),
 			Attrs:    Attrs{"language": value},
 			Children: fencedCodeText(current, source),
 		}, nil
 	case *ast.CodeBlock:
 		return &Node{
-			Type:     "code_block",
+			Type:     blockType(current),
 			Attrs:    Attrs{"language": nil},
 			Children: codeBlockText(current.Lines(), source),
 		}, nil
 	case *ast.ThematicBreak:
-		return &Node{Type: "hr"}, nil
+		return &Node{Type: blockType(current)}, nil
 	case *extensionast.Footnote:
 		children, err := parseBlocks(current, source, footnotes, depth)
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "footnote_definition", Attrs: Attrs{"label": decodeMarkdownText(current.Ref)}, Children: emptyParagraphFirst(children, false)}, nil
+		return &Node{Type: blockType(current), Attrs: Attrs{"label": decodeMarkdownText(current.Ref)}, Children: emptyParagraphFirst(children, false)}, nil
 	case *typedDirective:
 		return parseTypedDirective(current, source, footnotes, depth)
 	case *extensionast.Table:
 		return parseTable(current, source, footnotes)
+	case *displayText:
+		// Only the display read makes one, where it shows a block as the markdown it is written
+		// as (drawDisplayBlocks).
+		return &Node{Type: "paragraph", Children: displayLiteral(current.text)}, nil
+	case *displayHTML:
+		// Only the display read makes one, where it shows a block of HTML as the browser's
+		// engine draws it (drawDisplayBlocks).
+		return &Node{Type: "paragraph", Children: []*Node{{Type: "html", Attrs: Attrs{"value": current.value}}}}, nil
 	default:
 		// refuseBlocks refuses every block outside convertedBlocks before conversion starts.
 		panic(fmt.Sprintf("conversion reached a %s block, which refuseBlocks passed and parseBlock does not convert (convertedBlocks)", node.Kind()))
 	}
+}
+
+// blockType names the Proof node the conversion makes of one of goldmark's blocks: the name
+// parseBlock writes into the node it builds, read from one place so that a second reader of these
+// names cannot drift from the conversion (decision_card.go, which names the block a refused body's
+// decision card stands in). A typed block is its own type, declared by the schema or not, since
+// that is the block its author wrote. A block the conversion refuses rather than converts is named
+// by its goldmark kind, which is what a reader outside the conversion is left with; parseBlock
+// never reads that name, since refuseBlocks refuses such a block before the conversion starts.
+func blockType(block ast.Node) string {
+	switch current := block.(type) {
+	case *ast.Document:
+		return "doc"
+	case *ast.Paragraph, *ast.TextBlock:
+		return "paragraph"
+	case *ast.Heading:
+		return "heading"
+	case *ast.Blockquote:
+		return "blockquote"
+	case *ast.List:
+		if current.IsOrdered() {
+			return "ordered_list"
+		}
+		return "bullet_list"
+	case *ast.ListItem:
+		return "list_item"
+	case *ast.FencedCodeBlock, *ast.CodeBlock:
+		return "code_block"
+	case *ast.ThematicBreak:
+		return "hr"
+	case *extensionast.Footnote:
+		return "footnote_definition"
+	case *extensionast.Table:
+		return "table"
+	case *typedDirective:
+		return current.Name
+	}
+	return block.Kind().String()
 }
 
 func parseBlocks(parent ast.Node, source []byte, footnotes map[int]string, depth int) ([]*Node, error) {
@@ -781,21 +882,40 @@ func parseTypedDirective(directive *typedDirective, source []byte, footnotes map
 	if err != nil {
 		return nil, err
 	}
-	return &Node{Type: directive.Name, Attrs: directive.values, Children: emptyParagraphFirst(children, false)}, nil
+	// A typed block whose schema content opens with a paragraph is read holding one ahead of what
+	// the markdown wrote (opensWithAParagraph), and the display read marks the blocks it keeps
+	// whose content rule wants one for the same reason (displayFillAttr, displayContentFit).
+	_, fill := directive.Attribute(displayFillAttr)
+	return &Node{
+		Type:     directive.Name,
+		Attrs:    directive.values,
+		Children: emptyParagraphFirst(children, fill || opensWithAParagraph(directive.Name)),
+	}, nil
+}
+
+// opensWithAParagraph reports whether this typed block's schema content begins with a paragraph,
+// which the browser editor's own schema fills in when the markdown opens the block with another
+// block: an `ask` written with a list first is read holding an empty paragraph ahead of it, since
+// ProseMirror fills a node's content expression from its left (`paragraph+ bullet_list?`). A
+// block whose content is `block+` takes what it is given.
+func opensWithAParagraph(name string) bool {
+	typ, ok := schemaTypes[name]
+	if !ok {
+		return false
+	}
+	return typ.Content == BlockContentParagraphs || typ.Content == BlockContentParagraphsOptionalBulletList
 }
 
 // parseList reads a list's and its items' spread as browserListSpacing recorded them, or, where it
 // recorded none, from goldmark's looseness: a loose list's items holding more than one block are
 // spread, and the list is spread when none of them is.
 func parseList(list *ast.List, source []byte, footnotes map[int]string, depth int) (*Node, error) {
-	nodeType := "bullet_list"
 	browserSpread, browser := list.Attribute(browserSpreadAttr)
 	attrs := Attrs{"spread": !list.IsTight}
 	if browser {
 		attrs["spread"] = browserSpread
 	}
 	if list.IsOrdered() {
-		nodeType = "ordered_list"
 		attrs["order"] = list.Start
 	}
 	children := make([]*Node, 0, list.ChildCount())
@@ -819,7 +939,7 @@ func parseList(list *ast.List, source []byte, footnotes map[int]string, depth in
 		}
 		children = append(children, parsed)
 	}
-	return &Node{Type: nodeType, Attrs: attrs, Children: children}, nil
+	return &Node{Type: blockType(list), Attrs: attrs, Children: children}, nil
 }
 
 func parseListItem(item *ast.ListItem, source []byte, footnotes map[int]string, depth int) (*Node, error) {
@@ -831,7 +951,7 @@ func parseListItem(item *ast.ListItem, source []byte, footnotes map[int]string, 
 	if err != nil {
 		return nil, err
 	}
-	return &Node{Type: "list_item", Attrs: attrs, Children: emptyParagraphFirst(children, true)}, nil
+	return &Node{Type: blockType(item), Attrs: attrs, Children: emptyParagraphFirst(children, true)}, nil
 }
 
 // emptyParagraphFirst is a container's blocks as the browser editor's parser reads them: a
@@ -869,7 +989,7 @@ func parseTable(table *extensionast.Table, source []byte, footnotes map[int]stri
 	if len(children) == 1 {
 		children = append(children, &Node{Type: "table_row"})
 	}
-	return &Node{Type: "table", Children: children}, nil
+	return &Node{Type: blockType(table), Children: children}, nil
 }
 
 func parseTableRow(row ast.Node, header bool, source []byte, footnotes map[int]string) (*Node, error) {

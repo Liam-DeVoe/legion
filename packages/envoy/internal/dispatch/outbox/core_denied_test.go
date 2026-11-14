@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,23 +79,6 @@ func publishedDestinations(t *testing.T, database *store.Store, eventID int64) (
 // outbox with heldRoles.
 var holderSubject = contracts.AgentSubject(roleHolder)
 
-// answering subscribes a role holder on subject that answers every forward with an empty receipt,
-// as a session plugin does, and delivers each forward to the returned channel.
-func answering(t *testing.T, conn *natsgo.Conn, subject string) <-chan *natsgo.Msg {
-	t.Helper()
-	received := make(chan *natsgo.Msg, 8)
-	if _, err := conn.Subscribe(subject, func(msg *natsgo.Msg) {
-		received <- msg
-		_ = msg.Respond(nil)
-	}); err != nil {
-		t.Fatalf("subscribe to %s: %v", subject, err)
-	}
-	if err := conn.Flush(); err != nil {
-		t.Fatalf("flush the subscription to %s: %v", subject, err)
-	}
-	return received
-}
-
 // A role route whose forward to its holder NATS denies (a per-client grant without the holder's
 // agent subject) is not published: the outbox does not record the destination, does not mark the
 // event published, and backs it off for a retry, logging the route, the holder's subject and the
@@ -105,7 +89,7 @@ func TestRunRetriesARoleForwardNATSDenies(t *testing.T) {
 
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "notifications.role.>", "_INBOX.>", "$JS.API.>")
 	received := subscribe(t, subscriber, roleTopic)
-	forwarded := answering(t, subscriber, holderSubject)
+	forwarded := subscribe(t, subscriber, holderSubject)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	route := "role:reviewer"
@@ -164,7 +148,7 @@ func TestRunDeliversTheGrantedRoutesOfAnEventWhoseRoleForwardNATSDenies(t *testi
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "notifications.role.>", "notifications.agent.writer", "_INBOX.>", "$JS.API.>")
 	authorTopic := "notifications.agent.writer"
 	authorReceived := subscribe(t, subscriber, authorTopic)
-	forwarded := answering(t, subscriber, holderSubject)
+	forwarded := subscribe(t, subscriber, holderSubject)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
@@ -203,7 +187,7 @@ func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
 	client, subscriber, grant := grantedNATS(t, allow...)
 	authorTopic := "notifications.agent.writer"
 	authorReceived := subscribe(t, subscriber, authorTopic)
-	forwarded := answering(t, subscriber, holderSubject)
+	forwarded := subscribe(t, subscriber, holderSubject)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
@@ -244,11 +228,12 @@ func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
 
 // With the holder's subject granted, the role route is forwarded once, as a listener's role forward
 // carries it - the role's topic, the forward's dedupe key - recorded as its role topic, and the
-// event marked published on the holder's receipt. Nothing crosses the role's topic.
+// event marked published on the stream's acknowledgement of the stored copy. Nothing crosses the
+// role's topic.
 func TestRunForwardsAGrantedRoleRoute(t *testing.T) {
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", holderSubject, "_INBOX.>", "$JS.API.>")
 	received := subscribe(t, subscriber, roleTopic)
-	forwarded := answering(t, subscriber, holderSubject)
+	forwarded := subscribe(t, subscriber, holderSubject)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	route := "role:reviewer"
@@ -372,8 +357,11 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	registry.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	// The publisher is still running, so a count read here is the count at the moment of the read.
+	// The denial log goes in the message because the counter alone cannot say which send raised
+	// it: a count above the one asserted is one more send, and only the log names it.
 	if body := response.Body.String(); !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="denied"} 1`) {
-		t.Fatalf("/metrics body = %q, want the denied publish counted once", body)
+		t.Fatalf("/metrics body = %q, want the denied publish counted once; the publisher logged:\n%s", body, logged.String())
 	}
 }
 
@@ -393,6 +381,17 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 // violation, and the batch probed its connection for an outage that was not there. The
 // per-subject record (deniedPublish) answers each send its own denial, and this test holds that
 // for the shape a notifying event has in production.
+//
+// The hold the batch runs under is the test's own, and its deadline passes the moment the
+// batch's second send is on the wire: both denials, answered at publishAcknowledgementTimeout
+// (5 s, bus/async.go), then come back to a hold whose margin ran out during the very wait it
+// opened, which is what a renewal landing late leaves behind in production (publisherHoldOptions,
+// 6 s less a 2 s margin). The batch records what those sends came to all the same - the hold
+// covers the window it opened, and the record's guard on the database's clock is what keeps two
+// holders apart (recordBatch) - so the event is backed off once and each destination is counted
+// once. Left unrecorded, the batch would be read and sent again by the next scan and each
+// destination counted twice. The scan takes no further batch under a hold past its deadline, as
+// it never has, so it ends there.
 func TestRunCountsEveryDeniedJetStreamDestinationOfOneEvent(t *testing.T) {
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
@@ -413,20 +412,23 @@ func TestRunCountsEveryDeniedJetStreamDestinationOfOneEvent(t *testing.T) {
 		t.Fatalf("the appended event does not notify, so it has one destination and proves nothing: %#v", event)
 	}
 	registry := metrics.New()
-	stop := runDeps(t, Deps{
-		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
+	// holding pins the hold's row for the next hour, as the process the hold names holds it, so
+	// the record's guard on the database's clock passes and the in-process deadline below is the
+	// only one the batch meets: the test fires it, rather than waiting on a renewal to land late.
+	hold := &holdPassingDuringAcknowledgement{Client: client, sends: 2}
+	deps := Deps{Store: database, Publisher: hold, Broker: broker,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
-			"Destinations of an outbox publish attempt that did not reach NATS"),
-	}, 10*time.Second)
-	defer stop()
+			"Destinations of an outbox publish attempt that did not reach NATS")}
+	holding(t, deps).scan(context.Background(), hold)
 
-	// An outage line settles the wait as an attempt does, so the assertions below name it rather
-	// than this timing out.
-	waitFor(t, 30*time.Second, "the outbox's first attempt at the event settled", func() bool {
-		_, attempts := publishedDestinations(t, database, event.ID)
-		return attempts > 0 || publishedAt(t, database, event.ID) != nil ||
-			strings.Contains(logged.String(), bus.ErrUnavailable.Error())
-	})
+	if written := hold.written.Load(); written != 2 || !hold.passed.Load() {
+		t.Fatalf("the batch wrote %d sends and the hold's deadline passed: %t, want the event's two destinations written and the deadline passed during their answers; the publisher logged:\n%s",
+			written, hold.passed.Load(), logged.String())
+	}
+	if strings.Contains(logged.String(), "left unrecorded") {
+		t.Fatalf("the batch was left unrecorded, so the next scan sends it again and counts each destination twice: its sends all went out under the hold, so their answers are the hold's to record; the publisher logged:\n%s",
+			logged.String())
+	}
 	for _, line := range strings.Split(logged.String(), "\n") {
 		if strings.Contains(line, bus.ErrUnavailable.Error()) {
 			t.Fatalf("line %q reports a denied publish as an outage of the bus", line)
@@ -440,17 +442,63 @@ func TestRunCountsEveryDeniedJetStreamDestinationOfOneEvent(t *testing.T) {
 		t.Fatalf("published_destinations = %v records a denied destination", destinations)
 	}
 	if attempts != 1 {
-		t.Fatalf("attempt_count = %d, want the one backed-off attempt", attempts)
+		t.Fatalf("attempt_count = %d, want the one backed-off attempt; the publisher logged:\n%s", attempts, logged.String())
 	}
 	response := httptest.NewRecorder()
 	registry.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := response.Body.String()
+	// The counter is read once the batch is recorded, and it counts one denial per answered
+	// send: a count above this one is a send the test never asked for - the resend of a batch
+	// left unrecorded is what took it to 4 in CI - and only the log names which send it was.
 	if !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="denied"} 2`) {
-		t.Fatalf("/metrics body = %q, want both denied destinations counted as denials", body)
+		t.Fatalf("/metrics body = %q, want both denied destinations counted as denials; the publisher logged:\n%s",
+			body, logged.String())
 	}
 	if strings.Contains(body, `reason="failed"`) {
-		t.Fatalf("/metrics body = %q counts a denied destination as a failure", body)
+		t.Fatalf("/metrics body = %q counts a denied destination as a failure; the publisher logged:\n%s",
+			body, logged.String())
 	}
+}
+
+// holdPassingDuringAcknowledgement is a publisher hold whose deadline passes during the
+// acknowledgement wait the hold itself opened, and the publisher of the batch that runs under it:
+// its window writes the batch's sends while the deadline is still an hour ahead and passes the
+// deadline as the last of them goes out, so no send is refused for the deadline
+// (bus.ErrWindowDeadline) and every answer comes back past it. That is what the live hold leaves
+// behind when a renewal lands late while a denied send waits out publishAcknowledgementTimeout.
+type holdPassingDuringAcknowledgement struct {
+	*bus.Client
+	// sends is how many sends the batch writes: the deadline passes with the last of them.
+	sends int64
+	// written counts the sends the batch wrote, and passed reports the deadline fired.
+	written atomic.Int64
+	passed  atomic.Bool
+}
+
+func (h *holdPassingDuringAcknowledgement) Deadline() time.Time {
+	if h.passed.Load() {
+		return time.Now().Add(-time.Second)
+	}
+	return time.Now().Add(time.Hour)
+}
+
+func (h *holdPassingDuringAcknowledgement) WindowUntil(deadline func() time.Time) bus.Sender {
+	return passingWindow{Sender: h.Client.WindowUntil(deadline), hold: h}
+}
+
+// passingWindow is the hold's window: each send goes out through the client's own window, and the
+// hold's deadline passes once the batch has written every send it was told to expect.
+type passingWindow struct {
+	bus.Sender
+	hold *holdPassingDuringAcknowledgement
+}
+
+func (w passingWindow) PublishAsync(item contracts.Envelope) <-chan error {
+	answer := w.Sender.PublishAsync(item)
+	if w.hold.written.Add(1) >= w.hold.sends {
+		w.hold.passed.Store(true)
+	}
+	return answer
 }
 
 // Two events a batch sends through one publish window under a grant that denies their subjects
@@ -537,10 +585,12 @@ func TestRunCountsADeniedSubjectOncePerRefusedMessage(t *testing.T) {
 	registry.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := response.Body.String()
 	if !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="denied"} 2`) {
-		t.Fatalf("/metrics body = %q, want each refused message counted as a denial", body)
+		t.Fatalf("/metrics body = %q, want each refused message counted as a denial; the publisher logged:\n%s",
+			body, logged.String())
 	}
 	if strings.Contains(body, `reason="failed"`) {
-		t.Fatalf("/metrics body = %q counts a denied publish as a failure", body)
+		t.Fatalf("/metrics body = %q counts a denied publish as a failure; the publisher logged:\n%s",
+			body, logged.String())
 	}
 }
 

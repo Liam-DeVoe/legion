@@ -1,14 +1,17 @@
-import {
-  type Attrs,
-  type DOMOutputSpec,
-  DOMSerializer,
-  type Node as ProseMirrorNode,
-} from "prosemirror-model";
+import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { type ReactNode, useRef } from "react";
 
-import { markdownClassName, type SoftBreaks } from "./markdown-engine";
+import type { DisplayTree } from "../../api/types";
+import { type MarkdownEngine, markdownClassName, type SoftBreaks } from "./markdown-engine";
 import { drawTaskCheckboxes } from "./task-checkboxes";
-import { type PaintMarkdown, type SliceYield, useRenderedMarkdown } from "./useRenderedMarkdown";
+import type { TextSource } from "./text-references";
+import {
+  ATTACH_BATCH,
+  type PaintMarkdown,
+  type SliceYield,
+  useRenderedMarkdown,
+} from "./useRenderedMarkdown";
+import { useTextReferences } from "./useTextReferences";
 
 /** The first textblock's own inline content (marks intact), plus the flattened plain text of
  * every textblock after it, joined with a single space - see `flattenInline`. */
@@ -96,43 +99,33 @@ const paintBlock: PaintMarkdown = (element, parsed, serializer) => {
 };
 
 /**
- * `DOMSerializer.renderSpec` with the attribute object prosemirror-model's own serializer passes
- * it. Upstream's signature is `renderSpec(doc, structure, xmlNS = null, blockArraysIn)`, and
- * `blockArraysIn` is what makes it refuse a spec array that came out of an attribute object
- * (`suspiciousAttributes`), the guard a node's own `toDOM` is held to everywhere else.
- * prosemirror-model 1.25.11 declares only the first three in `dist/index.d.ts`, so the fourth is
- * passed through this one named type rather than at each call (sjawhar/legion#2519).
- */
-const renderSpecWithAttrs = DOMSerializer.renderSpec as (
-  doc: Document,
-  structure: DOMOutputSpec,
-  xmlNS: string | null,
-  blockArraysIn: Attrs
-) => { dom: HTMLElement; contentDOM?: HTMLElement };
-
-/**
  * One node into `parent`, yielding where the work can be cut: a node holding several block
  * children - a list, a quote, the document itself - is opened with its own `toDOM`, as the
- * serializer would, and its children go in one at a time; everything else, a textblock and its
- * marks included, goes in whole, since splitting inline content would split a mark across
- * elements.
+ * serializer would, and its children go in one at a time; everything else goes in whole. A
+ * textblock and its marks do, since splitting inline content would split a mark across
+ * elements, and so does a node holding one child or none, which has no second child to cut
+ * between - a quote around an 8,000-item list is one such node, and serialises in the one piece
+ * its own child is.
  *
  * An opened node is opened exactly as `DOMSerializer.serializeNode` opens it: its attributes go
  * to `renderSpec` as the guard wants them, and its own marks wrap what comes back, outermost
- * last, with the children still going into the node's own content hole.
+ * last, with the children still going into the node's own content hole. Both the serializer and
+ * that `renderSpec` come off the engine, so this module names none of prosemirror-model's
+ * classes and the first route parses none of them (`markdown-serializer.ts`).
  */
 function* appendNode(
   parent: Node,
   node: ProseMirrorNode,
-  serializer: DOMSerializer
+  engine: MarkdownEngine
 ): Generator<SliceYield> {
+  const { renderSpec, serializer } = engine;
   const toDOM = serializer.nodes[node.type.name];
   if (node.isTextblock || node.childCount <= 1 || toDOM === undefined) {
     parent.appendChild(serializer.serializeNode(node));
     yield;
     return;
   }
-  const { contentDOM, dom } = renderSpecWithAttrs(document, toDOM(node), null, node.attrs);
+  const { contentDOM, dom } = renderSpec(document, toDOM(node), null, node.attrs);
   let outermost: HTMLElement = dom;
   for (let at = node.marks.length - 1; at >= 0; at -= 1) {
     const mark = node.marks[at];
@@ -140,7 +133,7 @@ function* appendNode(
     if (markToDOM === undefined) {
       continue;
     }
-    const wrap = renderSpecWithAttrs(document, markToDOM(mark, node.isInline), null, mark.attrs);
+    const wrap = renderSpec(document, markToDOM(mark, node.isInline), null, mark.attrs);
     (wrap.contentDOM ?? wrap.dom).appendChild(outermost);
     outermost = wrap.dom;
   }
@@ -150,22 +143,9 @@ function* appendNode(
     return;
   }
   for (let child = 0; child < node.childCount; child += 1) {
-    yield* appendNode(contentDOM, node.child(child), serializer);
+    yield* appendNode(contentDOM, node.child(child), engine);
   }
 }
-
-/**
- * How many nodes of the built body one task puts into the page. What an engine spends on a batch
- * is the style and layout of what has just arrived, in the rendering update after that task, so
- * the batch is what one such pass costs. Measured on this pod against the dashboard's own
- * stylesheet (sjawhar/legion#2519), an 8,000-item list: put in with one `replaceChildren` the
- * thread runs no task for 918-971 ms in WebKit, 211 ms in Chromium and 173 ms in Firefox; put in
- * 500 nodes at a time, 72 ms, 124 ms and 39 ms, because each engine then lays out only the items
- * of the batch. WebKit is why the batch exists at all: it spends ~700 ms on a pass over 16,000
- * freshly attached nodes whether their boxes are laid out or skipped, so nothing but splitting
- * the attach brings it under the second a reader may wait.
- */
-const ATTACH_BATCH = 500;
 
 /** How many nodes `node` holds, itself included, counted no further than `limit`: a subtree
  *  bigger than a batch answers `limit` or a little more, which is all a batch needs to know. */
@@ -213,10 +193,10 @@ function* attachNode(parent: Node, node: Node, batch: { left: number }): Generat
 }
 
 /**
- * `paintBlock`, a piece at a time (`PaintMarkdownInSlices`), for a body the parse worker parsed:
- * the 16,000 elements of an 8,000-item list are built across several tasks rather than in one,
- * and then put into the page a batch at a time (`ATTACH_BATCH`), so no single task holds the
- * reader's thread while the body lands.
+ * `paintBlock`, a piece at a time (`PaintMarkdownInSlices`), for a body of more nodes than one
+ * task puts into the page (`paintsAcrossTasks`): the 16,000 elements of an 8,000-item list are
+ * built across several tasks rather than in one, and then put into the page a batch at a time
+ * (`ATTACH_BATCH`), so no single task holds the reader's thread while the body lands.
  *
  * The build is off the page, exactly as `paintBlock` serializes a body off the page: a tree
  * built in the page would be styled and laid out again for every piece, and everything watching
@@ -230,11 +210,11 @@ function* attachNode(parent: Node, node: Node, batch: { left: number }): Generat
 function* paintBlockInSlices(
   element: HTMLElement,
   parsed: ProseMirrorNode,
-  serializer: DOMSerializer
+  engine: MarkdownEngine
 ): Generator<SliceYield> {
   const built = document.createElement("div");
   for (let block = 0; block < parsed.childCount; block += 1) {
-    yield* appendNode(built, parsed.child(block), serializer);
+    yield* appendNode(built, parsed.child(block), engine);
   }
   finishBlock(built);
   yield;
@@ -277,47 +257,87 @@ function* paintBlockInSlices(
  * inside, say, an ask question reads as bold text at the card's own size rather than a
  * page-size h1, and a resolution reason inline in a `text-xs` line stays that size.
  *
- * A picture whose address is a Dispatch artifact at a version (`![shot.png](dispatch://…@v1)`,
- * what a pasted picture is written as) shows through `DispatchPicture`: at the column's width,
- * capped in height, in `block`; as a thumbnail beside its caption in `inline`. A picture on
- * another website renders as Proof renders it.
+ * A picture whose address is a Dispatch artifact (`![shot.png](dispatch://…@v1)`, what a pasted
+ * picture is written as, or the same without `@vN` for its latest version) shows through
+ * `DispatchPicture`: at its own size scaled down to the column, opening at full size on a click,
+ * in `block`; as a thumbnail beside its caption in `inline`. A picture on another website renders
+ * as Proof renders it.
  *
  * Once the schema and Proof's headless engine are loaded (the first body on the page loads
  * them), a body of at most `markdownWorkerThreshold` characters renders synchronously in the
  * layout phase of the commit that mounts it (`useRenderedMarkdown`); only the very first render
  * on a page, or a schema that failed to load, takes the asynchronous path. A longer body is
  * parsed off the page's own thread, so it holds its own text, marked `data-markdown-pending`,
- * until the parse worker answers (`markdown-engine.ts`), and the `block` variant then fills the
- * element a piece at a time (`paintBlockInSlices`), so the 16,000 elements of an 8,000-item list
- * never reach the page in one task. A preview that must clamp its rendered line is
- * `MarkdownPreview`, which parses with the same engine.
+ * until the parse worker answers (`markdown-engine.ts`). A stored text waits for neither: its
+ * `tree` is drawn in the commit that mounts it, however long it is. Either way, the `block`
+ * variant fills the element a piece at a time (`paintBlockInSlices`) wherever the document holds
+ * more nodes than one task puts into the page (`paintsAcrossTasks`), so the 16,000 elements of
+ * an 8,000-item list never reach it in one task. A preview that must clamp its rendered line is
+ * `MarkdownPreview`, which draws the same trees with the same engine.
+ *
+ * A bare issue key, and a `#` and the id of a question block of `source`'s document, read as
+ * references too, and link where they name something (`useTextReferences`). A caller names the
+ * record this text is in `source`, and the server says which document its `#id`s resolve
+ * against; text that is no record's passes nothing and gets no `#id` links, which is right.
+ * The text those references are read from is `markdown`, unless the caller names another in
+ * `referenceText`.
  */
 export function MarkdownBody({
   markdown,
   onRendered,
+  referenceText = markdown,
   softBreaks = "space",
+  source,
+  tree,
   variant = "block",
 }: {
+  /** The text this body holds: parsed and drawn where it has no `tree`, and written into the
+   *  element as its literal characters where neither the tree nor the markdown could be drawn -
+   *  no engine, a tree the schema refuses, a parse the parser refuses (`useRenderedMarkdown`).
+   *  So it is this element's own text and no more of its field than that: a caller drawing one
+   *  block of a longer text passes that block's text here, or the fallback writes the whole
+   *  field once for every block of it. */
   markdown: string;
   onRendered?: () => void;
+  /** The text whose references this body links, where that is not the text it draws: the whole
+   *  field a caller is drawing one block of. The references belong to the field - a link's
+   *  target and the backticks that end a key are in its markdown, and a block of it holds
+   *  neither - while what this element draws is the block alone, so the two are different texts
+   *  and each is read for its own thing. Defaults to `markdown`, which is every caller drawing
+   *  a whole field. */
+  referenceText?: string;
   /** What a single newline inside a paragraph becomes: `"space"` for a document (hard-wrapped
    *  Markdown is one paragraph), `"line"` for text whose author meant its lines as lines, such
-   *  as a model's streamed turn (`SoftBreaks`). */
+   *  as a model's streamed turn (`SoftBreaks`). Read only for a text with no `tree`: a stored
+   *  text was read by the server under the document's own policy. */
   softBreaks?: SoftBreaks;
+  /** The record this text is - the ask, comment, message or document version whose text it is
+   *  (`TextSource`); none for text of no record, which links no `#id`. */
+  source?: TextSource;
+  /** The reading Go made of this stored text, which the body draws rather than parsing the
+   *  markdown again. Absent for the three texts Dispatch does not store - a live agent turn, a
+   *  GitHub body in a link preview, and a write the server has not stored yet - and for a stored
+   *  text whose answer came from a pod of the build before this one during a rolling deploy,
+   *  which is why `reference-target.ts` and `markdown-engine.ts` still reach the browser parser
+   *  for a stored text: that fallback is the two-builds case, not a defect. */
+  tree?: DisplayTree;
   variant?: "block" | "inline";
 }): ReactNode {
   // One ref per tag, since a `<div>` and a `<span>` type their refs differently.
   const blockRoot = useRef<HTMLDivElement>(null);
   const inlineRoot = useRef<HTMLSpanElement>(null);
   const inline = variant === "inline";
+  const references = useTextReferences(referenceText, source);
   const { isFallback, isPending, portals } = useRenderedMarkdown(
     inline ? inlineRoot : blockRoot,
     markdown,
+    tree,
     inline ? paintInline : paintBlock,
     {
       pictures: variant,
       onRendered,
       paintInSlices: inline ? undefined : paintBlockInSlices,
+      references,
       softBreaks,
     }
   );

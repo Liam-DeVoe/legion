@@ -4,6 +4,7 @@ import { DELIVERY_DUPLICATE_WINDOW_MS, RECEIPT_TIMEOUT_CAUSE } from "@legion/con
 import {
   broadcastDelivery,
   type DeliveryOutcome,
+  deliveryOutcomeState,
   duplicateText,
   isSafeRetry,
   plainDelivery,
@@ -60,6 +61,19 @@ test("a queued attempt is never offered a retry, and reads as stored for a stopp
     { sessionId: "s1", storedTitle: undefined },
     " is stopped; it gets the message if it runs again within 72 hours",
   ]);
+});
+
+// The route table carries an attempt's state as a plain string, and every surface reads it
+// through this one narrowing: a queued attempt must come through it queued, or every surface
+// draws it as sent (INFRA-626). A word this build does not know still reads as sent.
+test("an attempt's state is read as one of the four, a queued one as queued", () => {
+  expect(["pending", "sent", "queued", "failed"].map(deliveryOutcomeState)).toEqual([
+    "pending",
+    "sent",
+    "queued",
+    "failed",
+  ]);
+  expect(deliveryOutcomeState("held")).toBe("sent");
 });
 
 test("an attempt the stream already had is not a safe retry either", () => {

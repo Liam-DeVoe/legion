@@ -11,15 +11,24 @@
 // arriving behind it, and that is what the reader would read until that frame's own answer and
 // its whole paint had landed: the regression this change has now repeated twice
 // (sjawhar/legion#2519, `useRenderedMarkdown`).
-import { expect, type Page, test } from "@playwright/test";
+// `markdownWorkerThreshold` comes from the module that carries it and imports nothing: the
+// engine around it (`markdown-engine.ts`) is a browser module this spec's process cannot load.
+// The row at the end of this file sizes its turn by it, since a turn under it is parsed on the
+// page's own thread and asks for no worker chunk to refuse.
+import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { type FakeSession, setLiveSessions } from "./agents";
 import { publishAgentStreamFrame } from "./api";
 import { expectSettled, looseTextLength, markdownBody } from "./heavy-bodies-page";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 declare global {
   interface Window {
+    /** How many batches the recorder has seen land in a body that already held blocks of the
+     *  same paint while the turn streamed: the window this row is about, counted as it happens,
+     *  so the row can wait for the page to be in it rather than hope its clock lands a frame
+     *  there (`aPaintOfTheTurnIsPartWayThrough`). */
+    __heavyStreamPartBuilt?: number;
     /** Every sample the streamed turn's recorder has taken, in order. */
     __heavyStreamSamples?: StreamSample[];
     /** Told by the row that the turn's last frame is about to go out, so every sample after it
@@ -27,10 +36,6 @@ declare global {
     __heavyStreamTurnEnded?: () => void;
   }
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /**
  * How many paragraphs the turn holds and how long the row leaves between frames, which the
@@ -121,7 +126,7 @@ function streamedBody(count: number): string {
 
 /** One snapshot of the one turn: every frame carries the same message id, so each replaces the
  *  turn's whole text, and `seq` orders the snapshots. */
-function turnFrame(seq: number, paragraphs: number, streaming: boolean): object {
+function turnFrame(seq: number, paragraphs: number, streaming: boolean): Record<string, unknown> {
   return {
     kind: "message",
     message: {
@@ -152,6 +157,7 @@ async function recordTheStreamedTurn(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const samples: StreamSample[] = [];
     let streaming = true;
+    window.__heavyStreamPartBuilt = 0;
     window.__heavyStreamSamples = samples;
     window.__heavyStreamTurnEnded = () => {
       streaming = false;
@@ -194,6 +200,9 @@ async function recordTheStreamedTurn(page: Page): Promise<void> {
       }
       const blocks = body.querySelectorAll("p, li").length;
       samples.push({ at, blocks, grew, paintedFrom, raw, streaming });
+      if (grew && streaming) {
+        window.__heavyStreamPartBuilt = (window.__heavyStreamPartBuilt ?? 0) + 1;
+      }
       held = blocks;
     };
     new MutationObserver(take).observe(document, {
@@ -213,9 +222,82 @@ function sleepUntil(at: number): Promise<void> {
   return promise;
 }
 
-test("a reader who opens the live view while a long turn streams is never shown a frame's text in front of the body", async ({
+/** How long the row waits for the page to be part-way through painting the turn it opened on
+ *  before it streams into it anyway. A shape that cannot be caught part-way ends the wait as
+ *  soon as it has painted rather than spending this, so what this covers is the one case it is
+ *  for: the first parse and the first batches of a 4,000-paragraph turn on a loaded machine
+ *  (`aPaintOfTheTurnIsPartWayThrough`). */
+const reachThePaintMs = 15_000;
+
+/**
+ * Waits until the page is part-way through a paint of the turn it opened on, and answers what
+ * ended the wait.
+ *
+ * The window this row is about is a frame arriving while a paint of this turn is between two of
+ * its batches, and the row used to publish its frames on a clock and hope one landed there.
+ * Under four Playwright workers none does. The page cannot paint a frame before the parse
+ * worker answers one, and a stream published into a page that is behind only makes that answer
+ * later: on this pod of two cores at four workers, Chromium's first paint of this turn landed
+ * 5.1 s into a 4.8 s stream, so all 36 samples taken while the turn streamed were of a body
+ * holding no blocks at all and the row's own guard red it - as it red the WebKit row of CI run
+ * 125366889641, with no part-built batch in 61 samples (sjawhar/legion#2612).
+ *
+ * So the stream waits for the page rather than for its own clock: no frame goes out until the
+ * turn's body is being filled a batch at a time, and from there the frames land in a page with
+ * a paint running - the opening body's own, which is 4,000 paragraphs in some sixteen batches
+ * (`ATTACH_BATCH` in `useRenderedMarkdown.tsx`), and then the paints the frames themselves bring.
+ *
+ * Two other things end the wait, and both leave the guards below to red rather than passing a
+ * row that measured nothing. A body painted whole - every block of it in one task, which is
+ * what `DISPATCH_STREAM_PROBE_PARAGRAPHS=2` makes this turn - can never be caught part-way, and
+ * the page says so by dropping the pending marker, so the wait ends there instead of holding
+ * the row for nothing. And a page that does neither within `waitMs` is streamed into anyway,
+ * which the guards read as the window never reached.
+ */
+async function aPaintOfTheTurnIsPartWayThrough(page: Page, waitMs: number): Promise<string> {
+  const ended = await page.waitForFunction(
+    (until) => {
+      if ((window.__heavyStreamPartBuilt ?? 0) > 0) {
+        return "a paint of it was part-way through";
+      }
+      const turns = document.querySelectorAll('[data-testid="agent-message-assistant"]');
+      const body = turns[turns.length - 1]?.querySelector(".dispatch-markdown") ?? null;
+      const painted = body !== null && body.querySelector("p") !== null;
+      if (painted && !body.hasAttribute("data-markdown-pending")) {
+        return "it was painted whole, so no paint of it can be caught part-way";
+      }
+      // Nothing yet, which is the empty answer Playwright polls on until the deadline here
+      // hands it one.
+      return Date.now() < until ? "" : "neither happened";
+    },
+    Date.now() + waitMs,
+    // The page's own deadline above is what ends this wait; this one is the backstop for a page
+    // that cannot run a script at all.
+    { timeout: 2 * waitMs }
+  );
+  return await ended.jsonValue();
+}
+
+// SLOW(>=2s): the stream is the measurement. The row waits for the page to be part-way through
+// painting a 4,000-paragraph turn and then publishes sixty frames into it, 80 ms apart, which
+// is 4.8 s of real time on top of that wait; the row's own two guards red it where the window
+// was never reached, so a shorter stream or a smaller turn would leave it green while proving
+// nothing (the comments above each number say so).
+// @webkit @firefox: a Web Worker's chunk, its deadline and a paint that arrives after it.
+// @pr: Live delivery: a reader opening the live view mid-stream must never be shown a frame's text in front of the body.
+test("a reader who opens the live view while a long turn streams is never shown a frame's text in front of the body @webkit @firefox @pr", async ({
   browser,
 }) => {
+  // What this row spends is the page's own work, three times over: the first parse and paint of
+  // a 4,000-paragraph turn before a frame goes out (1.1 to 4.9 s at four workers on this pod), the
+  // sixty frames of the stream, and the parse and paint of the whole 4,061-paragraph turn at the
+  // end, which is another 5 to 9 s there. The row used to overlap the first of those with the
+  // stream and measure nothing for it; measuring the window costs that overlap, and 30 s - the
+  // suite's blanket default - cut a run of it off at four workers with every guard already
+  // satisfied (sjawhar/legion#2612). The deadline is the room a node slower than this one needs;
+  // nothing the row waits for is a clock of its own.
+  test.setTimeout(60_000);
+
   const session = streamingSession.session_id;
   await setLiveSessions([streamingSession]);
   await publishAgentStreamFrame(
@@ -234,6 +316,18 @@ test("a reader who opens the live view while a long turn streams is never shown 
     // nobody. The turn is the reader's own text here, with its paint still to come.
     await expect(turns).toHaveCount(1);
     const turn = turns.last();
+
+    // The stream starts where the window is, not where a clock is: the page is painting this
+    // turn a batch at a time before its first frame goes out, so every frame of it arrives in a
+    // page with a paint running (`aPaintOfTheTurnIsPartWayThrough`). What ended this wait is on
+    // the result, since a wait ended by a body painted whole is a run whose guards below will
+    // red, and the reader of that run should see why.
+    const reachedAt = Date.now();
+    const reached = await aPaintOfTheTurnIsPartWayThrough(page, reachThePaintMs);
+    test.info().annotations.push({
+      description: `${reached}, ${Date.now() - reachedAt} ms after the turn was in the page`,
+      type: "before the first frame of the stream",
+    });
 
     /** When the server had each frame of the stream, which is a socket hop short of when the
      *  page had it: what a frame landing inside a paint is read from, below. */
@@ -326,6 +420,70 @@ test("a reader who opens the live view while a long turn streams is never shown 
         `${samples.length} recorded ones followed a frame published into its own paint, at ` +
         `${streamedParagraphs} paragraphs and ${streamedFrameGapMs} ms a frame`
     ).toBeGreaterThan(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+/**
+ * The parse worker's own chunk, as Vite names a module worker's bundle - the diagram renderer
+ * already ships `mermaid-render.worker-<hash>.js` from
+ * `new Worker(new URL("./mermaid-render.worker.ts", import.meta.url), { type: "module" })`. The
+ * row below addresses the worker by this URL, so the implementation must bundle the parse worker
+ * as its own chunk named from `markdown-parse.worker.ts`; nothing else here depends on how the
+ * worker is built.
+ */
+const workerChunk = /markdown-parse\.worker[^/]*\.js(\?.*)?$/;
+
+/** The paragraphs the turn below holds: enough that it is longer than `markdownWorkerThreshold`
+ *  and so the worker's to parse, since `paragraph <n>` and the blank line after it are at least
+ *  13 characters. A turn under that length is parsed on the page's own thread and asks for no
+ *  chunk to refuse. */
+const refusedChunkParagraphs = Math.ceil(markdownWorkerThreshold / "paragraph 0\n\n".length) + 50;
+
+// A worker that cannot be created, whose chunk fails to load, that crashes or that misses its
+// deadline falls back to parsing on the page, never to no formatting: the reader waits, and then
+// reads the turn as its paragraphs. `data-markdown-fallback` keeps meaning only that the parser
+// itself refused the body, so it is absent here. This row measures no main-thread gap: the page
+// is doing on its own thread what the worker could not.
+//
+// It belongs to this spec rather than to `heavy-bodies.e2e.ts`, where it was written, because a
+// live agent turn is the text the worker still parses: a stored comment, message or ask reply
+// arrives with the tree the server read it into and is parsed nowhere, whatever its length
+// (`markdown-engine.ts`), so no body of the Conversation, the Inbox or a hover card asks for the
+// worker's chunk at all (sjawhar/legion#2712).
+// SLOW(>=2s): with the worker's chunk refused, the turn is parsed and painted on the page's own
+// thread, which is the slower of the two paths by design and the one this row is here to prove
+// still ends in a formatted turn.
+test("a long streamed turn still ends formatted when the parse worker's chunk cannot load", async ({
+  browser,
+}) => {
+  const session = streamingSession.session_id;
+  await setLiveSessions([streamingSession]);
+  await publishAgentStreamFrame(
+    session,
+    { frames: [turnFrame(1, refusedChunkParagraphs, false)], session_id: session, v: 1 },
+    "replay"
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    let asked = false;
+    await alice.route(workerChunk, async (route) => {
+      asked = true;
+      await route.abort();
+    });
+    const page = await alice.newPage();
+    await page.goto(`/agents/${session}/live`);
+    const turns = page.getByTestId("agent-message-assistant");
+    await expect(turns).toHaveCount(1);
+    const turn = turns.last();
+    await expect(markdownBody(turn).locator("p")).toHaveCount(refusedChunkParagraphs);
+    await expectSettled(turn);
+    expect(
+      asked,
+      "the page never asked for a markdown-parse.worker chunk, so none was refused"
+    ).toBe(true);
   } finally {
     await alice.close();
   }

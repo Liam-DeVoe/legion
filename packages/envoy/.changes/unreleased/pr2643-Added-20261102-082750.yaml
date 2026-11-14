@@ -1,5 +1,21 @@
 kind: Added
-body: A send answers whether its target session is connected or stopped, stores a message for a stopped session Envoy still knows instead of answering 404, and takes `connected_only` to refuse a stopped target rather than store for it. A publish answers how many sessions get the message and how many of those are running, `GET /v1/registry/<id>?include_stopped=1` answers a stopped session's record, and a listener whose NATS user cannot open the new `envoy_known_sessions` bucket logs one line and runs without the counts.
+body: |-
+  A send answers `state`, `connected` or `stopped`, beside `recipient_state`. The listener asks the
+  target's relay subject whether anything still holds it, with one core request that carries only
+  the header `Envoy-Probe: 1` and waits one second: a reply or silence is `connected`, and NATS
+  no-responders is `stopped`. A session with no registration now that registered in the last 30
+  days is `stopped` too, from its record in the new `envoy_known_sessions` bucket, and its message
+  is stored for its own consumer and answered 200 instead of 404. A send with
+  `connected_only: true` to a stopped session is refused
+  `409 {"error":"the session is stopped"}` and nothing is stored. A publish to a topic the stream
+  captures answers `recipients` and `recipients_connected`, and `GET /v1/registry/<id>` takes
+  `stopped` in its `include=` list. The bucket is in `bus.ListenerBuckets()`, so envoy-infra grants
+  it to the listener, host and Dispatch users; a listener whose NATS user may not open it logs the
+  bucket once, answers no counts and no stopped session, and opens it in the background once the
+  grant arrives, with no restart. Dispatch records a message the listener stored for a stopped
+  session as a `queued` attempt, shows it as
+  `Queued: <session> is stopped; it gets the message if it runs again within 72 hours` in place of
+  a failure, and sends its model and effort switch with `connected_only`.
 time: 2026-11-02T08:27:50.533771962Z
 custom:
     Issue: pr2643

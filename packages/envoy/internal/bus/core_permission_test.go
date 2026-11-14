@@ -1,6 +1,7 @@
 package bus_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -53,8 +54,9 @@ func roleEnvelope(topic string) contracts.Envelope {
 
 // A core publish the server denies returns the denial, naming the subject, where core NATS itself
 // reports nothing to the publisher; a granted one after it is still accepted and delivered, so
-// the connection's recorded violation does not fail every later publish.
-func TestPublishCoreReportsAPublishNATSDenies(t *testing.T) {
+// the connection's recorded violation does not fail every later publish. Publish takes the core
+// transport for these role lanes (bus.UsesCoreTransport).
+func TestPublishReportsACorePublishNATSDenies(t *testing.T) {
 	client, subscriber := grantedClient(t)
 	received, err := subscriber.SubscribeSync(grantedRole)
 	if err != nil {
@@ -64,7 +66,7 @@ func TestPublishCoreReportsAPublishNATSDenies(t *testing.T) {
 		t.Fatalf("flush subscription: %v", err)
 	}
 
-	err = client.PublishCore(roleEnvelope(deniedRole))
+	err = client.Publish(roleEnvelope(deniedRole))
 	if !errors.Is(err, bus.ErrPublishDenied) || !errors.Is(err, natsgo.ErrPermissionViolation) {
 		t.Fatalf("denied publish returned %v, want ErrPublishDenied wrapping the permissions violation", err)
 	}
@@ -72,7 +74,7 @@ func TestPublishCoreReportsAPublishNATSDenies(t *testing.T) {
 		t.Fatalf("denied publish error %q does not carry the server's violation for %s", err, deniedRole)
 	}
 
-	if err := client.PublishCore(roleEnvelope(grantedRole)); err != nil {
+	if err := client.Publish(roleEnvelope(grantedRole)); err != nil {
 		t.Fatalf("granted publish after a denial returned %v", err)
 	}
 	if _, err := received.NextMsg(5 * time.Second); err != nil {
@@ -131,17 +133,17 @@ func TestPublishReportsAJetStreamPublishNATSDenies(t *testing.T) {
 	}
 }
 
-// A role-lane forward the server denies returns the denial at once, never ErrReceiptTimeout,
-// which the listener treats as delivered to a live holder.
-func TestRequestCoreToReportsAForwardNATSDenies(t *testing.T) {
+// A role-lane forward the server denies returns the denial at once, before any wait: the listener
+// reports it delivery_failed rather than holding the role send open for its whole window.
+func TestStartRequestStoredToReportsAForwardNATSDenies(t *testing.T) {
 	client, _ := grantedClient(t)
 	started := time.Now()
-	err := client.RequestCoreTo(deniedRole, roleEnvelope(deniedRole), "", 2*time.Second)
-	if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, bus.ErrReceiptTimeout) {
+	_, err := client.StartRequestStoredTo(deniedRole, roleEnvelope(deniedRole), bus.ForwardMsgID("denied-forward", deniedRole), 2*time.Second)
+	if !errors.Is(err, bus.ErrPublishDenied) {
 		t.Fatalf("denied forward returned %v, want ErrPublishDenied", err)
 	}
 	if elapsed := time.Since(started); elapsed >= 2*time.Second {
-		t.Fatalf("denied forward waited %s, the whole receipt window", elapsed)
+		t.Fatalf("denied forward waited %s, the whole forward window", elapsed)
 	}
 }
 
@@ -151,7 +153,7 @@ func TestAWindowRequestReportsAForwardNATSDenies(t *testing.T) {
 	client, _ := grantedClient(t)
 	started := time.Now()
 	select {
-	case err := <-client.WindowUntil(nil).Request(deniedRole, roleEnvelope(deniedRole), bus.RequestOptions{Timeout: 2 * time.Second}):
+	case err := <-client.WindowUntil(nil).Request(deniedRole, roleEnvelope(deniedRole), bus.RequestOptions{MsgID: bus.ForwardMsgID("denied", deniedRole), Timeout: 2 * time.Second}):
 		if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, bus.ErrNotAcknowledged) {
 			t.Fatalf("denied Request answered %v, want ErrPublishDenied", err)
 		}
@@ -163,11 +165,29 @@ func TestAWindowRequestReportsAForwardNATSDenies(t *testing.T) {
 	}
 }
 
+// The connection probe's request (RequestCore) the server denies answers the denial at once, not
+// as a subject that kept silent until the deadline: the send route counts the session connected
+// and logs the denial (cmd/listener), and a probe that waited would spend the send's budget.
+func TestARequestCoreNATSDeniesAnswersTheDenialAtOnce(t *testing.T) {
+	client, _ := grantedClient(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err := client.RequestCore(ctx, deniedRole, natsgo.Header{"Envoy-Probe": []string{"1"}})
+	if !errors.Is(err, bus.ErrPublishDenied) {
+		t.Fatalf("denied request answered %v, want ErrPublishDenied", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("denied request waited %s, the whole deadline", elapsed)
+	}
+}
+
 // The server's refusal of the core subscription the client sent again on reconnecting reads as an
 // inactive subscription until a server that grants it accepts it again. nats.go keeps a refused
-// subscription valid and only records the refusal, so the listener's live topics lane, reconnected
-// onto a server restarted without its grant on notifications.>, would deliver nothing while its
-// /healthz answered healthy and subscribed.
+// subscription valid and only records the refusal, so the listener's role lane, reconnected onto
+// a server restarted without its grant on notifications.role.>, would deliver nothing while its
+// /healthz answered healthy and subscribed. CoreSubOK is what that check reads
+// (cmd/listener/main.go, "role lane subscription inactive").
 func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T) {
 	const (
 		subject = "notifications.>"
@@ -285,9 +305,12 @@ func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 	if !held.IsValid() {
 		t.Fatal("nats.go dropped the revoked subscription; the test proves nothing about a refusal it keeps valid")
 	}
+	// The server's own wording for the refusal has changed between versions (v2.15.1 names the
+	// queue group between the subject and the sid), so what this asserts is the refusal and the
+	// subject it names, not the sentence.
 	if err := client.Conn.LastError(); !errors.Is(err, natsgo.ErrPermissionViolation) ||
-		!strings.Contains(err.Error(), `Permissions Violation for Subscription to "`+subject+`" (sid "`) {
-		t.Fatalf("the server's last error is %v, want its revocation of %s naming the sid", err, subject)
+		!strings.Contains(err.Error(), `Permissions Violation for Subscription to "`+subject+`"`) {
+		t.Fatalf("the server's last error is %v, want its revocation of %s", err, subject)
 	}
 
 	server.Restart(t, granted)

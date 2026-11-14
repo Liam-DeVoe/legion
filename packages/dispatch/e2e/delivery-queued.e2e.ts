@@ -1,6 +1,6 @@
 import { shortSessionId } from "@legion/contracts";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
+import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
   BROADCAST_REFUSED,
   type FakeSession,
@@ -12,8 +12,8 @@ import {
   setSessionStopped,
 } from "./agents";
 import { createIssue, createMessage, createProject } from "./api";
-import { resetDatabase } from "./seed";
 import { sessionIds } from "./session-ids";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -47,10 +47,6 @@ const observer: FakeSession = {
   session_id: sessionIds.observer,
   title: "Observer",
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** A top-level Conversation turn containing `text` exactly. */
 function turn(page: Page, text: string): Locator {
@@ -157,16 +153,14 @@ test("a broadcast keeps a session that stopped after it was ticked, and queues f
   browser,
 }) => {
   test.skip(test.info().project.name !== "chromium", "one browser proves the broadcast flow");
-  // The composer learns of a departure on its 15 s agent poll, which this row waits out.
-  test.setTimeout(60_000);
+  // The composer learns of a departure on its 15 s agent poll, which the page's own clock spends.
   await setLiveSessions([planner, observer]);
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    await page.clock.install();
     await page.goto("/agents");
-    const agents = page.getByRole("region", { name: "Agents" });
-    await agents.getByRole("button", { name: "No Dispatch activity (2)" }).click();
     for (const title of ["Planner", "Observer"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
@@ -178,12 +172,13 @@ test("a broadcast keeps a session that stopped after it was ticked, and queues f
     // list: Envoy may still know it, and only the server can say. The chip reads the short form
     // of its id, since the registry no longer holds its title.
     await setSessionStopped(observer.session_id, true);
+    await page.clock.fastForward(AGENT_REGISTRY_POLL_MS);
     await expect(
       composer.getByRole("button", {
         exact: true,
         name: `${shortSessionId(observer.session_id)} ✕`,
       })
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible();
     await expect(composer.getByText(/^Excluded:/)).toHaveCount(0);
     const send = composer.getByRole("button", { name: "Send to 2" });
     await expect(send).toBeEnabled();
@@ -214,16 +209,14 @@ test("the broadcast strip counts a queued copy rather than calling the broadcast
   browser,
 }) => {
   test.skip(test.info().project.name !== "chromium", "one browser proves the strip");
-  // The composer learns of a departure on its 15 s agent poll, which this row waits out.
-  test.setTimeout(60_000);
+  // The composer learns of a departure on its 15 s agent poll, which the page's own clock spends.
   await setLiveSessions([planner, observer]);
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    await page.clock.install();
     await page.goto("/agents");
-    const agents = page.getByRole("region", { name: "Agents" });
-    await agents.getByRole("button", { name: "No Dispatch activity (2)" }).click();
     const composer = page.getByRole("region", { name: "Broadcast" });
     const sends = page.getByRole("region", { name: "Sends" });
     const select = async () => {
@@ -250,12 +243,13 @@ test("the broadcast strip counts a queued copy rather than calling the broadcast
     // The Observer stops before the press: Envoy still knows it, so it stays a recipient and its
     // copy is queued for it.
     await setSessionStopped(observer.session_id, true);
+    await page.clock.fastForward(AGENT_REGISTRY_POLL_MS);
     await expect(
       composer.getByRole("button", {
         exact: true,
         name: `${shortSessionId(observer.session_id)} ✕`,
       })
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible();
     await composer.getByRole("button", { name: "Send to 2" }).click();
 
     const sent = sends.getByRole("listitem").filter({ hasText: "Report status." });

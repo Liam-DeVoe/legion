@@ -47,6 +47,9 @@ func TestFixturesReplayByteExactly(t *testing.T) {
 			if err != nil {
 				t.Fatalf("replay %s: %v", fixture.Function, err)
 			}
+			if got == nil {
+				t.Skipf("%s answers nothing this classifier keeps", fixture.Function)
+			}
 			want, err := keptFixtureOutput(fixture.Function, fixture.Output)
 			if err != nil {
 				t.Fatalf("project expected output: %v", err)
@@ -220,7 +223,12 @@ func replayFixture(function string, input json.RawMessage) ([]byte, error) {
 	case "reduceDispatchEvent":
 		return replayDispatchDecision(input)
 	case "reduceGithubEvent":
-		return replayGitHubDecision(input)
+		// The shipped GitHub reducer's recorded answer is its fix-attempt count, and no daemon
+		// counts one since a CI result stopped moving an issue (dispatch://INFRA-714/spec R1), so
+		// there is nothing of it left to replay. The records stay for the TypeScript reducer they
+		// were taken from, held to the directory contract
+		// (TestFixtureRecordsFollowTheDirectoryContract).
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unknown fixture function %q", function)
 	}
@@ -244,87 +252,14 @@ func replayDispatchDecision(input json.RawMessage) ([]byte, error) {
 	return canonicalJSON(map[string]any{"gate": fixtureGateValue(after)})
 }
 
-func replayGitHubDecision(input json.RawMessage) ([]byte, error) {
-	var decoded fixtureGithubInput
-	if err := json.Unmarshal(input, &decoded); err != nil {
-		return nil, err
-	}
-	payload, err := decodePayload(decoded.Payload)
-	if err != nil {
-		return nil, err
-	}
-	pr, found := decoded.State.pullRequest(payload)
-	if !found {
-		if decoded.canRegisterPullRequest(payload) {
-			return canonicalJSON(map[string]any{"fixAttempts": 0})
-		}
-		return canonicalJSON(map[string]any{})
-	}
-	before := pr
-	deleted := false
-	switch stringValue(payload, "kind") {
-	case "pr":
-		switch stringValue(payload, "action") {
-		case "synchronize":
-			if stringValue(payload, "head_sha") != "" && stringValue(payload, "head_sha") != pr.HeadSHA {
-				pr = AdvancePullRequestHead(pr, Arrival{}, stringValue(payload, "head_sha"))
-			}
-		case "closed":
-			deleted = true
-		}
-	case "push":
-		login := decoded.Config.ReviewAppLogin
-		push := record.ClassifiedPush{SHA: stringValue(payload, "after"), Before: stringValue(payload, "before"),
-			ByReviewApp: login != "" && stringValue(payload, "pusher") == login}
-		// The shipped state marks a head its synchronize counted before its push arrived
-		// (headCounted), not the run the Go record keeps for it: the replay opens that run, its
-		// anchor the red the shipped daemon counted the head on, at the head the push replaced (one
-		// of its own when the push names none, since the shipped daemon read one push per head).
-		if pr.HeadCounted != "" && pr.HeadCounted == push.SHA {
-			if push.Before == "" {
-				push.Before = "replay-before"
-			}
-			const red = "shipped-red"
-			pr.Run = &record.HeadRun{Pushes: append([]record.ClassifiedPush{}, pr.Pushes...), Steps: []record.RunStep{{Head: push.SHA}},
-				Anchor: record.Judgement{HeadSHA: push.Before, FixAttempts: pr.FixAttempts - 1, PlannedRed: pr.PlannedRed, CheckedHead: push.Before,
-					Failing: []string{red}, CheckRuns: []record.AttemptRun{{Name: red, ID: 1}}, Required: []string{red}, Workflows: []record.RequiredWorkflow{}}}
-		}
-		pr = ApplyPush(pr, push)
-	case "checks":
-		candidate := SettlementCandidate{CheckRuns: attemptRuns(payload), Generation: int64(numberValue(payload, "generation")), Snapshot: stringValue(payload, "snapshot"), Failing: stringSlice(payload, "failing")}
-		if settled, applied, _ := ApplySettlement(pr, candidate); applied {
-			pr, _ = BlockFixAttempt(settled, 3)
-		}
-	}
-	result := map[string]any{}
-	if deleted {
-		result["fixAttempts"] = nil
-		if before.BlockedAttempts != 0 {
-			result["blockedAttempts"] = nil
-		}
-		return canonicalJSON(result)
-	}
-	if pr.FixAttempts != before.FixAttempts {
-		result["fixAttempts"] = pr.FixAttempts
-	}
-	if pr.BlockedAttempts != before.BlockedAttempts {
-		if pr.BlockedAttempts == 0 {
-			result["blockedAttempts"] = nil
-		} else {
-			result["blockedAttempts"] = pr.BlockedAttempts
-		}
-	}
-	return canonicalJSON(result)
-}
-
 // keptFixtureOutput is the part of a record's output the Go classifier answers for: the shipped
-// reducers' fix-attempt counts and gate, and of an effective outcome its failing checks, since the
-// Go classifier keeps no settlement verdict of its own (the base branch's required checks decide,
-// HeadVerdict).
+// Dispatch reducer's gate, and of an effective outcome its failing checks, since the Go classifier
+// keeps no settlement verdict of its own. A GitHub event's recorded decision was its fix-attempt
+// count alone, which nothing counts any more, so those records are replayed no longer
+// (replayFixture) and none of them reaches here.
 func keptFixtureOutput(function string, raw json.RawMessage) ([]byte, error) {
 	keys := map[string][]string{
-		"reduceDispatchEvent": {"fixAttempts", "blockedAttempts", "gate"},
-		"reduceGithubEvent":   {"fixAttempts", "blockedAttempts", "gate"},
+		"reduceDispatchEvent": {"gate"},
 		"effectiveOutcome":    {"failing"},
 	}[function]
 	if keys == nil {
@@ -395,15 +330,11 @@ type fixturePullRequest struct {
 	Verdict       string          `json:"verdict"`
 	Failing       []string        `json:"failing"`
 	// ReviewDecision is the shipped state's; the Go record keeps it on the review round instead.
-	ReviewDecision  string                 `json:"reviewDecision"`
-	FixAttempts     int                    `json:"fixAttempts"`
-	BlockedAttempts *int                   `json:"blockedAttempts"`
-	CheckRuns       *[]record.AttemptRun   `json:"ciCheckRuns"`
-	Generation      *int64                 `json:"ciSettlementGeneration"`
-	Snapshot        *string                `json:"ciSnapshot"`
-	PendingPush     *record.ClassifiedPush `json:"pendingPush"`
-	HeadCounted     *bool                  `json:"headCounted"`
-	PlannedRed      bool                   `json:"plannedRed"`
+	ReviewDecision string                 `json:"reviewDecision"`
+	CheckRuns      *[]record.AttemptRun   `json:"ciCheckRuns"`
+	Generation     *int64                 `json:"ciSettlementGeneration"`
+	Snapshot       *string                `json:"ciSnapshot"`
+	PendingPush    *record.ClassifiedPush `json:"pendingPush"`
 }
 
 func (fixture fixturePullRequest) record() record.PullRequest {
@@ -419,14 +350,6 @@ func (fixture fixturePullRequest) record() record.PullRequest {
 	if fixture.Snapshot != nil {
 		snapshot = *fixture.Snapshot
 	}
-	blocked := 0
-	if fixture.BlockedAttempts != nil {
-		blocked = *fixture.BlockedAttempts
-	}
-	headCounted := ""
-	if fixture.HeadCounted != nil && *fixture.HeadCounted {
-		headCounted = fixture.HeadSHA
-	}
 	// The shipped state holds one pending push; the Go record keeps every one.
 	var pushes []record.ClassifiedPush
 	if fixture.PendingPush != nil {
@@ -434,24 +357,21 @@ func (fixture fixturePullRequest) record() record.PullRequest {
 		// The shipped daemon matched a head's pending push by its sha alone and read it as the push
 		// that replaced the recorded head, whatever before it named (none, from a listener that
 		// predated the field); the Go record judges a move by the chain of pushes from the recorded
-		// head (sparedMove), so the replay places the push there.
+		// head, so the replay places the push there.
 		if pending.SHA != fixture.HeadSHA {
 			pending.Before = fixture.HeadSHA
 		}
 		pushes = []record.ClassifiedPush{pending}
 	}
 	// The shipped state's verdict is always its head's (a new head cleared it), and a state that
-	// records one has settled, so its head is the checked head. The shipped daemon judged every
-	// check its settlement named, so the replay's base branch requires each check the state names
-	// failing: a red state is then red under the required set (HeadVerdict) too.
+	// records one has settled, so its head is the checked head.
 	checkedHead := ""
 	if fixture.Verdict != "" {
 		checkedHead = fixture.HeadSHA
 	}
 	return record.PullRequest{Issue: fixture.Key, Repo: fixture.Repo, Number: fixture.Number, Branch: fixture.Branch, HeadSHA: fixture.HeadSHA, CheckedHead: checkedHead,
 		HeadUpdatedAt: timestampJSON(fixture.HeadUpdatedAt), Failing: append([]string{}, fixture.Failing...),
-		FixAttempts: fixture.FixAttempts, BlockedAttempts: blocked, CheckRuns: checkRuns, Generation: generation, Snapshot: snapshot,
-		Pushes: pushes, HeadCounted: headCounted, PlannedRed: fixture.PlannedRed, Required: append([]string{}, fixture.Failing...)}
+		CheckRuns: checkRuns, Generation: generation, Snapshot: snapshot, Pushes: pushes}
 }
 
 type fixtureGate struct {

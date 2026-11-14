@@ -50,7 +50,7 @@ func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 }
 
 // The read of a session's message deliveries (S2) is an index-only scan of
-// message_deliveries_session_created (0147), never a read through message_deliveries_session
+// message_deliveries_session_taken (20261114081435), never a read through message_deliveries_session
 // (0051) of every delivery the session ever received. It is explained twice: as the custom plan a
 // statement's first runs get, and as the generic plan Postgres caches for it afterwards, which
 // knows neither the session nor the window's start.
@@ -95,7 +95,7 @@ func TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange(t *testing.T) {
 
 	since := time.Now().Add(-72 * time.Hour)
 	if custom := explain(query, "session-1", since, "notifications.agent.session-1"); !readsWindow(t, custom) {
-		t.Errorf("the custom plan reads message deliveries other than by an index-only scan of message_deliveries_session_created:\n%s", custom)
+		t.Errorf("the custom plan reads message deliveries other than by an index-only scan of message_deliveries_session_taken:\n%s", custom)
 	}
 	if _, err := tx.Exec(ctx, "prepare session_answers (text, timestamptz, text) as "+query); err != nil {
 		t.Fatalf("prepare the read: %v", err)
@@ -104,12 +104,12 @@ func TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange(t *testing.T) {
 		t.Fatalf("force generic plans: %v", err)
 	}
 	if generic := explain(`execute session_answers('session-1', now() - interval '72 hours', 'notifications.agent.session-1')`); !readsWindow(t, generic) {
-		t.Errorf("the generic plan reads message deliveries other than by an index-only scan of message_deliveries_session_created:\n%s", generic)
+		t.Errorf("the generic plan reads message deliveries other than by an index-only scan of message_deliveries_session_taken:\n%s", generic)
 	}
 }
 
 // readsWindow reports whether an EXPLAIN (FORMAT JSON) plan node, or a node under it, reads
-// message_deliveries exactly once, by an index-only scan of message_deliveries_session_created,
+// message_deliveries exactly once, by an index-only scan of message_deliveries_session_taken,
 // the window's own index. That index carries state, so the arm's `state in ('sent', 'queued')`
 // is answered from the index and the read touches no heap page.
 func readsWindow(t *testing.T, plan json.RawMessage) bool {
@@ -132,7 +132,7 @@ func deliveryReads(t *testing.T, plan json.RawMessage) (int, bool) {
 		t.Fatalf("decode plan node: %v", err)
 	}
 	if node.Relation == "message_deliveries" {
-		if node.NodeType == "Index Only Scan" && node.IndexName == "message_deliveries_session_created" {
+		if node.NodeType == "Index Only Scan" && node.IndexName == "message_deliveries_session_taken" {
 			return 1, false
 		}
 		return 0, true

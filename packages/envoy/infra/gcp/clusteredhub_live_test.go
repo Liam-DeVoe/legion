@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests in this file run what gcp:ClusteredNatsHub deploys on this machine, so they carry the
@@ -662,16 +663,14 @@ func (s *hubServer) count(text string) int { return strings.Count(s.proc.Output.
 func within(t *testing.T, timeout time.Duration, what string, check func() error) time.Duration {
 	t.Helper()
 	start := time.Now()
-	for {
-		err := check()
-		if err == nil {
-			return time.Since(start)
-		}
-		if time.Since(start) > timeout {
-			t.Fatalf("%s: not within %s: %v", what, timeout, err)
-		}
-		time.Sleep(100 * time.Millisecond)
+	var err error
+	if !testwait.Holds(timeout, 100*time.Millisecond, func() bool {
+		err = check()
+		return err == nil
+	}) {
+		t.Fatalf("%s: not within %s: %v", what, timeout, err)
 	}
+	return time.Since(start)
 }
 
 // stepDownStreamLeader asks the cluster to move stream's leadership to the server named preferred,
@@ -982,17 +981,26 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	for _, pattern := range session {
 		require.False(t, bus.SubjectContains(pattern, refused), "%s is outside core.SessionPermissions' publish grant", refused)
 	}
+	// A session receives on its own relay subject and on no notification topic of its own, so the
+	// hub refuses the credential-free user the plain notifications.> subscribe a session of an
+	// earlier release held.
+	relay := bus.DeliverSubject("live")
 	for _, s := range servers {
 		errs := make(chan error, 16)
 		conn, err := testnats.ConnectSeed(t, s.url(), "", natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) { errs <- err }))
 		require.NoError(t, err)
 		require.Equal(t, r.keys.sessionKey, s.authorizedUser(t, conn), "a client with no credential is the session user")
+		_, err = conn.SubscribeSync(relay)
+		require.NoError(t, err)
 		require.NoError(t, conn.Publish(allowed, nil))
 		require.NoError(t, conn.Publish(refused, nil))
 		awaitViolation(t, conn, errs, fmt.Sprintf("Publish to %q", refused))
+		_, err = conn.SubscribeSync(bus.NotificationTopicPrefix + ">")
+		require.NoError(t, err)
+		awaitViolation(t, conn, errs, `Subscription to "`+bus.NotificationTopicPrefix+`>"`)
 		conn.Close()
-		t.Logf("(a) a client with no credential on %s became the session user %s, published to %s and was refused a publish to %s",
-			s.name, r.keys.sessionKey, allowed, refused)
+		t.Logf("(a) a client with no credential on %s became the session user %s, subscribed to %s, published to %s, and was refused a publish to %s and a subscribe to %s>",
+			s.name, r.keys.sessionKey, relay, allowed, refused, bus.NotificationTopicPrefix)
 	}
 
 	// (b) A stream at three copies across a SIGKILL of its leader.

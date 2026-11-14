@@ -51,115 +51,31 @@ func TestPostSendsJSONAndAnswersWithTheStatus(t *testing.T) {
 	}
 }
 
-// Patch sends its body as JSON with PATCH, as GitHub's ref update takes it, and gives a refusal
-// back as an *Answer naming PATCH.
-func TestPatchSendsJSONWithPatch(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var sent struct {
-			SHA   string `json:"sha"`
-			Force bool   `json:"force"`
-		}
-		if r.Method != http.MethodPatch || r.Header.Get("Content-Type") != "application/json" || json.NewDecoder(r.Body).Decode(&sent) != nil || sent.Force {
-			http.Error(w, `{"message":"bad request"}`, http.StatusBadRequest)
-			return
-		}
-		if sent.SHA == "behind" {
-			http.Error(w, `{"message":"Update is not a fast forward"}`, http.StatusUnprocessableEntity)
-			return
-		}
-		w.Write([]byte(`{"object":{"sha":"` + sent.SHA + `"}}`))
-	}))
-	defer server.Close()
-	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
-
-	var moved struct {
-		Object struct {
-			SHA string `json:"sha"`
-		} `json:"object"`
-	}
-	if err := client.Patch(context.Background(), "/git/refs/heads/main", map[string]any{"sha": "ahead", "force": false}, &moved); err != nil || moved.Object.SHA != "ahead" {
-		t.Fatalf("Patch = %+v, %v; want the answer read", moved, err)
-	}
-	err := client.Patch(context.Background(), "/git/refs/heads/main", map[string]any{"sha": "behind", "force": false}, nil)
-	var answer *Answer
-	if !errors.As(err, &answer) || answer.Method != http.MethodPatch || answer.Path != "/git/refs/heads/main" || answer.Status != http.StatusUnprocessableEntity {
-		t.Fatalf("Patch behind = %v, want an *Answer for PATCH /git/refs/heads/main with 422", err)
-	}
-}
-
-// GraphQL posts to the client's GraphQL route itself, so an answer other than 2xx names that route
-// rather than nothing: a failed disarm logs "POST /graphql with 502", not "POST  with 502". An
-// answer that carries errors with status 200 is a *GraphQLError, whose NOT_FOUND names its path.
-func TestGraphQLNamesItsRouteAndItsErrors(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var sent struct {
-			Query string `json:"query"`
-		}
-		if r.Method != http.MethodPost || r.URL.Path != "/graphql" || json.NewDecoder(r.Body).Decode(&sent) != nil {
-			http.Error(w, `{"message":"bad request"}`, http.StatusBadRequest)
-			return
-		}
-		if strings.Contains(sent.Query, "missing") {
-			w.Write([]byte(`{"data":{"repository":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND","path":["repository","pullRequest"],"message":"Could not resolve to a PullRequest with the number of 42."}]}`))
-			return
-		}
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
-	}))
-	defer server.Close()
-	client := Client{Token: "token", API: GraphQLAPI(server.URL)}
-
-	err := client.GraphQL(context.Background(), "query { failing }", nil, nil)
-	var answer *Answer
-	if !errors.As(err, &answer) || answer.Path != "/graphql" || answer.Status != http.StatusBadGateway {
-		t.Fatalf("GraphQL on a 502 = %v, want an *Answer for POST /graphql with 502", err)
-	}
-	err = client.GraphQL(context.Background(), "query { missing }", nil, nil)
-	var failed *GraphQLError
-	if !errors.As(err, &failed) || !failed.NotFoundAt("repository", "pullRequest") || failed.NotFoundAt("repository") {
-		t.Fatalf("GraphQL on a NOT_FOUND answer = %v, want a *GraphQLError NOT_FOUND at repository.pullRequest only", err)
-	}
-}
-
-// RetryAfter reads GitHub's rate limit from either error a call returns, wrapped or not: an *Answer
-// for a REST or GraphQL answer other than 2xx, and a *GraphQLError for a RATE_LIMITED answer GitHub
-// sends with 200. It names how long GitHub asks the caller to wait and the budget the limit spent:
-// a Retry-After, a limit that reports no primary budget spent, or one whose message names the
-// secondary limit, is GitHub's secondary limit, which every call of the token meets; a primary limit
-// spends the budget x-ratelimit-resource names, or the called API's own when it names none. Any
-// other error is no limit.
+// RetryAfter reads GitHub's rate limit from the error a call returns, wrapped or not: an *Answer
+// for an answer other than 2xx. It names how long GitHub asks the caller to wait and the budget
+// the limit spent: a Retry-After, a limit that reports no primary budget spent, or one whose
+// message names the secondary limit, is GitHub's secondary limit, which every call of the token
+// meets; a primary limit spends the budget x-ratelimit-resource names, or the REST API's core
+// budget when it names none. Any other error is no limit.
 func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
 	const limited = `{"message":"API rate limit exceeded"}`
-	const graphQLLimited = `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`
 	for _, tc := range []struct {
 		name        string
-		graphQL     bool
 		status      int
 		headers     map[string]string
 		body        string
 		budget      Budget
 		least, most time.Duration
 	}{
-		{"a REST core limit", false, http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": "core"},
+		{"a REST core limit", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": "core"},
 			limited, BudgetCore, 9 * time.Minute, 10 * time.Minute},
-		{"a REST limit naming no resource", false, http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
+		{"a REST limit naming no resource", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
 			limited, BudgetCore, 9 * time.Minute, 10 * time.Minute},
-		{"a GraphQL limit answered with 403", true, http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": "graphql"},
-			limited, BudgetGraphQL, 9 * time.Minute, 10 * time.Minute},
-		{"a GraphQL limit answered with 403, naming no resource", true, http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
-			limited, BudgetGraphQL, 9 * time.Minute, 10 * time.Minute},
-		{"GraphQL's RATE_LIMITED", true, http.StatusOK, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": "graphql"},
-			graphQLLimited, BudgetGraphQL, 9 * time.Minute, 10 * time.Minute},
-		{"GraphQL's RATE_LIMITED reporting no primary budget spent", true, http.StatusOK, nil, graphQLLimited, BudgetSecondary, time.Minute, time.Minute},
-		{"GraphQL's RATE_LIMITED with a Retry-After", true, http.StatusOK, map[string]string{"Retry-After": "17"}, graphQLLimited, BudgetSecondary, 17 * time.Second, 17 * time.Second},
-		{"GraphQL's RATE_LIMITED for a secondary limit, its primary budget left", true, http.StatusOK, map[string]string{"X-RateLimit-Remaining": "4000", "X-RateLimit-Resource": "graphql"},
-			`{"data":null,"errors":[{"type":"RATE_LIMITED","message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`, BudgetSecondary, time.Minute, time.Minute},
-		{"GraphQL's RATE_LIMITED for a secondary limit, its primary budget spent too", true, http.StatusOK, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": "graphql"},
-			`{"data":null,"errors":[{"type":"RATE_LIMITED","message":"You have exceeded a secondary rate limit."}]}`, BudgetSecondary, 9 * time.Minute, 10 * time.Minute},
-		{"a secondary limit's 429", false, http.StatusTooManyRequests, map[string]string{"Retry-After": "17"}, limited, BudgetSecondary, 17 * time.Second, 17 * time.Second},
-		{"a secondary limit named by its message", false, http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "4321"},
+		{"a secondary limit's 429", http.StatusTooManyRequests, map[string]string{"Retry-After": "17"}, limited, BudgetSecondary, 17 * time.Second, 17 * time.Second},
+		{"a secondary limit named by its message", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "4321"},
 			`{"message":"You have exceeded a secondary rate limit."}`, BudgetSecondary, time.Minute, time.Minute},
-		{"an installation refused", false, http.StatusForbidden, nil, `{"message":"Resource not accessible by integration"}`, "", 0, 0},
+		{"an installation refused", http.StatusForbidden, nil, `{"message":"Resource not accessible by integration"}`, "", 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -170,12 +86,7 @@ func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 				w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			var err error
-			if tc.graphQL {
-				err = Client{Token: "token", API: GraphQLAPI(server.URL)}.GraphQL(context.Background(), "mutation { merge }", nil, nil)
-			} else {
-				err = Client{Token: "token", API: server.URL + "/repos/acme/widgets"}.Get(context.Background(), "/git/ref/heads/main", nil)
-			}
+			err := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}.Get(context.Background(), "/git/ref/heads/main", nil)
 			after, budget := RetryAfter(fmt.Errorf("wrapped: %w", err))
 			if budget != tc.budget || after < tc.least || after > tc.most {
 				t.Fatalf("RetryAfter(%v) = %s, %q; want %q between %s and %s", err, after, budget, tc.budget, tc.least, tc.most)
@@ -334,29 +245,5 @@ func TestARateLimitsResetFarInTheFutureWaitsNoLongerThanAnHour(t *testing.T) {
 	}
 	if !answer.RateLimited || answer.RetryAfter != time.Hour {
 		t.Fatalf("a reset six hours out = rate limited %v, retry after %s; want true and an hour's cap", answer.RateLimited, answer.RetryAfter)
-	}
-}
-
-// NotFound reads GitHub's 404 out of an error, however deeply its caller wrapped the *Answer, and
-// is false for every other answer, for an error that carries none, and for no error at all, so a
-// caller reads only a ref, a file or a repository GitHub does not have as missing.
-func TestNotFoundReadsGitHubs404(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "no error", err: nil},
-		{name: "an error carrying no answer", err: errors.New("read refs/heads/main: dial tcp: connection refused")},
-		{name: "another answer", err: &Answer{Method: http.MethodGet, Path: "/git/ref/heads/main", Status: http.StatusForbidden}},
-		{name: "a 404", err: &Answer{Method: http.MethodGet, Path: "/git/ref/heads/main", Status: http.StatusNotFound}, want: true},
-		{name: "a wrapped 404", want: true, err: fmt.Errorf("read refs/heads/main of acme/widgets: %w",
-			fmt.Errorf("get: %w", &Answer{Method: http.MethodGet, Path: "/git/ref/heads/main", Status: http.StatusNotFound}))},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := NotFound(tc.err); got != tc.want {
-				t.Fatalf("NotFound(%v) = %v, want %v", tc.err, got, tc.want)
-			}
-		})
 	}
 }

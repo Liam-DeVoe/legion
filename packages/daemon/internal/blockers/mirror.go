@@ -40,20 +40,40 @@ func NewMirror(store record.Store, project string) *Mirror {
 	return &Mirror{store: store, project: project}
 }
 
-// Apply writes the row of a Dispatch issue fact and every row the periodic turn's re-read
-// observed, the claim of a claim event, and does nothing for every other kind of fact — a tick
-// that observed nothing, which is almost every turn, included.
+// Apply writes the row of a Dispatch issue fact, of every child a release of children adopts, as
+// that release's own read showed it, and of every row the periodic turn's re-read observed, the
+// claim of a claim event, and does nothing for every other kind of fact — a tick that observed
+// nothing, which is almost every turn, included.
 func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	switch fact := fact.(type) {
 	case intake.DispatchIssue:
 		observed := intake.IssueStatus{Key: fact.Key, Status: fact.Status, Blockers: fact.Blockers, Seq: fact.Seq,
-			ClaimedBy: fact.ClaimedBy, ClaimKnown: fact.ClaimKnown}
+			ClaimedBy: fact.ClaimedBy, ClaimKnown: fact.ClaimKnown, Parent: fact.Parent}
 		if err := m.put(ctx, tx, observed); err != nil {
 			return intake.Result{}, err
 		}
 	case intake.DispatchClaim:
 		if err := m.store.PutDispatchClaim(ctx, tx, fact.Key, fact.ClaimedBy, fact.Seq); err != nil {
 			return intake.Result{}, err
+		}
+	case intake.ChildAdoption:
+		// An adopted root is recorded already, so no observation of it reaches a handler
+		// (intake's settleObserved) and nothing else would bring the release's read here. Without
+		// it the adoption's own promotion, judging by a row written before the person's edit,
+		// starts a root that edit blocked (dispatch://INFRA-714/spec R3).
+		for _, child := range fact.Children {
+			if child.Seq == 0 {
+				continue
+			}
+			// The parent travels with the status: a write at an equal sequence still replaces the
+			// parent column, so an adoption that left it out would erase the child's mirrored
+			// parent and the children-first rule (record.ChildWaitsOf) would stop seeing the
+			// child under it.
+			observed := intake.IssueStatus{Key: child.Issue, Status: child.Status, Blockers: child.BlockedBy,
+				Parent: child.Parent, Seq: child.Seq}
+			if err := m.put(ctx, tx, observed); err != nil {
+				return intake.Result{}, fmt.Errorf("mirror the release's read of %s: %w", child.Issue, err)
+			}
 		}
 	case intake.ControllerTick:
 		for _, observed := range fact.Observed {
@@ -67,10 +87,17 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 
 // put is one observation's row, under the daemon's project and behind the sequence fences
 // PutDispatchIssue applies: an observation older than the row's own leaves it exactly as it
-// stands, and one that does not show the claim leaves the claim as it stands.
+// stands, and one that does not show the claim leaves the claim as it stands. The parent is the
+// one field written outside that fence (record.PutDispatchIssue), for an observation at the
+// sequence the row already holds: that is a listing of an issue no event has touched since,
+// which is the only way the parent of an issue the daemon has never recorded reaches the mirror
+// at all. Every observation carries the parent it saw, an event's own payload included, and no
+// parent is one of the things it can have seen, so a child a person took out from under its
+// parent is mirrored as the issue Dispatch now shows and ends that parent's children-first wait.
 func (m *Mirror) put(ctx context.Context, tx pgx.Tx, observed intake.IssueStatus) error {
 	row := record.DispatchIssueRow{
 		Key: observed.Key, Project: m.project, Status: observed.Status, Blockers: observed.Blockers, Seq: observed.Seq,
+		Parent: observed.Parent,
 	}
 	if observed.ClaimKnown {
 		row.ClaimedBy, row.ClaimSeq = observed.ClaimedBy, observed.Seq
@@ -80,10 +107,16 @@ func (m *Mirror) put(ctx context.Context, tx pgx.Tx, observed intake.IssueStatus
 
 // Observed is one summary of a Dispatch listing as an observation of that issue, the facts a
 // mirror row is written from: the boot's reconcile and the periodic turn's listing both read the
-// project this way, and both write what it returns. A listing always shows the claim.
+// project this way, and both write what it returns. A listing always shows the claim, and shows
+// the parent of every issue the project has, recorded by the daemon or not, which is what makes
+// the first listing after a boot the moment the children-first rule is complete.
 func Observed(summary dispatch.IssueSummary) intake.IssueStatus {
+	parent := ""
+	if summary.Parent != nil {
+		parent = *summary.Parent
+	}
 	return intake.IssueStatus{Key: summary.Key, Status: summary.Status, Blockers: summary.BlockedBy, Seq: summary.LastSeq,
-		ClaimedBy: summary.ClaimedBy, ClaimKnown: !summary.ClaimUnread}
+		ClaimedBy: summary.ClaimedBy, ClaimKnown: !summary.ClaimUnread, Parent: parent}
 }
 
 // Reconcile mirrors the boot listing: every summary Dispatch returned for project, through the
