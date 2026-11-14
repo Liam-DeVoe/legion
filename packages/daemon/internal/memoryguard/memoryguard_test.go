@@ -1686,6 +1686,46 @@ func TestMemoryGuardCutCommandShowsNoPartOfAUserinfoWhoseAtSignIsPastTheCut(t *t
 	}
 }
 
+// The kill line shows no password of a URL after an API-key or bearer label whose value glues
+// other value characters to the URL's scheme (`Bearer _http://…`, `api-key: 1http://…`), whether
+// the guard holds the whole command or cut it before the `@`. The shared rules mask such a value
+// with the scheme in it, and `***://` is no scheme for the userinfo rule, so where a control rune
+// parts the userinfo from its `@` the password shows. Measured in a gVisor issue pod on 2026-11-14
+// at e9af0140: capabilities.RedactedLine gave `curl -H Bearer ***://u:SECRETPASS
+// Authorization:***)@h` for `curl -H Bearer _http://u:SECRETPASS\x07Authorization:a b)@h`, and
+// `curl _http://***@h` for the same text without the label.
+func TestMemoryGuardCommandShowsNoPasswordOfAURLAfterALabelWhoseValueGluesTextToItsScheme(t *testing.T) {
+	pod := newFakePod(t)
+	for _, label := range [][]string{{"-H", "Bearer"}, {"-H", "api-key:"}, {"-H", "x-subscription-token:"}} {
+		for _, glued := range []string{"_", "x_", "~", "/", "1", "+"} {
+			userinfo := glued + "http://u:SECRETPASS\x07Authorization:a"
+			for _, tc := range []struct {
+				name string
+				args []string
+			}{
+				{"whole", slices.Concat([]string{"curl"}, label, []string{userinfo, "b)@h"})},
+				{"cut before the at sign", slices.Concat([]string{"curl"}, label, []string{userinfo}, slices.Repeat([]string{"w"}, 3000), []string{"b)@h"})},
+			} {
+				pod.add(fakeProcess{pid: 900, ppid: 1, args: tc.args})
+				table, err := scan(pod.proc)
+				if err != nil {
+					t.Fatal(err)
+				}
+				p, ok := table.Get(900)
+				if !ok {
+					t.Fatal("the scan did not read pid 900")
+				}
+				command := commandText(p)
+				for _, text := range []string{command, cut(command, logCommandBytes)} {
+					if strings.Contains(text, "SECRETPASS") {
+						t.Errorf("%s %s%s, %s: the command shows the password: %.200q", label[1], glued, "http://…", tc.name, text)
+					}
+				}
+			}
+		}
+	}
+}
+
 // timedClock is a fakeClock that keeps the wall time at which the guard starts each wait: it
 // starts the next once the reading before it, and all that reading led to, is done.
 type timedClock struct {
