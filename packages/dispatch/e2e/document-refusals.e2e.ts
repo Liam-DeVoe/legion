@@ -1,6 +1,10 @@
 import type { ArtifactText } from "@legion/contracts";
 import { type Browser, expect, type Page, test } from "@playwright/test";
+import { createDecoder, readVarUint } from "lib0/decoding";
+import * as Y from "yjs";
 
+import { retiredClients } from "../web/src/features/doc/pending-sync";
+import { readField } from "../web/src/features/doc/sync-frame";
 import {
   createIssue,
   createIssueArtifact,
@@ -133,9 +137,18 @@ async function pendingEditCount(page: Page, artifactId: string): Promise<number>
   }, artifactId);
 }
 
+/** One document socket a page opened: every SyncStep2 and Update frame the page sent on it, and
+ *  every one the server sent it, each the whole frame, in order. */
+interface DocumentSocket {
+  received: number[][];
+  sent: number[][];
+}
+
 interface DocumentSockets {
   /** The close code of every document socket the page saw close, in order. */
   closes: number[];
+  /** Every document socket the page opened, in order. */
+  sockets: DocumentSocket[];
   /** The flag of every SyncStatus frame a document socket received: 1 applied, 0 not. */
   statuses: number[];
 }
@@ -146,11 +159,12 @@ declare global {
   }
 }
 
-/** Records, inside every page `page` loads, what its document sockets were told: the close codes
- * the server closed them with and the SyncStatus answers it gave. Install before navigating. */
+/** Records, inside every page `page` loads, what its document sockets were told and handed: the
+ * close codes the server closed them with, the SyncStatus answers it gave, and the update frames
+ * each socket carried either way. Install before navigating. */
 async function recordDocumentSockets(page: Page): Promise<() => Promise<DocumentSockets>> {
   await page.addInitScript(() => {
-    const record: DocumentSockets = { closes: [], statuses: [] };
+    const record: DocumentSockets = { closes: [], sockets: [], statuses: [] };
     window.documentSockets = record;
     const readVarUint = (bytes: Uint8Array, at: { pos: number }): number => {
       let value = 0;
@@ -163,27 +177,56 @@ async function recordDocumentSockets(page: Page): Promise<() => Promise<Document
         }
       }
     };
+    // A frame is the document's name, then its tag: 8 is Hocuspocus's SyncStatus, the server's
+    // answer to each update frame it was sent, and 0 a Sync frame, whose step 1 (SyncStep2) and 2
+    // (Update) carry a Yjs update. Answers the SyncStatus flag, whether the frame carries an
+    // update, or neither.
+    const read = (bytes: Uint8Array): { status?: number; update: boolean } => {
+      const at = { pos: 0 };
+      const nameLength = readVarUint(bytes, at);
+      at.pos += nameLength; // the document name
+      const tag = readVarUint(bytes, at);
+      if (tag === 8) {
+        return { status: readVarUint(bytes, at), update: false };
+      }
+      if (tag !== 0) {
+        return { update: false };
+      }
+      const step = readVarUint(bytes, at);
+      return { update: step === 1 || step === 2 };
+    };
     const Native = window.WebSocket;
     window.WebSocket = class extends Native {
+      recorded: DocumentSocket | undefined;
+
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols);
         if (!new URL(String(url), window.location.href).pathname.startsWith("/ws/doc/")) {
           return;
         }
+        const recorded: DocumentSocket = { received: [], sent: [] };
+        this.recorded = recorded;
+        record.sockets.push(recorded);
         this.addEventListener("close", (event) => record.closes.push(event.code));
         this.addEventListener("message", (event) => {
           if (!(event.data instanceof ArrayBuffer)) {
             return;
           }
           const bytes = new Uint8Array(event.data);
-          const at = { pos: 0 };
-          const nameLength = readVarUint(bytes, at);
-          at.pos += nameLength; // the document name
-          // Tag 8 is Hocuspocus's SyncStatus, the server's answer to each frame it was sent.
-          if (readVarUint(bytes, at) === 8) {
-            record.statuses.push(readVarUint(bytes, at));
+          const { status, update } = read(bytes);
+          if (status !== undefined) {
+            record.statuses.push(status);
+          } else if (update) {
+            recorded.received.push(Array.from(bytes));
           }
         });
+      }
+
+      override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+        if (this.recorded !== undefined && data instanceof Uint8Array && read(data).update) {
+          this.recorded.sent.push(Array.from(data));
+        }
+        super.send(data);
       }
     };
   });
@@ -194,6 +237,47 @@ async function recordDocumentSockets(page: Page): Promise<() => Promise<Document
     }
     return record;
   };
+}
+
+/** The Yjs update a SyncStep2 or Update frame carries. */
+function updateOf(frame: number[]): Uint8Array {
+  const decoder = createDecoder(Uint8Array.from(frame));
+  readField(decoder); // the document name
+  readVarUint(decoder); // the Sync tag
+  readVarUint(decoder); // the step
+  return readField(decoder);
+}
+
+/**
+ * The sockets a page opened after its first `from`, on which it handed the document server the
+ * history a rebuild replaced, each as the size of the update that carried it: a struct of a client
+ * the rebuilt document retired, below the clock it lists, which the server refuses as DOC_REBUILT
+ * (envoy's `weighPeerUpdate`, whose log line names the same `update_bytes`). The list of retired
+ * clients is the one the server sent the page on any of its sockets. This reads what the page sent
+ * rather than the closes it saw: the server closes the socket at once after its refusal, and a
+ * close frame the connection's reset overtakes reaches the page as an abnormal closure (1006),
+ * with no reason. The server closes a socket at its first refusal, so each counts once.
+ */
+function replacedHistoryHandoffs(record: DocumentSockets, from: number): number[] {
+  const told = new Y.Doc();
+  for (const socket of record.sockets) {
+    for (const frame of socket.received) {
+      Y.applyUpdate(told, updateOf(frame));
+    }
+  }
+  const retired = retiredClients(told);
+  const handoffs: number[] = [];
+  for (const socket of record.sockets.slice(from)) {
+    const replaced = socket.sent
+      .map(updateOf)
+      .find((update) =>
+        Y.decodeUpdate(update).structs.some(({ id }) => id.clock < (retired.get(id.client) ?? 0))
+      );
+    if (replaced !== undefined) {
+      handoffs.push(replaced.length);
+    }
+  }
+  return handoffs;
 }
 
 // `page.request` sends the page's session cookie and no `Origin`, and the server refuses a
@@ -597,7 +681,9 @@ test("a used-up document refuses a larger merge as needing a rebuild, and saves 
     await offline.close();
 
     // Bob types in place there, each keystroke before the last: typing goes on in a used-up room.
+    // His page stays open through the rebuild below, so it holds the history the rebuild replaces.
     const typing = await bob.newPage();
+    const bobSockets = await recordDocumentSockets(typing);
     await openSpec(typing, issue.key, MEETING_POINT);
     await placeCaret(typing, "after", MEETING_POINT);
     for (const character of TYPED_IN_PLACE) {
@@ -629,6 +715,11 @@ test("a used-up document refuses a larger merge as needing a rebuild, and saves 
       confirmation = dialog.message();
       void dialog.accept();
     });
+    // Each browser's document sockets from here on are the ones that can meet the rebuilt room.
+    const beforeRebuild = {
+      alice: (await sockets()).sockets.length,
+      bob: (await bobSockets()).sockets.length,
+    };
     await offer.click();
     await expect(page.getByText(NEEDS_REBUILD)).toHaveCount(0);
     expect(confirmation).toContain(
@@ -645,6 +736,21 @@ test("a used-up document refuses a larger merge as needing a rebuild, and saves 
     // One refusal: the editor closed its connection before the rebuild, so it handed the replaced
     // history to no rebuilt room.
     expect((await sockets()).closes.filter((code) => code === 4413)).toHaveLength(1);
+
+    // Bob's page held the replaced history when the rebuild closed its socket. Its reconnect hands
+    // that history to the rebuilt room once, the room refuses it, and Bob is told, reads the
+    // rebuilt document afresh and sees Alice's edit; no later socket of his carries it again.
+    await expect(typing.getByText(REBUILT_ELSEWHERE)).toBeVisible();
+    await expect(connectedDot(typing)).toHaveText("connected");
+    await expect(documentEditor(typing)).toContainText("saved after the rebuild");
+    // At most one DOC_REBUILT refusal for each browser of the row, counted from what each page
+    // sent: Alice's none, and Bob's the one his reconnect met.
+    const bobRecord = await bobSockets();
+    expect(replacedHistoryHandoffs(await sockets(), beforeRebuild.alice)).toEqual([]);
+    expect(
+      replacedHistoryHandoffs(bobRecord, beforeRebuild.bob),
+      `the sizes of the replaced histories Bob's page handed the rebuilt room; its document sockets closed with ${bobRecord.closes.join(", ")}`
+    ).toHaveLength(1);
   } finally {
     await alice.close();
     await bob.close();
@@ -677,6 +783,9 @@ test("a browser holding the history someone else's rebuild replaced is told the 
     // Alice goes offline and types: her browser holds the history with an edit on top of it, and
     // its reconnect waits until the rebuild has replaced that history.
     transport.hold();
+    // Every document socket her page opens from here on is held until after the rebuild, so these
+    // are the ones that can meet the rebuilt room.
+    const beforeRebuild = (await sockets()).sockets.length;
     await transport.sever();
     await typeAtEnd(page, "typed before the rebuild");
     await expect.poll(() => pendingEditCount(page, artifactId)).toBeGreaterThan(0);
@@ -704,8 +813,15 @@ test("a browser holding the history someone else's rebuild replaced is told the 
       .toContain("typed after the rebuild");
     await expect.poll(() => pendingEditCount(page, artifactId)).toBe(0);
     // One refusal, and no reconnect that met it again: the editor read the rebuilt document
-    // rather than hand the replaced history back once more.
-    expect((await sockets()).closes.filter((code) => code === 4413)).toHaveLength(1);
+    // rather than hand the replaced history back once more. Counted from what Alice's page sent,
+    // not from its 4413 closes: the room's refusal can reach the page as an abnormal closure (1006)
+    // with no reason, and a count of 4413s misses that close and any history handed over after it.
+    // Bob's page opens no document, so it has none to count.
+    const record = await sockets();
+    expect(
+      replacedHistoryHandoffs(record, beforeRebuild),
+      `the sizes of the replaced histories Alice's page handed the rebuilt room; its document sockets closed with ${record.closes.join(", ")}`
+    ).toHaveLength(1);
   } finally {
     await alice.close();
     await bob.close();

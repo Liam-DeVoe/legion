@@ -170,6 +170,20 @@ export function serverWith(text: string, clientId: number): Y.Doc {
   return server;
 }
 
+/**
+ * The room a rebuild of `history` leaves, as the server seeds it (`rebuiltSeed`): one paragraph of
+ * `text` written by a client of its own, and every client of `history` listed under the `retired`
+ * root, its id in decimal against the clock it had reached.
+ */
+export function rebuiltRoom(history: Y.Doc, text: string, clientId: number): Y.Doc {
+  const rebuilt = serverWith(text, clientId);
+  const retired = rebuilt.getMap("retired");
+  for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVector(history))) {
+    retired.set(String(client), clock);
+  }
+  return rebuilt;
+}
+
 /** The id of the last character of `text`: what an insert at its end names as its left origin. */
 function lastCharacterId(text: Y.XmlText): Y.ID {
   let last: Y.Item | undefined;

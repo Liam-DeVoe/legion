@@ -58,7 +58,7 @@ import { useWrites } from "../writes/write-store";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
-import type { ConnectionState, DocumentConnection } from "./connection";
+import type { ConnectionState, DocumentConnection, ReconnectWait } from "./connection";
 import { colorForLogin, refusedEditNotice } from "./connection";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
@@ -75,6 +75,7 @@ import { NameVersionDialog } from "./NameVersionDialog";
 import type { PendingState } from "./pending-sync";
 import { createPendingWaiter } from "./pending-waiter";
 import { quoteAnchor } from "./quote-anchor";
+import { ReconnectNotice } from "./ReconnectNotice";
 import { RefusedEditNotice } from "./RefusedEditNotice";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { FRAGMENT_NAME } from "./roots";
@@ -303,6 +304,9 @@ export function ProofDocument({
   // The server is out of room for open documents: the connection keeps trying, and the edits it
   // could not send wait in this browser.
   const [busy, setBusy] = useState(false);
+  // The wait before the connection's next socket, while one is waiting and the backoff has grown
+  // past its first attempt (`ReconnectNotice` says why that one shows nothing).
+  const [reconnectWait, setReconnectWait] = useState<ReconnectWait | undefined>(undefined);
   const [schemaReadOnly, setSchemaReadOnly] = useState(false);
   /** Why the closed document's last Comment opened no composer, for the reader. */
   const [quoteRefusal, setQuoteRefusal] = useState<string | undefined>(undefined);
@@ -365,6 +369,9 @@ export function ProofDocument({
     }
     connectionRef.current?.readmit();
   }, []);
+  /** Sends the waiting reconnect now, for the person who will not wait out the backoff
+   *  (`ReconnectNotice`); it brings that attempt forward and leaves the backoff as it stands. */
+  const reconnectNow = useCallback(() => connectionRef.current?.reconnectNow(), []);
   // A reading column offers no repair and no rebuild: it is not the document's page, and a
   // reader beside a list of questions has not come to mend a document. A blocked admission is
   // reported upward instead (`onUnavailable`), and the host - the Inbox's pane - falls back to
@@ -699,6 +706,7 @@ export function ProofDocument({
     setLoadError(undefined);
     setRefusedEdit(undefined);
     setBusy(false);
+    setReconnectWait(undefined);
     setAdmission(undefined);
     schemaReadOnlyRef.current = false;
     setSchemaReadOnly(false);
@@ -913,6 +921,14 @@ export function ProofDocument({
             onBusy: (waiting) => {
               if (mounted) {
                 setBusy(waiting);
+              }
+            },
+            // The first attempt after a socket that stayed up is the 2 s spread an ordinary blip
+            // comes back inside, and a notice for it would flash on the page and go: this holds
+            // the waits the backoff has grown, which are the ones a person waits through.
+            onReconnectWait: (wait) => {
+              if (mounted) {
+                setReconnectWait(wait === undefined || wait.attempt === 0 ? undefined : wait);
               }
             },
             onStatus: (status) => {
@@ -1196,6 +1212,9 @@ export function ProofDocument({
           in this browser until they save.
         </p>
       ) : null}{" "}
+      {reconnectWait === undefined ? null : (
+        <ReconnectNotice onRetryNow={reconnectNow} pending={pending} wait={reconnectWait} />
+      )}
       {repairError === undefined ? null : (
         <div className="space-y-3" role="alert">
           <p className={dangerText}>{repairError.message}</p>

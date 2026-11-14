@@ -74,6 +74,28 @@ export function connectionLabel(
 }
 
 /**
+ * What the document says while its next socket waits on the connection's backoff
+ * (`ConnectionCallbacks.onReconnectWait`): that it is reconnecting, in `secondsLeft` seconds when
+ * that is given, and what this browser keeps of the person's typing meanwhile. A read-only
+ * admission takes no typing, and a document whose saved rows are not known yet promises nothing.
+ */
+export function reconnectingNotice(
+  pending: PendingState | undefined,
+  secondsLeft: number | undefined = undefined
+): string {
+  const waiting =
+    secondsLeft === undefined
+      ? "Reconnecting to the document."
+      : `Reconnecting to the document in ${secondsLeft} s.`;
+  if (pending === undefined || pending.readOnly) {
+    return waiting;
+  }
+  return pending.stored
+    ? `${waiting} Your edits are kept in this browser until they are sent.`
+    : `${waiting} Your edits stay on this page, but a reload would lose them.`;
+}
+
+/**
  * The sentence the editor shows for an edit the server refused with
  * `DOCUMENT_TOO_LARGE_CLOSE_CODE`, by the close's reason: an edit the server could not merge into
  * the document quickly enough (`DOCUMENT_TOO_TANGLED_CLOSE_REASON`), one the document cannot take
@@ -111,10 +133,30 @@ export interface DocumentConnection {
   destroy(): void;
   /**
    * Has the server admit this connection again: the server decides a socket's admission once, as
-   * it connects, so this closes the socket, the provider reconnects as it does after any close the
-   * server makes, and the new socket's admission reaches `onAdmission` and the pending sync.
+   * it connects, so this closes the socket, the connection reconnects as it does after any close
+   * the server makes, and the new socket's admission reaches `onAdmission` and the pending sync.
+   * The close is this page's own and says nothing of the server, so its reconnect waits the first
+   * attempt's spread whatever backoff earlier closes built.
    */
   readmit(): void;
+  /**
+   * Sends the socket the connection is waiting to reconnect (`onReconnectWait`) now, rather than
+   * when its backoff says, and does nothing while no reconnect waits. It brings that one attempt
+   * forward and resets nothing: the attempt was counted as its wait began, a socket it opens that
+   * closes within `STEADY_SOCKET_MS` waits the next attempt's backoff, and only a socket that
+   * stays up that long starts the backoff over, as after any other attempt. The wait ends as the
+   * socket is made, so one call opens at most one socket, and another waits for that one to close.
+   */
+  reconnectNow(): void;
+}
+
+/** A wait before the connection's next socket (`ConnectionCallbacks.onReconnectWait`). */
+export interface ReconnectWait {
+  /** When the next socket goes out, by `Date.now()`. */
+  readonly at: number;
+  /** The reconnect attempt it is: 0 the first after a socket that stayed up `STEADY_SOCKET_MS`
+   *  or a readmission, and one more for each socket in a row that closed sooner. */
+  readonly attempt: number;
 }
 
 export interface ConnectionCallbacks {
@@ -131,7 +173,9 @@ export interface ConnectionCallbacks {
    * not merge it quickly enough (`DOCUMENT_TOO_TANGLED_CLOSE_REASON`), the document must be
    * rebuilt before it can take it (`DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`), the edit was typed
    * against a history someone else's rebuild replaced (`DOCUMENT_REBUILT_CLOSE_REASON`), or it
-   * holds content the document does not take (`DOCUMENT_UPDATE_REFUSED_CLOSE_REASON`). The
+   * holds content the document does not take (`DOCUMENT_UPDATE_REFUSED_CLOSE_REASON`). It fires
+   * with `DOCUMENT_REBUILT_CLOSE_REASON` too when a socket closes any other way while this
+   * connection's document holds the history a rebuild replaced (`holdsReplacedHistory`). The
    * connection has stopped reconnecting and the refused edit's saved row is gone; the refused
    * text is still in this connection's document, so the host rebuilds it from a fresh read rather
    * than let a reconnect send it again.
@@ -140,10 +184,18 @@ export interface ConnectionCallbacks {
   /**
    * Fires `true` when the server closed the socket because the memory it keeps for open documents
    * is full (`DOCUMENT_BUSY_CLOSE_CODE`), and `false` once it applies a frame from this browser
-   * again. The provider keeps reconnecting by itself, and the edits it could not send stay in this
-   * document and in the browser's saved rows until a socket takes them.
+   * again. The connection keeps reconnecting on its backoff, as after any close that ends no
+   * refusal, and the edits it could not send stay in this document and in the browser's saved rows
+   * until a socket takes them.
    */
   onBusy(waiting: boolean): void;
+  /**
+   * Fires with the wait as the connection starts waiting to reconnect after a close that ends no
+   * refusal, and with `undefined` once the socket it waited for is made or the connection is
+   * destroyed. The provider's own reconnect after its silent-socket check is no wait of this
+   * connection's and fires nothing (`reconnectWaitMs(0)` at a socket's open).
+   */
+  onReconnectWait(wait: ReconnectWait | undefined): void;
   onStatus(state: ConnectionState): void;
   /** Reports browser-held edits as IndexedDB changes or this admission's restore completes. */
   onPending(state: PendingState): void;
@@ -173,6 +225,37 @@ export function wsUrl(artifactId: string): string {
   return `${protocol}//${window.location.host}/ws/doc/${encodeURIComponent(artifactId)}`;
 }
 
+/**
+ * How long a socket must have stayed open for its close to start the connection's backoff over
+ * (`reconnect`, below). Every close sooner than this waits the next attempt's backoff, so a pod
+ * that admits the page and then dies, or turns away with 4503 the edit each reconnect brings,
+ * hears from each tab less and less often. Half a minute, because it is:
+ * - twice the server's `WriteWaitBound` (15 s, packages/envoy/internal/dispatch/docs/livewrite.go),
+ *   the longest the server keeps an admitted socket waiting before it closes it busy
+ *   (`weighStateAnswer`), so no socket a full pod turns away counts as having stayed up;
+ * - the backoff's own cap, so a loop whose sockets each outlast it still reconnects no more often
+ *   than once in 30 s, the rate the capped backoff holds a dead pod to;
+ * - the provider's `messageReconnectTimeout`, the silence after which it takes a socket for dead.
+ * What it costs: a person whose link drops more often than every 30 s waits longer after each
+ * drop, 15 to 30 s from the sixth on, where every drop used to be back within 2 s; a link that
+ * stays up 30 s between drops is back within the 2 s spread every time.
+ */
+const STEADY_SOCKET_MS = 30_000;
+
+/** The provider never reconnects after this close, its `Forbidden`: its close handler returns
+ *  before it either reconnects or fails the attempt (@hocuspocus/provider 2.15.3,
+ *  dist/hocuspocus-provider.esm.js:1987-1992). */
+const PROVIDER_FORBIDDEN_CLOSE_CODE = 4403;
+
+/**
+ * The provider's `initialDelay` for reconnect attempt `attempt`, 0 the first after a socket that
+ * stayed up: `reconnectDelayMs` in whole milliseconds, the only delay the provider takes, and never
+ * 0, at which the provider's own reconnect would open its socket before `reconnect` can replace it.
+ */
+function reconnectWaitMs(attempt: number): number {
+  return Math.max(1, Math.floor(reconnectDelayMs(attempt)));
+}
+
 // Hocuspocus and Yjs load with the first document that connects, not with the issue route: the
 // same lazy boundary `createEditor` puts around the editor itself. The connect they resolve to is
 // synchronous, so a host has one place to react to the connection.
@@ -181,7 +264,7 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     { HocuspocusProvider, HocuspocusProviderWebsocket },
     { Doc },
     { openPendingEdits },
-    { startPendingSync },
+    { holdsReplacedHistory, startPendingSync },
   ] = await importWhenOnline(() =>
     Promise.all([
       import("@hocuspocus/provider"),
@@ -204,6 +287,14 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     // cleared, which is asynchronous, and a close that lands meanwhile is the newer word.
     let busy = false;
     let busyCloses = 0;
+    // The attempt the next reconnect is, from 0, the first after a socket that stayed up
+    // `STEADY_SOCKET_MS`; `openedAt` is when the current socket opened, by the page's clock, and
+    // undefined while none is open; `readmitting` says `readmit` closed it (`reconnect`).
+    // `waiting` is the wait the host was told of, until the socket it waits for is made.
+    let attempt = 0;
+    let openedAt: number | undefined;
+    let readmitting = false;
+    let waiting: ReconnectWait | undefined;
     let provider: HocuspocusProvider;
     // `connect: false` below means this class cannot instantiate a socket until `sync` is assigned
     // after the provider exists; the explicit `websocket.connect()` is deliberately last.
@@ -211,15 +302,21 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     const WebSocketPolyfill = class extends globalThis.WebSocket {
       constructor(url: string, protocols?: string | string[]) {
         super(url, protocols);
+        // The socket the host was told to expect is on the wire: no reconnect waits now.
+        if (waiting !== undefined) {
+          waiting = undefined;
+          callbacks.onReconnectWait(undefined);
+        }
         this.addEventListener("open", () => {
-          // The provider waits `initialDelay` before the first try of every `connect()`, and
-          // calls `connect()` again whenever a socket the server had answered closes: the
-          // server's close (a restart or roll closes every tab's socket at the same moment) and
-          // the provider's own silent-socket check alike. So the page's first connect waits
-          // nothing, and once a socket has opened, the reconnect after it waits a fresh draw of
-          // the spread. The provider refuses a fractional delay. Tries that fail inside one
-          // `connect()` keep the provider's own jittered backoff.
-          websocket.setConfiguration({ initialDelay: Math.floor(reconnectDelayMs(0)) });
+          openedAt = performance.now();
+          // The page's first connect waits nothing: the provider's `initialDelay` is 0 until a
+          // socket opens. After that, the one reconnect `reconnect` does not schedule is the
+          // provider's own when its silent-socket check gives up on a socket whose close never
+          // fired: it calls its close handler with no close event, the 4408 of
+          // dist/hocuspocus-provider.esm.js:1923-1930, so the connection never hears of it. That
+          // socket carried a frame and then 30 s of nothing, so it stayed up, and this is the wait
+          // `reconnect` would give it: a fresh draw of the first attempt's spread.
+          websocket.setConfiguration({ initialDelay: reconnectWaitMs(0) });
           sync?.socketOpened();
         });
       }
@@ -273,6 +370,56 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
         }
       });
     };
+    // Ends this connection for an edit the server refused, and tells the host why once the
+    // refused frame's saved row is gone. The provider's own close handler, which runs before the
+    // connection's, has already started a reconnect that this disconnect ends.
+    const refuseEdit = (reason: string) => {
+      // The refused frame is taken now, from the socket the server has just closed.
+      void Promise.resolve(sync?.dropRefused(restored)).then(() => {
+        if (!destroyed) {
+          callbacks.onEditRefused(reason);
+        }
+      });
+      provider.disconnect();
+    };
+    // Decides when the next socket goes out after every close that ends no refusal: a socket the
+    // server answered and one that failed before any answer alike, `DOCUMENT_BUSY_CLOSE_CODE`
+    // included. The provider's own close handler has run first and started a reconnect of its own:
+    // after an answered socket a fresh `connect()`, which waits `initialDelay`, and after one that
+    // was never answered the next try of that `connect()`'s retry, on its own backoff (1 s, then a
+    // draw between 1 s and a doubling ceiling of up to 30 s; dist/hocuspocus-provider.esm.js:
+    // 1676-1692,1773-1817,1997-2004 with @lifeomic/attempt 3.1.0). That backoff lives inside one
+    // `connect()`, and a socket's first frame ends it, so a pod that admits the page and dies, or
+    // turns its edit away with 4503, had every tab back within the 2 s spread each time, for ever
+    // (dispatch://INFRA-179). The `connect()` here cancels whatever the provider started, whose
+    // retry then aborts before its next socket, and starts the one try this backoff chooses, so
+    // the provider's own backoff never opens a socket.
+    //
+    // The backoff is the live socket's (`reconnectDelayMs`, api/live-socket.ts), so a tab's two
+    // sockets to one pod come back on one schedule. The first attempt is spread over [0, 2 s): a
+    // blip is back within 2 s, a second on average, and a restart's crowd of tabs reaches the new
+    // process over two seconds rather than at once. Each later one doubles from 1 s and is capped
+    // at 30 s, [1, 2) s, [2, 4) s up to [15, 30) s from the sixth: a dead pod hears from a tab at
+    // most every 15 s, and a document whose pod returns is back within 30 s of it. The jitter is
+    // equal, half the ceiling plus a draw of the other half: Hocuspocus draws between 1 s and the
+    // ceiling, so even at its cap some tabs come back after a second, where here none waits less
+    // than half of it.
+    const reconnect = () => {
+      const lived = openedAt === undefined ? 0 : performance.now() - openedAt;
+      openedAt = undefined;
+      if (readmitting || lived >= STEADY_SOCKET_MS) {
+        attempt = 0;
+      }
+      readmitting = false;
+      const wait = reconnectWaitMs(attempt);
+      websocket.setConfiguration({ initialDelay: wait });
+      // Told before the wait starts, and taken back as the socket it waits for is made, which
+      // `connect()` does from inside this call when `reconnectNow` has cut the wait to nothing.
+      waiting = { at: Date.now() + wait, attempt };
+      attempt += 1;
+      callbacks.onReconnectWait(waiting);
+      void websocket.connect();
+    };
     provider = new HocuspocusProvider({
       document: doc,
       name: artifactId,
@@ -285,37 +432,50 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
         notifyAdmitted();
       },
       onClose: ({ event }) => {
-        // Hocuspocus answers every other close by reconnecting, which is what the transient
-        // `DOCUMENT_BUSY_CLOSE_CODE` wants: the server is out of room for open documents, and a
-        // later attempt finds what it has freed, so the edits it refused wait to go with it. The
-        // other two are the server's decision about the document itself, so the provider stops:
-        // a document outside the Proof schema the host reads again, and an edit past the
-        // document's size bound, one the server could not merge quickly enough, one the document
-        // cannot take until it is rebuilt and one typed against a history someone else's rebuild
-        // replaced, is dropped before the host rebuilds the document without it.
+        // Every other close reconnects, on this connection's backoff (`reconnect`), which is what
+        // the transient `DOCUMENT_BUSY_CLOSE_CODE` wants: the server is out of room for open
+        // documents, and a later attempt finds what it has freed, so the edits it refused wait to
+        // go with it. The other two are the server's decision about the document itself, so the
+        // connection stops: a document outside the Proof schema the host reads again, and an edit
+        // past the document's size bound, one the server could not merge quickly enough, one the
+        // document cannot take until it is rebuilt and one typed against a history someone else's
+        // rebuild replaced, is dropped before the host rebuilds the document without it.
         switch (event.code) {
           case DOCUMENT_SCHEMA_CLOSE_CODE:
             provider.disconnect();
             callbacks.onOutsideSchema();
-            break;
+            return;
           case DOCUMENT_TOO_LARGE_CLOSE_CODE:
-            // The refused frame is taken now: the provider's own close handler, which runs first,
-            // has already started a reconnect that this disconnect ends.
-            void Promise.resolve(sync?.dropRefused(restored)).then(() => {
-              if (!destroyed) {
-                callbacks.onEditRefused(event.reason);
-              }
-            });
-            provider.disconnect();
-            break;
-          case DOCUMENT_BUSY_CLOSE_CODE:
-            busyCloses += 1;
-            if (!busy) {
-              busy = true;
-              callbacks.onBusy(true);
-            }
-            break;
+            refuseEdit(event.reason);
+            return;
         }
+        // A document that holds the history a rebuild replaced never connects again, whatever
+        // closed its socket: the rebuilt room refuses that history as `DOCUMENT_REBUILT_CLOSE_REASON`
+        // and closes the socket at once, and a close frame the connection's reset overtakes reaches
+        // the page as an abnormal closure (1006, no reason) - in Chromium, 3 of 39 runs of the
+        // used-up row (e2e/document-refusals.e2e.ts). The room sent its state before that refusal,
+        // its list of the clients the rebuild retired with it, and this document took both: that is
+        // how it knows. The provider's reconnect would hand the same history back and be refused
+        // again, so the connection ends as that refusal ends it, and the host reads the rebuilt
+        // document afresh.
+        if (holdsReplacedHistory(doc)) {
+          refuseEdit(DOCUMENT_REBUILT_CLOSE_REASON);
+          return;
+        }
+        if (event.code === DOCUMENT_BUSY_CLOSE_CODE) {
+          busyCloses += 1;
+          if (!busy) {
+            busy = true;
+            callbacks.onBusy(true);
+          }
+        }
+        // The provider stops for good after the closes it takes as final - unauthorized (4401),
+        // a message too big (1009), forbidden - and after this connection's own disconnect; the
+        // backoff reconnects only where the provider would have.
+        if (destroyed || !websocket.shouldConnect || event.code === PROVIDER_FORBIDDEN_CLOSE_CODE) {
+          return;
+        }
+        reconnect();
       },
       onMessage: ({ event }) => {
         if (!(event.data instanceof ArrayBuffer)) {
@@ -364,6 +524,10 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
           return;
         }
         destroyed = true;
+        if (waiting !== undefined) {
+          waiting = undefined;
+          callbacks.onReconnectWait(undefined);
+        }
         sync?.destroy();
         provider.destroy();
         websocket.destroy();
@@ -371,9 +535,22 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       },
       doc,
       readmit() {
-        if (!destroyed) {
-          websocket.webSocket?.close();
+        const socket = websocket.webSocket;
+        if (!destroyed && socket !== null) {
+          readmitting = true;
+          socket.close();
         }
+      },
+      reconnectNow() {
+        if (destroyed || waiting === undefined) {
+          return;
+        }
+        // The attempt this wait belongs to is already counted, so this opens its socket early and
+        // leaves the backoff where it stands. The `connect()` cancels the retry waiting out the
+        // old delay and starts one that waits a millisecond; the socket it makes takes the wait
+        // back, so a second call before that socket exists only draws the same millisecond again.
+        websocket.setConfiguration({ initialDelay: 1 });
+        void websocket.connect();
       },
     };
   };

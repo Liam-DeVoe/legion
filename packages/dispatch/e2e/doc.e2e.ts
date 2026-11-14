@@ -30,7 +30,7 @@ import {
   typeAtEnd,
 } from "./editor";
 import { engineParagraphs } from "./read-back";
-import { type BrowserContext, expect, test } from "./test";
+import { type BrowserContext, expect, test, type WebSocketRoute } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -604,6 +604,130 @@ test("a dropped document transport reconnects the mounted editor and leaves one 
     await expect.poll(open).toBe(1);
   } finally {
     await bob.close();
+    await alice.close();
+  }
+});
+
+/** The least the page waits before each of four reconnects in a row after sockets the server
+ *  answered and then lost: the first attempt's spread starts at nothing, and each later attempt
+ *  waits at least half its doubled ceiling, 1, 2 and then 4 s (`reconnectDelayMs`,
+ *  `web/src/api/live-socket.ts`, which `web/src/features/doc/connection.ts` reconnects on). */
+const RECONNECT_FLOORS_MS = [0, 1_000, 2_000, 4_000];
+
+// A pod that admits a browser and then dies, again and again (dispatch://INFRA-179): every socket
+// is admitted and then lost as a reset loses it, an abnormal closure (1006) with no reason. The
+// provider's own backoff restarts at a socket's first frame, so on it alone each reconnect here
+// came within a fresh draw of [0, 2 s), however many there had been. The connection's backoff
+// restarts only after a socket that stayed up half a minute, so each wait is at least the floor
+// of its attempt. A wait is read on this side of the route: from the reset to the moment the
+// page's next socket reached it.
+// Past those four, the page is made to wait 8 s or more, which is a wait it owes the person a
+// word about: it says it is reconnecting, when the next attempt goes out, and that their edits
+// are kept, and it offers Retry now. That press sends the attempt the backoff was waiting on and
+// resets none of its growth, which the countdown after the next reset shows: 8 s or more again,
+// never the spread a reset would give.
+// SLOW(>=2s): four reconnects on the page's own backoff, at least 0 + 1 + 2 + 4 s of real time,
+// each after an admission by the real server. The waits past them are not spent: Retry now sends
+// each of those attempts as soon as the row has read the notice.
+test("a document whose sockets are admitted and then reset waits longer before each reconnect", async ({
+  browser,
+}) => {
+  await createProject({ key: "RESET", name: "Reset" });
+  const issue = await createIssue({
+    project: "RESET",
+    spec: "# Reset after admission\n\nOriginal body.\n",
+    title: "Reset after admission",
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const sockets: { admitted: Promise<void>; madeAt: number; route: WebSocketRoute }[] = [];
+    await page.routeWebSocket(/\/ws\/doc\//u, (route) => {
+      const madeAt = performance.now();
+      const admitted = Promise.withResolvers<void>();
+      const server = route.connectToServer();
+      server.onMessage((message) => {
+        route.send(message);
+        admitted.resolve();
+      });
+      sockets.push({ admitted: admitted.promise, madeAt, route });
+    });
+    await page.goto(`/issues/${issue.key}/spec`);
+    await expect(documentEditor(page)).toContainText("Original body.");
+
+    const waits: number[] = [];
+    for (const floor of RECONNECT_FLOORS_MS) {
+      const socket = sockets.at(-1);
+      if (socket === undefined) {
+        throw new Error("the page opened no document socket");
+      }
+      await socket.admitted;
+      await expect(connectedDot(page)).toHaveText("connected");
+      const made = sockets.length;
+      const resetAt = performance.now();
+      await socket.route.close({ code: 1006, reason: "" });
+      await expect.poll(() => sockets.length, { timeout: 2 * floor + 10_000 }).toBe(made + 1);
+      waits.push((sockets[made]?.madeAt ?? Number.NaN) - resetAt);
+    }
+    const read = waits.map((wait) => `${Math.round(wait)} ms`).join(", ");
+    test.info().annotations.push({ description: read, type: "waits before each reconnect" });
+    console.log(`reconnect waits after admitted sockets were reset: ${read}`);
+    for (const [attempt, floor] of RECONNECT_FLOORS_MS.entries()) {
+      expect(waits[attempt], `reconnect ${attempt + 1} of waits ${read}`).toBeGreaterThanOrEqual(
+        floor
+      );
+    }
+    // The fifth reset leaves a wait of at least 8 s: long enough that the page must say so.
+    const lastReset = sockets.at(-1);
+    if (lastReset === undefined) {
+      throw new Error("the page opened no document socket");
+    }
+    await lastReset.admitted;
+    await expect(connectedDot(page)).toHaveText("connected");
+    const grown = sockets.length;
+    await lastReset.route.close({ code: 1006, reason: "" });
+    const notice = page.getByText(/^Reconnecting to the document in \d+ s\./u);
+    await expect(notice).toHaveText(
+      /^Reconnecting to the document in \d+ s\. Your edits are kept in this browser until they are sent\.$/u
+    );
+
+    // Retry now sends that attempt at once: its socket is there far inside the 8 s it was waiting.
+    const pressedAt = performance.now();
+    await page.getByRole("button", { name: "Retry now" }).click();
+    await expect.poll(() => sockets.length, { timeout: 5_000 }).toBe(grown + 1);
+    const pressWait = performance.now() - pressedAt;
+    test.info().annotations.push({
+      description: `${Math.round(pressWait)} ms`,
+      type: "from Retry now to the socket it sent",
+    });
+    console.log(`Retry now sent the waiting socket after ${Math.round(pressWait)} ms`);
+    expect(pressWait).toBeLessThan(RECONNECT_FLOORS_MS[3] * 2);
+
+    // The press spent an attempt rather than resetting the backoff: the wait after the socket it
+    // sent is the next attempt's, 8 s or more again, which the countdown says without waiting it
+    // out. A reset backoff would draw its first attempt inside 2 s instead.
+    const retried = sockets.at(-1);
+    if (retried === undefined) {
+      throw new Error("Retry now opened no socket");
+    }
+    await retried.admitted;
+    await expect(connectedDot(page)).toHaveText("connected");
+    await retried.route.close({ code: 1006, reason: "" });
+    await expect(notice).toBeVisible();
+    const countdown = Number(/in (\d+) s/u.exec((await notice.textContent()) ?? "")?.[1]);
+    test.info().annotations.push({
+      description: `${countdown} s`,
+      type: "the countdown after the retried socket was reset",
+    });
+    console.log(`the wait after the retried socket was reset: ${countdown} s`);
+    expect(countdown).toBeGreaterThanOrEqual(8);
+
+    // The document still comes back, and the person never had to wait out the backoff to see it.
+    await page.getByRole("button", { name: "Retry now" }).click();
+    await expect(connectedDot(page)).toHaveText("connected");
+    await expect(notice).toHaveCount(0);
+  } finally {
     await alice.close();
   }
 });

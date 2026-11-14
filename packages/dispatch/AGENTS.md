@@ -1385,22 +1385,22 @@ admission keeps them all, and an `ARTIFACT_NOT_FOUND` admission removes rows for
 is gone. The connection indicator names saved edits while disconnected and warns when IndexedDB
 cannot retain them across a reload.
 
-The server refuses one browser's edit two ways, and `connection.ts` answers each by its close code
-(`packages/contracts`). `4413` (`DOCUMENT_TOO_LARGE_CLOSE_CODE`) is permanent - the edit would take
-the document past a bound of its own, the server could not merge it quickly enough
-(`DOC_TOO_TANGLED`), the document must be rebuilt before it can take it (`DOC_NEEDS_REBUILD`), or
-the edit was typed against the history someone else's rebuild replaced (`DOC_REBUILT`) - so the
-provider is stopped, the refused `Update` frame's saved row alone is
-dropped (`dropRefused`, after this admission's restore has settled; a refused `SyncStep2` names no
-row, so its rows stay and the replay after the rebuild finds the one the server refuses), and
-`ProofDocument` tears the editor down and admits again from a fresh read, since the refused text is
-still in the connection's document and any reconnect would send it again. The notice the reader
-sees is the close reason's own sentence (`refusedEditNotice`), shown by `RefusedEditNotice` and
-dismissible; it says the other edits are kept, except for `DOC_REBUILT`, where the rows typed
-against the replaced history are dropped as the restore reads them (`addsParking`) and the notice
-says so. Of the close reasons, `DOC_NEEDS_REBUILD` alone carries the rebuild offer, a button that
-confirms first and then calls `POST /api/v1/artifacts/{id}/rebuild` with the editor suspended, as
-the `409 DOCUMENT_UNLOADABLE` repair state does. The same offer, in a panel of its own on the
+The server refuses one browser's edit two ways, and `connection.ts` answers each by its close code (`packages/contracts`), except where the page's document holds the history a rebuild replaced (below).
+`4413` (`DOCUMENT_TOO_LARGE_CLOSE_CODE`) is permanent - the edit would take the document past a bound of its own, the server could not merge it quickly enough (`DOC_TOO_TANGLED`), the document must be rebuilt before it can take it (`DOC_NEEDS_REBUILD`), or the edit was typed against the history someone else's rebuild replaced (`DOC_REBUILT`) - so the provider is stopped, the refused `Update` frame's saved row alone is dropped (`dropRefused`, after this admission's restore has settled;
+a refused `SyncStep2` names no row, so its rows stay and the replay after the rebuild finds the one the server refuses), and `ProofDocument` tears the editor down and admits again from a fresh read, since the refused text is still in the connection's document and any reconnect would send it again.
+A page whose document holds the history a rebuild replaced is ended as `DOC_REBUILT` on any close, not only on a `4413` that names it:
+its close code alone is not what decides it.
+The rebuilt room refuses that history and closes the socket at once, but in Chromium the connection's reset can overtake that close frame, and the page then sees an abnormal closure (`1006`) with no reason, which the provider would answer by reconnecting and handing the same history back.
+What decides is the page's document: the room sent its state before the refusal, with its list of the clients the rebuild retired (`RETIRED_MAP_NAME`), and a document holding a struct of one of them holds that history (`holdsReplacedHistory` in `pending-sync.ts`).
+So on every other close, a `1006` or a `4503` alike, `connection.ts` asks the document, and one that holds that history ends the connection as a `4413` naming `DOC_REBUILT` ends it (`refuseEdit`), with the same notice and the same fresh read;
+the schema close and a `4413` keep their own answers.
+A document built afresh from the rebuilt room holds the list and none of those clients, so its sockets reconnect as any other.
+The e2e rows (`e2e/document-refusals.e2e.ts`) count what each page handed the rebuilt room (`replacedHistoryHandoffs`) rather than its `4413` closes:
+a count of close codes misses a lost close and any handover after it.
+The notice the reader sees is the close reason's own sentence (`refusedEditNotice`), shown by `RefusedEditNotice` and dismissible;
+it says the other edits are kept, except for `DOC_REBUILT`, where the rows typed against the replaced history are dropped as the restore reads them (`addsParking`) and the notice says so.
+Of the close reasons, `DOC_NEEDS_REBUILD` alone carries the rebuild offer, a button that confirms first and then calls `POST /api/v1/artifacts/{id}/rebuild` with the editor suspended, as the `409 DOCUMENT_UNLOADABLE` repair state does.
+The same offer, in a panel of its own on the
 document's page (never in a reading column), goes only where the rebuild route takes the document
 by the decode cap, as the server's own test (`nearACap`) answers it; the page runs no test of its
 own. The document's text read says so (`near_decode_cap`, with the server's reason in
@@ -1467,12 +1467,18 @@ shows the repair message and a markdown upload under the document's own name (wh
 file is called) that repairs it, `409 DOCUMENT_UNLOADABLE` offers the rebuild from the latest
 version, and any other failure says the document could not load. A blocked admission is admitted
 again by the next successful read of the text - the refetch a repair upload's or a rebuild's
-invalidation makes - so a repair reconnects the editor. After admission the provider owns
-reconnects: the first connect opens at once, and once a socket has opened, the reconnect after it
-closes waits a fresh draw of `reconnectDelayMs(0)`'s two-second spread (`connection.ts` sets the
-provider's `initialDelay` on every open), so the tabs one restart closed come back spread; a try
-that fails inside one connect keeps the provider's own jittered backoff. The server is what stops
-a reconnect into an unreadable room: it closes the socket with
+invalidation makes - so a repair reconnects the editor.
+After admission `connection.ts` owns every reconnect, on the live socket's backoff (`reconnectDelayMs`): the first connect opens at once, the page's first reconnect waits a uniform draw in [0, 2 s), and each later one in a row waits [1, 2) s, [2, 4) s, [4, 8) s, [8, 16) s and then [15, 30) s, half of `min(1 s × 2^attempt, 30 s)` plus a draw of the other half.
+Only a socket that stayed open 30 s (`STEADY_SOCKET_MS`) starts that backoff over, never a socket's first frame, which is what restarts Hocuspocus's own: on the provider alone, a pod that admitted the page and then died, or turned its edit away with 4503, had it back within the 2 s spread every time, for ever (dispatch://INFRA-179).
+Measured in Chromium against a server that resets every admitted socket, the provider's waits were 1358, 509, 472, 311, 1715, 1125 and 1749 ms, and this backoff's are 96, 1638, 3826, 4986, 14413, 17164 and 20564 ms; the longest an admitted socket stays open before a full pod closes it busy is the server's `WriteWaitBound`, 15.008 s in `TestABrowserWhoseAnswerThePodsCopyHeapHasNoRoomForIsClosedBusy`, half of those 30 s.
+`reconnect` cancels the provider's own reconnect and its retry's backoff before either opens a socket, so one policy decides every wait; a readmission starts the backoff over, and a close the provider takes as final (4401, 4403, 1009) is not reconnected.
+The cost falls on a link that drops more often than every 30 s: from its sixth drop in a row it waits 15 to 30 s each time, where every drop used to be back within 2 s.
+A wait the page made longer on purpose is a wait it shows: every wait past the first attempt's spread reaches the host (`onReconnectWait`, with the attempt and when it ends) and `ProofDocument` draws `ReconnectNotice` beside the busy line - that it is reconnecting, the seconds until the next attempt, and what this browser keeps of the typing (`reconnectingNotice`: the saved rows, or that a reload would lose them, and nothing to a read-only admission).
+The first attempt's draw shows nothing, since it is over inside 2 s.
+`Retry now` (`DocumentConnection.reconnectNow`) sends the attempt that wait was for and resets nothing else: the attempt was counted as its wait began, so a socket it opens that closes within 30 s waits the attempt after it, and only a socket that stays up starts the backoff over - a person pressing it cannot become the burst the backoff bounds.
+The wait is taken back as its socket is made, so one press opens one socket and the button waits for that socket to close before it offers another.
+The seconds tick in the notice rather than in the page, and a screen reader hears the sentence without them, so a countdown is not read out every second.
+The server is what stops a reconnect into an unreadable room: it closes the socket with
 code `4409` (`DOCUMENT_SCHEMA_CLOSE_CODE` in `packages/contracts`) before any sync, and
 `connection.ts` stops the provider and calls `onOutsideSchema`, where `ProofDocument` tears the
 editor down and admits again after 0, 1, 2, 4 and 8 seconds for successive refusals; the sixth in a

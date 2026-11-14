@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -631,6 +632,83 @@ func TestALoadWaitsForASlotWhileEveryOneIsHeldAndThenTakesIt(t *testing.T) {
 	if held := slots.held.Load(); held != 0 {
 		t.Fatalf("the load still holds %d bytes once loaded", held)
 	}
+}
+
+// A room ygo loaded without reading the store through this service's persistence - ygo decoded
+// what another persistence handed it into the room's document itself (theorem-labs/ygo
+// v1.55.1-theorem.4, provider/websocket/server.go:2052-2071), so the load hook finds no record
+// of a load of its own (takeLoadedState) - is decoded again by the hook, from an encode of its
+// own document, into the copy its replica takes, under a grant of the pod's load concurrency of
+// its own (onLoadDocument, holdServerLoad). That encode carries what the room parks, so the copy
+// parks it too, and the grant is weighed on the structs the room holds as an apply reports them,
+// parked structs included (heldStructs, copyWeight). A reading of the structs in the room's store
+// alone (crdt.Doc.StructCount) granted a room whose pending queue is heavy a copy short by
+// everything in that queue: the class of review 5856254176's second High (dispatch://INFRA-179).
+//
+// The room holds a small document of prose and one browser's frame of 2,000 GC structs parked
+// behind a gap in its client's clocks (parkedGCFrame), whose structs outweigh their bytes in the
+// pool, so the two readings grant weights apart. The hook is called as ygo's loadRoom calls it,
+// on the document as that load leaves it, and the grant is read off the pool as it is taken
+// (loadSlots.taken), as every other load's grant is read here.
+func TestARoomLoadedWithoutTheServicesPersistenceIsGrantedACopyThatCountsWhatItParks(t *testing.T) {
+	const parker, parkedStructs = 8_100_001, 2_000
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour // no settlement takes a grant beside the load's
+	// The room's document as ygo's loadRoom hands it to the hook: made with the pending cap
+	// lifted, the state its persistence read decoded into it - here with a frame parked behind
+	// a gap among it - and the server's cap set once that state is in (theorem-labs/ygo
+	// v1.55.1-theorem.4, provider/websocket/server.go:1885, 1951-1954, 2065-2066).
+	doc := crdt.New(crdt.WithMaxPendingItems(math.MaxInt))
+	for _, update := range [][]byte{seededState(t), parkedGCFrame(parker, parkedStructs)} {
+		if err := crdt.ApplyUpdateV1(doc, update, nil); err != nil {
+			t.Fatalf("decode the room's state: %v", err)
+		}
+	}
+	doc.SetMaxPendingItems(service.srv.MaxPendingItems)
+	if _, recorded := service.roomLoads.Load(artifactID); recorded {
+		t.Fatal("the room has a load of this service's persistence on record, so the hook would decode the state that load read rather than its own document's")
+	}
+	stored, parked := int64(doc.StructCount()), int64(doc.PendingStats().Items)
+	if parked != parkedStructs {
+		t.Fatalf("the room parks %d structs, want the frame's %d", parked, parkedStructs)
+	}
+	state := int64(len(crdt.EncodeStateAsUpdateV1(doc, nil)))
+	want, short := copyWeight(state, stored+parked), copyWeight(state, stored)
+	if short >= want {
+		t.Fatalf("a copy of %d bytes of state weighs %d at the %d structs of the room's store and %d with the %d it parks as well, so the fixture does not tell the two readings apart",
+			state, short, stored, want, parked)
+	}
+
+	slots := useLoadSlots(t, newLoadSlots(1))
+	var taken slotsHeld
+	slots.taken = taken.record
+	if err := service.srv.OnLoadDocument(context.Background(), artifactID, doc); err != nil {
+		t.Fatalf("the load hook failed: %v", err)
+	}
+	switch grants := taken.all(); {
+	case len(grants) != 1:
+		t.Fatalf("the load took grants leaving %v held, want the one its copy's decode takes", grants)
+	case grants[0] == short:
+		t.Fatalf("the load's copy was granted %d bytes, what its %d bytes of state and the %d structs of the room's store alone come to, want the %d they come to with the %d structs it parks: the copy parks them too",
+			grants[0], state, stored, want, parked)
+	case grants[0] != want:
+		t.Fatalf("the load's copy was granted %d bytes, want the %d its %d bytes of state and its %d structs with the %d it parks come to",
+			grants[0], want, state, stored+parked, parked)
+	}
+	if held := slots.held.Load(); held != 0 {
+		t.Fatalf("the load still holds %d bytes once loaded", held)
+	}
+	// The copy the grant covered is the room's replica, and it parks what the room parks: the
+	// structs the grant is weighed on are the ones that copy holds.
+	replica := service.replicaOf(doc)
+	if replica == nil || replica.doc == nil {
+		t.Fatal("the load kept no replica holding the copy it decoded")
+	}
+	if copyParks := int64(replica.doc.PendingStats().Items); copyParks != parked {
+		t.Fatalf("the copy the load decoded parks %d structs, want the room's %d", copyParks, parked)
+	}
+	t.Logf("a room of %d structs in its store and %d parked, %d bytes of state, was granted %d bytes for its copy, where its state and its store's structs alone come to %d",
+		stored, parked, state, want, short)
 }
 
 // Loads of six documents at once, against a pool left with room for two of their copies, never

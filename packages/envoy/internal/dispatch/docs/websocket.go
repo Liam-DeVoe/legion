@@ -745,11 +745,15 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// loaded without reading the store through this service's persistence is decoded again here,
 	// from its own document's state, under a grant of its own weighed on that state and on the
 	// structs the room itself holds, which that state's copy will hold too (holdServerLoad,
-	// copyWeight, crdt.Doc.StructCount), given back once the copy is the replica's.
+	// copyWeight, heldStructs). The structs are read as an apply reports them, parked structs
+	// included: the encode carries what the room has parked, so the copy this decode makes holds
+	// them as well, and a reading that left them out would under-charge a room whose pending
+	// queue is heavy by everything in it (the class of review 5856254176's second High, found
+	// again here by its own search).
 	stateBytes := int64(len(taken.state))
 	if record == nil {
 		encoded := crdt.EncodeStateAsUpdateV1(doc, nil)
-		release := holdServerLoad(ctx, copyWeight(int64(len(encoded)), int64(doc.StructCount())))
+		release := holdServerLoad(ctx, copyWeight(int64(len(encoded)), int64(heldStructs(doc))))
 		loaded, _ = decodeStoredCopy(encoded, s.maxPendingItems)
 		release()
 		stateBytes = int64(len(encoded))

@@ -22,8 +22,10 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
+	"github.com/reearth/ygo/awareness"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
+	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -1965,6 +1967,245 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 		t.Log("the sweep removed the unrecorded mark from the document no room held, and its room was closed once its settlement ended")
 	})
 	requireUnderThePod(t, peak, "the full server")
+}
+
+// refusalTrials is how many times each row of the drive below is refused, each on a socket of its
+// own: a close lost one time in ten fails a row of twenty in seven runs of eight (1 - 0.9^20).
+const refusalTrials = 20
+
+// A browser the room refuses reads the refusal's own close code although it has gone on sending
+// after the server's last read of its socket, over a real document socket of a real server: 4413
+// DOC_TOO_LARGE for an edit past the document bound, 4503 DOC_BUSY for an edit into a document
+// open on a full budget, and 4503 DOC_BUSY for a browser asking for a document the full budget has
+// no room for. Each is what the dashboard acts on - a permanent close drops the refused edit and
+// tells the person why, a transient one keeps it and backs off - and a page that reads 1006
+// instead has neither: it reconnects at once rather than backing off, and is never told why its
+// edit was refused. Measured in the dashboard's browser suite, 3 of 39 runs of one refusal row
+// ended with the close lost, the page reading 1006.
+//
+// Each trial is a page joining with an edit it holds, as @hocuspocus/provider joins: it asks for
+// the room's state (SyncStep1), hands its own edit over (SyncStep2) and sends its presence at
+// once, and then sends its presence again in awareness frames one after another for as long as
+// the socket lasts (sendUntilEnded), as it does at each move of the person's cursor. It takes no
+// frame off the socket until the server has logged its refusal (pageRefusalLine), as a page
+// applying a room's state on its main thread reads nothing meanwhile: the socket's buffers fill
+// with the room's state, and the refusal's close is sent behind state the page has not yet read.
+// Then it reads everything, and reads how its socket ended as a page does: the close frame's code
+// and reason, or 1006 with no reason where the connection ended without one. A page the budget
+// turns away at the upgrade is sent no state, and reads once it has sent its first frames.
+//
+// Both update rows are closed by ygo, which writes the close frame and closes the connection at
+// once after it (theorem-labs/ygo v1.55.1-theorem.4, provider/websocket/peer.go:471-481), while
+// the read loop drops the peer's input from the refusal on (server.go:2318-2327). The page's frames
+// meet a connection closed with frames of the page's unread, or still arriving, which the
+// server's kernel answers with a reset that throws away what it had not yet sent of the
+// connection: the tail of the state and the close frame behind it. So at that version the page
+// reads the state it was sent and then the reset, 1006, wherever the close was still unsent when
+// the reset went; RFC 6455's closing handshake, reading on until the page's own close in reply
+// before closing, delivers it. The third row is Dispatch's own close at the upgrade
+// (closeAtUpgrade), which sends no state and already reads until the browser's close in reply.
+//
+// The drive fails unless every trial of every row read its row's own code and reason, and logs the
+// count of each ending. The server's own line for each refusal says it refused with that code,
+// so a trial reading anything else read what the connection did to the refusal, not another
+// refusal. The full budget is the test hook's (setRoomBudget), set to one byte while a browser
+// holds a room open, as the browser suite fills it: that room cannot be closed, so the budget
+// stays full.
+func TestARefusedBrowserReadsItsCloseCodeAfterSendingOn(t *testing.T) {
+	memory := newMemoryHarness(t)
+	server := memory.start(t)
+	upload := func(t *testing.T, markdown string) string {
+		t.Helper()
+		stored := server.upload(t, "json", memory.issue, markdown)
+		if stored.status != http.StatusCreated {
+			t.Fatalf("upload: status %d body %.300s, want 201", stored.status, stored.body)
+		}
+		memory.waitForSettlement(t, stored)
+		return stored.artifactID
+	}
+	// The document is the one TestABrowsersUpdateIsBoundedByTheDocumentBound refuses a paste
+	// into: 32 KiB under the bound, whose state the room answers in about forty frames, far more
+	// than the socket's buffers hold. A refused edit changes nothing, so each row's edit is
+	// refused the same on every trial.
+	large := upload(t, proseMarkdown(t, pmdoc.MaxDocumentBytes-32<<10))
+	turnedAway := upload(t, "# Turned away\n\nA document no room holds while the budget is full.\n")
+	paste := browserEdit(t, memory.storedState(t, large), func(tree *pmdoc.Node) {
+		paddingTexts(t, tree)[0].Text += strings.Repeat(" pasted", 64<<10/7)
+	})
+	grow := func(tree *pmdoc.Node) { paddingTexts(t, tree)[0].Text += " This sentence grows the document." }
+
+	client := uint64(gcFloodClient)
+	// trials refuses a page refusalTrials times: the edit it hands over, or for a nil edit the
+	// socket itself, at the upgrade.
+	trials := func(t *testing.T, room string, edit []byte, code int, reason string) {
+		t.Helper()
+		want := fmt.Sprintf("%d %s", code, reason)
+		endings := map[string]int{}
+		for trial := 1; trial <= refusalTrials; trial++ {
+			page, err := server.connectBrowser(room)
+			if err != nil {
+				t.Fatalf("trial %d: %v", trial, err)
+			}
+			refused := len(pageRefusals(server, room))
+			client++
+			presence := awareness.New(client)
+			first := [][]byte{documentFrame(room, frameSync, ygsync.EncodeSyncStep1(crdt.New()))}
+			if edit != nil {
+				first = append(first, page.stateFrame(edit))
+			}
+			var written error
+			for _, frame := range append(first, page.presenceFrame(presence, 0)) {
+				if written = page.write(frame); written != nil {
+					break
+				}
+			}
+			type stop struct {
+				sent int
+				err  error
+			}
+			stopped := make(chan stop, 1)
+			go func() {
+				sent, err := page.sendUntilEnded(presence)
+				stopped <- stop{sent, err}
+			}()
+			if edit != nil {
+				if refusal := awaitPageRefusal(t, server, room, refused); refusal != want {
+					t.Fatalf("trial %d: the server refused the edit with %s, want %s", trial, refusal, want)
+				}
+			}
+			go page.read()
+			for reading := true; reading; {
+				select {
+				case <-page.answers:
+				case <-page.ended:
+					reading = false
+				case <-time.After(browserAnswerWithin):
+					t.Fatalf("trial %d: the socket was still open %s after the page last read a frame", trial, browserAnswerWithin)
+				}
+			}
+			sent := <-stopped
+			ended, err := page.closed()
+			page.leave()
+			// A page reads 1006 and no reason for a connection that ended without a close
+			// frame, which gorilla reads as the error that ended it, or as a 1006 of its own
+			// where that error was the connection's end of file: no close frame carries 1006.
+			const noCloseFrame = "1006 with no close frame"
+			ending, detail := want, fmt.Sprint(ended)
+			switch {
+			case err != nil:
+				ending, detail = noCloseFrame, err.Error()
+			case ended.Code == gws.CloseAbnormalClosure:
+				ending = noCloseFrame
+			case ended.Code != code || ended.Text != reason:
+				ending = fmt.Sprintf("%d %s", ended.Code, ended.Text)
+			}
+			endings[ending]++
+			t.Logf("trial %d: the page read %s (%s), having sent %d awareness frames behind its first frames (their write: %v; the write that stopped the awareness: %v)",
+				trial, ending, detail, sent.sent, written, sent.err)
+		}
+		t.Logf("%d trials, each wanting %s: %v", refusalTrials, want, endings)
+		if endings[want] != refusalTrials {
+			t.Errorf("%d of %d refused pages read %s, want every one: %v", endings[want], refusalTrials, want, endings)
+		}
+	}
+
+	t.Run("an edit past the document bound", func(t *testing.T) {
+		trials(t, large, paste, contracts.DocumentTooLargeCloseCode, contracts.DocumentTooLargeCloseReason)
+	})
+
+	holder := server.openBrowser(t, large)
+	t.Cleanup(holder.leave)
+	server.setRoomBudget(t, 1)
+	// The budget is full once the sweep setting it started has found nothing to close
+	// (roomBudget.swept), which is not at once: an edit is applied until then. The probe sends
+	// nothing after its edit and reads every frame, so its close is never at risk.
+	for deadline := time.Now().Add(browserAnswerWithin); ; time.Sleep(100 * time.Millisecond) {
+		probe := server.openBrowser(t, large)
+		applied, closed, err := probe.send(probe.updateFrame(browserEdit(t, probe.state(t), grow)))
+		probe.leave()
+		if err != nil {
+			t.Fatalf("probe the full budget: %v", err)
+		}
+		if !applied {
+			requireRefused(t, applied, closed, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("an edit that grows the document was still applied %s after the budget was set to one byte", browserAnswerWithin)
+		}
+	}
+	growth := browserEdit(t, holder.state(t), grow)
+
+	t.Run("an edit into a document open on a full budget", func(t *testing.T) {
+		trials(t, large, growth, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
+	})
+
+	t.Run("a browser asking for a document on a full budget", func(t *testing.T) {
+		trials(t, turnedAway, nil, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
+		requireRoomAbsent(t, server, turnedAway, "the document the full budget turned away")
+	})
+}
+
+// pageRefusalLine is the line the server logs for every browser's update its room's hook refuses
+// (docs' logRefusal): the document, and the close it answers the browser with.
+var pageRefusalLine = regexp.MustCompile(`msg="dispatch: refused a browser's update[^"]*" room=(\S+) update_bytes=\d+ close_code=(\d+) close_reason=(\S+)`)
+
+// pageRefusals is every close the server has logged refusing a browser's update into room with,
+// as code and reason, in the order it logged them.
+func pageRefusals(server *memoryServer, room string) []string {
+	var refusals []string
+	for _, match := range pageRefusalLine.FindAllStringSubmatch(server.output.String(), -1) {
+		if match[1] == room {
+			refusals = append(refusals, match[2]+" "+match[3])
+		}
+	}
+	return refusals
+}
+
+// awaitPageRefusal waits for the server to log a refusal of an update into room past the first
+// after of them, and answers the close it logged.
+func awaitPageRefusal(t *testing.T, server *memoryServer, room string, after int) string {
+	t.Helper()
+	for deadline := time.Now().Add(browserAnswerWithin); ; time.Sleep(10 * time.Millisecond) {
+		if refusals := pageRefusals(server, room); len(refusals) > after {
+			return refusals[after]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server logged no refusal of the edit into %s within %s", room, browserAnswerWithin)
+		}
+	}
+}
+
+// frameAwareness is the tag of an awareness frame of the document socket, whose payload is one
+// awareness update as VarBytes (theorem-labs/ygo v1.55.1-theorem.4, provider/websocket/
+// server.go:107, peer.go:107-110).
+const frameAwareness = 1
+
+// presenceFrame is the awareness frame a page sends when the person's cursor moves to cursor: its
+// presence's whole state, under a clock one past the last.
+func (b *browser) presenceFrame(presence *awareness.Awareness, cursor int) []byte {
+	presence.SetLocalState(map[string]any{"user": map[string]any{"name": "alice"}, "cursor": cursor})
+	update := presence.EncodeUpdate([]uint64{presence.ClientID()})
+	return documentFrame(b.room, frameAwareness, encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarBytes(update)
+	}))
+}
+
+// sendUntilEnded sends presence in awareness frames one after another, each at a cursor of its
+// own (presenceFrame), as the editor's provider sends one at each move of the person's cursor,
+// until the socket ends: until the read loop has read how it ended, or a write fails. It answers
+// how many it sent, and the write error that stopped it, nil where the socket's end did.
+func (b *browser) sendUntilEnded(presence *awareness.Awareness) (int, error) {
+	for sent := 0; ; sent++ {
+		select {
+		case <-b.ended:
+			return sent, nil
+		default:
+		}
+		if err := b.write(b.presenceFrame(presence, sent+1)); err != nil {
+			return sent, err
+		}
+	}
 }
 
 // gcFloodClient is the client of the first GC-struct update the A1 drives send, each later update
