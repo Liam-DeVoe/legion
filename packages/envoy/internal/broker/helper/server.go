@@ -49,10 +49,10 @@ type Server struct {
 	// cmd/agent-secrets-helper leaves it, means DefaultBrokerCallBound; a row that reads the
 	// bound sets one short enough to be quick.
 	BrokerCallBound time.Duration
-	// calls counts the connections Serve accepted that may still owe a broker-call op's answer,
-	// and pending is the same count as a number, for the line Serve logs while it waits on
-	// calls: each connection counts from its accept until its handler has read a request that
-	// is not a broker call, or has written the answer of one that is (Serve).
+	// calls counts the connections Serve accepted that may still owe a broker call's answer, and
+	// pending is the same count as a number, for the "connections" attribute of the line Serve
+	// logs while it waits on calls: each connection counts from its accept until its handler has
+	// read a request that is not a broker call, or has written the answer of one that is (Serve).
 	calls   sync.WaitGroup
 	pending atomic.Int64
 	// dormantGraceNS is DefaultDormantGrace unless SetDormantGrace names another: how long a
@@ -97,7 +97,7 @@ func (s *Server) Serve(ctx context.Context, ln *net.UnixListener) error {
 // logs at WARN how many it waits for when there are any.
 func (s *Server) awaitCalls() {
 	if n := s.pending.Load(); n > 0 {
-		s.Log.Warn("the helper is stopping; it waits for the broker calls in flight to answer", "calls", n, "bound", s.brokerCallBound())
+		s.Log.Warn("the helper is stopping; it waits for the connections that may still owe a broker call's answer", "connections", n, "bound", s.brokerCallBound())
 	}
 	s.calls.Wait()
 }

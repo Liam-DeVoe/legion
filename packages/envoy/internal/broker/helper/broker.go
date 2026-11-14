@@ -231,8 +231,21 @@ type BrokerError struct {
 	Message string
 }
 
+// Error names only the fields it has: the status always, the code where there is one, the message
+// where there is one. A front door's 502 with no JSON body would otherwise read "broker 502 : ",
+// and an unknown outcome's answer shows that text to an operator (sentCause, server.go). The
+// filled form does not change: "broker 403 SESSION_HELD: the session … belongs to …" reads byte
+// for byte as before, since refresh_test.go and nocredential_test.go match
+// "broker 401 LAUNCHER_INVALID" as a prefix.
 func (e *BrokerError) Error() string {
-	return fmt.Sprintf("broker %d %s: %s", e.Status, e.Code, e.Message)
+	s := fmt.Sprintf("broker %d", e.Status)
+	if e.Code != "" {
+		s += " " + e.Code
+	}
+	if e.Message != "" {
+		s += ": " + e.Message
+	}
+	return s
 }
 
 // readOperator reads OperatorFile, trimmed, per call: it names the login_hint for a machine
