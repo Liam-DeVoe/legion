@@ -85,16 +85,6 @@ create index graph_tuples_as_of_out on graph_tuples (from_kind, from_id, kind, a
 create index graph_tuples_as_of_in on graph_tuples (to_kind, to_id, kind, at desc, seq desc)
   where to_kind <> 'value';
 
--- Which kinds the store has taken over. `graph_edges` keeps its arm over each source column
--- while that kind's row reads false, and the tuple arm answers that kind once it reads true, so
--- the view answers each row exactly once at every instant. One row per kind from this migration,
--- so no arm's test reads null.
-create table graph_store_cutover (
-  kind text primary key,
-  complete boolean not null default false
-);
-insert into graph_store_cutover (kind) values ('comment'), ('block'), ('block_ref');
-
 -- What `envoy-dispatch erase` removed. An operator's audit row: nobody addresses it, and no read
 -- of the graph answers it. It holds no erased text.
 create table graph_erasures (

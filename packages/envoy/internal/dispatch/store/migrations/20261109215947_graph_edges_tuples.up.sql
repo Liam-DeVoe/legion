@@ -27,25 +27,35 @@
 -- row today, and a top-level block, whose parent is the document itself, would otherwise be
 -- rendered twice, once from that tuple and once from `in_document`.
 --
--- The cutover is per row and by the tuple's own kind: the arm answers a kind only once that
--- kind's `graph_store_cutover` row reads true, and each of the four old arms answers only while
--- it reads false. `in_document` is governed by the `block` row, a block's pointer kinds by the
--- `block_ref` row, and a comment's two by the `comment` row. So at the moment the backfill
--- completes a kind the tuple arm answers that kind's rows and the old arm answers none, and the
--- view answers each row exactly once at every instant. The four `comments` arms that thread a
+-- The switch is per row. Each of the four old arms answers only the rows of its own table
+-- whose `node_kind` is null, which is a row no node of the store stands behind, and the tuple
+-- arm answers what the store holds, which is the facts of the rows that name one. The two sets
+-- are complementary because one transaction writes both sides of a row: the writer that states
+-- a block's or a comment's tuples names that node on the row in the same transaction
+-- (`refs.IndexBlocks`, api's comment write, and the backfill), and a write that leaves a row
+-- naming no node states no tuple for it. So the view answers each row exactly once, at every
+-- point of the backfill and not only at its end, and the four `comments` arms that thread a
 -- reply are untouched: a later child writes those relations.
 --
--- Both halves of that test are written as the four old arms write theirs, as a subquery over
--- the three-row cutover table that is correlated with nothing, which the planner reads once for
--- the whole statement as an InitPlan rather than once a row. The first names no column of the
--- arm at all - it asks whether any kind this arm carries has moved - so the planner gates the
--- whole arm on it before it reads a tuple: while the three rows read false this arm is a
--- one-time filter and its tuples, its node join and its types test are never executed, which is
--- what this arm costs a deployment that has not backfilled. The second picks the row's own kind
--- out of the three. Written instead as a join to `graph_store_cutover`, the test is a join the
--- planner can only make after the arm has produced its rows: with the cutover rows off the arm
--- still read every tuple into the node and sorted them, 20 to 35 ms on a node with 5,000 of
--- them, for a join that then discarded every row.
+-- Per row and not per kind, because a row that names no node outlives the backfill of its kind
+-- in three ways, and a test over one row per kind would hide every one of them while it read
+-- true: a pod of the release before this one, writing while a roll is half done; a build rolled
+-- back to that release, which writes rows and no nodes; and a block whose address is past
+-- `refs.MaxBlockNodeBytes`, which is no node of this store by design and whose row therefore
+-- keeps its null columns for good. Each of those rows keeps its answer from the old arm.
+--
+-- The test costs each old arm nothing: it is a null test on a column of the row the arm has
+-- already read, so no table, index or subquery is added to any of the four. The tuple arm's own
+-- test is `edge.projects is not null`, which is the list of kinds it renders and nothing to do
+-- with the backfill; a deployment that has not backfilled holds no tuple of those kinds, so the
+-- arm's reads find none and answer none.
+--
+-- A rollback that drops a row and writes it again leaves that row's tuples standing, since no
+-- tuple is ever deleted, and the view answers it from both arms until the next write of the
+-- document or the comment: the writer of this release then names the node on the row again, the
+-- old arm goes quiet, and the store's newest tuple is the one the arm renders. That window is
+-- the stale cost of a rollback, and it closes itself; a test over one row per kind closes
+-- nothing, because it hides the rolled-back pod's rows for as long as the row reads true.
 --
 -- Two rules the arm carries.
 --
@@ -62,8 +72,8 @@
 --
 -- Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short
 -- transaction, so a reference read waits behind it. The arm list re-stated is
--- `20261105014808`'s, with the four cutover tests and the tuple arm added, and it is the arm
--- list a later migration re-states from. Nothing here refuses or rewrites a row.
+-- `20261105014808`'s, with the four `node_kind is null` tests and the tuple arm added, and it
+-- is the arm list a later migration re-states from. Nothing here refuses or rewrites a row.
 
 -- What a block's pointer may point at, read from the schema rather than from the row: the
 -- `targets` of the attribute node the link's kind names, or null where the attribute declares
@@ -111,14 +121,14 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'comment', c.id::text, 'anchored_to', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = (c.anchor->>'artifact_id')::uuid
-  where not (select complete from graph_store_cutover where kind = 'comment')
+  where c.node_kind is null
   union all
   select 'ask', k.id::text, 'owned_by', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = k.artifact_id
   union all
   select 'comment', c.id::text, 'owned_by', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = c.artifact_id
-  where not (select complete from graph_store_cutover where kind = 'comment')
+  where c.node_kind is null
   union all
   select 'comment', id::text, 'replies_to', 'comment', reply_to::text, created_at, null
   from comments where reply_to is not null
@@ -150,11 +160,11 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   select 'block', from_node, kind, to_kind, to_id, created_at, source_seq
   from block_refs
   where (to_types is null or block_ref_listed(to_types, to_id))
-    and not (select complete from graph_store_cutover where kind = 'block_ref')
+    and node_kind is null
   union all
   select 'block', d.node_id, 'part_of', 'artifact', a.ref_key, d.created_at, null
   from document_blocks d join artifacts a on a.id = d.artifact_id
-  where not (select complete from graph_store_cutover where kind = 'block')
+  where d.node_kind is null
   union all
   select 'comment_block', b.node_id, 'part_of', 'comment', b.comment_id::text, b.created_at, null
   from comment_blocks b where b.position is not null
@@ -205,19 +215,12 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
              when tuple.from_kind = 'block' and tuple.kind = 'in_document' then 'block'
              when tuple.from_kind = 'block' and tuple.kind <> 'part_of' then 'block_ref'
              when tuple.from_kind = 'comment' and tuple.kind in ('anchored_to', 'owned_by') then 'comment'
-           end as cutover
+           end as projects
     from graph_tuples tuple
     where tuple.to_kind <> 'value'
     order by tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq desc
   ) edge
   join graph_nodes node on node.kind = edge.from_kind and node.id = edge.from_id
-  where edge.asserted and node.state <> 'gone'
-    and (select bool_or(moved.complete) from graph_store_cutover moved
-         where moved.kind in ('block', 'block_ref', 'comment'))
-    and case edge.cutover
-          when 'block' then (select complete from graph_store_cutover where kind = 'block')
-          when 'block_ref' then (select complete from graph_store_cutover where kind = 'block_ref')
-          when 'comment' then (select complete from graph_store_cutover where kind = 'comment')
-        end
-    and (edge.cutover <> 'block_ref' or edge.stated = 'mentions'
+  where edge.asserted and node.state <> 'gone' and edge.projects is not null
+    and (edge.projects <> 'block_ref' or edge.stated = 'mentions'
          or block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id));

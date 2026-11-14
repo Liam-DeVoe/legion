@@ -493,9 +493,6 @@ func requireViewColumnsOverTuples(t *testing.T, database *store.Store, comment s
 		t.Fatalf("begin the read of the tuple arm: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `update graph_store_cutover set complete = true`); err != nil {
-		t.Fatalf("set the cutover rows: %v", err)
-	}
 	const target = "POSITION-1/spec"
 	var seq int64
 	if err := tx.QueryRow(ctx, `

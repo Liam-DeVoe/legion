@@ -22,13 +22,13 @@ import (
 // graphEdgesArm is one arm of graph_edges as this test reads it back: the relation the arm reads
 // first, and what is to become of it. The relation is enough to name an arm here because the
 // list is held in the view's own order, so two arms over one table are told apart by where they
-// stand. cutover is, for the four arms over a kind this change moved, the kind whose
-// graph_store_cutover row the arm tests, and empty for every other arm. text is the arm's own
+// stand. projects is, for the four arms over a kind this change moved, the kind whose rows the
+// store now holds beside that arm's table, and empty for every other arm. text is the arm's own
 // SQL as the catalogue prints it, which only an arm read back carries.
 type graphEdgesArm struct {
 	relation string
 	fate     string
-	cutover  string
+	projects string
 	text     string
 }
 
@@ -47,9 +47,9 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "issue_links", fate: "blocked_by; dispatch://INFRA-1156 makes an issue's relations typed edges"},
 	{relation: "artifacts", fate: "attached_to; no child has moved it"},
 	{relation: "asks", fate: "an ask's anchored_to; dispatch://INFRA-1152 writes an ask's relations"},
-	{relation: "comments", cutover: "comment", fate: "a comment's anchored_to; the store answers it while graph_store_cutover says comment, and " + movedArmsDeletedBy + " deletes this arm"},
+	{relation: "comments", projects: "comment", fate: "a comment's anchored_to; the store answers it for a row that names its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "asks", fate: "an ask's owned_by; dispatch://INFRA-1152 writes an ask's relations"},
-	{relation: "comments", cutover: "comment", fate: "a comment's owned_by; the store answers it while graph_store_cutover says comment, and " + movedArmsDeletedBy + " deletes this arm"},
+	{relation: "comments", projects: "comment", fate: "a comment's owned_by; the store answers it for a row that names its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", fate: "a reply's replies_to its thread; dispatch://INFRA-1152 writes it"},
 	{relation: "comments", fate: "a reply's answers; dispatch://INFRA-1152 writes it"},
 	{relation: "comments", fate: "a reply's replies_to an ask; dispatch://INFRA-1152 writes it"},
@@ -58,8 +58,8 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "components", fate: "a component's part_of; no child has moved it"},
 	{relation: "component_depends", fate: "depends_on; no child has moved it"},
 	{relation: "issue_component_members", fate: "affects; no child has moved it"},
-	{relation: "block_refs", cutover: "block_ref", fate: "a block's links; the store answers them while graph_store_cutover says block_ref, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "document_blocks", cutover: "block", fate: "a block's part_of its document; the store answers it while graph_store_cutover says block, and " + movedArmsDeletedBy + " deletes this arm"},
+	{relation: "block_refs", projects: "block_ref", fate: "a block's links; the store answers them for a row that names its node, and " + movedArmsDeletedBy + " deletes this arm"},
+	{relation: "document_blocks", projects: "block", fate: "a block's part_of its document; the store answers it for a row that names its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "comment_blocks", fate: "a comment block's part_of; dispatch://INFRA-1152 writes an item's blocks"},
 	{relation: "message_blocks", fate: "a message block's part_of; dispatch://INFRA-1152 writes an item's blocks"},
 	{relation: "ask_blocks", fate: "an ask part's part_of; dispatch://INFRA-1152 writes an item's blocks"},
@@ -69,7 +69,7 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "comments", fate: "a reply's replies_to a comment's block; dispatch://INFRA-1152 writes it"},
 	{relation: "comments", fate: "a reply's replies_to an ask's part; dispatch://INFRA-1152 writes it"},
 	{relation: "messages", fate: "a message's replies_to a message's block; dispatch://INFRA-1152 writes it"},
-	{relation: "graph_tuples", fate: "the store itself, which answers each kind whose cutover row reads true"},
+	{relation: "graph_tuples", fate: "the store itself, which answers the facts of every row that names its node"},
 }
 
 // graphEdgeRow is one row of graph_edges, every column of it, as both readings compare them: the
@@ -90,18 +90,24 @@ func (r graphEdgeRow) String() string {
 		r.fromKind, r.fromID, r.kind, r.toKind, r.toID, r.createdAt.UTC().Format(time.RFC3339Nano), seq)
 }
 
-// The view answers the same rows whichever side of the cutover it reads them from.
+// The view answers the same rows before the backfill and after it, and each row exactly once.
 //
 // Four things are held at once. The arm list is read back out of the catalogue and compared
 // with the one declared above, so no arm over a source column can be added anywhere in this
-// branch without this test naming it, and each of the four arms over a moved kind is read for a
-// graph_store_cutover test of its own kind, with the child that deletes it named in its fate.
-// Then the whole view is read with every graph_store_cutover row off, which is the four arms
-// over the projections, and again with every one on, which is the one arm over the current
-// tuples, and the two readings are compared row for row, each row's time and causing write
-// included; with the rows on, each of the four arms is read on its own and answers nothing.
-// Then refs.BacklinkCounts is read the same two ways for every node kind its arm table
+// branch without this test naming it; each of the four arms over a moved kind is read for the
+// `node_kind is null` test that keeps it to the rows no node stands behind, with the child that
+// deletes it named in its fate; and no arm may read a table that decides the switch by kind.
+// Then the whole view is read before the backfill, where the pre-store rows are answered by the
+// four old arms and the rows the index wrote by the store, and again after it, where the store
+// answers them all, and the two readings are compared row for row, each row's time and causing
+// write included; after the backfill each of the four arms is read on its own and answers
+// nothing. Then refs.BacklinkCounts is read the same two ways for every node kind its arm table
 // declares, so an inbound count that falls or rises is caught beside the rows.
+//
+// The first reading is the one that holds the per-row rule: the fixture leaves a document whose
+// rows name their nodes beside one whose rows name none, and three comments that name none, so
+// a row of each sort is read together and the row counts of the two readings say whether either
+// was answered twice.
 //
 // The seed is written through the real write paths: the block-index tick, which is the one
 // writer in this package that states what a version came to in the store, and the backfill,
@@ -125,51 +131,52 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	moved := movedArms(t, read)
 
 	seedGraphEdgeFixture(t, database, service)
+	// The rows of one document are put back in the shape the release before this one left
+	// them in, so the four old arms answer rows of their own while the store answers the rest.
+	unwriteTheStoreOfADocument(t, database, graphEdgeLegacyRefKey)
+	projected := graphEdgeRows(t, database)
+	projectedCounts := graphEdgeBacklinkCounts(t, database, projected)
+	// Each of the four answers rows of its own before the backfill, so finding it empty after
+	// it is the per-row test at work and not an arm with nothing to say.
+	for _, arm := range moved {
+		rows := armRows(t, database, arm)
+		t.Logf("arm %d (%s) answers %d rows before the backfill", arm.place, arm.relation, rows)
+		if rows == 0 {
+			t.Errorf("arm %d (%s) answers no row before the backfill, so finding it empty after it would prove nothing",
+				arm.place, arm.relation)
+		}
+	}
+
 	report, err := graphcensus.Backfill(ctx, database, io.Discard)
 	if err != nil {
 		t.Fatalf("backfill the store: %v", err)
 	}
 	for _, kind := range report.Kinds {
-		t.Logf("backfill kind=%s rows=%d nodes=%d tuples=%d remaining=%d cutover=%t",
+		t.Logf("backfill kind=%s rows=%d nodes=%d tuples=%d remaining=%d complete=%t",
 			kind.Kind, kind.Rows, kind.Nodes, kind.Tuples, kind.Remaining, kind.Complete)
 		if !kind.Complete {
-			t.Fatalf("the backfill left %s short of its cutover: %#v", kind.Kind, kind)
+			t.Fatalf("the backfill left %s with rows that name no node: %#v", kind.Kind, kind)
 		}
 	}
-
-	setGraphStoreCutover(t, database, false)
-	projected := graphEdgeRows(t, database)
-	projectedCounts := graphEdgeBacklinkCounts(t, database, projected)
-	// Each of the four answers rows of its own while its cutover row is off, so finding it
-	// empty once the row is on is the cutover test at work and not an arm with nothing to say.
-	for _, arm := range moved {
-		rows := armRows(t, database, arm)
-		t.Logf("arm %d (%s) answers %d rows with the cutover off", arm.place, arm.relation, rows)
-		if rows == 0 {
-			t.Errorf("arm %d (%s) answers no row with the cutover off, so finding it empty with the cutover on would prove nothing",
-				arm.place, arm.relation)
-		}
-	}
-	setGraphStoreCutover(t, database, true)
 	stored := graphEdgeRows(t, database)
 	storedCounts := graphEdgeBacklinkCounts(t, database, projected)
 	for _, arm := range moved {
 		if rows := armRows(t, database, arm); rows != 0 {
-			t.Errorf("arm %d (%s, %s) answers %d rows with every cutover row on, want none: the store's arm answers its kind now",
+			t.Errorf("arm %d (%s, %s) answers %d rows once every row of its table names a node, want none: the store's arm answers them now",
 				arm.place, arm.relation, arm.fate, rows)
 		}
 	}
 
 	if len(projected) == 0 {
-		t.Fatal("the view answers no row with the cutover off, so this test would prove nothing")
+		t.Fatal("the view answers no row before the backfill, so this test would prove nothing")
 	}
-	t.Logf("the view answers %d rows over the projections and %d over the store:\n  %s",
+	t.Logf("the view answers %d rows before the backfill and %d after it:\n  %s",
 		len(projected), len(stored), strings.Join(edgeShapes(projected), "\n  "))
 	requireEveryMovedKind(t, projected)
 	requireSameEdges(t, projected, stored)
 	for _, kind := range refs.BacklinkKinds() {
 		if !maps.Equal(projectedCounts[kind], storedCounts[kind]) {
-			t.Errorf("the %s backlink counts are %v over the projections and %v over the store",
+			t.Errorf("the %s backlink counts are %v before the backfill and %v after it",
 				kind, projectedCounts[kind], storedCounts[kind])
 		}
 	}
@@ -177,7 +184,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	// the four arms point at must each be counted at all.
 	for _, kind := range []string{"artifact", "issue", refs.BlockNodeKind} {
 		if len(projectedCounts[kind]) == 0 {
-			t.Errorf("the %s backlink counts over the projections are empty, so their comparison proves nothing", kind)
+			t.Errorf("the %s backlink counts before the backfill are empty, so their comparison proves nothing", kind)
 		}
 	}
 }
@@ -189,34 +196,42 @@ type movedArm struct {
 	graphEdgesArm
 }
 
-// cutoverTest matches each graph_store_cutover row an arm's text tests, by the kind it names,
-// as the catalogue prints the test.
-var cutoverTest = regexp.MustCompile(`graph_store_cutover\.kind = '([a-z_]+)'::text`)
+// nodelessRowTest matches the test that keeps an arm to the rows of its own table that name no
+// node, as the catalogue prints it, with the alias the arm gives that table.
+var nodelessRowTest = regexp.MustCompile(`(?:([a-z_]+)\.)?node_kind IS NULL`)
 
-// movedArms holds each of the four arms over a moved kind to the cutover test of its own kind
-// and to the child that deletes it, and answers them with their text for reading on their own.
-// An arm that tested another kind's row would go quiet when that kind moved, not its own, and
-// answer its kind twice in between.
+// switchedByKind matches a table that would decide the switch for a whole kind rather than for
+// one row. No arm may read one: a row written by a pod of the release before this one, a row
+// written after a rollback and a block past the address bound each name no node for as long as
+// they stand, and a test by kind would hide every one of them from the moment the backfill of
+// that kind finished.
+var switchedByKind = regexp.MustCompile(`graph_store_cutover`)
+
+// movedArms holds each of the four arms over a moved kind to the per-row test over its own
+// table and to the child that deletes it, and answers them with their text for reading on their
+// own.
 func movedArms(t *testing.T, read []graphEdgesArm) []movedArm {
 	t.Helper()
+	for index, arm := range read {
+		if switchedByKind.MatchString(arm.text) {
+			t.Errorf("arm %d (%s) reads a table that decides the switch by kind, not by row:\n%s",
+				index+1, arm.relation, arm.text)
+		}
+	}
 	var moved []movedArm
 	for index, declared := range graphEdgesArms {
-		if declared.cutover == "" {
+		if declared.projects == "" {
 			continue
 		}
 		arm := read[index]
-		arm.fate, arm.cutover = declared.fate, declared.cutover
-		var tested []string
-		for _, found := range cutoverTest.FindAllStringSubmatch(arm.text, -1) {
-			tested = append(tested, found[1])
-		}
-		if len(tested) == 0 || slices.ContainsFunc(tested, func(kind string) bool { return kind != declared.cutover }) {
-			t.Errorf("arm %d (%s) tests the graph_store_cutover rows %v, want the %s row alone:\n%s",
-				index+1, arm.relation, tested, declared.cutover, arm.text)
+		arm.fate, arm.projects = declared.fate, declared.projects
+		if !nodelessRowTest.MatchString(arm.text) {
+			t.Errorf("arm %d (%s) over the moved kind %s carries no `node_kind is null` test, so it answers rows the store answers too:\n%s",
+				index+1, arm.relation, declared.projects, arm.text)
 		}
 		if !strings.Contains(declared.fate, movedArmsDeletedBy) {
 			t.Errorf("arm %d (%s) over the moved kind %s is declared with the fate %q, which does not name %s, the child that deletes it",
-				index+1, arm.relation, declared.cutover, declared.fate, movedArmsDeletedBy)
+				index+1, arm.relation, declared.projects, declared.fate, movedArmsDeletedBy)
 		}
 		moved = append(moved, movedArm{place: index + 1, graphEdgesArm: arm})
 	}
@@ -449,23 +464,64 @@ func graphEdgeBacklinkCounts(t *testing.T, database *store.Store, rows []graphEd
 	return counts
 }
 
-// setGraphStoreCutover puts every kind's cutover row at complete, which is how the view is read
-// from the projections and then from the store over one set of rows. The backfill is what moves
-// these rows in a deployment; the test moves them back and forth to read both answers of one
-// database.
-func setGraphStoreCutover(t *testing.T, database *store.Store, complete bool) {
+// unwriteTheStoreOfADocument puts the rows of the document at refKey back in the shape the
+// release before the node and tuple store left them in: its document_blocks and block_refs
+// rows name no node, and the store holds neither the nodes of its blocks nor anything stated
+// about them. That is what a database holds for a document the backfill has not reached, and
+// what a pod of that release writes while a roll is half done. The view then answers those
+// rows from the four old arms and every other row from the store, which is the reading this
+// test takes first.
+func unwriteTheStoreOfADocument(t *testing.T, database *store.Store, refKey string) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(),
-		`update graph_store_cutover set complete = $1`, complete); err != nil {
-		t.Fatalf("set the cutover rows to %t: %v", complete, err)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the unwriting of %s: %v", refKey, err)
 	}
+	defer tx.Rollback(ctx)
+	var rows, links int64
+	for _, unwritten := range []struct {
+		what, statement string
+		touched         *int64
+	}{
+		{"document_blocks", `update document_blocks d set node_kind = null, node_address = null, parent_block_id = null
+		 from artifacts a where a.id = d.artifact_id and a.ref_key = $1`, &rows},
+		{"block_refs", `update block_refs r set node_kind = null, node_address = null
+		 from artifacts a where a.id = r.artifact_id and a.ref_key = $1`, &links},
+	} {
+		tag, err := tx.Exec(ctx, unwritten.statement, refKey)
+		if err != nil {
+			t.Fatalf("take the node columns off the %s rows of %s: %v", unwritten.what, refKey, err)
+		}
+		*unwritten.touched = tag.RowsAffected()
+	}
+	for _, statement := range []string{
+		`delete from graph_tuples where from_kind = $1 and starts_with(from_id, $2)`,
+		`delete from graph_nodes where kind = $1 and starts_with(id, $2)`,
+	} {
+		if _, err := tx.Exec(ctx, statement, refs.BlockNodeKind, refKey+"#"); err != nil {
+			t.Fatalf("take the store's rows of the blocks of %s away: %v", refKey, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the unwriting of %s: %v", refKey, err)
+	}
+	// The reading that follows holds the per-row rule only if this document really left rows
+	// of both tables naming no node.
+	if rows == 0 || links == 0 {
+		t.Fatalf("unwriting %s left %d block rows and %d link rows naming no node, want some of each", refKey, rows, links)
+	}
+	t.Logf("%s holds %d block rows and %d link rows that name no node", refKey, rows, links)
 }
 
 // The documents the fixture writes. target.md holds the two requirements a plan_task's serves
 // may point at; its second version retypes one of them to a callout, which the attribute does
 // not allow, so the link stored at it is listed by no arm. plan.md holds a pointer at each, a
 // mention of CORE-2 from a block inside another block, a block a later version drops and a
-// later one brings back, and a block a later version drops for good.
+// later one brings back, and a block a later version drops for good. legacy.md is the document
+// whose rows are put back in the shape the release before this one left them in: it holds a
+// nested block and a mention, so each of the two block arms has a row of its own to answer
+// while the rows of the other two documents are answered by the store.
 const (
 	graphEdgeTarget = ":::requirement{#r1}\nThe view answers one row per edge.\n:::\n\n" +
 		":::requirement{#r2}\nA requirement a later version retypes.\n:::\n\n" +
@@ -486,13 +542,21 @@ const (
 
 	graphEdgePlanRestored = graphEdgePlanPointers + "\n" +
 		":::callout{#revive kind=\"note\" title=\"\"}\nA block a version drops and another brings back, citing dispatch://CORE-2.\n:::\n"
+
+	graphEdgeLegacy = "::::callout{#held kind=\"note\" title=\"\"}\nA block that holds another.\n\n" +
+		":::callout{#inside kind=\"note\" title=\"\"}\nInside, after dispatch://CORE-2.\n:::\n\n::::\n"
 )
 
+// graphEdgeLegacyRefKey is the ref_key of legacy.md, the document unwriteTheStoreOfADocument is
+// run over: `createOwedDocument` hangs every document of this fixture on CORE-1 under its slug.
+const graphEdgeLegacyRefKey = "CORE-1/legacy"
+
 // seedGraphEdgeFixture writes what the four moved arms carry, through the paths that write it in
-// a deployment: two documents indexed by the block-index tick, one of them at three versions so
-// that a block is dropped and brought back and so that a version's edges carry the source_seq of
-// the event that recorded it, and three comments written as a build before the store existed
-// wrote them, which the backfill states.
+// a deployment: three documents indexed by the block-index tick, one of them at three versions
+// so that a block is dropped and brought back and so that a version's edges carry the
+// source_seq of the event that recorded it, and three comments written as a build before the
+// store existed wrote them, which the backfill states. The third document, legacy.md, is the
+// one the caller unwrites the store of.
 func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service) {
 	t.Helper()
 	ctx := context.Background()
@@ -508,6 +572,12 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	settle(t, database, plan)
 	if ticks := drainBlockIndex(t, service, "the document that points at it"); ticks == 0 {
 		t.Fatal("the fixture indexed no document holding a pointer")
+	}
+
+	legacy := createOwedDocument(t, database, service, "", "legacy", graphEdgeLegacy, "")
+	settle(t, database, legacy)
+	if ticks := drainBlockIndex(t, service, "the document the store is unwritten of"); ticks == 0 {
+		t.Fatal("the fixture indexed no document to unwrite the store of")
 	}
 
 	// The retype, which no pass over plan.md follows: its stored link at r2 stands and is

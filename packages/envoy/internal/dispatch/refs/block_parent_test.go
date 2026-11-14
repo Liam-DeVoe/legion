@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -689,4 +690,196 @@ func statesParent(stated []graphstore.Tuple, address string, asserted bool) bool
 	return slices.ContainsFunc(stated, func(tuple graphstore.Tuple) bool {
 		return tuple.Kind == graphstore.TuplePartOf && tuple.FromID == address && tuple.Asserted == asserted
 	})
+}
+
+// unwriteTheStore puts the document's rows back into the shape the release before the node and
+// tuple store left them in: every row of document_blocks and block_refs names no node, and the
+// store holds neither the nodes of its blocks nor anything stated about them. That is what a
+// database holds for a document indexed before this release and not reached by
+// `envoy-dispatch backfill-graph-store`, and it is the state a new version has to be indexable
+// from.
+func unwriteTheStore(t *testing.T, document parentDocument) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := document.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the unwriting of the store: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	for _, statement := range []string{
+		`update document_blocks set node_kind = null, node_address = null, parent_block_id = null
+		 where artifact_id = $1::uuid`,
+		`update block_refs set node_kind = null, node_address = null where artifact_id = $1::uuid`,
+	} {
+		if _, err := tx.Exec(ctx, statement, document.artifact); err != nil {
+			t.Fatalf("take the node columns off the rows of %s: %v", document.artifact, err)
+		}
+	}
+	for _, statement := range []string{
+		`delete from graph_tuples where from_kind = $1 and starts_with(from_id, $2)`,
+		`delete from graph_nodes where kind = $1 and starts_with(id, $2)`,
+	} {
+		if _, err := tx.Exec(ctx, statement, BlockNodeKind, document.refKey+"#"); err != nil {
+			t.Fatalf("take the store's rows of the blocks of %s away: %v", document.refKey, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the unwriting of the store: %v", err)
+	}
+	// The index pass that follows proves something only if the rows really name no node now.
+	var named, nodes int
+	if err := document.database.Pool.QueryRow(ctx, `
+		select (select count(*) from document_blocks
+		        where artifact_id = $1::uuid and (node_kind is not null or node_address is not null)),
+		       (select count(*) from graph_nodes where kind = $2 and starts_with(id, $3))
+	`, document.artifact, BlockNodeKind, document.refKey+"#").Scan(&named, &nodes); err != nil {
+		t.Fatalf("read back the unwritten rows of %s: %v", document.refKey, err)
+	}
+	if named != 0 || nodes != 0 {
+		t.Fatalf("after the unwriting %d row(s) of %s still name a node and the store holds %d of its block nodes, want none of either",
+			named, document.refKey, nodes)
+	}
+}
+
+// blockNodesOf is how many nodes the store holds of the document's blocks.
+func blockNodesOf(t *testing.T, document parentDocument) int {
+	t.Helper()
+	var nodes int
+	if err := document.database.Pool.QueryRow(context.Background(),
+		`select count(*) from graph_nodes where kind = $1 and starts_with(id, $2)`,
+		BlockNodeKind, document.refKey+"#").Scan(&nodes); err != nil {
+		t.Fatalf("count the block nodes of %s: %v", document.refKey, err)
+	}
+	return nodes
+}
+
+// A document indexed before this release takes a new version, and that version gives every row
+// of it its node and its membership of the document.
+//
+// The rows are put back in the shape the previous release left them in - node columns null, no
+// node and no tuple in the store - which is what a database the backfill has not reached holds.
+// A version is then written and indexed. It must commit: reconcileBlockParents names each
+// block's node on its row, and document_blocks_node is checked inside that statement, so a pass
+// that gave a node only to the blocks whose text the version changed would be refused there
+// (SQLSTATE 23503) and the document could never take another version.
+//
+// Afterwards every row names its node, the store holds each one live, and each block is a
+// member of its document exactly once, dated from its own row's created_at and stated by the
+// indexing version's writer under its event - a block whose text that version changed as much
+// as one it left alone, since the row of a changed pre-store block is updated rather than
+// inserted and states no membership of its own. A version after that states no second
+// membership for any of them: the pass gives a node to the rows that name none, not to every
+// row of the document.
+func TestAPreStoreDocumentTakesItsNodesAtItsNextVersion(t *testing.T) {
+	ctx := context.Background()
+	database := parentDatabase(t)
+	writer := model.Actor{Kind: "user", ID: "alice"}
+	document := newParentDocument(t, database, "PRIOR", "pre-store-md")
+
+	first := document.writeVersion(t, 1, nestedDocument("tail one\n").markdown, writer)
+	if won, _ := document.indexVersion(t, 1, nestedDocument("tail one\n"), first); !won {
+		t.Fatalf("the document's first index did not become the version its blocks stand at")
+	}
+	unwriteTheStore(t, document)
+
+	// The version changes top2's text alone, so top1, mid and leaf are blocks this pass writes
+	// no document_blocks row for at all.
+	changed := nestedDocument("tail two\n")
+	indexer := model.Actor{Kind: "user", ID: "bob"}
+	second := document.writeVersion(t, 2, changed.markdown, indexer)
+	won, stated := document.indexVersion(t, 2, changed, second)
+	if !won {
+		t.Fatalf("the version indexed after the store was unwritten did not become the version the document's blocks stand at")
+	}
+	wantParents := map[string]string{"top1": "", "mid": "top1", "leaf": "mid", "top2": ""}
+	if got := document.projectedParents(t); !maps.Equal(got, wantParents) {
+		t.Errorf("after the version document_blocks projects the parents %v, want %v", got, wantParents)
+	}
+	document.requireParentsProjected(t, "the version indexed after the store was unwritten")
+	if nodes := blockNodesOf(t, document); nodes != len(wantParents) {
+		t.Errorf("the store holds %d nodes of the document's blocks, want one for each of its %d", nodes, len(wantParents))
+	}
+	joinedAt := document.joined(t)
+	for block := range wantParents {
+		node, found, err := graphstore.ReadNode(ctx, database.Pool, BlockNodeKind, document.address(block))
+		if err != nil || !found {
+			t.Errorf("the store holds no node of block %s: found %v, %v", block, found, err)
+		} else if node.State != graphstore.StateLive {
+			t.Errorf("block %s's node is %s, want it live", block, node.State)
+		}
+		if held := document.memberships(t, block); len(held) != 1 {
+			t.Errorf("block %s holds %d in_document tuples in the log, want exactly one: %+v", block, len(held), held)
+		}
+		member := document.currentMembership(t, block)
+		if member.ToKind != "artifact" || member.ToID != document.refKey {
+			t.Errorf("block %s is a member of %s/%s, want artifact/%s", block, member.ToKind, member.ToID, document.refKey)
+		}
+		if !member.At.Equal(joinedAt[block]) {
+			t.Errorf("block %s's membership is dated %s, want its document_blocks row's created_at %s", block, member.At, joinedAt[block])
+		}
+		if member.Who != second.writer || member.SourceEvent != second.event {
+			t.Errorf("block %s's membership was stated by %#v under event %d, want the indexing version's writer %#v and its event %d",
+				block, member.Who, member.SourceEvent, second.writer, second.event)
+		}
+	}
+	for _, block := range []string{"top1", "mid", "leaf", "top2"} {
+		if !slices.ContainsFunc(stated, func(tuple graphstore.Tuple) bool {
+			return tuple.Kind == TupleInDocument && tuple.FromID == document.address(block)
+		}) {
+			t.Errorf("the version stated %+v, want block %s's membership among them", stated, block)
+		}
+	}
+
+	// A version after it states no membership at all: every row names its node now.
+	third := document.writeVersion(t, 3, nestedDocument("tail three\n").markdown, indexer)
+	_, again := document.indexVersion(t, 3, nestedDocument("tail three\n"), third)
+	for _, tuple := range again {
+		if tuple.Kind == TupleInDocument {
+			t.Errorf("the version after it stated the membership %+v, want none: every row of the document names its node already", tuple)
+		}
+	}
+}
+
+// A block whose address is past the store's bound keeps a row that names no node, and the
+// document takes version after version all the same.
+//
+// Its document's ref_key alone is longer than refs.MaxBlockNodeBytes, so no block of it can be
+// a node (blockNodeFits). The pass therefore writes no node, states nothing, and leaves the
+// node columns null - which is what keeps the `document_blocks` arm of graph_edges answering
+// those rows - and the second version indexes as the first did rather than being refused by
+// document_blocks_node for a node nobody may write.
+func TestABlockPastTheAddressBoundKeepsARowThatNamesNoNode(t *testing.T) {
+	database := parentDatabase(t)
+	writer := model.Actor{Kind: "user", ID: "alice"}
+	document := newParentDocument(t, database, "LONGKEY", strings.Repeat("l", MaxBlockNodeBytes))
+	if len(document.refKey) <= MaxBlockNodeBytes {
+		t.Fatalf("the document's ref_key is %d bytes, want more than the bound %d so that no block of it is a node",
+			len(document.refKey), MaxBlockNodeBytes)
+	}
+
+	for _, version := range []struct {
+		number int
+		tail   string
+	}{{1, "tail one\n"}, {2, "tail two\n"}} {
+		doc := nestedDocument(version.tail)
+		record := document.writeVersion(t, version.number, doc.markdown, writer)
+		if won, stated := document.indexVersion(t, version.number, doc, record); !won {
+			t.Fatalf("version %d of the long-keyed document did not become the version its blocks stand at", version.number)
+		} else if len(stated) != 0 {
+			t.Errorf("version %d of the long-keyed document stated %+v, want nothing: no block of it is a node", version.number, stated)
+		}
+	}
+	var rows, named int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*), count(*) filter (where node_kind is not null or node_address is not null)
+		from document_blocks where artifact_id = $1::uuid
+	`, document.artifact).Scan(&rows, &named); err != nil {
+		t.Fatalf("read the rows of the long-keyed document: %v", err)
+	}
+	if rows == 0 || named != 0 {
+		t.Errorf("the long-keyed document holds %d rows, %d of them naming a node; want rows that all name none", rows, named)
+	}
+	if nodes := blockNodesOf(t, document); nodes != 0 {
+		t.Errorf("the store holds %d nodes of the long-keyed document's blocks, want none", nodes)
+	}
 }

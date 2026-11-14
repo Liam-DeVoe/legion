@@ -31,8 +31,8 @@ const reportedDifferences = 20
 // (people and agents below), which is the side that exists for it; a role takes the roles the
 // event log ever named as well (addressedRoles).
 type projection struct {
-	// name is the kind as graph_store_cutover and the report name it, nodeKind the kind of
-	// graph_nodes row it projects and table the relation its rows come from, for the report.
+	// name is the kind as the report names it, nodeKind the kind of graph_nodes row it
+	// projects and table the relation its rows come from, for the report.
 	name     string
 	nodeKind string
 	table    string
@@ -61,17 +61,10 @@ type KindReport struct {
 // Difference is one disagreement: why it is one, and the row or node it was found at.
 type Difference struct{ Cause, At string }
 
-// CutoverState is one row of graph_store_cutover: whether the store has taken that kind over.
-type CutoverState struct {
-	Kind     string
-	Complete bool
-}
-
 // StoreReport is what the store census found. It is a report and not an error: a census that
 // reads a difference has done its job, and the deployment reading it decides.
 type StoreReport struct {
-	Kinds   []KindReport
-	Cutover []CutoverState
+	Kinds []KindReport
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
 }
@@ -105,18 +98,17 @@ func (r *StoreReport) Refused() bool {
 	return r.Sizing != nil && r.Sizing.Refused()
 }
 
-// The kinds the census holds the store to. The first three are the kinds graph_store_cutover
-// names, each with a table that projects it; the four after them are the people and the agents,
-// which no table projects.
+// The kinds the census holds the store to. The first three are the kinds a table projects, each
+// with that table; the four after them are the people and the agents, which no table projects.
 //
 // Each of the first three holds a row to the tuples that answer it as well as to its node row.
-// Once a kind's cutover is complete, graph_edges, refs.Edges and refs.BacklinkCounts answer that
-// kind's links from the tuples, so a link whose tuple is missing or retracted is gone from every
-// read while each node row still stands, and a census of the node rows alone reads zero
-// differences over a store that has lost edges. A row's digest therefore carries every link the
-// row states (statedLinks), and its node's digest carries every link the store states now under
-// the same tuple kinds (currentLinks): the two agree exactly when the store states each link the
-// row names and no other.
+// A row that names its node is answered from the tuples by graph_edges, refs.Edges and
+// refs.BacklinkCounts (migration 20261109215947), so a link whose tuple is missing or retracted
+// is gone from every read while the node row still stands, and a census of the node rows alone
+// reads zero differences over a store that has lost edges. A row's digest therefore carries
+// every link the row states (statedLinks), and its node's digest carries every link the store
+// states now under the same tuple kinds (currentLinks): the two agree exactly when the store
+// states each link the row names and no other.
 //
 // A block's address is its document's ref_key, '#' and its block id, and a block whose address
 // is past refs.MaxBlockNodeBytes is deliberately no node of the store: its row carries no node
@@ -454,11 +446,6 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 			}
 		}
 	}
-	cutover, err := readCutover(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	report.Cutover = cutover
 	if sizing {
 		sized, err := readSizing(ctx, tx)
 		if err != nil {
@@ -564,23 +551,6 @@ func readDifferences(ctx context.Context, tx pgx.Tx, kind, sql string, args []an
 	return found, rows.Err()
 }
 
-func readCutover(ctx context.Context, tx pgx.Tx) ([]CutoverState, error) {
-	rows, err := tx.Query(ctx, `select kind, complete from graph_store_cutover order by kind`)
-	if err != nil {
-		return nil, fmt.Errorf("read the cutover: %w", err)
-	}
-	defer rows.Close()
-	var states []CutoverState
-	for rows.Next() {
-		var state CutoverState
-		if err := rows.Scan(&state.Kind, &state.Complete); err != nil {
-			return nil, fmt.Errorf("read a cutover row: %w", err)
-		}
-		states = append(states, state)
-	}
-	return states, rows.Err()
-}
-
 // Write prints the report, one `census: store ` line per fact, every difference under its kind,
 // and the sizing after it, ending with the verdict. It prints counts, digests, kinds and the
 // addresses of rows and nodes; no body, no actor and no value of an attribute leaves the
@@ -593,9 +563,6 @@ func (r *StoreReport) Write(w io.Writer) {
 		fmt.Fprintf(w, "census: store kind=%s checks %s\n", kind.Kind, kind.Note)
 		writeDifferences(w, kind.Kind, kind.RowDifferences, kind.ReportedRows)
 		writeDifferences(w, kind.Kind, kind.NodeDifferences, kind.ReportedNodes)
-	}
-	for _, state := range r.Cutover {
-		fmt.Fprintf(w, "census: store cutover kind=%s complete=%t\n", state.Kind, state.Complete)
 	}
 	fmt.Fprintf(w, "census: store rows_checked=%s differences=%s\n",
 		pgmigrate.Thousands(r.Rows()), pgmigrate.Thousands(r.Differences()))

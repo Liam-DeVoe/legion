@@ -79,12 +79,6 @@ const tables = [
 // installs (pmdoc/schemanodes) and the targets `block_pointer_targets` reads for `graph_edges`,
 // so a reset that took them would leave the instance with no block type at all. `source_event`
 // tells them apart for nothing: the kind does, and that is what these predicates keep.
-//
-// `graph_store_cutover` is left out for the same reason and is not emptied at all: its one row
-// per kind comes from the migration that creates it, and every pre-store arm of `graph_edges`
-// reads `not (select complete from graph_store_cutover where kind = ...)`. With no row that
-// scalar is null, `not null` is null, and the arm answers nothing - so emptying it would silently
-// drop every arm it guards.
 const storeDeletes: ReadonlyArray<{ table: string; keep?: string }> = [
   { table: "graph_erasures" },
   { table: "graph_tuples", keep: "from_kind IN ('supertag', 'attribute')" },

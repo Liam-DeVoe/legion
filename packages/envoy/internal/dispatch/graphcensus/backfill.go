@@ -56,7 +56,8 @@ type KindBackfill struct {
 	// Owed is how many documents it marked owed a block index, for the block kind alone.
 	Owed int64
 	// Complete is whether every row of the kind the store can hold now names its node, which
-	// is what sets the kind's graph_store_cutover row.
+	// is when the arm of graph_edges over that kind's table answers nothing: each of the four
+	// old arms answers a row only while that row names no node (migration 20261109215947).
 	Complete bool
 	// Remaining is how many rows of the kind still name no node.
 	Remaining int64
@@ -114,12 +115,6 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 		if err != nil {
 			return report, err
 		}
-		if done.Complete {
-			if _, err := database.Pool.Exec(ctx,
-				`update graph_store_cutover set complete = true where kind = $1`, done.Kind); err != nil {
-				return report, fmt.Errorf("record the cutover of %s: %w", done.Kind, err)
-			}
-		}
 		report.Kinds = append(report.Kinds, done)
 		writeKindBackfill(out, done)
 	}
@@ -127,7 +122,7 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 }
 
 func writeKindBackfill(out io.Writer, done KindBackfill) {
-	fmt.Fprintf(out, "backfill-graph-store: kind=%s rows=%d nodes=%d tuples=%d skipped=%d owed=%d remaining=%d cutover=%t\n",
+	fmt.Fprintf(out, "backfill-graph-store: kind=%s rows=%d nodes=%d tuples=%d skipped=%d owed=%d remaining=%d complete=%t\n",
 		done.Kind, done.Rows, done.Nodes, done.Tuples, done.Skipped, done.Owed, done.Remaining, done.Complete)
 }
 
@@ -882,8 +877,8 @@ type roleRow struct {
 // and the time are the first event that named the role, or the sentinel and the run's own time
 // for a role only a row names, which no event dates.
 //
-// No role has a graph_store_cutover row, so Complete sets none: it reads whether every role the
-// census names holds its node and its page.
+// No arm of graph_edges answers a role, so its Complete switches nothing off: it reads whether
+// every role the census names holds its node and its page.
 func backfillRoles(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.KindRole}
 	missing, err := readRoleRows(ctx, database)

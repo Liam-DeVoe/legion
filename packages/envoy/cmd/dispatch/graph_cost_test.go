@@ -15,8 +15,8 @@ package main
 // One arm is this working copy's build, the other the build of the commit this branch forked
 // from (`git merge-base origin/main HEAD`, baseBuild). Each serves a database of its own and
 // migrates it at boot, so each arm runs its own code over its own schema: the older build has
-// no graph_nodes, no graph_tuples and no graph_store_cutover, and this build's graph_edges
-// reads the tuple arm behind that scalar. One database cannot be both schemas at once, and an
+// no graph_nodes and no graph_tuples, and this build's graph_edges reads the tuple arm over
+// them. One database cannot be both schemas at once, and an
 // older build serving this schema would be measured reading this child's view, which is neither
 // arm. The corpus is therefore written twice, by one seeding pass issuing the same requests to
 // each arm, and both arms are measured in one run, reading by reading, so the pod's load falls
@@ -110,31 +110,11 @@ type costArm struct {
 	server      *dispatchProcess
 	databaseURL string
 	pool        *pgxpool.Pool
-	// cutover is the state of graph_store_cutover this arm's readings are taken in, nil for an
-	// arm read in whatever state it is in. Two arms differing only in it are two readings of
-	// one server, which is how c-read-cost reads this child with the cutover rows off and with
-	// them on.
-	cutover *bool
-}
-
-// inCutover is this arm read in one state of graph_store_cutover: the same process and the same
-// database under a name of its own, so a reading is kept apart from the other state's.
-func (a *costArm) inCutover(complete bool) *costArm {
-	in := *a
-	in.cutover = &complete
-	in.name = a.name + ", the cutover rows off"
-	if complete {
-		in.name = a.name + ", the cutover rows on"
-	}
-	return &in
 }
 
 // ready puts the arm in the state its readings are taken in. It is off the clock.
 func (a *costArm) ready(t *testing.T) {
 	t.Helper()
-	if a.cutover != nil {
-		costCutover(t, a, *a.cutover)
-	}
 }
 
 // startCostArms starts both arms: this working copy's build and the build of the commit this
@@ -418,24 +398,11 @@ func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 	}
 }
 
-// costCutover sets every row of graph_store_cutover on this child's arm, which is the state the
-// backfill leaves (graphcensus.Backfill) and the state in which graph_edges answers from the
-// tuple arm. The older arm has no such table and no such scalar, so this is a no-op there.
-func costCutover(t *testing.T, arm *costArm, complete bool) {
-	t.Helper()
-	if !arm.head {
-		return
-	}
-	if _, err := arm.pool.Exec(context.Background(),
-		`update graph_store_cutover set complete = $1`, complete); err != nil {
-		t.Fatalf("%s: set the cutover rows to %v: %v", arm.name, complete, err)
-	}
-}
-
 // costRunBackfill runs `envoy-dispatch backfill-graph-store` on this child's arm and waits for
 // the block index the backfill marks owed, so that the store holds a node and its tuples for
-// every projection row the seed wrote and the cutover rows read true. It is what a deployment
-// runs once the new binary serves (store_census_test.go's runBackfill).
+// every projection row the seed wrote and every one of those rows names its node, which is
+// when the store's own arm of graph_edges answers them. It is what a deployment runs once the
+// new binary serves (store_census_test.go's runBackfill).
 func costRunBackfill(t *testing.T, arm *costArm) {
 	t.Helper()
 	if !arm.head {
@@ -443,10 +410,13 @@ func costRunBackfill(t *testing.T, arm *costArm) {
 	}
 	runBackfill(t, arm.databaseURL)
 	costBlockIndexDrained(t, arm, 10*time.Minute)
-	incomplete := arm.count(t, `select count(*) from graph_store_cutover where not complete`)
-	if incomplete != 0 {
-		t.Fatalf("%s: %d kind(s) of graph_store_cutover read false after the backfill, so no reading below is of the tuple arm",
-			arm.name, incomplete)
+	nameless := arm.count(t, `
+		select (select count(*) from comments where node_kind is null)
+		     + (select count(*) from document_blocks where node_kind is null)
+		     + (select count(*) from block_refs where node_kind is null)`)
+	if nameless != 0 {
+		t.Fatalf("%s: %d projection row(s) name no node after the backfill, so no reading below is of the tuple arm",
+			arm.name, nameless)
 	}
 }
 

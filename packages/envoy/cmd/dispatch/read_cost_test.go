@@ -583,8 +583,8 @@ func readCostNodeIsThere(t *testing.T, arm *costArm, node graphstore.Node) bool 
 //
 // Eight reads are measured over each of four corpora, at this child's head and at the commit
 // this branch forked from, in one run, interleaved, over one corpus written to each arm by one
-// seeding pass. This child's arm is read twice over, once with the rows of graph_store_cutover
-// on and once with them off, so the view's cutover test is inside every reading of it. Every
+// seeding pass. This child's arm is read after its backfill, where every projection row names
+// its node and the store's own arm of graph_edges answers it. Every
 // reading is printed and the statistic is a real order statistic by nearest rank. It takes 200
 // readings of each read on each arm, as the root's R22 requires, because p99 by nearest rank is
 // the ceil(0.99 x n)th: at twenty readings, and at fifty, that is the slowest of them, so one
@@ -601,9 +601,8 @@ func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) 
 	t.Log("how each arm is driven: both arms are server processes of their own build, each serving " +
 		"a database of its own which that build migrated at boot, and each is driven over its own " +
 		"HTTP API by this test, which encodes every request before the clock starts and reads every " +
-		"answer to its end before it stops. This child's arm is read in both cutover states, which " +
-		"are two readings of one server: the rows of graph_store_cutover are set before each " +
-		"reading, off the clock, and the older build has no such table.")
+		"answer to its end before it stops. This child's arm is read after its backfill, so every " +
+		"reading of it is a reading of the store's own arm.")
 
 	listener := costEnvoy(t)
 	listener.Accept(true)
@@ -624,18 +623,14 @@ func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) 
 		settleReadCost(t, arm, shapes[arm])
 	}
 
-	// The three subjects: this child's arm in both cutover states, and the older build. The two
-	// states are the same server read twice, which is why the corpus of a costArm is keyed by
-	// the arm it was seeded on and not by the subject.
-	headOn, headOff := head.inCutover(true), head.inCutover(false)
-	subjects := []*costArm{headOn, headOff, base}
+	// The two subjects: this child's arm and the older build.
+	subjects := []*costArm{head, base}
 	corpus := func(subject *costArm) []*readCostShape {
 		if subject.head {
 			return shapes[head]
 		}
 		return shapes[base]
 	}
-	requireReadCostAnswersAgree(t, headOn, headOff, shapes[head])
 
 	// No tick of either server's own runs inside a measured window.
 	for _, arm := range []*costArm{head, base} {
@@ -649,7 +644,7 @@ func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) 
 		for shapeIndex := range shapes[head] {
 			measured := subjects
 			if read.headOnly {
-				measured = []*costArm{headOn, headOff}
+				measured = []*costArm{head}
 			}
 			shapeName := shapes[head][shapeIndex].name
 			taken := costInterleaved(t, read.name, shapeName, costReadReadings, measured, func(subject *costArm, _ int) time.Duration {
@@ -669,52 +664,30 @@ func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) 
 		for shapeIndex := range shapes[head] {
 			shapeName := shapes[head][shapeIndex].name
 			if read.headOnly {
-				on := held[read.name][shapeName+" @ "+headOn.name]
-				off := held[read.name][shapeName+" @ "+headOff.name]
-				t.Logf("%s over %q: p99 %.1f ms with the cutover rows on and %.1f ms with them off. "+
+				here := held[read.name][shapeName+" @ "+head.name]
+				t.Logf("%s over %q: p99 %.1f ms. "+
 					"The commit before this child serves no such read - GET /api/v1/people/{login}/nodes "+
 					"is this child's own route - so this reading is held to no rise: there is no reading "+
 					"at the older arm to rise from.",
-					read.name, shapeName, costMilliseconds(on.p99()), costMilliseconds(off.p99()))
+					read.name, shapeName, costMilliseconds(here.p99()))
 				continue
 			}
 			before := held[read.name][shapeName+" @ "+base.name]
-			for _, subject := range []*costArm{headOn, headOff} {
-				here := held[read.name][shapeName+" @ "+subject.name]
-				rise := here.p99() - before.p99()
-				t.Logf("%s over %q, %s: p99 %.1f ms against %.1f ms at the commit before this child, a rise of %.1f ms against the %s budget",
-					read.name, shapeName, subject.name, costMilliseconds(here.p99()),
-					costMilliseconds(before.p99()), costMilliseconds(rise), costBudget)
-				if rise > costBudget {
-					t.Errorf("%s over %q, %s: p99 %.1f ms against %.1f ms at the commit before this child, a rise of %.1f ms, over the %s budget (this child's readings %s; the commit before's %s)",
-						read.name, shapeName, subject.name, costMilliseconds(here.p99()),
-						costMilliseconds(before.p99()), costMilliseconds(rise), costBudget,
-						here.printed(), before.printed())
-				}
+			here := held[read.name][shapeName+" @ "+head.name]
+			rise := here.p99() - before.p99()
+			t.Logf("%s over %q, %s: p99 %.1f ms against %.1f ms at the commit before this child, a rise of %.1f ms against the %s budget",
+				read.name, shapeName, head.name, costMilliseconds(here.p99()),
+				costMilliseconds(before.p99()), costMilliseconds(rise), costBudget)
+			if rise > costBudget {
+				t.Errorf("%s over %q, %s: p99 %.1f ms against %.1f ms at the commit before this child, a rise of %.1f ms, over the %s budget (this child's readings %s; the commit before's %s)",
+					read.name, shapeName, head.name, costMilliseconds(here.p99()),
+					costMilliseconds(before.p99()), costMilliseconds(rise), costBudget,
+					here.printed(), before.printed())
 			}
 		}
 	}
 
 	readCostEventNodeSequence(t, head, shapes[head][0].issue)
-}
-
-// requireReadCostAnswersAgree proves the two cutover states are two ways of answering one
-// question and not two answers: the reads below are measured in both states, and a state that
-// answered fewer rows would be measured as the faster one.
-func requireReadCostAnswersAgree(t *testing.T, on, off *costArm, shapes []*readCostShape) {
-	t.Helper()
-	for _, shape := range shapes {
-		on.ready(t)
-		with := readCostEdges(t, on, "to", shape.into)
-		off.ready(t)
-		without := readCostEdges(t, off, "to", shape.into)
-		if len(with.Edges) != len(without.Edges) {
-			t.Fatalf("%q answers %d edge(s) into %s with the cutover rows on and %d with them off, so the two states are not two readings of one answer",
-				shape.name, len(with.Edges), shape.into, len(without.Edges))
-		}
-		t.Logf("%q: the tuples into its node read %d edge(s) with the cutover rows on and the same with them off",
-			shape.name, len(with.Edges))
-	}
 }
 
 // readCostShapePhrase is the word one shape's main document carries and no other document of the

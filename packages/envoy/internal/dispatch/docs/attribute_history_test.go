@@ -288,13 +288,9 @@ func TestAnAttributeHistoryWrittenByTheBlockIndexReadsBackAsARelationHistoryDoes
 		t.Errorf("graph_nodes.state holds %q for %s, want the newest value %q", node.State, subject, newest)
 	}
 
-	// A value is no node, so it is the far end of no edge. Every kind is marked complete, which
-	// is the view a deployment reads once its backfill has run; this database is this test's
-	// own. The block's own edge is answered, so the arm is live and a zero below is the value
-	// being kept out rather than the arm answering nothing.
-	if _, err := database.Pool.Exec(ctx, `update graph_store_cutover set complete = true`); err != nil {
-		t.Fatalf("mark every kind's cutover complete: %v", err)
-	}
+	// A value is no node, so it is the far end of no edge. The block's row names its node, so
+	// the store answers its edges and the block's own edge is among them: the arm is live and
+	// a zero below is the value being kept out rather than the arm answering nothing.
 	var edges, literals int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) filter (where kind = 'part_of' and to_kind = 'artifact' and to_id = $3),
@@ -305,7 +301,7 @@ func TestAnAttributeHistoryWrittenByTheBlockIndexReadsBackAsARelationHistoryDoes
 		t.Fatalf("read the edges of %s: %v", subject, err)
 	}
 	if edges != 1 {
-		t.Errorf("graph_edges holds %d edges from %s to its document %s, want the one its in_document tuple states: with every cutover complete the tuple arm answers it",
+		t.Errorf("graph_edges holds %d edges from %s to its document %s, want the one its in_document tuple states: its row names its node, so the tuple arm answers it",
 			edges, subject, refKey)
 	}
 	if literals != 0 {

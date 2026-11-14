@@ -1118,19 +1118,13 @@ func (r *projectionRun) relations(t *testing.T, ctx context.Context, kind string
 	return ends
 }
 
-// requireOnlyTheMovedKindsReachedTheStore reads the kinds the change moves from the schema's
-// own list (graph_store_cutover, migration 20261109013400) and fails on a node of any other
-// kind, less the kinds the store holds of people and agents and the two its block schema
-// writes, which no projection backs.
+// requireOnlyTheMovedKindsReachedTheStore fails on a node of any kind but the three this change
+// moves - the kinds the three projected tables of migration 20261109022248 name - less the
+// kinds the store holds of people and agents and the two its block schema writes, which no
+// projection backs.
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
-	moved, err := readStrings(ctx, run.database.Pool, `select kind from graph_store_cutover order by kind`)
-	if err != nil {
-		t.Fatalf("read the kinds this change moves: %v", err)
-	}
-	if !slices.Equal(moved, []string{"block", "block_ref", "comment"}) {
-		t.Fatalf("the schema's list of moved kinds is %v, and this test is written for the three the change names", moved)
-	}
+	moved := []string{"block", "block_ref", "comment"}
 	allowed := append(slices.Clone(moved),
 		graphstore.KindPerson, graphstore.KindSession, graphstore.KindRole, graphstore.KindPage,
 		"supertag", "attribute")

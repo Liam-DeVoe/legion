@@ -2325,13 +2325,13 @@ It is one `repeatable read, read only` transaction on a connection of its own, s
 For each projected kind it counts the live nodes (a node whose `state` is `live`) against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
 a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a live node no row projects.
 The shared fields are digested rather than printed, and for the three projected kinds they include the tuples that answer the row, read as the store reads a current relation (the newest tuple per kind and far end, kept while it asserts), and not the node row alone:
-once a kind's cutover is complete `graph_edges`, `refs.Edges` and `refs.BacklinkCounts` answer its links from the tuples, so a missing or retracted tuple takes a link out of every read while each node row still stands.
+a row that names its node is answered from the tuples by `graph_edges`, `refs.Edges` and `refs.BacklinkCounts`, so a missing or retracted tuple takes a link out of every read while each node row still stands.
 A comment's `created_at`, `author`, the artifact its `anchor` names, the artifact its `artifact_id` names and the author `graphstore.AuthorOf` reads off `author` are held against its node's `made_at` and `made_by` and its current `anchored_to`, `owned_by` and `authored_by` tuples.
 A block's document and the block its `parent_block_id` names, or the document where it names none, are held against its current `in_document` and `part_of` tuples.
 A block that states no parent at all digests differently from one the document holds directly, which is how the census tells a block the index has not reached yet from a block at a document's top level.
 The kinds are:
 
-- `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds `graph_store_cutover` names, whose rows the report prints beside the counts.
+- `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds a table projects, whose counts the report prints.
   A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is the live block nodes its rows name, and every row of a block is held, as the set of links that block's rows name, against every link its node states now other than its `in_document` and `part_of`, so a link with no tuple and a tuple with no row are both read.
   A block whose address is past the store's key bound (`refs.MaxBlockNodeBytes`) is no node of the store by design, and both sides leave those rows out.
 
@@ -2368,7 +2368,7 @@ It walks each kind in batches, writing a batch's nodes, its tuples and the proje
 It appends no event of its own, and a fact whose row's own event cannot be found carries the store's sentinel (`source_event` 0) as its cause:
 a comment's own event is the `comment.created` that stored it, a block's is the event that recorded the version its row was written at, and a block reference's is its `source_seq`, which is that event's id already.
 Each tuple takes its row's own `created_at` as its time and its row's own `source_seq` as its `legacy_source_seq`, so a backfilled edge is dated and sequenced exactly as the `graph_edges` arm it replaces dates and sequences it.
-Once every row of a kind the store can hold names its node, the run sets that kind's row in `graph_store_cutover`.
+Once every row of a kind the store can hold names its node, the run reports that kind `complete=true`, which is the moment the arm of `graph_edges` over that kind's table answers nothing.
 
 It then gives every role the census's row side names, in a row now or in an event, and that has no node its node, its page and the page's `part_of` the role, as the publisher writes them for the events it publishes: the publisher writes none for an event it published before it wrote roles, so without this pass every role an older database names is a census difference.
 The input is the census's own role row side, so the roles the pass gives a node are exactly the roles the census holds to one; each role's node is caused by the first event that named it, or by the sentinel for a role only a row names, and a role that already holds both nodes is left alone.
@@ -2459,18 +2459,18 @@ A node the store does not hold is exit 2, naming it.
 
 ### The view over the store
 
-Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and the cutover test on each of the four arms whose relations the store now writes.
+Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and a `node_kind is null` test on each of the four arms whose relations the store now writes.
 The new arm takes, for each `(from_kind, from_id, kind, to_kind, to_id)`, the newest tuple, which is an edge only while that newest one asserts, with `to_kind <> 'value'` so no attribute's value is an edge.
 It renders a block's `in_document` as the `part_of` to its document the view has always answered, a block's `mentions` and its pointer kinds, and a comment's `anchored_to` and `owned_by`;
 the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
 No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
 The arm answers no row for a node whose current `state` is `gone`, which is how it stays level with a projection row that is really deleted (a block a version no longer holds), and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row, so both arms lose it together.
 
-The switch is per row and by the tuple's own kind: `in_document` is governed by the `block` row of `graph_store_cutover`, a block's pointer kinds by the `block_ref` row, and a comment's two by the `comment` row, while each of the four old arms carries the opposite test as an uncorrelated scalar the planner reads once.
-So the moment the backfill completes a kind, the store answers that kind's rows and the old arm answers none, and the view answers each row exactly once at every instant.
-`refs.BacklinkCounts` moves the same four arms the same way, each reading its own table behind `not complete` and the tuples behind `complete`, so a count and the list behind it cannot disagree across the cutover.
+The switch is per row: each of the four old arms answers only the rows of its own table whose `node_kind` is null, and the store answers the facts of the rows that name a node.
+One transaction writes both sides of a row — the writer that states a row's tuples names its node on the row — so the view answers each row exactly once, at every point of the backfill and not only at its end, and a row a previous release wrote during a roll, a row written after a rollback and a block past `refs.MaxBlockNodeBytes` each keep their answer from the old arm.
+`refs.BacklinkCounts` moves the same four arms the same way, each reading its own table for the rows that name no node and the tuples for the rest, so a count and the list behind it cannot disagree.
 A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
-`TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue, and reads the whole view and every backlink count with the cutover rows off and with them on over one seeded database, row for row.
+`TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue, and reads the whole view and every backlink count over one seeded database before the backfill, with rows that name a node beside rows that name none, and again after it, row for row.
 
 ## Stored-order check
 

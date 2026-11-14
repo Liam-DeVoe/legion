@@ -98,13 +98,13 @@ type inventoryRow struct {
 // comparisons are reported apart, because a row the migration lost shows in the first and never
 // in the second.
 //
-// The run then asserts that graph_store_cutover reads complete for every kind a table projects,
-// and only then holds each projection row to the tuple that answers it, read through the store's
-// own current read: a tuple that is missing or that a later one retracted leaves the node row
+// The run then asserts that every row of the three projected tables names its node, and only
+// then holds each projection row to the tuple that answers it, read through the store's own
+// current read: a tuple that is missing or that a later one retracted leaves the node row
 // standing and takes the link out of what refs.Edges and refs.BacklinkCounts answer, so a
 // comparison against graph_nodes alone reads zero differences over a graph that has lost edges.
-// The cutover comes first because, until it is complete, those reads answer those kinds from the
-// projections and a missing tuple proves nothing either way.
+// The naming comes first because, until a row names its node, those reads answer that row from
+// its own table and a missing tuple proves nothing either way.
 //
 // Only then does `envoy-dispatch census --store` run, which is the store-to-projection
 // comparison: it must read a population for every kind this child moves (a kind that checked
@@ -172,8 +172,8 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 		t.Errorf("comparison 2: the projection lacks %s %s (%s)", missing.Kind, missing.Identity, missing.Address)
 	}
 
-	// ───── the cutover, asserted before any row is compared with a tuple ─────
-	requireTheCutoverIsComplete(t, ctx, databaseURL, censusProjectedKinds)
+	// ───── every row naming its node, asserted before any row is compared with a tuple ─────
+	requireEveryRowNamesItsNode(t, ctx, databaseURL, censusProjectedKinds)
 
 	// ───── every projection row against the tuple that answers it ─────
 	projectionRowsAgainstTheirTuples(t, ctx, databaseURL)
@@ -855,12 +855,11 @@ func projectionsAgainstInventory(t *testing.T, ctx context.Context, databaseURL 
 	return read
 }
 
-// ───── the cutover, and each row against the tuple that answers it ────────
+// ───── every row naming its node, and each row against the tuple that answers it ─────────
 
-// censusProjectedKinds are the kinds a table projects, which are the kinds graph_store_cutover
-// names: the kinds whose rows this run holds to the tuples that answer them. The list is the
-// test's own, as censusKinds is, so a kind the schema stops naming is read by a person before
-// this test agrees with it.
+// censusProjectedKinds are the kinds a table projects: the kinds whose rows this run holds to
+// the tuples that answer them. The list is the test's own, as censusKinds is, so a kind the
+// schema stops naming is read by a person before this test agrees with it.
 var censusProjectedKinds = []string{"block", "block_ref", "comment"}
 
 // The two tuple kinds a comment states about the documents it hangs under, as the writer spells
@@ -872,49 +871,45 @@ const (
 	censusTupleOwnedBy    = "owned_by"
 )
 
-// requireTheCutoverIsComplete fails the run unless graph_store_cutover reads complete for every
-// kind the comparison below holds to the tuples, naming the kind that does not and stopping
-// before that comparison runs.
+// requireEveryRowNamesItsNode fails the run unless every row of the three projected tables
+// names its node, naming the kind that holds one that does not and stopping before the
+// comparison below runs.
 //
-// The order is the point. While a kind's row reads false, graph_edges answers that kind from its
-// own projection and refs.BacklinkCounts counts it there, so a tuple that is missing or retracted
-// changes no answer a reader gets and a comparison made then proves nothing about the tuples.
-// Complete is the one state in which the tuples are what the graph answers from.
-func requireTheCutoverIsComplete(t *testing.T, ctx context.Context, databaseURL string, kinds []string) {
+// The order is the point. A row that names no node is answered by the arm of graph_edges over
+// its own table and counted there by refs.BacklinkCounts (migration 20261109215947), so a tuple
+// that is missing or retracted changes no answer a reader gets for that row, and a comparison
+// made over it proves nothing about the tuples. A row that names its node is the one state in
+// which the tuples are what the graph answers from.
+//
+// A block past the store's address bound is no node of the store by design, so the two block
+// tables are read for the rows inside that bound alone, as the census reads them.
+func requireEveryRowNamesItsNode(t *testing.T, ctx context.Context, databaseURL string, kinds []string) {
 	t.Helper()
 	conn := censusConnect(t, ctx, databaseURL)
-	rows, err := conn.Query(ctx, `select kind, complete from graph_store_cutover order by kind`)
-	if err != nil {
-		t.Fatalf("read the cutover: %v", err)
+	var comments, blocks, links, rows int64
+	if err := conn.QueryRow(ctx, `
+		select (select count(*) from comments where node_kind is null),
+		       (select count(*) from document_blocks
+		        where node_kind is null and octet_length(node_id) <= $1),
+		       (select count(*) from block_refs
+		        where node_kind is null and octet_length(from_node) <= $1),
+		       (select count(*) from comments)
+		         + (select count(*) from document_blocks)
+		         + (select count(*) from block_refs)
+	`, refs.MaxBlockNodeBytes).Scan(&comments, &blocks, &links, &rows); err != nil {
+		t.Fatalf("read the rows that name no node: %v", err)
 	}
-	defer rows.Close()
-	cutover := map[string]bool{}
-	var read []string
-	for rows.Next() {
-		var kind string
-		var complete bool
-		if err := rows.Scan(&kind, &complete); err != nil {
-			t.Fatalf("scan a cutover row: %v", err)
-		}
-		cutover[kind] = complete
-		read = append(read, kind+"="+strconv.FormatBool(complete))
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the cutover: %v", err)
-	}
-	t.Logf("graph_store_cutover holds %d row(s): %s", len(read), strings.Join(read, " "))
-	requireADenominator(t, "the cutover of the kinds this run compares", len(read))
+	nameless := map[string]int64{"comment": comments, "block": blocks, "block_ref": links}
+	t.Logf("the three projected tables hold %d rows, %d comments, %d document blocks and %d block references of them naming no node",
+		rows, comments, blocks, links)
+	requireADenominator(t, "the rows of the kinds this run compares", int(rows))
 	for _, kind := range kinds {
-		complete, found := cutover[kind]
-		switch {
-		case !found:
-			t.Fatalf("graph_store_cutover holds no row for kind %s, so nothing says the store answers that kind", kind)
-		case !complete:
-			t.Fatalf("the cutover of kind %s is incomplete: graph_edges still answers that kind from its projection, so holding its rows to the tuples would prove nothing",
-				kind)
+		if nameless[kind] != 0 {
+			t.Fatalf("%d row(s) of kind %s name no node: the arm of graph_edges over that table still answers them, so holding its rows to the tuples would prove nothing",
+				nameless[kind], kind)
 		}
 	}
-	t.Logf("the cutover is complete for %s, which is the state the graph answers those kinds from the tuples in",
+	t.Logf("every row of %s names its node, which is the state the graph answers those kinds from the tuples in",
 		strings.Join(kinds, ", "))
 }
 
@@ -1261,7 +1256,7 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 	if err := conn.QueryRow(ctx, `show default_transaction_read_only`).Scan(&setting); err != nil || setting != "on" {
 		t.Fatalf("a session opened with the census's URL reads default_transaction_read_only %q (%v), want on", setting, err)
 	}
-	_, err = conn.Exec(ctx, `update graph_store_cutover set complete = complete`)
+	_, err = conn.Exec(ctx, `update graph_nodes set state = state`)
 	var postgres *pgconn.PgError
 	if !errors.As(err, &postgres) || postgres.Code != "25006" {
 		t.Fatalf("a session opened with the census's URL took an update (%v), want it refused as read_only_sql_transaction (25006)", err)

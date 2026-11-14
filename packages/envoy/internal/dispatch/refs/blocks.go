@@ -208,6 +208,12 @@ func blockNode(address string, writer model.Actor, at time.Time, state string) g
 //
 // Its third result is what the pass states in the node and tuple store, which the caller
 // appends under the event that caused the write (BlockIndexWrite).
+//
+// A block of the document whose row names no node - a row a build before this release wrote,
+// which the backfill has not reached - takes its node and its membership of the document here,
+// whether this version touched its text or not, because the row learns the address of that
+// node in this same pass (reconcileBlockParents) and the foreign key on it is checked inside
+// the statement that writes it.
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -229,7 +235,7 @@ func IndexBlocks(
 	if err != nil {
 		return nil, false, BlockIndexWrite{}, err
 	}
-	stored, err := storedBlockSums(ctx, tx, artifactID, len(blocks))
+	stored, err := storedBlocks(ctx, tx, artifactID, len(blocks))
 	if err != nil {
 		return nil, false, BlockIndexWrite{}, err
 	}
@@ -249,6 +255,9 @@ func IndexBlocks(
 	var ids, types, sums, excerpts []string
 	var textIDs []string
 	var texts []*string
+	// The blocks of this version whose row names no node, each with the time that row was
+	// written: a pre-store row, which the pass below gives its node and its membership.
+	var nodeless []nodelessBlock
 	// A block whose text no version moved needs no string of its sum: the comparison against
 	// the sum the index holds reads the hex out of one buffer this loop keeps, and only a
 	// block this version writes a row for takes a string of its own.
@@ -258,7 +267,10 @@ func IndexBlocks(
 		blockTextSum(&sum, body)
 		previous, held := stored[block.ID]
 		delete(stored, block.ID)
-		if held && previous == string(sum[:]) {
+		if held && !previous.named {
+			nodeless = append(nodeless, nodelessBlock{id: block.ID, joined: previous.joined})
+		}
+		if held && previous.sum == string(sum[:]) {
 			continue
 		}
 		ids, types, sums = append(ids, block.ID), append(types, block.Type), append(sums, string(sum[:]))
@@ -277,18 +289,19 @@ func IndexBlocks(
 	}
 
 	// The nodes this pass states are the blocks whose document_blocks row it writes - the new,
-	// the changed and the restored - and the ids the version dropped, and no other. That is
-	// exactly the set R16's foreign key needs a node for, and it is what makes the write cost
-	// what the edit changed rather than what the document holds: a version that moves one word
-	// of a two-thousand-block document states two node rows, not four thousand. A block whose
-	// text this version left alone already has its node from the version that first indexed
-	// it, and its placement, which may still have moved, is a tuple reconcileBlockParents
-	// states against that node.
+	// the changed and the restored - the ids the version dropped, and the blocks whose row
+	// names no node, and no other. The first two are exactly the set R16's foreign key needs a
+	// node for where every row of the document already names one, and that is what makes the
+	// write cost what the edit changed rather than what the document holds: a version that
+	// moves one word of a two-thousand-block document states two node rows, not four thousand.
+	// A block whose text this version left alone already has its node from the version that
+	// first indexed it, and its placement, which may still have moved, is a tuple
+	// reconcileBlockParents states against that node.
 	changed := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		changed[id] = struct{}{}
 	}
-	write := BlockIndexWrite{Nodes: make([]graphstore.Node, 0, len(ids)+len(deleted))}
+	write := BlockIndexWrite{Nodes: make([]graphstore.Node, 0, len(ids)+len(deleted)+len(nodeless))}
 	for _, id := range ids {
 		if !blockIDFits(refKey, id) {
 			continue
@@ -305,6 +318,34 @@ func IndexBlocks(
 		}
 		write.Nodes = append(write.Nodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateGone))
 	}
+	// A row written before this release names no node: migration 20261109022248 added the
+	// columns and filled none of them, and the backfill has not reached the document or has
+	// not been run at all. reconcileBlockParents names this block's node on every row of the
+	// document whose columns differ, and document_blocks_node is checked inside that
+	// statement, so each of those rows takes its node here or that update is refused. The
+	// membership goes with it: the insert above states one only for a row it truly inserted,
+	// so a pre-store block whose text this version changed would otherwise keep its row, state
+	// no in_document, and be skipped by the backfill for naming a node by then.
+	//
+	// Each membership is dated from its row's own created_at, as a row the insert writes
+	// afresh is, so the tuple arm of graph_edges answers what the document_blocks arm answered
+	// for it. A block past the address bound is no node of the store: it takes neither, and
+	// its row keeps its null columns, which is what keeps the old arm answering it.
+	var memberships []BlockTuple
+	for _, block := range nodeless {
+		if !blockIDFits(refKey, block.id) {
+			continue
+		}
+		address := blockNodeAddress(refKey, block.id)
+		if _, stated := changed[block.id]; !stated {
+			write.Nodes = append(write.Nodes, blockNode(address, writer, versionAt, graphstore.StateLive))
+		}
+		memberships = append(memberships, BlockTuple{Tuple: graphstore.Tuple{
+			FromKind: BlockNodeKind, FromID: address, Kind: TupleInDocument,
+			ToKind: "artifact", ToID: refKey,
+			At: block.joined, Who: writer, Asserted: true,
+		}})
+	}
 	// The nodes go in before any projection row that names one: the foreign key is checked
 	// inside the statement writing that row, so a node written afterwards would be too late.
 	// The base attributes that write states come back here rather than being appended with it,
@@ -318,6 +359,7 @@ func IndexBlocks(
 	for _, tuple := range base {
 		write.Tuples = append(write.Tuples, BlockTuple{Tuple: tuple})
 	}
+	write.Tuples = append(write.Tuples, memberships...)
 
 	if len(deleted) > 0 {
 		if _, err := tx.Exec(ctx, `
@@ -1025,22 +1067,48 @@ func BlockTextSum(body string) string {
 	return string(sum[:])
 }
 
-// storedBlockSums is each block the document's index holds, by id, with its text's sha256.
-// blocks is how many blocks the version being indexed holds, which is about how many rows the
-// read answers: a map made at that size is not grown once per thousand rows read into it.
-func storedBlockSums(ctx context.Context, tx pgx.Tx, artifactID string, blocks int) (map[string]string, error) {
-	rows, err := tx.Query(ctx, `select block_id, text_sha256 from document_blocks where artifact_id = $1`, artifactID)
+// storedBlock is what the document's index already holds of one block: the sha256 of its text,
+// when its document_blocks row was written, which is the time a membership of the document is
+// dated from (TupleInDocument), and whether that row names the block's node.
+type storedBlock struct {
+	sum    string
+	joined time.Time
+	named  bool
+}
+
+// nodelessBlock is one block of the version whose document_blocks row names no node: its id
+// and the time that row was written, which the membership IndexBlocks states for it is dated
+// from.
+type nodelessBlock struct {
+	id     string
+	joined time.Time
+}
+
+// storedBlocks is each block the document's index holds, by id. blocks is how many blocks the
+// version being indexed holds, which is about how many rows the read answers: a map made at
+// that size is not grown once per thousand rows read into it.
+//
+// It reads the node columns and the row's created_at beside the digest, in the one read of the
+// document's rows this pass takes, because the pass writes a node and a membership for every
+// row that names none (IndexBlocks) and a second read of the same rows would cost a scan of
+// the document for every version.
+func storedBlocks(ctx context.Context, tx pgx.Tx, artifactID string, blocks int) (map[string]storedBlock, error) {
+	rows, err := tx.Query(ctx, `
+		select block_id, text_sha256, created_at, node_kind is not null and node_address is not null
+		from document_blocks where artifact_id = $1
+	`, artifactID)
 	if err != nil {
 		return nil, fmt.Errorf("read the blocks of %s: %w", artifactID, err)
 	}
 	defer rows.Close()
-	stored := make(map[string]string, blocks)
+	stored := make(map[string]storedBlock, blocks)
 	for rows.Next() {
-		var id, sum string
-		if err := rows.Scan(&id, &sum); err != nil {
+		var id string
+		var held storedBlock
+		if err := rows.Scan(&id, &held.sum, &held.joined, &held.named); err != nil {
 			return nil, fmt.Errorf("scan a block of %s: %w", artifactID, err)
 		}
-		stored[id] = sum
+		stored[id] = held
 	}
 	return stored, rows.Err()
 }

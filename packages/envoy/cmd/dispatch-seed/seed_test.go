@@ -710,9 +710,9 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 // graphArmCount guards that the census reads every arm. It is the arm list of
 // 20261109215947_graph_edges_tuples, the last migration to restate graph_edges: the 27 arms
 // 20261105014808 restated it with, the comment answers arm among them, and the one arm over the
-// store's current tuples that migration adds. That arm answers a kind only once its
-// graph_store_cutover row reads true, which none of the seed's does, so it holds its rows only
-// with those rows on (countArmCutOver).
+// store's current tuples that migration adds. Each of the four arms over a kind the store now
+// writes answers only the rows of its table that name no node, and the seed names the node of
+// every row it writes, so those four answer nothing here (armGatedPerRow).
 const graphArmCount = 28
 
 var (
@@ -720,12 +720,17 @@ var (
 	armToKindLiteral = regexp.MustCompile(`'([a-z_]+)'::text AS to_kind`)
 )
 
+// armGatedPerRow matches one of the four arms over a kind the node and tuple store writes: the
+// test that keeps it to the rows of its own table that name no node.
+var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL`)
+
 // assertEveryGraphArmHoldsRows runs each arm of graph_edges as its own query and holds it to at
 // least one row, and holds each (kind, to_kind) pair the view's literals define to a non-zero
 // count in the view itself. The arms come from pg_get_viewdef, the view's own text, not from a
 // list in this test and not from the seed's fixture: an arm a later migration adds is covered the
-// day it lands. An arm that holds no row as the seed leaves the cutover rows is counted again
-// with every one of them on, which is the state the tuple arm answers in.
+// day it lands. One of the four arms the store answers for may hold no row of its own, since
+// every row the seed writes names its node; its pair is still held to a count in the view,
+// which is where the store's arm answers those rows.
 func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -745,11 +750,13 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+arm+`) arm`).Scan(&rows); err != nil {
 			t.Fatalf("count arm %d of graph_edges: %v\n%s", index+1, err, arm)
 		}
-		if rows == 0 {
-			rows = countArmCutOver(t, database, index, arm)
-		}
-		if rows == 0 {
-			t.Errorf("arm %d of graph_edges holds no row, with the cutover rows off or on:\n%s", index+1, arm)
+		switch {
+		case rows > 0:
+		case armGatedPerRow.MatchString(arm):
+			t.Logf("arm %d of graph_edges answers no row: it answers the rows of its table that name no node, and every row the seed writes names one, so the store's own arm answers them:\n%s",
+				index+1, arm)
+		default:
+			t.Errorf("arm %d of graph_edges holds no row:\n%s", index+1, arm)
 		}
 		kind := armKindLiteral.FindStringSubmatch(arm)
 		toKind := armToKindLiteral.FindStringSubmatch(arm)
@@ -791,30 +798,6 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 			t.Errorf("no mention names a %s, so the backlink count of that kind reads nothing", kind)
 		}
 	}
-}
-
-// countArmCutOver counts the rows arm answers with every graph_store_cutover row on, in a
-// transaction it rolls back, so the seeded database is left as the seed wrote it. The view answers
-// each kind the store took over from one place at every instant: its old arm while the kind's row
-// reads false, as the seed leaves all three, and the tuple arm once it reads true, as a completed
-// backfill leaves it. The seed writes the tuples that arm reads - a comment's anchored_to and
-// owned_by, a block's in_document and mentions - so it holds rows here.
-func countArmCutOver(t *testing.T, database *store.Store, index int, arm string) int {
-	t.Helper()
-	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the count of arm %d with the cutover rows on: %v", index+1, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `update graph_store_cutover set complete = true`); err != nil {
-		t.Fatalf("turn the cutover rows on to count arm %d: %v", index+1, err)
-	}
-	var rows int
-	if err := tx.QueryRow(ctx, `select count(*) from (`+arm+`) arm`).Scan(&rows); err != nil {
-		t.Fatalf("count arm %d of graph_edges with the cutover rows on: %v\n%s", index+1, err, arm)
-	}
-	return rows
 }
 
 // assertRareWordFindsItsDocuments is the draft's A3, run as SQL rather than through a server: a

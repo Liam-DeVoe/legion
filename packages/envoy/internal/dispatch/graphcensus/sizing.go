@@ -91,18 +91,17 @@ func (b BlockIndexBacklog) Age() time.Duration {
 }
 
 // branchTables are the tables the migrations of this branch touch, each with whether the
-// migration alters a relation that already held rows. graph_nodes, graph_tuples,
-// graph_store_cutover and graph_erasures are created by 20261109013400 and written by
-// 20261109051232, so no existing row is rewritten for them; document_blocks, block_refs and
-// comments are altered by 20261109022248, and a table that large is a migration that needs
-// another shape, which is what the limit refuses.
+// migration alters a relation that already held rows. graph_nodes, graph_tuples and
+// graph_erasures are created by 20261109013400 and written by 20261109051232, so no existing
+// row is rewritten for them; document_blocks, block_refs and comments are altered by
+// 20261109022248, and a table that large is a migration that needs another shape, which is
+// what the limit refuses.
 var branchTables = []struct {
 	name    string
 	altered bool
 }{
 	{"graph_nodes", false},
 	{"graph_tuples", false},
-	{"graph_store_cutover", false},
 	{"graph_erasures", false},
 	{"block_refs", true},
 	{"comments", true},

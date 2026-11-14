@@ -7,9 +7,9 @@
 // (store/migrations/20261109013400_graph_store.up.sql); every table Dispatch reads today stays
 // where it is and becomes the projection of those two
 // (store/migrations/20261109022248_graph_projections.up.sql). The census is what says the
-// projection and the store still agree, and it is the gate the backfill is measured by: a kind
-// is cut over (graph_store_cutover) once every row of it was written beside its node, and the
-// census is how anyone knows that is still true.
+// projection and the store still agree, and it is the gate the backfill is measured by: a row
+// is answered from the store the moment it names its node, and the census is how anyone knows
+// every row of a kind does and that what the store holds for them is still right.
 //
 // The census writes nothing and reads one read-only snapshot. The backfill writes through
 // graphstore, the one package in the tree that writes graph_nodes and graph_tuples.

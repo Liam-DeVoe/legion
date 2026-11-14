@@ -176,16 +176,9 @@ func TestAnAttributeHistoryReadsBackAsARelationHistoryDoes(t *testing.T) {
 		t.Errorf("the node reads back with %s %v, want %q", attribute, node.Attributes[attribute], newest)
 	}
 
-	// A value is no node, so it is the far end of no edge: graph_edges answers the projections,
-	// and a literal a block holds is never an address in it. The view's tuple arm answers a kind
-	// only once that kind's graph_store_cutover row reads true, and every row reads false until a
-	// backfill completes it, so with the rows as the first migration left them the arm answers
-	// nothing and no value could reach an edge whatever the arm let through. This database is
-	// this test's own, so every kind is marked complete here, which is the view a deployment
-	// reads once its backfill has run.
-	if _, err := pool.Exec(ctx, `update graph_store_cutover set complete = true`); err != nil {
-		t.Fatalf("mark every kind's cutover complete: %v", err)
-	}
+	// A value is no node, so it is the far end of no edge: a literal a block holds is never an
+	// address in graph_edges. The view's tuple arm answers what the store holds of a block,
+	// whatever any projection row says, so the edges counted below are the arm's own.
 	// The arm is live: each far end the relation was stated to is one edge of the view, so the
 	// count of edges at a value below is read off an arm that answers this node's tuples, and a
 	// zero there is the value being kept out rather than the arm answering nothing.
@@ -198,7 +191,7 @@ func TestAnAttributeHistoryReadsBackAsARelationHistoryDoes(t *testing.T) {
 			t.Fatalf("read graph_edges for the far end %q: %v", written.far, err)
 		}
 		if edges != 1 {
-			t.Errorf("graph_edges holds %d part_of edges from %s/%s to artifact/%q, want the one its %s tuple states: with every cutover complete the tuple arm answers that relation",
+			t.Errorf("graph_edges holds %d part_of edges from %s/%s to artifact/%q, want the one its %s tuple states: the tuple arm answers that relation",
 				edges, nodeKind, nodeID, written.far, relation)
 		}
 	}

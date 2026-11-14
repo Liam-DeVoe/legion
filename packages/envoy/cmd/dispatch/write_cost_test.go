@@ -411,10 +411,9 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 		corpora[arm] = seedWriteCost(t, arm)
 	}
 	// This child's arm is measured in the state a deployment serves after the backfill: every
-	// projection row beside its node, and every row of graph_store_cutover true, which is the
-	// state in which graph_edges answers from the tuple arm.
+	// projection row beside its node, which is the state in which graph_edges answers that row
+	// from the tuple arm.
 	costRunBackfill(t, head)
-	costCutover(t, head, true)
 	for _, arm := range arms {
 		costBlockIndexDrained(t, arm, 10*time.Minute)
 		requireWriteCostShapes(t, corpora[arm])

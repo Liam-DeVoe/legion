@@ -548,7 +548,7 @@ want_line C5 "the window the rate is read over" \
 want_line C5 "the write rate by kind" '^census: sizing write-rate type=[^ ]+ per_day=[0-9]+\.[0-9]+$'
 
 # C6: every table this branch's migrations touch, each inside the limit.
-for table in graph_nodes graph_tuples graph_store_cutover graph_erasures block_refs comments document_blocks; do
+for table in graph_nodes graph_tuples graph_erasures block_refs comments document_blocks; do
   want_line C6 "the size of $table" \
     "^census: sizing table name=$table altered=(true|false) rows=[0-9,]+ bytes=[0-9]+ limit_bytes=$limit verdict=inside\$"
 done
