@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -290,12 +292,139 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	}
 }
 
+// stateCarryingEveryDeclaredValue is the third state body. It carries every value answers.go's
+// EnumeratedFields declares above the floor, at every key path of the state the table declares
+// the value at, which the first two bodies do not carry between them. The value comparison
+// (shapeProblems) reads only the values a served body carries, so a value no body carries is held
+// to no record at any contract (TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody).
+//
+// The values are written here, and not read from the table: a value the table gains with no body
+// that carries it is then red in that census, and an edit of the table alone cannot carry it
+// here too. Issue i of the body carries value i of each list, and a list shorter than the longest
+// starts again at its first value, so the twelve issues carry every value of every list. Each
+// issue's architect carries a failure, a pending cause and a held task, as a worker does. No
+// other body carries them on an architect, so without this body no record describes those keys
+// at their architect paths, and the value comparison reads no value there.
+func stateCarryingEveryDeclaredValue(t *testing.T) State {
+	t.Helper()
+	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)
+	// The workflow's phases, which `heldFrom` and `pendingTask.phase` take, with `integrating`,
+	// which the plugin's enumeration names and no phase.Phase constant spells.
+	phaseWords := []phase.Phase{phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing,
+		phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging, "integrating", phase.Done,
+		phase.Held}
+	causeWords := []supervise.FailureCause{supervise.CauseLaunchRefused, supervise.CauseDied,
+		supervise.CauseNeverRegistered, supervise.CauseStalePlugin, supervise.CausePromptRetiresExhausted,
+		supervise.CauseProviderError, supervise.CauseUnrecorded}
+	updateWords := []UpdateState{UpdateStateNone, UpdateStateOpen, UpdateStateAsked, UpdateStateAnswered}
+	mergeWords := []record.MergeState{record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
+		record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
+		record.MergeStateUnknown}
+	stepWords := []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec}
+	statusWords := []GatedStepStatus{GatedStepUnregistered, GatedStepWaiting, GatedStepApproved, GatedStepChangesRequested}
+	partWords := []record.LinePart{record.PartReturned, record.PartStarting}
+	kindWords := []record.LineKind{record.LineReturning, record.LineAnswered, record.LineQueuedRoot,
+		record.LineFirstPhase, record.LineWaitingOnIssue}
+	whyWords := []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted}
+	groupWords := []memorygroup.Group{memorygroup.GroupMemory, memorygroup.GroupNone}
+	modeWords := []config.MemoryMode{config.MemoryOff, config.MemoryOn, config.MemoryRandom}
+	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
+		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldDesignGate, record.HeldDispatchBlocker,
+		record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldAtWork, record.HeldUnclassified}
+	roleWords := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
+		claim.RoleReviewer, claim.RoleMerger}
+
+	// claimView is a claim that failed with cause, whose pending cause is the next word of the
+	// list and whose held task was queued for taskPhase: every key of a failure and of a held
+	// task, so the architect's paths carry as many keys as a worker's do.
+	claimView := func(session string, update UpdateState, cause int, taskPhase phase.Phase) ClaimView {
+		return ClaimView{
+			Session:     session,
+			State:       "failed",
+			UpdateState: update,
+			Failure: &ClaimFailureView{
+				Cause:    causeWords[cause%len(causeWords)],
+				Detail:   "launch failures ran out",
+				At:       &at,
+				Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 1},
+			},
+			PendingCause: causeWords[(cause+1)%len(causeWords)],
+			PendingTask: &PendingTaskView{
+				Phase: taskPhase, QueuedAt: at,
+				SendFailures: 1, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+			},
+		}
+	}
+	notSlot := false
+	issues := make(map[string]Issue, len(phaseWords))
+	keys := make([]string, 0, len(phaseWords))
+	wakes := make([]WakeWaiting, 0, len(roleWords))
+	for i, heldFrom := range phaseWords {
+		key := fmt.Sprintf("VALUES-%d", i+1)
+		keys = append(keys, key)
+		// The architect's task is queued for the phase after the one the issue was held from, and
+		// the worker's for that phase itself, so each view carries every phase over the twelve.
+		// The worker's cause starts three words further along the list than the architect's.
+		architect := claimView("ses_architect_"+key, updateWords[i%len(updateWords)], i, phaseWords[(i+1)%len(phaseWords)])
+		issues[key] = Issue{
+			Key:           key,
+			Generation:    1,
+			Phase:         phase.Held,
+			Status:        "in_progress",
+			Tree:          key,
+			Repo:          "acme/widgets",
+			DefaultBranch: "main",
+			HeldFrom:      string(heldFrom),
+			Architect:     &architect,
+			Workers: map[claim.Role]PhaseView{
+				claim.RoleImplementer: {Claim: claimView("ses_implementer_"+key, updateWords[(i+1)%len(updateWords)], i+3, heldFrom)},
+			},
+			PullRequest: &PullRequestView{
+				Repo: "acme/widgets", Number: 2000 + i, Head: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", State: "open",
+				MergeState: string(mergeWords[i%len(mergeWords)]),
+			},
+			GatedSteps: []GatedStepView{{Step: stepWords[i%len(stepWords)], Status: statusWords[i%len(statusWords)]}},
+			WaitingLine: &WaitingLineView{
+				Place: i + 1, Length: len(phaseWords),
+				Part: partWords[i%len(partWords)].String(), Kind: kindWords[i%len(kindWords)].String(),
+				PartPlace: 1, PartLength: 1, HoldsSlot: &notSlot,
+				Reason: "It stands in the line so that the body carries this kind and this part.",
+			},
+			Why:            &WhyView{State: whyWords[i%len(whyWords)], Reason: "The body carries this state."},
+			MemoryGroup:    string(groupWords[i%len(groupWords)]),
+			MemoryDrawMode: string(modeWords[i%len(modeWords)]),
+		}
+		if i < len(roleWords) {
+			wakes = append(wakes, WakeWaiting{Claim: claim.Token("legion-values-" + key), Issue: key, Role: roleWords[i],
+				Kind: supervise.WakeLaunch, DueAt: at})
+		}
+	}
+	held := make([]HeldIssue, 0, len(heldWords))
+	for i, reason := range heldWords {
+		held = append(held, HeldIssue{Issue: keys[i], Reason: reason})
+	}
+	return State{
+		Daemon: DaemonInfo{
+			Project:       "values",
+			SchemaVersion: 1,
+			Boots:         1,
+			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
+			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
+		},
+		Admission:    Admission{Cap: 1, Waiting: keys, Trees: keys, Held: held},
+		Issues:       issues,
+		WakesWaiting: wakes,
+	}
+}
+
 // stateFixtures are the state bodies the records of the state and of the issue record are taken
-// from: the populated state every other golden of this package is written from, and a second
-// one of this case's own carrying what the first cannot (stateCarryingTheRestOfTheShape).
+// from: the populated state every other golden of this package is written from, a second one of
+// this case's own carrying what the first cannot (stateCarryingTheRestOfTheShape), and a third
+// carrying every value the enumerated fields declare above the floor
+// (stateCarryingEveryDeclaredValue).
 func stateFixtures(t *testing.T) []State {
 	t.Helper()
-	return []State{populatedState(t), stateCarryingTheRestOfTheShape(t)}
+	return []State{populatedState(t), stateCarryingTheRestOfTheShape(t), stateCarryingEveryDeclaredValue(t)}
 }
 
 // answerFixtures is one fixture per answer of the table. Every answer needs one: a row with no
@@ -1130,7 +1259,7 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	// The table itself: every row names an answer of Answers, so a row no answer carries is red
 	// rather than a domain nothing records, and every arrival is a contract this daemon serves a
 	// shape for. A value older than the field's own answer is no error — the record answer
-	// arrived at 127 and carries all nine values of `answeredBy` from its first record — since a
+	// arrived at 133 and carries all nine values of `answeredBy` from its first record — since a
 	// domain is every value whose arrival is at or below the contract (domainsOf).
 	for _, field := range EnumeratedFields {
 		if !slices.ContainsFunc(Answers, func(answer Answer) bool { return answer.ID == field.Answer }) {
@@ -1572,6 +1701,70 @@ func TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture(t *testing.T) {
 			t.Errorf("an exclusion names %s of the %s answer and a fixture realises it: the exclusion is dead and hides the next field that is not realised",
 				key.field, key.answer)
 		}
+	}
+}
+
+// The census of the enumerated fields: every key path answers.go's EnumeratedFields declares is
+// carried by some fixture body of its answer, and so is every value the table declares above the
+// floor, at its own key path. The value comparison (shapeProblems) reads only the values the
+// served bodies carry. A value no fixture body carries is held to no record, so a word served to
+// a contract that does not admit it passes the gate. A key path no body carries is in no record
+// at all, so neither the key comparison nor the value comparison reads it. The architect's
+// `failure.cause`, `pendingCause` and `pendingTask.phase` were three such paths until
+// stateCarryingEveryDeclaredValue gave the architect's view a failure and a held task.
+//
+// A value at the floor is not asked for. Every contract the records hold admits it, so no
+// comparison can find it unadmitted.
+func TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody(t *testing.T) {
+	fixtures := answerFixtures(t)
+	carriedPaths := map[AnswerID]map[string]bool{}
+	carriedValues := map[AnswerID]map[string]map[string]bool{}
+	for _, answer := range Answers {
+		fixture := fixtures[answer.ID]
+		if len(fixture.roots) == 0 {
+			// The 204 answers write no body, so no field of theirs is enumerated.
+			continue
+		}
+		shape := fixture.shape(t)
+		enumerated := enumeratedPathsOf(EnumeratedFields, answer.ID)
+		carriedPaths[answer.ID] = map[string]bool{}
+		carriedValues[answer.ID] = map[string]map[string]bool{}
+		for _, body := range fixture.bodies {
+			encoded, err := json.Marshal(body)
+			if err != nil {
+				t.Fatalf("marshal a body of the %s answer: %v", answer.ID, err)
+			}
+			bodyPaths, bodyValues := keyPathsOfBody(t, encoded, shape, enumerated)
+			maps.Copy(carriedPaths[answer.ID], bodyPaths)
+			for path, values := range bodyValues {
+				if carriedValues[answer.ID][path] == nil {
+					carriedValues[answer.ID][path] = map[string]bool{}
+				}
+				maps.Copy(carriedValues[answer.ID][path], values)
+			}
+		}
+	}
+
+	asked := 0
+	for _, field := range EnumeratedFields {
+		if !carriedPaths[field.Answer][field.KeyPath] {
+			t.Errorf("the %s answer: answers.go's EnumeratedFields declares `%s`, and no fixture body carries that key path, so no record describes it and the value comparison reads no value there. Give a fixture body of the answer (answerFixtures) a value at that key path.",
+				field.Answer, field.KeyPath)
+		}
+		for _, value := range field.Values {
+			if value.Since <= ServingFloor {
+				continue
+			}
+			asked++
+			if carriedValues[field.Answer][field.KeyPath][value.Value] {
+				continue
+			}
+			t.Errorf("the %s answer: answers.go's EnumeratedFields declares `%s` at `%s`, arriving at %d, and no fixture body carries that value there, so the value comparison never holds it to the records of the contracts below %d. Give a fixture body of the answer (answerFixtures) that value at that key path.",
+				field.Answer, value.Value, field.KeyPath, value.Since, value.Since)
+		}
+	}
+	if asked == 0 {
+		t.Fatal("answers.go's EnumeratedFields declares no value above the floor; this proves nothing")
 	}
 }
 

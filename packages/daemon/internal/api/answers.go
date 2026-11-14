@@ -42,7 +42,7 @@ const ServingFloor = 46
 // The last is the constant rather than its number, because this change's own entry is the last
 // one: a renumber of this change moves shapedAnswersContract and this list with it, and moving
 // one of the two alone would describe a shape at a contract no entry declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, shapedAnswersContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, shapedAnswersContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -91,11 +91,11 @@ type Answer struct {
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor},
-	// version.go's 127: the per-issue record route a role reads in place of the whole state.
-	// This change adds the route, so no contract below 127 records it.
+	// version.go's 133: the per-issue record route a role reads in place of the whole state.
+	// This change adds the route, so no contract below 133 records it.
 	{ID: AnswerIssueRecord, Routes: []string{"GET /legion/v1/issues/{key}/record"}, Since: shapedAnswersContract},
-	// version.go's 127: the typed health body (`api.Health`), which this change puts in place of
-	// the one untyped key the route answered, so the typed body has no record below 127 either.
+	// version.go's 133: the typed health body (`api.Health`), which this change puts in place of
+	// the one untyped key the route answered, so the typed body has no record below 133 either.
 	{ID: AnswerHealth, Routes: []string{"GET /healthz"}, Since: shapedAnswersContract},
 	// Older than the floor: a role's registration answer (`claim.RegisterResponse`).
 	{ID: AnswerRegister, Routes: []string{"POST /legion/v1/claims/register"}, Since: ServingFloor},
@@ -195,10 +195,11 @@ type EnumeratedValue struct {
 // field itself arrived at, since a field that arrives at 55 can carry no value older than 55.
 // The first reading is measured rather than guessed: `legion-api.ts` and `legion-roles.ts` were
 // read at the commit that declared each contract of SupportedContracts, and the members of
-// every `z.enum` diffed. Exactly two of the lists below ever grew — `answeredBy` gained
-// `declined` at 68, and `strandedClaims[].state` gained `retired` at 56 — so every other list
-// is recorded whole at its own field's arrival. (`suspendedBy` gained `released` at 48 and is
-// no row here: the operator claim answers carry it and no plugin parses them.)
+// every `z.enum` diffed. Exactly three of the lists below ever grew — `answeredBy` gained
+// `declined` at 68, `strandedClaims[].state` gained `retired` at 56, and `waitingLine.kind`
+// gained `waiting_on_issue` at 132 — so every other list is recorded whole at its own field's
+// arrival. (`suspendedBy` gained `released` at 48 and is no row here: the operator claim answers
+// carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
 
 // enumeratedFields is every row the table holds: the state's own, the record's taken from them,
@@ -313,7 +314,9 @@ var stateEnumeratedFields = []EnumeratedField{
 	// why it waits there (api.WaitingLineView, record.LinePart and record.LineKind). Both
 	// arrived with the line's own fields and are served down below that contract, where the
 	// member is rebuilt with its `place` and its `length` alone (shaping.go's
-	// withoutWhyAndLineFields).
+	// withoutWhyAndLineFields). `kind` is the third row whose list grew: `waiting_on_issue`
+	// arrived at 132, and a member of that kind is served without its `kind` below that
+	// contract (shaping.go's withoutWaitingOnIssue).
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.part", Values: lineParts},
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.kind", Values: lineKinds},
 	// `state` of the one rendered answer an issue that is not working now carries, which of the
@@ -410,14 +413,27 @@ var failureCauses = valuesFrom(recordFieldsContract,
 	supervise.CauseStalePlugin, supervise.CausePromptRetiresExhausted, supervise.CauseProviderError,
 	supervise.CauseUnrecorded)
 
-// lineParts is every part of the admission's waiting line a member can stand in, lineKinds every
-// reason it stands there, and whyStates every fact that holds an issue that is not working now.
-// All three arrived at whyAndLineFieldsContract, so each list is recorded there. lineParts and
-// lineKinds stay literal: record.LinePart and record.LineKind are numbered constants (`int`)
-// whose words come from their String methods, so no string constant of the tree spells them.
+// lineParts is every part of the admission's waiting line a member can stand in, and whyStates
+// every fact that holds an issue that is not working now. Both arrived at
+// whyAndLineFieldsContract, so each list is recorded there. lineParts stays literal:
+// record.LinePart is a numbered constant (`int`) whose words come from its String method, so no
+// string constant of the tree spells them.
 var lineParts = valuesFrom(whyAndLineFieldsContract, "returned", "starting")
-var lineKinds = valuesFrom(whyAndLineFieldsContract, "returning", "answered", "queued_root", "first_phase")
 var whyStates = valuesFrom(whyAndLineFieldsContract, WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted)
+
+// lineKinds is every reason a member stands in the waiting line. The field arrived at
+// whyAndLineFieldsContract with four words, and its list grew once: `waiting_on_issue`, a
+// started issue that gave its admission slot back to wait on another issue, arrived at
+// waitingOnIssueContract (version.go's 132, record.LineWaitingOnIssue). So it is written out
+// value by value, sorted by value, as waitAnswers is. It stays literal for the reason lineParts
+// does: record.LineKind is a numbered constant whose words come from its String method.
+var lineKinds = []EnumeratedValue{
+	{Value: "answered", Since: whyAndLineFieldsContract},
+	{Value: "first_phase", Since: whyAndLineFieldsContract},
+	{Value: "queued_root", Since: whyAndLineFieldsContract},
+	{Value: "returning", Since: whyAndLineFieldsContract},
+	{Value: "waiting_on_issue", Since: waitingOnIssueContract},
+}
 
 // heldReasons is every word of a held row's `reason`, recorded at heldContract, the contract
 // `admission.held` arrived at. It names each constant rather than reading record.HeldReasons,

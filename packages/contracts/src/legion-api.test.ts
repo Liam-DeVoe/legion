@@ -746,7 +746,7 @@ test("a backward move rejects future read-only phases", () => {
   ).toBeFalse();
 });
 
-// Contract 40: `awaiting_person`, a root that gave its slot up while its architect waits on a
+// Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
 // before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
@@ -1327,9 +1327,9 @@ test("a claim carries the leak check's cause beside its failure", () => {
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // it shaped the body to — and the body it narrows for a caller below it carries no such key at
 // all, since a key added to a narrowed body is exactly what the narrowing exists to prevent. The
-// daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 127 on,
+// daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 133 on,
 // a reader served the body whole, the operator's `legion state --json` among them, is told the
-// daemon's own number as the caller's too, which is the golden's mark. A daemon from 75 to 123
+// daemon's own number as the caller's too, which is the golden's mark. A daemon from 75 to 132
 // served that reader the daemon's number alone, and the schema reads that mark as well.
 test("the state says which contract it was built at", () => {
   const { daemonApiVersion } = fixture("version.json") as { daemonApiVersion: number };

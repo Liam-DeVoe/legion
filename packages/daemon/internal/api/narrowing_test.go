@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -73,16 +74,35 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
+// narrowingState is the state golden with one more member of the waiting line, LEGION-213, a
+// started issue that gave its slot back to wait on another issue (waitingOnIssueContract): the
+// golden itself stands no member of that kind, so without it the value strip of that contract
+// would find nothing to take and write no line, and the rows below could not say that every
+// strip writes its own.
+func narrowingState(t *testing.T) State {
+	t.Helper()
+	state := populatedState(t)
+	issues := make(map[string]Issue, len(state.Issues)+1)
+	maps.Copy(issues, state.Issues)
+	issues["LEGION-213"] = waitingOnIssueMember()
+	state.Issues = issues
+	return state
+}
+
 // narrowingsExpected is what the daemon's log holds for a caller whose pod records contract, in
 // the order recordShaping writes the lines: the `dropped` of every row of stateNarrowings the
-// caller's strip stands below, and then the two value strips, which follow its restore. The
+// caller's strip stands below, and then the three value strips, which follow its restore. The
 // bands are read from the table rather than written out here, so a narrowing added above the
 // contract a row below reads is counted by that row rather than failing it.
 //
-// The two strips hold no row of that table, so they are read from what the shaping itself
+// The three strips hold no row of that table, so they are read from what the shaping itself
 // reports it took off state (tookOff), the one place their conditions are written. The fixture
-// carries a retired stranded entry and no wait answered by a value younger than the floor, so a
-// caller below 56 is expected one value line and no caller is expected two.
+// carries a retired stranded entry and no wait answered by a value younger than the floor, and
+// narrowingState adds a member of the kind `waiting_on_issue`. So a caller below 56 is expected
+// the retired entries' line, a caller from whyAndLineFieldsContract up to below
+// waitingOnIssueContract the line of that kind, and no caller both: below
+// whyAndLineFieldsContract the band of that contract takes `kind` first, and the strip finds
+// nothing left to take.
 func narrowingsExpected(state State, contract int) []string {
 	restore, strip := restoreContract(contract), stripContract(contract)
 	var dropped []string
@@ -98,6 +118,9 @@ func narrowingsExpected(state State, contract int) []string {
 	}
 	if took.waitAnswer {
 		dropped = append(dropped, droppedWaitAnswer)
+	}
+	if took.waitingOnIssue {
+		dropped = append(dropped, droppedWaitingOnIssue)
 	}
 	return dropped
 }
@@ -121,7 +144,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// of that one arm.
 	t.Run("a caller below the contract is told nothing, and the log says what was taken", func(t *testing.T) {
 		const remote = statePodAddr + ":41000"
-		state := populatedState(t)
+		state := narrowingState(t)
 		body, narrowings := stateNarrowed(t, state, remote, podClaims(recordFieldsContract-1))
 
 		if mark, carried := contractServed(t, body); carried {
@@ -172,7 +195,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// Such a caller is still below every band above it, the tree quiet time among them, so its
 	// issues carry no measure and its request writes one line for each of those bands.
 	t.Run("a caller at the contract carries the two numbers beside the record", func(t *testing.T) {
-		state := populatedState(t)
+		state := narrowingState(t)
 		body, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(recordFieldsContract))
 
 		mark, carried := contractServed(t, body)
@@ -215,7 +238,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// was built at twice: as the daemon's, and as the contract the caller is served (ContractView
 	// says why a caller at the daemon's own contract is told it too).
 	t.Run("the operator's own answer says which contract it was built at", func(t *testing.T) {
-		body, narrowings := stateNarrowed(t, populatedState(t), "192.0.2.1:41000", podClaims(recordFieldsContract-1))
+		body, narrowings := stateNarrowed(t, narrowingState(t), "192.0.2.1:41000", podClaims(recordFieldsContract-1))
 
 		mark, carried := contractServed(t, body)
 		if !carried {
@@ -232,7 +255,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	// The other value strip, read on the fixture that carries what it takes: a pod at 64 is
+	// The second value strip, read on the fixture that carries what it takes: a pod at 64 is
 	// served the wait of a root a person declined without its answered pair, and one line says
 	// so, naming the pod's lowest contract as the number that strip followed. The report of
 	// claims nothing will wake is empty in this state, so the strip above writes nothing and
@@ -264,48 +287,64 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every row of
 	// stateNarrowings is served one line per row, each naming its own keys, and one more for the
-	// value strip that took the retired entries out of its body. One line for all of them, or a
-	// line that named the contract and nothing else, would leave a reader of the log to find out
-	// elsewhere what left the body.
+	// value strip that took the retired entries out of its body; and a caller at
+	// quietTimeContract is served the line of the value strip of waitingOnIssueContract, the one
+	// strip the first caller's body no longer reaches, since a band below it has taken `kind`
+	// already. Between them every row and both strips write their line, and no request writes
+	// one twice. One line for all of them, or a line that named the contract and nothing else,
+	// would leave a reader of the log to find out elsewhere what left the body.
 	//
-	// The value strip's line names the lowest contract the pod records, which is the floor for
-	// this caller, where a band's line names the highest; the clause under `follows` is what
-	// tells an operator the two numbers of one request apart.
+	// A value strip's line names the lowest contract the pod records, which is restore for this
+	// caller, where a band's line names the highest; the clause under `follows` is what tells an
+	// operator the two numbers of one request apart.
 	t.Run("each narrowing names its own keys", func(t *testing.T) {
-		state := populatedState(t)
-		_, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(supervise.PodUpdateContract-1))
-
-		want := narrowingsExpected(state, supervise.PodUpdateContract-1)
-		if len(want) != len(stateNarrowings)+1 {
+		if want := narrowingsExpected(narrowingState(t), supervise.PodUpdateContract-1); len(want) != len(stateNarrowings)+1 {
 			t.Fatalf("a caller below every row expects %d lines, want the %d rows and the retired entries' own: %v",
 				len(want), len(stateNarrowings), want)
 		}
-		if len(narrowings) != len(want) {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller below every contract, want %d: %+v",
-				len(narrowings), len(want), narrowings)
-		}
-		dropped := map[string]bool{}
-		for i, line := range narrowings {
-			if line.Dropped == "" {
-				t.Errorf("line %d says nothing of what it dropped", i)
+		told := map[string]bool{}
+		for _, contract := range []int{supervise.PodUpdateContract - 1, quietTimeContract} {
+			state := narrowingState(t)
+			_, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(contract))
+			want := narrowingsExpected(state, contract)
+			if len(narrowings) != len(want) {
+				t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d: %+v",
+					len(narrowings), contract, len(want), narrowings)
 			}
-			if dropped[line.Dropped] {
-				t.Errorf("two narrowings report the same keys, %q: each arm names its own", line.Dropped)
+			dropped := map[string]bool{}
+			for i, line := range narrowings {
+				if line.Dropped == "" {
+					t.Errorf("line %d of a caller at %d says nothing of what it dropped", i, contract)
+				}
+				if dropped[line.Dropped] {
+					t.Errorf("two narrowings of a caller at %d report the same keys, %q: each arm names its own", contract, line.Dropped)
+				}
+				dropped[line.Dropped] = true
+				told[line.Dropped] = true
+				if line.Dropped != want[i] {
+					t.Errorf("the lines are out of the order recordShaping writes them: line %d of a caller at %d says %q, want %q",
+						i, contract, line.Dropped, want[i])
+				}
 			}
-			dropped[line.Dropped] = true
-			if line.Dropped != want[i] {
-				t.Errorf("the lines are out of the order recordShaping writes them: line %d says %q, want %q",
-					i, line.Dropped, want[i])
+			if band := narrowings[0]; band.Follows != "" {
+				t.Errorf("a band's line says it follows %q, want no such clause: a band follows the pod's highest contract and says so by saying nothing",
+					band.Follows)
+			}
+			value := narrowings[len(narrowings)-1]
+			if restore := restoreContract(contract); value.PluginContract != restore || value.Follows != followsTheLowest {
+				t.Errorf("the value strip's line of a caller at %d names contract %d and follows %q, want the pod's lowest %d and %q",
+					contract, value.PluginContract, value.Follows, restore, followsTheLowest)
 			}
 		}
-		if band := narrowings[0]; band.Follows != "" {
-			t.Errorf("a band's line says it follows %q, want no such clause: a band follows the pod's highest contract and says so by saying nothing",
-				band.Follows)
+		for _, narrowing := range stateNarrowings {
+			if !told[narrowing.dropped] {
+				t.Errorf("no caller was told the row of contract %d dropped %q", narrowing.contract, narrowing.dropped)
+			}
 		}
-		value := narrowings[len(narrowings)-1]
-		if value.PluginContract != ServingFloor || value.Follows != followsTheLowest {
-			t.Errorf("the value strip's line names contract %d and follows %q, want the pod's lowest %d and %q",
-				value.PluginContract, value.Follows, ServingFloor, followsTheLowest)
+		for _, value := range []string{droppedRetiredStranded, droppedWaitingOnIssue} {
+			if !told[value] {
+				t.Errorf("no caller was told the value strip dropped %q", value)
+			}
 		}
 	})
 }

@@ -180,7 +180,7 @@ const legionStepView = z.object({
 });
 
 /** The two fields a wake the daemon's pacing holds carries: what kind of wake it is, and
- * `dueAt`, the moment the pacing gave it, which is when it runs (contract 127). The claim view's
+ * `dueAt`, the moment the pacing gave it, which is when it runs (contract 133). The claim view's
  * `wake` and `legionWakeWaiting` below carry the same wake, so both spread this one object and
  * cannot drift apart. The kind is read as a plain string, so a lane a later daemon adds is read
  * rather than refused. */
@@ -280,12 +280,12 @@ const legionClaimView = z.object({
   /** Why the daemon must replace this pod, as it found the drift, and absent while no round is
    * open: the worker answering a round is told to act on it. */
   updateReasons: nonEmptyString.optional(),
-  /** Where the claim's update round stands, read from the claim's own columns (contract 127):
+  /** Where the claim's update round stands, read from the claim's own columns (contract 133):
    * `none` when no round is open, `open` when a round is open and its ask has not gone out,
    * `asked` when the round published its ask on this worker's role topic, and `answered` once
    * the worker answered. A reader takes this rather than spelling the same reading out of
    * `updateRound` and `updateHead`, which cannot tell a worker that answered with no head from
-   * one nobody asked. A caller in a pod whose plugin declares a contract below 127 is served the
+   * one nobody asked. A caller in a pod whose plugin declares a contract below 133 is served the
    * state with no such key at all (the daemon's `withoutClaimRoundReport`), so every reader
    * takes it as optional. */
   updateState: z.enum(["none", "open", "asked", "answered"]).optional(),
@@ -318,8 +318,8 @@ const legionClaimView = z.object({
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
   /** The wake the daemon's pacing holds for this claim, absent where it holds none: the same
-   * wake `wakesWaiting` names beside this claim (contract 127). The kinds are the daemon's three
-   * paced lanes, as `legionWakeWaiting` below names them. A caller below 127 is served no such
+   * wake `wakesWaiting` names beside this claim (contract 133). The kinds are the daemon's three
+   * paced lanes, as `legionWakeWaiting` below names them. A caller below 133 is served no such
    * key (`withoutClaimRoundReport`). */
   wake: z.object(legionPacedWake).optional(),
   /** Why the claim failed, and absent for a claim the daemon holds no cause and sentence for: one
@@ -456,13 +456,17 @@ const legionSlotView = z.object({
  * one declares a new contract for it, as the ninth answer did at contract 68, which is what keeps
  * this reader away from a body that carries it. Nothing older reaches them either: both words are
  * rendered afresh from `record.LinePart` and `record.LineKind` at each read and never stored, so no
- * retired word comes back off a row, and naming the four kinds is what lets a reader branch on
- * them. */
+ * retired word comes back off a row, and naming the five kinds is what lets a reader branch on
+ * them. `waiting_on_issue`, a started issue that gave its admission slot back to wait on another
+ * issue, is the fifth, added at contract 132; a caller below 132 is served such a member without
+ * its `kind`. */
 const legionWaitingLineView = z.object({
   place: z.number().int().positive().optional(),
   length: z.number().int().positive().optional(),
   part: z.enum(["returned", "starting"]).optional(),
-  kind: z.enum(["returning", "answered", "queued_root", "first_phase"]).optional(),
+  kind: z
+    .enum(["returning", "answered", "queued_root", "first_phase", "waiting_on_issue"])
+    .optional(),
   partPlace: z.number().int().positive().optional(),
   partLength: z.number().int().positive().optional(),
   holdsSlot: z.boolean().optional(),
@@ -758,10 +762,10 @@ const daemonInfo = z.object({
 
 /** `api.ContractView` — the mark of the narrowing, beside the daemon's own block: `daemon` is the
  * contract the daemon declares and served this body at (its `DaemonAPIVersion`), and `caller` the
- * contract the daemon shaped this body to (contract 75). From contract 127 on the daemon writes
+ * contract the daemon shaped this body to (contract 75). From contract 133 on the daemon writes
  * `caller` for every reader. A reader served the body whole — the operator's
  * `legion state --json`, a tmux pane, a pod whose claims record no contract, a reader at the
- * daemon's own contract — is told the daemon's own number. A daemon from 75 to 123 left `caller`
+ * daemon's own contract — is told the daemon's own number. A daemon from 75 to 132 left `caller`
  * off for such a reader, which is why the key stays optional.
  *
  * The daemon serves a caller below 75 the state with this key gone, as it strips the nine fields
@@ -778,8 +782,9 @@ const legionContract = z.object({
 });
 
 /** `api.BlockedIssue` (`record.BlockedIssue`, and `api.HeldChild` on a wave release) — one issue
- * Legion is waiting to start and the issues it waits on that are not done, in the order Dispatch
- * lists them. A blocker the daemon has not yet observed as an issue of its own counts as
+ * Legion waits on another issue for, one it has still to start or one it started that gave its
+ * admission slot back for the wait, and the issues it waits on that are not done, in the order
+ * Dispatch lists them. A blocker the daemon has not yet observed as an issue of its own counts as
  * unfinished, so `blockedBy` can name a key the state's `issues` does not. */
 const legionBlockedIssue = z.object({
   issue: issueKey.optional(),
@@ -832,18 +837,24 @@ const legionHeldIssue = z.object({
  * person, while an issue past its review — a merger at work in `merging`, one in `merging`
  * whose start a closed design gate holds, a merged root standing in `merging` while the rest
  * of its tree runs — and one whose phase has left the workflow, `done` or a status Dispatch
- * took it out of the workflow with, are in neither list. An issue holding a slot is
- * in `waiting` as well while its work comes back to it, an answered root until the pass that
- * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a running
- * tree may hold no slot at all — the controller reads it where it read `active` as the running
+ * took it out of the workflow with, are in neither list. A started issue that waits on another
+ * issue before its review is missing from `active` too, other than the three roots that keep
+ * their slot through such a wait: it holds no slot while it waits and stands in `waiting` and in
+ * `blocked`, which is how a reader tells it from an issue a person parked, which stands in none
+ * of the three (the rule: "Admission" in the root AGENTS.md). An issue holding a slot is in
+ * `waiting` as well while its work comes back to it, an answered root until the pass that
+ * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a
+ * running tree may hold no slot at all — the controller reads it where it read `active` as the
+ * running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose
  * claims record a contract below 51 (`api.shapeState`, `withoutTrees`). A reader that finds it
  * absent has been served that stripped body and learns nothing about which trees run; it is
  * never a daemon older than this plugin, whom the boot gate and `legion probe-image` refuse.
- * `blocked` is every root and every child Legion is waiting to start behind a Dispatch
- * issue nobody has finished, by issue key; a blocked issue the line carries is in `waiting` too.
+ * `blocked` is every issue Legion waits on a Dispatch issue nobody has finished for, by issue
+ * key: a root or a child Legion is waiting to start, and a started issue that gave its slot back
+ * for the wait; a blocked issue the line carries is in `waiting` too.
  * The controller names them in the day's report and takes nothing for them.
  * `held` is every issue the daemon's record holds in the workflow that stands in neither
  * `active` nor `waiting`, sorted by key: the work the daemon runs nothing of and queues nowhere,
@@ -1035,7 +1046,7 @@ export const LegionStateResponse = z.object({
   settings: legionSettings.optional(),
   consumers: z.array(legionConsumerLag).optional(),
   // `lowestPluginContract` is the lowest contract among the claims of the project that hold a
-  // process and record one, absent where no claim does (contract 127). No plugin code reads the
+  // process and record one, absent where no claim does (contract 133). No plugin code reads the
   // value — it is a number for an operator and for the serving-down's own reckoning — so it is
   // optional here, and a reader that finds it absent learns that nothing of the project runs a
   // plugin it knows the contract of.
@@ -1045,14 +1056,14 @@ export const LegionStateResponse = z.object({
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
 
-/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 127): one
+/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 133): one
  * issue's record, equal field for field to the value the whole-project body holds under
  * `issues.<key>`. It is the very schema `LegionStateResponse` reads that value with, so the two
  * readers cannot drift apart. The daemon answers 404 with the code `RECORD_NOT_FOUND` for an
  * issue it records nothing of, which is the client's absent-record branch and no body at all. */
 export const LegionIssueRecordResponse = legionIssue;
 
-/** `api.Health`, the body of `GET /healthz` (contract 127): that the daemon is serving, and the
+/** `api.Health`, the body of `GET /healthz` (contract 133): that the daemon is serving, and the
  * project it serves. `project` is required because the controller's boot check reads it
  * (`packages/pi-legion/src/controller-session.ts`), which is the one word that read the whole
  * state before. `status` is a word for an operator: no plugin code takes its value. */

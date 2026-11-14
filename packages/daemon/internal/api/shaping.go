@@ -23,7 +23,7 @@ import (
 )
 
 // pluginContractHeader is the request header a caller states the contract its own plugin speaks
-// in (version.go's 127). A caller that states one is placed by what it states and by nothing
+// in (version.go's 133). A caller that states one is placed by what it states and by nothing
 // else, whatever address the request came from, which is how a caller the daemon can place in no
 // pod — a pane, an operator's command, a process of a pod whose claims record nothing — reaches
 // the body its own reader parses.
@@ -217,16 +217,18 @@ func recordedContractAtOrBelow(n int) int {
 // Every later reader takes those keys as optional — `packages/contracts/src/legion-api.ts`
 // marks them optional for exactly these bodies.
 //
-// Two strips take a value rather than a key, and both compose with the bands: the report of
-// claims nothing will wake is served without its retired entries (withoutRetiredStranded), and
+// Three strips take a value rather than a key, and all three compose with the bands: the report
+// of claims nothing will wake is served without its retired entries (withoutRetiredStranded),
 // each issue's wait without its answered pair where `answeredBy` is a value the caller's
-// contract does not admit (withoutUnadmittedWaitAnswer). A strict reader refuses the whole body
-// for a value its enumeration does not name as surely as for a key it does not know (answers.go's
-// EnumeratedFields), and no reader requires a value, so the two follow restore where every band
-// follows strip. Both are asked of every caller. A caller at this daemon's own contract admits
-// every value the table declares and loses neither. A value the table declares no arrival for is
-// read as arriving at this daemon's own contract, so every caller below it is served the wait
-// without the pair (waitAnswerArrival).
+// contract does not admit (withoutUnadmittedWaitAnswer), and each waiting line member of the
+// kind `waiting_on_issue` without its `kind` where the caller's contract does not admit that
+// word (withoutWaitingOnIssue). A strict reader refuses the whole body for a value its
+// enumeration does not name as surely as for a key it does not know (answers.go's
+// EnumeratedFields), and no reader requires a value, so the three follow restore where every
+// band follows strip. All three are asked of every caller. A caller at this daemon's own
+// contract admits every value the table declares and loses none. A value the table declares no
+// arrival for is read as arriving at this daemon's own contract, so every caller below it is
+// served the body without that value (waitAnswerArrival, lineKindArrival).
 //
 // The record's row is shapeIssue, the per-issue half of the state's own row: the record route
 // answers the very value the whole-project body holds under `issues.<key>` (issueRecordRoute),
@@ -278,7 +280,7 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 }
 
 // tookOff is what one shaping of the state took off that body: the rows of stateNarrowings that
-// moved it, by their place in the table, and the two value strips that moved it. shapeState
+// moved it, by their place in the table, and the three value strips that moved it. shapeState
 // fills it, with shapeIssue for each issue of the state, on the one application it makes, and
 // recordShaping writes a line for each part that is set, so the log names what the body served
 // lost and nothing it did not carry.
@@ -287,6 +289,7 @@ type tookOff struct {
 	bands           []bool
 	retiredStranded bool
 	waitAnswer      bool
+	waitingOnIssue  bool
 }
 
 // band is whether the row of stateNarrowings at place moved the body.
@@ -351,12 +354,12 @@ func shapeState(state State, restore, strip int, took *tookOff) State {
 			state = applyBand(took, place, narrowing.state, state)
 		}
 	}
-	// The two value strips follow restore, the lowest contract the pod records, where every band
-	// above follows strip, its highest: a reader that does not know a key the body carries
+	// The three value strips follow restore, the lowest contract the pod records, where every
+	// band above follows strip, its highest: a reader that does not know a key the body carries
 	// tolerates it and a later reader may require it, so an added key follows the highest, while
 	// a reader whose enumeration does not admit a value refuses the whole body for it and no
 	// reader requires a value at all, so a value follows the lowest. This is the first of the
-	// two; shapeIssue carries the other. Each strip reports whether it took anything.
+	// three; shapeIssue carries the other two. Each strip reports whether it took anything.
 	if restore < retiredStrandedContract {
 		state, took.retiredStranded = withoutRetiredStranded(state)
 	}
@@ -381,7 +384,7 @@ func shapeState(state State, restore, strip int, took *tookOff) State {
 //
 // Each band is a row of stateNarrowings, as the body's own keys are, and the lines beside the
 // loop are the same two kinds: the keys a contract removed, written back at restore, and the
-// value strip of the wait's answered pair.
+// two value strips of an issue, the wait's answered pair and the waiting line's `kind`.
 //
 // The issue is a value of its own, and each pointer and map it carries is copied before it is
 // written, so the state the source answered is left as it was.
@@ -394,13 +397,19 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 			issue = applyBand(took, place, narrowing.issue, issue)
 		}
 	}
-	// The second value strip, keyed to restore for the reason shapeState's gives, and no band of
-	// its own: the table says which values this caller's reader admits, and a caller at this
-	// daemon's own contract admits every value the table declares. The strip itself reports
-	// whether it took the pair.
+	// The second and third value strips, keyed to restore for the reason shapeState's gives,
+	// and no band of their own: the table says which values this caller's reader admits, and a
+	// caller at this daemon's own contract admits every value the table declares. Each strip
+	// reports whether it took something. Both run after the bands, so a caller whose strip is
+	// below whyAndLineFieldsContract has lost `kind` with the rest of the line's fields already,
+	// and withoutWaitingOnIssue finds no word to take from it.
 	issue, tookPair := withoutUnadmittedWaitAnswer(issue, restore)
 	if tookPair && took != nil {
 		took.waitAnswer = true
+	}
+	issue, tookKind := withoutWaitingOnIssue(issue, restore)
+	if tookKind && took != nil {
+		took.waitingOnIssue = true
 	}
 	return issue
 }
@@ -448,11 +457,12 @@ type stateNarrowing struct {
 // all whichever runs first, and a caller below only the higher one keeps the field with its
 // `place` and its `length`, which is what the lower band's own contract describes.
 //
-// The two value strips are no rows of this table: they follow the lowest contract the pod
+// The three value strips are no rows of this table: they follow the lowest contract the pod
 // records rather than its highest, which is a question this table's one number cannot ask
 // (shapeState). Each is written out once, beside the loop that applies the rows, and reports
 // what it took as a row does (tookOff), so a body served without a value says so in the log as
-// a body served without a key does (recordShaping, droppedRetiredStranded and droppedWaitAnswer).
+// a body served without a key does (recordShaping, droppedRetiredStranded, droppedWaitAnswer and
+// droppedWaitingOnIssue).
 var stateNarrowings = []stateNarrowing{
 	{contract: supervise.PodUpdateContract, issue: withoutUpdateRounds,
 		dropped: "the claim views' updateRound and updateHead"},
@@ -528,6 +538,9 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 	if took.waitAnswer {
 		s.recordValueStrip(r, at, droppedWaitAnswer)
 	}
+	if took.waitingOnIssue {
+		s.recordValueStrip(r, at, droppedWaitingOnIssue)
+	}
 }
 
 // recordValueStrip writes the line of one value strip: the number that strip followed, which is
@@ -545,12 +558,14 @@ func (s *server) recordValueStrip(r *http.Request, at placement, dropped string)
 // contract as a value strip does (refusedAfterTheStop).
 const followsTheLowest = "the pod's lowest contract, which a value follows where a key follows its highest"
 
-// droppedRetiredStranded and droppedWaitAnswer are what the two value strips name as dropped.
-// They stand here rather than in stateNarrowings because the two strips are no rows of that
-// table, and a reader of the log is told what left the body either way.
+// droppedRetiredStranded, droppedWaitAnswer and droppedWaitingOnIssue are what the three value
+// strips name as dropped. They stand here rather than in stateNarrowings because the three
+// strips are no rows of that table, and a reader of the log is told what left the body either
+// way.
 const (
 	droppedRetiredStranded = "the retired entries of strandedClaims"
 	droppedWaitAnswer      = "the answeredAt and answeredBy of each wait answered by a value this caller does not admit"
+	droppedWaitingOnIssue  = "the waiting line's kind of every member waiting on another issue"
 )
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -604,7 +619,7 @@ const waitingLineContract = 58
 // checkRoleContract is the daemon contract that added each production check view's `role`, the
 // role the check records as the one that works it (version.go's 54): a plugin before it reads
 // the check view with a strict schema that knows no `role` and refuses the whole body for it.
-// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 127).
+// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 133).
 const checkRoleContract = 54
 
 // fixAttemptsContract is the daemon contract that took the fix-attempt count out of the state
@@ -613,7 +628,7 @@ const checkRoleContract = 54
 // pull request with a strict schema that requires `fixAttempts` and refuses the whole body
 // without it, and every worker's `read_record` parses the state through that reader, so a caller
 // below this contract is served both keys as stand-ins (withFixAttempts, withMaxFixAttempts).
-// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 127).
+// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 133).
 const fixAttemptsContract = 59
 
 // backwardMovesContract is the daemon contract that added each worker's counts of the moves back
@@ -676,7 +691,7 @@ const whyAndLineFieldsContract = 85
 // It removed one key, each pull request's `checksVerdict`. Every reader from ServingFloor to 85
 // declared it `nonEmptyString.optional()`, so none of them requires it, and the records of
 // those contracts leave it out: no caller is served the key, and no stand-in is written back
-// for it, as none is for the `note` 86 took off AnswerHandoffComplete (version.go's 127).
+// for it, as none is for the `note` 86 took off AnswerHandoffComplete (version.go's 133).
 //
 // It took one value out of an enumeration too — `awaiting_merge`, from an issue's `phase` and
 // from the two fields of the decided record that take the workflow's phases (answers.go's
@@ -744,7 +759,7 @@ const processReadContract = 104
 // strip is needed. It changed no request a plugin sends.
 const quietTimeContract = 111
 
-// shapedAnswersContract is the daemon contract this change lands under (version.go's 127), and
+// shapedAnswersContract is the daemon contract this change lands under (version.go's 133), and
 // the contract that added three keys of its own: `lowestPluginContract` on the state, the
 // lowest contract among the claims whose locator names a pod and that record a contract
 // (recordsContract), and each claim view's `updateState` and `wake`. A plugin before it reads
@@ -756,19 +771,31 @@ const quietTimeContract = 111
 // moves that constant, and the contract these keys arrived at stays where it is. It moves only
 // with this change's own number, as the arrival contracts of this change's two new answers do
 // (answers.go's AnswerIssueRecord and AnswerHealth).
-const shapedAnswersContract = 127
+const shapedAnswersContract = 133
 
 // podUpdateGraceContract is the daemon contract whose settings block carries
 // `pod_update_grace_minutes` in place of `pod_update_retask_hours` and `pod_update_notice_hours`
 // (main's #3982). #3982 merged when main declared 111 and took no contract number of its own. An
 // unnumbered change belongs to the first contract number whose daemon carries it, and a daemon at
 // 123 is the first to send `pod_update_grace_minutes` and neither of the two old keys
-// (version.go's 127). A caller below it is served the block without the new key
+// (version.go's 133). A caller below it is served the block without the new key
 // (withoutPodUpdateGrace) and with the two old keys as stand-ins (withPodUpdateHours).
 //
 // It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
 // that constant, and the contract whose daemon first carried the new key stays where it is.
 const podUpdateGraceContract = 123
+
+// waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
+// line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
+// another issue (record.LineWaitingOnIssue). A plugin from 85 up to it reads `kind` with a
+// `z.enum` of the four words before it, which refuses a word it does not name and with it the
+// whole state body. So a caller whose restore is below it is served such a member without its
+// `kind` (withoutWaitingOnIssue), which that schema takes as optional. The number is written
+// once, in the declared table (answers.go's lineKinds), and the strip reads it from there.
+//
+// It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
+// that constant, and the contract the word arrived at stays where it is.
+const waitingOnIssueContract = 132
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -858,7 +885,7 @@ func recordsContract(c supervise.Claim) bool {
 // Every build at shapedAnswersContract or later states its own contract in
 // pluginContractHeader, and contractsFor answers on the header before it reads the pod at all.
 // Counting such a claim would shape the pod-decided body for a reader that does not read it and
-// break the one that does: in the `{46, 127}` pod a roll makes, the highest would be 127, and the
+// break the one that does: in the `{46, 133}` pod a roll makes, the highest would be 133, and the
 // 46 process — the one process this body is written for — would be served `admission.trees` and
 // the memory fields, which its reader refuses the whole body for. So the pod reading answers for
 // the processes that read it and for no others. The fleet's reading counts every claim that
@@ -1052,7 +1079,7 @@ func withoutRetiredStranded(state State) (State, bool) {
 // It follows restore, the lowest contract the pod records, where a band follows strip, its
 // highest: no reader requires a value, and a reader whose enumeration does not name the value
 // refuses the whole body for it, so the value a pod is served must be one its oldest process
-// admits (shapeState says this beside the other value strip). In a pod recording 64 and 85 the
+// admits (shapeState says this beside the first value strip). In a pod recording 64 and 85 the
 // `declined` of 68 is held back, and the 64 process reads the body.
 //
 // The pair goes and the `waitingOn` block stays, which is where this parts company with
@@ -1092,6 +1119,55 @@ func withoutUnadmittedWaitAnswer(issue Issue, restore int) (Issue, bool) {
 	return issue, true
 }
 
+// waitingOnIssueKind is the word record.LineWaitingOnIssue writes on the wire, named once for
+// the strip below and for the tests that stand a member of that kind.
+var waitingOnIssueKind = record.LineWaitingOnIssue.String()
+
+// withoutWaitingOnIssue is the issue whose waiting line member of the kind `waiting_on_issue`
+// carries no `kind`, where restore's reader does not admit that word: its arrival, read from
+// the declared table (answers.go's lineKinds), is above restore. Every other field of the member
+// stays, since each is a field of whyAndLineFieldsContract, and so does every member of another
+// kind. `kind` is `omitempty`, so the emptied field writes no key, and every reader from 85 up
+// takes `kind` as optional.
+//
+// It follows restore, the lowest contract the pod records, for the reason
+// withoutUnadmittedWaitAnswer gives. In a pod recording 111 and 133 the word is held back, and
+// the 111 process reads the body. A caller whose strip is below whyAndLineFieldsContract has
+// lost `kind` with the rest of the line's fields before this runs (shapeIssue), so this finds
+// nothing to take there and writes no line.
+//
+// The member is a pointer of the issue's own, and it is copied before it is written, so the
+// state the source answered is left as it was. It reports whether it took the word, which is
+// what the log line of this strip is written from (tookOff).
+func withoutWaitingOnIssue(issue Issue, restore int) (Issue, bool) {
+	line := issue.WaitingLine
+	if line == nil || line.Kind != waitingOnIssueKind {
+		return issue, false
+	}
+	if lineKindArrival(line.Kind) <= restore {
+		return issue, false
+	}
+	member := *line
+	member.Kind = ""
+	issue.WaitingLine = &member
+	return issue, true
+}
+
+// lineKindArrival is the contract a word of the waiting line's `kind` arrived at, read from the
+// declared table. A word no row of the table names reads as this daemon's own contract, for the
+// reason waitAnswerArrival gives.
+func lineKindArrival(kind string) int {
+	if since, declared := lineKindArrivals[kind]; declared {
+		return since
+	}
+	return DaemonAPIVersion
+}
+
+// lineKindArrivals is the contract each word of `kind` arrived at, read once from the list the
+// table itself is written from (answers.go's lineKinds). The state's row answers for the
+// record's too, as waitAnswerArrivals does.
+var lineKindArrivals = arrivalsOf(lineKinds)
+
 // waitAnswerArrival is the contract value arrived at, read from the declared table. A value no
 // row of the table names reads as this daemon's own contract: no older reader is known to admit
 // it, so none is served it, and the gate reds on it at every contract until the table declares
@@ -1108,12 +1184,12 @@ func waitAnswerArrival(value record.Answer) int {
 // the record's too: the two declare one field of the daemon's own (answers.go's
 // EnumeratedFields), both take that one list, and shapeIssue shapes the issue behind both
 // answers.
-var waitAnswerArrivals = waitAnswerArrivalsOf()
+var waitAnswerArrivals = arrivalsOf(waitAnswers)
 
-// waitAnswerArrivalsOf is waitAnswers as a map, each value under its own arrival.
-func waitAnswerArrivalsOf() map[string]int {
-	arrivals := make(map[string]int, len(waitAnswers))
-	for _, value := range waitAnswers {
+// arrivalsOf is one list of the declared table as a map, each value under its own arrival.
+func arrivalsOf(values []EnumeratedValue) map[string]int {
+	arrivals := make(map[string]int, len(values))
+	for _, value := range values {
 		arrivals[value.Value] = value.Since
 	}
 	return arrivals
@@ -1293,7 +1369,7 @@ func withMaxFixAttempts(state State) State {
 // whole settings block, and there the two values read as the unconfigured defaults. Those
 // describe no behaviour of this daemon, whose update round asks no worker again and ends at its
 // bound. The stand-ins exist only to keep the records of those contracts fixed (version.go's
-// 127).
+// 133).
 const (
 	podUpdateRetaskHoursStandIn float64 = 1
 	podUpdateNoticeHoursStandIn float64 = 4

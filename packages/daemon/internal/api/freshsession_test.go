@@ -345,10 +345,10 @@ func stoppedWaitingImplementer(t *testing.T, h *harness) claim.Token {
 	return token
 }
 
-// freshSessionLine is admission's waiting line and the facts it is read from, read exactly as a
-// promotion reads them — blockers.JudgeLine, the one place the line is judged, which fills the
-// held set and the children-first waits the line cannot judge itself: the order in which the
-// next slot is offered.
+// freshSessionLine is admission's waiting line and the facts it is read from, judged by
+// blockers.JudgeLine from the stored state: the held set, the children-first waits and the waits
+// of started issues (record.LineFacts.Held, ChildWaits and Waits). It runs none of the releases
+// a pass runs before it judges the line.
 func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.LineEntry, record.LineFacts) {
 	t.Helper()
 	var (
@@ -945,7 +945,7 @@ func podPlacedHarness(t *testing.T, claims []supervise.Claim) *harness {
 
 // A caller that states no contract is placed by its pod, and the fresh session's answer follows
 // the pod's lowest contract, as a value strip does (api's readsTheStopAsAFailure). The pod's
-// claims record 103, 104 and 127. A claim that records 127 states its contract in the header,
+// claims record 103, 104 and 133. A claim that records 133 states its contract in the header,
 // so the pod's reading leaves it out (api's podContracts). The pod reads as lowest 103 and
 // highest 104, and the two readings give different answers: the 103 process reads the 200 as a
 // claim that runs again, so the whole pod gets the failure that the daemon gave before 104.

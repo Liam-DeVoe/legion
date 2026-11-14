@@ -163,19 +163,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 127
+        "since": 133
       },
       {
         "value": "asked",
-        "since": 127
+        "since": 133
       },
       {
         "value": "none",
-        "since": 127
+        "since": 133
       },
       {
         "value": "open",
-        "since": 127
+        "since": 133
       }
     ]
   },
@@ -185,19 +185,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 127
+        "since": 133
       },
       {
         "value": "asked",
-        "since": 127
+        "since": 133
       },
       {
         "value": "none",
-        "since": 127
+        "since": 133
       },
       {
         "value": "open",
-        "since": 127
+        "since": 133
       }
     ]
   },
@@ -886,6 +886,10 @@
       {
         "value": "returning",
         "since": 85
+      },
+      {
+        "value": "waiting_on_issue",
+        "since": 132
       }
     ]
   },
@@ -1125,19 +1129,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 127
+        "since": 133
       },
       {
         "value": "asked",
-        "since": 127
+        "since": 133
       },
       {
         "value": "none",
-        "since": 127
+        "since": 133
       },
       {
         "value": "open",
-        "since": 127
+        "since": 133
       }
     ]
   },
@@ -1147,19 +1151,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 127
+        "since": 133
       },
       {
         "value": "asked",
-        "since": 127
+        "since": 133
       },
       {
         "value": "none",
-        "since": 127
+        "since": 133
       },
       {
         "value": "open",
-        "since": 127
+        "since": 133
       }
     ]
   },
@@ -1664,6 +1668,10 @@
       {
         "value": "returning",
         "since": 85
+      },
+      {
+        "value": "waiting_on_issue",
+        "since": 132
       }
     ]
   },
