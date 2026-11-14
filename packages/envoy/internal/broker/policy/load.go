@@ -22,6 +22,15 @@ const RefusedMessage = "agent secret policy refused"
 // force. The deployment's alarm filters on it too.
 const LoadFailedMessage = "agent secret policy load failed; previous policy kept"
 
+// ReloadedMessage is logged, at INFO, once the whole-namespace reload NewCurrent runs every
+// interval has succeeded, with cause=CauseBackstop. A pod reads a secret again for one of two
+// reasons, and each says which: this reload, the backstop, and a peer's fan-out, which logs
+// reread.ReadMessage with reread.CauseFanOut. A reload a shutdown ended logs neither line.
+const (
+	ReloadedMessage = "agent secret policy reloaded"
+	CauseBackstop   = "backstop"
+)
+
 // Why a secret under the prefix is refused, as its RefusedMessage line's reason.
 const (
 	// ReasonNameMalformed: the name under the prefix is not lowercase letters, digits and single

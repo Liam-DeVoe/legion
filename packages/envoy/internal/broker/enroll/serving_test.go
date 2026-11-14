@@ -16,7 +16,10 @@ import (
 )
 
 // notServingAfter is the threshold every clock in this file records unless a test says otherwise:
-// a gap after the latest beat longer than this is time no broker was serving.
+// a gap after the latest beat longer than this is time no broker was serving. The gap it is
+// compared with is PostgreSQL's own (now() less last_serving_at, migration 0024's rule), so no
+// clock of Envoy's can stand in for it: a row that needs a gap makes one with SQL, and the one
+// row that lets real time pass sets a threshold of its own below.
 const notServingAfter = 15 * time.Second
 
 // servingInterval is the rig clocks' Interval, and so the bound on each of their beats: far above
@@ -452,7 +455,9 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 	// broker's beats with them, which turns the guard on and makes the lapsed lease below read
 	// live. Both were seen in 50 runs under eight busy loops on two cores. A second of interval
 	// and four of threshold keep every relation this row reads and give that machine room
-	// (INFRA-985).
+	// (INFRA-985). The threshold is PostgreSQL's comparison of its own now() with
+	// last_serving_at, which no fake clock of Envoy's reaches, so this row lets that much real
+	// time pass and waits for the beats that report it (beatsPast) rather than for a duration.
 	const interval, threshold = time.Second, 4 * time.Second
 	stuck := &ServingClock{Enrollments: r.svc, Interval: interval, NotServingAfter: threshold}
 	serving := &ServingClock{Enrollments: r.svc, Interval: interval, NotServingAfter: threshold}
@@ -476,12 +481,10 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 	start := r.now(t)
 	r.setLease(t, id, `now() + interval '100 milliseconds'`)
 
-	began := time.Now()
-	err = stuck.Beat(ctx)
-	// Beat bounds itself by Interval, so a held row fails at about that; the bound here is a
-	// hang guard around it rather than a second measurement of the same clock.
-	if took := time.Since(began); err == nil || took >= 4*interval || !beatTimedOut(err) {
-		t.Fatalf("Beat on a held row = %v after %s, want a timeout within %s", err, took, 4*interval)
+	// Beat bounds itself by Interval, so a held row fails with its own timeout. What that
+	// failure is, and not how long it took, is the fact: the shared wait owns the hang guard.
+	if err = stuck.Beat(ctx); err == nil || !beatTimedOut(err) {
+		t.Fatalf("Beat on a held row = %v, want its own timeout", err)
 	}
 
 	runs, cancel := context.WithCancel(ctx)
@@ -531,29 +534,13 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 	}
 }
 
-// beatsPastCap and beatsPastMargin bound the wait below: the clock under test needs more than its
-// threshold of real time to get past want, and a run whose binary deadline leaves less than the
-// margin fails by name rather than letting go test's own timeout fire with no test named.
-const beatsPastCap = 30 * time.Second
-const beatsPastMargin = 10 * time.Second
-
 // beatsPast waits for clock's broker_serving row to pass want.
 func (r servingRig) beatsPast(t *testing.T, clock *ServingClock, want time.Time) {
 	t.Helper()
-	wait := beatsPastCap
-	if deadline, bounded := t.Deadline(); bounded {
-		left := time.Until(deadline)
-		if left <= beatsPastMargin {
-			t.Fatalf("the test binary's deadline leaves %s, not more than %s: this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), beatsPastMargin)
-		}
-		wait = min(wait, left-beatsPastMargin)
-	}
-	if !testwait.Holds(wait, 10*time.Millisecond, func() bool {
+	testwait.Eventually(t, "the serving broker's last_serving_at to pass "+want.String(), func() bool {
 		last, _ := r.servingOf(t, clock)
 		return last.After(want)
-	}) {
-		t.Fatalf("the serving broker's last_serving_at did not pass %s within %s", want, wait)
-	}
+	})
 }
 
 // Run beats as soon as it starts and returns once its context ends.
@@ -565,23 +552,11 @@ func TestRunBeatsAtOnceAndReturnsWhenItsContextEnds(t *testing.T) {
 		r.clock.Run(ctx)
 		close(done)
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if processes := r.processes(t); slices.Contains(processes, r.clock.processID()) {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatal("Run never beat")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "Run to beat", func() bool {
+		return slices.Contains(r.processes(t), r.clock.processID())
+	})
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not return after its context ended")
-	}
+	testwait.Receive(t, "Run to return once its context ended", done)
 }
 
 // beforeTheSharedRule is the gap condition ServingClock.Beat held inline, in SQL of its own,

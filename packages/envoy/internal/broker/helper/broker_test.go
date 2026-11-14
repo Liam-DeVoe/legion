@@ -48,13 +48,13 @@ const failAlways = 1 << 30
 // thumbprint it carries — exactly the conflict a fresh Recover enroll racing ahead of the old
 // row's revoke can hit for real, which byTP alone (keyed on the NEW session's fresh thumbprint)
 // can never reproduce. conflicts counts how many times that 409 fired, so a test can assert none
-// ever did. revokeFirstDelay, when set, delays the FIRST DELETE this fake receives (dropped to
-// zero for every later one) so a test can hold an old row "live" for a window and prove the
-// helper never calls Enroll for that runtime_id before the delayed DELETE actually clears it —
-// without holding f.mu for the delay itself, which would just serialize the racing Enroll behind
+// ever did. revokeFirstGate, when set, holds the FIRST DELETE this fake receives (dropped for
+// every later one) until the test closes it, so a test can hold an old row "live" and prove the
+// helper never calls Enroll for that runtime_id before the held DELETE actually clears it —
+// without holding f.mu while it waits, which would just serialize the racing Enroll behind
 // the DELETE instead of letting a genuinely concurrent (buggy) caller collide with it.
 // revokeFailFirst, when set, answers the next N DELETEs with 503 before any of them touches the
-// row — an unreachable broker, as opposed to revokeFirstDelay's merely slow one — so a revoke
+// row — an unreachable broker, as opposed to revokeFirstGate's merely slow one — so a revoke
 // stuck retrying with backoff can be observed and torn down mid-retry. revokeAttempts counts
 // every DELETE this fake received, whether it failed or actually deleted the row, independent of
 // revokeFailFirst, so a test can poll for exactly when an attempt has been answered instead of
@@ -87,7 +87,7 @@ type fakeBroker struct {
 	renews             int
 	conflicts          int           // 409 ALREADY_ENROLLED answers from the runtime_id-keyed conflict path
 	failFirst          int           // 503 this many enroll calls first
-	revokeFirstDelay   time.Duration // sleep this long before the first DELETE actually removes its row
+	revokeFirstGate    chan struct{} // the first DELETE waits for this to close before it removes its row
 	revokeFailFirst    int           // 503 this many DELETE calls first, row untouched (an unreachable broker)
 	revokeAttempts     int           // every DELETE this fake received, failed or not
 	lease              time.Duration // lease length the fake grants; 900 s unless a test shortens it
@@ -255,14 +255,14 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 			writeJSON(w, 503, map[string]string{"code": "DATABASE", "error": "postgres unreachable"})
 			return
 		}
-		delay := f.revokeFirstDelay
-		f.revokeFirstDelay = 0
+		gate := f.revokeFirstGate
+		f.revokeFirstGate = nil
 		f.mu.Unlock()
-		if delay > 0 {
-			// Deliberately outside the lock: a delayed DELETE must let a concurrent (buggy)
-			// Enroll for the same runtime_id observe the row as still live during this window,
+		if gate != nil {
+			// Deliberately outside the lock: a held DELETE must let a concurrent (buggy)
+			// Enroll for the same runtime_id observe the row as still live while it waits,
 			// which holding f.mu here would instead serialize away.
-			time.Sleep(delay)
+			<-gate
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -563,10 +563,14 @@ func machineFilePath(t *testing.T) string {
 
 // loggedInBroker builds a Broker against f, logs it in against the fake's default "issued"
 // outcome, and waits for the credential to install, so a test can exercise Enroll/Renew/Revoke
-// without exercising Login itself.
-func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
+// without exercising Login itself. Each tune runs on the Broker before it logs in, so a field
+// it sets — a clock of the row's own, say — is set before any goroutine of the broker reads it.
+func loggedInBroker(t *testing.T, f *fakeBroker, operator string, tune ...func(*Broker)) *Broker {
 	t.Helper()
 	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, operator), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	for _, apply := range tune {
+		apply(b)
+	}
 	t.Cleanup(b.Close)
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
 		t.Fatalf("login: %v", err)
@@ -575,14 +579,12 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	return b
 }
 
-// waitFor polls cond until it is true or 5s pass, whichever comes first, failing the test on
-// timeout. A login's first token poll comes a second after its device authorization (the
-// interval the fake names).
+// waitFor waits until cond is true. A login's first token poll comes a second after its device
+// authorization (the interval the fake names), so a row that waits for an issued login waits
+// for that poll.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, cond) {
-		t.Fatal("condition never became true")
-	}
+	testwait.Eventually(t, "the condition the row waits on", cond)
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
@@ -722,11 +724,8 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 	read := make(chan loginState, 1)
 	b.testClearHook = func() {
 		go func() { read <- b.LoginStatus() }()
-		select {
-		case got := <-read:
-			read <- got
-		case <-time.After(200 * time.Millisecond):
-		}
+		testwait.Quiet(t, "a login-status read while the drop holds the state", read, 200*time.Millisecond,
+			"the reader is parked on stateMu, which keeps no count of its waiters: no state of the broker says it has arrived, no later action can reach it while this drop holds the lock, and the login it reads ran over the fake broker's real HTTP, which synctest cannot hold")
 	}
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
 	if err := b.clearOnInvalid(held, rejected); !errors.Is(err, errNoCredential) {
@@ -762,10 +761,9 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 	f.mu.Lock()
 	f.loginOutcome = "denied"
 	f.mu.Unlock()
-	deadline := time.Now().Add(15 * time.Second) // pollLogin backs off 2 s, then 4 s, between polls
-	for b.login.Load().State == "pending" && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	// pollLogin's own backoff, 2 s then 4 s between polls, is x/oauth2's, which no clock of
+	// Envoy's reaches: the row waits for the denial it brings.
+	waitFor(t, func() bool { return b.login.Load().State != "pending" })
 	if got := b.LoginStatus(); got.State != "denied" || got.Refused || got.CredentialHeld {
 		t.Fatalf("that re-login once denied: %+v, want denied, not refused, no credential", got)
 	}

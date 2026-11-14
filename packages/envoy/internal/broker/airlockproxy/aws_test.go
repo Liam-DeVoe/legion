@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The key pair behind the airlock: what the broker holds, and what the command holds in its
@@ -410,11 +411,8 @@ func TestTheAirlockHoldsOnlyItsBudgetOfBodiesToHash(t *testing.T) {
 	if path := <-arrived; path != "/hashed" {
 		t.Fatalf("the service was sent %q next; want the call that carries its own hash, which holds no body", path)
 	}
-	select {
-	case path := <-arrived:
-		t.Fatalf("the service was sent %q while the whole budget was held; want it to wait for room", path)
-	case <-time.After(100 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the call that has to wait for room to reach the service", arrived, 100*time.Millisecond,
+		"the budget is a semaphore.Weighted, which keeps no count this test can read: no state of the proxy says a call is parked on it, no later action's effect shows it, and the call is a real HTTP request, so synctest cannot see it either")
 
 	// Both calls in flight answer, which gives the first one's bytes back, and the waiting
 	// call goes through on them.

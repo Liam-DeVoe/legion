@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // awsListLag is the AWS store's ListLag, which every Local-backed Current here runs on.
@@ -349,23 +350,17 @@ func heldCurrent(t *testing.T) *policy.Current {
 	return cur
 }
 
-// rereadWithin runs RefreshOne(ctx, name) and answers its error, failing t when it has not
-// returned within a second: long enough for any answer that waits on nothing, far shorter than a
-// held reload.
-func rereadWithin(t *testing.T, cur *policy.Current, ctx context.Context, name string) error {
+// reread runs RefreshOne(ctx, name) on a goroutine of its own and answers its error, so a
+// RefreshOne that waits on the writer lock a reload holds fails the test naming that wait rather
+// than returning an answer the caller reads as prompt.
+func reread(t *testing.T, cur *policy.Current, ctx context.Context, name string) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() {
 		_, err := cur.RefreshOne(ctx, name)
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(time.Second):
-		t.Fatalf("RefreshOne(%s) waited on the writer lock a reload holds", name)
-		return nil
-	}
+	return testwait.Receive(t, "RefreshOne("+name+") to answer rather than wait on the writer lock a reload holds", done)
 }
 
 // TestARereadOfANameNoSecretCanCarryWaitsOnNoReload pins that RefreshOne refuses such a name
@@ -374,7 +369,7 @@ func rereadWithin(t *testing.T, cur *policy.Current, ctx context.Context, name s
 func TestARereadOfANameNoSecretCanCarryWaitsOnNoReload(t *testing.T) {
 	cur := heldCurrent(t)
 	for _, name := range []string{"not a secret name", "A" + strings.Repeat("B", 512-len(policytest.Prefix))} {
-		if err := rereadWithin(t, cur, context.Background(), name); !errors.Is(err, policy.ErrNameInvalid) {
+		if err := reread(t, cur, context.Background(), name); !errors.Is(err, policy.ErrNameInvalid) {
 			t.Fatalf("RefreshOne(%.20s...) = %v, want ErrNameInvalid", name, err)
 		}
 	}
@@ -384,17 +379,34 @@ func TestARereadOfANameNoSecretCanCarryWaitsOnNoReload(t *testing.T) {
 // a reload holds ends with its caller's context: one already done returns its error without
 // waiting, and one whose deadline passes while it waits returns then.
 func TestARereadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
-	cur := heldCurrent(t)
-	done, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := rereadWithin(t, cur, done, "NEW_KEY"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("RefreshOne with its context done = %v, want context.Canceled", err)
-	}
-	expiring, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := rereadWithin(t, cur, expiring, "NEW_KEY"); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("RefreshOne whose deadline passed while it waited = %v, want context.DeadlineExceeded", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		cur := heldCurrent(t)
+		// A context already done is answered by lock's own first check, before it waits at
+		// all, so this call returns on this goroutine: one that waited would leave every
+		// goroutine of the bubble blocked, which synctest reports as the deadlock it is.
+		done, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := cur.RefreshOne(done, "NEW_KEY"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("RefreshOne with its context done = %v, want context.Canceled", err)
+		}
+
+		expiring, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		answered := make(chan error, 1)
+		go func() {
+			_, err := cur.RefreshOne(expiring, "NEW_KEY")
+			answered <- err
+		}()
+		// Waiting on the writer lock the held reload owns: synctest.Wait returns once every
+		// other goroutine of the bubble is durably blocked, so the deadline below passes
+		// while this call waits, which is the path this half is about rather than lock's
+		// check of a context already done.
+		synctest.Wait()
+		time.Sleep(time.Minute)
+		if err := <-answered; !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("RefreshOne whose deadline passed while it waited = %v, want context.DeadlineExceeded", err)
+		}
+	})
 }
 
 // hangingLister answers page until hang; from then on it holds each call until unhang releases
@@ -473,7 +485,9 @@ func TestAReloadGivesUpWithinItsInterval(t *testing.T) {
 		const failed = "ERROR " + policy.LoadFailedMessage + " error=\"list secrets under " + policytest.Prefix + ": context deadline exceeded\"\n"
 		await(t, func() bool { return strings.Contains(logged.String(), failed) })
 		lister.unhang()
-		if err := rereadWithin(t, cur, context.Background(), "NEW_KEY"); err != nil {
+		// On this goroutine: a RefreshOne still waiting on the writer lock the hung reload
+		// held would leave every goroutine of the bubble blocked, which synctest reports.
+		if _, err := cur.RefreshOne(context.Background(), "NEW_KEY"); err != nil {
 			t.Fatalf("RefreshOne after the hung reload gave up = %v", err)
 		}
 	})

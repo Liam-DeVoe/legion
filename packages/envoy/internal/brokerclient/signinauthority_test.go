@@ -80,6 +80,8 @@ func (r *signInRig) signIn(t *testing.T, person string) SignInRecord {
 	if err := r.issuer.ApproveDeviceCode(authorization.UserCode); err != nil {
 		t.Fatalf("%s types the code in: %v", person, err)
 	}
+	// x/oauth2's own wait between token requests, which no clock of Envoy's reaches; the code
+	// is approved already, so the first poll is the only one.
 	authorization.Interval = 1
 	granted, err := r.flow.Wait(context.Background(), authorization)
 	if err != nil {

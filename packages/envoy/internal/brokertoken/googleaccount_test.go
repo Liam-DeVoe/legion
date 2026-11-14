@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // metadataAudience is the broker audience these reads ask the metadata server to mint for.
@@ -91,10 +92,9 @@ func TestGoogleAccountSharesOneMetadataReadBetweenConcurrentReaders(t *testing.T
 		}()
 	}
 	// The whole point is what the readers behind the first one do, so the stub is held until
-	// every reader has been scheduled and given a moment to reach the read; nothing a reader
-	// blocked inside the shared read is observable from here.
+	// every reader has been scheduled and given a moment to reach the read.
 	started.Wait()
-	time.Sleep(50 * time.Millisecond)
+	testwait.Span(t, 50*time.Millisecond, "a reader waiting behind the shared read is blocked inside singleflight's own call, which keeps no count this test can read: no state of the account says it has arrived, no later action's effect shows it, and the read is a real HTTP call to the stub, so synctest cannot see it either")
 	close(release)
 	done.Wait()
 

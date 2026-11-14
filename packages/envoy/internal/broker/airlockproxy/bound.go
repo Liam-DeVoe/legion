@@ -152,13 +152,13 @@ func (s *Server) valuesFor(ctx context.Context, grantID string) (map[string]requ
 	// The common path, checked before the single-flight lock: the grant's values are held and
 	// still usable, so every parallel request of one grant answers from them at once. Taking
 	// read first would put them all in a queue behind a read that is not going to happen.
-	if values, _, fresh := held.held(s.now(), version, s.keepValues); fresh {
+	if values, _, fresh := held.held(s.clock.Now(), version, s.keepValues); fresh {
 		return values, nil
 	}
 
 	held.read.Lock()
 	defer held.read.Unlock()
-	values, drops, fresh := held.held(s.now(), version, s.keepValues)
+	values, drops, fresh := held.held(s.clock.Now(), version, s.keepValues)
 	if fresh {
 		return values, nil
 	}
@@ -447,14 +447,15 @@ const joinMessage = "airlock proxy: a joined connection its grant no longer carr
 // pings. So the read every other request makes for itself runs here instead, on watchInterval,
 // until the caller's cancel ends it.
 func (s *Server) watchJoined(ctx context.Context, decrypted net.Conn, info connInfo, r *http.Request, chosen pair) {
-	ticker := time.NewTicker(s.watch)
-	defer ticker.Stop()
+	timer := s.clock.NewTimer(s.watch)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C():
 		}
+		timer.Reset(s.watch)
 		status, why := s.joinRefusal(ctx, info, chosen.name)
 		if why == "" {
 			continue
@@ -498,7 +499,7 @@ func cutJoined(cut *cutConn, c net.Conn) {
 // error logged where grantRefusal logs one: a read that failed says nothing about the grant, and
 // a database failover must cut no WebSocket the airlock carries.
 func (s *Server) joinRefusal(ctx context.Context, info connInfo, name string) (int, string) {
-	if expires := info.grant.Expires; expires != nil && !s.now().Before(*expires) {
+	if expires := info.grant.Expires; expires != nil && !s.clock.Now().Before(*expires) {
 		return http.StatusProxyAuthRequired, "this grant expired while this connection was joined to the service"
 	}
 	grant, err := s.grants.AirlockConnection(ctx, info.password)

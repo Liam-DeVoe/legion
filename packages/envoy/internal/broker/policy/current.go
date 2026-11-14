@@ -52,7 +52,10 @@ func NewCurrent(ctx context.Context, loader Loader, every time.Duration) (*Curre
 				reload, cancel := context.WithTimeout(ctx, every)
 				err := c.Refresh(reload)
 				cancel()
-				if err != nil && ctx.Err() == nil {
+				switch {
+				case err == nil:
+					slog.Info(ReloadedMessage, "cause", CauseBackstop)
+				case ctx.Err() == nil:
 					slog.Error(LoadFailedMessage, "error", err)
 				}
 			}

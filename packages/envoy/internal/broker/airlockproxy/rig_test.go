@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The grant every row but the two-name one is served by: one secret, bound to one host, whose
@@ -291,20 +292,13 @@ func (c *logCapture) lines(message string) []logLine {
 // answer has been copied to the client, so a client whose own read of the body has returned can
 // still be ahead of that write by a few instructions: a row that reads calls()[0] straight after
 // its request passes on an idle machine and panics on a loaded one, which is how this wait came
-// to be written. It fails the row rather than hanging when the line never comes.
+// to be written.
 func (c *logCapture) callsAtLeast(t *testing.T, n int) []logLine {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	return testwait.Until(t, fmt.Sprintf("the proxy to write at least %d lines for a call to a bound host", n), func() ([]logLine, bool) {
 		calls := c.calls()
-		if len(calls) >= n {
-			return calls
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the proxy wrote %d lines for a call to a bound host; want at least %d", len(calls), n)
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return calls, len(calls) >= n
+	})
 }
 
 // rig is one row's whole world: the proxy, what it dials, what it may resolve, the stand-in
@@ -431,9 +425,7 @@ func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 		}
 	}()
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		r.proxy.Shutdown(ctx)
+		r.proxy.Shutdown(testwait.Context(t))
 	})
 	return r
 }

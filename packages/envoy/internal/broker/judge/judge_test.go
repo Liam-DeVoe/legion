@@ -454,7 +454,7 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
 	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(pending())
 
-	waitFor(t, "the run Consider started to apply its decision", 10*time.Second, func() bool {
+	waitFor(t, "the run Consider started to apply its decision", func() bool {
 		applied, _ := machine.rows()
 		return len(applied) == 1
 	})
@@ -469,8 +469,8 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 // show for them, which is the one outcome the trail exists to prevent.
 //
 // The request is left pending either way, so the row is the whole of what this proves. It takes
-// the wall-clock time it says it does — the bounds are real durations — and runs beside the
-// rest of the package's tests rather than after them.
+// the wall-clock time it says it does — the bounds are real durations, and the model call's is
+// agentloop's own — and runs beside the rest of the package's tests rather than after them.
 func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
@@ -483,22 +483,27 @@ func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	model.delay = runBudget
 	// The row's own transaction, which has to commit inside what is left of the budget.
 	machine.writeTakes = 2 * time.Second
-	started := time.Now()
+
 	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(pending())
 
-	waitFor(t, "the slowest run there is to write its row", runBudget+5*time.Second, func() bool {
+	waitFor(t, "the slowest run there is to write its row", func() bool {
 		_, logged := machine.rows()
 		return len(logged) == 1
 	})
-	if took := time.Since(started); took < dispatchBound+modelBound-time.Second {
-		t.Errorf("the run wrote its row after %s; want it to have spent both bounds, %s", took, dispatchBound+modelBound)
+	// Both bounds were spent, read from what the stand-ins saw rather than from the clock:
+	// the Dispatch phase made both of its reads, each held for half of dispatchBound, and the
+	// model call ran to its own bound, which is the error the row carries below.
+	if got := dispatch.got(); len(got) != 2 {
+		t.Errorf("the Dispatch stand-in answered %d reads; want the issue and the spec, each held for half of %s", len(got), dispatchBound)
 	}
 	row := theOneRow(t, machine)
 	if row["verdict"] != Refer || row["asked"] != true {
 		t.Errorf("the row reads verdict %v, asked %v; want the model asked and the request referred", row["verdict"], row["asked"])
 	}
-	if _, carries := row["error"].(string); !carries {
-		t.Errorf("the row carries error %v; want the model call's own timeout", row["error"])
+	// agentloop's own words for its time bound ("the run went past 20s"), naming modelBound:
+	// the call ran to its bound rather than failing early on something else.
+	if message, carries := row["error"].(string); !carries || !strings.Contains(message, "went past "+modelBound.String()) {
+		t.Errorf("the row carries error %v; want the model call's own timeout at %s, which is how the call is known to have run to modelBound", row["error"], modelBound)
 	}
 	if failed := failedCheck(t, row); failed != "" {
 		t.Errorf("the row names %q as a failed check; want every check passed before the model", failed)

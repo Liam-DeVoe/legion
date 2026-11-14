@@ -21,15 +21,11 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// clientTimeout bounds every request a Client makes. It sits past the broker's own request
-// deadline (cmd/broker's requestDeadline, 45 seconds) so a handler that takes its whole budget —
-// one waiting on a row another process holds, say — still answers this client rather than being
-// turned into a transport error that names nothing.
-const clientTimeout = 90 * time.Second
-
 // pollInterval is the interval a Client's device-code exchange polls on, overriding the one the
 // device authorization answered: every code a test exchanges has already been approved, so the
-// first poll is the only one, and a second of it is all the delay a row should pay.
+// first poll is the only one, and a second of it is all the delay a row should pay. The timer it
+// sets is x/oauth2's own (DeviceAccessToken's wait between polls), which no clock of Envoy's
+// reaches, and no row reads whether it fired.
 const pollInterval = 1
 
 // Client drives one broker over genuine HTTP: every URL it builds, signs and sends names
@@ -88,14 +84,15 @@ func NewClient(t *testing.T, publicURL, addr string) *Client {
 		// client exists to be pinned to, and publicURL resolves nowhere, so the failure would be
 		// a DNS error naming a host no test chose.
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, addr)
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, network, addr)
 		},
 	}
 	t.Cleanup(transport.CloseIdleConnections)
 	return &Client{
 		PublicURL: publicURL, Addr: addr,
 		transport: transport,
-		http:      &http.Client{Transport: transport, Timeout: clientTimeout},
+		http:      &http.Client{Transport: transport},
 	}
 }
 
@@ -151,7 +148,8 @@ func NewSigningKey(t *testing.T) *ecdsa.PrivateKey {
 // token endpoints under its public URL, over a transport that both pins the connection to this
 // client's process and signs a DPoP proof of key for every request, as the helper's own does. Its
 // context is the shared wait's (testwait.Context), so an exchange that goes on polling ends with
-// what the broker kept saying before the test binary's deadline does.
+// what the broker kept saying before the test binary's deadline does, and it is the one bound
+// each of its requests has.
 func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Config, context.Context) {
 	t.Helper()
 	if c.DPoP == nil {
@@ -166,7 +164,7 @@ func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Conf
 			},
 		},
 		context.WithValue(testwait.Context(t), oauth2.HTTPClient,
-			&http.Client{Transport: c.DPoP(key, c.transport), Timeout: clientTimeout})
+			&http.Client{Transport: c.DPoP(key, c.transport)})
 }
 
 // DeviceLogin asks this broker for a device code for a machine of person on host, as the helper's

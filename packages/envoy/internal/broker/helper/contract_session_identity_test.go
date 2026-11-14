@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type contractCreatedRequest struct {
@@ -235,14 +236,10 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 
 	// The sweep fires each revoke off rather than holding its own goroutine on one
 	// (SweepDormant), so the broker stops honouring the grant a moment after the sweep returns.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Eventually(t, "the broker to stop honouring the swept session's grant", func() bool {
 		status, body = cr.sessionReq(t, sess, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
-		if status != http.StatusOK || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return status != http.StatusOK
+	})
 	if status == http.StatusOK {
 		t.Fatalf("a session that never came back still released its grant: %d %s", status, body)
 	}
