@@ -1,3 +1,5 @@
+//go:build !race
+
 package delivery
 
 // The delivery timeline's own write transactions under storetest's xid rig (INFRA-636, plan test

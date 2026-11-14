@@ -1,3 +1,5 @@
+//go:build !race
+
 package api
 
 import (
@@ -29,97 +31,64 @@ import (
 // (storetest.MarkXid), so only the transactions the request itself ran are judged; the server's
 // background work shares the pool but not the verdict. The server settles documents after an
 // hour, so no settlement races the measured request, except where a route needs settlement to
-// have run first (the block ask).
+// have run first (the block ask). The fixture itself is xid_fixture_test.go's.
+//
+// This file, route_xid_window_test.go and delivery's xid_window_test.go build without the race
+// detector (`//go:build !race`). Under it the rig judges no gap (storetest.XidJudgesGaps) and the
+// shape is the same rule in either build, so a race run of these tests proved nothing the plain
+// run does not, at about four times the plain run's cost: envoy-go's step "Test what the race
+// build cannot run at all or at full size" runs them, judging shape and gaps both.
+//
+// Seeding the fixture is most of what a window test costs: twenty anchored writes on a 40 KB
+// spec, each of which renders the spec, about fifteen seconds of a race-built run on a two-core
+// pod against well under one for the measured request. So the measurements run as steps on as
+// few fixtures as their requests allow (runXidSteps), each step a subtest that seeds what its
+// own request needs, waits for the database to fall quiet and measures that request alone. A
+// step anchors its writes on a spare cell of its own (takeSpare) and acts on a seed item no
+// other step touches, so it meets the fixture as a fixture of its own would show it, plus the
+// rows the steps before it added beside its own; and the steps of a run are ordered so that no
+// step meets a state that would send its request down another path: the anchored writes before
+// the spec is versioned, the versions before an approval request is open (every version moves an
+// open request, a path of its own on the route window table), and the claim last. A measurement
+// whose request needs what no run can leave it - a spec its approver approved, a request over two
+// documents, a document store that fails a load, an ask a step before it closed - keeps a fixture
+// of its own.
 
-// xidProject is the fixture's project key.
-const xidProject = "XID"
-
-// xidAnchoredComments and xidAnchoredAsks are the fixture's open anchors: twenty, as on the
-// harness's large specs once their comments have accumulated.
-const (
-	xidAnchoredComments = 12
-	xidAnchoredAsks     = 8
-)
-
-// xidSpec is the fixture spec, storetest.XidSpec on the fixture's project: about 40 KB of tables
-// and prose as the harness's large specs, and its requirement cells.
-func xidSpec(seed uint64) (string, []string) { return storetest.XidSpec(xidProject, seed) }
-
-// xidFixture is a server on a traced pool holding one issue whose spec is xidSpec with twenty open
-// anchors on it, written by a session through the API as the harness's seed writes them.
-type xidFixture struct {
-	handler  http.Handler
-	database *store.Store
-	deps     Deps
-	tracer   *storetest.XidTracer
-	issueKey string
-	specID   string
-	spec     string
-	quotes   []string
-	// spare are requirement cells no fixture anchor quotes, for the measured request's own.
-	spare    []string
-	comments []string
-	asks     []string
-	// mayHoldNoXid passes a measured request that holds no xid at all
-	// (storetest.XidReport.MayHoldNoXid): one that may write nothing.
-	mayHoldNoXid bool
+// xidStep is one measurement of a run of steps on one fixture (runXidSteps): the subtest's name,
+// and the step itself, which seeds what its request needs on the fixture the steps before it
+// left and measures that request.
+type xidStep struct {
+	name    string
+	measure func(t *testing.T, f *xidFixture)
 }
 
-// newXidFixture builds the fixture on a server with options, whose tracer it sets, and with spec
-// as the issue's spec (xidSpec(1) when empty).
-func newXidFixture(t *testing.T, options testServerOptions, spec string) *xidFixture {
+// runXidSteps runs steps in order on f, each as a subtest. Before each step it waits for the
+// database to fall quiet (awaitQuietDatabase) - and where settled, for every document to settle
+// as well - so the work the steps before it left running, a mention's send or a version's
+// settlement, has finished and the step measures its request alone. A failed step does not stop
+// the run: a window's verdict is read after its request answered, so the fixture holds what that
+// request wrote and each later step still answers for its own window alone; a step whose request
+// was refused fails as a rig problem, which names it.
+func runXidSteps(t *testing.T, f *xidFixture, settled bool, steps []xidStep) {
 	t.Helper()
-	fixture := &xidFixture{tracer: storetest.NewXidTracer()}
-	if options.settle == 0 {
-		options.settle = time.Hour
-	}
-	options.tracer = fixture.tracer
-	fixture.handler, fixture.database, fixture.deps = newTestServer(t, options)
-	_, fixture.quotes = xidSpec(1)
-	if spec == "" {
-		spec, _ = xidSpec(1)
-	}
-	fixture.spec = spec
-	started := time.Now()
-	issue := createInteractionIssue(t, fixture.handler, xidProject, "Large spec under review", spec)
-	fixture.issueKey, fixture.specID = issue.Key, issue.PrimaryArtifactID
-
-	anchors := xidAnchoredComments + xidAnchoredAsks
-	step := len(fixture.quotes) / (anchors + 4)
-	anchored := map[int]bool{}
-	for i := range anchors {
-		index := i * step
-		anchored[index] = true
-		quote := fixture.quotes[index]
-		if i < xidAnchoredComments {
-			created := sessionRequest(t, fixture.handler, http.MethodPost, "/api/v1/issues/"+fixture.issueKey+"/comments", map[string]any{
-				"body":   fmt.Sprintf("Seed comment %d: does %q still hold after the migration?", i, quote),
-				"anchor": map[string]any{"artifact": "spec", "quote": quote}, "actor": sessionActor(),
-			})
-			if created.Code != http.StatusCreated {
-				t.Fatalf("seed anchored comment %d: status=%d body=%s", i, created.Code, created.Body.String())
-			}
-			fixture.comments = append(fixture.comments, decodeBody[model.Comment](t, created).ID)
-			continue
-		}
-		created := sessionRequest(t, fixture.handler, http.MethodPost, "/api/v1/issues/"+fixture.issueKey+"/asks", map[string]any{
-			"question": fmt.Sprintf("Seed ask %d: who owns %q?", i, quote),
-			"options":  []map[string]string{{"label": "Platform"}, {"label": "Product"}},
-			"anchor":   map[string]any{"artifact": "spec", "quote": quote}, "actor": sessionActor(),
+	for _, step := range steps {
+		t.Run(step.name, func(t *testing.T) {
+			awaitQuietDatabase(t, f.database, settled)
+			step.measure(t, f)
 		})
-		if created.Code != http.StatusCreated {
-			t.Fatalf("seed anchored ask %d: status=%d body=%s", i, created.Code, created.Body.String())
-		}
-		fixture.asks = append(fixture.asks, decodeBody[model.Ask](t, created).ID)
 	}
-	for index := len(fixture.quotes) - 1; index >= 0 && len(fixture.spare) < 8; index-- {
-		if !anchored[index] {
-			fixture.spare = append(fixture.spare, fixture.quotes[index])
-		}
-	}
-	t.Logf("xid fixture: spec of %d bytes, %d requirement cells, %d open anchored comments and %d open anchored asks, seeded in %s",
-		len(spec), len(fixture.quotes), len(fixture.comments), len(fixture.asks), time.Since(started).Round(time.Millisecond))
-	return fixture
+}
+
+// revise moves the spec's revision token on by one in f.spec, and answers the token as it stood
+// and as it now stands: each step that versions the spec moves the token from where the step
+// before it left it, so the version it writes changes one line of the spec as a version of a
+// fixture of its own would.
+func (f *xidFixture) revise() (from, to string) {
+	from = fmt.Sprintf("Revision token r%d", f.revision)
+	f.revision++
+	to = fmt.Sprintf("Revision token r%d", f.revision)
+	f.spec = strings.Replace(f.spec, from, to, 1)
+	return from, to
 }
 
 // measure runs one request through the fixture's handler under a marked context and judges the
@@ -186,18 +155,23 @@ func (f *xidFixture) resolveComment(t *testing.T, commentID string) {
 	}
 }
 
-// suggest opens a session's anchored suggestion on a spare requirement cell.
-func (f *xidFixture) suggest(t *testing.T) model.Comment {
+// accepted records in f.spec the text an accepted suggestion left in the spec.
+func (f *xidFixture) accepted(suggestion xidSuggestion) {
+	f.spec = strings.Replace(f.spec, suggestion.quote, suggestion.replaceWith, 1)
+}
+
+// uploadVerification uploads the issue's Verification document, a document of the harness's
+// size holding the two checks a result is recorded against (twoChecks), the first time a step
+// asks for it.
+func (f *xidFixture) uploadVerification(t *testing.T) {
 	t.Helper()
-	quote := f.spare[0]
-	created := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/comments", map[string]any{
-		"body": "This requirement no longer holds as worded.", "anchor": map[string]any{"artifact": "spec", "quote": quote},
-		"suggestion": map[string]string{"replace_with": strings.Replace(quote, "holds", "stands", 1)}, "actor": sessionActor(),
-	})
-	if created.Code != http.StatusCreated {
-		t.Fatalf("open suggestion: status=%d body=%s", created.Code, created.Body.String())
+	if f.verification {
+		return
 	}
-	return decodeBody[model.Comment](t, created)
+	verification, _ := xidSpec(4)
+	uploaded := uploadDocument(t, f.handler, "/api/v1/issues/"+f.issueKey, "verification.md", verification+"\n"+twoChecks)
+	waitForArtifactVersion(t, f.handler, uploaded.Artifact.ID, 1)
+	f.verification = true
 }
 
 // awaitSettledDocuments waits until no document owes a settlement and no backend has held an xid
@@ -241,18 +215,50 @@ func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
 	t.Fatal("the database never fell quiet")
 }
 
-func TestXidWindowCommentCreateAnchored(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+// TestXidWindowsOnTheLargeSpec measures, as steps on one fixture, every route whose request needs
+// nothing a step before it could have changed: the anchored writes and the writes beside the spec
+// first, then the versions of the spec, then the approval request and its hand-back, and the
+// claim last.
+func TestXidWindowsOnTheLargeSpec(t *testing.T) {
+	runXidSteps(t, newXidFixture(t, testServerOptions{}, ""), false, []xidStep{
+		{"comment create anchored", xidWindowCommentCreateAnchored},
+		{"comment create reply on anchored thread", xidWindowCommentCreateReplyOnAnchoredThread},
+		{"ask create anchored", xidWindowAskCreateAnchored},
+		{"asked of", xidWindowAskedOf},
+		{"comment edit", xidWindowCommentEdit},
+		{"comment resolve", xidWindowCommentResolve},
+		{"comment reopen", xidWindowCommentReopen},
+		{"suggestion reject", xidWindowSuggestionReject},
+		{"issue patch", xidWindowIssuePatch},
+		{"message create", xidWindowMessageCreate},
+		{"user issue state", xidWindowUserIssueState},
+		{"user thread read", xidWindowUserThreadRead},
+		{"result recorded", xidWindowResultRecorded},
+		{"result retracted", xidWindowResultRetracted},
+		{"plan review", xidWindowPlanReview},
+		{"issue create with spec", xidWindowIssueCreateWithSpec},
+		{"existing external issue", xidWindowExistingExternalIssue},
+		{"upload replace", xidWindowUploadReplace},
+		{"spec edit", xidWindowSpecEdit},
+		{"named version", xidWindowNamedVersion},
+		{"suggestion accept", xidWindowSuggestionAccept},
+		{"approval request opened", xidWindowApprovalRequestOpened},
+		{"approval request handed back", xidWindowApprovalRequestHandedBack},
+		{"claim", xidWindowClaim},
+	})
+}
+
+func xidWindowCommentCreateAnchored(t *testing.T, f *xidFixture) {
+	quote := f.takeSpare(t)
 	f.measureAdvised(t, http.StatusCreated, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/comments", map[string]any{
-			"body": "Does this still hold once the outbox is sharded?", "anchor": map[string]any{"artifact": "spec", "quote": f.spare[0]},
+			"body": "Does this still hold once the outbox is sharded?", "anchor": map[string]any{"artifact": "spec", "quote": quote},
 			"actor": sessionActor(),
 		})
 	})
 }
 
-func TestXidWindowCommentCreateReplyOnAnchoredThread(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowCommentCreateReplyOnAnchoredThread(t *testing.T, f *xidFixture) {
 	f.measureAdvised(t, http.StatusCreated, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/comments", map[string]any{
 			"body": "It does: the listener keeps its interests in the bucket.", "reply_to": f.comments[0], "actor": sessionActor(),
@@ -260,13 +266,13 @@ func TestXidWindowCommentCreateReplyOnAnchoredThread(t *testing.T) {
 	})
 }
 
-func TestXidWindowAskCreateAnchored(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowAskCreateAnchored(t *testing.T, f *xidFixture) {
+	quote := f.takeSpare(t)
 	f.measureAdvised(t, http.StatusCreated, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/asks", map[string]any{
 			"question": "Which team signs off on this requirement?",
 			"options":  []map[string]string{{"label": "Platform"}, {"label": "Product"}},
-			"anchor":   map[string]any{"artifact": "spec", "quote": f.spare[0]}, "actor": sessionActor(),
+			"anchor":   map[string]any{"artifact": "spec", "quote": quote}, "actor": sessionActor(),
 		})
 	})
 }
@@ -305,8 +311,19 @@ func TestXidWindowAskResolveBlock(t *testing.T) {
 	})
 }
 
-func TestXidWindowAskEditBlockText(t *testing.T) {
+// TestXidWindowAskBlockEditThenIssueClose measures, on one block ask fixture, the edit of the
+// block ask's text, which leaves the ask open, and then the close that withdraws it with the
+// issue's anchored asks: the edit's version settles before the close is measured, as the block
+// ask's own opening did before the edit.
+func TestXidWindowAskBlockEditThenIssueClose(t *testing.T) {
 	f, askID := newBlockAskFixture(t)
+	runXidSteps(t, f, true, []xidStep{
+		{"ask edit block text", func(t *testing.T, f *xidFixture) { xidWindowAskEditBlockText(t, f, askID) }},
+		{"issue close with open asks", xidWindowIssueCloseWithOpenAsks},
+	})
+}
+
+func xidWindowAskEditBlockText(t *testing.T, f *xidFixture, askID string) {
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPatch, "/api/v1/asks/"+askID, map[string]any{
 			"question": "Which transport ships first?",
@@ -328,12 +345,11 @@ func TestXidWindowAskEditBlockText(t *testing.T) {
 // (readAskForTransition); and the person it waited on beside its issue's assignee. The
 // `update asks ... returning asked_of_at` is the first statement that writes, so it is where
 // the window opens.
-func TestXidWindowAskedOf(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowAskedOf(t *testing.T, f *xidFixture) {
 	created := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/asks", map[string]any{
 		"question": "Who signs off on the migration section?",
 		"options":  []map[string]string{{"label": "Platform"}, {"label": "Product"}},
-		"anchor":   map[string]any{"artifact": "spec", "quote": f.spare[0]}, "actor": sessionActor(),
+		"anchor":   map[string]any{"artifact": "spec", "quote": f.takeSpare(t)}, "actor": sessionActor(),
 	})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("open the ask to hand on: status=%d body=%s", created.Code, created.Body.String())
@@ -346,18 +362,18 @@ func TestXidWindowAskedOf(t *testing.T) {
 	})
 }
 
-func TestXidWindowCommentReopen(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
-	f.resolveComment(t, f.comments[0])
+// xidWindowCommentReopen reopens a seed comment of its own, which it resolves first; the resolve
+// step resolves another (xidWindowCommentResolve).
+func xidWindowCommentReopen(t *testing.T, f *xidFixture) {
+	f.resolveComment(t, f.comments[2])
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
-		return dispatchRequest(t, h, http.MethodPost, "/api/v1/comments/"+f.comments[0]+"/reopen", nil, "alice")
+		return dispatchRequest(t, h, http.MethodPost, "/api/v1/comments/"+f.comments[2]+"/reopen", nil, "alice")
 	})
 }
 
-func TestXidWindowCommentEdit(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowCommentEdit(t *testing.T, f *xidFixture) {
 	created := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/comments", map[string]any{
-		"body": "First wording.", "anchor": map[string]any{"artifact": "spec", "quote": f.spare[0]},
+		"body": "First wording.", "anchor": map[string]any{"artifact": "spec", "quote": f.takeSpare(t)},
 	}, "alice")
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create alice's anchored comment: status=%d body=%s", created.Code, created.Body.String())
@@ -368,34 +384,32 @@ func TestXidWindowCommentEdit(t *testing.T) {
 	})
 }
 
-func TestXidWindowCommentResolve(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowCommentResolve(t *testing.T, f *xidFixture) {
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
-		return dispatchRequest(t, h, http.MethodPost, "/api/v1/comments/"+f.comments[0]+"/resolve", nil, "alice")
+		return dispatchRequest(t, h, http.MethodPost, "/api/v1/comments/"+f.comments[1]+"/resolve", nil, "alice")
 	})
 }
 
-func TestXidWindowSuggestionAccept(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowSuggestionAccept(t *testing.T, f *xidFixture) {
 	suggestion := f.suggest(t)
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPost, "/api/v1/comments/"+suggestion.ID+"/accept", map[string]any{}, "alice")
 	})
+	f.accepted(suggestion)
 }
 
-func TestXidWindowSuggestionReject(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowSuggestionReject(t *testing.T, f *xidFixture) {
 	suggestion := f.suggest(t)
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPost, "/api/v1/comments/"+suggestion.ID+"/reject", map[string]any{}, "alice")
 	})
 }
 
-func TestXidWindowSpecEdit(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowSpecEdit(t *testing.T, f *xidFixture) {
+	from, to := f.revise()
 	f.measureAdvised(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/artifacts/"+f.specID+"/edits", map[string]any{
-			"ops":   []map[string]string{{"op": "replace", "find": "Revision token r0", "with": "Revision token r1"}},
+			"ops":   []map[string]string{{"op": "replace", "find": from, "with": to}},
 			"actor": sessionActor(),
 		})
 	})
@@ -403,12 +417,11 @@ func TestXidWindowSpecEdit(t *testing.T) {
 
 // An upload under the spec's name replaces it: the whole document is re-read, its anchors re-found
 // and a version written.
-func TestXidWindowUploadReplace(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
-	revised := strings.Replace(f.spec, "Revision token r0", "Revision token r1", 1)
+func xidWindowUploadReplace(t *testing.T, f *xidFixture) {
+	f.revise()
 	f.measureAdvised(t, http.StatusCreated, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/artifacts", map[string]any{
-			"name": "spec.md", "content": revised, "summary": "Bump the revision", "actor": sessionActor(),
+			"name": "spec.md", "content": f.spec, "summary": "Bump the revision", "actor": sessionActor(),
 		})
 	})
 }
@@ -423,9 +436,9 @@ func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 	f := newXidFixture(t, testServerOptions{}, "")
 	approval := reviewDocument(t, f.handler, f.specID, "alice", "approved", "")
 	approved := versionMarkdown(t, f.handler, f.specID, approval.Version)
-	revised := strings.Replace(f.spec, "Revision token r0", "Revision token r1", 1)
+	f.revise()
 	if uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/artifacts", map[string]any{
-		"name": "spec.md", "content": revised, "summary": "Bump the revision", "actor": sessionActor(),
+		"name": "spec.md", "content": f.spec, "summary": "Bump the revision", "actor": sessionActor(),
 	}); uploaded.Code != http.StatusCreated {
 		t.Fatalf("stale the approval before the restore: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
@@ -443,10 +456,10 @@ func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 
 // A named version of a document changed since its last version captures and renders the live
 // document.
-func TestXidWindowNamedVersion(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowNamedVersion(t *testing.T, f *xidFixture) {
+	from, to := f.revise()
 	if edited := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.specID+"/edits", map[string]any{
-		"ops":   []map[string]string{{"op": "replace", "find": "Revision token r0", "with": "Revision token r1"}},
+		"ops":   []map[string]string{{"op": "replace", "find": from, "with": to}},
 		"actor": sessionActor(),
 	}); edited.Code != http.StatusOK {
 		t.Fatalf("edit the spec before naming a version: status=%d body=%s", edited.Code, edited.Body.String())
@@ -473,17 +486,16 @@ func TestXidWindowDocumentRebuild(t *testing.T) {
 		t.Fatalf("evict the spec: %v", err)
 	}
 	broken.failNextLoad(f.specID)
-	revised := strings.Replace(f.spec, "Revision token r0", "Revision token r1", 1)
+	f.revise()
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
-		return dispatchRequest(t, h, http.MethodPost, "/api/v1/artifacts/"+f.specID+"/rebuild", map[string]any{"markdown": revised}, "alice")
+		return dispatchRequest(t, h, http.MethodPost, "/api/v1/artifacts/"+f.specID+"/rebuild", map[string]any{"markdown": f.spec}, "alice")
 	})
 }
 
 // An approval request on a document with no open request inserts the ask, follows its author,
 // indexes its question and appends ask.opened. What it decides on - the document, its settled
 // version and the approval it already carries - is read before the first of those writes.
-func TestXidWindowApprovalRequestOpened(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowApprovalRequestOpened(t *testing.T, f *xidFixture) {
 	f.measureBatched(t, http.StatusCreated, func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/artifacts/"+f.specID+"/approval-requests", map[string]any{
 			"summary": "The migration section is rewritten; the rest of the spec stands.", "actor": sessionActor(),
@@ -494,17 +506,12 @@ func TestXidWindowApprovalRequestOpened(t *testing.T) {
 // A version moved the open request, so it waits on its agent: a request naming a new summary
 // rewords it (docs.RewriteApprovalAsk) and hands it back. The rewording plans the question's
 // references and reads the row's edit time in the read phase, and the hand-back's update and both
-// events follow in the write phase.
-func TestXidWindowApprovalRequestHandedBack(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
-	if opened := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.specID+"/approval-requests", map[string]any{
-		"summary": "The first pass is ready to read.", "actor": sessionActor(),
-	}); opened.Code != http.StatusCreated {
-		t.Fatalf("open the approval request: status=%d body=%s", opened.Code, opened.Body.String())
-	}
-	revised := strings.Replace(f.spec, "Revision token r0", "Revision token r1", 1)
+// events follow in the write phase. The request is the one the step before this one opened
+// (xidWindowApprovalRequestOpened).
+func xidWindowApprovalRequestHandedBack(t *testing.T, f *xidFixture) {
+	f.revise()
 	if uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/artifacts", map[string]any{
-		"name": "spec.md", "content": revised, "summary": "Bump the revision", "actor": sessionActor(),
+		"name": "spec.md", "content": f.spec, "summary": "Bump the revision", "actor": sessionActor(),
 	}); uploaded.Code != http.StatusCreated {
 		t.Fatalf("version the spec under the open request: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
@@ -572,8 +579,7 @@ func TestXidWindowApprovalAnswerOverTwoDocuments(t *testing.T) {
 // review, queued on the ledger and sent by Commit; everything it is decided on - the document's
 // row, its owner, taken under the advisory lock that assigns no xid, and its settled versions - is
 // read before it, so the window is that batch and the COMMIT ending it.
-func TestXidWindowPlanReview(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowPlanReview(t *testing.T, f *xidFixture) {
 	markdown, _ := xidSpec(3)
 	plan := uploadDocument(t, f.handler, "/api/v1/issues/"+f.issueKey, "plan.md", markdown)
 	waitForArtifactVersion(t, f.handler, plan.Artifact.ID, 1)
@@ -584,8 +590,7 @@ func TestXidWindowPlanReview(t *testing.T) {
 	})
 }
 
-func TestXidWindowIssueCreateWithSpec(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowIssueCreateWithSpec(t *testing.T, f *xidFixture) {
 	spec, _ := xidSpec(2)
 	f.measureAdvised(t, http.StatusCreated, storetest.XidWindowOf(10,
 		"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
@@ -600,8 +605,7 @@ func TestXidWindowIssueCreateWithSpec(t *testing.T) {
 // A create naming a GitHub issue Dispatch already tracks answers that issue
 // (respondWithExistingExternalIssue), with its advice. It writes nothing: today its row lock gives
 // it an xid, and once the owner lock is advisory (plan M1) it may hold none at all.
-func TestXidWindowExistingExternalIssue(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowExistingExternalIssue(t *testing.T, f *xidFixture) {
 	if mapped := dispatchRequest(t, f.handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
 		"project": xidProject,
 	}, "alice"); mapped.Code != http.StatusOK {
@@ -612,14 +616,14 @@ func TestXidWindowExistingExternalIssue(t *testing.T) {
 		t.Fatalf("create the external issue: status=%d body=%s", created.Code, created.Body.String())
 	}
 	f.mayHoldNoXid = true
+	defer func() { f.mayHoldNoXid = false }()
 	f.measureAdvised(t, http.StatusOK, storetest.XidWindowOf(1,
 		"its COMMIT alone: the answer writes nothing and locks no row, so no statement of it holds a transaction id"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues", body)
 	})
 }
 
-func TestXidWindowIssuePatch(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowIssuePatch(t *testing.T, f *xidFixture) {
 	f.measureAdvised(t, http.StatusOK, storetest.XidWindowOf(5,
 		"the issue row's own update, the two reads that load the issue it answers with, the queued batch and its COMMIT"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPatch, "/api/v1/issues/"+f.issueKey, map[string]any{
@@ -628,8 +632,7 @@ func TestXidWindowIssuePatch(t *testing.T) {
 	})
 }
 
-func TestXidWindowMessageCreate(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowMessageCreate(t *testing.T, f *xidFixture) {
 	f.measureAdvised(t, http.StatusCreated, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/messages", map[string]any{
 			"body":  "Status: the spec at dispatch://" + f.issueKey + " has twenty open anchors; replies welcome.",
@@ -638,8 +641,7 @@ func TestXidWindowMessageCreate(t *testing.T) {
 	})
 }
 
-func TestXidWindowClaim(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowClaim(t *testing.T, f *xidFixture) {
 	f.measureAdvised(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/claim", map[string]any{}, "alice")
 	})
@@ -649,8 +651,7 @@ func TestXidWindowClaim(t *testing.T) {
 // settlement opened from the spec's `:::ask` block, whose block and copies it writes resolved into
 // the spec (docs.WriteIssueAskStates) before it records each ask withdrawn. That document work
 // reads and rewrites the whole spec, so it is the close's read phase, before its first write.
-func TestXidWindowIssueCloseWithOpenAsks(t *testing.T) {
-	f, _ := newBlockAskFixture(t)
+func xidWindowIssueCloseWithOpenAsks(t *testing.T, f *xidFixture) {
 	f.measure(t, http.StatusOK, storetest.XidWindowOf(5,
 		"the issue row's own update, the two reads that load the issue it answers with, the batch withdrawing its asks and its COMMIT"), func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPatch, "/api/v1/issues/"+f.issueKey, map[string]any{"status": "done"}, "alice")
@@ -668,11 +669,8 @@ func TestXidWindowIssueCloseWithOpenAsks(t *testing.T) {
 // the one read of the live document a moved version or digest needs runs with those locks given
 // back (recordResultWithFreshWords), so no read of a document is inside this window or behind
 // these locks.
-func TestXidWindowResultRecorded(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
-	verification, _ := xidSpec(4)
-	uploaded := uploadDocument(t, f.handler, "/api/v1/issues/"+f.issueKey, "verification.md", verification+"\n"+twoChecks)
-	waitForArtifactVersion(t, f.handler, uploaded.Artifact.ID, 1)
+func xidWindowResultRecorded(t *testing.T, f *xidFixture) {
+	f.uploadVerification(t)
 	f.measure(t, http.StatusCreated, storetest.XidWindowOf(3,
 		"the batch appending result.recorded, the result row's insert and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
 		return recordResult(t, h, f.issueKey, resultBody("k1", "pass", headCommit, map[string]any{
@@ -691,11 +689,8 @@ func TestXidWindowResultRecorded(t *testing.T) {
 // (store.LockOwner); the claim of the issue the result was recorded on, which decides a session
 // caller (refuseRetractionBy); and whether a retraction of this result stands already
 // (resultIsRetracted), both read under that lock.
-func TestXidWindowResultRetracted(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
-	verification, _ := xidSpec(4)
-	uploaded := uploadDocument(t, f.handler, "/api/v1/issues/"+f.issueKey, "verification.md", verification+"\n"+twoChecks)
-	waitForArtifactVersion(t, f.handler, uploaded.Artifact.ID, 1)
+func xidWindowResultRetracted(t *testing.T, f *xidFixture) {
+	f.uploadVerification(t)
 	recorded := recordResult(t, f.handler, f.issueKey, resultBody("k1", "pass", headCommit, map[string]any{
 		"observed": "41 passed", "negative_control": "Cut the route and the row fails.",
 	}))
@@ -718,8 +713,7 @@ func TestXidWindowResultRetracted(t *testing.T) {
 // which the append would otherwise be the first to take and which assigns no transaction id
 // (store.LockOwner); and the caller's own row, read under that lock with no row lock of its own,
 // which the stale check and the merge of the body's fields decide on (putUserState).
-func TestXidWindowUserIssueState(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowUserIssueState(t *testing.T, f *xidFixture) {
 	// The row is written once before the measurement, so the measured write is a write over a row
 	// that stands, which is the common one. A row lock of a row that does not exist assigns no
 	// transaction id, so a first write would hide the `for update` this window is declared
@@ -747,8 +741,7 @@ func TestXidWindowUserIssueState(t *testing.T) {
 // (putThreadRead); whether the mark moves the row, read under that lock by the update's own
 // predicate; and the project's owner lock, which the append would otherwise be the first to
 // take.
-func TestXidWindowUserThreadRead(t *testing.T) {
-	f := newXidFixture(t, testServerOptions{}, "")
+func xidWindowUserThreadRead(t *testing.T, f *xidFixture) {
 	// Alice's own comment gives her the thread's user_threads row - the trigger writes one for a
 	// person's write (migration 0095) - and a session's reply to it leaves that row unread, so
 	// the measured mark moves it. A mark that moved nothing would write nothing and hold no
@@ -780,6 +773,18 @@ func newXidDeliveryFixture(t *testing.T) *xidFixture {
 	t.Helper()
 	listener, _ := newBroadcastListener(t, xidDeliverySessions)
 	return newXidFixture(t, testServerOptions{envoyURL: listener.URL}, "")
+}
+
+// TestXidWindowDeliveries measures, as steps on one delivery fixture, each delivery route on a
+// delivery of its own: a mention's reply, a targeted message's reply, a direct message's accept
+// and a targeted message's retry.
+func TestXidWindowDeliveries(t *testing.T) {
+	runXidSteps(t, newXidDeliveryFixture(t), false, []xidStep{
+		{"comment delivery reply", xidWindowCommentDeliveryReply},
+		{"message delivery reply", xidWindowMessageDeliveryReply},
+		{"delivery accepted", xidWindowDeliveryAccepted},
+		{"pending delivery recorded", xidWindowPendingDeliveryRecorded},
+	})
 }
 
 // xidSessionReply is the mentioned session answering one delivery attempt, as its host answers
@@ -817,8 +822,7 @@ func xidCitingBody(text, issueKey string) string {
 // raised, after the mention and the attempt have been checked, so the answers of this route are
 // what they were. The mention rows are read without a lock, so the window opens at the attempt
 // row.
-func TestXidWindowCommentDeliveryReply(t *testing.T) {
-	f := newXidDeliveryFixture(t)
+func xidWindowCommentDeliveryReply(t *testing.T, f *xidFixture) {
 	comment := decodeMentionedComment(t, postMentionedComment(t, f.handler, f.issueKey, map[string]any{
 		"body":     "Does this still hold once the outbox is sharded?\n\nThe migration section is the one to read.",
 		"ask_id":   f.asks[0],
@@ -847,8 +851,7 @@ func TestXidWindowCommentDeliveryReply(t *testing.T) {
 // index and references are planned there, for an id and a created_at reserved there
 // (planMessageReply), and written as one batch behind its insert. The issue's owner lock
 // assigns no transaction id.
-func TestXidWindowMessageDeliveryReply(t *testing.T) {
-	f := newXidDeliveryFixture(t)
+func xidWindowMessageDeliveryReply(t *testing.T, f *xidFixture) {
 	message := createIssueMessage(t, f.handler, f.issueKey, map[string]any{
 		"body":   "Can this ship?\n\nThe migration section is the one to read.",
 		"target": "session:s1", "delivery": "steer",
@@ -872,8 +875,7 @@ func TestXidWindowMessageDeliveryReply(t *testing.T) {
 // owner lock: the event of a direct message has no owner, and a message on an issue is refused
 // before any write, so the message row's lock, the window's first statement, is the one that
 // orders two accepts.
-func TestXidWindowDeliveryAccepted(t *testing.T) {
-	f := newXidDeliveryFixture(t)
+func xidWindowDeliveryAccepted(t *testing.T, f *xidFixture) {
 	created := postAgentMessage(t, f.handler, "s1", map[string]any{
 		"body": "Read the migration section of the spec and tell me what it costs.", "delivery": "aside",
 	}, "alice")
@@ -906,8 +908,7 @@ func TestXidWindowDeliveryAccepted(t *testing.T) {
 // own, three statements where this path runs one. Nothing declares that branch. It is database
 // statements throughout - an update, an event batch and an insert - which is why it is left
 // undeclared rather than measured.
-func TestXidWindowPendingDeliveryRecorded(t *testing.T) {
-	f := newXidDeliveryFixture(t)
+func xidWindowPendingDeliveryRecorded(t *testing.T, f *xidFixture) {
 	parent := createIssueMessage(t, f.handler, f.issueKey, map[string]any{
 		"body": "Status: the migration section is rewritten.\n\nThe outbox section stands as you read it.",
 	}, "alice")

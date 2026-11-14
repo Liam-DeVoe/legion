@@ -192,6 +192,15 @@ func readyProjectDocumentRename(t *testing.T, base routeFixture) lockedItemWrite
 	return write
 }
 
+// projectDesignNotes files spec as a project document no issue holds, the owner the document
+// routes write under, and waits for its first version.
+func projectDesignNotes(t *testing.T, fixture itemRowFixture, spec string) model.Artifact {
+	t.Helper()
+	document := createProjectDocument(t, fixture.handler, "LOCK", "Design notes", spec)
+	waitForArtifactVersion(t, fixture.handler, document.ID, 1)
+	return document
+}
+
 // readyArtifactRemoval drives DELETE /api/v1/artifacts/{id} on an untouched document of the
 // issue, which removes it under the issue's owner lock beginArtifactWrite takes before the
 // document's room (removeArtifact, requireOpenOwnerStatus).

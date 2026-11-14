@@ -274,9 +274,9 @@ func TestResultRetractionIsTakenOnAClosedIssueAndForAnAfterMergeCheck(t *testing
 // appends their event, and the second's insert then hits check_result_retractions' primary key,
 // which its caller reads as a 500.
 //
-// TestXidWindowResultRetracted cannot tell the two apart: the append's batch takes the same lock
-// as its first statement, so the window holds the same three statements either way. Holding the
-// lock until both retractions wait on it does.
+// The window test's result-retracted step (xidWindowResultRetracted) cannot tell the two apart:
+// the append's batch takes the same lock as its first statement, so the window holds the same
+// three statements either way. Holding the lock until both retractions wait on it does.
 func TestTwoRetractionsOfOneResultSentAtOnceAnswerOneRetractionAndOneConflict(t *testing.T) {
 	// An hour's settle keeps the upload's settlement, which takes the same owner lock, out of the
 	// queue this test counts.

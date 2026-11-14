@@ -17,10 +17,11 @@ import (
 // lock inside the event's append, which waits with a transaction id already open - the wait
 // INFRA-636 exists to take off the transaction id.
 //
-// TestXidWindowUserThreadRead cannot tell the two apart: with nobody holding the project's lock
-// both run the same three statements inside their window, the update, the batch appending the
-// event (whose first statement is that lock) and the COMMIT, and a wait inside the append is
-// statement time, not a gap. Only holding the lock and asking what the waiter holds does.
+// The window test's thread-read step (xidWindowUserThreadRead) cannot tell the two apart: with
+// nobody holding the project's lock both run the same three statements inside their window, the
+// update, the batch appending the event (whose first statement is that lock) and the COMMIT, and
+// a wait inside the append is statement time, not a gap. Only holding the lock and asking what
+// the waiter holds does.
 func TestAThreadMarkWaitsForTheProjectLockHoldingNoTransactionID(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Mark behind the project", "A spec")

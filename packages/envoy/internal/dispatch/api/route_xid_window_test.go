@@ -1,3 +1,5 @@
+//go:build !race
+
 package api
 
 import (
@@ -634,15 +636,6 @@ func readyClaimRelease(t *testing.T, base routeFixture) lockedItemWrite {
 				t.Fatalf("release the claim: status=%d body=%s", answer.Code, answer.Body.String())
 			}
 		})
-}
-
-// projectDesignNotes files the large spec as a project document no issue holds, the owner the
-// document routes write under, and waits for its first version.
-func projectDesignNotes(t *testing.T, fixture itemRowFixture, spec string) model.Artifact {
-	t.Helper()
-	document := createProjectDocument(t, fixture.handler, "LOCK", "Design notes", spec)
-	waitForArtifactVersion(t, fixture.handler, document.ID, 1)
-	return document
 }
 
 // readyDocumentAsk drives POST /api/v1/artifacts/{id}/asks, a session's anchored ask on a
