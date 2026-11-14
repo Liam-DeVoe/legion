@@ -536,7 +536,7 @@ describe("EnvoyClient", () => {
     });
   });
 
-  test("a send reads the target's state, and asks for a connected target only when told to", async () => {
+  test("a send reads the target's state", async () => {
     const envelope = {
       event_id: "event-stopped",
       source: "agent",
@@ -571,7 +571,6 @@ describe("EnvoyClient", () => {
       sourceSessionID: "ses_sender",
       targetSessionID: "ses_target",
       message: "hello",
-      connectedOnly: true,
     });
 
     expect(stopped).toMatchObject({
@@ -582,8 +581,6 @@ describe("EnvoyClient", () => {
     expect(connected.recipientState).toBe("live");
     expect(connected.state).toBe("connected");
     expect(connected.lastSeen).toBeUndefined();
-    expect(await recorded.requests[0]?.json()).not.toHaveProperty("connected_only");
-    expect(await recorded.requests[1]?.json()).toMatchObject({ connected_only: true });
   });
 
   test("a send a listener of an earlier release answers no state for reads as connected", async () => {

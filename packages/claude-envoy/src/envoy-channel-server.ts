@@ -1838,9 +1838,6 @@ export async function executeEnvoyTool(
         ...(args.idempotency_key === undefined ? {} : { idempotencyKey: args.idempotency_key }),
         ...toMessageMetadata(args),
       })
-      // The text says what the target was when Envoy stored the message; the fields beside it say
-      // it too: its registry state, whether its plugin was connected (`state`), and its last
-      // registration (unix milliseconds) when the listener gave one.
       return {
         message: sendConfirmationText(result),
         event_id: result.envelope.event_id,

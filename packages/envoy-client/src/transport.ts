@@ -1,5 +1,5 @@
 import {
-  DELIVERY_DUPLICATE_WINDOW_MS,
+  DELIVERY_DUPLICATE_WINDOW_HOURS,
   type Envelope,
   EnvelopeSchema,
   type ExpectsReply,
@@ -532,14 +532,6 @@ export type SendInput = (AgentSourceInput | HumanSourceInput) &
      * `EnvoySendUnconfirmedError` to send that message again: the listener stores it at most once.
      */
     readonly idempotencyKey?: string;
-    /**
-     * Store the message only for a target that is running: a stopped one is refused with 409
-     * (`the session is stopped`) and nothing is stored. Sent as `connected_only` and omitted
-     * unless set, so every other caller's request body is unchanged. Dispatch's model and effort
-     * switch is the one caller that sets it: it asks a session to change how it runs, which a
-     * session reading it three hours later must not act on.
-     */
-    readonly connectedOnly?: boolean;
   };
 
 export type PublishInput = (AgentSourceInput | HumanSourceInput) &
@@ -773,7 +765,7 @@ export class EnvoySendUnconfirmedError extends Error {
     const resendSafe = mintedDedupeKey.test(`agent.${targetSessionID.trim()}.${idempotencyKey}`);
     const resend = resendSafe
       ? `Sending it again with idempotency_key ${idempotencyKey} within ` +
-        `${DELIVERY_DUPLICATE_WINDOW_MS / 3_600_000} hours is the safe resend: Envoy drops it as ` +
+        `${DELIVERY_DUPLICATE_WINDOW_HOURS} hours is the safe resend: Envoy drops it as ` +
         "a repeat if the first copy arrived (a recipient that restarted in between can rarely " +
         "see it twice)."
       : `Envoy cannot recognise a resend under idempotency_key ${idempotencyKey} as a repeat ` +
@@ -1057,9 +1049,6 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             target_session: input.targetSessionID,
             message: input.message,
             idempotency_key: idempotencyKey,
-            // Refuse a stopped target rather than store for it (`connectedOnly`), omitted unless
-            // the caller asks so an older listener sees an unchanged body.
-            ...(input.connectedOnly === undefined ? {} : { connected_only: input.connectedOnly }),
             ...messageMetadata(input),
           },
           {

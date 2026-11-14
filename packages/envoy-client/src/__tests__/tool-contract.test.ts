@@ -164,6 +164,20 @@ describe("envoyToolSpecs", () => {
       "A holder that stopped answering keeps its role but was not sent the message, and nothing waits for it, so publish the message again once that holder's holder_state reads live, and start no replacement for that session."
     );
   });
+
+  test("says what the recipient counts and the stopped state mean", () => {
+    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
+
+    for (const name of ["envoy_sessions", "envoy_role_get", "envoy_send", "envoy_publish"]) {
+      expect(envoyToolSpecs.find((spec) => spec.name === name)?.description).toContain(
+        "A send answered with state stopped means that session is not running: the message is stored for it and reaches it if it runs again within 72 hours, and nothing of its claims changes."
+      );
+    }
+    expect(publish?.description).toContain(
+      "recipients is every session other than you that the message goes to, one that is stopped and gets it when it runs again within 72 hours included, and recipients_connected is how many of those are running now"
+    );
+    expect(publish?.description).toContain("a role topic names its holder instead");
+  });
 });
 
 describe("publishConfirmationText", () => {
@@ -305,20 +319,6 @@ describe("publishConfirmationText", () => {
       })
     ).toBe("published evt_1.");
   });
-
-  test("says what the recipient counts and the stopped state mean", () => {
-    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
-
-    for (const name of ["envoy_sessions", "envoy_role_get", "envoy_send", "envoy_publish"]) {
-      expect(envoyToolSpecs.find((spec) => spec.name === name)?.description).toContain(
-        "A send answered with state stopped means that session is not running: the message is stored for it and reaches it if it runs again within 72 hours, and nothing of its claims changes."
-      );
-    }
-    expect(publish?.description).toContain(
-      "recipients is every session other than you that the message goes to, one that is stopped and gets it when it runs again within 72 hours included, and recipients_connected is how many of those are running now"
-    );
-    expect(publish?.description).toContain("a role topic names its holder instead");
-  });
 });
 
 describe("envoy_send resend", () => {
@@ -369,10 +369,8 @@ describe("envoy_send resend", () => {
     expect(text).toBe(
       "queued once for ses_b: an earlier attempt under the same idempotency_key was already stored, so this one stored no second copy; the session is stopped (last seen 2026-11-02T09:15:00Z); if it runs again within 72 hours, it gets the message"
     );
-    // Acceptance A7 holds for the resend too: the one stored copy waits on a session that is
-    // not running, so the line says queued and leaves out the event id of the copy it did not
-    // store.
-    expect(text).toMatch(/^queued \S+ for /);
+    // The one stored copy waits on a session that is not running, so the line says queued and
+    // leaves out the event id of the copy this resend did not store.
     expect(text).not.toContain("sent");
     expect(text).not.toContain("event-2");
   });
@@ -546,9 +544,8 @@ describe("sendConfirmationText for a state", () => {
     expect(text).toBe(
       "queued evt_01 for ses_target: the session is stopped (last seen 2026-11-02T09:15:00Z); if it runs again within 72 hours, it gets the message"
     );
-    // Acceptance A7: a model that reads "sent" waits for an answer from a session that is not
-    // running, so the queued line says nothing of the kind.
-    expect(text).toMatch(/^queued \S+ for /);
+    // A model that reads "sent" waits for an answer from a session that is not running, so the
+    // queued line says nothing of the kind.
     expect(text).not.toContain("sent");
   });
 
@@ -576,7 +573,6 @@ describe("sendConfirmationText for a state", () => {
     expect(text).toBe(
       "queued evt_01 for ses_target: the session is stopped; if it runs again within 72 hours, it gets the message"
     );
-    expect(text).toMatch(/^queued \S+ for /);
     expect(text).not.toContain("sent");
   });
 });
@@ -588,8 +584,6 @@ describe("publishConfirmationText counts", () => {
     const text = publishConfirmationText({ envelope, recipients: 3, recipientsConnected: 2 });
 
     expect(text).toBe("published evt_02 to 3 other sessions (2 running now)");
-    // Acceptance A2.
-    expect(text).toMatch(/^published \S+ to 3 other sessions/);
   });
 
   test("one other session takes the singular", () => {
@@ -607,21 +601,5 @@ describe("publishConfirmationText counts", () => {
     expect(text).toBe(
       "published evt_02; no other session subscribes to notifications.team.deploy-squad.all, so no other session gets it"
     );
-    // Acceptance A2.
-    expect(text).toMatch(/^published \S+; no other session subscribes to /);
-  });
-
-  test("a listener that counts nothing is answered exactly the line it always was", () => {
-    expect(publishConfirmationText({ envelope })).toBe("published evt_02.");
-  });
-
-  test("a role topic names its holder and is given no count", () => {
-    expect(
-      publishConfirmationText({
-        envelope: { event_id: "evt_03", topic: "notifications.role.controller" },
-        holder: "ses_controller",
-        holderState: "live",
-      })
-    ).toBe("published evt_03. Its role holder is ses_controller (live).");
   });
 });

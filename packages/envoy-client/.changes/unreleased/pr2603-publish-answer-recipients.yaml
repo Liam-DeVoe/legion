@@ -3,7 +3,7 @@ body: |-
   `PublishResult.unresponsive` and the `unresponsive` key of the publish answer and of the error
   wire are gone with the listener field no build writes any more: a publish to a topic the stream
   captures is stored once and read by each subscribed session's own consumer, so no recipient is
-  named. `publishConfirmationText` names no recipient and says what the publish did; a send
+  reported. `publishConfirmationText` takes no recipients and says what the publish did; a send
   addressed to one session still carries `recipientState` and `lastSeen`.
 custom:
     Issue: pr2603

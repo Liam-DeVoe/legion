@@ -121,15 +121,15 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `commented on ${event.payload.artifact_name}: “${event.payload.anchor?.quote ?? ""}”`;
     case "comment.answered":
       return "answered a comment";
-    // Same rule as the issue timeline's line: a repeat the stream recognised says so first. A
-    // queued mention is the listener holding it for a session that is not running, which is
-    // neither delivered nor refused, so it says what a queued attempt says everywhere.
+    // Same rule as the issue timeline's line. A queued mention is the listener holding it for a
+    // session that is not running, which is neither delivered nor refused, so it reads as queued
+    // first, a queued repeat included; a repeat the stream recognised says so next.
     case "comment.delivery":
-      if (event.payload.duplicate === true) {
-        return `already delivered a comment mention to ${event.payload.target}`;
-      }
       if (event.payload.state === "queued") {
         return `queued a comment mention for ${event.payload.target}, which ${queuedWait}`;
+      }
+      if (event.payload.duplicate === true) {
+        return `already delivered a comment mention to ${event.payload.target}`;
       }
       return event.payload.state === "failed"
         ? `could not deliver a comment mention to ${event.payload.target}`
@@ -176,6 +176,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "message.created":
       return "sent a message";
     case "message.delivery":
+      // A message the listener holds for a session that is not running is not delivered yet.
+      if (event.payload.state === "queued") {
+        return `queued a message for ${event.payload.target ?? `session:${event.payload.session_id}`}, which ${queuedWait}`;
+      }
       return "delivered a message";
     case "message.accepted":
       return "took a message as its own turn";

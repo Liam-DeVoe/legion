@@ -75,9 +75,10 @@ export function takenAsUserTurn(deliveries: readonly TargetedMessageAttempt[]): 
 }
 
 /** The headline one targeted message gets: who answered it, that it reached the session's own
- *  conversation, why it failed, that it is still going out, that it is a BTW waiting on an
- *  answer, or that it was delivered, naming the mode as the composer does (`MODE_LABELS`). It is
- *  `AgentPart`s, so the agents it names keep their identity until `AgentParts` draws them.
+ *  conversation, why it failed, that it is queued for a session that is not running, that it is
+ *  still going out, that it is a BTW waiting on an answer, or that it was delivered, naming the
+ *  mode as the composer does (`MODE_LABELS`). It is `AgentPart`s, so the agents it names keep
+ *  their identity until `AgentParts` draws them.
  *  `asking` is that BTW branch, whose line ends in a separator because it carries a timestamp:
  *  the two belong to one decision, so the caller reads it here rather than restating the
  *  condition.
@@ -135,9 +136,10 @@ function attemptSummary(attempt: TargetedMessageAttempt, targetName: AgentPart):
 }
 
 /** What became of a targeted message: answered, taken into the session's conversation as the
- *  person's own turn, failed, asking (BTW), or sent - then the earlier attempts, oldest first.
- *  Shared by the card and by a delivered reply in its thread. `retryRow` is whether the surface
- *  shows `DeliveryRetry` beneath it, whose buttons the failure's guidance names. */
+ *  person's own turn, failed, queued for a session that is not running, asking (BTW), or sent -
+ *  then the earlier attempts, oldest first. Shared by the card and by a delivered reply in its
+ *  thread. `retryRow` is whether the surface shows `DeliveryRetry` beneath it, whose buttons the
+ *  failure's guidance names. */
 export function DeliveryStatus({
   answeredBy,
   deliveries,

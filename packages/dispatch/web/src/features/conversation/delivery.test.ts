@@ -63,9 +63,10 @@ test("a queued attempt is never offered a retry, and reads as stored for a stopp
   ]);
 });
 
-// The route table carries an attempt's state as a plain string, and every surface reads it
-// through this one narrowing: a queued attempt must come through it queued, or every surface
-// draws it as sent (INFRA-626). A word this build does not know still reads as sent.
+// The route table carries a message attempt's state as a plain string, and the Agents card
+// (`attempts.ts`), the conversation model, the Sends strip and the search bar's send read it
+// through this one narrowing: a queued attempt must come through it queued, or they draw it as
+// sent. A word this build does not know still reads as sent.
 test("an attempt's state is read as one of the four, a queued one as queued", () => {
   expect(["pending", "sent", "queued", "failed"].map(deliveryOutcomeState)).toEqual([
     "pending",

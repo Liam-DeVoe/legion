@@ -4789,9 +4789,6 @@ export default function envoyExtension(pi: PiApi): void {
             ...(typeof idempotencyKey === "string" ? { idempotencyKey } : {}),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
-          // The text says what the target was; the details say it in fields: its registry state,
-          // whether its plugin was connected (`state`), and its last registration (`last_seen`,
-          // unix milliseconds) when the listener gave one.
           return toolSuccess(sendConfirmationText(result), {
             event_id: result.envelope.event_id,
             recipient: result.recipient,
@@ -4826,7 +4823,6 @@ export default function envoyExtension(pi: PiApi): void {
           // holder it names is the session the resolution read, which never received the message.
           const undelivered =
             result.kept !== true && source !== "" && result.holder === source && inSubagent;
-          // One text for both hosts, counts and role holder alike (`publishConfirmationText`).
           const published = publishConfirmationText(result);
           return toolSuccess(
             undelivered

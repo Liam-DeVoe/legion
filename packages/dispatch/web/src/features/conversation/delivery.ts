@@ -1,6 +1,7 @@
 import {
   DELIVERY_ATTEMPT_STATES,
   DELIVERY_CAPABILITIES,
+  DELIVERY_DUPLICATE_WINDOW_HOURS,
   DELIVERY_DUPLICATE_WINDOW_MS,
   type DeliveryAttemptState,
   type MessageDeliveryMode,
@@ -168,21 +169,17 @@ export function isSafeRetry(attempt: DeliveryOutcome, now: number = Date.now()):
 /** What a duplicate attempt reads as: an earlier attempt landed, so this one added nothing. */
 export const duplicateText = `Delivered by an earlier attempt, so not delivered again ${unlessRestarted}`;
 
-/** How long the notification stream keeps a message for a session that is not running, in whole
- *  hours: the same window in which a repeat is recognised, since the stream's retention is what
- *  decides both (`DELIVERY_DUPLICATE_WINDOW_MS`). */
-const QUEUED_HOURS = DELIVERY_DUPLICATE_WINDOW_MS / (60 * 60 * 1000);
-
 /** What a queued attempt's session is and when it gets the message, said after the session's
  *  name: the one wording of a queued attempt, which `queuedParts` and the Activity tab's mention
- *  line (`activityDescription`) both read. */
-export const queuedWait = `is stopped; it gets the message if it runs again within ${QUEUED_HOURS} hours`;
+ *  and message lines (`activityDescription`) read. The hours are the stream's retention, the
+ *  same window in which a repeat is recognised (`DELIVERY_DUPLICATE_WINDOW_MS`). */
+export const queuedWait = `is stopped; it gets the message if it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours`;
 
-/** What a queued attempt reads as, on every surface that shows one: the listener took the
- *  message for a session it knows and that is not running, and stores it until that session
- *  runs again. It takes the place of the `Failed: no live session <id>` such a session used to
- *  read as. `session` is the recipient as the surface draws it, so a card names it through
- *  `AgentName` and a plain line names it as text. */
+/** What a queued attempt reads as on the Agents page's card (`TargetedMessageCard`), the
+ *  Conversation tab's delivery line (`ConversationTab`) and the search bar's send
+ *  (`SendToAgentOffer`): the listener took the message for a session it knows and that is not
+ *  running, and stores it until that session runs again. `session` is the recipient as the
+ *  surface draws it, so a card names it through `AgentName` and a plain line names it as text. */
 export function queuedParts(session: AgentPart): AgentPart[] {
   return ["Queued: ", session, ` ${queuedWait}`];
 }

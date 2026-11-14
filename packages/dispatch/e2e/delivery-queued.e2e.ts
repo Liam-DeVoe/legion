@@ -17,15 +17,15 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * INFRA-626, A10. A session the Envoy listener knows and that is not running is a recipient, not
+ * INFRA-626. A session the Envoy listener knows and that is not running is a recipient, not
  * a refusal: the listener stores the message for it and hands it over when it runs again, and
  * Dispatch records that attempt `queued`. This spec reads that word on each of the three surfaces
  * a person sees it on - a message aimed at one session, a mention in a comment, and a broadcast
  * recipient - and holds the one answer a reader may act on where it still belongs: a session
  * Envoy knows nothing of is still refused as `no live session`.
  *
- * The sentence is spelt out here rather than imported from the SPA, so each row fails against the
- * commit before the change on its own assertion.
+ * The sentence is spelt out here rather than imported from the SPA, so a change to the SPA's
+ * wording fails a row here rather than passing with it.
  */
 const QUEUED = (name: string) =>
   `Queued: ${name} is stopped; it gets the message if it runs again within 72 hours`;
@@ -168,7 +168,7 @@ test("a broadcast keeps a session that stopped after it was ticked, and queues f
     await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("steer");
     await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Report status.");
 
-    // The Observer stops. The composer no longer leaves a session out for having left the live
+    // The Observer stops. The composer does not leave a session out for having left the live
     // list: Envoy may still know it, and only the server can say. The chip reads the short form
     // of its id, since the registry no longer holds its title.
     await setSessionStopped(observer.session_id, true);
@@ -203,8 +203,8 @@ test("a broadcast keeps a session that stopped after it was ticked, and queues f
 
 // The strip over the composer is where the sender watches the broadcast they just made, and a
 // copy the listener is holding for a stopped session is not a copy delivered. The strip counts
-// those on their own; before this change it read "Sent to 2 agents — delivered" while one of the
-// two was still waiting for its session to run.
+// those on their own, so it does not read "Sent to 2 agents — delivered" while one of the two is
+// still waiting for its session to run.
 test("the broadcast strip counts a queued copy rather than calling the broadcast delivered", async ({
   browser,
 }) => {

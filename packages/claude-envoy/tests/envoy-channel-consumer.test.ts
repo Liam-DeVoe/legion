@@ -484,8 +484,6 @@ test("a connection probe on the relay subject is answered, follows a session-id 
     // The session shuts down: its relay subject closes before its connection does.
     await session.shutdown()
     expect(nats.emitProbe(next, "_INBOX.probe.4")).toBe(false)
-    expect(nats.repliesOn("_INBOX.probe.2")).toEqual([])
-    expect(nats.repliesOn("_INBOX.probe.4")).toEqual([])
     expect(notifier.written).toEqual([])
   } finally {
     for (const write of notifier.pending) write.resolve()

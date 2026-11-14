@@ -1,5 +1,6 @@
 import { api } from "../../api/client";
 import type { Message } from "../../api/types";
+import { deliveryOutcomeState } from "../conversation/delivery";
 import type { Attempt, Writes } from "../writes/write-store";
 import { press } from "./offer";
 
@@ -69,8 +70,10 @@ export async function sendToAgent(
     );
   const message = await press(writes, `“${words}” to the agent on ${issue}`, write);
   const attempt = message?.deliveries?.at(-1);
-  if (attempt?.state === "failed") {
+  if (attempt === undefined) return { kind: "sent" };
+  const state = deliveryOutcomeState(attempt.state);
+  if (state === "failed") {
     return { kind: "refused", refusal: attempt.error ?? "Dispatch gave no reason." };
   }
-  return { kind: attempt?.state === "queued" ? "queued" : "sent" };
+  return { kind: state === "queued" ? "queued" : "sent" };
 }

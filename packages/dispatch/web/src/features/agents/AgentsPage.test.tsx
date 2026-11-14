@@ -2831,9 +2831,9 @@ test("a selected agent that came back is shown as not in the restored send, and 
 });
 
 // The security review's minor: only a session the live plan would include is "not in the refused
-// send"; one the mode still leaves out keeps the reason the mode gives. Since INFRA-626 a session
-// gone from the live list is one the live plan would include - it may be stopped rather than
-// ended, and the server decides - so an edit brings it back in.
+// send"; one the mode still leaves out keeps the reason the mode gives. A session gone from the
+// live list is one the live plan would include - it may be stopped rather than ended, and the
+// server decides - so an edit brings it back in.
 test("a restored send names a selected session it leaves out by the reason an edit would keep, unless it has come back", () => {
   const [planner, reviewer] = agents;
   const restored = {

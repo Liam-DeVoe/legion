@@ -480,14 +480,12 @@ order; that relay, not a subscription of this plugin's, is where the session's m
   path left after two unanswered pings (`natsConnectionOptions`, below) ends in such a reconnect:
   nats.js subscribes the relay subject again on the new connection, and the registration names the
   new epoch.
-  The relay subscription also answers the listener's connection probe: a send to this session
-  makes the listener send one core request on the relay subject with the one header
-  `Envoy-Probe: 1` and no body, and `receive` in `@legion/envoy-client/consumer-delivery` answers
-  it `done` before it decodes anything (`RelayHeader.probe`), so the probe reaches no host,
-  ledger or resume point and is logged by nobody.
-  Nothing in this extension takes part: while the relay subscription is open the send reads
-  `connected`, and once the NATS connection closes, or a session switch moves the relay to
-  another id and drops the old subject, nothing answers and the send reads `stopped`.
+  The relay subscription also answers the listener's connection probe, through `receive` in
+  `@legion/envoy-client/consumer-delivery` (the probe's format is in `packages/envoy/AGENTS.md`,
+  "Session consumers"), and nothing in this extension takes part: while the relay subscription
+  is open a send to this session reads `connected`, and once the NATS connection closes, or a
+  session switch moves the relay to another id and drops the old subject, nothing answers and
+  the send reads `stopped`.
 - The answer's one mode is `consumer` (`takeDeliveryAnswer`), and the relay carries the agent
   subject and every followed topic, each of which the stream stores (`streamStores`; the listener
   drops any other `notifications.` topic from the registration and names it in a warning, so a

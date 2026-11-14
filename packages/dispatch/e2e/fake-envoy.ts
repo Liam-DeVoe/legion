@@ -28,7 +28,8 @@ interface SentMessage {
   readonly urgency: string;
   readonly expects_reply: ExpectsReply;
   /** The sender asked for a session that is running now: a stopped target is refused rather
-   *  than stored for. Dispatch leaves it out of every send but the model and effort switch. */
+   *  than stored for. Dispatch leaves it out of every send but the live view's model and thinking
+   *  switch. */
   readonly connected_only?: boolean;
 }
 
@@ -430,15 +431,11 @@ const server = Bun.serve({
         );
       }
       const session = state.sessions.find((item) => item.session_id === sessionID);
-      if (record === "absent" || session === undefined) {
+      const stopped = state.stoppedSessions.has(sessionID);
+      if (record === "absent" || session === undefined || (stopped && !includes(url, "stopped"))) {
         return Response.json({ error: `no live session ${sessionID}` }, { status: 404 });
       }
-      if (state.stoppedSessions.has(sessionID)) {
-        if (!includes(url, "stopped")) {
-          return Response.json({ error: `no live session ${sessionID}` }, { status: 404 });
-        }
-        return Response.json(stoppedBody(session));
-      }
+      if (stopped) return Response.json(stoppedBody(session));
       const answered = asAnswered(session, Date.now());
       // A session past the live window is the 404 it always was unless the caller asked for it
       // with include=unresponsive, and that refusal keeps the "no live session <id>" prefix
@@ -511,8 +508,8 @@ const server = Bun.serve({
       }
       const connection = sendConnection(message.target_session);
       // A send that asked for a running session is refused rather than stored, which is what
-      // Dispatch's model and effort switch asks for: a line that applied at an unknown later
-      // time is worse than none.
+      // the live view's model and thinking switch asks for: a line that applied at an unknown
+      // later time is worse than none.
       if (connection === "stopped" && message.connected_only === true) {
         return Response.json({ error: "the session is stopped" }, { status: 409 });
       }
@@ -641,12 +638,15 @@ const server = Bun.serve({
         if (body.record === "absent") state.liveSessions.delete(sessionID);
       }
       if (body.stopped !== undefined) {
-        if (body.stopped) state.stoppedSessions.add(sessionID);
-        else state.stoppedSessions.delete(sessionID);
         // A session that is not running is out of the listener's in-memory list as well as
         // out of its registry, so a test that stops one gets both at once.
-        if (body.stopped) state.liveSessions.delete(sessionID);
-        else state.liveSessions.add(sessionID);
+        if (body.stopped) {
+          state.stoppedSessions.add(sessionID);
+          state.liveSessions.delete(sessionID);
+        } else {
+          state.stoppedSessions.delete(sessionID);
+          state.liveSessions.add(sessionID);
+        }
       }
       if (body.send_state !== undefined) {
         if (body.send_state !== "connected" && body.send_state !== "stopped") {

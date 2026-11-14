@@ -1,5 +1,5 @@
 import {
-  DELIVERY_DUPLICATE_WINDOW_MS,
+  DELIVERY_DUPLICATE_WINDOW_HOURS,
   EnvelopeSchema,
   EXPECTS_REPLY_VALUES,
   type ExpectsReply,
@@ -19,13 +19,6 @@ import {
   UNRESPONSIVE_RULE,
 } from "./transport";
 
-/**
- * How long the notification stream keeps a message a session has not read, which is how long a
- * message for a stopped session waits for it: the stream takes its own max age from this number
- * (`packages/envoy/internal/bus/stream.go`), so the four say one number.
- */
-const STORED_MESSAGE_HOURS = DELIVERY_DUPLICATE_WINDOW_MS / (60 * 60 * 1000);
-
 // The rule itself lives beside the states it is about (`transport.ts`), so the tool
 // descriptions, the send confirmation and a refusal's message all say it in one wording.
 
@@ -34,14 +27,14 @@ const SESSION_STATE_GUIDE =
   "minutes, unresponsive after that and within an hour, gone past the hour or with no record at " +
   `all. ${UNRESPONSIVE_RULE} A session named with no state is live. A send answered with state ` +
   "stopped means that session is not running: the message is stored for it and reaches it if " +
-  `it runs again within ${STORED_MESSAGE_HOURS} hours, and nothing of its claims changes.`;
+  `it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and nothing of its claims changes.`;
 
 const DELIVERY_CONTRACT =
   "Delivery is at-least-once, possibly out of order across topics; use id for dedupe and at for freshness.";
 
 const PUBLISH_COUNTS =
   "The answer counts who gets it: recipients is every session other than you that the message " +
-  `goes to, one that is stopped and gets it when it runs again within ${STORED_MESSAGE_HOURS} hours included, and ` +
+  `goes to, one that is stopped and gets it when it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours included, and ` +
   "recipients_connected is how many of those are running now. A listener that counts neither " +
   "sends neither, and a role topic names its holder instead.";
 
@@ -216,7 +209,7 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_send",
-    description: `Send an Envoy agent-to-agent message directly to another session by session ID. The confirmation names the recipient's state. A message to an unresponsive session is stored and reaches it when it answers again, so an unresponsive recipient is not a failed send and no reason to send to someone else instead. ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT} A send that is not confirmed delivered errs naming its idempotency_key; send the same message again with that idempotency_key within ${STORED_MESSAGE_HOURS} hours, and Envoy drops it as a repeat if the first copy arrived.`,
+    description: `Send an Envoy agent-to-agent message directly to another session by session ID. The confirmation names the recipient's state. A message to an unresponsive session is stored and reaches it when it answers again, so an unresponsive recipient is not a failed send and no reason to send to someone else instead. ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT} A send that is not confirmed delivered errs naming its idempotency_key; send the same message again with that idempotency_key within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and Envoy drops it as a repeat if the first copy arrived.`,
     arguments: (schema) => ({
       session_id: schema
         .string()
@@ -310,9 +303,9 @@ const STORED_ONCE =
  *
  * A stopped target (`state`, what the listener's connection check found) is queued: Envoy stored
  * the message on that session's topic and it arrives if the session runs again within the
- * stream's {@link STORED_MESSAGE_HOURS} hours. The queued line says `queued`, never `sent`,
- * because nothing read the message and a model told "sent" waits for an answer that is not
- * coming.
+ * stream's {@link DELIVERY_DUPLICATE_WINDOW_HOURS} hours. The queued line says `queued`, never
+ * `sent`, because nothing read the message and a model told "sent" waits for an answer that is
+ * not coming.
  *
  * A connected target is sent to, and the line names its registry state and, for one that stopped
  * answering, since when (`lastSeen`, the listener's record of its last registration): a send to
@@ -339,7 +332,7 @@ export function sendConfirmationText(result: {
   if (result.state === "stopped") {
     const seen =
       result.lastSeen === undefined ? "" : ` (last seen ${lastSeenText(result.lastSeen)})`;
-    const waits = `the session is stopped${seen}; if it runs again within ${STORED_MESSAGE_HOURS} hours, it gets the message`;
+    const waits = `the session is stopped${seen}; if it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, it gets the message`;
     if (result.duplicate) {
       return `queued once for ${result.recipient}: ${STORED_ONCE}; ${waits}`;
     }

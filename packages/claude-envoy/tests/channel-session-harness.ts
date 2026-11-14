@@ -133,18 +133,11 @@ export class FakeNats implements ChannelConnection {
   emitOn(pattern: string, subject: string, raw: string, reply?: string): void {
     const queue = this.subscriptions.get(pattern)
     if (queue === undefined) throw new Error(`no subscription for ${pattern}`)
-    const message = {
+    this.deliver(queue, {
       subject,
       data: new TextEncoder().encode(raw),
       ...(reply === undefined ? {} : { reply }),
-    }
-    if (queue.waiter === undefined) {
-      queue.messages.push(message)
-      return
-    }
-    const waiter = queue.waiter
-    queue.waiter = undefined
-    waiter.resolve(message)
+    })
   }
 
   /**
@@ -175,19 +168,12 @@ export class FakeNats implements ChannelConnection {
       [RelayHeader.storedAt, frame.storedAt ?? new Date().toISOString()],
       ...(frame.gap === true ? [[RelayHeader.gap, "true"] as [string, string]] : []),
     ])
-    const message: ChannelBrokerMessage = {
+    this.deliver(queue, {
       subject,
       data: new TextEncoder().encode(frame.raw),
       reply: frame.reply,
       headers: { get: (name) => headers.get(name) },
-    }
-    if (queue.waiter === undefined) {
-      queue.messages.push(message)
-      return
-    }
-    const waiter = queue.waiter
-    queue.waiter = undefined
-    waiter.resolve(message)
+    })
   }
 
   /**
@@ -199,21 +185,25 @@ export class FakeNats implements ChannelConnection {
   emitProbe(sessionID: string, reply: string): boolean {
     const subject = deliverSubject(sessionID)
     const queue = this.subscriptions.get(subject)
-    if (queue === undefined || queue.closed) return false
-    const message: ChannelBrokerMessage = {
+    if (queue === undefined) return false
+    this.deliver(queue, {
       subject,
       data: new Uint8Array(),
       reply,
       headers: { get: (name) => (name === RelayHeader.probe ? "1" : undefined) },
-    }
+    })
+    return true
+  }
+
+  /** Hands `message` to the iterator parked on `queue`, or queues it for the next pull. */
+  private deliver(queue: Queue, message: ChannelBrokerMessage): void {
     if (queue.waiter === undefined) {
       queue.messages.push(message)
-      return true
+      return
     }
     const waiter = queue.waiter
     queue.waiter = undefined
     waiter.resolve(message)
-    return true
   }
 
   /** The bodies published on `subject` so far, decoded: a relay frame's replies on its inbox. */

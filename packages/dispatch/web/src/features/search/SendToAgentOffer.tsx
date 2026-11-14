@@ -9,7 +9,7 @@ import { AgentParts, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { useWrites } from "../writes/write-store";
 import { barNoteClassName, type Offer, refusalText, useWordsState } from "./offer";
-import { type SendToAgent, sendToAgent } from "./send-to-agent";
+import { type SendToAgent, type SendToAgentOutcome, sendToAgent } from "./send-to-agent";
 
 /** The group the offer's one row sits in, and the row's own id, which the bar's arrows and
  *  `aria-activedescendant` read. */
@@ -21,7 +21,11 @@ export const SEND_TO_AGENT_OPTION_ID = "search-option-send-to-agent";
  *  state at all (`useWordsState`). */
 type OfferState =
   | { readonly kind: "sending"; readonly words: string }
-  | { readonly agent: string; readonly kind: "sent" | "queued"; readonly words: string }
+  | {
+      readonly agent: string;
+      readonly kind: Exclude<SendToAgentOutcome["kind"], "refused">;
+      readonly words: string;
+    }
   | { readonly kind: "refused"; readonly refusal: string; readonly words: string };
 
 /**
@@ -152,8 +156,8 @@ function SendToAgentSaid({
     );
   }
   // Queued is neither sent nor refused: the words are stored for a session that has stopped
-  // since the bar offered it, so the line says what a queued attempt says everywhere, and the
-  // row stays gone, since a second press would store a second copy.
+  // since the bar offered it, so the line is `queuedParts`, as on the Agents card and the
+  // Conversation tab, and the row stays gone, since a second press would store a second copy.
   if (state.kind === "queued") {
     return (
       <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="status">

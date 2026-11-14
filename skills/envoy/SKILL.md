@@ -18,12 +18,10 @@ Delivery is at-least-once and can come out of order across topics: drop a repeat
 - Reply with `in_reply_to=<the delivery's id>`, so the recipient can match the answer to its question.
 
 - Read the `recipient` in the send result, the session Envoy targeted: if it is not the one you meant, resend to the right id.
-  The result also says what that session was when Envoy stored the message:
-  `sent <id> to <recipient> (live)` for a live session, the same line with `unresponsive` and the time it went silent for an unresponsive one, and `queued <id> for <recipient>: the session is stopped (last seen <time>); if it runs again within 72 hours, it gets the message` for a session that is not running.
-  None of them says that the session read the message.
 
-- A send answered with `state: stopped` went to a session that is not running: Envoy stored the message for it, the session gets it if it runs again within 72 hours, and nothing of its claims changes.
-  Do not send a queued message again, because a second send stores a second copy for that session to read.
+- A send answered `queued <id> for <recipient>: the session is stopped …` (`state: stopped`) went to a session that is not running, and nothing of its claims changes.
+  Do not send that message again, because a second send stores a second copy for that session to read.
+  What each send answer means: `skill://envoy/references/deliveries.md`, "What a publish and a send answer".
 
 - When `envoy_send` says the send is not confirmed delivered, send the same message again with the `idempotency_key` the error names, within 72 hours:
   Envoy drops it as a repeat if the first copy arrived, and the result then says the earlier attempt was already stored (its text begins `sent to <recipient> once` for a running session, `queued once for <recipient>` for a stopped one).
@@ -157,10 +155,8 @@ Every topic starts with `notifications.`.
   Every other `notifications.` topic no source in the table uses is refused by name, at publish and at subscribe, because no session would ever receive it.
   A topic outside `notifications.` is refused at publish alone: you may subscribe to one, and nothing is stored under it, so you receive nothing on it.
 
-- A publish to any topic but a role answers how many sessions get the message: `published <id> to N other sessions (M running now)`.
-  `N` counts every session other than you that follows the topic, a stopped session Envoy still knows included, and `M` counts how many of those are live now.
-  `published <id>; no other session subscribes to <topic>, so no other session gets it` means nobody follows the topic and the message reached nobody, so reach whoever you meant another way.
-  A role topic names its `holder` in place of a count, and a listener that cannot read its records of known sessions answers `published <id>.` with no count.
+- A publish answered `published <id>; no other session subscribes to <topic>, so no other session gets it` reached nobody: reach whoever you meant another way.
+  What the counts in a publish answer mean: `skill://envoy/references/deliveries.md`, "What a publish and a send answer".
 
 - How a role claim survives a resume, a fork or a dead process: `skill://envoy/references/roles.md`.
 

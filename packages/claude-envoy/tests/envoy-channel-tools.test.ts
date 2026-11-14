@@ -490,9 +490,6 @@ test("tells the model its message was queued, never sent, when the target is sto
     message: "ready",
   })
 
-  const { message } = result as { readonly message: string }
-  expect(message).toMatch(/^queued \S+ for /)
-  expect(message).not.toContain("sent")
   expect(result).toEqual({
     message:
       "queued evt-text for ses_receiver: the session is stopped (last seen 2026-11-02T09:15:00Z); if it runs again within 72 hours, it gets the message",
@@ -509,19 +506,16 @@ for (const published of [
   {
     counts: { recipients: 0, recipients_connected: 0 },
     label: "no other session subscribes",
-    pattern: /^published \S+; no other session subscribes to /,
     text: "published evt-text; no other session subscribes to notifications.team.test, so no other session gets it",
   },
   {
     counts: { recipients: 3, recipients_connected: 2 },
     label: "three other sessions get it",
-    pattern: /^published \S+ to 3 other sessions/,
     text: "published evt-text to 3 other sessions (2 running now)",
   },
   {
     counts: {},
     label: "a listener that counts nobody",
-    pattern: /^published \S+\.$/,
     text: "published evt-text.",
   },
 ]) {
@@ -531,13 +525,17 @@ for (const published of [
       ...published.counts,
     })
 
-    const result = (await executeEnvoyTool(runtime, "envoy_publish", {
+    const result = await executeEnvoyTool(runtime, "envoy_publish", {
       topic: "notifications.team.test",
       message: "broadcast",
-    })) as { readonly message: string }
+    })
 
-    expect(result.message).toMatch(published.pattern)
-    expect(result.message).toBe(published.text)
-    expect(result).toMatchObject(published.counts)
+    // Strict, so a count the listener did not send is no key of the result at all.
+    expect(result).toStrictEqual({
+      message: published.text,
+      event_id: "evt-text",
+      topic: "notifications.team.test",
+      ...published.counts,
+    })
   })
 }
