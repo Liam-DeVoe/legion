@@ -119,9 +119,11 @@ permissions cut down to it: a permission the account has not approved is left ou
 request, and the daemon says so once on its stderr, naming the App, the owner and the
 permission. The daemon itself reads
 GitHub with the implement App too, in a pass as it starts and every two minutes after: it reads
-each open pull request's base branch and the checks that branch requires (its rulesets and its
-branch protection), since only those decide whether CI is red at a head, and so where Legion sends
-the issue. Whether the merge happens is GitHub's to decide, under those same rules.
+each open pull request's head and the checks GitHub reports on that head, since those decide
+whether CI is red at a head, and so where Legion sends the issue.
+It reads no repository ruleset and no branch protection, so a required check that has never run is
+in no list GitHub gives it, and the daemon names no such check.
+Whether the merge happens is GitHub's to decide, under the rules that repository sets.
 
 The same pass applies what a GitHub event lost, or still waiting behind the daemon's GitHub
 consumer, would have carried, so such an event leaves the record behind for at most one pass:
