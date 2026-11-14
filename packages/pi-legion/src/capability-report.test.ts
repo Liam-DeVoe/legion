@@ -14,7 +14,9 @@ import {
   type CapabilityHost,
   type CapabilityInput,
   type CommandResult,
+  CREDENTIAL_RULES,
   cleanDetail,
+  credentialRuleCharacters,
   ENVOY_TOOL_NAMES,
   LIVE_CAPABILITIES,
   type LiveCapability,
@@ -942,32 +944,39 @@ describe("cleanDetail", () => {
   }
 
   // A rule that may start inside a run its own value class reads through makes JavaScriptCore,
-  // which backtracks, read that run once per start: time quadratic in the detail, which the plugin
+  // which backtracks, read that run once per start: work quadratic in the detail, which the plugin
   // cleans before it cuts it to 1,024 bytes, so one such detail stalls a session's start. Each
-  // fixture unit, repeated, holds a start for every repetition. Measured from 4 to 128 KiB, every
-  // case here doubles its cost when its text doubles, below and above one step where the engine
-  // leaves a fast path and the cost jumps about 40x in a single doubling; a quadratic rule would
-  // read four times the cost at every doubling instead. That step falls at a different size for
-  // each case, so at the 64 KiB this row cleans two cases land just above it and take about 369 and
-  // 383 ms on an idle machine.
+  // fixture unit, repeated, holds a start for every repetition.
   //
-  // What this row holds is that `cleanDetail` comes back on the largest input the fixture builds,
-  // inside the command's one guard. What it does not hold is that a rule has stayed linear: a
-  // quadratic rule is not caught here. The JWT rule made quadratic by hand costs 13,570 to
-  // 14,088 ms on a 2-CPU gVisor agent pod, and CI is about 4.5 times faster (job 128346885451 ran
-  // the two cases above at 83.20 and 80.76 ms), where that same regression would cost about 3 s —
-  // an estimate from those ratios, not a run on CI. No limit on time can hold both machines, and
-  // JavaScriptCore counts no regular-expression steps a row could read instead, so the row has no
-  // count of the work to judge either. INFRA-985's architect ruled on 2026-11-07 that this is not
-  // fixed here: an accepted risk of this change, recorded in the pull request body, not an
-  // oversight.
+  // No clock carries the verdict, since no limit on time holds a 2-CPU pod and CI alike. Two
+  // counts of the work do. This row holds `cleanDetail`'s own count of the characters its rules'
+  // passes are handed (`credentialRuleCharacters`) to one pass of every rule over the detail, one
+  // more after each reading of held text, and one over what the cut keeps: an extra pass, or a
+  // rule run once per match, exceeds it. recheck's reading of each pattern
+  // (`capability-report-patterns.test.ts`) holds each pass linear, which no count reaches, since
+  // JavaScriptCore counts no step a regular expression takes. Four rules have no verdict from
+  // recheck, a risk INFRA-3149's architect accepted (`WITHOUT_VERDICT` there): for those, this
+  // count alone holds, and it does not catch a pass that backtracks within itself.
+  const RULES = CREDENTIAL_RULES.length;
+  /** The readings of held text after the first (capability-report.ts's HELD_READINGS): each that
+   *  changes the text has the rules read it again. */
+  const READINGS = 3;
+  /** The most of a detail the cut keeps, in UTF-8 bytes and so in characters, which the rules
+   *  read once more (capability-report.ts's MAX_DETAIL_BYTES). */
+  const MAX_DETAIL_BYTES = 1024;
   for (const { name, unit } of redaction.linear) {
-    test(`cleans 64 KiB of ${name} without stalling`, () => {
+    test(`cleans 64 KiB of ${name} in rule passes bounded by its length`, () => {
       const text = unit.repeat(Math.ceil((64 * 1024) / unit.length));
-      cleanDetail(text);
-      // No limit of its own: on bun 1.4.4 the command's guard is reported for a body that blocks
-      // the thread only once that body comes back, so it ends a blow-up that returns at all, and
-      // a rule that never returns is ended by the pi-legion job's own `timeout-minutes`.
+      const before = credentialRuleCharacters();
+      const cleaned = cleanDetail(text);
+      const handed = credentialRuleCharacters() - before;
+      // No rule redacts anything in these texts, so each reading settles in its first pass.
+      expect(cleaned).not.toContain("***");
+      const allowed = RULES * ((1 + READINGS) * text.length + MAX_DETAIL_BYTES);
+      expect(
+        handed,
+        `cleaning 64 KiB of ${name} handed the rules ${handed} characters, where at most ${allowed} (${RULES} rules, each over the ${text.length} characters once and once more after each of ${READINGS} readings, and over the ${MAX_DETAIL_BYTES} the cut keeps) are allowed`
+      ).toBeLessThanOrEqual(allowed);
     });
   }
 });

@@ -156,6 +156,7 @@
     "@oh-my-pi/pi-utils": "^18.1.15",
     "@types/bun": "latest",
     "@xterm/headless": "^6.0.0",
+    "recheck": "4.6.2",
     "typescript": "^5.3.0",
     "zod": "4.3.6"
   }

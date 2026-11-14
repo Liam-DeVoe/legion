@@ -886,10 +886,10 @@ describe("DispatchClient", () => {
   // 120-character cut. Each pass over the body must stay linear and the scan bounded, or a page of
   // unclosed tags freezes the session: a quadratic pass takes seconds on tens of kilobytes. The row
   // holds the excerpt's own count of its work to the 64 KiB it reads: dropping tags one at a time,
-  // a pass for each, or passing over the whole megabyte, each counts far past it. It does not catch
-  // a pattern made to backtrack quadratically within one pass, because JavaScriptCore counts no
-  // step a regular expression takes; the patterns' own shape is what keeps that linear (a tag holds
-  // no `<`, and a script or style block left open runs to the end).
+  // a pass for each, or passing over the whole megabyte, each counts far past it. A pattern made
+  // to backtrack quadratically within one pass is caught instead by recheck's reading of each of
+  // `excerpt`'s patterns (`excerpt-patterns.test.ts`), because JavaScriptCore counts no step a
+  // regular expression takes.
   test("builds the excerpt of a megabyte of unclosed tags in work bounded by what it reads", async () => {
     const megabyte = 1 << 20;
     // The last three hold the client's bearer, "secret", everywhere, or almost everywhere.

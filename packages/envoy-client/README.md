@@ -29,7 +29,10 @@ No row passes or fails by reading a clock. A row about one of the client's own t
 Bun's fake clock (`jest.useFakeTimers()`, which holds `AbortSignal.timeout` as well) or holds it,
 and reads what the client did at each moment; a row that bounds the work of the client reads the
 client's own count of it (`bearerRedactionMatches`, `excerptPatternCharacters` in
-`dispatch-http.ts`).
+`dispatch-http.ts`). What no count reaches, the steps a regular expression takes within one pass,
+recheck's automaton checker reads from each pattern instead (`test/pattern-analysis.ts`): a row
+analyzes a pattern it reads in a moment, and holds a slower one to the verdict `bun run
+analyze:patterns` committed beside its test.
 
 ## Inbound delivery
 

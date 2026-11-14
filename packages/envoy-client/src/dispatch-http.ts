@@ -716,7 +716,8 @@ const BEARER_PIECE = 8;
  * the size of what an excerpt reads rather than to the time it took: each match the bearer
  * redaction's scans visit (`redactBearer`), and each character a pattern pass of `excerpt` is
  * handed. A step a regular expression takes inside one pass is not counted, because
- * JavaScriptCore counts none: a pattern that backtracks within a pass costs more than this says.
+ * JavaScriptCore counts none: recheck's reading of each pattern (`EXCERPT_PATTERNS`) is what holds
+ * a pass linear.
  */
 let bearerMatchesVisited = 0;
 let patternCharactersHanded = 0;
@@ -769,30 +770,42 @@ function redactBearer(text: string, bearer: string): string {
 }
 
 /**
+ * The patterns of `excerpt`'s passes, in the order it runs them: scripts and styles, tags, the
+ * value after `Authorization:` and the value after `Bearer`. A tag holds no `<`, and a script or
+ * style block left open runs to the end. The block pattern spells its two names out, where a
+ * back-reference to one name would close a block with the name that opened it the same way:
+ * recheck's automaton checker cannot read a back-reference, and reads each of these linear
+ * (`excerpt-patterns.test.ts`).
+ */
+const SCRIPT_OR_STYLE_BLOCK =
+  /<script\b[^<>]*>(?:[\s\S]*?<\/script\s*>|[\s\S]*)|<style\b[^<>]*>(?:[\s\S]*?<\/style\s*>|[\s\S]*)/gi;
+const TAG = /<[^<>]*>/g;
+const AUTHORIZATION_VALUE =
+  /(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token)\s+)?)[^\s"'<>,;]+/gi;
+const BEARER_VALUE = /(\bbearer\s+)[^\s"'<>,;]+/gi;
+
+/** `excerpt`'s patterns by name, for the analyzer rows of `excerpt-patterns.test.ts`. */
+export const EXCERPT_PATTERNS: Readonly<Record<string, RegExp>> = {
+  "script-or-style-block": SCRIPT_OR_STYLE_BLOCK,
+  tag: TAG,
+  "authorization-value": AUTHORIZATION_VALUE,
+  "bearer-value": BEARER_VALUE,
+};
+
+/**
  * Text a gateway chose (a body, or the reason phrase) as one line of plain text safe to quote. A
  * misconfigured gateway echoes the request back, so two kinds of credential are redacted: first
  * every piece of the client's own bearer, trimmed as fetch sends it (`redactBearer`); then, after
  * scripts, styles and tags are dropped, the value after `Authorization:` (its scheme kept) or
  * `Bearer`. All of it runs before the cut to one line, so a cut never leaves a credential's first
  * characters behind. The text is the answerer's, and the excerpt is built on the host's event loop,
- * so only the first `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time:
- * a tag holds no `<`, and a script or style block left open runs to the end.
+ * so only the first `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time.
  */
 function excerpt(text: string, token: string): string {
-  const withoutBlocks = patternPass(
-    redactBearer(text, token.trim()),
-    /<(script|style)\b[^<>]*>(?:[\s\S]*?<\/\1\s*>|[\s\S]*$)/gi,
-    " "
-  );
-  const withoutTags = patternPass(withoutBlocks, /<[^<>]*>/g, " ");
-  const withoutAuthorization = patternPass(
-    withoutTags,
-    /(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token)\s+)?)[^\s"'<>,;]+/gi,
-    `$1${REDACTED}`
-  );
-  return textHead(
-    patternPass(withoutAuthorization, /(\bbearer\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
-  );
+  const withoutBlocks = patternPass(redactBearer(text, token.trim()), SCRIPT_OR_STYLE_BLOCK, " ");
+  const withoutTags = patternPass(withoutBlocks, TAG, " ");
+  const withoutAuthorization = patternPass(withoutTags, AUTHORIZATION_VALUE, `$1${REDACTED}`);
+  return textHead(patternPass(withoutAuthorization, BEARER_VALUE, `$1${REDACTED}`));
 }
 
 /** `text` with `pattern` replaced, counting the characters the pass is handed. */
