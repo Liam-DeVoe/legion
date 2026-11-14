@@ -69,6 +69,12 @@ type issueSandboxAPI struct {
 	// pod it deleted. Both are the rig's.
 	onPodReady func(pod, uid string, roles map[string]string)
 	onPodGone  func(pod string)
+	// controlled is whether run has started the controller stand-in. held counts the patches that
+	// set a Sandbox Running while no controller ran and no pod of its stood: each is a launch's
+	// Running patch, whose launch now waits for a pod nothing in the rig will ever make
+	// (heldLaunches).
+	controlled bool
+	held       int
 }
 
 // kubeEvent is one watch event: its type and the object it carries.
@@ -146,6 +152,9 @@ func issueSandbox(name, uid, tree, issue string) map[string]any {
 // run reconciles every Sandbox until t ends: the controller stand-in.
 func (a *issueSandboxAPI) run(t *testing.T) {
 	t.Helper()
+	a.mu.Lock()
+	a.controlled = true
+	a.mu.Unlock()
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -438,12 +447,25 @@ func (a *issueSandboxAPI) mode(name string) string {
 	if !ok {
 		return "deleted"
 	}
+	return sandboxMode(object)
+}
+
+// sandboxMode is a Sandbox's operatingMode, Running when it names none, as the controller reads it.
+func sandboxMode(object map[string]any) string {
 	spec, _ := object["spec"].(map[string]any)
 	mode, _ := spec["operatingMode"].(string)
 	if mode == "" {
 		return "Running"
 	}
 	return mode
+}
+
+// heldLaunches is how many launches wait for a pod nothing in the rig will make: each Running
+// patch a Sandbox took while no controller ran and no pod of its stood (held).
+func (a *issueSandboxAPI) heldLaunches() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.held
 }
 
 // label is the Sandbox's label key, "" once the API no longer has it.
@@ -760,6 +782,10 @@ func (a *issueSandboxAPI) patch(w http.ResponseWriter, r *http.Request, kind kub
 		}
 	}
 	stored := a.putLocked(kind.resource, name, object)
+	if _, hasPod := a.objects["pods"][name]; kind.resource == "sandboxes" && !a.controlled && !hasPod &&
+		sandboxMode(held) != "Running" && sandboxMode(stored) == "Running" {
+		a.held++
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(stored)
 }

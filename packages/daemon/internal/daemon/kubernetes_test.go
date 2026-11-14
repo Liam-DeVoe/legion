@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
@@ -77,6 +78,68 @@ func defaultRepositoryCache(t *testing.T) sandbox.RepositoryCache {
 		t.Fatal(err)
 	}
 	return cache
+}
+
+// The bounds a test that builds sandbox Options by hand gives its runtime. The boot timeout and
+// the adoption's bound are the daemon's defaults (worker_boot_timeout_seconds,
+// slow_command_timeout_seconds), so every wait they bound ends on its event in a rig, which a
+// loaded machine only delays. The watch's period is an hour, past probe_interval_seconds' 30 s,
+// which keeps the periodic pass away from a rig that never reads it.
+const (
+	rigBootTimeout   = 120 * time.Second
+	rigAdoptTimeout  = 300 * time.Second
+	rigProbeInterval = time.Hour
+)
+
+// podlessBoots is a rig's runtime clock (Options.Clock) and the API its runtime launches into,
+// which runs no controller (issueSandboxAPI.run): a launch there sets its Sandbox Running and then
+// waits for a pod nothing in the rig will make. Such a wait runs out on the clock, never on the
+// machine's (outlastingTheBoot).
+type podlessBoots struct {
+	api   *issueSandboxAPI
+	clock *clocktest.Fake
+	// ranOut is how many of the launches the API holds (heldLaunches) the clock was moved past.
+	ranOut int
+}
+
+// newPodlessBoots is the runtime clock for a rig over api, standing at the machine's present.
+func newPodlessBoots(api *issueSandboxAPI) *podlessBoots {
+	return &podlessBoots{api: api, clock: clocktest.New(time.Now())}
+}
+
+// outlastingTheBoot runs call, which may launch into a Sandbox whose pod never comes, and runs
+// each such launch's wait for its pod out on the clock: once the API reports a launch it holds that
+// the clock has not yet been moved past (heldLaunches) and the launch's wait has armed its
+// deadline, the boot timeout from the clock's present, it sets the clock to that deadline and no
+// further. The clock moves only for a wait the API itself says nothing will end, so a launch that
+// is only slow is never cut short.
+func (b *podlessBoots) outlastingTheBoot(t *testing.T, what string, call func() error) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- call() }()
+	for {
+		var err error
+		var deadline time.Time
+		returned := false
+		testwait.Eventually(t, what+" to return, or to wait for a pod the API will never make", func() bool {
+			select {
+			case err = <-done:
+				returned = true
+				return true
+			default:
+			}
+			if b.api.heldLaunches() <= b.ranOut {
+				return false
+			}
+			deadline = b.clock.Now().Add(rigBootTimeout)
+			return slices.Contains(b.clock.Armed(), deadline)
+		})
+		if returned {
+			return err
+		}
+		b.clock.Set(deadline)
+		b.ranOut++
+	}
 }
 
 // noRepositories is a mapping that names none, for a test whose runtime makes no cache.

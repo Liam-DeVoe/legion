@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -1102,67 +1103,73 @@ func TestALaunchReturnsOnlyOnceTheSandboxStoreHoldsItsRunningPatch(t *testing.T)
 
 // A launch that fails after setting its Sandbox Running sets it Suspended again before returning:
 // the claim is a launch failure now, and a pod the controller created later would run a valid
-// token for a claim nothing supervises.
+// token for a claim nothing supervises. The pod never comes, so the launch's wait for it runs out:
+// the row runs in a synctest bubble, on whose clock that boot timeout passes.
 func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
-	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
-	g.hold.Store(true)
-	if _, err := g.r.Spawn(g.ctx, workerSpec(t)); err == nil || !strings.Contains(err.Error(), "wait for its new pod") {
-		t.Fatalf("Spawn: %v, want the new pod's timeout", err)
-	}
-	name := SandboxName(workerToken)
-	expectSteps(t, steps(t, g.writes(), name), "create sandbox", "create secret", "run", "suspend")
-	if mode := g.sandbox(name).mode(); mode != modeSuspended {
-		t.Fatalf("the failed launch left its sandbox %s", mode)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, nil, withBubbleBoot())
+		g.hold.Store(true)
+		if _, err := g.r.Spawn(g.ctx, workerSpec(t)); err == nil || !strings.Contains(err.Error(), "wait for its new pod") {
+			t.Fatalf("Spawn: %v, want the new pod's timeout", err)
+		}
+		name := SandboxName(workerToken)
+		expectSteps(t, steps(t, g.writes(), name), "create sandbox", "create secret", "run", "suspend")
+		if mode := g.sandbox(name).mode(); mode != modeSuspended {
+			t.Fatalf("the failed launch left its sandbox %s", mode)
+		}
+	})
 }
 
 // A launch whose pod never comes said only that it timed out, which tells an operator nothing
 // about why: the Sandbox controller records that in the Sandbox's own Ready condition, and the
 // probe path already reads it. The timeout carries it too, so the operator reads one line instead
-// of going to the cluster for the condition the daemon had in its store all along.
+// of going to the cluster for the condition the daemon had in its store all along. The row runs in
+// a synctest bubble, on whose clock the launch's wait for its pod runs out.
 func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
-	blocked := metav1.Condition{
-		Type: conditionReady, Status: metav1.ConditionFalse, Reason: "PodSchedulingBlocked",
-		Message: "0/3 nodes are available: 3 Insufficient cpu.",
-	}
-	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
-	g.hold.Store(true)
-	// The controller reports on the generation it observed, and a condition of an earlier one is
-	// not read as this launch's, so the rig writes it as the controller would: after the Running
-	// patch, against the generation that patch produced.
-	apply := k8stesting.ObjectReaction(g.dyn.Tracker())
-	g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
-		handled, object, err := apply(a)
-		if !handled || err != nil || !modePatched(t, string(a.(k8stesting.PatchAction).GetPatch()), modeRunning) {
-			return handled, object, err
+	synctest.Test(t, func(t *testing.T) {
+		blocked := metav1.Condition{
+			Type: conditionReady, Status: metav1.ConditionFalse, Reason: "PodSchedulingBlocked",
+			Message: "0/3 nodes are available: 3 Insufficient cpu.",
 		}
-		patched := object.(*unstructured.Unstructured)
-		s, err := decodeSandbox(patched)
-		if err != nil {
-			return true, object, err
+		g := newRig(t, nil, withBubbleBoot())
+		g.hold.Store(true)
+		// The controller reports on the generation it observed, and a condition of an earlier one is
+		// not read as this launch's, so the rig writes it as the controller would: after the Running
+		// patch, against the generation that patch produced.
+		apply := k8stesting.ObjectReaction(g.dyn.Tracker())
+		g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
+			handled, object, err := apply(a)
+			if !handled || err != nil || !modePatched(t, string(a.(k8stesting.PatchAction).GetPatch()), modeRunning) {
+				return handled, object, err
+			}
+			patched := object.(*unstructured.Unstructured)
+			s, err := decodeSandbox(patched)
+			if err != nil {
+				return true, object, err
+			}
+			blocked.ObservedGeneration = s.Generation
+			status := map[string]any{"conditions": []any{map[string]any{
+				"type": blocked.Type, "status": string(blocked.Status), "reason": blocked.Reason,
+				"message": blocked.Message, "observedGeneration": blocked.ObservedGeneration,
+				"lastTransitionTime": metav1.NewTime(rigNow).Format(time.RFC3339),
+			}}}
+			if err := unstructured.SetNestedMap(patched.Object, status, "status"); err != nil {
+				return true, object, err
+			}
+			return true, patched, g.dyn.Tracker().Update(sandboxGVR, patched, testNamespace)
+		})
+
+		_, err := g.r.Spawn(g.ctx, workerSpec(t))
+
+		if err == nil {
+			t.Fatal("Spawn returned no error though its pod never came")
 		}
-		blocked.ObservedGeneration = s.Generation
-		status := map[string]any{"conditions": []any{map[string]any{
-			"type": blocked.Type, "status": string(blocked.Status), "reason": blocked.Reason,
-			"message": blocked.Message, "observedGeneration": blocked.ObservedGeneration,
-			"lastTransitionTime": metav1.NewTime(rigNow).Format(time.RFC3339),
-		}}}
-		if err := unstructured.SetNestedMap(patched.Object, status, "status"); err != nil {
-			return true, object, err
+		for _, want := range []string{"wait for its new pod", "PodSchedulingBlocked", "0/3 nodes are available: 3 Insufficient cpu."} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("Spawn error = %q, want it to name %q", err, want)
+			}
 		}
-		return true, patched, g.dyn.Tracker().Update(sandboxGVR, patched, testNamespace)
 	})
-
-	_, err := g.r.Spawn(g.ctx, workerSpec(t))
-
-	if err == nil {
-		t.Fatal("Spawn returned no error though its pod never came")
-	}
-	for _, want := range []string{"wait for its new pod", "PodSchedulingBlocked", "0/3 nodes are available: 3 Insufficient cpu."} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Spawn error = %q, want it to name %q", err, want)
-		}
-	}
 }
 
 // A runtime whose API server refuses connections cannot see its Sandboxes, so boot refuses and
@@ -1457,7 +1464,7 @@ func TestAFailedLauncherBindingReadNeverLeavesASupervisedRoleChildRunning(t *tes
 // than holding its launch for ever.
 func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T) {
 	for name, tc := range map[string]struct {
-		// bootTimeout is the rig's boot timeout, 0 for the rig's own.
+		// bootTimeout is the rig's boot timeout on the bubble's clock, 0 for the rig's own.
 		bootTimeout time.Duration
 		// answer is the server's answer to an address record after refused refusals, nil to apply it.
 		answer func(refused int32) error
@@ -1496,46 +1503,50 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var options []rigOption
-			if tc.bootTimeout != 0 {
-				options = append(options, withOptions(func(o *Options) { o.BootTimeout = tc.bootTimeout }))
-			}
-			g := newRig(t, nil, options...)
-			spec := workerSpec(t)
-			machine, _, _ := supervisedSandboxMachine(t, g, spec)
-			first := startSupervisedSandboxRole(t, g, machine, spec, resumeSession)
-			var refused atomic.Int32
-			g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
-				if !strings.Contains(string(a.(k8stesting.PatchAction).GetPatch()), addressesAnnotation(claim.RoleTester)) {
-					return false, nil, nil
+			// Each case runs in a synctest bubble: the throttle's case waits out the launch's own
+			// deadline, which passes on the bubble's clock, so no real clock decides it.
+			synctest.Test(t, func(t *testing.T) {
+				var options []rigOption
+				if tc.bootTimeout != 0 {
+					options = append(options, withOptions(func(o *Options) { o.BootTimeout = tc.bootTimeout }))
 				}
-				answer := tc.answer(refused.Load())
-				if answer == nil {
-					return false, nil, nil
+				g := newRig(t, nil, options...)
+				spec := workerSpec(t)
+				machine, _, _ := supervisedSandboxMachine(t, g, spec)
+				first := startSupervisedSandboxRole(t, g, machine, spec, resumeSession)
+				var refused atomic.Int32
+				g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
+					if !strings.Contains(string(a.(k8stesting.PatchAction).GetPatch()), addressesAnnotation(claim.RoleTester)) {
+						return false, nil, nil
+					}
+					answer := tc.answer(refused.Load())
+					if answer == nil {
+						return false, nil, nil
+					}
+					refused.Add(1)
+					return true, nil, answer
+				})
+				err := machine.Handle(g.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *first, Kind: runtime.StaleAddress, At: rigNow}})
+				got := machine.Claim()
+				if tc.err == "" {
+					if err != nil {
+						t.Fatalf("relaunch: %v", err)
+					}
+					if got.State == supervise.StateFailed || got.Budgets.LaunchFailures != 0 || got.Locator == nil {
+						t.Fatalf("claim after the relaunch = %+v, want launched with no launch failure", got)
+					}
+				} else {
+					if err == nil || !strings.Contains(err.Error(), tc.err) {
+						t.Fatalf("relaunch = %v, want %q", err, tc.err)
+					}
+					if got.State != supervise.StateFailed || got.Budgets.LaunchFailures != 3 || got.Locator != nil {
+						t.Fatalf("claim after the relaunch = %+v, want failed with three launch failures", got)
+					}
 				}
-				refused.Add(1)
-				return true, nil, answer
+				if n := refused.Load(); !tc.refused(n) {
+					t.Fatalf("the server refused %d address records, want %s", n, tc.want)
+				}
 			})
-			err := machine.Handle(g.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *first, Kind: runtime.StaleAddress, At: rigNow}})
-			got := machine.Claim()
-			if tc.err == "" {
-				if err != nil {
-					t.Fatalf("relaunch: %v", err)
-				}
-				if got.State == supervise.StateFailed || got.Budgets.LaunchFailures != 0 || got.Locator == nil {
-					t.Fatalf("claim after the relaunch = %+v, want launched with no launch failure", got)
-				}
-			} else {
-				if err == nil || !strings.Contains(err.Error(), tc.err) {
-					t.Fatalf("relaunch = %v, want %q", err, tc.err)
-				}
-				if got.State != supervise.StateFailed || got.Budgets.LaunchFailures != 3 || got.Locator != nil {
-					t.Fatalf("claim after the relaunch = %+v, want failed with three launch failures", got)
-				}
-			}
-			if n := refused.Load(); !tc.refused(n) {
-				t.Fatalf("the server refused %d address records, want %s", n, tc.want)
-			}
 		})
 	}
 }
@@ -1706,46 +1717,54 @@ func startSupervisedSandboxRole(
 // That start may have begun the new generation even though start returns an error, so relaunch,
 // which owns the child it started, sends a Stop for the issued generation before returning. This
 // holds both where Resume has no previous locator and where its previous locator names the same
-// pod: the Stop names the issued generation, never the previous one, which is the caller's.
+// pod: the Stop names the issued generation, never the previous one, which is the caller's. Each
+// case runs in a synctest bubble, on whose clock the start's deadline (the boot timeout and the
+// termination grace below) passes.
 func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t *testing.T) {
 	for name, previous := range map[string]bool{
 		"without a previous locator":              false,
 		"on the same pod as its previous locator": true,
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil, withOptions(func(o *Options) {
-				o.BootTimeout, o.TerminationGrace = time.Second, 50*time.Millisecond
-			}))
-			spec := workerSpec(t)
-			first := g.spawn(spec)
-			delayed := g.scriptedStartLauncher(spec.Claim, 1, func(shimwire.LauncherStart) *shimwire.LauncherStartResult { return nil })
-			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-g2", resumeSession
-			var prev *runtime.Locator
-			if previous {
-				prev = &first
-			}
-			if _, err := g.r.Resume(g.ctx, prev, spec); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
-				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
-			}
-			if start := delayed.start(t, 2); start.Generation != 2 {
-				t.Fatalf("Start = generation %d, want generation 2", start.Generation)
-			}
-			if stop := delayed.stop(t, 2); stop.Generation != 2 {
-				t.Fatalf("Stop = generation %d, want the Start's generation 2", stop.Generation)
-			}
-			if recorded, found := g.r.recorded(spec.Claim); found {
-				t.Errorf("runtime still records %s after the failed Resume", recorded.Incarnation)
-			}
-			// The launcher reports generation 2's exit in the state frame it writes after its Stop
-			// result, which the runtime reads asynchronously; wait for it, then hold it exactly.
-			g.eventually("the launcher to report generation 2 ended", func() bool {
+			synctest.Test(t, func(t *testing.T) {
+				g := newRig(t, nil, withOptions(func(o *Options) {
+					o.BootTimeout, o.TerminationGrace = time.Second, 50*time.Millisecond
+				}))
+				spec := workerSpec(t)
+				first := g.spawn(spec)
+				delayed := g.scriptedStartLauncher(spec.Claim, 1, func(shimwire.LauncherStart) *shimwire.LauncherStartResult { return nil })
+				spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-g2", resumeSession
+				var prev *runtime.Locator
+				if previous {
+					prev = &first
+				}
+				if _, err := g.r.Resume(g.ctx, prev, spec); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
+					t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
+				}
+				// Bare receives: in a bubble the shared wait cannot read the test's deadline, and a
+				// frame that never comes leaves every goroutine blocked, which synctest fails as a
+				// deadlock naming them.
+				start := <-delayed.starts
+				for start.Generation != 2 {
+					start = <-delayed.starts
+				}
+				stop := <-delayed.stops
+				for stop.Generation != 2 {
+					stop = <-delayed.stops
+				}
+				if recorded, found := g.r.recorded(spec.Claim); found {
+					t.Errorf("runtime still records %s after the failed Resume", recorded.Incarnation)
+				}
+				// The launcher reports generation 2's exit in the state frame it writes after its Stop
+				// result, which the runtime reads on a goroutine of its own: once every goroutine of
+				// the bubble has blocked (synctest.Wait), that frame has been read, and the state is
+				// held exactly.
+				synctest.Wait()
 				state, connected := g.r.launchers.state(spec.Claim, first.Sandbox.PodUID)
-				return connected && state.LastExit != nil && state.LastExit.Generation == 2
+				if !connected || state.Child != nil || state.LastExit == nil || state.LastExit.Generation != 2 {
+					t.Fatalf("launcher after the delayed Start = connected=%t state=%+v, want generation 2 ended", connected, state)
+				}
 			})
-			state, connected := g.r.launchers.state(spec.Claim, first.Sandbox.PodUID)
-			if !connected || state.Child != nil || state.LastExit == nil || state.LastExit.Generation != 2 {
-				t.Fatalf("launcher after the delayed Start = connected=%t state=%+v, want generation 2 ended", connected, state)
-			}
 		})
 	}
 }

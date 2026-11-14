@@ -264,13 +264,13 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		},
 		{
 			row: "6 unscheduled past the boot timeout",
-			objects: append(withPod(modeRunning, nil, recorded, sandboxUID, unscheduledFor(3*time.Second)), &corev1.Event{
+			objects: append(withPod(modeRunning, nil, recorded, sandboxUID, unscheduledFor(testOptions().BootTimeout+time.Second)), &corev1.Event{
 				ObjectMeta:     metav1.ObjectMeta{Name: name + ".1", Namespace: testNamespace},
 				InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: name, UID: recorded},
 				Type:           "Warning", Reason: "FailedScheduling", Message: "0/3 nodes are available: 3 node(s) had untolerated taint",
 			}),
 			want:   runtime.Gone,
-			detail: []string{"unscheduled for 3s, past the boot timeout 2s (PodScheduled=False Unschedulable", "events: Warning FailedScheduling: 0/3 nodes are available: 3 node(s) had untolerated taint"},
+			detail: []string{"unscheduled for 2m1s, past the boot timeout 2m0s (PodScheduled=False Unschedulable", "events: Warning FailedScheduling: 0/3 nodes are available: 3 node(s) had untolerated taint"},
 		},
 		{
 			row:     "6 unscheduled within the boot timeout is alive",

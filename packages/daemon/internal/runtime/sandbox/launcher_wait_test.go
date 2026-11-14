@@ -73,7 +73,7 @@ func (g *rig) pendingPodInBubble(name string, status func(*corev1.Pod)) time.Tim
 // once the launcher connects: the claim is charged no launch failure.
 func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		g := newRig(t, nil)
+		g := newRig(t, nil, withBubbleBoot())
 		g.autoStart.Store(false)
 		spec := workerSpec(t)
 		machine, _, _ := supervisedSandboxMachine(t, g, spec)
@@ -115,7 +115,7 @@ func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
 // ProvisionBound.
 func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		g := newRig(t, nil)
+		g := newRig(t, nil, withBubbleBoot())
 		g.autoStart.Store(false)
 		result := make(chan error, 1)
 		go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
@@ -142,7 +142,7 @@ func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) 
 // provisioning: its launch gives up at the boot timeout.
 func TestALaunchWhosePodNeverProvisionsGivesUpAtTheBootTimeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		g := newRig(t, nil)
+		g := newRig(t, nil, withBubbleBoot())
 		g.autoStart.Store(false)
 		result := make(chan error, 1)
 		go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
@@ -218,7 +218,7 @@ func TestTheLauncherWaitOutlastsTheFetchsWholeBudget(t *testing.T) {
 // name it, has not come.
 func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		g := newRig(t, nil)
+		g := newRig(t, nil, withBubbleBoot())
 		g.autoStart.Store(false)
 		g.r.provisionBound = time.Second
 		spec := workerSpec(t)
@@ -246,7 +246,7 @@ func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
 // starts the role.
 func TestALaunchCountsItsProvisioningBoundFromTheFirstInitContainer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		g := newRig(t, nil)
+		g := newRig(t, nil, withBubbleBoot())
 		g.autoStart.Store(false)
 		g.r.provisionBound = 3 * time.Second
 		spec := workerSpec(t)

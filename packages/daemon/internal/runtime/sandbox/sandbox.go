@@ -53,6 +53,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -117,7 +118,9 @@ type Runtime struct {
 	launchers                      *launchers
 	launcherAuth                   launcherCredentials
 	now                            func() time.Time
-	log                            *slog.Logger
+	// clock is Options.Clock; timers reads it, the wall clock when it is nil.
+	clock clock.Clock
+	log   *slog.Logger
 	// podShapes is the configuration each kind of pod is built from now (podShape), by kind,
 	// encoded once here. Every input of a shape — the image, the kind's reservation, the
 	// operator's volumes and mounts and the disk — is set at construction and never written
@@ -369,7 +372,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
-		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
+		store:      opts.Store, conns: opts.Conns, now: opts.Now, clock: opts.Clock, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
@@ -626,7 +629,7 @@ func (r *Runtime) notify(obj any) {
 // budget, and that one bound is the wait's: a request done makes, a launch's waiting out an
 // overloaded server included (resend), ends with the wait rather than up to a boot timeout past it.
 func (r *Runtime) await(ctx context.Context, budget time.Duration, what string, done func(context.Context) (bool, error)) error {
-	bounded, cancel := context.WithTimeout(ctx, budget)
+	bounded, cancel := r.timers().WithTimeout(ctx, budget)
 	defer cancel()
 	recheck := time.NewTicker(recheckInterval)
 	defer recheck.Stop()
@@ -648,6 +651,15 @@ func (r *Runtime) await(ctx context.Context, budget time.Duration, what string, 
 		case <-recheck.C:
 		}
 	}
+}
+
+// timers is the clock the runtime's bounded waits run on: Options.Clock, or the wall clock where
+// none was set.
+func (r *Runtime) timers() clock.Clock {
+	if r.clock == nil {
+		return clock.Real()
+	}
+	return r.clock
 }
 
 // storedObject is the claim's Sandbox in the synced store as the informer holds it, undecoded, or
@@ -875,7 +887,7 @@ func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 		r.forgetIf(loc)
 		return nil
 	}
-	stopping, cancel := context.WithTimeout(ctx, r.bootTimeout+r.terminationGrace)
+	stopping, cancel := r.timers().WithTimeout(ctx, r.bootTimeout+r.terminationGrace)
 	defer cancel()
 	if err := r.launchers.stop(stopping, loc.Claim, loc.Sandbox.PodUID, r.stopFrame(loc.Sandbox.Generation)); err != nil {
 		return fmt.Errorf("suspend %s: %w", loc.Claim, err)

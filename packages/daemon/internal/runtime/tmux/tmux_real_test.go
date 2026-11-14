@@ -35,6 +35,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -449,7 +450,10 @@ func (c *stubConn) awaitEvent(t *testing.T, want string) {
 
 // rig is one test's private tmux server, daemon, stream stub, and runtime.
 type rig struct {
-	t            *testing.T
+	t *testing.T
+	// clock is every runtime's of the rig (Options.Clock): the sweep's period and each tmux
+	// client's command timeout run on it, and a row moves it (nextSweep, hungServer.outlast).
+	clock        *clocktest.Fake
 	dir          string // the server's TMUX_TMPDIR as well as the rig's files
 	stateDir     string
 	rolePrompt   string
@@ -467,7 +471,7 @@ type rig struct {
 func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	t.Helper()
 	requireTmux(t)
-	r := &rig{t: t}
+	r := &rig{t: t, clock: clocktest.New(time.Now())}
 	r.legion, r.omp = standins(t)
 	r.project = "t" + randomHex(t, 4)
 	// The directory is the server's TMUX_TMPDIR itself, with no subdirectory: tmux binds
@@ -513,17 +517,19 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 func (r *rig) newRuntime(adjust ...func(*Options)) *Runtime {
 	r.t.Helper()
 	opts := Options{
-		Project:              r.project,
-		StateDir:             r.stateDir,
-		StreamAddress:        "unix://" + filepath.Join(r.dir, "stream.sock"),
-		DaemonURL:            r.daemon.server.URL,
-		EnvoyURL:             "http://127.0.0.1:9020",
-		NatsURLs:             []string{"nats://127.0.0.1:4222"},
-		Launchers:            ompOnly(shellprefix.Word(r.omp)),
-		StopGrace:            5 * time.Second,
-		ProbeInterval:        100 * time.Millisecond,
-		AdoptTimeout:         5 * time.Second,
-		CommandTimeout:       10 * time.Second,
+		Project:       r.project,
+		StateDir:      r.stateDir,
+		StreamAddress: "unix://" + filepath.Join(r.dir, "stream.sock"),
+		DaemonURL:     r.daemon.server.URL,
+		EnvoyURL:      "http://127.0.0.1:9020",
+		NatsURLs:      []string{"nats://127.0.0.1:4222"},
+		Launchers:     ompOnly(shellprefix.Word(r.omp)),
+		StopGrace:     5 * time.Second,
+		// The daemon's defaults (probe_interval_seconds, slow_command_timeout_seconds, and the
+		// runtime's own 30 s command timeout), on the rig's fake clock, which only a row moves.
+		ProbeInterval:        30 * time.Second,
+		AdoptTimeout:         300 * time.Second,
+		Clock:                r.clock,
 		Conns:                r.stream,
 		Environ:              r.environ,
 		Executable:           func() (string, error) { return r.legion, nil },
@@ -621,6 +627,136 @@ func probe(t *testing.T, rt *Runtime, loc runtime.Locator) runtime.Observation {
 		t.Fatalf("Probe: %v", err)
 	}
 	return obs
+}
+
+// nextSweep is the report of the sweep that starts once the rig's clock reaches the end of the
+// sweep's period. The caller has received the previous sweep's report, after which that sweep
+// runs no tmux client, so it moves the clock only once exactly one deadline is armed and that
+// deadline is the period's, ProbeInterval from the clock's present, and only to it: the move ends
+// no client's wait. Then it waits for the report the next sweep sends.
+func (r *rig) nextSweep(t *testing.T, what string, observations <-chan runtime.Observation) runtime.Observation {
+	t.Helper()
+	period := r.clock.Now().Add(r.rt.probeInterval)
+	testwait.Until(t, what+": the sweep's period, at "+period.Format(time.RFC3339Nano)+", the one deadline armed", func() ([]time.Time, bool) {
+		armed := r.clock.Armed()
+		return armed, len(armed) == 1 && armed[0].Equal(period)
+	})
+	r.clock.Set(period)
+	got := testwait.Until(t, what, func() (sweepReport, bool) {
+		select {
+		case obs, open := <-observations:
+			return sweepReport{obs, open}, true
+		default:
+			return sweepReport{}, false
+		}
+	})
+	if !got.open {
+		t.Fatalf("%s: the sweep's channel closed", what)
+	}
+	return got.obs
+}
+
+// sweepReport is one receive from the sweep's channel: what came, and whether the channel was
+// still open.
+type sweepReport struct {
+	obs  runtime.Observation
+	open bool
+}
+
+// hungServer is a tmux server that accepts every client and never says anything to one: a server
+// not responding. Each client it accepts it holds, under its lock, until the row ends.
+type hungServer struct {
+	mu   sync.Mutex
+	held []net.Conn
+	// ranOut is how many of the held clients the row has moved its clock past (outlast); the
+	// row's own goroutine alone reads and writes it.
+	ranOut int
+}
+
+// listenHung serves a hung server on the unix socket at path until the test ends.
+func listenHung(t *testing.T, path string) *hungServer {
+	t.Helper()
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &hungServer{}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			h.mu.Lock()
+			h.held = append(h.held, conn)
+			h.mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		listener.Close()
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		for _, conn := range h.held {
+			conn.Close()
+		}
+	})
+	return h
+}
+
+// accepted is how many clients the server has accepted and holds.
+func (h *hungServer) accepted() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.held)
+}
+
+// outlast waits until done reports true, running out on clk, the clock of the runtime whose
+// clients reach the server, the command timeout of each client the server holds: once the server
+// has accepted a client the clock has not yet been moved past and that client's deadline,
+// commandTimeout from the clock's present, is armed, it sets the clock to that deadline and no
+// further. A client the server holds never hears from it, so only its timeout ends it; the clock
+// moves for no other wait.
+func (h *hungServer) outlast(t *testing.T, clk *clocktest.Fake, commandTimeout time.Duration, what string, done func() bool) {
+	t.Helper()
+	for {
+		var deadline time.Time
+		finished := false
+		testwait.Eventually(t, what+", or a client the hung server holds, its command timeout armed", func() bool {
+			if done() {
+				finished = true
+				return true
+			}
+			if h.accepted() <= h.ranOut {
+				return false
+			}
+			deadline = clk.Now().Add(commandTimeout)
+			return slices.Contains(clk.Armed(), deadline)
+		})
+		if finished {
+			return
+		}
+		clk.Set(deadline)
+		h.ranOut++
+	}
+}
+
+// returning runs call, running out the command timeout of each client of its that the server
+// holds (outlast) until it returns.
+func (h *hungServer) returning(t *testing.T, r *rig, what string, call func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		call()
+	}()
+	h.outlast(t, r.clock, r.rt.commandTimeout, what+" to return", func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 // awaitGone re-probes loc until it reads Gone, and fails if the process is ever Alive again. A stop
@@ -1202,37 +1338,13 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 // A tmux server that does not answer proves nothing about a pane: Probe says Uncertain, and a stop
 // that cannot confirm its process gone is an error, never a success.
 func TestRealTmuxUncertainOnABrokenSocket(t *testing.T) {
-	r := newRig(t, func(o *Options) { o.CommandTimeout = time.Second })
+	r := newRig(t)
 	socketDir := filepath.Join(r.dir, fmt.Sprintf("tmux-%d", os.Getuid()))
 	if err := os.MkdirAll(socketDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// A socket that accepts and never says anything: a server not responding.
-	hung, err := net.Listen("unix", filepath.Join(socketDir, r.rt.Socket()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hung.Close()
-	var held []net.Conn
-	var heldMu sync.Mutex
-	go func() {
-		for {
-			conn, err := hung.Accept()
-			if err != nil {
-				return
-			}
-			heldMu.Lock()
-			held = append(held, conn)
-			heldMu.Unlock()
-		}
-	}()
-	defer func() {
-		heldMu.Lock()
-		defer heldMu.Unlock()
-		for _, conn := range held {
-			conn.Close()
-		}
-	}()
+	hung := listenHung(t, filepath.Join(socketDir, r.rt.Socket()))
 	loc := runtime.Locator{
 		Runtime:     runtime.RuntimeTmux,
 		Claim:       "legion-t-LEGION-9-architect",
@@ -1241,20 +1353,37 @@ func TestRealTmuxUncertainOnABrokenSocket(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	obs := probe(t, r.rt, loc)
-	if obs.Kind != runtime.Uncertain || !strings.Contains(obs.Detail, "cannot verify pane %1: list-panes -t %1 timed out") {
-		t.Errorf("Probe on a hung server = %+v, want uncertain naming the timeout", obs)
+	// Every client against the hung server runs to its command timeout, which runs on the rig's
+	// clock: each call below returns once the clock has been moved past the timeout of each client
+	// of its the server holds (outlast).
+	var obs runtime.Observation
+	var probeErr, suspendErr, releaseErr, reconcileErr error
+	hung.returning(t, r, "the probe on the hung server", func() { obs, probeErr = r.rt.Probe(ctx, loc) })
+	if probeErr != nil || obs.Kind != runtime.Uncertain || !strings.Contains(obs.Detail, "cannot verify pane %1: list-panes -t %1 timed out") {
+		t.Errorf("Probe on a hung server = %+v, %v; want uncertain naming the timeout", obs, probeErr)
 	}
-	if err := r.rt.Suspend(ctx, loc); err == nil || !strings.Contains(err.Error(), "cannot verify pane %1") {
-		t.Errorf("Suspend on a hung server = %v, want a refusal", err)
+	hung.returning(t, r, "the suspend on the hung server", func() { suspendErr = r.rt.Suspend(ctx, loc) })
+	if suspendErr == nil || !strings.Contains(suspendErr.Error(), "cannot verify pane %1") {
+		t.Errorf("Suspend on a hung server = %v, want a refusal", suspendErr)
 	}
-	if err := r.rt.Release(ctx, runtime.Known{Claim: loc.Claim, Locator: &loc}); err == nil || !strings.Contains(err.Error(), "cannot verify pane %1") {
-		t.Errorf("Release on a hung server = %v, want a refusal", err)
+	hung.returning(t, r, "the release on the hung server", func() { releaseErr = r.rt.Release(ctx, runtime.Known{Claim: loc.Claim, Locator: &loc}) })
+	if releaseErr == nil || !strings.Contains(releaseErr.Error(), "cannot verify pane %1") {
+		t.Errorf("Release on a hung server = %v, want a refusal", releaseErr)
 	}
-	if err := r.rt.ReconcileOrphans(ctx, []runtime.Known{{Claim: loc.Claim, Locator: &loc}}, 0); err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("ReconcileOrphans on a hung server = %v, want the listing's failure", err)
+	hung.returning(t, r, "the reconcile on the hung server", func() {
+		reconcileErr = r.rt.ReconcileOrphans(ctx, []runtime.Known{{Claim: loc.Claim, Locator: &loc}}, 0)
+	})
+	if reconcileErr == nil || !strings.Contains(reconcileErr.Error(), "timed out") {
+		t.Errorf("ReconcileOrphans on a hung server = %v, want the listing's failure", reconcileErr)
 	}
-	// The sweep reports the same, and keeps the process watched.
+	// The sweep reports the same, and keeps the process watched. Each sweep's probe is a client
+	// the hung server holds, and the sweep's period and that client's timeout are armed from the
+	// same present for the same length, so the move that runs the client out ends the period too,
+	// and the next sweep starts as soon as this one has reported: no move of the period's own is
+	// needed.
+	if r.rt.probeInterval != r.rt.commandTimeout {
+		t.Fatalf("the rig's probe interval %s is not its command timeout %s, which this row's sweeps rest on", r.rt.probeInterval, r.rt.commandTimeout)
+	}
 	sweepCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	observations, err := r.rt.Observe(sweepCtx)
@@ -1262,7 +1391,21 @@ func TestRealTmuxUncertainOnABrokenSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 2 {
-		if obs := testwait.Receive(t, fmt.Sprintf("sweep %d's report", i), observations); obs.Kind != runtime.Uncertain || obs.Locator.Incarnation != loc.Incarnation {
+		what := fmt.Sprintf("sweep %d's report", i)
+		var report sweepReport
+		hung.outlast(t, r.clock, r.rt.commandTimeout, what, func() bool {
+			select {
+			case obs, open := <-observations:
+				report = sweepReport{obs, open}
+				return true
+			default:
+				return false
+			}
+		})
+		if !report.open {
+			t.Fatalf("%s: the sweep's channel closed", what)
+		}
+		if obs := report.obs; obs.Kind != runtime.Uncertain || obs.Locator.Incarnation != loc.Incarnation {
 			t.Errorf("sweep %d reported %+v, want uncertain", i, obs)
 		}
 	}
@@ -1468,10 +1611,11 @@ func TestRealTmuxObserveReportsGoneOnce(t *testing.T) {
 	// vanished by the time it was read. The supervisor takes either for the same death
 	// (internal/supervise/machine.go:806), and the sweep untracks on either, so it reports either
 	// once (observe.go:58-60). Each wait names the last observation, since a classifier stuck on
-	// Uncertain or Alive and a sweep gone silent would otherwise fail alike.
+	// Uncertain or Alive and a sweep gone silent would otherwise fail alike. Each later sweep starts
+	// once the rig's clock passes the period (nextSweep).
 	var last runtime.Observation
 	for final := false; !final; {
-		last = testwait.Receive(t, fmt.Sprintf("the sweep to report the killed pane gone (last report: %+v)", last), observations)
+		last = r.nextSweep(t, fmt.Sprintf("the sweep to report the killed pane gone (last report: %+v)", last), observations)
 		final = last.Kind == runtime.Gone || last.Kind == runtime.NotRecordedProcess
 	}
 	// The sweep reports only what it watches, and lets a process go right after sending its final

@@ -548,24 +548,20 @@ func TestPodDriftTellsTheRoundsOwnReplacementFromALaunchs(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			// The replacement runs in a goroutine while the row reads, and each of its waits
-			// (awaitPodGone, then awaitNewPod) is bounded by BootTimeout, which the rig and
-			// testOptions both set to two seconds: the row's reading had to finish inside that or
-			// the wait it must end gave up first (INFRA-985). A minute is the replacement's own
-			// bound here, and the row ends the pod's termination itself, so those waits end on
-			// their events. Both runtimes get it: the replacement runs on the second one, which
-			// builds its own Options.
-			longBoot := func(o *Options) { o.BootTimeout = time.Minute }
-			g := newRig(t, nil, withOptions(longBoot))
+			// (awaitPodGone, then awaitNewPod) is bounded by BootTimeout. testOptions sets the
+			// daemon's own two minutes, for both runtimes (the replacement runs on the second one,
+			// which builds its Options from testOptions too); at the two seconds it once held, the
+			// row's reading had to finish inside that or the wait it must end gave up first
+			// (INFRA-985). The row ends the pod's termination itself, so those waits end on their
+			// events.
+			g := newRig(t, nil)
 			// The pod stays terminating until this test releases it, which is the window the
 			// reading is taken in: the suspension has landed and the pod has not ended.
 			g.holdTerminating.Store(true)
 			spec := workerSpec(t)
 			loc := g.spawn(spec)
 			sandboxName := loc.Sandbox.Name
-			r2 := secondRuntime(t, g, func(o *Options) {
-				tc.moved(o)
-				longBoot(o)
-			})()
+			r2 := secondRuntime(t, g, tc.moved)()
 			g.connectRunning(spec.Claim, loc.Sandbox.Generation)
 			g.eventually("the role's launcher to report its child to the restarted daemon", func() bool {
 				state, connected := r2.launchers.state(spec.Claim, loc.Sandbox.PodUID)

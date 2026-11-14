@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -1436,7 +1437,9 @@ func TestSandboxNameHashIsTheControllersNameHash(t *testing.T) {
 // leaves it once it has adopted it — its own controller reference and the exact selector written,
 // its type and external name kept. The launch waits on it, logging why, and fails at the boot
 // timeout naming the Service, with no issue pod made and no token written for one; and legion
-// state shows the cache refused, naming the Service and why.
+// state shows the cache refused, naming the Service and why. Nothing the launch does reaches a
+// socket, so it runs in a synctest bubble, whose clock passes the boot timeout once every
+// goroutine of the rig is blocked with the launch still waiting on the Service.
 func TestAnIssuePodGetsNoCacheAddressFromAServiceThatIsNotTheCaches(t *testing.T) {
 	for name, tc := range map[string]struct {
 		edit func(*corev1.Service)
@@ -1455,31 +1458,33 @@ func TestAnIssuePodGetsNoCacheAddressFromAServiceThatIsNotTheCaches(t *testing.T
 		}, "is a ClusterIP Service"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			spec := rootSpec(t)
-			cache := CacheSandboxName(testProject, spec.Repository)
-			service := cacheService(cache, "uid-cache")
-			tc.edit(service)
-			logs := &logBuffer{}
-			g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), service}, withLog(logs))
+			synctest.Test(t, func(t *testing.T) {
+				spec := rootSpec(t)
+				cache := CacheSandboxName(testProject, spec.Repository)
+				service := cacheService(cache, "uid-cache")
+				tc.edit(service)
+				logs := &logBuffer{}
+				g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), service}, withLog(logs), withBubbleBoot())
 
-			_, err := g.r.Spawn(g.ctx, spec)
-			if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache) || !strings.Contains(err.Error(), tc.says) {
-				t.Fatalf("Spawn = %v, want the launch refused naming the Service %s and %q", err, cache, tc.says)
-			}
-			issue := SandboxName(spec.Claim)
-			if pod := g.pod(issue); pod != nil {
-				t.Errorf("the refused launch made the issue pod %s", pod.Name)
-			}
-			if secret := g.secret(secretName(issue)); secret != nil {
-				t.Errorf("the refused launch wrote the provisioning Secret %s: %v", secret.Name, slices.Sorted(maps.Keys(secret.Data)))
-			}
-			if !strings.Contains(logs.String(), "service="+cache) || !strings.Contains(logs.String(), tc.says) {
-				t.Errorf("the launch logged %q, want its wait on the Service %s and why", logs.String(), cache)
-			}
-			status, found := g.r.RepositoryCache(spec.Repository)
-			if !found || status.State != cacheRefused || status.Ready || status.Address != "" || !strings.Contains(status.Reason, "Service "+cache) || !strings.Contains(status.Reason, tc.says) {
-				t.Errorf("RepositoryCache = %+v, %t; want it refused, naming the Service %s and %q", status, found, cache, tc.says)
-			}
+				_, err := g.r.Spawn(g.ctx, spec)
+				if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache) || !strings.Contains(err.Error(), tc.says) {
+					t.Fatalf("Spawn = %v, want the launch refused naming the Service %s and %q", err, cache, tc.says)
+				}
+				issue := SandboxName(spec.Claim)
+				if pod := g.pod(issue); pod != nil {
+					t.Errorf("the refused launch made the issue pod %s", pod.Name)
+				}
+				if secret := g.secret(secretName(issue)); secret != nil {
+					t.Errorf("the refused launch wrote the provisioning Secret %s: %v", secret.Name, slices.Sorted(maps.Keys(secret.Data)))
+				}
+				if !strings.Contains(logs.String(), "service="+cache) || !strings.Contains(logs.String(), tc.says) {
+					t.Errorf("the launch logged %q, want its wait on the Service %s and why", logs.String(), cache)
+				}
+				status, found := g.r.RepositoryCache(spec.Repository)
+				if !found || status.State != cacheRefused || status.Ready || status.Address != "" || !strings.Contains(status.Reason, "Service "+cache) || !strings.Contains(status.Reason, tc.says) {
+					t.Errorf("RepositoryCache = %+v, %t; want it refused, naming the Service %s and %q", status, found, cache, tc.says)
+				}
+			})
 		})
 	}
 }
@@ -1489,32 +1494,36 @@ func TestAnIssuePodGetsNoCacheAddressFromAServiceThatIsNotTheCaches(t *testing.T
 // at the boot timeout naming the Service and the stale store, with nothing written, and legion
 // state shows the cache refused, saying its Service cannot be checked. Once a request succeeds the
 // store is trusted again. The failure recorded here is what the Service informer's list or watch
-// records when the API server refuses it.
+// records when the API server refuses it. Nothing the launch does reaches a socket, so it runs in
+// a synctest bubble, whose clock passes the boot timeout once every goroutine of the rig is
+// blocked with the launch still waiting on the Service.
 func TestNoServiceIsTrustedWhileTheServiceWatchFails(t *testing.T) {
-	spec := rootSpec(t)
-	cache := CacheSandboxName(testProject, spec.Repository)
-	logs := &logBuffer{}
-	g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), cacheService(cache, "uid-cache")}, withLog(logs))
-	g.r.serviceFeed.record(errors.New(`services is forbidden: User "legion-daemon" cannot watch resource "services"`), time.Now())
-	says := "cannot be checked: the Service store may be stale"
+	synctest.Test(t, func(t *testing.T) {
+		spec := rootSpec(t)
+		cache := CacheSandboxName(testProject, spec.Repository)
+		logs := &logBuffer{}
+		g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), cacheService(cache, "uid-cache")}, withLog(logs), withBubbleBoot())
+		g.r.serviceFeed.record(errors.New(`services is forbidden: User "legion-daemon" cannot watch resource "services"`), time.Now())
+		says := "cannot be checked: the Service store may be stale"
 
-	_, err := g.r.Spawn(g.ctx, spec)
-	if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache+" "+says) {
-		t.Fatalf("Spawn = %v, want the launch refused naming the Service %s and %q", err, cache, says)
-	}
-	issue := SandboxName(spec.Claim)
-	if pod, secret := g.pod(issue), g.secret(secretName(issue)); pod != nil || secret != nil {
-		t.Errorf("the refused launch made pod %v and Secret %v, want neither", pod != nil, secret != nil)
-	}
-	if !strings.Contains(logs.String(), "service="+cache) || !strings.Contains(logs.String(), says) {
-		t.Errorf("the launch logged %q, want its wait on the Service %s and why", logs.String(), cache)
-	}
-	if status, _ := g.r.RepositoryCache(spec.Repository); status.State != cacheRefused || status.Address != "" || !strings.Contains(status.Reason, "its Service "+cache+" "+says) {
-		t.Errorf("RepositoryCache = %+v, want it refused, its Service unchecked", status)
-	}
+		_, err := g.r.Spawn(g.ctx, spec)
+		if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache+" "+says) {
+			t.Fatalf("Spawn = %v, want the launch refused naming the Service %s and %q", err, cache, says)
+		}
+		issue := SandboxName(spec.Claim)
+		if pod, secret := g.pod(issue), g.secret(secretName(issue)); pod != nil || secret != nil {
+			t.Errorf("the refused launch made pod %v and Secret %v, want neither", pod != nil, secret != nil)
+		}
+		if !strings.Contains(logs.String(), "service="+cache) || !strings.Contains(logs.String(), says) {
+			t.Errorf("the launch logged %q, want its wait on the Service %s and why", logs.String(), cache)
+		}
+		if status, _ := g.r.RepositoryCache(spec.Repository); status.State != cacheRefused || status.Address != "" || !strings.Contains(status.Reason, "its Service "+cache+" "+says) {
+			t.Errorf("RepositoryCache = %+v, want it refused, its Service unchecked", status)
+		}
 
-	g.r.serviceFeed.record(nil, time.Now())
-	if refusal, made := g.r.cacheServiceRefusal(cache, "uid-cache"); refusal != "" || !made {
-		t.Errorf("cacheServiceRefusal once the watch is fed again = %q, %t; want the cache's own Service", refusal, made)
-	}
+		g.r.serviceFeed.record(nil, time.Now())
+		if refusal, made := g.r.cacheServiceRefusal(cache, "uid-cache"); refusal != "" || !made {
+			t.Errorf("cacheServiceRefusal once the watch is fed again = %q, %t; want the cache's own Service", refusal, made)
+		}
+	})
 }

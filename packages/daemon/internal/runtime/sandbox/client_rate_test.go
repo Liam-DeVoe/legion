@@ -312,7 +312,9 @@ func TestLaunchesInFlightAtARestartOutwaitTheReconnectingLaunchersReads(t *testi
 	const pods, speedup = 25, 100
 	limit := newFakeLimiter(2, speedup)
 	objects, hellos := reconnectingPods(t, pods)
-	g := newRig(t, objects, withClientLimiter(limit), withOptions(func(o *Options) { o.BootTimeout = 5 * time.Minute }))
+	// The rig's boot timeout is the daemon's own two minutes (testOptions), which outlasts the
+	// limiter's 30 s queue as production's does, so every wait a launch takes behind it ends.
+	g := newRig(t, objects, withClientLimiter(limit))
 
 	accept := g.r.LauncherResolver()
 	var sent, accepted atomic.Int64
@@ -605,13 +607,10 @@ func TestTheInformersWatchOnTheirClientsAndALaunchsRequestsGoThroughTheRequests(
 // that covered the queue would end the request where it stands, so the queue is what the row
 // reads — the hold the limiter itself imposed (heldLast), which must outlast the timeout for the
 // request's success to say anything — and not the span of the call, which also carries a loopback
-// round trip a loaded machine makes slow. The timeout is a second rather than the 50 ms it was
-// so that an ordinary round trip ends well inside it and only the queue can spend it. That is a
-// wider bound, not independence from the machine: it is the product's own timeout rather than a
-// wall clock this test chose, and it is proven at the load this row is sized for - two and eight
-// busy loops on these cores, 30 runs of 30 - while starvation past that (thirty-two loops, eight
-// times the cores) can still spend a second on the round trip, which is outside what the row
-// claims rather than a mode it rules out.
+// round trip a loaded machine makes slow. The timeout is client-go's own request timeout, which no
+// clock of this repository's reaches, so the row lengthens it (5 s, from the 50 ms and then the
+// second it once was) to keep an ordinary round trip, starved as far as a loaded machine starves
+// it, well inside it, and holds the request twice as long: only the queue can spend it.
 func TestARequestsTimeoutStartsOnceTheClientsLimiterLetsItGo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -619,13 +618,13 @@ func TestARequestsTimeoutStartsOnceTheClientsLimiterLetsItGo(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	requests := requestConfig(&rest.Config{Host: server.URL})
-	// One slot every two seconds: the Wait below takes the free one, and the request waits out the
-	// next.
-	limit := newFakeLimiter(0.5, 1)
+	// One slot every ten seconds: the Wait below takes the free one, and the request waits out the
+	// next, twice its 5 s timeout.
+	limit := newFakeLimiter(0.1, 1)
 	if err := limit.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	requests.RateLimiter, requests.Timeout = limit, time.Second
+	requests.RateLimiter, requests.Timeout = limit, 5*time.Second
 	kube, err := kubernetes.NewForConfig(requests)
 	if err != nil {
 		t.Fatal(err)

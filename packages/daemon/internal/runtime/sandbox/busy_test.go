@@ -184,11 +184,13 @@ func TestABurstOfRelaunchesThroughAThrottlingAPIServerConvergesUncharged(t *test
 	}
 }
 
-// burstOfRelaunches is the burst, the informers' lists and watches refused with feedRefusal.
+// burstOfRelaunches is the burst, the informers' lists and watches refused with feedRefusal. Each
+// launch's waits are bounded by the rig's boot timeout, the daemon's own two minutes (testOptions),
+// which the burst's throttle only delays.
 func burstOfRelaunches(t *testing.T, feedRefusal error) {
 	const issues = 8
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer}
-	g := newRig(t, nil, withBreakableFeeds(), withOptions(func(o *Options) { o.BootTimeout = 15 * time.Second }))
+	g := newRig(t, nil, withBreakableFeeds())
 	type role struct {
 		spec    runtime.SpawnSpec
 		machine *supervise.Machine

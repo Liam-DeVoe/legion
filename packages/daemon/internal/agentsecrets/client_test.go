@@ -598,10 +598,9 @@ func TestTheLoginLoopRenewsHalfwayToExpiry(t *testing.T) {
 }
 
 // TestAFailedLoginIsRetriedAfterItsWait: a login the broker refuses is logged and retried by the
-// loop once loginRetryWait has passed, and the first one that succeeds gives the client its
-// credential.
+// loop once its wait on the refusal's schedule has passed on the client's clock — loginRetryInitial,
+// then twice that — and the first one that succeeds gives the client its credential.
 func TestAFailedLoginIsRetriedAfterItsWait(t *testing.T) {
-	withLoginRetry(t, 50*time.Millisecond, 100*time.Millisecond)
 	broker, server := newFakeBroker(t)
 	broker.refuseLogins = []enrollAnswer{
 		{http.StatusTooManyRequests, `{"code":"RATE_LIMITED","error":"slow down"}`},
@@ -609,10 +608,18 @@ func TestAFailedLoginIsRetriedAfterItsWait(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	fake := clocktest.New(time.Now())
+	broker.now = fake.Now
 	logged := &lockedLog{}
-	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(logged, nil))}
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(logged, nil)), clock: fake}
 	if err := c.Start(ctx); err == nil {
 		t.Fatal("the first login succeeded, want the refusal")
+	}
+	for i, want := range []time.Duration{loginRetryInitial, 2 * loginRetryInitial} {
+		if wait := armedWait(t, broker, fake, i+1); wait != want {
+			t.Fatalf("after refused login %d the login loop waits %v before the next, want the refusal's schedule's %v", i+1, wait, want)
+		}
+		fake.Advance(want)
 	}
 	eventually(t, func() bool { return c.LoginStatus().State == "issued" }, "a retried login to succeed")
 	if n := broker.loginCount(); n != 3 {
@@ -650,25 +657,26 @@ func TestTokenLoginRetriesQuicklyWhileTheBrokerDoesNotAnswer(t *testing.T) {
 }
 
 // TestTokenLoginRetriesSlowlyWhenTheBrokerRefuses: a login the broker answers with a refusal waits
-// the long schedule's first wait before the next attempt, not the short one an unanswered login
-// waits, and is then retried.
+// the long schedule's first wait (loginRetryInitial) before the next attempt, not the short one an
+// unanswered login waits (unavailableRetryInitial), and is then retried.
 func TestTokenLoginRetriesSlowlyWhenTheBrokerRefuses(t *testing.T) {
-	withLoginRetry(t, 300*time.Millisecond, 300*time.Millisecond)
-	withUnansweredRetry(t, 10*time.Millisecond, 10*time.Millisecond)
 	broker, server := newFakeBroker(t)
 	broker.refuseLogins = []enrollAnswer{{http.StatusUnauthorized, `{"code":"TOKEN_EXPIRED","error":"the token has expired"}`}}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	fake := clocktest.New(time.Now())
+	broker.now = fake.Now
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), clock: fake}
 	err := c.Start(ctx)
 	var api *APIError
 	if !errors.As(err, &api) || api.Status != http.StatusUnauthorized {
 		t.Fatalf("the first login = %v, want the broker's 401", err)
 	}
-	eventually(t, func() bool { return c.LoginStatus().State == "issued" }, "the refused login to be retried")
-	if gap := broker.login(1).at.Sub(broker.login(0).at); gap < 300*time.Millisecond {
-		t.Fatalf("the retry came %v after the refusal, want the long schedule's 300 ms wait at least", gap)
+	if wait := armedWait(t, broker, fake, 1); wait != loginRetryInitial {
+		t.Fatalf("after the refusal the login loop waits %v before the next, want the long schedule's %v, never the short schedule's %v", wait, loginRetryInitial, unavailableRetryInitial)
 	}
+	fake.Advance(loginRetryInitial)
+	eventually(t, func() bool { return c.LoginStatus().State == "issued" }, "the refused login to be retried")
 }
 
 // TestTokenLoginRetriesQuicklyWhileTheFrontDoorAnswersForADownBroker: the daemon reaches the
