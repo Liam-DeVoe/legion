@@ -582,7 +582,8 @@ something to count.
   container when both are set, so run one yourself and point them at it:
 
   ```sh
-  go run github.com/nats-io/nats-server/v2@v2.15.1 -js -p 14222 -m 18222 -sd "$TMPDIR/nats" &
+  store=$(mktemp -d "$TMPDIR/nats.XXXXXX")
+  go run github.com/nats-io/nats-server/v2@v2.15.1 -js -p 14222 -m 18222 -sd "$store" &
   export LEGION_TEST_NATS_URL=nats://127.0.0.1:14222 LEGION_TEST_NATS_MONITOR_URL=http://127.0.0.1:18222
   ```
 
@@ -592,7 +593,13 @@ something to count.
   that leaves a client connected. One server serves one test binary at a time, so name one
   package a command (or pass `-p 1`): two packages' binaries on one server delete each other's
   streams, and each would see the other's connections as a leak.
-  Pick ports no sibling role holds, and keep the store directory off your home. In your own
+  Pick ports no sibling role holds, and keep the store directory off your home.
+  Give each run a store of its own, made empty, as the `mktemp -d` above does, and delete it
+  when the server stops: JetStream keeps its streams in the store across a restart, so a server
+  started again on an old store serves the streams an earlier suite left. Measured on
+  2026-11-13: pi-legion's real-binary suite failed 12 cases, each one a relay frame answered by
+  an `ENVOY_NOTIFICATIONS` stream that an earlier run had left in the store, and passed whole
+  (914 pass, 0 fail) against a server on an empty store. In your own
   work, run the NATS-backed tests your change touches by name (`go test -run`), as the first
   section says. Measured here, as proof of the route and not as a run to repeat:
   `go run …@v2.15.1 --version` prints `nats-server: v2.15.1`, and with the two variables set
