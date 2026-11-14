@@ -773,9 +773,9 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			messageBody
 			TargetSession string `json:"target_session"`
 			// ConnectedOnly asks for a stopped target to be refused rather than written to:
-			// Dispatch's model and effort switch sets it, because a switch that applied at an
-			// unknown later time is worse for its sender than no switch at all. Absent, which is
-			// every other sender and every older client, nothing changes.
+			// Dispatch's live view's model and thinking switch sets it, because a switch that
+			// applied at an unknown later time is worse for its sender than no switch at all.
+			// Absent, which is every other sender and every older client, nothing changes.
 			ConnectedOnly bool `json:"connected_only"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {

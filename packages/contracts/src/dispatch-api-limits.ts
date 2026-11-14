@@ -302,6 +302,9 @@ export const IDEMPOTENCY_LEASE_MS = 60 * 1000;
  */
 export const DELIVERY_DUPLICATE_WINDOW_MS = 72 * 60 * 60 * 1000;
 
+/** `DELIVERY_DUPLICATE_WINDOW_MS` in whole hours, for text that names the window. */
+export const DELIVERY_DUPLICATE_WINDOW_HOURS = DELIVERY_DUPLICATE_WINDOW_MS / 3_600_000;
+
 /**
  * The cause a delivery attempt records when the listener never answered its send. The listener
  * publishes before it answers, so this is the one failure that may already have reached the

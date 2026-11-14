@@ -1,4 +1,8 @@
-import { RECEIPT_TIMEOUT_CAUSE } from "../../../packages/contracts/src/dispatch-api";
+import {
+  DELIVERY_DUPLICATE_WINDOW_HOURS,
+  RECEIPT_TIMEOUT_CAUSE,
+  SETTLED_DELIVERY_STATES,
+} from "../../../packages/contracts/src/dispatch-api";
 import {
   COUNT_KEYS,
   type Comment,
@@ -198,7 +202,8 @@ export const CAUSES: Readonly<Record<string, CauseEntry>> = {
       "running. The session reads it when it runs again.",
     fix:
       "Nothing to fix: the mention is stored, not thrown away. It is lost only when the " +
-      "session never runs again, since the stream drops a message 72 hours old.",
+      `session does not run again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, since the ` +
+      `stream drops a message ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours old.`,
   },
   "not-running": {
     meaning:
@@ -275,11 +280,12 @@ function judgePair(comment: Comment, pair: Pair): Verdict {
   if (receipt.status === "unknown")
     return { class: "unknown", cause: "", why: receipt.unknownReason };
   if (comment.publishedAt === "") return notDelivered("never-published");
-  // A queued attempt is one the listener took, as a sent one is: it stored the mention for a
-  // session it knows that was not running. So the mention did address the session, and the pair
-  // is never not-addressed; it has not reached the session yet, so it is not delivered either.
-  const taken = pair.mentionState === "sent" || pair.mentionState === "queued";
-  if (pair.reasons.length > 0 && !pair.addressed && !taken && pair.mentionState !== "failed") {
+  // A mention attempt that settled - sent, queued (stored for a session the listener knows that
+  // was not running) or failed - is a delivery Dispatch tried, so the pair is not-addressed only
+  // when no attempt settled. A queued pair has not reached the session yet, so it is not
+  // delivered either.
+  const settled = (SETTLED_DELIVERY_STATES as readonly string[]).includes(pair.mentionState);
+  if (pair.reasons.length > 0 && !pair.addressed && !settled) {
     return notDelivered(`not-addressed:${pair.reasons.join("+")}`);
   }
   if (pair.mentionState === "failed") {

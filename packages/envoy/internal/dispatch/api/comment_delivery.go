@@ -114,7 +114,7 @@ type sendOutcome struct {
 
 // sendResolvedDelivery sends one already-resolved delivery and reports what the listener did.
 // connectedOnly asks the listener to refuse a stopped target rather than store the message for
-// it, which the model and effort switch alone sets (createStoredMessage).
+// it (pendingMessageDelivery.connectedOnly).
 //
 // Every failure comes with a nil envelope. The dashboard reads a failed attempt row that carries
 // an envelope id as one its session answered with an error (rowAnsweredWithError in
@@ -169,7 +169,7 @@ func (s *server) sendResolvedDelivery(
 	}
 	// The listener's own word for what it did with the message: handed to a running session, or
 	// stored for one it knows that is not running. A listener that predates the field answers
-	// none, which reads as connected, exactly what every send meant before it existed.
+	// none, which reads as connected.
 	queued := send.State == dispatchenvoy.SendStateStopped
 	// A duplicate names an envelope JetStream discarded, so the attempt records none.
 	if send.Duplicate {
@@ -726,8 +726,9 @@ func (s *server) deliverResolvedCommentMention(
 	wanted := commentExpectsReply(stored)
 	var outcome sendOutcome
 	send := func() string {
-		// A comment mention is never the model and effort switch.
-		outcome = s.sendResolvedDelivery(ctx, target, stored.Body, key, nil, wanted, frame, queueIfStopped)
+		// A comment mention is never the live view's model and thinking switch, so it asks for no
+		// connected session: a stopped session the listener knows takes it when it runs again.
+		outcome = s.sendResolvedDelivery(ctx, target, stored.Body, key, nil, wanted, frame, false)
 		return outcome.failure
 	}
 	if decided && claimed.pending.SessionID == nil {
@@ -735,7 +736,7 @@ func (s *server) deliverResolvedCommentMention(
 		// error is this attempt's outcome, with nothing to try again.
 		send()
 	} else {
-		_, err = takeover.retry(ctx, send, func() (bool, error) {
+		err = takeover.retry(ctx, send, func() (bool, error) {
 			// A pinned row is rechecked; with no session pinned yet the recipient is still the
 			// mention's target, resolved afresh rather than sent the resolve error the row holds.
 			var pinned *model.CommentDelivery
@@ -783,7 +784,7 @@ func (s *server) deliverResolvedCommentMention(
 func (s *server) supersedeOvertakenAttempts(
 	ctx context.Context, comment model.Comment, sent model.CommentDelivery, actor model.Actor,
 ) error {
-	if (sent.State != model.DeliveryStateSent && sent.State != model.DeliveryStateQueued) || sent.Attempt < 2 {
+	if !model.DeliveryTaken(sent.State) || sent.Attempt < 2 {
 		return nil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `

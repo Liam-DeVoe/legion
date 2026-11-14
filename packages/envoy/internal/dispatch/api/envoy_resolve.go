@@ -270,20 +270,20 @@ func (s *server) newTakeoverRetry() takeoverRetry {
 }
 
 // retry is the one take-over loop every sender runs: it makes a try, and while again allows
-// another after a take-over's failure, renews and tries again; it returns the failure the last try
-// recorded, "" for one that succeeded. try makes one try and returns its failure, leaving whatever
-// else the try produced in its caller's variables. renew prepares the next try of an attempt - it
+// another after a take-over's failure, renews and tries again. try makes one try and returns its
+// failure, "" for one that succeeded, leaving whatever else the try produced - the outcome the
+// sender settles with - in its caller's variables. renew prepares the next try of an attempt - it
 // resolves again what the attempt names and renews the claim - and reports whether this sender
 // still holds the attempt; a sender that no longer does makes no further try and settles with the
-// last one, and an error from renew ends the tries with that error. renew is nil for tries that
-// hold no attempt (resolveThroughTakeover).
-func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func() (bool, error)) (string, error) {
+// last one, and an error from renew ends the tries with that error, which retry returns. renew is
+// nil for tries that hold no attempt (resolveThroughTakeover).
+func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func() (bool, error)) error {
 	failure := try()
 	for r.again(ctx, failure) {
 		if renew != nil {
 			held, err := renew()
 			if err != nil {
-				return failure, err
+				return err
 			}
 			if !held {
 				break
@@ -291,7 +291,7 @@ func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func
 		}
 		failure = try()
 	}
-	return failure, nil
+	return nil
 }
 
 // resolveThroughTakeover resolves one target as resolveMentionTarget does, with nothing held,
@@ -320,7 +320,7 @@ func (s *server) resolveThroughTakeover(
 		return resolved, takeover
 	}
 	// A try that holds nothing has nothing to renew, so retry answers no error.
-	_, _ = takeover.retry(ctx, resolve, nil)
+	_ = takeover.retry(ctx, resolve, nil)
 	return resolved, takeover
 }
 

@@ -10,14 +10,17 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // INFRA-626: a session the Envoy listener knows and that is not running is a recipient, not a
 // refusal. The listener stores the message for it and hands it over when it runs again, and
 // Dispatch records that attempt `queued`. A session the listener knows nothing about is refused
-// exactly as before, by the same text.
+// with "no live session <id>".
 
 // fakeSession is one session the queueing listener knows. stopped is a session the listener knows
 // by its known-session record alone, with no registry entry: GET /v1/registry/<id> answers it 200
@@ -190,9 +193,9 @@ func stoppedAndLive(t *testing.T) *queueingListener {
 }
 
 // A person's direct message to a stopped but known session reaches the listener, which stores it
-// for that session, and the attempt is recorded queued - never failed "no live session", which is
-// what Dispatch recorded before this change and what told the person their message was thrown
-// away. The receipt the conversation renders carries the same word.
+// for that session, and the attempt is recorded queued - never failed "no live session", which
+// would tell the person their message was thrown away. The receipt the conversation renders
+// carries the same word.
 func TestDirectMessageToAStoppedSessionIsQueued(t *testing.T) {
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)
@@ -306,9 +309,8 @@ func TestASendAnsweredStoppedIsQueuedThoughTheRegistryReadFoundItLive(t *testing
 	}
 }
 
-// A session Envoy knows nothing about is refused exactly as it always was, by the text
-// retryableDeliveryFailure and the dashboard both key on, and is still excluded from a broadcast
-// with the reason they key on there.
+// A session Envoy knows nothing about is refused by the text retryableDeliveryFailure and the
+// dashboard both key on, and is excluded from a broadcast with the reason they key on there.
 func TestASessionTheListenerDoesNotKnowIsStillRefusedByTheSameText(t *testing.T) {
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)
@@ -376,8 +378,7 @@ func TestASessionAcceptsAQueuedAttemptAsItsTurn(t *testing.T) {
 }
 
 // The delivery sweep resumes and settles the attempts a dead sender left pending. A queued
-// attempt is not one of them - the listener took its message - so a pass leaves it as it is, even
-// on a message whose issue has closed, which is what the sweep settles failed.
+// attempt is not one of them - the listener took its message - so a pass leaves it as it is.
 func TestTheSweepLeavesAQueuedAttemptAlone(t *testing.T) {
 	listener := stoppedAndLive(t)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.url})
@@ -454,10 +455,11 @@ func TestTheSweepResumesAStrandedSwitchAsConnectedOnly(t *testing.T) {
 				t.Fatalf("sweep: %v", err)
 			}
 			attempts := messageAttempts(t, database, messageID)
+			flags := connectedOnlyFlags(t, database, messageID)
 			if len(attempts) != 1 || attempts[0].State != test.wantState ||
-				attempts[0].ConnectedOnly != test.connectedOnly {
-				t.Fatalf("the resumed attempt = %#v, want one %s attempt carrying connected_only=%v",
-					attempts, test.wantState, test.connectedOnly)
+				!slices.Equal(flags, []bool{test.connectedOnly}) {
+				t.Fatalf("the resumed attempt = %#v carrying connected_only %v, want one %s attempt carrying connected_only=%v",
+					attempts, flags, test.wantState, test.connectedOnly)
 			}
 			if test.wantState == "failed" && (attempts[0].Error == nil || *attempts[0].Error != "the session is stopped") {
 				t.Fatalf("the refused switch's error = %v, want \"the session is stopped\"", attempts[0].Error)
@@ -473,7 +475,7 @@ func TestTheSweepResumesAStrandedSwitchAsConnectedOnly(t *testing.T) {
 	}
 }
 
-// The Agents page's model and effort switch keeps its refusal: it asks the listener for a session
+// The live view's model and thinking switch keeps its refusal: it asks the listener for a session
 // that is running now (connected_only), and the 409 it meets settles the attempt failed with the
 // listener's own reason. Nothing is stored for the session, so nothing applies at an unknown
 // later time.
@@ -550,11 +552,12 @@ func TestARetryOfARefusedSwitchIsRefusedAgainAndQueuesNothing(t *testing.T) {
 	}
 
 	attempts := messageAttempts(t, database, message.ID)
-	if len(attempts) != 3 {
-		t.Fatalf("the switch's attempts = %#v, want three", attempts)
+	flags := connectedOnlyFlags(t, database, message.ID)
+	if len(attempts) != 3 || len(flags) != 3 {
+		t.Fatalf("the switch's attempts = %#v carrying connected_only %v, want three", attempts, flags)
 	}
-	for _, attempt := range attempts {
-		if attempt.State != "failed" || !attempt.ConnectedOnly ||
+	for index, attempt := range attempts {
+		if attempt.State != "failed" || !flags[index] ||
 			attempt.Error == nil || *attempt.Error != "the session is stopped" {
 			t.Fatalf("attempt %d = %#v, want it failed, carrying connected_only, reading \"the session is stopped\"",
 				attempt.Attempt, attempt)
@@ -595,4 +598,21 @@ func TestTheClaimHoldersLivenessReadNeverAsksForStoppedSessions(t *testing.T) {
 	if sessionID != "s1" || resolveError != "" {
 		t.Fatalf("a delivery resolved s1 as (%q, %q), want it resolved with no error", sessionID, resolveError)
 	}
+}
+
+// connectedOnlyFlags reads message_deliveries.connected_only of every attempt of messageID,
+// oldest first, as the claim reads it (model.ConnectedOnlySQL).
+func connectedOnlyFlags(t *testing.T, database *store.Store, messageID string) []bool {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select `+model.ConnectedOnlySQL+` from message_deliveries where message_id = $1 order by attempt
+	`, messageID)
+	if err != nil {
+		t.Fatalf("read the connected_only flags of %s: %v", messageID, err)
+	}
+	flags, err := pgx.CollectRows(rows, pgx.RowTo[bool])
+	if err != nil {
+		t.Fatalf("read the connected_only flags of %s: %v", messageID, err)
+	}
+	return flags
 }

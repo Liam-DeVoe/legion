@@ -31,9 +31,9 @@ type createMessageInput struct {
 	// ConnectedOnly asks that this message reach a session that is running now or not at all:
 	// the send is made with the listener's connected_only, which refuses a session the listener
 	// knows and that is not running rather than storing the message for it, and the attempt
-	// records that refusal as its failure. Unset - every message but the Agents page's model and
-	// effort switch - a stopped session is a recipient whose attempt is recorded queued, and the
-	// listener hands it the message when it runs again. The switch sets it because its line
+	// records that refusal as its failure. Unset - every message but the live view's model and
+	// thinking switch - a stopped session is a recipient whose attempt is recorded queued, and
+	// the listener hands it the message when it runs again. The switch sets it because its line
 	// applies to the session that reads it: queued, it would change a model at an unknown later
 	// time.
 	ConnectedOnly bool         `json:"connected_only"`
@@ -89,9 +89,9 @@ type createAgentMessageInput struct {
 	Delivery       string  `json:"delivery" required:"true"`
 	InReplyTo      *string `json:"in_reply_to"`
 	InReplyToBlock *string `json:"in_reply_to_block"`
-	// ConnectedOnly is the Agents page's model and effort switch asking for a session that is
-	// running now (createMessageInput.ConnectedOnly). Every other send from this page leaves it
-	// out and is queued for a stopped session.
+	// ConnectedOnly is the live view's model and thinking switch asking for a session that is
+	// running now (createMessageInput.ConnectedOnly). Every other send leaves it out and is
+	// queued for a stopped session.
 	ConnectedOnly bool `json:"connected_only"`
 }
 
@@ -367,7 +367,7 @@ func (s *server) createStoredMessage(
 	// openFirstMessageDeliveryAttempt) serves only the messages such a release stored. It records
 	// who asked for it, the urgency they chose and whether they asked for a session running now,
 	// which every send of it carries (pendingMessageDelivery), this request's own and a resumed
-	// one alike, and every later attempt of the message inherits (insertMessageDeliveryAttempt).
+	// one alike.
 	if message.Target != nil {
 		if _, err := tx.Exec(ctx, `
 			insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by,
@@ -400,13 +400,6 @@ func (s *server) createStoredMessage(
 		// owning attempt 1 - a repeat of a keyed send that found this message committed
 		// (sendHeldMessageOn) among them - means the message's delivery is under way there: the
 		// message is stored, so it is answered with the attempts as that sender has left them.
-		//
-		// The send asks the listener for what attempt 1 recorded above
-		// (createMessageInput.ConnectedOnly): a request that asked for a connected session
-		// refuses a stopped one rather than queueing for it - the model and effort switch,
-		// whose line applies to the session that runs it and would otherwise be applied at an
-		// unknown later time. Every other send queues, and every later attempt of this message
-		// asks what attempt 1 asked (insertMessageDeliveryAttempt).
 		attempt, err := s.deliverMessageResuming(sending, message, delivery, actor, &thread, 1)
 		switch {
 		case errors.Is(err, errAttemptNotPending):

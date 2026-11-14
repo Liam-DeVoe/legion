@@ -17,7 +17,7 @@
 -- wider than the one it was written under, so the read a validation makes would find nothing.
 --
 -- message_deliveries gains `connected_only`: null, or 'connected_only' where the message's sends
--- ask for a session that is running now - the Agents page's model and effort switch alone asks it
+-- ask for a session that is running now - the live view's model and thinking switch alone asks it
 -- (api/messages.go, createMessageInput.ConnectedOnly). The flag is attempt 1's, which every later
 -- attempt inherits: a Retry or a mode change opens its attempt with the first attempt's value
 -- (api/message_delivery.go, insertMessageDeliveryAttempt), so a refused switch is refused again

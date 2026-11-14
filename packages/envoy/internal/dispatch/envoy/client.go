@@ -115,12 +115,7 @@ type Interest struct {
 // role and issue claims, a message sent to it is stored for it, and nothing starts a
 // replacement for it (dispatch://INFRA-392).
 //
-// StateStopped is a fourth answer, which only SessionIncludingStopped asks for: a session the
-// registry holds no entry for, or one past its gone horizon, whose known-session record the
-// listener still holds. It is not running; the listener stores a message sent to it for its own
-// consumer and hands it over when it runs again. It is never a registry state: Session, Sessions
-// and Role never see it, so an issue claim's holder, the route roster and role resolution never
-// read a stopped session as one that holds anything.
+// StateStopped is a fourth answer, which only SessionIncludingStopped gives.
 const (
 	StateLive         = "live"
 	StateUnresponsive = "unresponsive"
@@ -174,9 +169,7 @@ type Session struct {
 	// when it answered, or StateStopped, which only SessionIncludingStopped reads. A listener
 	// that predates the field names none, and normalize reads that as StateLive: every session
 	// such a listener answers with is one it holds live, so reading it as anything else would
-	// retire working sessions during a rollout. A stopped session carries no Dir, MachineID,
-	// Host, TmuxPlace or Roles - its record holds none, and a session that is not running has no
-	// address to be reached at - so a caller that needs one of those needs a running session.
+	// retire working sessions during a rollout.
 	State string `json:"state"`
 }
 
@@ -230,9 +223,9 @@ type SendInput struct {
 	ExpectsReply contracts.ExpectsReply
 	// ConnectedOnly asks the listener to refuse a stopped target rather than store the message
 	// for it: a 409 with the reason "the session is stopped", and nothing stored. It is for the
-	// one send whose meaning depends on arriving now - Dispatch's model and effort switch, which
-	// would otherwise apply at an unknown later time. Unset, the send is sent exactly as it was
-	// before the flag existed: the field is left out of the body.
+	// one send whose meaning depends on arriving now - the live view's model and thinking
+	// switch, which would otherwise apply at an unknown later time. Unset, the field is left out
+	// of the body.
 	ConnectedOnly bool
 }
 
@@ -243,8 +236,8 @@ type SendInput struct {
 // envelope id then names an envelope JetStream discarded.
 //
 // State is what the target was when the listener stored the message, SendStateConnected or
-// SendStateStopped. A listener that predates it answers none, which reads as a connected target,
-// exactly what every send meant before it existed.
+// SendStateStopped. A listener that predates the field answers none, which reads as a connected
+// target.
 type SendResult struct {
 	EnvelopeID string
 	Recipient  string
@@ -520,14 +513,12 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 // is answered from the listener's in-memory cache alone: a session whose cache entry is still
 // being refilled is absent from the list while its record is there to be read, and a missing
 // row cannot tell the two apart. A session the listener knows only by its known-session record,
-// one that is not running, is ErrNotFound here as it has always been: this read is the registry's
-// alone, which is what an issue claim's holder liveness (issue_claim.go), role resolution
-// (lapsedRoleHolder) and every other reader of it ask for. A delivery asks
-// SessionIncludingStopped instead. Every other status, a body that does not decode and a
-// transport failure alike are ErrUnavailable carrying the listener's own reason, so a read the
-// message bus did not answer reads as "ask again", never as "that session is gone"; only a
-// transport failure and a 502, 503 or 504 are also ErrUnreachable, because a status the listener
-// chose - a 401 for a token it refuses, say - is its answer and asking again repeats it.
+// one that is not running, is ErrNotFound here (SessionIncludingStopped reads it). Every other
+// status, a body that does not decode and a transport failure alike are ErrUnavailable carrying
+// the listener's own reason, so a read the message bus did not answer reads as "ask again", never
+// as "that session is gone"; only a transport failure and a 502, 503 or 504 are also
+// ErrUnreachable, because a status the listener chose - a 401 for a token it refuses, say - is
+// its answer and asking again repeats it.
 func (c *Client) Session(ctx context.Context, sessionID string) (Session, error) {
 	return c.readSession(ctx, sessionID, includeUnresponsive)
 }
@@ -535,12 +526,16 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 // SessionIncludingStopped is Session widened by one answer: a session the listener's registry
 // holds no entry for, or one past its gone horizon, whose known-session record it still holds
 // comes back as that record, with State StateStopped and the Title, Capabilities and LastSeen
-// it holds, rather than as ErrNotFound. It carries no port, host, machine, dir or roles: the record
-// holds none, and a session that is not running has no address to be reached at.
+// it holds, rather than as ErrNotFound. It carries no Dir, MachineID, Host, TmuxPlace or Roles:
+// the record holds none, and a session that is not running has no address to be reached at, so
+// a caller that needs one of those needs a running session.
 //
 // A delivery reads this one, and nothing else does. The listener takes a message for a stopped
-// session it knows, stores it and hands it over when that session runs again, so refusing such
-// a session here would throw a person's message away for a session that is only suspended. A
+// session it knows, stores it for the session's own consumer and hands it over when that session
+// runs again, so refusing such a session here would throw a person's message away for a session
+// that is only suspended. StateStopped is never a registry state: Session, Sessions and Role
+// never answer it, so an issue claim's holder liveness (issue_claim.go), the route roster and
+// role resolution (lapsedRoleHolder) never read a stopped session as one that holds anything. A
 // session the listener holds neither an entry nor a record of is still ErrNotFound, which is
 // what "no live session <id>" is recorded for. Every other answer, and every failure, is exactly
 // Session's.

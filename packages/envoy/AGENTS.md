@@ -1514,7 +1514,7 @@ A delivery reads its session through `SessionIncludingStopped` (`internal/dispat
 a role resolves through `Role` alone, since a stopped session holds no role, and issue claims, the route roster and every other reader keep `Session` and `Sessions`, which never see `stopped`.
 A create-message request that set `connected_only` is the one exception:
 the listener refuses its stopped target with `409` instead of storing for it, and the attempt records that refusal as its failure, `the session is stopped`.
-Dispatch's live view's model and effort switch is the one sender that sets it, because a `/model` or `/effort` line applies to the session that reads it, and one stored for a session that is not running would change that session's model at an unknown later time.
+Dispatch's live view's model and thinking switch is the one sender that sets it, because a `/model` or `/effort` line applies to the session that reads it, and one stored for a session that is not running would change that session's model at an unknown later time.
 The flag is the message's, not one send's:
 attempt 1 records what the request asked (`message_deliveries.connected_only`) and every later attempt of that message is opened with the first attempt's (`insertMessageDeliveryAttempt`), so the delivery sweep's resume, a repeat under the request's key, and a person's Retry or mode change from the agent card all ask the listener for a running session and are refused again.
 
@@ -4213,7 +4213,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   Either `stopped` answer stored the message, and the stream keeps it 72 hours, so a session that runs again under the same id gets it from its own consumer.
   A target neither store knows is the `404` above.
   A stopped target whose request set `connected_only` is `409 {"error":"the session is stopped"}` with nothing stored, recorded `outcome=session_stopped`;
-  `connected_only` is a boolean field of the request body, which only Dispatch's model and effort switch sets, and absent it changes nothing.
+  `connected_only` is a boolean field of the request body, which only Dispatch's live view's model and thinking switch sets, and absent it changes nothing.
   A target with no entry within the gone horizon raises the wake report whatever its record says, on the `404` and the `stopped` answer alike, and one whose probe met no-responders raises none.
 
 - The connection probe (`probeSessionConnection`, `cmd/listener/connection_probe.go`) is one core NATS request on the target's relay subject, `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`), with a reply inbox of its own, no body and the one header `Envoy-Probe: 1`, waiting at most 1 s (`connectionProbeTimeout`).

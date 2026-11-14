@@ -766,8 +766,8 @@ func TestOnlyTheDeliveryReadAsksForStoppedSessions(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	want := map[string][]string{
-		"/v1/sessions":           {"include=unresponsive"},
-		"/v1/registry/s1":        {"include=unresponsive", "include=unresponsive,stopped"},
+		"/v1/sessions":             {"include=unresponsive"},
+		"/v1/registry/s1":          {"include=unresponsive", "include=unresponsive,stopped"},
 		"/v1/roles/legion-planner": {"include=unresponsive"},
 	}
 	if !reflect.DeepEqual(queries, want) {
@@ -777,7 +777,7 @@ func TestOnlyTheDeliveryReadAsksForStoppedSessions(t *testing.T) {
 
 // A send's answer says what the listener did with the message - handed to a connected session,
 // or stored for a stopped one - and a send asks connected_only only when its input sets it, so
-// every other send's body is the bytes it always was.
+// every other send's body leaves the field out.
 func TestSendCarriesTheListenersStateAndAsksConnectedOnlyWhenSet(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

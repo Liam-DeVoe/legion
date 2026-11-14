@@ -2118,10 +2118,16 @@ const (
 	DeliveryStateFailed  = "failed"
 )
 
-// DeliveryTakenStates is the two states that mean the listener took the message, as the SQL list
-// an `in` test over a comment_deliveries or message_deliveries state column takes, so every
+// DeliveryTakenStatesSQL is the two states that mean the listener took the message, as the SQL
+// list an `in` test over a comment_deliveries or message_deliveries state column takes, so every
 // query that asks it reads one definition rather than each spelling the pair.
-const DeliveryTakenStates = "('" + DeliveryStateSent + "', '" + DeliveryStateQueued + "')"
+const DeliveryTakenStatesSQL = "('" + DeliveryStateSent + "', '" + DeliveryStateQueued + "')"
+
+// DeliveryTaken reports whether state is one of the two that mean the listener took the message,
+// the Go reading of DeliveryTakenStatesSQL.
+func DeliveryTaken(state string) bool {
+	return state == DeliveryStateSent || state == DeliveryStateQueued
+}
 
 // MentionSweepWindow is how far back the delivery sweep resumes an owed mention attempt
 // (OwedMentionAttemptSQL): the window in which a repeat of a send is still recognised as a
@@ -2208,7 +2214,7 @@ func MentionAttemptStandsSQL(row string) string {
 // (supersedeCommentDelivery in internal/dispatch/api), and the delivery sweep settles every such
 // attempt left pending and claim-free (settleSupersededMentions), so none stays pending for good.
 func MentionAttemptDeliveredLaterSQL(row string) string {
-	return mentionLaterAttemptSQL(row, `later.state in `+DeliveryTakenStates)
+	return mentionLaterAttemptSQL(row, `later.state in `+DeliveryTakenStatesSQL)
 }
 
 // MentionAttemptIsTheMentionsSQL is true of a pending attempt the delivery sweep owes, or will owe
@@ -2698,37 +2704,25 @@ type MessageDelivery struct {
 	// session's own user turn. At most one attempt of a message is ever accepted.
 	AcceptedAt *time.Time `json:"accepted_at"`
 	AcceptedAs *string    `json:"accepted_as"`
-	// ConnectedOnly records that the message's sends ask for a session that is running now: the
-	// Agents page's model and effort switch, which must not be stored for a stopped session and
-	// applied at an unknown later time. The flag is attempt 1's, which every later attempt
-	// inherits: a person's Retry or mode change opens its attempt with the first attempt's flag
-	// (api/message_delivery.go, insertMessageDeliveryAttempt), so a refused switch is refused
-	// again and nothing is stored for it, and every later send of an attempt - the delivery
-	// sweep's, a repeat under the request's key - reads it back and asks the same, so a sender
-	// that died before its settle cannot turn a switch into a queued message. The row stores it
-	// as message_deliveries.connected_only (ConnectedOnlyColumn, ConnectedOnlySQL). It is the
-	// server's own and stays out of every answer: no reader needs it.
-	ConnectedOnly bool `json:"-"`
 }
 
-// ConnectedOnlyMark is the one value message_deliveries.connected_only holds beside null
+// connectedOnlyMark is the one value message_deliveries.connected_only holds beside null
 // (migration 20261114081434): the attempt's sends ask the listener for a session that is
-// running now (MessageDelivery.ConnectedOnly). Null is every other attempt, and every attempt a
-// release older than the column wrote.
-const ConnectedOnlyMark = "connected_only"
+// running now. Null is every other attempt, and every attempt a release older than the column
+// wrote.
+const connectedOnlyMark = "connected_only"
 
-// ConnectedOnlySQL reads message_deliveries.connected_only as the bool
-// MessageDelivery.ConnectedOnly carries, for a select list or a returning clause over that table.
+// ConnectedOnlySQL reads message_deliveries.connected_only as a bool, for a select list or a
+// returning clause over that table.
 const ConnectedOnlySQL = "(connected_only is not null)"
 
 // ConnectedOnlyColumn is the message_deliveries.connected_only value a send that asked
-// connectedOnly stores: ConnectedOnlyMark, or null.
+// connectedOnly stores: connectedOnlyMark, or null.
 func ConnectedOnlyColumn(connectedOnly bool) *string {
 	if !connectedOnly {
 		return nil
 	}
-	mark := ConnectedOnlyMark
-	return &mark
+	return new(connectedOnlyMark)
 }
 
 // MessageEventPayload wraps a Message with the reply target's body preview (first 160

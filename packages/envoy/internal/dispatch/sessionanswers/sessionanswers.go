@@ -37,7 +37,7 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 //     messages, direct or on an issue, and broadcast copies. `sent` is one it handed to the
 //     running session, `queued` one it stored for a session that is not running and hands over
 //     when it runs again (api/envoy_resolve.go, deliveryOutcome); both are words a person wrote
-//     that reach the session, so both are read (model.DeliveryTakenStates). It is an index-only
+//     that reach the session, so both are read (model.DeliveryTakenStatesSQL). It is an index-only
 //     scan of message_deliveries_session_taken (20261114081435, which replaced 0147's
 //     message_deliveries_session_created), whose predicate holds both states and which carries
 //     `state` beside message_id: Postgres drops a predicate's clause from a scan only where it can
@@ -86,7 +86,7 @@ const query = `
 	), mentioned as (
 		select cd.comment_id::text as id
 		from comment_deliveries cd
-		where cd.session_id = $1 and cd.state in ` + model.DeliveryTakenStates + ` and cd.created_at >= $2 - interval '1 hour'
+		where cd.session_id = $1 and cd.state in ` + model.DeliveryTakenStatesSQL + ` and cd.created_at >= $2 - interval '1 hour'
 	), answer_ids as (
 		select distinct id from reached where type = 'ask.answered'
 	), answer_events as materialized (
@@ -118,7 +118,7 @@ const query = `
 		union
 		select md.message_id::text
 		from message_deliveries md
-		where md.session_id = $1 and md.state in ` + model.DeliveryTakenStates + `
+		where md.session_id = $1 and md.state in ` + model.DeliveryTakenStatesSQL + `
 		  and md.created_at >= $2 - interval '1 hour'
 	)
 	select 'answer' as kind, a.id::text as id, (a.answer->>'at')::timestamptz as at,

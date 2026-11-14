@@ -1701,16 +1701,38 @@ the release before this one reads `ask.answered`, `comment.created`, `message.cr
 Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
 A failed concurrent build leaves an INVALID index of the new name on `events`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
 
-Migration `0147_message_deliveries_session_created` creates `message_deliveries_session_created` on `message_deliveries (session_id, created_at desc) include (message_id)` where `state` is `sent`, for the same route's read of the session's sent message deliveries created since an hour before its window.
+Migration `0147_message_deliveries_session_created` created `message_deliveries_session_created` on `message_deliveries (session_id, created_at desc) include (message_id)` where `state` is `sent`, for the same route's read of the session's sent message deliveries created since an hour before its window, and `20261114081436_drop_message_deliveries_session_created` drops it:
+the route reads queued deliveries too now and takes that window through `message_deliveries_session_taken` (`20261114081435`, below) instead.
 `message_deliveries_session` (`0051`) keys `session_id` alone, so through it that read fetched the session's whole delivery history and filtered it by time:
 a long-lived session that receives every broadcast copy read all of its deliveries on every model request.
-The new index holds only the read's sent rows and carries the one column it returns, so the read is an index-only scan of the window's range, and a cached generic plan, which knows neither the session nor the window, chooses it too:
+`0147`'s index held only the read's sent rows and carried the one column it returned, so the read was an index-only scan of the window's range, and a cached generic plan, which knows neither the session nor the window, chose it too:
 costed as a plain `(session_id, created_at desc)` index it came within a percent of `0051`, which the generic plan kept.
 `0051` stays for the conversation window, which reads every delivery a session ever received.
 On the seeded database above, with one session given 60,003 sent deliveries (1,019 since an hour before its window), the read of them went from 58,984 rows fetched and discarded (798 buffers, 20-22 ms) to an index-only scan of the 1,019 (11 buffers, 0.3-0.4 ms), in the custom and the generic plan alike;
 the index built in 0.34-0.52 s over three runs on 110,003 deliveries.
-A plain `create index` inside the runner's transaction, it holds `SHARE` on `message_deliveries` while it builds: writes to it wait, reads do not.
+A plain `create index` inside the runner's transaction, it held `SHARE` on `message_deliveries` while it built: writes to it waited, reads did not.
 Its census answers `0`.
+
+Migration `20261114081434_delivery_queued_state` adds the fourth delivery attempt state, `queued`: the Envoy listener took the message and stored it for a session it knows and that is not running, which reads it when it runs again.
+It drops `comment_deliveries_state_check` (`0039`) and `message_deliveries_state_check` (`0046`) without `cascade` and adds each back `not valid` with `queued` beside `pending`, `sent` and `failed`, so no stored row is read:
+no row can fail a check wider than the one it was written under.
+It adds `message_deliveries.connected_only`, a nullable `text` column with no default whose one other value is `connected_only` (its own check, also `not valid`), set on an attempt whose sends ask the listener for a session that is running now:
+only the live view's model and thinking switch asks that, and every later attempt of a message inherits attempt 1's value.
+The release before this one writes only `pending`, `sent` and `failed` and never names the column, so the two builds run against the widened schema at once.
+Each statement is one of the census's catalog-only `alter table` forms, so the census exempts the migration from its table size limit at any size, and each takes `ACCESS EXCLUSIVE` on its table for its catalog write alone.
+Its census answers `0`: it refuses and rewrites no row.
+Rolling back past it is an image rollback alone while no row carries `queued`; once one does, the checks have to be widened again by hand before an earlier set is restored.
+
+Migration `20261114081435_message_deliveries_session_taken` creates `message_deliveries_session_taken` on `message_deliveries (session_id, created_at desc) include (message_id, state)` where `state` is `sent` or `queued`, and `20261114081436_drop_message_deliveries_session_created` drops `0147`'s index behind it.
+The answers route reads a session's queued message deliveries beside its sent ones, so its read names two states and `0147`'s `sent`-only index cannot serve it at all.
+The index carries `state` beside `message_id` because Postgres drops an index predicate's clause from a scan only where the query's clause and the predicate imply each other, so over two states it keeps the read's own `state in ('sent', 'queued')` as a filter, which an uncarried column would turn into a heap read of every row the scan found.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`):
+`message_deliveries` grows with every message and broadcast copy Dispatch sends, and a plain build holds `SHARE` on it, which blocks every write, for as long as one read of the table takes.
+The drop lands in the same release because a read of `sent` alone implies the two-state predicate:
+the release before this one reads `state = 'sent'`, and the wider index carries every column that read returns, so the planner reads it index-only through the wider index for as long as that build keeps serving requests.
+`drop index` takes `ACCESS EXCLUSIVE` on `message_deliveries` for the instant it unlinks the index, inside the runner's transaction, and it reads no row of the table.
+Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
+A failed concurrent build leaves an INVALID index of the new name on `message_deliveries`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
 
 Migration `0142_item_blocks` creates the tables behind the blocks of a comment or message as graph nodes (`packages/envoy/AGENTS.md`, "References form one graph"):
 `comment_blocks`, `message_blocks`, `comment_block_texts`, `comment_block_state`, `message_block_state`, `comment_block_refs` and `message_block_refs`, each with a foreign key to `comments` or `messages` that cascades, with their indexes, among them the partial `comment_block_state_owed` and `message_block_state_owed` through which the block-index reconciliation reads what is owed.
@@ -3110,7 +3132,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   What people wrote that Dispatch delivered to one session, newest first:
   each ask's current answer (`replaced` when it changed an earlier one), each decline of an ask (a question a person closed without answering it), each comment at its current body (`edited_at` when edited) and each message, once however it arrived:
-  a person's `ask.answered`, `comment.created`, `message.created`, `message.answered` or `ask.resolved` event whose `published_destinations` hold the session's own topic, of which the list takes the declines alone, its sent message deliveries, and its sent comment deliveries (mentions).
+  a person's `ask.answered`, `comment.created`, `message.created`, `message.answered` or `ask.resolved` event whose `published_destinations` hold the session's own topic, of which the list takes the declines alone, its sent or queued message deliveries, and its sent or queued comment deliveries (mentions).
   Never an agent's or the system's words, any other resolution of an ask or its hand-back, or a delivery to a `role:` route.
   Each item carries its `relation`, the `ask` and its question where it answers, declines or replies in one, and its `owner`, `ref` and `href`.
   A decline is the kind `declined` under the relation `declined_your_ask`, and it carries both parts apart:
