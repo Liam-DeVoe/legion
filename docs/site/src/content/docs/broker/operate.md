@@ -967,9 +967,10 @@ shows both). A `429` that the Azure token endpoint answers and the proxy forward
 it keeps its call line at INFO, which names its answer id and its status, and writes no refusal
 line.
 
-Each field whose text the caller chose, on this line and on the call line alike, is cut to its
-first 256 bytes: the method, the path, the host, a reason that names the host, and the
-correlation id. So whatever a caller sends, each line stays within one Cloud Logging entry.
+Each field whose text the caller chose is cut to its first 256 bytes, so whatever a caller sends,
+each line stays within one Cloud Logging entry. On the refusal line those are the method, the
+host, a reason that names the host, the path and the correlation id; on the call line, the
+method, the host and the path, which is all of the caller's text it names.
 
 No refusal line holds a secret's value or a placeholder, and the API port's line holds no message
 text either: it names the code. Each answer, a refusal or not, also counts in

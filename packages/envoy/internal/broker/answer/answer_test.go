@@ -557,15 +557,18 @@ func TestARefusalsLineCountsTheNamesAsItWritesThem(t *testing.T) {
 // Logging entry whatever the caller sends (ca-refusal-record, Verification v15). Each row sends
 // 300 KB through one field: the API port's method and X-Correlation-Id, through the recorder; a
 // correlation id handed to answer.RefusalLine whole; a port's own field before correlation_id and
-// one after it, as the airlock's proxy port names its host and its slot; and a field of a line
-// built by answer.ClipFields alone, as the airlock's call line is, both a string and an error,
-// as the airlock's upstream failure line names the transport's. Each row writes its line through
-// the broker's own JSON handler (logging.NewCloudHandler), reads its length, and reads the field
-// back as the first 256 bytes of what was sent. The airlock's own rows, sent through its proxy,
-// are airlockproxy's TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote.
+// one after it, as the airlock's proxy port names its host and its slot; and the forms a line
+// built by answer.ClipFields alone writes, as the airlock's call line is - a string, an error, as
+// its upstream failure line names the transport's, a slog.Attr holding either, and a key with no
+// value after it, which slog writes as the value of !BADKEY. Each row writes its line through the
+// broker's own JSON handler (logging.NewCloudHandler), reads its length, and reads the field back
+// as the first 256 bytes of what was sent. The airlock's own rows, sent through its proxy, are
+// airlockproxy's TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote.
 //
 // The named revert: let one field pass answer.ClipFields uncut; that field's row writes a line of
-// about 300 KB and fails.
+// about 300 KB and fails. The X-Correlation-Id row is the one exception, since the recorder keeps
+// at most 256 bytes of that header before the line is built (answer.CorrelationID): reverting
+// both that and the clip is what fails it.
 func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 	const entryLimit = 256 << 10
 	// The caller's text: not one byte repeated, so its first 256 bytes are no other 256 of it.
@@ -591,6 +594,8 @@ func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 		{"the API port's method", "method", func() {
 			refused(func(req *http.Request) { req.Method = sent })
 		}},
+		// The recorder's own clip, not ClipFields: CorrelationID keeps at most 256 bytes of the
+		// header, so this row pins that cut and the line's clip never sees a longer one.
 		{"the API port's X-Correlation-Id", "correlation_id", func() {
 			refused(func(req *http.Request) { req.Header.Set("X-Correlation-Id", sent) })
 		}},
@@ -610,6 +615,15 @@ func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 		}},
 		{"an error of a line built by answer.ClipFields", "error", func() {
 			slog.Warn("an upstream line", answer.ClipFields([]any{"host", "example.com", "path", "/v1/", "error", errors.New(sent)})...)
+		}},
+		{"a slog.Attr's string value", "path", func() {
+			slog.Info("a call line", answer.ClipFields([]any{"method", http.MethodGet, slog.String("path", sent)})...)
+		}},
+		{"a slog.Attr's error", "error", func() {
+			slog.Warn("an upstream line", answer.ClipFields([]any{"host", "example.com", slog.Any("error", errors.New(sent))})...)
+		}},
+		{"a key with no value after it, which slog writes under !BADKEY", "!BADKEY", func() {
+			slog.Info("a call line", answer.ClipFields([]any{"method", http.MethodGet, sent})...)
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -633,8 +647,8 @@ func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 			}
 		})
 	}
-	if driven != 7 {
-		t.Fatalf("the table drove %d fields, want 7", driven)
+	if driven != 10 {
+		t.Fatalf("the table drove %d fields, want 10", driven)
 	}
 }
 

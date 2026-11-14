@@ -72,7 +72,7 @@ const correlationHeader = "X-Correlation-Id"
 // fieldBytes bounds each text field of a line the broker writes about a request (clip,
 // ClipFields): whatever the caller wrote into it - the method, the path, the host, a reason or
 // an error that quotes the host or its address, the correlation id, each secret name, a form
-// field or a person a relay names - is at most this many bytes of it.
+// field or an approver a relay names - is at most this many bytes of it.
 const fieldBytes = 256
 
 // secretNamesBytes bounds the secret names a refusal's line lists (SecretNames), counted as the
@@ -696,32 +696,57 @@ func clip(text string) string {
 
 // ClipFields cuts each text value of fields, a line's attributes as slog takes them, by clip, in
 // place, and answers fields. It is where the caller's text enters a line the broker writes about
-// a request: the refusal line of either port (RefusalLine.Fields), the airlock's call line and its
-// upstream failure line, and the API port's and the approval page's lines that name a form
-// field, an approver or a provider's error pass their whole list through it. So each text field
-// - the method, the path, the host, a reason or an error that quotes the host or its address,
-// the correlation id, and any field a line adds later - is at most fieldBytes, and the line stays
-// under the 262,144 bytes of one Cloud Logging entry whatever the caller sends. A text value is a
-// string, or an error, whose text a longer one is written as once cut; a value that is neither,
-// such as the secret names' list, is written as it is. It reads the list as slog does: a string
-// is a key and the value after it, and anything else in a key's place, a slog.Attr, is an
-// argument of its own.
+// a request: the refusal line of either port (RefusalLine.Fields), the airlock's call line, its
+// joined connection's line and its upstream failure line, and the API port's and the approval
+// page's lines that name a form field, an approver or a provider's error pass their whole list
+// through it. So each text field - the method, the path, the host, a reason or an error that
+// quotes the host or its address, the correlation id, and any field a line adds later - is at
+// most fieldBytes, and the line stays under the 262,144 bytes of one Cloud Logging entry
+// whatever the caller sends.
+//
+// It reads the list as slog does, so that what it cuts is what the line writes: a string is a
+// key and the value after it, a string with no value after it is written as the value of
+// !BADKEY, and anything else in a key's place - a slog.Attr, or a value of another type, which
+// is written under !BADKEY too - is an argument of its own (clipValue).
 func ClipFields(fields []any) []any {
 	for i := 0; i < len(fields); i++ {
-		if _, key := fields[i].(string); !key || i+1 == len(fields) {
-			continue
+		if _, key := fields[i].(string); key && i+1 < len(fields) {
+			i++
 		}
-		i++
-		switch value := fields[i].(type) {
-		case string:
-			if len(value) > fieldBytes {
-				fields[i] = clip(value)
+		fields[i] = clipValue(fields[i])
+	}
+	return fields
+}
+
+// clipValue is one value of a line as the line writes it, cut to fieldBytes: a string, an error,
+// whose text a longer one is written as once cut, and a slog.Attr holding either. A value of any
+// other kind, such as the secret names' list, is itself: a list is bounded where it is built
+// (SecretNames), and a number or a time is no caller's text.
+func clipValue(value any) any {
+	switch held := value.(type) {
+	case string:
+		if len(held) > fieldBytes {
+			return clip(held)
+		}
+	case error:
+		if text := held.Error(); len(text) > fieldBytes {
+			return clip(text)
+		}
+	case slog.Attr:
+		// An Attr's error is a KindAny the handler writes as its text, as it writes the error
+		// above, so both are cut to a string of that text.
+		switch held.Value.Kind() {
+		case slog.KindString:
+			if text := held.Value.String(); len(text) > fieldBytes {
+				return slog.String(held.Key, clip(text))
 			}
-		case error:
-			if text := value.Error(); len(text) > fieldBytes {
-				fields[i] = clip(text)
+		case slog.KindAny:
+			if err, ok := held.Value.Any().(error); ok {
+				if text := err.Error(); len(text) > fieldBytes {
+					return slog.String(held.Key, clip(text))
+				}
 			}
 		}
 	}
-	return fields
+	return value
 }

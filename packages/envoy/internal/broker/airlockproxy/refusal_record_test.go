@@ -16,12 +16,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -366,37 +368,6 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 	}
 }
 
-// TestTheAirlocksRefusalRecordCutsWhatTheCallerWrote: the method, the host and the path a refusal
-// record names are the caller's own text, and the record keeps at most 256 bytes of each, as the
-// API port's record keeps of its method (answer.ClipFields). A request that is no proxy request is
-// refused before any credential is read, so anyone who reaches the port writes this record.
-func TestTheAirlocksRefusalRecordCutsWhatTheCallerWrote(t *testing.T) {
-	r := newRig(t, Options{})
-	long := func(c string) string { return strings.Repeat(c, 300) }
-	request, err := http.NewRequest(long("M"), "http://"+r.addr+"/"+long("p"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Host = long("h")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
-	if err != nil {
-		t.Fatalf("a request to the proxy port: %v", err)
-	}
-	got := answeredBy(response, bodyOf(t, response))
-	if got.status != http.StatusBadRequest {
-		t.Fatalf("the answer is %d %q, want 400", got.status, got.body)
-	}
-	records := linesNaming(r.logs.refusals(), got.id())
-	if len(records) != 1 {
-		t.Fatalf("the refusal wrote %d records naming its answer id, want 1: %v", len(records), r.logs.refusals())
-	}
-	for field, want := range map[string]string{"method": long("M")[:256], "host": long("h")[:256], "path": ("/" + long("p"))[:256]} {
-		if kept := fmt.Sprint(records[0].fields[field]); kept != want {
-			t.Errorf("the record's %s is %d bytes, want the first 256 of the caller's: %q", field, len(kept), kept)
-		}
-	}
-}
-
 // TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames: a refusal's line on
 // the proxy port is the one record of that refusal, so it must fit one Cloud Logging entry,
 // 262,144 bytes, which Cloud Logging refuses past and GKE drops a jsonPayload entry past. Its
@@ -470,21 +441,29 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 	}
 }
 
-// TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote: a refusal's line, a call's line and an
-// upstream failure's line on the proxy port each fit one Cloud Logging entry, 262,144 bytes,
-// whatever the caller sends, because each text field of them is cut to its first 256 bytes where
-// it enters the line (answer.ClipFields; ca-refusal-record, Verification v15). Each row sends
-// 300 KB through one field the caller chose, on the real proxy of the rig: of a refusal's line,
-// the method, the host, the path and the X-Correlation-Id of a request that is no proxy request,
-// and the reason in both its forms that quote the host - a CONNECT target that is no host and
-// port (r.Host), and a name that does not resolve (checkedAddresses' error), on a CONNECT and on
-// a plain proxy request; of a call's line (callFields), the method of a call whose grant read did
-// not happen and the path of a call the proxy carried; and of the upstream failure's line
-// (badGateway), the path of a plain proxy request whose service cannot be reached. Each row
-// writes its line through the broker's own JSON handler (logging.NewCloudHandler), reads its
-// length, and reads the field back as the first 256 bytes of the text it held, which for a reason
-// is the proxy's words around the host. The table records which field of which line it drove, and
-// fails when it drove fewer than all of them.
+// TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote: a refusal's line, a call's line, a joined
+// connection's line and an upstream failure's line on the proxy port each fit one Cloud Logging
+// entry, 262,144 bytes, whatever the caller sends, because each text field of them is cut to its
+// first 256 bytes where it enters the line (answer.ClipFields; ca-refusal-record, Verification
+// v15). Each row sends 300 KB through one field the caller chose, on the real proxy of the rig:
+//
+//   - of a refusal's line, the method, the host, the path and the X-Correlation-Id of a request
+//     that is no proxy request, and the reason in both its forms that quote the host - a CONNECT
+//     target that is no host and port (r.Host), and a name that does not resolve
+//     (checkedAddresses' error), on a CONNECT and on a plain proxy request;
+//   - of a call's line (callFields), the method of a call whose grant read did not happen and the
+//     path of a call the proxy carried;
+//   - of a joined connection's line (watchJoined, through callFields), the method of an upgrade
+//     whose entry allows any method (Allow nil) and the path of one under the allowed prefix,
+//     each joined and then closed by a grant that stopped carrying it;
+//   - of the upstream failure's line (badGateway), the path and the host of a plain proxy request
+//     whose service cannot be reached, and the error of one whose name answers the check and
+//     nothing to the transport's own lookup, which quotes that host.
+//
+// Each row writes its line through the broker's own JSON handler (logging.NewCloudHandler), reads
+// its length, and reads the field back as the first 256 bytes of the text it held, which for a
+// reason or an error is the proxy's words around the host. The table records which field of which
+// line it drove, and fails when it drove fewer than all of them.
 //
 // The named revert: let one field pass answer.ClipFields uncut; that field's row writes a line of
 // about 300 KB and fails.
@@ -492,6 +471,9 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 	const entryLimit = 256 << 10
 	// The caller's text: not one byte repeated, so its first 256 bytes are no other 256 of it.
 	sent := strings.Repeat("abcdefghij", 30000)
+	// public is an address the proxy may dial that no stand-in service answers on port 80, so a
+	// plain proxy request to a name holding it reaches badGateway.
+	public := netip.MustParseAddr("93.184.216.37")
 	// notAProxyRequest is a request to the proxy port that is no proxy request, changed by edit,
 	// which the port refuses before it reads any credential.
 	notAProxyRequest := func(t *testing.T, r *rig, edit func(*http.Request)) *http.Response {
@@ -519,11 +501,29 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			return response
 		}
 	}
+	// join upgrades to the service at that method and path, joins the two connections, and then
+	// ends the grant behind them, which is what makes the watcher write the join's own line
+	// (TestAJoinedConnectionIsClosedWhenItsGrantStopsCarryingIt drives the same close).
+	join := func(method, path string) func(t *testing.T, r *rig) *http.Response {
+		return func(t *testing.T, r *rig) *http.Response {
+			_, conn, reader, upgraded := joinedThroughPath(t, r, method, path)
+			r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
+			waitClosed(t, conn, reader)
+			return upgraded
+		}
+	}
+	// anyMethod is the rules file of the join's method row: an entry with no allow list, which
+	// the airlock reads as any method and path (airlock.SecretRule.Allow), so the upgrade the row
+	// sends is carried rather than refused and its method reaches the join's line.
+	anyMethod := airlock.Rules{Secrets: []airlock.SecretRule{{
+		Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
+	}}}
 	// fields is every field of each line that holds the caller's text, each of which a row drives.
 	fields := map[string][]string{
 		answer.RefusalMessage: {"method", "host", "path", "correlation_id", "reason"},
 		callMessage:           {"method", "path"},
-		upstreamMessage:       {"path"},
+		joinMessage:           {"method", "path"},
+		upstreamMessage:       {"path", "host", "error"},
 	}
 	drove := map[string]bool{}
 	driven := 0
@@ -533,47 +533,78 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 		// field holds before the cut.
 		message, field, held string
 		status               int
-		send                 func(t *testing.T, r *rig) *http.Response
+		// options is the rig's; the zero value is the plain rig every other row drives.
+		options Options
+		send    func(t *testing.T, r *rig) *http.Response
 	}{
-		{"a refusal's method", answer.RefusalMessage, "method", sent, http.StatusBadRequest, func(t *testing.T, r *rig) *http.Response {
-			return notAProxyRequest(t, r, func(request *http.Request) { request.Method = sent })
-		}},
-		{"a refusal's host", answer.RefusalMessage, "host", sent, http.StatusBadRequest, func(t *testing.T, r *rig) *http.Response {
-			return notAProxyRequest(t, r, func(request *http.Request) { request.Host = sent })
-		}},
-		{"a refusal's path", answer.RefusalMessage, "path", "/" + sent, http.StatusBadRequest, func(t *testing.T, r *rig) *http.Response {
-			return notAProxyRequest(t, r, func(request *http.Request) { request.URL.Path = "/" + sent })
-		}},
-		{"a refusal's X-Correlation-Id", answer.RefusalMessage, "correlation_id", sent, http.StatusBadRequest, func(t *testing.T, r *rig) *http.Response {
-			return notAProxyRequest(t, r, func(request *http.Request) { request.Header.Set("X-Correlation-Id", sent) })
-		}},
-		{"a refusal's reason: a CONNECT target that is no host and port", answer.RefusalMessage, "reason",
-			sent + "] is no host and port", http.StatusBadRequest, connect(sent + "]")},
-		{"a refusal's reason: a CONNECT target that does not resolve", answer.RefusalMessage, "reason",
-			"cannot resolve " + sent + ": no such host", http.StatusForbidden, connect(sent + ":443")},
-		{"a refusal's reason: a plain proxy request to a host that does not resolve", answer.RefusalMessage, "reason",
-			"cannot resolve " + sent + ": no such host", http.StatusForbidden, func(_ *testing.T, r *rig) *http.Response {
+		{name: "a refusal's method", message: answer.RefusalMessage, field: "method", held: sent, status: http.StatusBadRequest,
+			send: func(t *testing.T, r *rig) *http.Response {
+				return notAProxyRequest(t, r, func(request *http.Request) { request.Method = sent })
+			}},
+		{name: "a refusal's host", message: answer.RefusalMessage, field: "host", held: sent, status: http.StatusBadRequest,
+			send: func(t *testing.T, r *rig) *http.Response {
+				return notAProxyRequest(t, r, func(request *http.Request) { request.Host = sent })
+			}},
+		{name: "a refusal's path", message: answer.RefusalMessage, field: "path", held: "/" + sent, status: http.StatusBadRequest,
+			send: func(t *testing.T, r *rig) *http.Response {
+				return notAProxyRequest(t, r, func(request *http.Request) { request.URL.Path = "/" + sent })
+			}},
+		{name: "a refusal's X-Correlation-Id", message: answer.RefusalMessage, field: "correlation_id", held: sent, status: http.StatusBadRequest,
+			send: func(t *testing.T, r *rig) *http.Response {
+				return notAProxyRequest(t, r, func(request *http.Request) { request.Header.Set("X-Correlation-Id", sent) })
+			}},
+		{name: "a refusal's reason: a CONNECT target that is no host and port", message: answer.RefusalMessage, field: "reason",
+			held: sent + "] is no host and port", status: http.StatusBadRequest, send: connect(sent + "]")},
+		{name: "a refusal's reason: a CONNECT target that does not resolve", message: answer.RefusalMessage, field: "reason",
+			held: "cannot resolve " + sent + ": no such host", status: http.StatusForbidden, send: connect(sent + ":443")},
+		{name: "a refusal's reason: a plain proxy request to a host that does not resolve", message: answer.RefusalMessage, field: "reason",
+			held: "cannot resolve " + sent + ": no such host", status: http.StatusForbidden,
+			send: func(_ *testing.T, r *rig) *http.Response {
 				response, _ := r.get(r.client(workerPlaceholder), "http://"+sent+"/")
 				return response
 			}},
-		{"a call's method", callMessage, "method", sent, http.StatusServiceUnavailable, func(_ *testing.T, r *rig) *http.Response {
-			r.grants.refuseValues(databaseDown)
-			return bound(r, sent, "/v1/things")
-		}},
-		{"a call's path", callMessage, "path", "/v1/" + sent, http.StatusOK, func(_ *testing.T, r *rig) *http.Response {
-			return bound(r, http.MethodGet, "/v1/"+sent)
-		}},
-		{"an upstream failure's path: a plain proxy request whose service cannot be reached", upstreamMessage, "path",
-			"/" + sent, http.StatusBadGateway, func(_ *testing.T, r *rig) *http.Response {
+		{name: "a call's method", message: callMessage, field: "method", held: sent, status: http.StatusServiceUnavailable,
+			send: func(_ *testing.T, r *rig) *http.Response {
+				r.grants.refuseValues(databaseDown)
+				return bound(r, sent, "/v1/things")
+			}},
+		{name: "a call's path", message: callMessage, field: "path", held: "/v1/" + sent, status: http.StatusOK,
+			send: func(_ *testing.T, r *rig) *http.Response {
+				return bound(r, http.MethodGet, "/v1/"+sent)
+			}},
+		{name: "a joined connection's method", message: joinMessage, field: "method", held: sent, status: http.StatusSwitchingProtocols,
+			options: Options{Watch: watchFast, Rules: anyMethod}, send: join(sent, upgradePath)},
+		{name: "a joined connection's path", message: joinMessage, field: "path", held: "/v1/" + sent, status: http.StatusSwitchingProtocols,
+			options: Options{Watch: watchFast}, send: join(http.MethodGet, "/v1/"+sent)},
+		{name: "an upstream failure's path: a plain proxy request whose service cannot be reached", message: upstreamMessage, field: "path",
+			held: "/" + sent, status: http.StatusBadGateway,
+			send: func(_ *testing.T, r *rig) *http.Response {
 				// The rig dials nothing on port 80, so the request is a 502 of badGateway's.
 				response, _ := r.get(r.client(workerPlaceholder), "http://"+echoHost+"/"+sent)
+				return response
+			}},
+		{name: "an upstream failure's host: a plain proxy request to a name that resolves and answers nothing", message: upstreamMessage, field: "host",
+			held: sent, status: http.StatusBadGateway,
+			send: func(_ *testing.T, r *rig) *http.Response {
+				// The name resolves to an address the proxy may dial and no service answers on.
+				r.addresses[sent] = []netip.Addr{public}
+				response, _ := r.get(r.client(workerPlaceholder), "http://"+sent+"/")
+				return response
+			}},
+		{name: "an upstream failure's error: a name that answers the check and nothing the transport's own lookup", message: upstreamMessage, field: "error",
+			held: sent + " resolves to no address", status: http.StatusBadGateway,
+			send: func(_ *testing.T, r *rig) *http.Response {
+				// One answer for servePlain's check and none for the transport's lookup, whose
+				// error names the host the caller asked for.
+				r.answers[sent] = [][]netip.Addr{{public}, {}}
+				response, _ := r.get(r.client(workerPlaceholder), "http://"+sent+"/")
 				return response
 			}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
 			drove[row.message+" "+row.field] = true
-			r := newRig(t, Options{})
+			r := newRig(t, row.options)
 			response := row.send(t, r)
 			id := response.Header.Get(answer.Header)
 			if response.StatusCode != row.status || id == "" {
@@ -625,8 +656,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			}
 		}
 	}
-	if driven != 10 || len(missing) != 0 {
-		t.Fatalf("the table drove %d fields, want 10; it never drove %v", driven, missing)
+	if driven != 14 || len(missing) != 0 {
+		t.Fatalf("the table drove %d fields, want 14; it never drove %v", driven, missing)
 	}
 }
 
