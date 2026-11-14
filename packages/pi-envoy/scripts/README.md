@@ -375,20 +375,33 @@ token, from an owner-only file that is removed when the judge ends. On the provi
 profile's models.yml is the block as the operator wrote it, `!cat` command included, so no key is
 copied anywhere: the container mounts the directory of the file that command reads, read-only.
 
-Each run's agent runs in a mount namespace of its own (`unshare -Urm`, then a user namespace that
-maps it back to the caller's uid): there the runs directory and the archive hold only its own run,
-and `/tmp` is the run's own `<run>/tmp`, so an agent can neither list nor read another run nor
-leave a file in `/tmp` for one. When a run ends, the rig moves its directory from
-`$SKILL_SCENARIOS_WORK/runs/<run>` to `$SKILL_SCENARIOS_WORK/archive/runs/<run>`; `rig.sh score`
-reads both directories, and `rig.sh judge` and `rig.sh health` take a run in either. At
-`SKILL_SCENARIOS_PARALLEL=1` a run's exit also deletes what the run left at the top of the
-machine's `/tmp`, by the entries it recorded there when it started, and never anything that was
+Each run's agent runs in a user, mount and PID namespace of its own (`env -i
+PATH=/usr/sbin:/usr/bin:/sbin:/bin unshare -Urm -p --fork --mount-proc`, then a user namespace that
+maps it back to the caller's uid), built from one declaration in `rig.sh`, `world_paths`, which
+`rig.sh world <label> <run dir>` prints. It hides behind an empty tmpfs the scratch root the
+caller's `TMPDIR` names, the issue workspaces (`/legion/workspaces`, or `LEGION_WORKSPACE` three
+levels up), the work directory, every label's checkout, `/var/run/legion` and `/var/run/secrets`;
+it shows again the run's own directory, its label's profile and checkout (never the other
+label's), the batch's services, the rig's own directory and the one package its stand-ins import,
+and the tools the run's pane names (each directory on its PATH, mise's installs, the pin and the
+push guard's check), read-only but for the run and its model route's call record. `/tmp` is the
+run's own `<run>/tmp`, and `/proc` lists the run's own processes alone. `/var/run/model-gateway-key`
+and `/var/run/operator` stay: they are the model route's own credentials. So an agent can neither
+list nor read another run, another role's scratch, the other label's skills or the pod's
+credentials, nor leave a file in `/tmp` for another run. A host that refuses the namespace starts
+nothing: `rig.sh run`, `batch` and `live-read` probe it first and exit 1 naming the host's refusal
+(a GitHub runner answers `unshare: write failed /proc/self/uid_map: Operation not permitted`), and
+the rig's namespace tests skip there with that text. When a run ends, the rig moves its directory
+from `$SKILL_SCENARIOS_WORK/runs/<run>` to `$SKILL_SCENARIOS_WORK/archive/runs/<run>`;
+`rig.sh score` reads both directories, and `rig.sh judge` and `rig.sh health` take a run in
+either. At `SKILL_SCENARIOS_PARALLEL=1` a run's exit also deletes what the run left at the top of
+the machine's `/tmp`, by the entries it recorded there when it started, and never anything that was
 there before. A run's pushes meet the push guard a Legion pod's do: where the `git` on the
 caller's PATH is Legion's leak-check wrapper, the rig passes the caller's `PUBLIC_LEAK_CHECK` into
 each run's pane and refuses to start a run when it names no readable check.
 
 `rig.sh health [--tmp-snapshot <file>] <run dir>...` says whether each run's world could take what
-its agents did, and whether the run stayed inside its own world. It reads nine things: the run
+its agents did, and whether the run stayed inside its own world. It reads thirteen things: the run
 finished (its `out.txt` ends with an `exit=` line); every completion line names a role the
 scenario boots, and every completion the daemon stand-in refused was answered as
 `completion-answers.ts`'s `ANSWERS` table allows for the run's scenario, label and that role; a
@@ -401,13 +414,19 @@ tool result of any
 agent, and no `out*.txt`, holds a line the push guard prints when it refuses a push or cannot run;
 no `gh` call the gh stand-in refused (`calls.jsonl`) with a refusal `health.ts`'s `GH_DECLARED`
 does not declare for the scenario and the calling role (a call no route of the world answers
-never is); no tool call names a path under another run's directory; and no tool call reads a path
+never is); no tool call names a path under another run's directory; no tool call reads a path
 another of the runs given wrote last before the read, or a `/tmp` entry that was there before the
 run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp` entries taken before the
-batch). A run's own writes outside its directory are recorded and are no verdict on it. Give a
-batch's runs in one call: given one run, `health` sees no other run's writes. It reads every
-transcript under each run's `sessions/`, every role's and every subagent's. It scores nothing and
-writes nothing: it prints `<run>  healthy` or `<run>  unhealthy: <reason>` for each run, naming
+batch); no tool call names a path its world hides (by `rig.sh world`: under the scratch root, the
+issue workspaces, the work directory or any label's checkout, the other runs' given included)
+outside its own directory, `/tmp` and what its world shows again; no tool call reads another
+process's `/proc/<n>/environ` or `cmdline`; no tool call names a path under `/var/run/legion` or
+`/var/run/secrets`; and no `web_search` call, and no `bash`, `read` or `fetch` call that reaches a
+host other than the loopback, the hosts its pane's URLs name and the model gateway its profile's
+`models.yml` names. A run's own writes outside its directory are recorded and are no verdict on
+it. Give a batch's runs in one call: given one run, `health` sees no other run's writes. It reads
+every transcript under each run's `sessions/`, every role's and every subagent's. It scores nothing
+and writes nothing: it prints `<run>  healthy` or `<run>  unhealthy: <reason>` for each run, naming
 the evidence, then how many runs each rule flags, then a count. It exits 0 when every run is
 healthy, 1 when one is not, and 2, printing no run, for no argument or for a path that is not a
 run of a scenario and label the table names. Start a batch only once a run of each label in each

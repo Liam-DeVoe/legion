@@ -33,13 +33,25 @@
  *      batch, wherever it sits;
  *   9. another run's write: no tool call of the run reads a path another run of those given wrote
  *      last before the read (`otherRunWrite`). A run's own writes outside its directory, HOME and
- *      TMPDIR are recorded (`writesOf`) and are no verdict on it.
- * Rules 6, 8 and 9 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each agent's
+ *      TMPDIR are recorded (`writesOf`) and are no verdict on it;
+ *  10. outside its world: no tool call names a path its world hides — the scratch root, the issue
+ *      workspaces, the work directory, every label's checkout — outside its own directory, its
+ *      /tmp and every path its world shows again (`outsideWorld`). The world is rig.sh's one
+ *      declaration of it (world_paths, `rig.sh world`), the one the run's namespace mounts;
+ *  11. another process: no tool call reads a /proc/<n>/environ or cmdline but /proc/self's
+ *      (`otherProcess`);
+ *  12. credentials: no tool call names a path under /var/run/legion or /var/run/secrets, by
+ *      either name (`credentialReach`);
+ *  13. off-world network: no `web_search` call, and no `bash`, `read` or `fetch` call that reaches
+ *      a host other than the loopback, the hosts its pane's URLs name and the model gateway its
+ *      profile's models.yml names (`offWorld`).
+ * Rules 6 and 8 to 13 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each agent's
  * and each subagent's) through score.ts's readers. The run's own directory is the one its pane
  * file names (`SKILL_SCENARIO_RUN`, which the transcripts' paths are written under) and the
  * directory health was given, which differ for a run read from an archive or a copy. Rule 9 reads
  * the runs it is given together, so a batch's runs are judged in one call: given one run, it
- * sees no other run's writes and flags nothing, while rules 1 to 8 read each run alone.
+ * sees no other run's writes and flags nothing, and rule 10 sees no other label's checkout but
+ * the work directory's profiles name, while the other rules read each run alone.
  *
  * Prints one line per run, `<run>  healthy` or `<run>  unhealthy: <reason>`, naming the first rule
  * the run fails with the evidence it failed on; then, for each rule, `health: <rule>: <n> of <m>
@@ -48,7 +60,7 @@
  * 1 otherwise, and 2, printing no run, for no argument or for a path that is not a run directory
  * of a scenario `ANSWERS` names and of a label `LABEL_DAEMONS` names.
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -398,6 +410,251 @@ function otherRunReach(run: Run): string | undefined {
   return undefined;
 }
 
+/** A run's world as rig.sh declares it (world_paths, read through `rig.sh world`, the one
+ * declaration its namespace mounts too): what the namespace hides behind an empty tmpfs
+ * (`cover`), the credentials it hides the same way (`credentials`), and what it shows again
+ * (`rw`, `ro`). */
+interface World {
+  readonly covers: readonly string[];
+  readonly credentials: readonly string[];
+  readonly shown: readonly string[];
+}
+
+const worlds = new Map<string, World>();
+
+/** The run's world, from `rig.sh world <label> <run dir>`, read once per run. */
+function worldOf(run: Run): World {
+  const known = worlds.get(run.dir);
+  if (known !== undefined) return known;
+  const made = Bun.spawnSync(
+    ["bash", path.join(import.meta.dir, "rig.sh"), "world", run.label, run.dir],
+    { stdout: "pipe", stderr: "pipe" }
+  );
+  if (made.exitCode !== 0)
+    throw new Error(
+      `rig.sh world ${run.label} ${run.dir} exited ${made.exitCode}: ${made.stderr.toString().trim()}`
+    );
+  const world = { covers: [] as string[], credentials: [] as string[], shown: [] as string[] };
+  for (const line of made.stdout.toString().split("\n")) {
+    const at = line.indexOf(" ");
+    const where = path.posix.normalize(line.slice(at + 1));
+    const kind = line.slice(0, at);
+    if (kind === "cover") world.covers.push(where);
+    else if (kind === "credentials") world.credentials.push(where);
+    else if (kind === "rw" || kind === "ro") world.shown.push(where);
+  }
+  worlds.set(run.dir, world);
+  return world;
+}
+
+/** Rule 10: the first path a tool call of the run names under what its world hides
+ * — the scratch root, the issue workspaces, the work directory and every label's checkout (those
+ * of the runs given too, by their built-from) — outside the run's own directory, its /tmp (the
+ * namespace's $R/tmp) and every path its world shows again. The world is the one its namespace
+ * mounted, so the allowlist is that declaration, and a path under the other label's checkout is
+ * outside it. A run from before the namespace is held to the same world. What it cannot see is
+ * what rule 8 cannot: a reach that names no path. */
+function outsideWorld(run: Run, runs: readonly Run[]): string | undefined {
+  const world = worldOf(run);
+  const hidden = [
+    ...world.covers,
+    ...runs.flatMap((one) => {
+      try {
+        return [path.posix.normalize(labelCheckout(one.dir))];
+      } catch {
+        return [];
+      }
+    }),
+  ];
+  const allowed = [...run.own, "/tmp", ...world.shown];
+  for (const call of run.calls)
+    for (const target of namedPaths(call.tool, call.args)) {
+      if (allowed.some((dir) => inside(target, dir))) continue;
+      const zone = hidden.find((dir) => inside(target, dir));
+      if (zone !== undefined)
+        return `outside its world: a ${call.tool} call in ${call.file} names ${target}, under ${zone}, which the run's world hides and does not show again (rig.sh's world_paths)`;
+    }
+  return undefined;
+}
+
+/** The text a call runs or reads by: a `bash` command whole, an `eval` cell, and a `read`, `grep`
+ * or `glob` path. */
+function callText(tool: string, args: ToolArgs): string {
+  if (tool === "bash") return stringArg(args, "command") ?? "";
+  if (tool === "eval") return stringArg(args, "code") ?? "";
+  return ["read", "grep", "glob"].includes(tool) ? (stringArg(args, "path") ?? "") : "";
+}
+
+/** The environment or the command line of a process other than the caller's own: any
+ * `/proc/<n>/environ` or `/proc/<n>/cmdline` but `/proc/self/…` and `/proc/thread-self/…`, a glob
+ * or a variable in place of `<n>` included. Inside a run's namespace PID 1 is the run's own, but
+ * a run from before it shared the pod's processes, and a transcript does not say which it was. */
+const OTHER_PROCESS =
+  /\/proc\/(?!self\/|thread-self\/)[^/\s'"`;|&<>()]+\/(?:environ|cmdline)(?![\w.-])/;
+
+/** Rule 11: the first tool call of the run that reads another process's environment
+ * or command line (OTHER_PROCESS), here-document bodies included: the 2026-11-14 probe read the
+ * caller's Dispatch variables out of /proc/1/environ. */
+function otherProcess(run: Run): string | undefined {
+  for (const call of run.calls) {
+    const found = OTHER_PROCESS.exec(callText(call.tool, call.args));
+    if (found !== null)
+      return `another process: a ${call.tool} call in ${call.file} reads ${found[0]}, a process the run does not own`;
+  }
+  return undefined;
+}
+
+/** Rule 12: the first path a tool call of the run names under a credentials path of
+ * its world (/var/run/legion, /var/run/secrets, by either name), whatever the run then did with
+ * it. */
+function credentialReach(run: Run): string | undefined {
+  const { credentials } = worldOf(run);
+  for (const call of run.calls)
+    for (const target of namedPaths(call.tool, call.args)) {
+      const under = credentials.find((dir) => inside(target, dir));
+      if (under !== undefined)
+        return `credentials: a ${call.tool} call in ${call.file} names ${target}, under ${under}`;
+    }
+  return undefined;
+}
+
+/** A URL that reaches a host, whole, with its host: the schemes of the network, not Oh My Pi's
+ * own references (skill://, dispatch://, local://), which reach none. */
+const NETWORK_URL =
+  /\b(?:https?|wss?|ssh|git|git\+ssh|ftp|sftp|rsync):\/\/(?:[^\s/@'"`]*@)?(\[[0-9A-Fa-f:.]+\]|[^\s/:?#'"`()<>;|&]+)[^\s'"`()<>;|&]*/gi;
+/** Any URL, with its host: what the pane names (nats://, postgres://) counts as the world's. */
+const ANY_URL =
+  /\b[a-z][a-z0-9+.-]*:\/\/(?:[^\s/@'"`]*@)?(\[[0-9A-Fa-f:.]+\]|[^\s/:?#'"`()<>;|&]+)/gi;
+/** A git remote in scp form, `<user>@<host>:<path>`. */
+const SCP_REMOTE = /^[\w.-]+@([\w.-]+):/;
+/** A host a curl or wget operand names without a scheme: a name with a dot, an address or
+ * localhost, followed by a port or a path. */
+const BARE_HOST =
+  /^(localhost|\d{1,3}(?:\.\d{1,3}){3}|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d+)?(?:[/:]|$)/i;
+/** The curl and wget options whose value is the next word, which is no URL. */
+const VALUE_FLAGS = new Set(
+  "-o -O -H -d -X -u -T -F -A -e -b -c -w -x -P --output --output-document --header --data --data-raw --data-binary --data-urlencode --request --user --upload-file --form --user-agent --referer --cookie --cookie-jar --write-out --proxy --directory-prefix".split(
+    " "
+  )
+);
+
+/** A host as the world compares it: lower case, an IPv6 address out of its brackets. */
+function hostName(host: string): string {
+  return host.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+}
+
+/** A flag whose value is text the command writes (a comment's body, a commit's message, a
+ * title), with that value: a URL in it is a link the agent wrote, not a host it reached. */
+const TEXT_FLAG =
+  /(^|\s)(--body|-b|--title|-t|-m|--message|--subject)(=|[ \t]+)(?:'[^']*'|"[^"]*"|[^\s'"])+/g;
+/** A `gh api` field flag with its `key=value` word; its value is written text when the key is
+ * `body`, `title` or `message`. */
+const FIELD_FLAG = /(^|\s)(-f|-F|--field|--raw-field)(=|[ \t]+)((?:'[^']*'|"[^"]*"|[^\s'"])+)/g;
+
+/** Every host a `bash` command reaches, with the text that names it: the host of every network
+ * URL in it but those in text it writes (here-document bodies, and the values of TEXT_FLAG and of
+ * a `body`, `title` or `message` FIELD_FLAG), the scp-form remote of a `git` or `jj` command, a
+ * curl or wget operand that names a host without a scheme, and the host a `gh api --hostname`
+ * names. */
+function bashHosts(command: string): { host: string; named: string }[] {
+  const code = withoutBodies(command).code;
+  const reached = code
+    .replace(TEXT_FLAG, (_all, lead, flag, separator) => `${lead}${flag}${separator}''`)
+    .replace(FIELD_FLAG, (all, lead, flag, separator, value) =>
+      /^['"]?(?:body|title|message)=/.test(value) ? `${lead}${flag}${separator}''` : all
+    );
+  const hosts = [...reached.matchAll(NETWORK_URL)].map((hit) => ({
+    host: hostName(hit[1] ?? ""),
+    named: hit[0],
+  }));
+  for (const hit of code.matchAll(SHELL_COMMAND)) {
+    const name = path.posix.basename(hit[1] ?? "");
+    const words = [...(hit[2] ?? "").matchAll(WORD)].map((word) =>
+      word[0].replace(/^(['"])(.*)\1$/, "$2")
+    );
+    words.forEach((word, at) => {
+      const before = words[at - 1] ?? "";
+      const scp = SCP_REMOTE.exec(word);
+      if ((name === "git" || name === "jj") && scp !== null && !word.includes("://"))
+        hosts.push({ host: hostName(scp[1] ?? ""), named: word });
+      const bare = BARE_HOST.exec(word);
+      if (
+        (name === "curl" || name === "wget") &&
+        bare !== null &&
+        !word.includes("://") &&
+        !VALUE_FLAGS.has(before)
+      )
+        hosts.push({ host: hostName(bare[1] ?? ""), named: word });
+      if (name === "gh" && before === "--hostname")
+        hosts.push({ host: hostName(word), named: word });
+      if (name === "gh" && word.startsWith("--hostname="))
+        hosts.push({ host: hostName(word.slice("--hostname=".length)), named: word });
+    });
+  }
+  return hosts;
+}
+
+/** A profile's models.yml, as far as its providers' addresses. */
+const ModelsFile = z.looseObject({
+  providers: z.record(z.string(), z.looseObject({ baseUrl: z.string().optional() })).optional(),
+});
+
+/** The hosts of the run's world: the loopback, every host a URL of its pane file names (its
+ * stand-ins', its Dispatch's, its Envoy's and its NATS's), and the host of every provider's
+ * baseUrl in the models.yml of each HOME the run's agents ran under (`home`, `home-<role>`): the
+ * model gateway its profile names, read from the profile's own configuration. */
+function worldHosts(run: Run): Set<string> {
+  const hosts = new Set(["127.0.0.1", "localhost", "::1"]);
+  const pane = path.join(run.dir, "pane.env");
+  if (existsSync(pane))
+    for (const hit of readFileSync(pane, "utf8").matchAll(ANY_URL))
+      hosts.add(hostName(hit[1] ?? ""));
+  const homes = readdirSync(run.dir).filter((name) => /^home(?:-[\w-]+)?$/.test(name));
+  for (const home of homes) {
+    const profiles = path.join(run.dir, home, ".omp", "profiles");
+    if (!existsSync(profiles)) continue;
+    for (const profile of readdirSync(profiles)) {
+      const models = path.join(profiles, profile, "agent", "models.yml");
+      if (!existsSync(models)) continue;
+      const parsed = ModelsFile.safeParse(Bun.YAML.parse(readFileSync(models, "utf8")));
+      for (const provider of Object.values(parsed.data?.providers ?? {}))
+        for (const hit of (provider.baseUrl ?? "").matchAll(ANY_URL))
+          hosts.add(hostName(hit[1] ?? ""));
+    }
+  }
+  return hosts;
+}
+
+/** Rule 13: the first call of the run that reaches a host off its world (`worldHosts`):
+ * a `bash` command's (`bashHosts`), a `read` or `fetch` of an http(s) URL, and every `web_search`
+ * call, which always leaves it. No tool is taken out of a profile for this: a profile without a
+ * tool is a world that differs from production. */
+function offWorld(run: Run): string | undefined {
+  const hosts = worldHosts(run);
+  const allowed = [...hosts].join(", ");
+  for (const call of run.calls) {
+    if (call.tool === "web_search")
+      return `off-world network: a web_search call in ${call.file} searches the web, which no host of the run's world serves`;
+    const reached =
+      call.tool === "bash"
+        ? bashHosts(stringArg(call.args, "command") ?? "")
+        : ["read", "fetch", "web_fetch"].includes(call.tool)
+          ? [stringArg(call.args, "url") ?? stringArg(call.args, "path") ?? ""].flatMap((one) =>
+              /^https?:\/\//i.test(one)
+                ? [...one.matchAll(NETWORK_URL)].map((hit) => ({
+                    host: hostName(hit[1] ?? ""),
+                    named: one,
+                  }))
+                : []
+            )
+          : [];
+    const off = reached.find((one) => !hosts.has(one.host));
+    if (off !== undefined)
+      return `off-world network: a ${call.tool} call in ${call.file} reaches ${off.host} (${off.named}), no host of the run's world (${allowed})`;
+  }
+  return undefined;
+}
+
 /** Commands whose operands are files they write: every operand, or the last, which is the
  * destination (`cp`, `mv`, `ln` and `install`, unless `-t <dir>` names it; `sed -i`, whose
  * last operand is the file and whose first may be a script that starts with `/`). */
@@ -619,6 +876,10 @@ const RULES: readonly {
   { name: "gh", judge: ghUndeclared },
   { name: "another run", judge: otherRunReach },
   { name: "another run's write", judge: otherRunWrite },
+  { name: "outside its world", judge: outsideWorld },
+  { name: "another process", judge: otherProcess },
+  { name: "credentials", judge: credentialReach },
+  { name: "off-world network", judge: offWorld },
 ];
 
 if (import.meta.main) {

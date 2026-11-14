@@ -30,9 +30,17 @@
 #                                                  another of the runs given wrote, or /tmp scratch
 #                                                  from before the run (<file>: the /tmp entries
 #                                                  before the batch, for runs with no record of
-#                                                  their own). Give a batch's runs in one call;
+#                                                  their own); no tool call named a path its
+#                                                  world hides and does not show (`rig.sh world`),
+#                                                  another process's /proc environ or cmdline, or a
+#                                                  credential under /var/run/legion or
+#                                                  /var/run/secrets; and no call reached a host off
+#                                                  its world. Give a batch's runs in one call;
 #                                                  exits 0 when every run is healthy, 1 otherwise,
 #                                                  2 on a usage error
+#   rig.sh world     <label> <run dir>             the run's world, one `<kind> <path>` a line
+#                                                  (world_paths): what its namespace hides and
+#                                                  what it shows again
 #   rig.sh judge     <run dir>...                  the judge's prompts on each spec-writing or
 #                                                  spec-rewrite run (judge.ts run), each in a fresh
 #                                                  Oh My Pi session with no Dispatch
@@ -291,17 +299,24 @@
 #   - A worker run gets a Legion project of its own, built from its scenario, its case, its label,
 #     its number and its batch (run_project), since the Envoy role topics it claims carry that
 #     project and every worker run is booted on one issue key.
-#   - Its agent runs in a mount namespace of its own (launch, private_world): the runs directory and
-#     the archive hold only the run's own directory, and /tmp is the run's own $R/tmp. It can still
-#     read the rest of the filesystem, the operator's home included. score.ts does not score a run
+#   - Its agent runs in a user, mount and PID namespace of its own, started with `env -i` (launch,
+#     world_paths, private_world): the scratch root TMPDIR names, the issue workspaces, the work
+#     directory, every label's checkout, /var/run/legion and /var/run/secrets are each an empty
+#     tmpfs, and only the run's world is shown again: its own directory, its label's profile and
+#     checkout, the batch's services, this script's own directory and the tools its pane names.
+#     /tmp is the run's own $R/tmp and /proc holds its own processes alone. It can still read the
+#     rest of the filesystem, the operator's home included. A host that refuses the namespace
+#     starts no run (require_namespace). score.ts does not score a run
 #     that reads a skill file outside its own label or a file of another label's checkout, or whose
 #     PR body carries another run's line (unscored, testerProof). It flags, and still scores, a run
 #     whose tool calls only name such a skill file or checkout (skillReaches), or name a path
 #     outside its work directory, its label's checkout and the system locations (outsideReaches): a
 #     flag shows the path was named, not that it was read. A path a call reaches without naming it,
 #     as a glob from `/` does, is not caught. health.ts calls a run unhealthy, whatever it scored,
-#     when a tool call names another run's directory, or reads a path another run of the batch
-#     wrote or /tmp scratch from before the run: the second line behind the namespace.
+#     when a tool call names another run's directory, a path its world hides and does not show,
+#     another process's /proc environ or cmdline or a credential path, or reaches a host off its
+#     world, or reads a path another run of the batch wrote or /tmp scratch from before the run:
+#     the second line behind the namespace.
 #   - An exit stops what its command started (on_exit, stop_run, stop_batch); a serial run's exit
 #     then removes what the run left at the top of the machine's /tmp (scratch_clean), and moves
 #     the run's directory to <work>/archive/runs/<run> (archive_run), out of the runs/ a later run
@@ -800,20 +815,159 @@ EOF
   [ -f "$R/fixtures.json" ] || printf '{"routes":[]}\n' >"$R/fixtures.json"
 }
 
-# The script launch.sh runs as root of a user and mount namespace of its own (`unshare -Urm`),
-# with the run directory, the runs directory, the archive, and this user's uid and gid as its
-# arguments, then the agent's command. It binds $R onto /tmp to hold it, covers the runs directory
-# and the archive with an empty tmpfs each, makes $R's path again inside the runs tmpfs and binds
-# the held $R back onto it, binds $R/tmp onto /tmp, and starts the command in a second user
-# namespace that maps it back to this user's uid and gid. The order is the record: covering the
-# runs directory first and binding $R onto itself afterwards binds the new tmpfs's empty $R, and
-# the agent writes every file of the run there and nowhere the host can see, exit 0. /tmp holds
-# $R while the runs are covered because it is no path under either and is covered by $R/tmp in
-# turn, so the namespace leaves no directory behind. The agent keeps this user's uid because one
-# running as uid 0 meets git's ownership checks and tools behaving as root, and
-# `--map-current-user` cannot take a mount (`must be superuser to use mount`). No network
-# namespace: the stand-ins, NATS and Postgres are reached on the loopback as before.
-private_world='R=$1 runs=$2 archive=$3 uid=$4 gid=$5; shift 5; mount --bind "$R" /tmp && mount -t tmpfs tmpfs "$runs" && mount -t tmpfs tmpfs "$archive" && mkdir -p "$R" && mount --bind /tmp "$R" && mount --bind "$R/tmp" /tmp && exec unshare -U --map-user="$uid" --map-group="$gid" "$@"'
+# The PATH the namespace's own commands (sh, mount, mkdir, cp and the inner unshare) run on, and
+# the whole environment its first process gets: with a PID namespace of its own the run's PID 1 is
+# that process until it execs the agent, and one that inherited the caller's environment would
+# hold the caller's Dispatch and Envoy variables and credentials there.
+namespace_path=/usr/sbin:/usr/bin:/sbin:/bin
+
+# pane_var NAME FILE prints the value of the pane file FILE's last NAME line, as `env -i` gives
+# the agent the last of two, and nothing for a file that has none or does not exist.
+pane_var() {
+  [ ! -f "$2" ] || sed -n "s/^$1=//p" "$2" | tail -n 1
+}
+
+# world_paths R WORK P CO PANE [PIN_DIR] prints the world of the run R, one `<kind> <path>` a
+# line: what the run's namespace hides (private_world mounts it) and what health.ts judges a run's
+# tool calls by (`rig.sh world`, cmd_world). It is the one declaration of that world: launch
+# writes it to $R/namespace.txt for the namespace, and health.ts reads it for each run it judges,
+# so the namespace and the detector cannot hold two lists. WORK is the run's work directory, P its
+# label's profile, CO its label's checkout, PANE its pane file and PIN_DIR the pinned Oh My Pi's
+# install. The kinds:
+#   cover        hidden behind an empty tmpfs: a path a run names under one, outside its own
+#                directory and every rw and ro path, is one the run reached out of its world;
+#   credentials  hidden the same way: any path a run names under one is a reach for a credential;
+#   rw, ro       shown again at its own path, writable or read-only, where it exists.
+# Anything a cover hides that no rw or ro line shows again is out of the run's world, and /tmp is
+# the run's own $R/tmp (private_world's last bind).
+world_paths() {
+  local R=$1 work=$2 P=$3 co=$4 pane=$5 pin_dir=${6:-} workspaces=/legion/workspaces dir file entry
+  # Hidden. The scratch root the caller's TMPDIR names: on a Legion pod every role of the issue
+  # writes there, and it holds the work directory, the base label's checkout and every extraction
+  # of a tree (rig-at-<commit>, head-checkout).
+  printf 'cover %s\n' "$(realpath -m -- "${TMPDIR:-/tmp}")"
+  # The issue workspaces, <state>/workspaces/<owner>/<repo>/<issue> (packages/daemon/internal/
+  # workspace's provision.go), whose root is LEGION_WORKSPACE's three levels up on a pod: the head
+  # label's checkout is often one of them, and a run needs nothing there.
+  [ -z "${LEGION_WORKSPACE:-}" ] || workspaces=${LEGION_WORKSPACE%/*/*/*}
+  printf 'cover %s\n' "$(realpath -m -- "$workspaces")"
+  # The work directory, wherever it is: the other runs, live and archived, and the other label's
+  # profile.
+  printf 'cover %s\n' "$work"
+  # Every label's checkout: the other label's skills are no part of this run's world.
+  for file in "$work"/profiles/*/checkout; do [ ! -f "$file" ] || printf 'cover %s\n' "$(<"$file")"; done
+  # The pod's credentials, by both their names: Legion's role secrets, tokens and private state,
+  # and the cluster's service account. /var/run/model-gateway-key and /var/run/operator stay: they
+  # are the model route's own credentials, which every production agent's Oh My Pi reads.
+  for dir in /var/run/legion /var/run/secrets; do
+    printf 'credentials %s\n' "$dir"
+    [ "$(realpath -m -- "$dir")" = "$dir" ] || printf 'credentials %s\n' "$(realpath -m -- "$dir")"
+  done
+  # Shown again. The run's own directory: its record, HOME, TMPDIR, cwd and world.
+  printf 'rw %s\n' "$R"
+  {
+    # The label's profile: its packed plugins and model route, which the HOME copied from it names.
+    printf 'ro %s\n' "$P"
+    # The model route's call record and minted key, which its key command writes on every model
+    # call (install_model_route's DIR/key and DIR/cache).
+    printf 'rw %s\n' "$P/key" "$P/cache"
+    # The batch's services: the Dispatch token and the Envoy listener's address the pane names.
+    printf 'ro %s\n' "$work/services"
+    # The run's own label's checkout, and no other label's.
+    [ -z "$co" ] || printf 'ro %s\n' "$co"
+    # The rig's own directory (score.ts's RIG_DIR), not the tree around it: the gh and bun
+    # stand-ins on the pane's PATH run its scripts.
+    printf 'ro %s\n' "$here"
+    # zod, the one package those scripts import, where bun's resolution finds it from that
+    # directory: the first node_modules/zod above it.
+    dir=$here
+    while [ "$dir" != / ] && [ ! -e "$dir/node_modules/zod" ]; do dir=$(dirname -- "$dir"); done
+    [ ! -e "$dir/node_modules/zod" ] || printf 'ro %s\n' "${dir%/}/node_modules/zod"
+    # Every tool directory on the pane's PATH but the run's own: mise and tmux, git and jj with
+    # the push guard's wrappers, bun, the operator's tools.
+    while IFS= read -r -d : entry; do
+      case $entry in /*) ;; *) continue ;; esac
+      case $entry/ in "$R"/*) continue ;; esac
+      entry=${entry%/}
+      printf 'ro %s\n' "${entry:-/}"
+    done < <(printf '%s:' "$(pane_var PATH "$pane")")
+    # mise's installs, which `mise x <pin>` runs the agent from; read-only, so no run installs a
+    # tool into another's world.
+    entry=$(pane_var MISE_DATA_DIR "$pane")
+    [ -z "$entry" ] || printf 'ro %s\n' "$entry"
+    # The pinned Oh My Pi, wherever `mise where` put it.
+    [ -z "$pin_dir" ] || printf 'ro %s\n' "$pin_dir"
+    # The push guard's shared check (push_guard's PUBLIC_LEAK_CHECK), which a Legion pod keeps
+    # outside the scratch root.
+    entry=$(pane_var PUBLIC_LEAK_CHECK "$pane")
+    [ -z "$entry" ] || printf 'ro %s\n' "$(dirname -- "$entry")"
+  } | LC_ALL=C sort -k2 | uniq
+}
+
+# The script launch.sh runs as root of a user, mount and PID namespace of its own (`unshare -Urm
+# -p --fork --mount-proc`, with /proc mounted afresh, so the run sees its own processes alone),
+# under `env -i` with namespace_path alone, with this user's uid and gid, the run directory and its
+# cwd as its arguments, then the agent's command. It reads $R/namespace.txt (world_paths) and:
+#   1. mounts a tmpfs on /dev/shm, its holder, and binds each rw and ro path there, $R first;
+#   2. covers each cover and credentials path with an empty tmpfs;
+#   3. binds each held path back onto its own path, read-only unless it is rw, $R first;
+#   4. binds $R/tmp onto /tmp, and the held paths under /tmp again, since that bind hides them;
+#   5. drops the holder for an empty /dev/shm of the run's own, marks $R/namespace-ready, and
+#      starts the command in a second user namespace that maps it back to this user's uid and gid.
+# The order is the record: covering first and binding $R onto itself afterwards binds the new
+# tmpfs's empty $R, and the agent writes every file of the run there and nowhere the host can see,
+# exit 0. The agent keeps this user's uid because one running as uid 0 meets git's ownership
+# checks and tools behaving as root, and `--map-current-user` cannot take a mount (`must be
+# superuser to use mount`). Any command that fails stops the script before the agent starts, with
+# that command's own message on out.txt and no namespace-ready. No network namespace: the
+# stand-ins, NATS and Postgres are reached on the loopback as before.
+private_world='uid=$1 gid=$2 R=$3 cwd=$4; shift 4
+mount -t tmpfs tmpfs /dev/shm && cp "$R/namespace.txt" /dev/shm/plan && : >/dev/shm/held || exit 1
+i=0
+while read -r kind p; do
+  case $kind in rw | ro) [ -d "$p" ] || continue ;; *) continue ;; esac
+  i=$((i + 1))
+  mkdir "/dev/shm/$i" && mount --bind "$p" "/dev/shm/$i" && printf "%s %s %s\n" "$i" "$kind" "$p" >>/dev/shm/held || exit 1
+done </dev/shm/plan
+while read -r kind p; do
+  case $kind in cover | credentials) [ ! -d "$p" ] || mount -t tmpfs tmpfs "$p" || exit 1 ;; esac
+done </dev/shm/plan
+back() { mkdir -p "$3" && mount --bind "/dev/shm/$1" "$3" && { [ "$2" = rw ] || mount -o remount,bind,ro "$3"; }; }
+while read -r i kind p; do back "$i" "$kind" "$p" || exit 1; done </dev/shm/held
+mount --bind "$R/tmp" /tmp || exit 1
+while read -r i kind p; do
+  case $p/ in /tmp/*) back "$i" "$kind" "$p" || exit 1 ;; esac
+done </dev/shm/held
+umount -l /dev/shm && mount -t tmpfs tmpfs /dev/shm && : >"$R/namespace-ready" && cd "$cwd" || exit 1
+exec unshare -U --map-user="$uid" --map-group="$gid" "$@"
+'
+
+# namespace_probe makes, under the same unshare, `env -i` and flags as launch.sh, a namespace that
+# mounts a tmpfs, binds a directory of it and remounts that read-only, and maps this user back:
+# each step private_world takes. It prints nothing and succeeds where the host allows that, and
+# prints the host's refusal and fails where it does not (a GitHub runner answers
+# `unshare: write failed /proc/self/uid_map: Operation not permitted`). The unshare is the one on
+# this script's PATH, as launch.sh's is.
+namespace_probe() {
+  local unshare out
+  unshare=$(command -v unshare) || {
+    echo "no unshare on PATH"
+    return 1
+  }
+  # shellcheck disable=SC2016 # expanded by the namespace's sh, not here
+  out=$(env -i PATH="$namespace_path" "$unshare" -Urm -p --fork --mount-proc sh -c 'mount -t tmpfs tmpfs /dev/shm && mkdir /dev/shm/held && mount --bind /dev/shm/held /dev/shm/held && mount -o remount,bind,ro /dev/shm/held && exec unshare -U --map-user="$1" --map-group="$2" true' - "$(id -u)" "$(id -g)" 2>&1) && return 0
+  printf '%s\n' "${out:-$unshare exited $? and printed nothing}"
+  return 1
+}
+
+# require_namespace refuses a run, a batch or a live read before anything of it starts, on a host
+# that refuses the namespace every agent runs in, naming the host's refusal. There is no fallback:
+# a run outside its namespace sees every other run, the operator's scratch and the pod's
+# credentials.
+require_namespace() {
+  local why
+  why=$(namespace_probe) || fail "this host refuses the namespace every agent of a run starts in (unshare -Urm -p --fork --mount-proc), so nothing starts: $why"
+}
 
 # launch NAME [OMP_ARG]... runs `omp -p "$(cat $R/prompt.txt)"` and then each OMP_ARG in $R/cwd
 # under $R/pane.env, followed by $R/system-args (one --append-system-prompt argument, as shell text)
@@ -823,30 +977,43 @@ private_world='R=$1 runs=$2 archive=$3 uid=$4 gid=$5; shift 5; mount --bind "$R"
 # wait reads only its own exit line. The session's transcript goes to $sessions_dir, which is
 # $R/sessions for the run's own agent and a directory of its own for each later one (worker_boot).
 #
-# The agent and every process it starts run in a world of the run's own (private_world): launch.sh
-# starts them in a mount namespace where the runs directory and the archive are each an empty
-# tmpfs with the run's own $R bound back at its path, and $R/tmp is bound onto /tmp. So `ls` of
-# the runs directory shows this run alone, no other run's directory, live or archived, can be
-# read, and nothing a run writes to /tmp reaches the machine's /tmp or another run: it stays under
-# $R as the run's record. The 2026-11-14 agents read other runs' pointer files under the runs
-# directory and wrote /tmp/LWEVAL-1-review.json, a name every run's agent picks, into the /tmp
-# every run shared. The label's profile, the work directory's services and the rig's own files
-# stay visible. A run whose agent cannot start in this namespace fails as that run; there is no
-# fallback to the shared world. scratch_clean and health.ts's rules stay behind this as a second
-# line.
+# The agent and every process it starts run in a world of the run's own (world_paths,
+# private_world): the scratch root, the issue workspaces, the work directory, every label's
+# checkout and the pod's credentials are each an empty tmpfs, with the run's own $R, its label's
+# profile and checkout, the batch's services, the rig's own directory and the tools the pane names
+# shown again; $R/tmp is /tmp, and /proc holds the run's own processes alone. So `ls` of the runs
+# directory shows this run alone, no other run's directory, live or archived, no other role's
+# scratch, no other label's checkout and no credential under /var/run/legion can be read, and
+# nothing a run writes to /tmp reaches the machine's /tmp or another run: it stays under $R as the
+# run's record. The 2026-11-14 agents read other runs' pointer files under the runs directory and
+# wrote /tmp/LWEVAL-1-review.json, a name every run's agent picks, into the /tmp every run shared.
+# An agent that does not start in this namespace fails the run, naming the host's refusal: there
+# is no fallback to the shared world. A path the run's world shows that holds a path it hides is
+# refused before anything starts, since showing it would show all it holds. scratch_clean and
+# health.ts's rules stay behind this as a second line.
 launch() {
-  local system='' extra='' omp
+  local system='' extra='' omp unshare kind path other hidden
   omp=$(pinned_omp "$pin") || exit 1
+  unshare=$(command -v unshare) || fail "no unshare on PATH: every agent runs in a namespace of its own"
   session=$tag-$1
   shift
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
   [ ! -f "$R/system-args" ] || system=" $(<"$R/system-args")"
   mkdir -p "$R/tmp" "$work/runs" "$work/archive"
+  world_paths "$R" "$work" "$P" "$co" "$R/pane.env" "${omp%/bin/omp}" >"$R/namespace.txt"
+  while read -r kind path; do
+    case $kind in rw | ro) ;; *) continue ;; esac
+    while read -r other hidden; do
+      case $other in cover | credentials) ;; *) continue ;; esac
+      case $hidden in "${path%/}"/?*) fail "launch: the run's world shows $path ($kind), which holds $hidden, a path it hides (world_paths)" ;; esac
+    done <"$R/namespace.txt"
+  done <"$R/namespace.txt"
+  rm -f "$R/namespace-ready"
   cat >"$R/launch.sh" <<EOF
 #!/usr/bin/env bash
 cd $(printf %q "$R/cwd")
 mapfile -t vars <$(printf %q "$R/pane.env")
-exec unshare -Urm sh -c $(printf %q "$private_world") - $(printf %q "$R") $(printf %q "$work/runs") $(printf %q "$work/archive") $(id -u) $(id -g) env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "${sessions_dir:-$R/sessions}") >$(printf %q "$R/out.txt") 2>&1
+exec env -i PATH=$namespace_path $(printf %q "$unshare") -Urm -p --fork --mount-proc sh -c $(printf %q "$private_world") - $(id -u) $(id -g) $(printf %q "$R") $(printf %q "$R/cwd") env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "${sessions_dir:-$R/sessions}") >$(printf %q "$R/out.txt") 2>&1
 EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
@@ -860,6 +1027,8 @@ EOF
   done
   tail -n 1 "$R/out.txt" 2>/dev/null | grep -q '^exit=' || echo "exit=timeout" >>"$R/out.txt"
   tmux kill-session -t "=$session" 2>/dev/null || true
+  [ -e "$R/namespace-ready" ] ||
+    fail "the agent of ${R##*/} did not start: its namespace could not be made: $(grep -v '^exit=' "$R/out.txt" | head -n 3 | tr '\n' ' ')"
 }
 
 # run_env_pids DIR prints each process whose environment names a run at or under DIR in
@@ -1018,6 +1187,7 @@ skill_reads() {
 cmd_live_read() {
   [ $# -ge 2 ] || fail "usage: rig.sh live-read <label> <skill>..."
   load_label "$1"
+  require_namespace
   shift
   local paths=() skill list
   R=$work/live-read/${P##*/}
@@ -2693,6 +2863,8 @@ cmd_run() {
   # A world whose push guard cannot find its check refuses every push, so it is refused before
   # anything of it is built (push_guard).
   push_guard >/dev/null
+  # A host that refuses the namespace its agent runs in starts nothing of it (require_namespace).
+  require_namespace
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
   [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\`"
@@ -2769,6 +2941,8 @@ cmd_batch() {
   # Each run refuses a world whose push guard has no check (push_guard); the batch refuses it
   # here, before any service starts.
   push_guard >/dev/null
+  # And a host that refuses the agents' namespace, likewise (require_namespace).
+  require_namespace
   # A spec run reads its source and the label's superpowers skills: refused here, before any
   # service starts. Its number is one above the label's highest, so no batch removes an earlier run.
   local first=1
@@ -2792,6 +2966,25 @@ cmd_batch() {
   wait "$runs_pid"
 }
 
+# cmd_world LABEL RUN prints the world of the run directory RUN of label LABEL as world_paths
+# declares it, from what the run recorded: its own directory as its pane file names it
+# (SKILL_SCENARIO_RUN; RUN itself for a run with no pane file), the work directory that holds it,
+# the label's profile there, the checkout its built-from names, its pane file, and the pin's
+# install where mise still has it. health.ts judges every run's tool calls by it.
+cmd_world() {
+  [ $# = 2 ] || fail "usage: rig.sh world <label> <run dir>"
+  [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "label '$1' is not lower-case letters, digits and hyphens"
+  local label=$1 dir=$2 R run_work P co pin_dir=''
+  R=$(pane_var SKILL_SCENARIO_RUN "$dir/pane.env")
+  [ -n "$R" ] || R=$(realpath -m -- "$dir")
+  run_work=${R%/*/*}
+  P=$run_work/profiles/$label
+  co=$(sed -n 's/^checkout //p' "$dir/built-from" 2>/dev/null | head -n 1) || co=''
+  [ -n "$co" ] || [ ! -f "$P/checkout" ] || co=$(<"$P/checkout")
+  if [ -f "$P/pin" ] && command -v mise >/dev/null; then pin_dir=$(mise where "$(<"$P/pin")" 2>/dev/null) || pin_dir=''; fi
+  world_paths "$R" "$run_work" "$P" "$co" "$dir/pane.env" "$pin_dir"
+}
+
 # Bash reads a script as it runs it, so the dispatch and its exit are one command line: a batch
 # outlives any edit to this file, and resuming at its old offset would run whatever lies there now.
 case "${1:-}" in
@@ -2801,6 +2994,7 @@ batch) shift && cmd_batch "$@" ;;
 run) shift && cmd_run "$@" ;;
 score) shift && bun "$here/score.ts" runs "$work/runs" "$@" ;;
 health) shift && SKILL_SCENARIOS_WORK=$work bun "$here/health.ts" "$@" ;;
+world) shift && cmd_world "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;

@@ -10,6 +10,7 @@ import {
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
@@ -32,6 +33,27 @@ const withoutPython = skipWithout("python3");
 
 const root = path.resolve(import.meta.dir, "../../../..");
 const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
+
+// Every row whose run starts an agent needs the namespace each agent runs in (rig.sh's launch),
+// and a host that refuses it refuses every run (require_namespace): rig.sh's own probe, read
+// once, says which host refuses it and in its words, as the python3 rows' warning does. The row
+// of a refused run, and the one refused before the namespace, run everywhere.
+const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
+const probe = Bun.spawnSync(
+  [
+    "bash",
+    "-c",
+    `${/^namespace_path=.*$/m.exec(readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8"))?.[0]}\n${fn("namespace_probe")}\nnamespace_probe`,
+  ],
+  { env: { PATH: process.env.PATH ?? "" } }
+);
+const withoutNamespace = probe.exitCode !== 0;
+if (withoutNamespace)
+  console.warn(
+    `Skipped the namespace rows in ${import.meta.path}. This host refuses the namespace every run's agent starts in (rig.sh's namespace_probe): ${probe.stdout.toString().trim()}`
+  );
+/** The rows that read the two runs the hook starts, and every other row that starts an agent. */
+const withoutRuns = withoutPython || withoutNamespace;
 
 /**
  * Every write this file's body asks for, as a function the `beforeAll` at the end calls. The
@@ -298,6 +320,8 @@ beforeAll(async () => {
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
   mkdirSync(env.HOME);
   start = String(Math.floor(Date.now() / 1000));
+  // The two runs start agents, which a host that refuses their namespace starts none of.
+  if (withoutNamespace) return;
   runs = await Promise.all(
     [1, 2].map(async (n) => {
       const { code, stderr } = await runRig(["run", "askgate", "on", String(n), String(n), start]);
@@ -311,11 +335,11 @@ beforeAll(async () => {
   });
 });
 
-test.skipIf(withoutPython)("both runs finish", () => {
+test.skipIf(withoutRuns)("both runs finish", () => {
   for (const { code, stderr } of runs) expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
 });
 
-test.skipIf(withoutPython)("each run makes a database of its own in the batch's Postgres", () => {
+test.skipIf(withoutRuns)("each run makes a database of its own in the batch's Postgres", () => {
   const made = lines(path.join(stub, "docker.log")).filter((line) =>
     line.includes("CREATE DATABASE")
   );
@@ -326,7 +350,7 @@ test.skipIf(withoutPython)("each run makes a database of its own in the batch's 
   ]);
 });
 
-test.skipIf(withoutPython)(
+test.skipIf(withoutRuns)(
   "each run starts a Dispatch server of its own, on its own database and port",
   () => {
     expect(servers.map((server) => server.database).sort()).toEqual([
@@ -337,7 +361,7 @@ test.skipIf(withoutPython)(
   }
 );
 
-test.skipIf(withoutPython)(
+test.skipIf(withoutRuns)(
   "each run's agent, seeds and capture reach the run's own Dispatch and no other",
   () => {
     const seeds = lines(path.join(stub, "seeds.log")).map((line) => JSON.parse(line));
@@ -370,7 +394,7 @@ test.skipIf(withoutPython)(
 
 // The run's exit handler kills its server's whole tree before the run exits, so a server's pid is
 // gone or a zombie by the time its run has ended.
-test.skipIf(withoutPython)("each run stops its Dispatch server when it ends", () => {
+test.skipIf(withoutRuns)("each run stops its Dispatch server when it ends", () => {
   expect(servers.length).toBe(2);
   const running = servers.filter(
     ({ pid }) =>
@@ -394,10 +418,37 @@ test.skipIf(withoutPython)(
   }
 );
 
+// A host that refuses the namespace every agent runs in (a GitHub runner answers the unshare
+// below) must start no run in the shared world instead: the run is refused before anything of it
+// is built, naming the host's refusal, with no directory, no database, no Dispatch server, no
+// agent and no session. The unshare first on PATH is the one the rig probes with and launches by.
+test.skipIf(withoutPython)(
+  "a run on a host that refuses the agent's namespace starts nothing and names the refusal",
+  async () => {
+    const refusal = "unshare: write failed /proc/self/uid_map: Operation not permitted";
+    const refusing = path.join(scratch, "refusing-bin");
+    mkdirSync(refusing, { recursive: true });
+    writeFileSync(path.join(refusing, "unshare"), `#!/bin/sh\necho "${refusal}" >&2\nexit 1\n`);
+    chmodSync(path.join(refusing, "unshare"), 0o755);
+    const servers = lines(path.join(stub, "servers.log")).length;
+    const { code, stderr } = await runRig(["run", "askgate", "on", "7", "7", start], {
+      PATH: `${refusing}:${env.PATH}`,
+    });
+    expect(code).toBe(1);
+    expect(stderr).toContain(
+      `this host refuses the namespace every agent of a run starts in (unshare -Urm -p --fork --mount-proc), so nothing starts: ${refusal}`
+    );
+    for (const runs of [["runs"], ["archive", "runs"]])
+      expect(existsSync(path.join(work, ...runs, "askgate-facts-on-7"))).toBe(false);
+    expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("on_7");
+    expect(lines(path.join(stub, "servers.log"))).toHaveLength(servers);
+  }
+);
+
 // The link case's ask states the reindex time from a file, for AskGate's content 9 (an unsourced
 // claim about what we run today): the run's working directory must hold that file, with the line
 // the prompt quotes.
-test.skipIf(withoutPython)(
+test.skipIf(withoutRuns)(
   "a link run's working directory holds the crontab its prompt cites, with the line it quotes",
   async () => {
     const { code, stderr } = await runRig(["run", "askgate", "on", "1", "4", start], {

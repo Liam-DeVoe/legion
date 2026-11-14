@@ -5,10 +5,12 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -57,6 +59,36 @@ function definition(name: string): string {
   }
   throw new Error(`rig.sh's ${name}() has no closing }`);
 }
+/** rig.sh's own top-level single-quoted assignment of `name`, over as many lines as it takes, as
+ * the script writes it (private_world). */
+function quotedAssignment(name: string): string {
+  const found = new RegExp(`^${name}='[^']*'$`, "m").exec(rigScript);
+  if (found === null) throw new Error(`rig.sh assigns no quoted ${name} at the start of a line`);
+  return found[0];
+}
+/** What rig.sh's namespace_probe prints and its status, under `env`: the probe every run's start
+ * makes (require_namespace), in the same form launch.sh starts the agent in. */
+function namespaceProbe(env: Record<string, string>) {
+  const result = Bun.spawnSync(
+    ["bash", "-c", `${assignment("namespace_path")}\n${fn("namespace_probe")}\nnamespace_probe`],
+    { env }
+  );
+  return { code: result.exitCode, stdout: result.stdout.toString().trim() };
+}
+/** Why this host refuses the namespace every run's agent starts in, by the probe's own words, or
+ * undefined where it makes one: read once, so one warning names the refusal for the whole file,
+ * as the Docker rows' does. Every row that starts an agent in it skips on such a host (a GitHub
+ * runner answers `unshare: write failed /proc/self/uid_map: Operation not permitted`); every
+ * other row runs everywhere. */
+const namespaceRefusal = (() => {
+  const probe = namespaceProbe({ PATH: process.env.PATH ?? "" });
+  if (probe.code === 0) return undefined;
+  console.warn(
+    `Skipped the namespace rows in ${import.meta.path}. This host refuses the namespace every run's agent starts in (rig.sh's namespace_probe): ${probe.stdout}`
+  );
+  return probe.stdout;
+})();
+const withoutNamespace = namespaceRefusal !== undefined;
 /** The login every answer of a world names a user by (rig.sh's `world_login`). */
 const WORLD_LOGIN = assignment("world_login").replace(/^world_login='(.*)'$/, "$1");
 const work = temporaryDirectory("skill-scenarios-rig");
@@ -1458,7 +1490,9 @@ describe("health", () => {
     );
     return dir;
   }
-  function health(...dirs: string[]) {
+  /** `rig.sh health` of `dirs`, under childEnv with the caller's go caches and `vars` over it (a
+   * TMPDIR, whose root a run's world hides, say). */
+  function healthIn(vars: Record<string, string>, ...dirs: string[]) {
     // The go caches of the caller's, which the routes rule's `go run` compiles with: a HOME of
     // its own would have go fetch and build the daemon module from nothing.
     const go = Object.fromEntries(
@@ -1469,7 +1503,7 @@ describe("health", () => {
     );
     const result = Bun.spawnSync(
       ["bash", path.join(import.meta.dir, "rig.sh"), "health", ...dirs],
-      { env: { ...childEnv, ...go, SKILL_SCENARIOS_WORK: freshDir("health-work") } }
+      { env: { ...childEnv, ...go, SKILL_SCENARIOS_WORK: freshDir("health-work"), ...vars } }
     );
     return {
       code: result.exitCode,
@@ -1477,6 +1511,7 @@ describe("health", () => {
       stderr: result.stderr.toString(),
     };
   }
+  const health = (...dirs: string[]) => healthIn({}, ...dirs);
   /** The verdict line health printed for the run directory `dir`. */
   const verdict = (stdout: string, dir: string) =>
     stdout.split("\n").find((line) => line.startsWith(`${path.basename(dir)}  `));
@@ -1797,9 +1832,10 @@ describe("health", () => {
   type Step = { tool: string; args: object; result?: string; at?: string };
   /** A run named `name` as a worker batch leaves it: its pane file recording it under `ran`, the
    * directory its transcripts' paths are written under (a run read from the archive or from a
-   * copy is read under another); the transcript `steps` under `sessions/<agent>` (the run's own
-   * for ""), its gh calls, the world's routes and repository, a reviewer completion taken, and,
-   * given `before`, the shared scratch's entries when it started (rig.sh's scratch_before). */
+   * copy is read under another), with `pane`'s lines after its own; the transcript `steps` under
+   * `sessions/<agent>` (the run's own for ""), its gh calls, the world's routes and repository, a
+   * reviewer completion taken, its built-from naming `checkout` when one is given, and, given
+   * `before`, the shared scratch's entries when it started (rig.sh's scratch_before). */
   function worldRun(
     name: string,
     {
@@ -1807,13 +1843,29 @@ describe("health", () => {
       agent = "",
       calls = [],
       before,
-    }: { steps?: Step[]; agent?: string; calls?: object[]; before?: string[] }
+      checkout = "",
+      pane = [],
+    }: {
+      steps?: Step[];
+      agent?: string;
+      calls?: object[];
+      before?: string[];
+      checkout?: string;
+      pane?: string[];
+    }
   ) {
-    const dir = run(name, [[complete(200, undefined, "reviewer")]]);
+    const dir = run(name, [[complete(200, undefined, "reviewer")]], { checkout });
     const ran = `/recorded/work/runs/${name}`;
     writeFileSync(
       path.join(dir, "pane.env"),
-      `HOME=${ran}/home\nTMPDIR=${ran}/tmp\nSKILL_SCENARIO_RUN=${ran}\nPATH=${ran}/bin:/usr/bin\n`
+      [
+        `HOME=${ran}/home`,
+        `TMPDIR=${ran}/tmp`,
+        `SKILL_SCENARIO_RUN=${ran}`,
+        `PATH=${ran}/bin:/usr/bin`,
+        ...pane,
+        "",
+      ].join("\n")
     );
     if (before !== undefined)
       writeFileSync(path.join(dir, "scratch-before.txt"), before.map((one) => `${one}\n`).join(""));
@@ -2120,6 +2172,177 @@ describe("health", () => {
       "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs\n"
     );
   });
+
+  // Catches, one run each: a run that reads a path of the scratch root outside its world (another
+  // role's notes); a base run that reads the head label's checkout, whose checkout only the head
+  // run's built-from names; a read of PID 1's environment, where the 2026-11-14 probe found the
+  // caller's Dispatch variables; a path under /var/run/legion/private; a curl of GitHub's API; a
+  // read that fetches a GitHub page; and a web search, each read as healthy. And the run that
+  // reaches only the loopback and the model gateway its profile's models.yml names, and reads
+  // only its own checkout and its label's profile, read as unhealthy. The scratch root is the
+  // caller's TMPDIR, here /recorded/scratch.
+  test("a run that reaches out of its world, by path, process, credential or network, is unhealthy", () => {
+    const read = (target: string): Step => ({ tool: "read", args: { path: target } });
+    const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+    const scratch = worldRun("threads-closed-text-fixes-head-6", {
+      steps: [read("/recorded/scratch/another-role/notes.md")],
+    }).dir;
+    const otherLabel = worldRun("threads-closed-text-fixes-base-6", {
+      checkout: "/recorded/base-co",
+      steps: [read("/recorded/head-co/skills/legion-worker/references/review-threads.md")],
+    }).dir;
+    const proc = worldRun("threads-closed-code-defect-head-6", {
+      steps: [bash("tr '\\0' '\\n' </proc/1/environ | grep DISPATCH")],
+    }).dir;
+    const secret = worldRun("threads-closed-code-defect-head-7", {
+      steps: [read("/var/run/legion/private/token")],
+    }).dir;
+    const curl = worldRun("threads-closed-code-defect-head-8", {
+      steps: [bash("curl -sS https://api.github.com/repos/cybermonklabs/legion/pulls/2827")],
+    }).dir;
+    const fetched = worldRun("threads-closed-code-defect-head-9", {
+      steps: [read("https://github.com/cybermonklabs/legion/blob/main/README.md")],
+    }).dir;
+    const searched = worldRun("threads-closed-code-defect-base-6", {
+      steps: [{ tool: "web_search", args: { query: "legion review threads" } }],
+    }).dir;
+    const gateway = "http://model-gateway.example.invalid:4000";
+    const own = worldRun("threads-closed-text-fixes-head-7", {
+      checkout: "/recorded/head-co",
+      before: [],
+      // A world's address off the loopback, as a batch given SKILL_SCENARIOS_NATS_URL has one.
+      pane: ["OMP_PROFILE=skills-head", "DISPATCH_URL=http://dispatch.example.invalid:4101"],
+      steps: [
+        bash(
+          `curl -sS http://127.0.0.1:4100/v1/sessions && curl -sS http://dispatch.example.invalid:4101/api/v1/whoami && curl -sS ${gateway}/v1/models`
+        ),
+        read("/recorded/head-co/skills/legion-worker/references/review-threads.md"),
+        read("/recorded/work/profiles/head/built-from"),
+        read("/tmp/LWEVAL-1-review.json"),
+        bash("tr '\\0' '\\n' </proc/self/environ | grep -c SKILL_SCENARIO_RUN"),
+      ],
+    }).dir;
+    const agentDir = path.join(own, "home", ".omp", "profiles", "skills-head", "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      path.join(agentDir, "models.yml"),
+      JSON.stringify({ providers: { anthropic: { baseUrl: gateway } } })
+    );
+    const runs = [scratch, otherLabel, proc, secret, curl, fetched, searched, own];
+    const { code, stdout } = healthIn({ TMPDIR: "/recorded/scratch" }, ...runs);
+    expect(code).toBe(1);
+    const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
+    const hidden = "which the run's world hides and does not show again (rig.sh's world_paths)";
+    const loopback = "127.0.0.1, localhost, ::1";
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      `threads-closed-text-fixes-head-6  unhealthy: outside its world: a read call in ${session} names /recorded/scratch/another-role/notes.md, under /recorded/scratch, ${hidden}`,
+      `threads-closed-text-fixes-base-6  unhealthy: outside its world: a read call in ${session} names /recorded/head-co/skills/legion-worker/references/review-threads.md, under /recorded/head-co, ${hidden}`,
+      `threads-closed-code-defect-head-6  unhealthy: another process: a bash call in ${session} reads /proc/1/environ, a process the run does not own`,
+      `threads-closed-code-defect-head-7  unhealthy: credentials: a read call in ${session} names /var/run/legion/private/token, under /var/run/legion`,
+      `threads-closed-code-defect-head-8  unhealthy: off-world network: a bash call in ${session} reaches api.github.com (https://api.github.com/repos/cybermonklabs/legion/pulls/2827), no host of the run's world (${loopback})`,
+      `threads-closed-code-defect-head-9  unhealthy: off-world network: a read call in ${session} reaches github.com (https://github.com/cybermonklabs/legion/blob/main/README.md), no host of the run's world (${loopback})`,
+      `threads-closed-code-defect-base-6  unhealthy: off-world network: a web_search call in ${session} searches the web, which no host of the run's world serves`,
+      "threads-closed-text-fixes-head-7  healthy",
+    ]);
+    for (const [rule, count] of [
+      ["outside its world", 2],
+      ["another process", 1],
+      ["credentials", 1],
+      ["off-world network", 3],
+    ] as const)
+      expect(stdout).toContain(`health: ${rule}: ${count} of 8 runs\n`);
+    // No reason names the gateway: the healthy run's call to it is in its world.
+    expect(stdout).not.toContain("model-gateway.example.invalid");
+  });
+
+  // Catches: a host a bash command reaches with no URL's scheme read as no host at all: a git
+  // remote in scp form, a curl operand that names a host bare, and a `gh api --hostname`. And a
+  // run whose curl writes to a file with a dot in its name (`-o report.json`) and whose git
+  // remote is a local path read as reaching either.
+  test("a bash call that reaches a host with no scheme is off its world", () => {
+    const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+    const scp = worldRun("threads-closed-text-fixes-head-6", {
+      steps: [bash("git clone git@github.com:cybermonklabs/legion.git src")],
+    }).dir;
+    const bare = worldRun("threads-closed-text-fixes-head-7", {
+      steps: [bash("curl -sS api.github.com/repos/cybermonklabs/legion")],
+    }).dir;
+    const hostname = worldRun("threads-closed-text-fixes-head-8", {
+      steps: [bash("gh api --hostname github.com repos/cybermonklabs/legion/pulls/2827")],
+    }).dir;
+    const joined = worldRun("threads-closed-code-defect-head-6", {
+      steps: [bash("gh api --hostname=github.com repos/cybermonklabs/legion/pulls/2827")],
+    }).dir;
+    const local = worldRun("threads-closed-text-fixes-head-9", {
+      steps: [
+        bash("curl -sS -o report.json http://127.0.0.1:4101/api/v1/whoami"),
+        bash("git -C ws remote add origin ../remote.git && git -C ws fetch origin"),
+      ],
+    }).dir;
+    const runs = [scp, bare, hostname, joined, local];
+    const { stdout } = health(...runs);
+    const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
+    const off = (named: string, host: string) =>
+      `off-world network: a bash call in ${session} reaches ${host} (${named}), no host of the run's world (127.0.0.1, localhost, ::1)`;
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      `threads-closed-text-fixes-head-6  unhealthy: ${off("git@github.com:cybermonklabs/legion.git", "github.com")}`,
+      `threads-closed-text-fixes-head-7  unhealthy: ${off("api.github.com/repos/cybermonklabs/legion", "api.github.com")}`,
+      `threads-closed-text-fixes-head-8  unhealthy: ${off("github.com", "github.com")}`,
+      `threads-closed-code-defect-head-6  unhealthy: ${off("--hostname=github.com", "github.com")}`,
+      "threads-closed-text-fixes-head-9  healthy",
+    ]);
+  });
+
+  // Catches: a link an agent writes into a comment, a review reply or a commit message read as a
+  // host it reached (a reviewer's reply names the pull request it answers), and that exclusion
+  // read so wide that a curl in the same command line as such a text goes unread.
+  test("a URL in text a command writes is no reach, and a curl beside it still is", () => {
+    const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+    const link = "https://github.com/cybermonklabs/legion/pull/2827";
+    const comment = worldRun("threads-closed-text-fixes-head-6", {
+      steps: [
+        bash(`gh pr comment 1001 --body 'see ${link}'`),
+        bash(`git commit -m "Answer ${link}" && gh pr create --title "${link}" --body="${link}"`),
+      ],
+    }).dir;
+    const field = worldRun("threads-closed-text-fixes-head-7", {
+      steps: [
+        bash(
+          `gh api -f body='${link}' -F title="${link}" repos/example/widgets/pulls/1001/comments`
+        ),
+      ],
+    }).dir;
+    const beside = worldRun("threads-closed-text-fixes-head-8", {
+      steps: [
+        bash(
+          `gh pr comment 1001 --body 'see ${link}' && curl -sS https://github.com/cybermonklabs/legion`
+        ),
+      ],
+    }).dir;
+    const runs = [comment, field, beside];
+    const { stdout } = health(...runs);
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-text-fixes-head-6  healthy",
+      "threads-closed-text-fixes-head-7  healthy",
+      "threads-closed-text-fixes-head-8  unhealthy: off-world network: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl reaches github.com (https://github.com/cybermonklabs/legion), no host of the run's world (127.0.0.1, localhost, ::1)",
+    ]);
+  });
+
+  // Catches: a credential path named by the name /var/run resolves to (/run on a host whose
+  // /var/run is a link to it, as a Legion pod's and a GitHub runner's is) read as no credential.
+  test.skipIf(realpathSync("/var/run") === "/var/run")(
+    "a credential path named by its resolved name is unhealthy",
+    () => {
+      const run = realpathSync("/var/run");
+      const dir = worldRun("threads-closed-code-defect-head-7", {
+        steps: [{ tool: "read", args: { path: `${run}/legion/private/token` } }],
+      }).dir;
+      const { stdout } = health(dir);
+      expect(verdict(stdout, dir)).toBe(
+        `threads-closed-code-defect-head-7  unhealthy: credentials: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names ${run}/legion/private/token, under ${run}/legion`
+      );
+    }
+  );
 
   // The tester's fixture of 2026-11-14 (health-fixture/): twenty-one runs covering the fifteen
   // completion worlds (fields in either order, a log line that is no JSON, a role-less 409, a
@@ -3796,20 +4019,69 @@ describe("require_superpowers", () => {
 
 // launch with a stand-in tmux that starts the pane's command a moment later, as a real tmux server
 // does, and a stand-in mise that runs the agent it was given, here a script of the row's own in
-// place of omp, inside the namespace launch.sh starts it in (private_world).
+// place of omp, inside the namespace launch.sh starts it in (world_paths, private_world). Every
+// row that starts an agent needs that namespace and skips on a host that refuses it
+// (namespaceRefusal); the rows of a refusal run everywhere.
 describe("launch", () => {
   const standIns = `
 tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
 sleep() { command sleep 0.05; }`;
+  /** The rig's own directory, which every run's world shows again. */
+  const RIG = import.meta.dir;
+  /** The caller's scratch root: every row's directories are under it, as a Legion pod's are. */
+  const SCRATCH = process.env.TMPDIR ?? tmpdir();
+  /** An unshare that refuses as a GitHub runner's does. */
+  const REFUSAL = "unshare: write failed /proc/self/uid_map: Operation not permitted";
+  const refusing = () => {
+    const dir = freshDir("refusing-unshare");
+    writeFileSync(path.join(dir, "unshare"), `#!/bin/sh\necho "${REFUSAL}" >&2\nexit 1\n`, {
+      mode: 0o755,
+    });
+    return dir;
+  };
+  interface Launch {
+    /** The run's label, whose profile and checkout it gets: head by default. */
+    label?: string;
+    /** Each label's checkout, as the work directory's profiles name it; the head's alone, a
+     * directory of the row's own, by default. */
+    checkouts?: Record<string, string>;
+    /** The caller's variables over childEnv's; its TMPDIR, the scratch root, is SCRATCH unless
+     * one is given. */
+    env?: Record<string, string>;
+    /** The pane's PATH; the stand-ins' and the caller's by default. */
+    panePath?: string;
+    /** Lines the pane file carries after its PATH and SKILL_SCENARIO_RUN. */
+    pane?: string[];
+    /** Directories ahead of the stand-ins on the caller's PATH. */
+    callerPath?: string[];
+    /** The rig's own directory (`here`); this one by default. */
+    here?: string;
+  }
   /** A work directory holding the run `name` under runs/, with the run's prompt and pane file,
-   * another live run and an archived one, each with a file of its own, and the label's profile;
-   * `agent` is the body of the shell script that stands in for omp. */
-  function launched(work: string, name: string, agent: string, args: string[] = []) {
+   * another live run and an archived one, each with a file of its own, and each label's profile
+   * naming its checkout; `agent` is the body of the shell script that stands in for omp. */
+  function launched(
+    work: string,
+    name: string,
+    agent: string,
+    args: string[] = [],
+    options: Launch = {}
+  ) {
     const run = path.join(work, "runs", name);
     const bin = path.join(work, "bin");
+    const label = options.label ?? "head";
+    const checkouts = options.checkouts ?? { head: `${work}-checkout` };
     for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir), { recursive: true });
     writeFileSync(path.join(run, "prompt.txt"), "The person answered your asks on LWEVAL-2.\n");
-    writeFileSync(path.join(run, "pane.env"), `PATH=${bin}:${process.env.PATH ?? ""}\n`);
+    writeFileSync(
+      path.join(run, "pane.env"),
+      [
+        `PATH=${options.panePath ?? `${bin}:${process.env.PATH ?? ""}`}`,
+        `SKILL_SCENARIO_RUN=${run}`,
+        ...(options.pane ?? []),
+        "",
+      ].join("\n")
+    );
     writeFileSync(path.join(run, "out.txt"), "the first turn\nexit=0\n");
     writeFileSync(path.join(run, "daemon.log"), '{"at":"t","opened":"daemon.log"}\n');
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
@@ -3822,87 +4094,114 @@ sleep() { command sleep 0.05; }`;
     for (const [dir, file] of [
       [path.join(work, "runs", "threads-closed-text-fixes-head-9"), "pointer"],
       [path.join(work, "archive", "runs", "threads-closed-text-fixes-base-1"), "pointer"],
-      [path.join(work, "profiles", "head"), "checkout"],
     ] as const) {
       mkdirSync(dir, { recursive: true });
       writeFileSync(path.join(dir, file), `${dir}\n`);
+    }
+    mkdirSync(path.join(work, "services"), { recursive: true });
+    for (const [one, checkout] of Object.entries(checkouts)) {
+      mkdirSync(path.join(work, "profiles", one), { recursive: true });
+      mkdirSync(checkout, { recursive: true });
+      writeFileSync(path.join(work, "profiles", one, "checkout"), `${checkout}\n`);
     }
     const result = bash(
       [
         fn("fail"),
         fn("pinned_omp"),
+        fn("pane_var"),
+        fn("world_paths"),
         fn("launch"),
-        assignment("private_world"),
+        assignment("namespace_path"),
+        quotedAssignment("private_world"),
         standIns,
-        "R=$1 work=$2 tag=t pin=omp@pin",
-        `launch ${name} "\${@:3}"`,
+        `R=$1 work=$2 tag=t pin=omp@pin P=$work/profiles/${label} co=$3 here=$4`,
+        `launch ${name} "\${@:5}"`,
       ].join("\n"),
-      [run, work, ...args],
-      { PATH: `${bin}:${childEnv.PATH}` }
+      [run, work, checkouts[label] ?? "", options.here ?? RIG, ...args],
+      {
+        TMPDIR: SCRATCH,
+        ...options.env,
+        PATH: [...(options.callerPath ?? []), bin, childEnv.PATH].join(":"),
+      }
     );
     return { run, result, out: readFileSync(path.join(run, "out.txt"), "utf8") };
   }
+  /** The run's world as launch wrote it for its namespace ($R/namespace.txt). */
+  const world = (run: string) =>
+    readFileSync(path.join(run, "namespace.txt"), "utf8")
+      .split("\n")
+      .filter((line) => line !== "");
 
   // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
   // once, and extra omp arguments placed anywhere but after the prompt.
-  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
-    const work = freshDir("launch-turn");
-    const { result, out } = launched(work, "spec-writing-s1-1", 'echo "$0 $*"', ["--continue"]);
-    expect(result.code).toBe(0);
-    expect(out).toBe(
-      `${work}/bin/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${work}/runs/spec-writing-s1-1/sessions\nexit=0\n`
-    );
-  });
+  test.skipIf(withoutNamespace)(
+    "a later turn passes its arguments to omp and waits for its own exit line",
+    () => {
+      const work = freshDir("launch-turn");
+      const { result, out } = launched(work, "spec-writing-s1-1", 'echo "$0 $*"', ["--continue"]);
+      expect(result.code).toBe(0);
+      expect(out).toBe(
+        `${work}/bin/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${work}/runs/spec-writing-s1-1/sessions\nexit=0\n`
+      );
+    }
+  );
 
   // Catches: an agent that can list and read the other runs of its batch, live or archived, which
   // the 2026-11-14 agents did for a sibling's pointer file; one that writes into the /tmp every
   // run shares; one that runs as uid 0; and a namespace that binds the run's directory in the
-  // wrong order, which leaves the host's run directory without a file the agent wrote there.
-  test("the agent sees its own run alone and its own /tmp, as this user, and its writes land in the run", () => {
-    const work = freshDir("launch-world");
-    const marker = `rig-launch-${path.basename(work)}`;
-    const others = `${work}/runs/threads-closed-text-fixes-head-9/pointer ${work}/archive/runs/threads-closed-text-fixes-base-1/pointer`;
-    const { run, result, out } = launched(
-      work,
-      "threads-closed-text-fixes-head-1",
-      [
-        `echo "uid=$(id -u)"`,
-        `echo "runs=$(ls ${work}/runs)"`,
-        `echo "archive=$(ls -A ${work}/archive)"`,
-        `for f in ${others}; do cat "$f" >/dev/null 2>&1 && echo "read $f"; done`,
-        `echo "profile=$(cat ${work}/profiles/head/checkout)"`,
-        `echo "log=$(cat ${work}/runs/threads-closed-text-fixes-head-1/daemon.log)"`,
-        `echo scratch >/tmp/${marker}`,
-        `echo record >${work}/runs/threads-closed-text-fixes-head-1/agent-wrote`,
-      ].join("\n")
-    );
-    expect(result.code).toBe(0);
-    expect(out.split("\n")).toEqual([
-      `uid=${process.getuid?.()}`,
-      "runs=threads-closed-text-fixes-head-1",
-      "archive=",
-      `profile=${work}/profiles/head`,
-      'log={"at":"t","opened":"daemon.log"}',
-      "exit=0",
-      "",
-    ]);
-    // On the host, after the agent exited: what it wrote is in the run, its /tmp is the run's
-    // own, and the machine's /tmp and the other runs are as they were.
-    expect(readFileSync(path.join(run, "agent-wrote"), "utf8")).toBe("record\n");
-    expect(readFileSync(path.join(run, "daemon.log"), "utf8")).toBe(
-      '{"at":"t","opened":"daemon.log"}\n'
-    );
-    expect(readFileSync(path.join(run, "tmp", marker), "utf8")).toBe("scratch\n");
-    expect(existsSync(path.join("/tmp", marker))).toBe(false);
-    expect(readdirSync(path.join(work, "runs")).sort()).toEqual([
-      "threads-closed-text-fixes-head-1",
-      "threads-closed-text-fixes-head-9",
-    ]);
-  });
+  // wrong order, which leaves the host's run directory without a file the agent wrote there, exit
+  // 0. The scratch root is a directory elsewhere, so the work directory's own cover is what hides
+  // the other runs.
+  test.skipIf(withoutNamespace)(
+    "the agent sees its own run alone and its own /tmp, as this user, and its writes land in the run",
+    () => {
+      const work = freshDir("launch-world");
+      const marker = `rig-launch-${path.basename(work)}`;
+      const others = `${work}/runs/threads-closed-text-fixes-head-9/pointer ${work}/archive/runs/threads-closed-text-fixes-base-1/pointer`;
+      const { run, result, out } = launched(
+        work,
+        "threads-closed-text-fixes-head-1",
+        [
+          `echo "uid=$(id -u)"`,
+          `echo "runs=$(ls ${work}/runs)"`,
+          `echo "archive=$(ls -A ${work}/archive 2>/dev/null)"`,
+          `for f in ${others}; do cat "$f" >/dev/null 2>&1 && echo "read $f"; done`,
+          `echo "profile=$(cat ${work}/profiles/head/checkout)"`,
+          `echo "log=$(cat ${work}/runs/threads-closed-text-fixes-head-1/daemon.log)"`,
+          `echo scratch >/tmp/${marker}`,
+          `echo record >${work}/runs/threads-closed-text-fixes-head-1/agent-wrote`,
+        ].join("\n"),
+        [],
+        { env: { TMPDIR: freshDir("launch-elsewhere") } }
+      );
+      expect(result.code).toBe(0);
+      expect(out.split("\n")).toEqual([
+        `uid=${process.getuid?.()}`,
+        "runs=threads-closed-text-fixes-head-1",
+        "archive=",
+        `profile=${work}-checkout`,
+        'log={"at":"t","opened":"daemon.log"}',
+        "exit=0",
+        "",
+      ]);
+      // On the host, after the agent exited: what it wrote is in the run, its /tmp is the run's
+      // own, and the machine's /tmp and the other runs are as they were.
+      expect(readFileSync(path.join(run, "agent-wrote"), "utf8")).toBe("record\n");
+      expect(readFileSync(path.join(run, "daemon.log"), "utf8")).toBe(
+        '{"at":"t","opened":"daemon.log"}\n'
+      );
+      expect(readFileSync(path.join(run, "tmp", marker), "utf8")).toBe("scratch\n");
+      expect(existsSync(path.join("/tmp", marker))).toBe(false);
+      expect(readdirSync(path.join(work, "runs")).sort()).toEqual([
+        "threads-closed-text-fixes-head-1",
+        "threads-closed-text-fixes-head-9",
+      ]);
+    }
+  );
 
   // Catches: a /tmp one run shares with the next: a file the first run's agent writes to /tmp is
   // absent from the second run's.
-  test("a file one run writes to /tmp is absent in the next run", () => {
+  test.skipIf(withoutNamespace)("a file one run writes to /tmp is absent in the next run", () => {
     const work = freshDir("launch-next");
     const marker = `rig-next-${path.basename(work)}`;
     const first = launched(work, "threads-closed-text-fixes-head-1", `echo first >/tmp/${marker}`);
@@ -3914,6 +4213,360 @@ sleep() { command sleep 0.05; }`;
     );
     expect(second.out).toBe("absent\nexit=0\n");
     expect(existsSync(path.join("/tmp", marker))).toBe(false);
+  });
+
+  // Catches: a cover of the work directory's runs and archive alone, the namespace before this
+  // one, which left every other file of the scratch root readable: on a Legion pod, every other
+  // role's scratch and every extraction of a tree.
+  test.skipIf(withoutNamespace)(
+    "a file in the scratch root outside the run is absent in it",
+    () => {
+      const work = freshDir("launch-scratch");
+      const planted = path.join(freshDir("another-role"), "notes.md");
+      writeFileSync(planted, "another role's notes\n");
+      const { run, result, out } = launched(
+        work,
+        "threads-closed-text-fixes-head-1",
+        `cat ${planted} 2>/dev/null || echo absent`
+      );
+      expect(result.code).toBe(0);
+      expect(out).toBe("absent\nexit=0\n");
+      expect(world(run)).toContain(`cover ${realpathSync(SCRATCH)}`);
+    }
+  );
+
+  // Catches: a world whose declaration drops a path a run needs (the label's profile, the
+  // batch's services, its own checkout, the rig's directory, a tool directory, mise's installs,
+  // the pin, the push guard's check), a namespace that hides a declared path rather than showing
+  // it again, and one that shows a read-only path writable. Every fixture path lies under the
+  // scratch root, so each is hidden unless the world shows it again.
+  test.skipIf(withoutNamespace)(
+    "every path the run's world shows is there inside it, writable only where declared rw",
+    () => {
+      const work = freshDir("launch-declared");
+      const mise = freshDir("mise-data");
+      const guard = path.join(freshDir("leak-check"), "public-leak-check.sh");
+      writeFileSync(guard, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      mkdirSync(path.join(work, "profiles", "head", "key"), { recursive: true });
+      const name = "threads-closed-text-fixes-head-1";
+      const R = path.join(work, "runs", name);
+      const { result, out } = launched(
+        work,
+        name,
+        [
+          `while read -r kind p; do`,
+          `  case $kind in rw | ro) ;; *) continue ;; esac`,
+          `  [ -d "$p" ] || { echo "$kind $p absent"; continue; }`,
+          `  if touch "$p/.rig-probe" 2>/dev/null; then rm -f "$p/.rig-probe"; echo "$kind $p writable"; else echo "$kind $p read-only"; fi`,
+          `done <${R}/namespace.txt`,
+        ].join("\n"),
+        [],
+        { pane: [`MISE_DATA_DIR=${mise}`, `PUBLIC_LEAK_CHECK=${guard}`] }
+      );
+      expect(result.code).toBe(0);
+      const declared = world(R).filter((line) => /^r[ow] /.test(line));
+      // zod, where bun finds it from the rig's directory: the gh stand-in's one package.
+      let modules = RIG;
+      while (modules !== "/" && !existsSync(path.join(modules, "node_modules", "zod")))
+        modules = path.dirname(modules);
+      for (const line of [
+        `rw ${R}`,
+        `ro ${work}/profiles/head`,
+        `rw ${work}/profiles/head/key`,
+        `rw ${work}/profiles/head/cache`,
+        `ro ${work}/services`,
+        `ro ${work}-checkout`,
+        `ro ${RIG}`,
+        `ro ${path.join(modules, "node_modules", "zod")}`,
+        `ro ${work}/bin`,
+        `ro ${mise}`,
+        `ro ${work}/bin/pin`,
+        `ro ${path.dirname(guard)}`,
+      ])
+        expect(declared).toContain(line);
+      // Inside the run, each declared path the host has is there, writable where it is rw.
+      const expected = declared.map((line) => {
+        const [kind = "", where = ""] = [line.slice(0, 2), line.slice(3)];
+        if (!existsSync(where) || !statSync(where).isDirectory()) return `${kind} ${where} absent`;
+        return `${kind} ${where} ${kind === "rw" ? "writable" : "read-only"}`;
+      });
+      expect(out.split("\n")).toEqual([...expected, "exit=0", ""]);
+    }
+  );
+
+  // Catches: a namespace that hides the push guard's shared check, under which the guard refuses
+  // every push (`LEAK CHECK SETUP ERROR`), as tester v21's batch met it. The check here is a copy
+  // of the pod's shared one under the scratch root, so only the world's showing it again keeps
+  // it; the pod's own, outside the scratch root, must be reachable too.
+  const shared = process.env.PUBLIC_LEAK_CHECK ?? "";
+  test.skipIf(
+    withoutNamespace ||
+      !existsSync("/opt/legion/bin/git") ||
+      !existsSync("/opt/legion/bin/legion") ||
+      !existsSync(shared)
+  )("the push guard's check is reachable inside a run, and a push from it passes the guard", () => {
+    const work = freshDir("launch-guard");
+    const copy = path.join(freshDir("guard-copy"), "leak-check");
+    cpSync(path.dirname(shared), copy, { recursive: true });
+    const check = path.join(copy, path.basename(shared));
+    const name = "threads-closed-text-fixes-head-1";
+    const R = path.join(work, "runs", name);
+    const git = "/usr/bin/git -c user.name=A -c user.email=a@example.invalid";
+    const { result, out } = launched(
+      work,
+      name,
+      [
+        `test -r ${shared} && echo "shared reachable"`,
+        `test -r "$PUBLIC_LEAK_CHECK" && echo "copy reachable"`,
+        `${git} init -q --bare ${R}/remote.git && ${git} init -q ${R}/src`,
+        `echo "The widgets CLI." >${R}/src/README.md`,
+        `${git} -C ${R}/src add -A && ${git} -C ${R}/src commit -qm init`,
+        `git -C ${R}/src push ${R}/remote.git HEAD:refs/heads/main >${R}/push.txt 2>&1; echo "push=$?"`,
+      ].join("\n"),
+      [],
+      { pane: [`HOME=${R}/home`, `PUBLIC_LEAK_CHECK=${check}`] }
+    );
+    expect(result.code).toBe(0);
+    const push = readFileSync(path.join(R, "push.txt"), "utf8");
+    expect({ out, setup: push.includes("LEAK CHECK SETUP ERROR") }).toEqual({
+      out: "shared reachable\ncopy reachable\npush=0\nexit=0\n",
+      setup: false,
+    });
+  });
+
+  // Catches: a namespace whose first process inherits the caller's environment: with a PID
+  // namespace of its own the run's PID 1 is that process until it execs the agent, and the
+  // 2026-11-14 probe read six DISPATCH_* lines of the caller's there. The unshare here records
+  // the environment it was started with before it runs the real one; the agent reads PID 1's.
+  test.skipIf(withoutNamespace)(
+    "the namespace starts with the system PATH alone, and PID 1 names no variable of the caller's",
+    () => {
+      const work = freshDir("launch-environ");
+      const wrapper = freshDir("recording-unshare");
+      const seen = path.join(wrapper, "environment");
+      writeFileSync(
+        path.join(wrapper, "unshare"),
+        `#!/bin/sh\nenv >${seen}\nexec ${Bun.which("unshare") ?? "/usr/bin/unshare"} "$@"\n`,
+        { mode: 0o755 }
+      );
+      const marker = `RIG_CALLER_MARKER_${path.basename(work).replace(/\W/g, "_")}`;
+      const { result, out } = launched(
+        work,
+        "threads-closed-text-fixes-head-1",
+        `echo "marked=$(tr '\\0' '\\n' </proc/1/environ | grep -c ${marker})"`,
+        [],
+        {
+          env: { [marker]: "the caller's", DISPATCH_URL: "http://127.0.0.1:1" },
+          callerPath: [wrapper],
+        }
+      );
+      expect(result.code).toBe(0);
+      expect(out).toBe("marked=0\nexit=0\n");
+      const names = readFileSync(seen, "utf8")
+        .split("\n")
+        .filter((line) => line.includes("="))
+        .map((line) => line.slice(0, line.indexOf("=")));
+      expect(names.filter((one) => one === marker || one.startsWith("DISPATCH_"))).toEqual([]);
+      expect(readFileSync(seen, "utf8")).toContain(
+        `\nPATH=${assignment("namespace_path").slice("namespace_path=".length)}\n`.slice(1)
+      );
+    }
+  );
+
+  // Catches: a run that shares the pod's processes, as one with no PID namespace does: it could
+  // read every same-user process's environment and every process's command line, the tester's
+  // role prompt among them. The row starts a process of its own outside the run whose command
+  // line carries that prompt's words.
+  test.skipIf(withoutNamespace)(
+    "inside a run /proc lists the run's own processes alone",
+    async () => {
+      const work = freshDir("launch-pids");
+      const outside = Bun.spawn(["sh", "-c", "sleep 30", "Legion Tester Deployment instructions"]);
+      try {
+        const name = "threads-closed-text-fixes-head-1";
+        const R = path.join(work, "runs", name);
+        const { result, out } = launched(
+          work,
+          name,
+          [
+            `for d in /proc/[0-9]*; do`,
+            `  line=$(tr '\\0' ' ' <"$d/cmdline" 2>/dev/null) || continue`,
+            `  case $line in *"Legion Tester"* | *"Deployment instructions"*) echo "marked \${d#/proc/}" ;; esac`,
+            `  vars=$(tr '\\0' '\\n' <"$d/environ" 2>/dev/null) || continue`,
+            `  printf '%s\\n' "$vars" | grep -qxF "SKILL_SCENARIO_RUN=${R}" || echo "foreign \${d#/proc/}"`,
+            `done`,
+            `echo listed`,
+          ].join("\n")
+        );
+        expect(result.code).toBe(0);
+        expect(out).toBe("listed\nexit=0\n");
+      } finally {
+        outside.kill();
+        await outside.exited;
+      }
+    }
+  );
+
+  // Catches: a run that can read the pod's credentials: Legion's role secrets and private state
+  // under /var/run/legion and the cluster's service account under /var/run/secrets; one that
+  // loses the model route's own key, which every production agent's Oh My Pi reads; and one that
+  // can read the issue workspaces of the pod's root, where nothing but what its world shows
+  // again (the rig's own directory, which lies in this checkout) is a run's.
+  test.skipIf(withoutNamespace)(
+    "inside a run the pod's credentials and workspaces are hidden, and the model route's key is not",
+    () => {
+      const work = freshDir("launch-credentials");
+      const name = "threads-closed-text-fixes-head-1";
+      const R = path.join(work, "runs", name);
+      const { run, result, out } = launched(
+        work,
+        name,
+        [
+          `test -e /var/run/legion/private && echo "legion private" || echo "no legion private"`,
+          `echo "secrets=$(ls -A /var/run/secrets 2>/dev/null | tr '\\n' ' ')"`,
+          `test -e /run/legion/private && echo "run legion private" || echo "no run legion private"`,
+          `echo "run secrets=$(ls -A /run/secrets 2>/dev/null | tr '\\n' ' ')"`,
+          `test -e /var/run/model-gateway-key/key && echo "gateway key" || echo "no gateway key"`,
+          `find /legion/workspaces -type f >${R}/workspaces.txt 2>/dev/null || true`,
+        ].join("\n")
+      );
+      expect(result.code).toBe(0);
+      expect(out.split("\n")).toEqual([
+        "no legion private",
+        "secrets=",
+        "no run legion private",
+        "run secrets=",
+        existsSync("/var/run/model-gateway-key/key") ? "gateway key" : "no gateway key",
+        "exit=0",
+        "",
+      ]);
+      const shown = world(run)
+        .filter((line) => /^r[ow] /.test(line))
+        .map((line) => line.slice(3));
+      const found = readFileSync(path.join(R, "workspaces.txt"), "utf8")
+        .split("\n")
+        .filter((file) => file !== "");
+      expect(found.filter((file) => !shown.some((dir) => file.startsWith(`${dir}/`)))).toEqual([]);
+    }
+  );
+
+  // Catches: a run that reads the other label's text: from a base run, the head label's checkout
+  // (outside the scratch root and the issue workspaces, so its own cover alone hides it), a
+  // whole-tree extraction under the scratch root, and another issue's workspace under the
+  // workspaces root LEGION_WORKSPACE names; and the mirror from a head run. Each run keeps its
+  // own label's copy and the rig's own directory, which lies in the head's checkout.
+  test.skipIf(withoutNamespace)(
+    "a run reads its own label's skills and no other copy, from either label",
+    () => {
+      const top = freshDir("launch-labels");
+      const scratch = path.join(top, "scratch");
+      const work = path.join(scratch, "work");
+      const skill = "skills/legion-worker/references/review-threads.md";
+      const copies = {
+        head: path.join(top, "head-checkout"),
+        base: path.join(scratch, "base-checkout"),
+        extraction: path.join(scratch, "rig-at-0123456"),
+        workspace: path.join(top, "workspaces", "acme", "widgets", "widgets-7"),
+      };
+      for (const [which, dir] of Object.entries(copies)) {
+        mkdirSync(path.dirname(path.join(dir, skill)), { recursive: true });
+        writeFileSync(path.join(dir, skill), `${which}\n`);
+      }
+      const here = path.join(copies.head, "packages/pi-legion/scripts/skill-scenarios");
+      mkdirSync(here, { recursive: true });
+      writeFileSync(path.join(here, "rig.sh"), "the rig\n");
+      const agent = [
+        ...Object.values(copies).map(
+          (dir) => `cat ${dir}/${skill} 2>/dev/null || echo "absent ${path.basename(dir)}"`
+        ),
+        `cat ${here}/rig.sh`,
+      ].join("\n");
+      const options = (label: string) => ({
+        label,
+        checkouts: { head: copies.head, base: copies.base },
+        here,
+        env: {
+          TMPDIR: scratch,
+          LEGION_WORKSPACE: path.join(top, "workspaces", "acme", "widgets", "widgets-1"),
+        },
+      });
+      const base = launched(work, "threads-closed-text-fixes-base-1", agent, [], options("base"));
+      expect(base.result.code).toBe(0);
+      expect(base.out.split("\n")).toEqual([
+        "absent head-checkout",
+        "base",
+        "absent rig-at-0123456",
+        "absent widgets-7",
+        "the rig",
+        "exit=0",
+        "",
+      ]);
+      const head = launched(work, "threads-closed-text-fixes-head-1", agent, [], options("head"));
+      expect(head.result.code).toBe(0);
+      expect(head.out.split("\n")).toEqual([
+        "head",
+        "absent base-checkout",
+        "absent rig-at-0123456",
+        "absent widgets-7",
+        "the rig",
+        "exit=0",
+        "",
+      ]);
+    }
+  );
+
+  // Catches: a launch that carries on when the namespace cannot be made: the agent never ran, its
+  // out.txt holds unshare's refusal and an exit line, and the run would read as an agent that
+  // exited 1. The launch fails, naming the refusal, and the agent never starts.
+  test("a namespace the host refuses at launch fails the launch, naming the refusal", () => {
+    const work = freshDir("launch-refused");
+    const name = "threads-closed-text-fixes-head-1";
+    const { run, result } = launched(
+      work,
+      name,
+      `: >${path.join(work, "runs", name, "agent-ran")}`,
+      [],
+      {
+        callerPath: [refusing()],
+      }
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `the agent of ${name} did not start: its namespace could not be made: ${REFUSAL}`
+    );
+    expect(existsSync(path.join(run, "agent-ran"))).toBe(false);
+  });
+
+  // Catches: a world that shows a directory holding one it hides, which shows every file of the
+  // hidden one: here a tool directory on the pane's PATH that holds the scratch root.
+  test("a world that shows a path holding a hidden one is refused before the agent starts", () => {
+    const top = freshDir("launch-holds");
+    const work = path.join(top, "scratch", "work");
+    const name = "threads-closed-text-fixes-head-1";
+    const { run, result } = launched(
+      work,
+      name,
+      `: >${path.join(work, "runs", name, "agent-ran")}`,
+      [],
+      {
+        env: { TMPDIR: path.join(top, "scratch") },
+        panePath: `${path.join(work, "bin")}:${top}:/usr/bin:/bin`,
+      }
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `launch: the run's world shows ${top} (ro), which holds ${path.join(top, "scratch")}, a path it hides (world_paths)`
+    );
+    expect(existsSync(path.join(run, "agent-ran"))).toBe(false);
+  });
+
+  // Catches: a probe that reads a refusal as a namespace, or reports none of the host's words:
+  // the skip of every namespace row and the refusal of every run carry the text it prints.
+  test("namespace_probe prints the host's refusal and fails where unshare refuses", () => {
+    expect(namespaceProbe({ PATH: `${refusing()}:${childEnv.PATH}` })).toEqual({
+      code: 1,
+      stdout: REFUSAL,
+    });
   });
 });
 
