@@ -4562,9 +4562,10 @@ When the pod's anonymous memory reaches a share of the limit, the guard ends wit
 The rest of the pod goes on: the guard never ends a role's agent, its shim or its `role-init`, so no role's turn ends for the kill, and the command that was ended fails in the turn that ran it.
 The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
 
-Measured on 2026-11-14 in gVisor test pods with memory limits of 4, 8 and 19 GiB, over every run of the Jobs in dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md, whose numbers are recorded in that issue's `wc-gvisor` results:
-with the guard off, the kernel stopped the sandbox when `AnonPages` was 95.4% to 99.4% of the limit;
-with the guard on at the defaults, each growing process — 64 MiB every 0.25 s, 256 MiB every 0.25 s, and shared anonymous memory — was ended when the reading was 85.0% to 89.2% of the limit, 6.7 to 36.9 ms after the guard's first reading at the mark, and the pod went on.
+Measured on 2026-11-14 in gVisor test pods with memory limits of 4, 8 and 19 GiB, in the tester's `wc-gvisor` result at `bebc420b` (dispatch://INFRA-3557, from the Jobs of dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md):
+with the guard off, the kernel stopped the sandbox when `AnonPages` was 95.5% to 99.4% of the limit;
+with the guard on at the defaults, each growing process — 64 MiB every 0.25 s, 256 MiB every 0.25 s, shared anonymous memory, a memfd written and never mapped, and a grower beside an unwritten 16 GiB memfd or with about 1 MiB of arguments — was ended when the reading was 85.0% to 90.0% of the limit, 8.8 to 14.7 ms after the guard's first reading at the mark, and the pod went on.
+The earlier runs of those Jobs, recorded in the same issue's `wc-gvisor` results, put the kernel's lowest kill point at 95.4% (the tester's run at `bde5a751`) and took up to 36.9 ms to decide (the implementer's 8 GiB run of shared anonymous memory at `d6f81bbf`).
 
 **Where it runs.**
 Only a launcher that is its container's first process, PID 1, runs the guard: the `legion launcher` of an issue pod's `roles` container ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
@@ -4574,10 +4575,10 @@ The launcher of the controller's pod runs none either.
 
 **What it reads.**
 Each interval, `interval_milliseconds` (100 ms by default), the guard reads two files: `AnonPages` of `/proc/meminfo`, the pod's anonymous memory, which is its reading, and the cgroup's `memory.limit_in_bytes`, the container's limit.
-Each of the two reads took 0.025 to 0.044 ms at the median in the measured pods.
+Each of the two reads took 0.025 to 0.044 ms at the median in the read-cost Job of dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md (`infra-3557-19g-readcost-fbf6z`, 2026-11-14).
 The guard never acts on the cgroup's counter, `memory.usage_in_bytes`, because the counter also counts the pages of the files a process maps, which the kernel can take back:
-in the measured pods a file mapped and read raised the counter to 97% to 105% of the limit, and an LMDB map larger than the limit raised it to 107% to 135%, while `AnonPages` stayed under 12% and the guard ended neither process.
-One read of the counter took about 18 ms at the median in a running issue pod of six roles (0.04 ms in the test pods), so the guard reads it every 5 seconds for its hourly line and once at each kill, and never each interval.
+in the tester's `wc-gvisor` result at `bebc420b` a file mapped and read raised the counter to 97.2% to 105.4% of the limit, and an LMDB map larger than the limit raised it to 107.4% to 134.9%, while `AnonPages` stayed under 11% and the guard ended neither process.
+One read of the counter took about 18 ms at the median in a running INFRA issue pod of six roles, measured on 2026-11-14, and 0.04 ms in that read-cost Job, so the guard reads it every 5 seconds for its hourly line and once at each kill, and never each interval.
 Where `AnonPages` or the limit cannot be read, where the limit reads as no limit (2^62 bytes or more), where the system has no `pidfd_open`, through which the guard ends a process, or where the guard cannot list the processes of `/proc`, the guard writes one `off` line and does nothing more while the launcher runs.
 
 **What it ends.**
@@ -4669,7 +4670,8 @@ A dropped connection leaves the settings in force.
 Every line of the guard starts `launcher: memory guard: ` in the `roles` container's log and carries `key=value` fields (`packages/daemon/internal/memoryguard/lines.go`):
 sizes in bytes, times in RFC 3339 UTC, `wait` and `interval` as Go durations (`5s`, `100ms`), and a command last and in quotes, made one line (each run of whitespace one space, each control character or control sequence read away), each credential masked by the rules of a capability report's detail ([The deployment's capability report](#the-deployments-capability-report)), each other character that does not print escaped, and the text cut to 512 bytes with `…` where it was cut.
 The guard masks at most the first 4 KiB of a process's arguments and leaves the rest out, so the work after a kill does not grow with the arguments.
-When the arguments run past 4 KiB, it also leaves out the last word of that 4 KiB, before the masking and again after it, and ends the command with `…`, so a cut never shows part of a credential.
+When the arguments run past 4 KiB, it also leaves out the last word of that 4 KiB, before the masking and again after it, and ends the command with `…`, so a cut shows nothing the whole command's masking would mask.
+The one masking rule whose match can run past the cut is a URL's user part, which needs an `@` that another rule's mask can bring next to it from beyond the cut, so in a cut command the guard also masks everything from the first `scheme://` whose user part no `/`, `?` or `#` ends, to the end (`RedactedCutLine`, `packages/daemon/internal/capabilities/capabilities.go`).
 The guard's own lines carry no role prefix, since it watches every role's processes and the launcher's together, and `role=none` names a process of no role.
 
 ```text
@@ -4761,10 +4763,10 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   A reading that keeps crossing the mark has at most one such line a minute, with the stops left out counted in `left_out`, and a crossing at which the processes it may end hold the floor is still acted on at once.
 
 - It does not stop a fill faster than its margin.
-  Between the mark and the point where the kernel stops the sandbox, measured at 95.4% to 99.4% of the limit, the guard must take a reading at or above the mark and end the process.
+  Between the mark and the point where the kernel stops the sandbox, measured at 95.5% to 99.4% of the limit in the tester's result at `bebc420b` and as low as 95.4% in an earlier run (above), the guard must take a reading at or above the mark and end the process.
   A process that crosses that margin inside one interval and the scan after it is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
-  A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14, the longest gap between two readings was 1082 ms against a usual 108 to 115 ms;
-  the kill still came at 85.23% of the limit, below every point at which the kernel was measured to stop the sandbox (95.4% to 99.4%).
+  A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14 (the tester's at `8c24499c`), the longest gap between two readings was 1082 ms, where the longest gap of any growth run was 115.8 ms in the tester's result at `bebc420b` and 228.9 ms in the implementer's result at that head;
+  the kill still came at 85.23% of the limit, below every kill point measured in those results (95.4% and above).
 
 - It does not bound the reads of a decision by what a process holds.
   Each decision walks the descriptors of every process the guard may end, to find the memfds they hold, at about 12.5 µs a descriptor in a gVisor pod (measured on 2026-11-14), so a process holding 20,000 descriptors adds about 250 ms to a decision, the one after a kill included.
