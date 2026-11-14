@@ -629,7 +629,7 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // failed in CI - 20 against 21. The wait ends on the set itself, so a panel that starts
   // eagerly fetching before its tab is ever opened still trips this immediately instead of
   // only breaking some looser upper bound, and a failure names the request that is missing or
-  // extra instead of leaving a reader to work out which of 21 a count of 20 dropped. The
+  // extra instead of leaving a reader to work out which of 22 a count of 21 dropped. The
   // Conversation pages no event log at all now that the history is the Activity tab's, and the
   // Activity panel is unmounted until its tab is opened.
   const firstLoad = [
@@ -689,7 +689,7 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // messages.
     `/api/v1/issues/${issue.key}/handoffs`,
   ].sort();
-  expect(firstLoad).toHaveLength(21);
+  expect(firstLoad).toHaveLength(22);
   await expect.poll(() => [...apiRequestPaths].sort()).toEqual(firstLoad);
 
   await alice.close();
