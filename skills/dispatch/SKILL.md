@@ -8,14 +8,14 @@ description: "Use before your first dispatch command in a session: a message, co
 Dispatch is a record for the people who decide, never a log of your work.
 
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
-- Put long text on stdin: `--<field>-file -` with a quoted here-document (`<<'EOF'`); give object and list fields as JSON.
+- Put long text on stdin, one flag per call: `--<field>-file -` with `<<'EOF'`; objects and lists take JSON.
 - Exit 1 is a refusal, 2 a usage error. A refusal lists every problem: fix all, call once.
 - Never work around a hard-to-use command, or one storing or losing something wrongly: open an issue in the owning project and tell its controller. A Legion role tells its architect (`skill://legion-worker/references/findings.md`).
 
 ## Asks and ask blocks
 
 - An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.
-- An ask waits on the issue's assignee until a person hands it on. No agent can hand one on.
+- An ask waits on its asked-of person, else the issue's assignee, else the project's default assignee; no agent hands one on.
 - A design question's ask block ends its section:
 
 ```md
@@ -42,6 +42,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - Record each wait in that comment. A wait on a same-project issue also goes in a `blocked_by` link, and one on a person in a `dispatch ask`.
 - `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. Dispatch refuses a link to another project's issue (`BLOCKED_BY_OUTSIDE_PROJECT`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
+- Name an issue's priority: `--advance <id>`; `dispatch priorities` lists what advances no priority.
 
 ## Issue status is yours to move
 

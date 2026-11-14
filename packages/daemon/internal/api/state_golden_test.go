@@ -270,6 +270,18 @@ func populatedState(t *testing.T) State {
 				{Issue: "LEGION-209", BlockedBy: []string{"LEGION-210", "LEGION-213"}},
 				{Issue: "LEGION-211", BlockedBy: []string{"LEGION-210"}},
 			},
+			// The issues the record holds in the workflow that stand in neither list above, each
+			// with the one word for why. Both shapes of the row are here, and that is what the
+			// fixture is for: LEGION-209 is held by the issues `blocked` names, so its row
+			// carries `heldBy`, and LEGION-214, a root of its own tree whose record says the
+			// label is off (`label_off`), is held by no issue at all, so its row carries none. The contracts
+			// gate walks the keys the file holds (packages/contracts/src/legion-api.test.ts), so
+			// a list of one shape would prove nothing of the other — an absent `heldBy` is as
+			// much part of the row's schema as a filled one.
+			Held: []HeldIssue{
+				{Issue: "LEGION-209", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-210", "LEGION-213"}},
+				{Issue: "LEGION-214", Reason: record.HeldLabelOff},
+			},
 		},
 		Issues: map[string]Issue{
 			"LEGION-208": {
@@ -305,11 +317,13 @@ func populatedState(t *testing.T) State {
 									Container: "roles", Generation: 2,
 								},
 							},
-							// The pod's update round, which every claim of that pod shares: the daemon
-							// replaces the pod only once each has answered. This one has, and reported
-							// the head it pushed. The reasons are the round's own, so every claim of
-							// the pod carries the same text: what the worker answering is told to act
-							// on.
+							// The pod's update round, which every claim of that pod shares: the round
+							// asks each role, and the daemon replaces the pod once every asked role has
+							// answered and no turn runs, or at the round's bound
+							// (pod_update_grace_minutes) whatever the roles answered, an operator's
+							// suspension excepted. This one has answered, and reported the head it
+							// pushed. The reasons are the round's own, so every claim of the pod
+							// carries the same text: what the worker answering is told to act on.
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateHead:    "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
@@ -571,6 +585,24 @@ func populatedState(t *testing.T) State {
 					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
 				},
 			},
+			// LEGION-214 is the fixture's one held row that names no issue holding it, which is
+			// what it is here for: the contracts gate walks the keys the file holds, so a held list
+			// of one shape would prove nothing of a row with no `heldBy`. It is a root of its own
+			// tree at admitted whose record says the Legion label is off, so the admission queue
+			// does not carry it, it stands in neither `active` nor `waiting`, and its word is
+			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
+			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
+			// no memory group.
+			"LEGION-214": {
+				Key:           "LEGION-214",
+				Generation:    1,
+				Phase:         phase.Admitted,
+				Status:        "todo",
+				Tree:          "LEGION-214",
+				Repo:          "zeta/tools",
+				DefaultBranch: "release/v7.1",
+				Workers:       map[claim.Role]PhaseView{},
+			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),
 			// and it is open at its second look, woken by the Dispatch issue.deployed that release
@@ -742,6 +774,37 @@ func populatedState(t *testing.T) State {
 		MemoryGroup:    string(memorygroup.GroupMemory),
 		MemoryDrawMode: string(config.MemoryRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
+	}
+	// Every issue standing in a tree the admission block names carries that tree's quiet time,
+	// the two keys contract 111 added: the measure is the tree's, so each member of one tree
+	// carries the same pair. LEGION-207's tree closed and LEGION-209 stands in no tree of this
+	// fixture, so neither of them is measured, which is what a reader is served for an issue no
+	// live tree holds. The four pairs are one reading, at quietReadAt, a little after the newest
+	// step record of this state.
+	//
+	// Each tree's movement is the newest fact the measure reads of it — the `MovedAt` of its
+	// members and the step times of their claims (record.QuietTrees) — and its hours are the
+	// reading less that movement, worked out here rather than written beside it: a second
+	// number can disagree with the first, and one did. LEGION-208's pair said the tree had been
+	// still for half an hour while its own implementer's step stood 48 seconds before the
+	// reading, so the fixture showed a pair no daemon would serve, which is why the movement of
+	// that tree is the step record itself. The other three trees hold no claim with a step, so
+	// each of them moves at a time of its own.
+	quietReadAt := time.Date(2026, 9, 22, 9, 18, 0, 0, time.UTC)
+	quietMoved := map[string]time.Time{
+		"LEGION-208": implementerStep.At,
+		"LEGION-210": time.Date(2026, 9, 22, 6, 18, 0, 0, time.UTC),
+		"LEGION-211": time.Date(2026, 9, 21, 9, 18, 0, 0, time.UTC),
+		"LEGION-212": time.Date(2026, 9, 22, 9, 3, 0, 0, time.UTC),
+	}
+	for key, issue := range state.Issues {
+		movedAt, measured := quietMoved[issue.Tree]
+		if !measured {
+			continue
+		}
+		hours := quietReadAt.Sub(movedAt).Hours()
+		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
+		state.Issues[key] = issue
 	}
 	return state
 }
@@ -924,8 +987,8 @@ func TestReadyRequestGolden(t *testing.T) {
 	})
 }
 
-// The ready-for-update request is the worker's answer to its pod's update task: the claim it
-// holds, the generation it answers for, the round the task it read named — the one round the
+// The ready-for-update request is the worker's answer to its update round's ask: the claim it
+// holds, the generation it answers for, the round the ask it read named — the one round the
 // answer counts for — and the head of `legion/<issue>@origin` it reports, which the daemon
 // records and verifies nothing of.
 func TestReadyForUpdateRequestGolden(t *testing.T) {

@@ -210,7 +210,7 @@ func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []recor
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		_, _, line, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil)
+		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil, time.Now())
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
@@ -249,6 +249,17 @@ func issue(t *testing.T, pool *pgxpool.Pool, key string) record.Issue {
 		t.Fatalf("issue %s is missing", key)
 	}
 	return *got
+}
+
+// withoutMovement is a record with the moment the daemon last saw the issue move taken off
+// (record.Issue.MovedAt). Every write of a record stamps it from the database's own clock and
+// every fact that moves the issue writes it again, so two runs of the same events never agree on
+// it and no fixture can name it: a test about what a fact records compares everything else. The
+// column's own rule is held to by TestTheRecordKeepsWhenAnIssueLastMoved, which is the one test
+// here that reads it.
+func withoutMovement(issue record.Issue) record.Issue {
+	issue.MovedAt = time.Time{}
+	return issue
 }
 
 func maybeIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {
