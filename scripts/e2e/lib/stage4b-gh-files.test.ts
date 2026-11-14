@@ -100,7 +100,10 @@ describe("assert_gh_files", () => {
   });
 
   test("fails an owner's directory holding a file beside the two gh files, naming it and the listing", () => {
-    const { exitCode, out } = judge("..data\nrenames.txt\nsjawhar\n", "config.yml\nhosts.yml\ntoken\n");
+    const { exitCode, out } = judge(
+      "..data\nrenames.txt\nsjawhar\n",
+      "config.yml\nhosts.yml\ntoken\n"
+    );
     expect(exitCode).toBe(1);
     expect(out).toBe(
       "FAIL: the implementer's namespaces of pod-a's /var/run/legion/gh/sjawhar holds token beside its two gh files, which are all an owner's directory holds: a bundle holds one directory per owner account the App is installed on and no directory for a repository; it holds: config.yml hosts.yml token \n"
@@ -111,7 +114,10 @@ describe("assert_gh_files", () => {
   // those same two gh files, and the helper passed a bundle carrying one. A bundle holds no such
   // directory now, so the listing that once passed is the one this row fails.
   test("fails an owner's directory holding a repository's directory, naming it and the listing", () => {
-    const { exitCode, out } = judge("..data\nrenames.txt\nsjawhar\n", "config.yml\nhosts.yml\nlegion\n");
+    const { exitCode, out } = judge(
+      "..data\nrenames.txt\nsjawhar\n",
+      "config.yml\nhosts.yml\nlegion\n"
+    );
     expect(exitCode).toBe(1);
     expect(out).toBe(
       "FAIL: the implementer's namespaces of pod-a's /var/run/legion/gh/sjawhar holds legion beside its two gh files, which are all an owner's directory holds: a bundle holds one directory per owner account the App is installed on and no directory for a repository; it holds: config.yml hosts.yml legion \n"
