@@ -281,14 +281,6 @@ export const waitingFill = {
   blocked: stageFill.held,
   person: stageFill.awaiting_person,
 } as const;
-/** The Slot use bar's fills: steps of the stage palette, in the order of the five uses. */
-export const slotUseFill = {
-  working: stageFill.implementing,
-  between_turns: stageFill.reviewing,
-  held_children: stageFill.merging,
-  held_person: stageFill.awaiting_person,
-  held_idle: stageFill.held,
-} as const;
 export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300";
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));
 export const tableResizeActive = "bg-sky-500 dark:bg-sky-400";

@@ -31,8 +31,8 @@ import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
 import { PhaseHoursCell, phaseHours } from "./issues-phase-hours";
 import {
-  SLOT_USES,
-  slotUseLabel,
+  ACTIVITIES,
+  activityLabel,
   stageIds,
   stageLabel,
   WAITING_REASONS,
@@ -51,7 +51,7 @@ import {
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 /** Rows with no value of their own sort after every row with one, whichever way the column is
- *  sorted: an empty Place or Slot is not "first". TanStack reverses a sorting function for a
+ *  sorted: an empty Place or Activity is not "first". TanStack reverses a sorting function for a
  *  descending sort, so the empty side is turned with it. */
 function emptyLast<T>(
   value: (item: Item) => T | undefined,
@@ -348,15 +348,6 @@ const renderings = (
         />
       ),
   },
-  slot: {
-    header: "Slot",
-    accessorFn: (item) => item.card?.card.slot ?? undefined,
-    sortingFn: emptyLast((item) => item.card?.card.slot ?? undefined, byNumber),
-    cell: ({ row }) =>
-      row.original.card?.card.slot == null ? null : (
-        <span className="tabular-nums">{row.original.card.card.slot}</span>
-      ),
-  },
   roles: {
     header: "Roles",
     accessorFn: (item) => (item.card?.card.roles ?? []).join(", "),
@@ -364,18 +355,17 @@ const renderings = (
       <span className={`text-xs ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
     ),
   },
-  slot_use: {
-    header: "Slot use",
+  activity: {
+    header: "Activity",
     accessorFn: (item) => item.card?.card.slot_use ?? "",
     sortingFn: emptyLast((item) => {
-      const use = item.card?.card.slot_use ?? "";
-      const index = (SLOT_USES as readonly string[]).indexOf(use);
+      const index = (ACTIVITIES as readonly string[]).indexOf(item.card?.card.slot_use ?? "");
       return index === -1 ? undefined : index;
     }, byNumber),
     cell: ({ getValue }) =>
       getValue<string>() === "" ? null : (
         <span className={`text-xs ${textSecondaryOnCanvas}`}>
-          {slotUseLabel(getValue<string>())}
+          {activityLabel(getValue<string>())}
         </span>
       ),
   },

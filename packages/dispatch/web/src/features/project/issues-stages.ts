@@ -41,18 +41,10 @@ export const NOT_STARTED_STAGES: readonly StageId[] = STAGES.filter(
   (stage) => stage.group === "not_started"
 ).map((stage) => stage.id);
 
-/** Stages 6 to 17, the In flight view's stages in a project with a Legion daemon. */
+/** Stages 6 to 17, the In flight view's stages. */
 export const IN_FLIGHT_STAGES: readonly StageId[] = STAGES.filter(
   (stage) => stage.group === "in_flight"
 ).map((stage) => stage.id);
-
-/** The In flight view's stages in a project with no Legion daemon: the status stages of work. */
-export const STATUS_IN_FLIGHT_STAGES: readonly StageId[] = [
-  "in_progress",
-  "testing",
-  "needs_review",
-  "retro",
-];
 
 /** The stages only a card puts an issue in: the daemon owns them, so the Board refuses a drop
  *  on them (all but Queue, which takes a drop from inside itself as a rank write). */
@@ -91,13 +83,14 @@ export function stageOf(status: string, column: LegionBoardColumnID | undefined)
   return isStageId(status) ? status : "triage";
 }
 
-/** Why a card waits, in the order the Waiting bar draws them: it is ready to start, it waits for
- *  a slot, a blocker link holds it, or a person has not answered it. */
+/** Why a card waits, in the order the Waiting bar draws them: it is ready to start, the daemon
+ *  has no capacity free, a blocker link holds it, or a person has not answered it. The values
+ *  are the board route's. */
 export const WAITING_REASONS = ["ready", "slot", "blocked", "person"] as const;
 export type WaitingReason = (typeof WAITING_REASONS)[number];
 const waitingLabels: Record<WaitingReason, string> = {
   ready: "Ready",
-  slot: "Needs a slot",
+  slot: "No capacity",
   blocked: "Blocked",
   // The stage's own words: a person has not answered.
   person: "Waiting on a person",
@@ -106,22 +99,23 @@ export function waitingLabel(reason: string): string {
   return (waitingLabels as Record<string, string>)[reason] ?? reason;
 }
 
-/** What a slot holder does with its slot, in the order the Slot use bar draws them. */
-export const SLOT_USES = [
+/** What an issue the daemon holds capacity for is doing, the Activity column's values in their
+ *  order. The values are the board route's `slot_use`. */
+export const ACTIVITIES = [
   "working",
   "between_turns",
   "held_children",
   "held_person",
   "held_idle",
 ] as const;
-export type SlotUse = (typeof SLOT_USES)[number];
-const slotUseLabels: Record<SlotUse, string> = {
+export type Activity = (typeof ACTIVITIES)[number];
+const activityLabels: Record<Activity, string> = {
   working: "Working",
   between_turns: "Between turns",
   held_children: "Held for children",
   held_person: "Held for a person",
   held_idle: "Held, idle",
 };
-export function slotUseLabel(use: string): string {
-  return (slotUseLabels as Record<string, string>)[use] ?? use;
+export function activityLabel(activity: string): string {
+  return (activityLabels as Record<string, string>)[activity] ?? activity;
 }

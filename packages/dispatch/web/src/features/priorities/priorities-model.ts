@@ -115,13 +115,7 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   },
   { id: "in-flight", header: "In flight", ...COUNT_WIDTH, values: (i) => [String(i.inFlight)] },
   { id: "waiting", header: "Waiting", ...COUNT_WIDTH, values: (i) => [String(i.waiting)] },
-  {
-    id: "parked",
-    header: "In backlog or icebox",
-    size: 180,
-    min: 180,
-    values: (item) => [String(item.parked)],
-  },
+  { id: "parked", header: "Backlog, icebox", ...COUNT_WIDTH, values: (i) => [String(i.parked)] },
   { id: "closed", header: "Closed, 7 days", ...COUNT_WIDTH, values: (i) => [String(i.closed)] },
   {
     id: "newest",

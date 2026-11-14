@@ -14,9 +14,9 @@ import { capSearchQuery, copyAddress, type TableAddressView } from "../../lib/pa
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
 import {
-  SLOT_USES,
+  ACTIVITIES,
+  activityLabel,
   type StageId,
-  slotUseLabel,
   stageIds,
   stageLabel,
   stageOf,
@@ -139,9 +139,8 @@ export type ColumnId =
   | "created"
   | "updated"
   | "closed"
-  | "slot"
   | "roles"
-  | "slot_use"
+  | "activity"
   | "waited"
   | "waiting_reason"
   | "time_in_phase"
@@ -323,16 +322,16 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 104,
     filter: { kind: "range", value: (item) => item.issue.closed_at },
   },
-  { id: "slot", size: 60, min: 56, board: true },
   { id: "roles", size: 120, min: 64, board: true },
   {
-    id: "slot_use",
+    // What an issue the daemon holds capacity for is doing (the board's `slot_use`).
+    id: "activity",
     size: 140,
     min: 112,
     board: true,
     filter: one((item) => item.card?.card.slot_use ?? "", {
-      order: [...SLOT_USES, ""],
-      show: (value) => (value === "" ? "None" : slotUseLabel(value)),
+      order: [...ACTIVITIES, ""],
+      show: (value) => (value === "" ? "None" : activityLabel(value)),
     }),
   },
   { id: "waited", size: 88, min: 80, board: true },

@@ -152,8 +152,9 @@ export const ISSUE_TABLE_NAMES: DataTableNames = {
   rowAttribute: ISSUE_ROW_ATTRIBUTE,
 };
 
-/** The line under the List: how many issues of how many, in how many groups, over how many
- *  rows. */
+/** The line under the table: the range of rows, the page, the steps and the page size, with no
+ *  totals. The Issues tab's open view counts its rows on its tab; a priority page's tables
+ *  count theirs in their headings and strips. */
 const ISSUE_TABLE_PAGER: PagerOptions = {
   allRows: ALL_ROWS,
   nouns: {
@@ -163,10 +164,11 @@ const ISSUE_TABLE_PAGER: PagerOptions = {
   },
   pageSizes: PAGE_SIZES,
   testId: "issues-table-pager",
+  totals: false,
 };
 
-/** Where one view's columns, widths and layout are kept in this browser, per project. All open
- *  keeps the key the table has always used, so today's stored layout becomes All open's. */
+/** Where one view's columns, widths and layout are kept in this browser, per project. Open
+ *  keeps the key the table has always used, so today's stored layout becomes Open's. */
 const viewStorageKey = (project: string, view: BuiltInViewId) =>
   view === "open" ? tableStorageKey(project) : `${tableStorageKey(project)}.view.${view}`;
 
@@ -174,12 +176,11 @@ const viewStorageKey = (project: string, view: BuiltInViewId) =>
 const BAR_COLUMN = {
   stage: "stage",
   waiting_reason: "waiting_reason",
-  slot_use: "slot_use",
 } as const;
 
 /** Whether a view lists closed issues: its Status filter picks Done, its Stage filter picks
  *  Done, or the Status filter is lifted (`lifted`, `nofilter=1`). A view with no Status filter
- *  of its own (Waiting line, In flight, Slots) lists the open issues its Legion filters select. */
+ *  of its own (Waiting line, In flight) lists the open issues its Legion filters select. */
 function filtersListClosed(filters: View["filters"], lifted: boolean): boolean {
   const picks = (id: string) => {
     const value = filters.find((filter) => filter.id === id)?.value;
@@ -458,8 +459,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   const colsParam = embedded ? null : params.get("cols");
   // Start next is offered only on the views that list Todo issues; elsewhere its column is not
   // drawn, so the view's own columns get its width. An embedded table offers it as the List did.
-  const trailingWidth =
-    embedded || ["open", "waiting", "mine"].includes(builtIn.id) ? ACTION_WIDTH : 0;
+  const trailingWidth = embedded || ["open", "waiting"].includes(builtIn.id) ? ACTION_WIDTH : 0;
   const layout = useMemo(() => {
     // An embedded table is laid out by main's rules alone (`issueTableLayout`): its columns at
     // main's widths, scrolling sideways where they do not fit, in the order the reader left them.
@@ -739,28 +739,28 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   );
 
   // Each tab's count, from the data the page holds: the open listing (and the board) for every
-  // view but Finished, whose done read counts once the view has been opened in the page.
-  const [finishedOpened, setFinishedOpened] = useState(builtIn.id === "finished");
-  if (builtIn.id === "finished" && !finishedOpened) setFinishedOpened(true);
-  const finishedWindow = windowRead("28d", nowMs) ?? {};
-  const finishedRead = useQuery({
-    ...projectDoneIssuesQuery(project ?? "", finishedWindow),
-    enabled: finishedOpened && project !== undefined,
+  // view but Done, whose read of every done issue counts once the view has been opened in the
+  // page (the same read the view itself makes while no Closed window narrows it).
+  const [doneOpened, setDoneOpened] = useState(builtIn.id === "done");
+  if (builtIn.id === "done" && !doneOpened) setDoneOpened(true);
+  const everyDone = useQuery({
+    ...projectDoneIssuesQuery(project ?? "", {}),
+    enabled: doneOpened && project !== undefined,
   });
   const text = useAgentText();
   const counts = useMemo(() => {
     const result = new Map<string, number | undefined>();
     for (const entry of views) {
       const own = readUrl(copyAddress(`view=${entry.id}`), hasLegion).filters;
-      if (entry.id === "finished") {
-        const rows = finishedRead.data;
+      if (entry.id === "done") {
+        const rows = everyDone.data;
         result.set(
           entry.id,
           rows === undefined
             ? undefined
-            : buildItems(rows, text.label, [], undefined, { board: board.data, hasLegion })
-                .filter((item) => item.issue.closed_at !== null)
-                .filter((item) => matchesFilters(item, own)).length
+            : buildItems(rows, text.label, [], undefined, { board: board.data, hasLegion }).filter(
+                (item) => matchesFilters(item, own)
+              ).length
         );
         continue;
       }
@@ -773,20 +773,22 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       result.set(entry.id, allItems.filter((item) => matchesFilters(item, own)).length);
     }
     return result;
-  }, [views, hasLegion, allItems, finishedRead.data, board.data, text, issues.data]);
+  }, [views, hasLegion, allItems, everyDone.data, board.data, text, issues.data]);
+  // A saved view that lists closed issues counts only while it is open (`tabSavedCounts`): the
+  // page holds its closed rows then alone.
   const savedCounts = useMemo(() => {
     const result = new Map<string, number | undefined>();
     for (const entry of saved) {
       const query = copyAddress(entry.query);
       if (listsClosed(query, hasLegion)) {
-        result.set(entry.name, entry.name === savedName ? listedRows.length : undefined);
+        result.set(entry.name, undefined);
         continue;
       }
       const own = readUrl(query, hasLegion).filters;
       result.set(entry.name, allItems.filter((item) => matchesFilters(item, own)).length);
     }
     return result;
-  }, [saved, hasLegion, allItems, savedName, listedRows.length]);
+  }, [saved, hasLegion, allItems]);
 
   const selectView = (id: string) => {
     setChosenSaved(undefined);
@@ -948,28 +950,36 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     [allItems]
   );
 
-  const tabs = embedded ? null : (
-    <IssueViewTabs
-      active={active}
-      boardHeader={board.data?.header}
-      changed={changed}
-      counts={counts}
-      hasLegion={hasLegion}
-      onDelete={deleteSaved}
-      onSelect={selectView}
-      onSelectSaved={selectSaved}
-      saved={saved}
-      savedCounts={savedCounts}
-      settingsFailure={settingsFailure}
-      views={views}
-    />
-  );
-
   const loading =
     issues.isPending ||
     userState.isPending ||
     (done !== undefined && doneIssues.isPending) ||
     (legionFiltered && board.isPending);
+  // The active tab counts the rows the table lists now, the reader's own changes (filters,
+  // search, flags, chips) included, as a search narrows GitHub's Open count. Every other tab
+  // keeps its own view's count.
+  const listedCount = loading ? undefined : listedRows.length;
+  const tabCounts =
+    active.kind === "built-in" ? new Map(counts).set(active.id, listedCount) : counts;
+  const tabSavedCounts =
+    active.kind === "saved" ? new Map(savedCounts).set(active.name, listedCount) : savedCounts;
+
+  const tabs = embedded ? null : (
+    <IssueViewTabs
+      active={active}
+      boardHeader={board.data?.header}
+      changed={changed}
+      counts={tabCounts}
+      hasLegion={hasLegion}
+      onDelete={deleteSaved}
+      onSelect={selectView}
+      onSelectSaved={selectSaved}
+      saved={saved}
+      savedCounts={tabSavedCounts}
+      settingsFailure={settingsFailure}
+      views={views}
+    />
+  );
   const failed = (issues.isError && issues.data === undefined) || userState.isError;
   const boardFailed = legionFiltered && board.isError;
 
@@ -998,7 +1008,6 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
         hasLegion={hasLegion}
         onSave={saveView}
         saved={saved}
-        views={views}
       />
     </>
   );
@@ -1014,7 +1023,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
         {embedded ? (
           // Issues by status, as main draws them: a click shows only that status, a second
           // click every status.
-          <IssueTableStatus epics={epics} items={allItems} table={table} />
+          <IssueTableStatus items={allItems} table={table} />
         ) : (
           <ViewBar
             by={barBy}

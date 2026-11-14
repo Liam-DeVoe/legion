@@ -33,6 +33,10 @@ export interface PagerOptions {
   /** The page size that means every row, which reads as `All rows` rather than a count per
    *  page. Any size at least this big is that choice. */
   readonly allRows?: number;
+  /** Whether the line counts the rows: `3 of 40 issues in 2 groups`, `Rows 1–25 of 40` and
+   *  `All 40 rows`. A page that shows the count elsewhere passes `false`, and the line keeps
+   *  only the range (`Rows 1–25`, `All rows`), the page, the steps and the page size. */
+  readonly totals?: boolean;
   readonly testId: string;
 }
 
@@ -79,6 +83,7 @@ export function Pager<TData>({
   pagerRef,
   table,
   testId,
+  totals = true,
 }: PagerProps<TData>): ReactNode {
   const { pageIndex, pageSize } = table.getState().pagination;
   const { grouping } = table.getState();
@@ -87,6 +92,7 @@ export function Pager<TData>({
   const groupCount = table.getGroupedRowModel().rows.length;
   const total = table.options.data.length;
   const { group, item, row } = nouns;
+  const range = `${sentence(row.many)} ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)}`;
   return (
     <div
       ref={pagerRef}
@@ -94,16 +100,22 @@ export function Pager<TData>({
       data-testid={testId}
       className={`flex shrink-0 flex-wrap items-center gap-3 text-sm ${textSecondaryOnCanvas}`}
     >
-      <span>
-        {leafCount} of {total} {total === 1 ? item.one : item.many}
-        {grouping.length > 0
-          ? ` in ${groupCount} ${groupCount === 1 ? group.one : group.many}`
-          : ""}
-      </span>
+      {totals ? (
+        <span>
+          {leafCount} of {total} {total === 1 ? item.one : item.many}
+          {grouping.length > 0
+            ? ` in ${groupCount} ${groupCount === 1 ? group.one : group.many}`
+            : ""}
+        </span>
+      ) : null}
       <span className="ml-auto">
         {pageSize >= allRows
-          ? `All ${rowsOnPages} ${rowsOnPages === 1 ? row.one : row.many}`
-          : `${sentence(row.many)} ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
+          ? totals
+            ? `All ${rowsOnPages} ${rowsOnPages === 1 ? row.one : row.many}`
+            : `All ${row.many}`
+          : totals
+            ? `${range} of ${rowsOnPages}`
+            : range}
       </span>
       <PagerButton disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
         ‹ Previous

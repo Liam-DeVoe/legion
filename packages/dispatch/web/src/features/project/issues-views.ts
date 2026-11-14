@@ -1,27 +1,20 @@
 import { copyAddress } from "../../lib/page-address";
 import { openIssueStatuses } from "./board-model";
-import { IN_FLIGHT_STAGES, SLOT_USES, STATUS_IN_FLIGHT_STAGES } from "./issues-stages";
+import { IN_FLIGHT_STAGES } from "./issues-stages";
 import type { ColumnId } from "./issues-table-model";
 
 /**
  * The Issues tab's views. A view is one type: a name, the URL parameters it stands for, the
- * columns it opens with, and what its bar counts by. The seven built-in views are constants of
- * it, and a saved view is a name and a URL query. An address names its view with `view=<id>`;
- * every other parameter of the address replaces the view's value of that same parameter, or
- * narrows the view further, so a link carries only what differs from its view.
+ * columns it opens with, and what its bar counts by. The built-in views are constants of it, and
+ * a saved view is a name and a URL query. An address names its view with `view=<id>`; every
+ * other parameter of the address replaces the view's value of that same parameter, or narrows
+ * the view further, so a link carries only what differs from its view.
  */
 
-export type BuiltInViewId =
-  | "open"
-  | "triage"
-  | "waiting"
-  | "in-flight"
-  | "slots"
-  | "finished"
-  | "mine";
+export type BuiltInViewId = "open" | "waiting" | "in-flight" | "done";
 
 /** What a view's bar counts its rows by. */
-export type BarBy = "stage" | "waiting_reason" | "slot_use";
+export type BarBy = "stage" | "waiting_reason";
 
 export interface BuiltInView {
   readonly id: BuiltInViewId;
@@ -37,38 +30,27 @@ export interface BuiltInView {
   readonly notStartedNumber?: boolean;
   /** The view shows only for a project with a Legion daemon. */
   readonly legionOnly?: boolean;
-  /** What the (i) hint beside the tabs says the view lists. */
-  readonly hint: string;
 }
 
 const OPEN_STATUSES = openIssueStatuses.map((status) => ["status", status] as const);
 
-/** All open: today's default list, and what an address that names no view, or a view the
- *  project does not have, opens. */
-const ALL_OPEN: BuiltInView = {
+/** Open: today's default list, and what an address that names no view, or a view the project
+ *  does not have, opens. */
+const OPEN: BuiltInView = {
   id: "open",
-  name: "All open",
+  name: "Open",
   params: () => [...OPEN_STATUSES, ["sort", "queue"]],
   // Created and Open asks are in the Columns menu, not the defaults (the Needs you flag covers
   // the asks): the default columns fit 1440 px beside the sidebar.
   cols: ["priority", "queue", "key", "title", "stage", "epic", "assignee", "claim"],
   bar: "stage",
   notStartedNumber: true,
-  hint: "Every open issue",
 };
 
+/** The built-in views, in their tabs' order. Any other list (Triage, what the reader created)
+ *  is a filter a reader saves as a view of their own. */
 export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
-  ALL_OPEN,
-  {
-    id: "triage",
-    name: "Triage",
-    params: () => [
-      ["status", "triage"],
-      ["sort", "-created"],
-    ],
-    cols: ["priority", "key", "title", "author", "labels", "created"],
-    hint: "New issues that no person has sorted yet",
-  },
+  OPEN,
   {
     id: "waiting",
     name: "Waiting line",
@@ -79,67 +61,38 @@ export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
     cols: ["queue", "priority", "key", "title", "waiting_reason", "waited", "epic"],
     bar: "waiting_reason",
     legionOnly: true,
-    hint: "The issues that wait for Legion to start them, in the order it starts them",
   },
   {
     id: "in-flight",
     name: "In flight",
-    params: (hasLegion) =>
-      hasLegion
-        ? [
-            ...IN_FLIGHT_STAGES.map((stage) => ["f.stage", stage] as const),
-            ["sort", "stage,-time_in_phase"],
-          ]
-        : [
-            ...STATUS_IN_FLIGHT_STAGES.map((stage) => ["f.stage", stage] as const),
-            ["sort", "stage,-updated"],
-          ],
-    // Assignee is in the Columns menu, not the defaults: the default columns fit 1440 px
-    // beside the sidebar.
-    cols: ["priority", "key", "title", "stage", "slot", "roles", "time_in_phase", "phase_hours"],
+    params: () => [
+      ...IN_FLIGHT_STAGES.map((stage) => ["f.stage", stage] as const),
+      ["sort", "stage,-time_in_phase"],
+    ],
+    cols: ["priority", "key", "title", "stage", "roles", "time_in_phase", "phase_hours"],
     bar: "stage",
-    hint: "The issues in work now, from Design to Held",
-  },
-  {
-    id: "slots",
-    name: "Slots",
-    params: () => [...SLOT_USES.map((use) => ["f.slot_use", use] as const), ["sort", "slot"]],
-    cols: ["slot", "key", "title", "stage", "slot_use", "phase_hours"],
-    bar: "slot_use",
     legionOnly: true,
-    hint: "The issues that hold a slot, and what each does with it",
   },
   {
-    id: "finished",
-    name: "Finished",
-    params: (hasLegion) => [
+    id: "done",
+    name: "Done",
+    // Every done issue, newest first: the Closed column's date filter narrows it to a window.
+    params: () => [
       ["status", "done"],
-      ["f.closed", "28d"],
-      ...(hasLegion ? [["f.legion", "worked"] as const] : []),
       ["sort", "-closed"],
     ],
-    cols: ["key", "title", "closed", "work_hours", "review_rounds", "phase_hours", "assignee"],
-    hint: "The issues closed in the last 28 days that Legion worked on",
-  },
-  {
-    id: "mine",
-    name: "Created by me",
-    params: () => [...OPEN_STATUSES, ["f.author", "@me"], ["sort", "-created"]],
-    cols: ["priority", "key", "title", "stage", "created"],
-    bar: "stage",
-    notStartedNumber: true,
-    hint: "The open issues that you or your agents created",
+    cols: ["priority", "key", "title", "closed", "assignee", "work_hours", "phase_hours"],
   },
 ];
 
-/** The views a project has: Waiting line and Slots only where a Legion daemon runs. */
+/** The views a project has: Waiting line and In flight only where a Legion daemon runs. */
 export function viewsFor(hasLegion: boolean): readonly BuiltInView[] {
   return BUILT_IN_VIEWS.filter((view) => hasLegion || view.legionOnly !== true);
 }
 
-/** The view `id` names, or All open for an id the project does not have. */
+/** The view `id` names, or Open for an id the project does not have. */
 export function viewFor(id: string | null, hasLegion: boolean): BuiltInView {
-  return viewsFor(hasLegion).find((view) => view.id === id) ?? ALL_OPEN;
+  return viewsFor(hasLegion).find((view) => view.id === id) ?? OPEN;
 }
 
 /** The parameters that are no part of what a view lists: they mark no view as changed. */
@@ -202,19 +155,19 @@ export function compressAgainst(own: URLSearchParams, full: URLSearchParams): UR
 export function compressView(full: URLSearchParams, hasLegion: boolean): URLSearchParams {
   const view = viewFor(full.get("view"), hasLegion);
   const next = copyAddress();
-  if (view.id !== ALL_OPEN.id) next.set("view", view.id);
+  if (view.id !== OPEN.id) next.set("view", view.id);
   for (const [key, value] of compressAgainst(ownParams(view, hasLegion), full))
     next.append(key, value);
   return next;
 }
 
 /**
- * What a table that draws no view opens with: All open's own parameters (the open statuses,
- * sorted by Place), which is what the project List opened with before the views, and what a
- * table embedded in another page still opens with. Such a table writes no `view=`.
+ * What a table that draws no view opens with: Open's own parameters (the open statuses, sorted
+ * by Place), which is what the project List opened with before the views, and what a table
+ * embedded in another page still opens with. Such a table writes no `view=`.
  */
 export function embeddedDefaults(): URLSearchParams {
-  return ownParams(ALL_OPEN, false);
+  return ownParams(OPEN, false);
 }
 
 /** A built-in view is changed when any parameter but the page, its size, the columns and the

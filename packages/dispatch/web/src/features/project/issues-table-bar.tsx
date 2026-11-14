@@ -1,7 +1,6 @@
 import { type ReactNode, useRef } from "react";
 import {
   borderDefault,
-  slotUseFill,
   stageFill,
   surfaceMutedBg,
   surfaceMutedHoverBg,
@@ -9,15 +8,9 @@ import {
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
+  waitingFill,
 } from "../../theme/classes";
-import {
-  NOT_STARTED_STAGES,
-  SLOT_USES,
-  STAGES,
-  slotUseLabel,
-  WAITING_REASONS,
-  waitingLabel,
-} from "./issues-stages";
+import { NOT_STARTED_STAGES, STAGES, WAITING_REASONS, waitingLabel } from "./issues-stages";
 import type { Item } from "./issues-table-model";
 import type { BarBy } from "./issues-views";
 
@@ -30,26 +23,15 @@ export interface BarSegment {
 }
 
 const STAGE_FILLS: Readonly<Record<string, string>> = stageFill;
-const WAITING_FILLS: Readonly<Record<string, string>> = {
-  ready: stageFill.planning,
-  slot: stageFill.reviewing,
-  blocked: stageFill.held,
-  person: stageFill.awaiting_person,
-};
-const SLOT_FILLS: Readonly<Record<string, string>> = slotUseFill;
+const WAITING_FILLS: Readonly<Record<string, string>> = waitingFill;
 
-/** What a bar counts `items` by: their stages in the stage order, their waiting reasons or their
- *  slot uses in the order of those values, each value with no row left out. A row with no value
- *  of a Legion column counts under None, last. */
+/** What a bar counts `items` by: their stages in the stage order, or their waiting reasons in
+ *  the order of those values, each value with no row left out. A row with no value of a Legion
+ *  column counts under None, last. */
 export function barSegments(items: readonly Item[], by: BarBy): BarSegment[] {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const value =
-      by === "stage"
-        ? item.stage
-        : by === "waiting_reason"
-          ? (item.card?.card.waiting?.reason ?? "")
-          : (item.card?.card.slot_use ?? "");
+    const value = by === "stage" ? item.stage : (item.card?.card.waiting?.reason ?? "");
     counts.set(value, (counts.get(value) ?? 0) + 1);
   }
   const ordered: readonly { value: string; label: string; fill: string }[] =
@@ -59,17 +41,11 @@ export function barSegments(items: readonly Item[], by: BarBy): BarSegment[] {
           label: stage.label,
           fill: STAGE_FILLS[stage.id] ?? "",
         }))
-      : by === "waiting_reason"
-        ? WAITING_REASONS.map((reason) => ({
-            value: reason,
-            label: waitingLabel(reason),
-            fill: WAITING_FILLS[reason] ?? "",
-          }))
-        : SLOT_USES.map((use) => ({
-            value: use,
-            label: slotUseLabel(use),
-            fill: SLOT_FILLS[use] ?? "",
-          }));
+      : WAITING_REASONS.map((reason) => ({
+          value: reason,
+          label: waitingLabel(reason),
+          fill: WAITING_FILLS[reason] ?? "",
+        }));
   const known = new Set(ordered.map((entry) => entry.value));
   const others = [...counts.keys()].filter((value) => !known.has(value));
   return [
@@ -174,7 +150,7 @@ export function ViewBar({
     }`;
   return (
     <section
-      aria-label={`Listed issues by ${by === "stage" ? "stage" : by === "waiting_reason" ? "waiting reason" : "slot use"}`}
+      aria-label={`Listed issues by ${by === "stage" ? "stage" : "waiting reason"}`}
       className="flex h-[4.75rem] flex-col justify-center gap-1 md:h-12"
       data-view-bar={by}
     >

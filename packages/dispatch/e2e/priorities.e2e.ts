@@ -30,7 +30,7 @@ const PRIORITIES_PATH = "/priorities";
  *  `PrioritiesPage.tsx` passes, which `features/project/IssuesTable.tsx` names its table by with
  *  " table" after it. */
 const NO_PRIORITY_TABLE = "Issues in flight under no priority table";
-const PARKED_TABLE = "Priority issues in backlog or icebox table";
+const PARKED_TABLE = "Parked priority issues table";
 
 /** What the server says of a deployment with no live priority, in its own words
  *  (`priorityNoneWritten`, `internal/dispatch/api/priority_queries.go`): the empty page draws the
@@ -38,14 +38,8 @@ const PARKED_TABLE = "Priority issues in backlog or icebox table";
 const NONE_LIVE =
   "No priority is live now, so the list is empty. Write one, then say which work advances it.";
 
-/** What the page says each fault is, in `web/src/features/priorities/PrioritiesPage.tsx`'s own
- *  words: a row below reads them off the page, so a rule reworded there fails here rather than
- *  quietly changing what a reader is told a list means. */
-const NO_PRIORITY_RULE =
-  "Work in progress, testing, review or retro that advances no priority, its own or one it inherits.";
-const PARKED_RULE =
-  "Work that advances a priority and stands in the backlog or the icebox, with the time it was " +
-  "moved there and whoever moved it. No reason is recorded for a move yet.";
+/** The one count a fault section shows beside its heading (`PrioritiesPage.tsx`). */
+const faultCount = (section: Locator) => section.locator("[data-fault-count]");
 
 /** What the margin says of each state but Everything (`PriorityMargin.tsx`). */
 const MARGIN_SENTENCES: readonly (readonly [string, string])[] = [
@@ -262,16 +256,16 @@ test("the priorities page draws the order first and the two fault lists under it
     // The agreed picture (dispatch://INFRA-2947/artifact/priorities-round10-png): the
     // priorities, then the work in flight under none, then the priority work parked.
     const unplaced = section(page, "In flight under no priority");
-    const parked = section(page, "Priority work in backlog or icebox");
+    const parked = section(page, "Parked priority work");
     const tops = await Promise.all([topOf(priorities), topOf(unplaced), topOf(parked)]);
     expect(tops[0]).toBeLessThan(tops[1]);
     expect(tops[1]).toBeLessThan(tops[2]);
 
-    // Each fault says what it is and how big it is, and neither is a judgement.
-    await expect(unplaced.getByText(NO_PRIORITY_RULE)).toBeVisible();
-    await expect(unplaced.getByText(/^4 issues · CORE 2 · OPS 1 · WEB 1$/)).toBeVisible();
-    await expect(parked.getByText(PARKED_RULE)).toBeVisible();
-    await expect(parked.getByText(/^1 issue · /)).toBeVisible();
+    // Each fault shows its one count beside its heading, and no rule or count line repeats it.
+    await expect(faultCount(unplaced)).toHaveText("4");
+    await expect(faultCount(parked)).toHaveText("1");
+    await expect(unplaced.getByText(/ · /)).toHaveCount(0);
+    await expect(parked.getByText(/ · /)).toHaveCount(0);
 
     // Each fault list is the application's one Issues table over its own issue listing, which
     // is a read of its own beside the priorities read: its rows are waited for, not assumed
@@ -594,9 +588,7 @@ test("another person's rename and delete of a priority redraw an open page with 
     await endPriority(seed.ids[2], { login: "bob" });
     await expectRowOrder(priorities, [`P1 ${seed.titles[0]}`, `P2 ${seed.titles[1]}`]);
     await expectRowNames(parkedTable, []);
-    await expect(
-      section(reader, "Priority work in backlog or icebox").getByText(/^0 issues$/)
-    ).toBeVisible();
+    await expect(faultCount(section(reader, "Parked priority work"))).toHaveText("0");
     await expect(badge).toHaveText("4");
 
     expect(await reader.evaluate(() => document.documentElement.dataset.heldOpen)).toBe("yes");
@@ -918,7 +910,7 @@ test("another person's delete of a priority leaves an open issue page, whose nex
 });
 
 // SLOW(>=2s): the seed and two pages read for what they do not draw.
-test("a priority's page offers no versions and no delete, and the parked rule says no reason is recorded", async ({
+test("a priority's page offers no versions and no delete, and the parked list carries no rule text", async ({
   browser,
 }) => {
   const seed = await seedPriorities();
@@ -938,11 +930,11 @@ test("a priority's page offers no versions and no delete, and the parked rule sa
     await expect(main.getByRole("button", { name: /delete/i })).toHaveCount(0);
     await expect(main.getByRole("link", { name: /delete/i })).toHaveCount(0);
 
-    // And the second fault's rule says the one thing it cannot say about a parked issue: why it
-    // was moved. Nothing records a reason until dispatch://INFRA-2934 does.
+    // The parked list says why nothing records a reason in its Reason cells alone (the row
+    // above): the section above it carries no paragraph of rules.
     await page.goto(PRIORITIES_PATH);
-    const parked = section(page, "Priority work in backlog or icebox");
-    await expect(parked.getByText(PARKED_RULE)).toBeVisible();
+    const parked = section(page, "Parked priority work");
+    await expect(parked.getByText(/No reason is recorded/)).toHaveCount(0);
   } finally {
     await context.close();
   }

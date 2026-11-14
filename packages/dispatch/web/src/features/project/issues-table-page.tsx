@@ -15,15 +15,13 @@ import {
   surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
-  textPrimaryOnCanvas,
-  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useUserPreference } from "../shell/userPreference";
 import { issueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import type { ViewLayout } from "./IssueViewTabs";
 import { useIssueFilters } from "./issue-filters";
-import { type Item, runningIssueStatuses } from "./issues-table-model";
+import type { Item } from "./issues-table-model";
 
 /** The panel the row's one filter trigger opens: a column of chips, portalled over the page so
  *  opening it moves no row of the table beneath (INFRA-3135, R1). */
@@ -52,47 +50,25 @@ export function Action({
 }
 
 /**
- * The strip a table another page draws above its rows (the priority pages'), as main draws it:
- * how many of its issues are in Legion's queue, running, and epics, and its issues by status in
- * the status scale. A click shows only that status, a second click every status. The project's
- * Issues tab draws its views' bar instead (`issues-table-bar.tsx`).
+ * The strip a table another page draws above its rows (the priority pages'): its issues by
+ * status in the status scale, as main draws them. A click shows only that status, a second
+ * click every status. The project's Issues tab draws its views' bar instead
+ * (`issues-table-bar.tsx`).
  */
 export function IssueTableStatus({
   table,
   items,
-  epics,
 }: {
   table: Table<Item>;
   items: readonly Item[];
-  epics: readonly IssueSummary[];
 }): ReactNode {
   const statusColumn = table.getColumn("status");
   const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
   const statusCounts = new Map<string, number>();
-  let queuedCount = 0;
-  let runningCount = 0;
-  for (const item of items) {
+  for (const item of items)
     statusCounts.set(item.issue.status, (statusCounts.get(item.issue.status) ?? 0) + 1);
-    if (item.queue !== undefined) queuedCount += 1;
-    if ((runningIssueStatuses as readonly string[]).includes(item.issue.status)) runningCount += 1;
-  }
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
-      <div
-        className={`mb-2 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm ${textSecondaryOnCanvas}`}
-      >
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{queuedCount}</b> in Legion's
-          queue
-        </span>
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{runningCount}</b> running
-        </span>
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{epics.length}</b>{" "}
-          {epics.length === 1 ? "epic" : "epics"}
-        </span>
-      </div>
       <fieldset
         aria-label="Issues by status"
         className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}

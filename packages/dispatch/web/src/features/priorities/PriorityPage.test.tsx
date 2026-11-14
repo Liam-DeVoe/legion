@@ -151,7 +151,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   return { listing, patch, view };
 }
 
-test("the header carries the order, the title in place, the owner and the three counts", async () => {
+test("the header carries the order, the title in place and the owner, with no count line", async () => {
   page();
   const title = await screen.findByRole("textbox", { name: "Title" });
   expect((title as HTMLInputElement).value).toBe("Rocq and Lean speed work restarted");
@@ -159,8 +159,9 @@ test("the header carries the order, the title in place, the owner and the three 
   // The owner is the picker the page is drawn as: it offers the owners the deployment already
   // uses and takes one nobody has written yet, so it is a combobox and not a plain field.
   expect(screen.getByRole("combobox", { name: "Owner" })).toBeDefined();
-  expect(screen.getByText("Order P2, dragged on the priorities page")).toBeDefined();
-  expect(screen.getByText(/In flight 3 · waiting 11 · in backlog or icebox 5/)).toBeDefined();
+  // The order and the three counts are the priorities table's; the page repeats neither.
+  expect(screen.queryByText(/dragged on the priorities page/)).toBeNull();
+  expect(screen.queryByText(/In flight 3 · waiting 11/)).toBeNull();
   expect(screen.getByRole("link", { name: "‹ Priorities" }).getAttribute("href")).toBe(
     "/priorities"
   );
@@ -285,9 +286,9 @@ test("the page carries no tab strip, no version control and no delete", async ()
   expect(/\bv\d+\b|Versions|Comments on this description/.test(text)).toBe(false);
 });
 
-test("one link out leaves the scope, naming the issues and why", async () => {
+test("one link out per project leaves the scope, naming the issues and why", async () => {
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
-  const out = await screen.findByRole("link", { name: "CORE’s issues table" });
+  const out = await screen.findByRole("link", { name: "Open in CORE" });
   expect(out.getAttribute("href")).toBe(
     "/projects/CORE/issues?only=CORE-1%2CCORE-4&onlyLabel=Rocq+and+Lean+speed+work+restarted&nofilter=1"
   );

@@ -1751,9 +1751,10 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
   expect(drawn, "the table drew every row of the page at once").toBeLessThan(50);
   expect(drawn, "the table drew no rows").toBeGreaterThan(0);
 
-  // The pager: its own words, and a second page.
+  // The pager: its own words, with no totals on the Issues tab, and a second page.
   const pager = control(main, CONTROL.pager);
-  await expect(pager).toContainText("60 of 60 issues");
+  await expect(pager).toContainText("Rows 1–50");
+  await expect(pager).not.toContainText("of 60");
   await pager.getByRole("button", { name: "Next" }).click();
   await expect(page).toHaveURL(/[?&]page=2/);
   await pager.getByRole("combobox").selectOption("100");

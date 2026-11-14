@@ -132,32 +132,44 @@ const view = (id: string, extra = "", key = project) =>
   `/projects/${key}/issues?view=${id}${extra}`;
 const tab = (page: Page, id: string) => page.locator(`[data-view-tab="${id}"]`);
 
-/** Opens In flight narrowed to one stage, so the view is changed, and opens Save view with a
- *  name typed. */
-async function openSaveView(page: Page, name: string): Promise<void> {
-  await open(page, view("in-flight", "&f.stage=implementing"));
+/** Opens Open with `status=triage` added, so the view is changed to the triage issues, and opens
+ *  Save view with "Triage" typed. */
+async function openSaveView(page: Page): Promise<void> {
+  await open(page, view("open", "&status=triage"));
   await page.getByRole("button", { name: "Save view" }).click();
-  await page.getByRole("textbox", { name: "Name" }).fill(name);
+  await page.getByRole("textbox", { name: "Name" }).fill("Triage");
+}
+
+/** The count a view's tab draws, from its accessible name (`Done 596`). */
+async function tabCount(page: Page, id: string): Promise<number> {
+  const label = (await tab(page, id).getAttribute("aria-label")) ?? "";
+  return Number(/ (\d+)$/.exec(label)?.[1] ?? Number.NaN);
 }
 
 /** `/priorities` once its three tables have drawn their rows: the priorities and the two
- *  faults. */
+ *  faults. The parked fault is "Parked priority work" in the design and "Priority work in
+ *  backlog or icebox" on main, where the before pictures are taken. */
 async function openPriorities(page: Page): Promise<void> {
   await open(page, "/priorities", prioritySection(page, "In flight under no priority"));
-  await prioritySection(page, "Priority work in backlog or icebox").waitFor({ timeout: 30_000 });
+  await prioritySection(page, "Parked priority work", "Priority work in backlog or icebox").waitFor(
+    { timeout: 30_000 }
+  );
   await prioritySection(page, "Priorities").waitFor({ timeout: 30_000 });
 }
 
-/** The first priority's own page, reached by its row's link, once its issue table has drawn. */
+/** The first priority's own page (P1), reached by its row's link, once its issue table has
+ *  drawn. */
 async function openPriority(page: Page): Promise<void> {
   await openPriorities(page);
   await page.locator('section[aria-label="Priorities"] a[href*="/priorities/"]').first().click();
   await settle(page, prioritySection(page, "Work advancing this priority"));
 }
 
-/** The first row of the section the label names. */
-const prioritySection = (page: Page, label: string) =>
-  page.locator(`section[aria-label="${label}"] [data-issue-row]`).first();
+/** The first row of the section one of the labels names. */
+const prioritySection = (page: Page, ...labels: string[]) =>
+  page
+    .locator(labels.map((label) => `section[aria-label="${label}"] [data-issue-row]`).join(", "))
+    .first();
 
 const beforeShots: Shot[] = [
   { name: "before-list-1440", viewport: DESKTOP, take: (page) => open(page, issuesPath) },
@@ -186,48 +198,75 @@ const beforeShots: Shot[] = [
   { name: "before-priority-page-1440", viewport: DESKTOP, fullPage: true, take: openPriority },
 ];
 
-const VIEWS = ["open", "triage", "waiting", "in-flight", "slots", "finished", "mine"];
+/** Done with Time per phase drawn in Hours. */
+async function openDoneInHours(page: Page): Promise<void> {
+  await open(page, view("done"));
+  await page
+    .getByRole("group", { name: "Time per phase as" })
+    .getByRole("button", { name: "Hours" })
+    .click();
+}
 
 const afterShots: Shot[] = [
-  ...VIEWS.map((id) => ({
-    name: `view-${id}-1440`,
+  { name: "view-open-1440", viewport: DESKTOP, take: (page) => open(page, view("open")) },
+  { name: "view-waiting-1440", viewport: DESKTOP, take: (page) => open(page, view("waiting")) },
+  {
+    name: "view-in-flight-1440",
     viewport: DESKTOP,
-    take: (page: Page) => open(page, view(id)),
-  })),
+    take: (page) => open(page, view("in-flight")),
+  },
   {
     name: "board-in-flight-1440",
     viewport: DESKTOP,
     take: (page) => open(page, view("in-flight", "&layout=board")),
   },
+  { name: "view-done-1440", viewport: DESKTOP, take: (page) => open(page, view("done")) },
+  // Done with one week picked in the Closed column's date-range filter, the 3rd of November to
+  // the 9th, and the filter opened again to show it.
   {
-    name: "board-all-open-1440",
-    viewport: DESKTOP,
-    take: (page) => open(page, view("open", "&layout=board")),
-  },
-  {
-    name: "finished-time-per-phase-hours-1440",
+    name: "done-closed-filter-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      await open(page, view("finished"));
-      await page
-        .getByRole("group", { name: "Time per phase as" })
-        .getByRole("button", { name: "Hours" })
-        .click();
+      await open(page, view("done"));
+      const filter = page.getByRole("button", { name: /^Filter Closed/ });
+      await filter.click();
+      await page.getByLabel("Closed from").fill("2026-11-03");
+      await page.getByLabel("Closed to").fill("2026-11-09");
+      await page.getByRole("button", { name: "Apply", exact: true }).click();
+      await settle(page);
+      await filter.click();
+      await page.waitForTimeout(500);
+      check(
+        page.url().includes("f.closed=2026-11-03..2026-11-09"),
+        "the picked week writes f.closed=2026-11-03..2026-11-09"
+      );
+      const count = await tabCount(page, "done");
+      check(count === 596, `the Done tab reads ${count} for the week`);
+    },
+  },
+  {
+    name: "done-time-per-phase-hours-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await openDoneInHours(page);
       await page.waitForTimeout(500);
     },
   },
   {
-    name: "save-view-popover-1440",
+    name: "board-open-1440",
     viewport: DESKTOP,
-    take: (page) => openSaveView(page, "Implementing"),
+    take: (page) => open(page, view("open", "&layout=board")),
   },
+  { name: "save-view-popover-1440", viewport: DESKTOP, take: openSaveView },
   {
     name: "save-view-saved-tab-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      await openSaveView(page, "Implementing");
+      await openSaveView(page);
       await page.getByRole("button", { name: "Save", exact: true }).click();
-      await settle(page, page.locator('[data-saved-view-tab="Implementing"]'));
+      const saved = page.locator('[data-saved-view-tab="Triage"]');
+      await settle(page, saved);
+      check((await saved.getAttribute("aria-selected")) === "true", "the saved Triage tab is open");
     },
   },
   {
@@ -240,11 +279,11 @@ const afterShots: Shot[] = [
     },
   },
   {
-    name: "closed-date-range-filter-open-1440",
+    name: "view-open-info-hint-open-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      await open(page, view("finished"));
-      await page.getByRole("button", { name: /^Filter Closed/ }).click();
+      await open(page, view("open"));
+      await page.getByRole("button", { name: "Legion daemon" }).click();
       await page.waitForTimeout(500);
     },
   },
@@ -258,76 +297,6 @@ const afterShots: Shot[] = [
         `/projects/${project}/settings`,
         page.locator("[data-legion-settings] tbody tr").first()
       ),
-  },
-  { name: "view-open-390", viewport: PHONE, take: (page) => open(page, view("open")) },
-  { name: "view-in-flight-390", viewport: PHONE, take: (page) => open(page, view("in-flight")) },
-  {
-    name: "board-in-flight-390",
-    viewport: PHONE,
-    take: (page) => open(page, view("in-flight", "&layout=board")),
-  },
-  {
-    name: "view-open-scrolled-to-right-end-1440",
-    viewport: DESKTOP,
-    take: async (page) => {
-      await open(page, view("open"));
-      // The columns past the window's edge: the box the rows scroll in, at its right end.
-      await page
-        .getByTestId("issues-table-scroll")
-        .evaluate((box) => box.scrollTo({ left: box.scrollWidth }));
-      await page.waitForTimeout(500);
-    },
-  },
-  {
-    name: "board-all-open-390",
-    viewport: PHONE,
-    take: (page) => open(page, view("open", "&layout=board")),
-  },
-  {
-    name: "finished-time-per-phase-hours-390",
-    viewport: PHONE,
-    take: async (page) => {
-      await open(page, view("finished"));
-      await page
-        .getByRole("group", { name: "Time per phase as" })
-        .getByRole("button", { name: "Hours" })
-        .click();
-      // Swipe the column in as a reader would: its left edge just after the pinned Key.
-      await page.getByTestId("issues-table-scroll").evaluate((box) => {
-        const headers = [...box.querySelectorAll("th")];
-        const phase = headers.find((th) => th.textContent?.includes("Time per phase"));
-        const key = headers.find((th) => th.textContent?.trim().startsWith("Key"));
-        if (phase === undefined || key === undefined) return;
-        box.scrollLeft += phase.getBoundingClientRect().left - key.getBoundingClientRect().right;
-      });
-      await page.waitForTimeout(500);
-    },
-  },
-  {
-    name: "view-open-info-hint-open-1440",
-    viewport: DESKTOP,
-    take: async (page) => {
-      await open(page, view("open"));
-      await page.getByRole("button", { name: "About this view" }).click();
-      await page.waitForTimeout(500);
-    },
-  },
-  // The views of a project with no Legion daemon: no Waiting line or Slots tab, no board-fed
-  // column, and In flight of the statuses Legion does not run.
-  {
-    name: "no-daemon-view-open-1440",
-    viewport: DESKTOP,
-    take: (page) => open(page, view("open", "", flags["no-daemon-project"])),
-  },
-  {
-    name: "no-daemon-view-in-flight-1440",
-    viewport: DESKTOP,
-    take: (page) => open(page, view("in-flight", "", flags["no-daemon-project"])),
-  },
-  {
-    name: "no-daemon-board-all-open-1440",
-    viewport: DESKTOP,
-    take: (page) => open(page, view("open", "&layout=board", flags["no-daemon-project"])),
   },
   // The daemon's newest read failed (the stub's demo=read-failed flag): the alert beside the
   // tabs, and the cards of the read before it.
@@ -351,22 +320,62 @@ const afterShots: Shot[] = [
       check(!page.url().includes("demo="), "the settings-failed flag leaves the address");
     },
   },
+  // A project with no Legion daemon (GTM by default): Open and Done alone, no board-fed column,
+  // no daemon hint.
+  {
+    name: "no-daemon-view-open-1440",
+    viewport: DESKTOP,
+    take: (page) => open(page, view("open", "", flags["no-daemon-project"])),
+  },
+  {
+    name: "no-daemon-board-open-1440",
+    viewport: DESKTOP,
+    take: (page) => open(page, view("open", "&layout=board", flags["no-daemon-project"])),
+  },
   // The priority pages (cybermonklabs/legion#3767), whose issue tables are the design's.
   { name: "priorities-1440", viewport: DESKTOP, fullPage: true, take: openPriorities },
   { name: "priority-page-1440", viewport: DESKTOP, fullPage: true, take: openPriority },
+  { name: "view-open-390", viewport: PHONE, take: (page) => open(page, view("open")) },
+  { name: "view-in-flight-390", viewport: PHONE, take: (page) => open(page, view("in-flight")) },
+  {
+    name: "board-in-flight-390",
+    viewport: PHONE,
+    take: (page) => open(page, view("in-flight", "&layout=board")),
+  },
+  {
+    name: "board-open-390",
+    viewport: PHONE,
+    take: (page) => open(page, view("open", "&layout=board")),
+  },
+  {
+    name: "done-time-per-phase-hours-390",
+    viewport: PHONE,
+    take: async (page) => {
+      await openDoneInHours(page);
+      // Swipe the column in as a reader would: its left edge just after the pinned Key.
+      await page.getByTestId("issues-table-scroll").evaluate((box) => {
+        const headers = [...box.querySelectorAll("th")];
+        const phase = headers.find((th) => th.textContent?.includes("Time per phase"));
+        const key = headers.find((th) => th.textContent?.trim().startsWith("Key"));
+        if (phase === undefined || key === undefined) return;
+        box.scrollLeft += phase.getBoundingClientRect().left - key.getBoundingClientRect().right;
+      });
+      await page.waitForTimeout(500);
+    },
+  },
   { name: "priorities-390", viewport: PHONE, fullPage: true, take: openPriorities },
 ];
 
 /** The single file, clicked through with the network off. */
 const fileShots: Shot[] = [
   {
-    name: "file-opens-on-all-open-1440",
+    name: "file-opens-on-open-1440",
     viewport: DESKTOP,
     take: async (page) => {
       await page.goto(base);
       await settle(page);
       check(page.url().includes(`#${issuesPath}`), "the file opens on the Issues tab");
-      check((await tab(page, "open").getAttribute("aria-selected")) === "true", "All open is on");
+      check((await tab(page, "open").getAttribute("aria-selected")) === "true", "Open is on");
     },
   },
   {
@@ -420,9 +429,9 @@ const fileShots: Shot[] = [
     name: "file-save-view-saved-tab-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      await openSaveView(page, "Implementing");
+      await openSaveView(page);
       await page.getByRole("button", { name: "Save", exact: true }).click();
-      const saved = page.locator('[data-saved-view-tab="Implementing"]');
+      const saved = page.locator('[data-saved-view-tab="Triage"]');
       await settle(page, saved);
       check((await saved.count()) === 1, "Save view adds the saved tab");
     },
@@ -431,11 +440,11 @@ const fileShots: Shot[] = [
     name: "file-saved-view-deleted-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      await openSaveView(page, "Implementing");
+      await openSaveView(page);
       await page.getByRole("button", { name: "Save", exact: true }).click();
-      const saved = page.locator('[data-saved-view-tab="Implementing"]');
+      const saved = page.locator('[data-saved-view-tab="Triage"]');
       await settle(page, saved);
-      await page.getByRole("button", { name: "Delete saved view Implementing" }).click();
+      await page.getByRole("button", { name: "Delete saved view Triage" }).click();
       await page.waitForTimeout(500);
       check((await saved.count()) === 0, "Delete takes the saved tab away");
       await page.reload();
@@ -449,7 +458,7 @@ const fileShots: Shot[] = [
     take: async (page) => {
       await open(page, view("open"));
       const header = page.locator("thead th", { hasText: "Work time" });
-      check((await header.count()) === 0, "All open shows no Work time column at first");
+      check((await header.count()) === 0, "Open shows no Work time column at first");
       await page.getByRole("button", { name: /^Columns/ }).click();
       await page.getByRole("checkbox", { name: "Work time" }).check();
       await page.keyboard.press("Escape");
@@ -461,34 +470,28 @@ const fileShots: Shot[] = [
     name: "file-closed-filter-7-days-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      await open(page, view("finished"));
-      const listed = async () => {
-        const text = await page.getByText(/^\d+ of \d+ issues$/).textContent();
-        return Number(/^(\d+)/.exec(text ?? "")?.[1] ?? Number.NaN);
-      };
-      const before = await listed();
+      await open(page, view("done"));
+      // The pager draws no total, so the rows listed are the count on the current tab.
+      const before = await tabCount(page, "done");
       await page.getByRole("button", { name: /^Filter Closed/ }).click();
       await page.getByRole("button", { name: "7 days", exact: true }).click();
       // Off the rows, so no issue's hover preview stands in the picture.
       await page.mouse.move(1, 1);
       await settle(page);
-      const after = await listed();
+      const after = await tabCount(page, "done");
       // The rows the view should list: the done issues closed in the last 7 times 24 hours of
-      // the page's own clock that have Legion work, from the stub's own two routes.
+      // the page's own clock, from the stub's own listing.
       const expected = await page.evaluate(async (key) => {
         const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
-        const rows: { key: string }[] = await (
+        const rows: unknown[] = await (
           await fetch(`/api/v1/issues?project=${key}&status=done&closed_since=${since}`)
         ).json();
-        const board: { issues: Record<string, unknown> } = await (
-          await fetch(`/api/v1/projects/${key}/legion/board`)
-        ).json();
-        return rows.filter((row) => Object.hasOwn(board.issues, row.key)).length;
+        return rows.length;
       }, project);
       check(page.url().includes("f.closed=7d"), "the 7 days preset writes f.closed=7d");
       check(
         after === expected && after > 0 && after < before,
-        `Closed in the last 7 days lists ${after} rows of the 28 days' ${before}; the stub's rows say ${expected}`
+        `Closed in the last 7 days lists ${after} rows of Done's ${before}; the stub's rows say ${expected}`
       );
     },
   },

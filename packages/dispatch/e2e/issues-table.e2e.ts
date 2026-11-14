@@ -63,11 +63,12 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.getByRole("option", { name: /^frontend,/ }).click();
     await page.keyboard.press("Escape");
     await expect(page.getByText("Backend unrelated", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("30 of 32 issues", { exact: true })).toBeVisible();
+    // The open view's tab counts the rows the table lists; the pager draws no totals.
+    await expect(page.getByRole("tab", { name: "Open 30" })).toBeVisible();
 
     const search = page.getByRole("searchbox", { name: "Search issues" });
     await search.fill("searchble work");
-    await expect(page.getByText("30 of 32 issues", { exact: true })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Open 30" })).toBeVisible();
     await search.fill("searchble impossible");
     await expect(page.getByText("No issues match these filters.")).toBeVisible();
     await search.fill("searchble work");
@@ -298,7 +299,7 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     await page.setViewportSize({ width: 1000, height: 800 });
     await page.goto("/projects/CORE/issues?sort=title&size=250");
     // 80 seeded rows and the epic, which is a row of the table like any other.
-    await expect(page.getByText("81 of 81 issues", { exact: true })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Open 81" })).toBeVisible();
     const scroller = page.getByTestId("issues-table-scroll");
     const original = await scroller.elementHandle();
     const ancestorRequested = Promise.withResolvers<void>();
@@ -329,7 +330,7 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     expect(await original?.evaluate((element) => element.isConnected)).toBe(true);
     expect(await scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
     ancestorReady.resolve();
-    await expect(page.getByText("82 of 82 issues", { exact: true })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Open 82" })).toBeVisible();
     await expect
       .poll(() =>
         page
@@ -515,7 +516,9 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     await expect(
       page.getByRole("link", { name: `${epic.key} · Phone epic`, exact: true }).first()
     ).toHaveAttribute("href", `/issues/${epic.key}`);
-    await expect(page.getByText("1 of 1 issue in 1 group", { exact: true })).toBeVisible();
+    // The pager draws no totals on the Issues tab: the open view's tab counts the listed rows.
+    await expect(page.getByRole("tab", { name: "Open 1" })).toBeVisible();
+    await expect(page.getByTestId("issues-table-pager")).not.toContainText("in 1 group");
     await page.screenshot({ path: testInfo.outputPath("issues-table-phone.png"), fullPage: true });
     await page.setViewportSize({ width: 900, height: 400 });
     await page.getByTestId("issues-table-pager").scrollIntoViewIfNeeded();

@@ -206,14 +206,10 @@ test("the page draws the priorities table above both fault lists", async () => {
     name: "Issues in flight under no priority table",
   });
   const parked = await screen.findByRole("table", {
-    name: "Priority issues in backlog or icebox table",
+    name: "Parked priority issues table",
   });
   const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
-  expect(headings).toEqual([
-    "Priorities",
-    "In flight under no priority",
-    "Priority work in backlog or icebox",
-  ]);
+  expect(headings).toEqual(["Priorities", "In flight under no priority", "Parked priority work"]);
   // The priorities come first, which is what the page's own name says it is about.
   expect(priorities.compareDocumentPosition(faults) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
     Node.DOCUMENT_POSITION_FOLLOWING
@@ -221,11 +217,12 @@ test("the page draws the priorities table above both fault lists", async () => {
   expect(faults.compareDocumentPosition(parked) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
     Node.DOCUMENT_POSITION_FOLLOWING
   );
-  // Each fault stands under its rule in plain words, with its count and where it falls.
-  expect(screen.getByText(/advances no priority, its own or one it inherits/)).toBeDefined();
-  expect(screen.getByText(/stands in the backlog or the icebox/)).toBeDefined();
-  expect(screen.getByText(/1 issue · CORE 1/)).toBeDefined();
-  expect(screen.getByText(/1 issue · Linkage closure eval 1/)).toBeDefined();
+  // Each fault stands under its name with its one count beside it, and no rule or count line
+  // repeats them in prose.
+  const counts = [...document.querySelectorAll("[data-fault-count]")].map((n) => n.textContent);
+  expect(counts).toEqual(["1", "1"]);
+  expect(screen.queryByText(/advances no priority, its own or one it inherits/)).toBeNull();
+  expect(screen.queryByText(/1 issue · /)).toBeNull();
   // Each list holds its own fault's rows and no other's.
   expect(await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(within(faults).queryByRole("row", { name: "CORE-9 Work CORE-9" })).toBeNull();
@@ -249,7 +246,7 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     name: "Issues in flight under no priority table",
   });
   const parked = await screen.findByRole("table", {
-    name: "Priority issues in backlog or icebox table",
+    name: "Parked priority issues table",
   });
   // The narrowing is the server's: the no-priority list names the statuses work is done in, and
   // the parked list backlog and icebox with the move into them. Neither reads a closed issue.
@@ -523,12 +520,13 @@ test("the page carries no estimate, no forecast, no percentage and no written st
   expect(/estimate|forecast|on track|at risk/i.test(text)).toBe(false);
 });
 
-test("the priorities table counts its rows as priorities, as the agreed page reads", async () => {
+test("the priorities table's line draws its range and no totals", async () => {
   page(FIFTEEN);
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  // dispatch://INFRA-2947/artifact/priorities-round10-png reads "15 of 15 priorities" under the
-  // table: a priority is no issue, and a reader counting the rows is told what they count.
-  expect(screen.getByText("3 of 3 priorities")).toBeDefined();
+  // The heading of each fault and the priorities' own rows carry the counts, so the line under
+  // the table repeats none of them: it holds the range, the page and the page size alone.
+  expect(screen.getByText("Rows 1–3")).toBeDefined();
+  expect(screen.queryByText("3 of 3 priorities")).toBeNull();
   expect(screen.queryByText("3 of 3 issues")).toBeNull();
 });
 
@@ -584,7 +582,10 @@ test("a grouped table counts each group in the plural its rows are called by", a
     await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
   ).toBeDefined();
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  await user.selectOptions(groupBy("In flight under no priority"), "status");
+  // An embedded table's Group by is in its display menu (INFRA-3135's control row).
+  const unplaced = screen.getByRole("region", { name: "In flight under no priority" });
+  await user.click(within(unplaced).getByRole("button", { name: "View" }));
+  await user.click(screen.getByRole("radio", { name: "Status" }));
   expect(
     await screen.findByRole("button", { name: "Collapse In progress, 2 issues" })
   ).toBeDefined();

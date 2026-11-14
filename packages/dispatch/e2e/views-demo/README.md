@@ -17,7 +17,7 @@ data (issue titles, keys, people) never goes into a file here.
 - `web/src/demo/`: the stub.
   - `clock.ts` fixes the page's clock: the page reads the time as the fixtures' read time
     (`manifest.daemon_read_at`) plus the time since it loaded, so every age (Waited, In phase,
-    Closed) and Finished's 28-day window look the same whenever the demo is opened.
+    Closed) and the Closed filter's windows on Done look the same whenever the demo is opened.
     `vite.demo.config.ts` writes that time into the page before any module runs.
   - `install.ts` replaces `fetch` and `WebSocket`.
   - `server.ts` answers every `/api/` and `/auth/` request the page makes. The listing applies
@@ -147,25 +147,33 @@ fixtures' read time (`web/src/demo/clock.ts`), so a run on another machine or an
 the same times. `report-<mode>.json` writes down the Chromium version and every font the browser
 drew the pictures' text in, with its glyph count, so two runs can be compared.
 
-Without `--before` it takes the design's pictures, each named by what it shows:
+Without `--before` it takes the design's pictures, each named by what it shows. At 1440 x 900:
 
-- every built-in view, and All open scrolled to the table's right end;
-- In flight and All open on the Board;
-- Finished with Time per phase in Hours;
-- Save view, the panel and then the saved tab;
-- the Columns menu;
-- the Closed date filter open;
-- the project settings page;
-- the (i) hint open, from its place in the control row;
-- five phone pictures: All open and In flight in the table, the In flight and All open Boards,
-  and Time per phase in Hours;
-- All open, In flight and All open on the Board of the project with no Legion daemon
-  (`--no-daemon-project`, GTM by default);
-- All open with the daemon's read failed (`demo=read-failed`), and with the Legion setting's
-  read failed (`demo=settings-failed`);
-- the whole of `/priorities` (the priorities and the two fault tables) and of the first
-  priority's own page at 1440 wide, and `/priorities` at 390. A whole-page picture draws the
-  banner at the page's foot, under everything the page drew.
+- the four built-in views: `view-open-1440`, `view-waiting-1440`, `view-in-flight-1440` and
+  `view-done-1440`;
+- `done-closed-filter-1440`: Done with one week picked in the Closed column's date-range
+  filter, from the 3rd of November to the 9th, and the filter opened again to show it;
+- `done-time-per-phase-hours-1440`: Done with Time per phase in Hours;
+- `board-in-flight-1440` and `board-open-1440`: those two views on the Board;
+- `save-view-popover-1440` and `save-view-saved-tab-1440`: Open narrowed to the triage issues,
+  the Save view panel with "Triage" typed, and then the saved tab it adds after Done;
+- `columns-menu-legion-columns-1440`: the Columns menu;
+- `view-open-info-hint-open-1440`: the Legion daemon hint open, from its place in the control
+  row;
+- `project-settings-legion-panel-1440`: the project's settings page;
+- `view-open-daemon-read-failed-1440` and `view-open-settings-failed-1440`: Open with the
+  daemon's read failed (`demo=read-failed`) and with the Legion setting's read failed
+  (`demo=settings-failed`);
+- `no-daemon-view-open-1440` and `no-daemon-board-open-1440`: the table and the Board of a
+  project with no Legion daemon (`--no-daemon-project`, GTM by default), which has neither
+  Waiting line nor In flight;
+- `priorities-1440` and `priority-page-1440`: the whole of `/priorities` (the priorities and
+  the two fault tables) and of the first priority's own page.
+
+At 390 x 844: `view-open-390`, `view-in-flight-390`, `board-in-flight-390`, `board-open-390`,
+`done-time-per-phase-hours-390` and `priorities-390`, the last one the whole page.
+
+A whole-page picture draws the banner at the page's foot, under everything the page drew.
 
 `--before` takes the page before the design, on a checkout of its base: the List, the Board, the
 Legion view and the phone List. The base has no priority pages, so `before-priorities-1440` and
@@ -182,8 +190,10 @@ drawn its rows (a table row, a Board card or a Legion view card) or its own elem
 does not draw them in 30 s fails its picture. The design's Issues page is also waited on for its
 view tabs (`[data-view-tab]`), which the page before the design has none of, so the design's
 pictures taken against that page fail at the first one. The run fails if a picture failed, the
-stub left a request unanswered, the page threw, or the phone banner took more than two lines.
-The report in the output lists all of it.
+stub left a request unanswered, the page threw, the phone banner took more than two lines, or a
+check of what the page drew failed: the week the Closed filter writes, the count its Done tab
+reads, the saved tab standing open, or a failure flag left in the address. The report in the
+output lists all of it.
 
 ## Build the single file
 
@@ -208,6 +218,7 @@ The second command opens the file with the network off and checks that:
 - a drag on the Board sets a status;
 - Save view adds a tab, and its delete takes the tab away, also after a reload;
 - the Columns menu shows a column it ticks;
-- the Closed filter's 7 days lists the done issues with Legion work closed in the last 7 days;
+- the Closed filter's 7 days on Done lists the done issues closed in the last 7 days, counted
+  on the Done tab, since no pager draws a total;
 - the priorities page lists every priority the stub answers, and a press on one opens its own
   page with its issue table.

@@ -1,6 +1,6 @@
 // The views demo's clock (packages/dispatch/e2e/views-demo/README.md): the page reads the time
 // as if it were the moment the fixtures were read, plus the time since the page loaded, so every
-// age it draws (Waited, In phase, Closed) and every window it reads (Finished's 28 days) is the
+// age it draws (Waited, In phase, Closed) and every window it reads (Done's Closed presets) is the
 // same whenever the demo is opened. vite.demo.config.ts writes that moment into the page as
 // `window.__DISPATCH_DEMO_CLOCK__` before any module runs; install.ts imports this first, so the
 // app's modules all read the demo's Date. `performance.now()` is left alone: the app reads it only

@@ -320,7 +320,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
         .getByRole("table", { exact: true, name: "Issues in flight under no priority table" })
         .getByRole("row", { name: /Broadcast recipients keep their send order/ }),
       page
-        .getByRole("table", { exact: true, name: "Priority issues in backlog or icebox table" })
+        .getByRole("table", { exact: true, name: "Parked priority issues table" })
         .getByRole("row", { name: /Agents page freshness folds/ }),
     ],
   },

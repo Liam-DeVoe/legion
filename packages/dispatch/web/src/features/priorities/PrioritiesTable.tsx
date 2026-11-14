@@ -35,7 +35,7 @@ const NOUN: PagerNoun = { many: "priorities", one: "priority" };
 /** The table's words for the shared core: its rows carry the issue table's attributes and walk
  *  by its keys, as they always have, and its filters count priorities. */
 const NAMES: DataTableNames = { ...ISSUE_TABLE_NAMES, filterCountNoun: NOUN };
-/** The line under the table, counting priorities. */
+/** The line under the table, with no totals, as under every issue table on these pages. */
 const PAGER: PagerOptions = {
   allRows: ALL_ROWS,
   nouns: {
@@ -45,6 +45,7 @@ const PAGER: PagerOptions = {
   },
   pageSizes: PAGE_SIZES,
   testId: "priorities-table-pager",
+  totals: false,
 };
 /** The layout key of the priorities table: one table, one deployment, one stored layout. */
 const LAYOUT_KEY = "priorities";

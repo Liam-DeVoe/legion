@@ -28,15 +28,17 @@ export type ViewLayout = "table" | "board";
 
 const PANEL_CLASS = `z-50 flex w-72 max-w-[calc(100vw-16px)] flex-col gap-2 rounded-lg border p-3 text-sm font-normal shadow-lg ${card}`;
 
+// On a phone a tab's count stands under its name, so the four built-in tabs keep one row
+// whatever their counts, and a change of view moves no table row.
 const tabClass = (active: boolean) =>
   active
-    ? `inline-flex min-h-11 shrink-0 items-center gap-1 border-b-2 px-1 py-2 text-[13px] whitespace-nowrap md:font-semibold md:min-h-9 ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
-    : `inline-flex min-h-11 shrink-0 items-center gap-1 border-b-2 border-transparent px-1 py-2 text-[13px] whitespace-nowrap md:min-h-9 ${textSecondaryOnCanvas}`;
+    ? `inline-flex min-h-11 shrink-0 flex-col items-center justify-center border-b-2 px-1.5 py-1 text-[13px] leading-tight whitespace-nowrap md:flex-row md:gap-1 md:py-2 md:px-1 md:font-semibold md:min-h-9 ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
+    : `inline-flex min-h-11 shrink-0 flex-col items-center justify-center border-b-2 border-transparent px-1.5 py-1 text-[13px] leading-tight whitespace-nowrap md:flex-row md:gap-1 md:py-2 md:px-1 md:min-h-9 ${textSecondaryOnCanvas}`;
 
 const smallButton = `inline-flex min-h-9 shrink-0 items-center rounded-md border px-1 text-xs md:px-1.5 font-medium whitespace-nowrap md:min-h-8 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas}`;
 
-/** A tab's count: smaller than the shared pill, so seven tabs and a saved one fit one row. */
-const countClass = `rounded-full px-1 py-0.5 text-[11px] font-medium tabular-nums ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
+/** A tab's count: smaller than the shared pill, so the tabs and a saved one fit one row. */
+const countClass = `rounded-full px-1 text-[11px] font-medium tabular-nums md:py-0.5 ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
 
 /** The box the layout control and the Board's toggles are drawn in, and the face of one option
  *  in it, filled while pressed. */
@@ -54,7 +56,7 @@ function ChangedMark(): ReactNode {
   );
 }
 
-/** The daemon's numbers and read state, for the (i) hint. */
+/** The daemon's numbers and read state, which the (i) hint holds. */
 function DaemonHint({
   header,
   pending,
@@ -67,7 +69,7 @@ function DaemonHint({
   const { queue_length, read_at, read_error, read_ok, slot_cap, slots_in_use, trees } = header;
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5" data-legion-header>
-      <dt className={textMutedOnCanvas}>Slots in use</dt>
+      <dt className={textMutedOnCanvas}>Capacity</dt>
       <dd data-legion-slots>
         {slots_in_use} of {slot_cap ?? "no cap"}
       </dd>
@@ -194,7 +196,7 @@ export interface SettingsFailure {
 }
 
 /**
- * The row above the table: a tab for each view with its count (Slots against the cap), the
+ * The row above the table: a tab for each view with its count, the
  * saved views after the built-in ones, and the mark of a changed view on its tab. Under the
  * row, a failed read of the daemon, or of the Legion setting, is an alert with its whole error.
  * The view's own controls (Save view and the (i) hint) are in the control row (`ViewControls`).
@@ -253,7 +255,7 @@ export function IssueViewTabs({
     <>
       <div
         aria-label="Views"
-        className={`flex flex-wrap items-center gap-x-1 border-b md:flex-nowrap md:gap-x-0 md:overflow-x-auto md:[scrollbar-width:thin] ${borderDefault}`}
+        className={`flex flex-wrap items-center border-b md:flex-nowrap md:overflow-x-auto md:[scrollbar-width:thin] ${borderDefault}`}
         data-view-tabs
         ref={listRef}
         role="tablist"
@@ -261,12 +263,7 @@ export function IssueViewTabs({
         {views.map((view) => {
           const on = active.kind === "built-in" && active.id === view.id;
           const count = counts.get(view.id);
-          const shown =
-            count === undefined
-              ? undefined
-              : view.id === "slots" && boardHeader?.slot_cap != null
-                ? `${count}/${boardHeader.slot_cap}`
-                : String(count);
+          const shown = count === undefined ? undefined : String(count);
           return (
             <button
               aria-label={shown === undefined ? view.name : `${view.name} ${shown}`}
@@ -348,9 +345,8 @@ export function IssueViewTabs({
 
 /**
  * The view's own controls in the control row, after the page's others: **Save view**, shown
- * while the view is changed in room the row keeps for it, so its showing moves nothing, and the
- * (i) hint with what the view lists and, in a project with a Legion daemon, the daemon's
- * numbers and read state.
+ * while the view is changed in room the row keeps for it, so its showing moves nothing, and, in
+ * a project with a Legion daemon, the (i) hint with the daemon's numbers and read state.
  */
 export function ViewControls({
   active,
@@ -360,7 +356,6 @@ export function ViewControls({
   hasLegion,
   onSave,
   saved,
-  views,
 }: {
   active: ActiveView;
   boardHeader: LegionBoardHeader | undefined;
@@ -369,11 +364,8 @@ export function ViewControls({
   hasLegion: boolean;
   onSave: (name: string) => void;
   saved: readonly SavedView[];
-  views: readonly BuiltInView[];
 }): ReactNode {
   const [panel, setPanel] = useState<"hint" | "save" | undefined>(undefined);
-  const activeView =
-    active.kind === "built-in" ? views.find((view) => view.id === active.id) : undefined;
   return (
     <>
       <span
@@ -389,23 +381,24 @@ export function ViewControls({
           saved={saved}
         />
       </span>
-      <PanelTrigger
-        align="right"
-        control={CONTROL.viewPanel}
-        label="i"
-        onOpenChange={(open) => setPanel(open ? "hint" : undefined)}
-        open={panel === "hint"}
-        panelClassName={PANEL_CLASS}
-        title="About this view"
-        triggerClassName={`inline-flex size-11 shrink-0 items-center justify-center rounded-full border text-xs font-semibold italic md:size-8 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas}`}
-      >
-        {() => (
-          <div className={`flex flex-col gap-2 text-xs ${textSecondaryOnCanvas}`}>
-            <p>{activeView === undefined ? "A view you saved in this browser" : activeView.hint}</p>
-            {hasLegion ? <DaemonHint header={boardHeader} pending={boardPending} /> : null}
-          </div>
-        )}
-      </PanelTrigger>
+      {hasLegion ? (
+        <PanelTrigger
+          align="right"
+          control={CONTROL.viewPanel}
+          label="i"
+          onOpenChange={(open) => setPanel(open ? "hint" : undefined)}
+          open={panel === "hint"}
+          panelClassName={PANEL_CLASS}
+          title="Legion daemon"
+          triggerClassName={`inline-flex size-11 shrink-0 items-center justify-center rounded-full border text-xs font-semibold italic md:size-8 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas}`}
+        >
+          {() => (
+            <div className={`text-xs ${textSecondaryOnCanvas}`}>
+              <DaemonHint header={boardHeader} pending={boardPending} />
+            </div>
+          )}
+        </PanelTrigger>
+      ) : null}
     </>
   );
 }

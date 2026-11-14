@@ -93,11 +93,6 @@ function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode 
         {item.facts === undefined ? null : (
           <Fact hook="work-time" label="Work time" value={formatWorkTime(item.facts.work_hours)} />
         )}
-        <Fact
-          hook="slot"
-          label="Slot"
-          value={legion.slot === null ? "none" : String(legion.slot)}
-        />
         <Fact hook="roles" label="Roles" value={roles.length === 0 ? "none" : roles.join(", ")} />
       </div>
       {blockedBy.length === 0 ? null : (
@@ -485,19 +480,16 @@ export function IssueBoard({
     const placeRefusal = (): string | undefined => {
       if (beside === undefined || (beside.place === undefined) === (row.place === undefined))
         return undefined;
-      const why = hasLegion ? "Legion orders the waiting line" : "Cards with a Place come first";
-      return row.place === undefined
-        ? `${why}: a card without a Place cannot move among cards with one`
-        : `${why}: a card with a Place cannot move among cards without one`;
+      return hasLegion ? "Legion orders the waiting line." : "Cards with a Place stay first.";
     };
     if (target.stage === "queue") {
       // Within the Queue column a drop writes the rank; from anywhere else it is refused.
       if (row.stage !== "queue") {
-        setNotice("Legion moves cards into Queue itself: a card cannot be dropped there");
+        setNotice("Only Legion moves cards into Queue.");
         return;
       }
       if (!reorders) {
-        setNotice("Legion owns the Queue stage: a card cannot change lanes there");
+        setNotice("Only Legion moves cards within Queue.");
         return;
       }
       const refusal = reorderRefusal ?? placeRefusal();
@@ -516,9 +508,7 @@ export function IssueBoard({
       return;
     }
     if (status === undefined) {
-      setNotice(
-        `Legion owns the ${stageLabel(target.stage)} stage: a card cannot be dropped there`
-      );
+      setNotice(`Only Legion moves cards into ${stageLabel(target.stage)}.`);
       return;
     }
     if (reorders) {

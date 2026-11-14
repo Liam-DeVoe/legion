@@ -272,19 +272,12 @@ export function useIssueTableActions({
     const queued = queuedInOrder(items, keys);
     const outside = selection === undefined ? 0 : keys.length - queued.length;
     if (queued.length && (selection?.offPage === true || outside > 0)) {
-      const moves =
-        queued.length === 1
-          ? "1 issue moves ahead of the other Todo issues labelled legion, in one write."
-          : `${queued.length} issues move ahead of the other Todo issues labelled legion, one write each.`;
+      const moves = `${queued.length} ${queued.length === 1 ? "issue moves" : "issues move"} ahead of the other Todo issues labelled legion`;
       const stays =
-        outside === 0
-          ? ""
-          : outside === 1
-            ? " 1 of the selected issues is not a Todo issue labelled legion and stays where it is."
-            : ` ${outside} of the selected issues are not Todo issues labelled legion and stay where they are.`;
+        outside === 0 ? "" : `; ${outside} ${outside === 1 ? "other stays" : "others stay"}`;
       setConfirming({
         title: "Start these next?",
-        body: `${moves}${stays}`,
+        body: `${moves}${stays}.`,
         confirmLabel: "Start next",
         run: () => runQueued(queued),
       });

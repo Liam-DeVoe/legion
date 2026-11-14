@@ -467,7 +467,7 @@ function visits(seed: Seeded): readonly Visit[] {
         page.locator('section[aria-label="Priorities"]'),
         page.getByRole("table", { name: "Priorities table" }),
         page.locator('section[aria-label="In flight under no priority"]'),
-        page.locator('section[aria-label="Priority work in backlog or icebox"]'),
+        page.locator('section[aria-label="Parked priority work"]'),
       ],
       url: "/priorities",
     },
