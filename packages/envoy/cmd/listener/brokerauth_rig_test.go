@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // brokerRig is a listener's /v1 as a deployment runs it, with every piece of the broker-token
@@ -54,8 +55,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
-	ready, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ready := testwait.Context(t)
 	if err := sessions.WaitForCacheReady(ready); err != nil {
 		t.Fatalf("warm the session cache: %v", err)
 	}
