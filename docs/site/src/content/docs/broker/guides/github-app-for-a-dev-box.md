@@ -104,8 +104,10 @@ sign-in that you leave there. Thus, on the box, delete the key files and delete 
 you complete the step.
 
 Sign in one time with `gcloud auth login`. This command does not change the credentials of the
-box. When the credentials of the box are not your own, `agent-secrets` writes the secret with your
-gcloud login. For more information, refer to
+box. `agent-secrets` writes with the credentials that its environment gives it: first an access
+token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, then the Application Default Credentials, then your gcloud
+login. A box usually has Application Default Credentials of its own. Thus, on the box, give your
+access token to the command, as the `set` command below does. For more information, refer to
 [Before you start](/legion/broker/guides/manage-a-secret/#before-you-start) in "Manage a secret".
 Then build the file and set the secret.
 
@@ -122,7 +124,9 @@ Set the secret from standard input, then delete the two key files once the set s
 put the private key on a command line.
 
 ```sh
-agent-secrets secret set GITHUB_APP_<PERSON> < app-key.json && rm app-key.json '<private key file>.pem'
+CLOUDSDK_AUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)" \
+  agent-secrets secret set GITHUB_APP_<PERSON> < app-key.json \
+  && rm app-key.json '<private key file>.pem'
 ```
 
 `secret set` checks the value before it writes it, as the broker reads it: a JSON object with an
