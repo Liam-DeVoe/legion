@@ -32,6 +32,12 @@ const MinRunningWorkspaceCopyRestoreID int64 = 1 << 62
 // the daemon logs it apart from a save that failed.
 var ErrReleaseBundleSaved = errors.New("an idle release has saved its bundle off the pod this copy was taken off, and that bundle is the pod's last copy")
 
+// ErrNewerCopyStands is PutRunningWorkspaceCopy's refusal of a copy whose take began before the
+// take of the running copy the issue holds. It is a refusal and not a failure: the row stands for
+// a workspace read later than this copy read its own, so the daemon logs it apart from a save
+// that failed.
+var ErrNewerCopyStands = errors.New("the issue's running copy was taken after this copy's take began, and a copy never replaces a newer one")
+
 // releaseBundleSavedOff is the condition, on issue $1 and pod $2, that the issue's release bundle
 // came off that pod. Once an idle release has saved its bundle, that bundle is the pod's last
 // copy: no running copy is taken off that pod afterwards, at a push or for any other reason. The
@@ -75,7 +81,8 @@ const runningCopyReplaced = `restore_id = nextval('workspace_running_copy_restor
 // issue's running copy, the save (PutRunningWorkspaceCopy) and the move of a release bundle
 // (keepReleaseBundleAsRunningCopy): one issue has one row, and the copy the insert carries
 // replaces every column of the work the row held, both its times among them, under
-// runningCopyReplaced.
+// runningCopyReplaced. The save follows it with a condition of its own, that the row's take did
+// not begin after the copy's; the move weighs the two copies before it writes.
 const runningCopyUpsert = `on conflict (issue) do update set source_pod_uid = excluded.source_pod_uid,
 	bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at,
 	written_at = excluded.written_at, head = excluded.head,
@@ -185,6 +192,30 @@ func (s *Store) BeginWorkspaceCopy(ctx context.Context) (WorkspaceCopyBegun, err
 // The daemon's single flight keeps the save from running beside a copy's write in the first
 // place (runningCopies.hold), so a copy that wrote before the save is dropped by it
 // (PutWorkspaceBundle), and one whose write comes after it meets this refusal.
+//
+// A copy never replaces a stored running copy whose take began later: one whose `at` is before
+// the row's is refused with ErrNewerCopyStands and leaves the row as it is. The daemon's single
+// flight writes the cadence's own copies in the order their takes began, so the row such a copy
+// meets is one written at a move — a cancelled release's (CancelIssueRelease) or a confirmed
+// restore's (KeepRestoredWorkspaceBundle, KeepRestoredRunningWorkspaceCopy), each stamped with
+// the move's own time — or a copy off another pod. Stored, the older copy would put back the work
+// of its own earlier read over the work the row holds, and would carry a time from before a push
+// the row's time is after, which the push rule then refuses (runtime.DecideWorkspaceRestore).
+// Both statements carry the condition under the issue's copy lock, and where the release
+// bundle's refusal holds as well, that refusal is the one answered.
+//
+// The rule closes two kinds of order, each of which the store alone would otherwise let through
+// whatever its caller does (TestEveryInterleavingOfTheCopysTimesKeepsBothInvariants). In one, a
+// release's save falls between a copy's take and its write, and the bundle leaves its table
+// before the write: in `take push ask confirm save cancel write` the copy taken before the save
+// would replace the copy the cancel moved, dropping the work done between the take and the save.
+// In the other, a copy is taken after a release's save and written after the cancel moved the
+// bundle: in `save take push ask cancel write confirm` the copy would replace the moved copy
+// with a time from before a push recorded during the release, and the push rule would refuse it
+// to the next pod. The rule also keeps a confirmed restore's copy over a late copy, one read off
+// the pod before the restoring pod and written after the confirmation; that late copy's work is
+// lost to the restoring pod's own copy, which is the late-copy loss the restore accepts
+// (runtime.DecideWorkspaceRestore).
 func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, begun WorkspaceCopyBegun, b runtime.WorkspaceBundle) error {
 	if issue == "" {
 		return errors.New("a running workspace copy needs its issue")
@@ -211,30 +242,41 @@ func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, begun
 		// writes them again. A workspace that did change matches no row here and is written
 		// whole below, at the cost of one indexed read that touched nothing. A copy the release
 		// bundle refuses moves nothing here either, and the write below refuses it by the same
-		// condition.
+		// condition, as it does a copy whose take began before the row's.
 		moved, err := tx.Exec(ctx, `update workspace_running_copies set at = $7, written_at = clock_timestamp()
 			where issue = $1 and source_pod_uid = $2 and head = $3 and size_bytes = $4
-				and tips = $5 and bookmarks = $6 and not `+releaseBundleSavedOff,
+				and tips = $5 and bookmarks = $6 and at <= $7 and not `+releaseBundleSavedOff,
 			issue, b.PodUID, b.Head, b.Size(), tips, bookmarks, begun.at)
 		if err != nil || moved.RowsAffected() > 0 {
 			return err
 		}
 		// The insert is a select so that it can carry the refusal's condition: a statement of
 		// values has no condition of its own, and the conflict's condition guards the update
-		// alone.
+		// alone, which is where the newer row is kept.
 		written, err := tx.Exec(ctx, `insert into workspace_running_copies
 				(issue, source_pod_uid, bundle, size_bytes, at, written_at, head, tips, bookmarks)
 			select $1, $2, $3, $4, $8, clock_timestamp(), $5, $6, $7
 			where not `+releaseBundleSavedOff+`
-			`+runningCopyUpsert,
+			`+runningCopyUpsert+`
+			where workspace_running_copies.at <= excluded.at`,
 			issue, b.PodUID, b.Bundle, b.Size(), b.Head, tips, bookmarks, begun.at)
 		if err != nil {
 			return err
 		}
-		if written.RowsAffected() == 0 {
+		if written.RowsAffected() > 0 {
+			return nil
+		}
+		// Nothing was written, so the release bundle's condition or the newer row's held, and
+		// the bundle's is read again to say which, so that it is the one answered where both
+		// held. The copy is refused either way.
+		var saved bool
+		if err := tx.QueryRow(ctx, `select `+releaseBundleSavedOff, issue, b.PodUID).Scan(&saved); err != nil {
+			return err
+		}
+		if saved {
 			return fmt.Errorf("off pod %s: %w", b.PodUID, ErrReleaseBundleSaved)
 		}
-		return nil
+		return fmt.Errorf("taken at %s: %w", begun.at, ErrNewerCopyStands)
 	})
 	if err != nil {
 		return fmt.Errorf("save the running workspace copy of %s: %w", issue, err)
@@ -418,8 +460,10 @@ const workspaceCopyLock = `select pg_advisory_xact_lock(hashtextextended('worksp
 // over the work it had done since.
 //
 // Each transaction that takes it takes it before it locks any row of either table, so the row
-// locks they then take wait in one order. A delete of a copy writes no time, and takes the rows
-// alone.
+// locks they then take wait in one order. A delete writes no time, so the deletes a write of
+// another copy makes take the rows alone (deleteRunningCopy); the cadence's own delete takes the
+// lock, since it weighs the row's time against its take's and must read and delete under one
+// (DeleteRunningWorkspaceCopy).
 func lockWorkspaceCopies(ctx context.Context, tx pgx.Tx, issue string) error {
 	if _, err := tx.Exec(ctx, workspaceCopyLock, issue); err != nil {
 		return fmt.Errorf("take the workspace copy lock of %s: %w", issue, err)
@@ -514,23 +558,57 @@ func takeCopy(ctx context.Context, tx pgx.Tx, copies copyTable, issue, podUID st
 	return taken, nil
 }
 
-// DeleteRunningWorkspaceCopy drops issue's running copy whatever minute took it. It is the
-// cadence's own delete, of a workspace that bundled to nothing: a copy taken minutes before holds
-// work that has since been pushed, and the next pod must never restore it. The two writes that
-// invalidate what the issue holds drop the copy inside their own transaction, with the release
-// bundle each saves or drops (PutWorkspaceBundle, DeleteWorkspaceBundle). Deleting one the table
-// does not hold is success, so a retried delete finishes.
-func (s *Store) DeleteRunningWorkspaceCopy(ctx context.Context, issue string) error {
-	if err := deleteRunningCopy(ctx, s.pool, issue); err != nil {
+// DeleteRunningWorkspaceCopy drops issue's running copy where its take began at or before begun,
+// the time the take of the deleting copy began (BeginWorkspaceCopy). It is the cadence's own
+// delete, of a workspace that bundled to nothing: a copy taken minutes before holds work that has
+// since been pushed, and the next pod must never restore it. The two writes that invalidate what
+// the issue holds drop the copy inside their own transaction, with the release bundle each saves
+// or drops (PutWorkspaceBundle, DeleteWorkspaceBundle), and those deletes read no time: the
+// bundle they write or drop is the issue's whole answer either way.
+//
+// A row whose take began after this take is left standing and answers ErrNewerCopyStands, which
+// is the rule a save of a copy keeps (PutRunningWorkspaceCopy): a read that found nothing
+// unpushed says what the workspace held as the take began, and nothing of the work a later copy
+// read. The row this delete meets is one written at a move — a cancelled release's
+// (CancelIssueRelease) or a confirmed restore's (KeepRestoredWorkspaceBundle,
+// KeepRestoredRunningWorkspaceCopy) — or a copy off another pod, and each holds unpushed work
+// this delete would drop. The read and the delete are one transaction under the issue's copy
+// lock (lockWorkspaceCopies), so no copy is written between them. Deleting a copy the table does
+// not hold is success, so a retried delete finishes, and a delete handed no take's begin is
+// refused: a delete the store cannot order is one it cannot keep this rule for.
+func (s *Store) DeleteRunningWorkspaceCopy(ctx context.Context, issue string, begun WorkspaceCopyBegun) error {
+	if begun.at.IsZero() {
+		return fmt.Errorf("the delete of the running workspace copy of %s needs the store's time its take began (BeginWorkspaceCopy)", issue)
+	}
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
+			return err
+		}
+		dropped, err := tx.Exec(ctx, `delete from workspace_running_copies where issue = $1 and at <= $2`, issue, begun.at)
+		if err != nil || dropped.RowsAffected() > 0 {
+			return err
+		}
+		var held bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from workspace_running_copies where issue = $1)`,
+			issue).Scan(&held); err != nil {
+			return err
+		}
+		if held {
+			return fmt.Errorf("taken at %s: %w", begun.at, ErrNewerCopyStands)
+		}
+		return nil
+	})
+	if err != nil {
 		return fmt.Errorf("delete the running workspace copy of %s: %w", issue, err)
 	}
 	return nil
 }
 
-// deleteRunningCopy drops issue's running copy whatever minute took it, through db: the pool for
-// the cadence's own delete (DeleteRunningWorkspaceCopy), and the transaction of each write that
-// drops the copy with what it changes (PutWorkspaceBundle, DeleteWorkspaceBundle). Deleting one
-// the table does not hold is success.
+// deleteRunningCopy drops issue's running copy whatever minute took it, through db: the
+// transaction of each write that drops the copy with what it changes (PutWorkspaceBundle,
+// DeleteWorkspaceBundle), each of which leaves the issue an answer of its own and so reads no
+// time. The cadence's own delete reads one (DeleteRunningWorkspaceCopy). Deleting one the table
+// does not hold is success.
 func deleteRunningCopy(ctx context.Context, db execer, issue string) error {
 	_, err := db.Exec(ctx, `delete from workspace_running_copies where issue = $1`, issue)
 	return err
@@ -551,8 +629,8 @@ func deleteRunningCopy(ctx context.Context, db execer, issue string) error {
 // rule, runtime.DecideWorkspaceRestore), and its new id and clear attempt make it offered to the
 // issue's next pod as any copy taken off a running pod is. The pod's own copies replace it as they
 // are taken (PutRunningWorkspaceCopy), an idle release of that pod drops it in the save's own
-// transaction (PutWorkspaceBundle), and a workspace that bundles to nothing drops it
-// (DeleteRunningWorkspaceCopy).
+// transaction (PutWorkspaceBundle), and a copy of that pod that finds nothing unpushed drops it
+// where its own take began after the confirmation (DeleteRunningWorkspaceCopy).
 //
 // Both of the kept copy's times, when its take began and when it was written, are the store's
 // clock read once under that lock rather than the copy's own, for the reason a kept release

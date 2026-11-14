@@ -5001,7 +5001,7 @@ the daemon hands each copy to a goroutine of its own, and the turn's end, the ne
 The copy is asked of the first live role of the issue that has a running process, through the same `BundleWorkspace` call an idle release's save makes and under the same 40 MiB bound ([Idle release](#idle-release)).
 Only a shim can build it, in the workspace its own role already works in.
 The daemon stores it in its own database, in the `workspace_running_copies` table, one row per issue, and never in the `workspace_bundles` row an idle release writes.
-A workspace that holds nothing unpushed drops the issue's running copy instead, so no pod restores work that has since been pushed.
+A workspace that holds nothing unpushed drops the issue's running copy instead, so no pod restores work that has since been pushed, unless that copy's own take began after the drop's, when the row holds work the drop never read and stands.
 A copy that is not taken or not stored holds nothing back:
 the daemon logs `running copy: no copy of the issue workspace was stored` with the reason by name
 — `claims_unread`, `no_live_role`, `clock_unread`, `bundler_failed`, `budget_spent`, `bundle_too_large`, `save_failed`, `drop_failed` or `release_bundle_unread` —
@@ -5015,6 +5015,7 @@ A push the daemon records in that moment, such as GitHub's "Update branch", a pe
 The daemon reads the pod the role's process runs in before it asks the role, and asks no role of a pod whose release has saved its bundle; the store refuses the write of a copy off that pod as well.
 It logs the same `running copy: no copy of the issue workspace was stored` line at Info with the reason `release_bundle_saved`, which is no fault and is not one of the reasons above.
 Stored, such a copy would be the later of the two copies by the clock, the next pod would be sent it in the bundle's place, and the bundle's row would then hold the issue's pod under `bundle_unrestored` until the issue's work is over.
+A copy whose take began before the take of the issue's stored running copy is not stored either, and a workspace that bundled to nothing drops no such copy; each logs the same line at Info with the reason `newer_copy_stands`, the drop with `bytes` 0, which is no fault and is not one of the reasons above: a copy never replaces a stored running copy whose take began later, nor drops one ([The times the restore compares](#the-times-the-restore-compares)).
 
 A copy runs the shim's own `jj` in the workspace a role is working in, and two `jj` commands at once in one workspace can leave a divergent change there, which a role then has to clean up in its own turn.
 That race is not new — another role's `jj` makes it today — and the copy raises how often the workspace is inside a `jj` command of somebody else's.
@@ -5033,6 +5034,7 @@ A tie goes to the release bundle, which was taken while the roles were idle.
 The bytes of a closed copy stay in the database for an operator.
 
 Every time the restore compares is the database's own clock, so no skew between a node, the Kubernetes API server and the database can turn its choice.
+[The times the restore compares](#the-times-the-restore-compares) names each of them in one table, with the clock and the statement that set it and the rule that reads it.
 A copy's time, the `at` of its row, is the database's clock when its take began, which the daemon reads before it asks the shim to read the workspace: the shim's own reading of when it took the copy is not kept.
 It is not the time the database wrote the copy, because the write lands seconds later, once the bundle is built and carried, and a copy read before a push and written just after the push was recorded would then carry a time after the push and be sent over the pushed commits.
 A copy whose take began before the push is older than the push however late it is written.
@@ -5055,6 +5057,7 @@ A copy written after the pod first asked is a late copy, such as the last copy o
 The new pod is sent nothing of a late copy, on that ask or any later one, and nothing is recorded on the copy: the pod has been working since its first ask, and the copy would `jj edit` its workspace back over that work.
 The copy keeps its one attempt, and the next pod of the issue, whose first ask comes after the copy was written, is sent it.
 The late copy's work reaches that pod only while the working pod takes no copy of its own: the working pod's next copy replaces the late one, and a copy of the working pod that finds nothing unpushed drops it.
+The copy a confirmed restore keeps is the working pod's own copy too, taken at the confirmation, so a late copy written after the confirmation is not stored.
 That loss needs a copy's write stalled through a whole pod start, and is accepted.
 The daemon logs, at Info, a line that begins `launcher bundle: the saved workspace copy was written after this pod first asked for a restore` with the issue, the pod, the copy, `firstAsked` and `written`, both by the database's clock.
 A copy is written a moment after the shim reads the workspace, and a push the daemon records while a copy is being read marks that copy overtaken, so it is not stored and the copy the push asks for is taken behind it.
@@ -5124,6 +5127,25 @@ Both copies of an issue go when the issue is done or its tree closes, and both s
 `karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation, and every Legion pod carries it whatever its reservation.
 Karpenter therefore consolidates and drifts no node a Legion pod runs on, as before this release.
 So an AWS deployment gains the copy and the uncharged resume from this change, and no repacking of its pods.
+
+#### The times the restore compares
+
+Every time below is the database's own clock, and three rules of the restore read them.
+The newer-copy choice offers the newer of an issue's two copies by their `at` and closes the older unsent, a tie going to the release bundle.
+The late-copy rule sends the offered copy only to a pod that first asked at or after the copy's `written_at`, and leaves a copy written later for the next pod.
+The push rule, the time rule above, refuses a running copy whose `at` is before the newest `pushed_at`, and never refuses a release bundle.
+
+| The time | The clock and the statement that set it | The rule that reads it |
+| :--- | :--- | :--- |
+| A copy's take: the running copy's `at` | `clock_timestamp()`, read by `BeginWorkspaceCopy` once the copy holds the issue's one place in flight and before the shim reads the workspace, and stored by the copy's write | The newer-copy choice, and the push rule |
+| A copy's write: the running copy's `written_at` | `clock_timestamp()` in the transaction of `PutRunningWorkspaceCopy`, under the issue's copy lock | The late-copy rule |
+| A push: `pushed_at` in `issue_pushes` | `statement_timestamp()` of the statement that reads the push's heads, in the push's own transaction (`RecordIssuePush`); it only ever moves later | The push rule |
+| A pod's first ask: `first_asked_at` in `workspace_restore_asks` | `clock_timestamp()` in the transaction of that pod's first `TakeWorkspaceCopyForRestore`, under the issue's copy lock; a later ask of the same pod leaves it as it is | The late-copy rule |
+| A restore's confirmation: the kept copy's `at` and `written_at` | One `clock_timestamp()` for both, in the transaction of `KeepRestoredRunningWorkspaceCopy` or `KeepRestoredWorkspaceBundle`, under the issue's copy lock | The newer-copy choice, which keeps a restored release bundle unless the running copy is newer; the push rule, under which no push recorded before the confirmation refuses the kept copy; and the late-copy rule, which sends the kept copy to the next pod, whose first ask comes after it |
+| A release's save: the bundle's `at` and `written_at` in `workspace_bundles` | `at` is `clock_timestamp()` read by `BeginWorkspaceCopy` as the save's take begins; `written_at` is `clock_timestamp()` in the transaction of `PutWorkspaceBundle`, under the issue's copy lock | The newer-copy choice and the late-copy rule; the push rule never reads a release bundle |
+| A release's cancel: the moved copy's `at` and `written_at` | One `clock_timestamp()` for both, in the transaction of `CancelIssueRelease`, under the issue's copy lock | The newer-copy choice, which moves the bundle unless the running copy is newer; the push rule, under which a push recorded during the release refuses no moved copy and a push recorded after the cancel does; and the late-copy rule |
+
+The store orders the writes of running copies by their take times, whatever its caller does: a copy never replaces a stored running copy whose take began later, and a copy that bundled to nothing drops no such copy, so neither the copy a cancel moved nor the copy a confirmation kept is replaced or dropped by a copy whose take began before that move.
 
 #### Rolling back the running copy
 

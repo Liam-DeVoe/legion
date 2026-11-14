@@ -59,7 +59,8 @@ const (
 	// had; the issue is tried again at the next period. A push's copy and an owed copy of an
 	// issue with no live role write it at Debug instead (copyWorkspaceAtPush, takeRunningCopy),
 	// and a copy off a pod an idle release has saved its bundle off writes it at Info, since
-	// nothing failed (runningCopyReleaseBundled).
+	// nothing failed (runningCopyReleaseBundled), as does a copy the store refuses because the
+	// issue's running copy was taken after it (runningCopyNewerStands).
 	runningCopyUnsavedLine = "running copy: no copy of the issue workspace was stored"
 	// runningCopyOvertakenLine is a copy that was being built when the daemon recorded a push of
 	// the issue's branch, at Info. It is not stored: it may have read the workspace before the
@@ -108,6 +109,15 @@ const (
 	// runningCopyBundleUnread: the daemon could not read whether the issue's release bundle came
 	// off the pod the copy would be taken off, so it asked no shim of that pod.
 	runningCopyBundleUnread = "release_bundle_unread"
+	// runningCopyNewerStands: the issue's running copy was taken after this copy's take began —
+	// a cancelled release or a confirmed restore wrote it at that move, or a copy of another pod
+	// came first — and a copy never replaces a newer one, nor drops one
+	// (store.ErrNewerCopyStands, store.Store.PutRunningWorkspaceCopy,
+	// store.Store.DeleteRunningWorkspaceCopy). A workspace that bundled to nothing writes it with
+	// `bytes` 0: it says what the workspace held as its take began, and the row holds work read
+	// after that. It is written at Info: it is no fault, and it is not one of the reasons above
+	// that a deployment counts.
+	runningCopyNewerStands = "newer_copy_stands"
 )
 
 // runningCopies is what the cadence holds in memory: per issue, whether a copy of that issue is
@@ -546,6 +556,11 @@ func (w *workflowRuntime) startOwedCopy(issue string) {
 // the overtaken mark above is set only once the push's transaction has committed, so a copy that
 // checks the mark just before it and writes just after the push's record is stored all the same.
 // A clock the daemon cannot read is a copy not taken, logged under its reason as every other.
+// That time is handed to the drop of a workspace that bundled to nothing as well
+// (store.Store.DeleteRunningWorkspaceCopy), which drops no copy taken after it: the read says
+// what the workspace held as the take began, and a row written since — a cancelled release's
+// move, a confirmed restore's keep — holds work read after that. Such a drop is logged at Info
+// under runningCopyNewerStands, and the copy it left stands for the next pod.
 //
 // A copy off a pod an idle release has saved its bundle off is refused, before the issue's place
 // is taken and the shim is asked, and again by the store's write: once an idle release has saved
@@ -640,7 +655,13 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 		w.log.Warn(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyTooLarge,
 			"bytes", size, "max", runtime.MaxWorkspaceBundleBytes, "took", took())
 	case size == 0:
-		if err := w.copyStore.DeleteRunningWorkspaceCopy(ctx, issue); err != nil {
+		err := w.copyStore.DeleteRunningWorkspaceCopy(ctx, issue, begun)
+		if errors.Is(err, store.ErrNewerCopyStands) {
+			w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyNewerStands,
+				"pod", bundle.PodUID, "bytes", 0, "taken", begun.At(), "took", took())
+			return
+		}
+		if err != nil {
 			unsaved("role", role, "reason", runningCopyDropFailed, "took", took(), "error", err)
 			return
 		}
@@ -652,6 +673,11 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 		if errors.Is(err, store.ErrReleaseBundleSaved) {
 			w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyReleaseBundled,
 				"pod", bundle.PodUID, "bytes", size, "took", took())
+			return
+		}
+		if errors.Is(err, store.ErrNewerCopyStands) {
+			w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyNewerStands,
+				"pod", bundle.PodUID, "bytes", size, "taken", begun.At(), "took", took())
 			return
 		}
 		if err != nil {

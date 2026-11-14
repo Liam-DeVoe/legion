@@ -37,7 +37,7 @@ import (
 // replaces the released one first asks after the save and is sent the bundle.
 //
 // The issue's running copy is dropped in the save's own transaction, whatever minute took it
-// (DeleteRunningWorkspaceCopy). This bundle is the newer copy of the same workspace — it is taken
+// (deleteRunningCopy). This bundle is the newer copy of the same workspace — it is taken
 // off the disk that copy came off, while the roles are idle and just before the release stops
 // them — so from this moment the running copy is stale, and leaving it would mean a pod after the
 // next one being sent work older than the bundle the next one restored. The two are one write
@@ -138,10 +138,10 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 // whose workspace already holds it (the take's source rule, runtime.DecideWorkspaceRestore), and
 // is offered to the issue's next pod. It holds no pod, as no running copy does, and it goes the
 // way every running copy goes: the pod's own copies replace it as they are taken, an idle release
-// of that pod drops it in the save's own transaction (PutWorkspaceBundle), and a workspace that
-// bundles to nothing drops it (DeleteRunningWorkspaceCopy). The release guard is not touched: the
-// bundle's row is gone, so no copy is refused for having come off the pod it was saved off
-// (releaseBundleSavedOff).
+// of that pod drops it in the save's own transaction (PutWorkspaceBundle), and a copy of that pod
+// that finds nothing unpushed drops it where its own take began after the confirmation
+// (DeleteRunningWorkspaceCopy). The release guard is not touched: the bundle's row is gone, so no
+// copy is refused for having come off the pod it was saved off (releaseBundleSavedOff).
 //
 // Both of the kept copy's times, when its take began and when it was written, are the store's
 // clock read once under the issue's copy lock, which the confirming transaction takes first

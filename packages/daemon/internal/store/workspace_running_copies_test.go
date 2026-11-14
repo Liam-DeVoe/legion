@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -257,14 +258,15 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 		t.Fatalf("the pod after pod-2 was answered %v of %q under %d (%v), want the kept copy sent under %d",
 			restore.Running.Take, restore.Running.Bundle.Bundle, restore.Running.Bundle.Release, err, kept.restoreID)
 	}
-	// The cadence's own delete, of a workspace that bundled to nothing, drops a kept copy as it
-	// drops any other, and a delete of an issue holding nothing finishes.
+	// The cadence's own delete, of a workspace that bundled to nothing, drops a kept copy whose
+	// take began before its own as it drops any other, and a delete of an issue holding nothing
+	// finishes.
 	for _, issue := range []string{"INFRA-1117", "INFRA-2760"} {
-		if err := s.DeleteRunningWorkspaceCopy(ctx, issue); err != nil {
+		if err := s.DeleteRunningWorkspaceCopy(ctx, issue, copyBegun(t, s)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.DeleteRunningWorkspaceCopy(ctx, "INFRA-2760"); err != nil {
+	if err := s.DeleteRunningWorkspaceCopy(ctx, "INFRA-2760", copyBegun(t, s)); err != nil {
 		t.Fatalf("a repeated delete: %v", err)
 	}
 	if rows := runningCopyRows(t, s); rows != 0 {
@@ -295,6 +297,57 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 	}
 	if rows := runningCopyRows(t, s); rows != 0 {
 		t.Fatalf("the refused copies left %d rows, want none", rows)
+	}
+}
+
+// The cadence's drop of a workspace that bundled to nothing drops no copy taken after its own
+// take began. The drop says what the workspace held as the take began and nothing of what was
+// read after it: here a cancelled release moves its bundle into the issue's running copy while
+// the empty copy is being built, so the row the drop meets holds unpushed work read after that
+// take, off the pod whose roles the cancel resumed. Dropped, that work would be gone from
+// everywhere but the pod's own disk, and an eviction before the resumed roles end a turn would
+// lose it. The next copy that finds nothing unpushed, its take begun after the move, drops it as
+// the cadence's drop always did: by then the read does cover the moved work.
+func TestAnEmptyCopyDropsNoRunningCopyTakenAfterItsTakeBegan(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	const issue = "INFRA-1117"
+	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cancelled release saved"), Head: "c1",
+		Tips: []string{"c1"}, PodUID: releasedPodUID}
+	if err := s.PutWorkspaceBundle(ctx, issue, markInterleavingRelease(t, s, issue), copyBegun(t, s), saved); err != nil {
+		t.Fatal(err)
+	}
+	// The empty copy's take begins while the release stands, and the cancel moves the bundle into
+	// the running copy, stamped at the cancel, before that copy's drop reaches the store.
+	begun := copyBegun(t, s)
+	if _, _, err := s.CancelIssueRelease(ctx, "legion", issue, resumeRow, record.OutOfWorkflow); err != nil {
+		t.Fatal(err)
+	}
+	moved := storedRunningCopy(t, s, issue)
+	if !moved.at.After(begun.At()) {
+		t.Fatalf("the cancel moved the bundle as a copy taken at %s, want it after the empty copy's take at %s",
+			moved.at, begun.At())
+	}
+
+	if err := s.DeleteRunningWorkspaceCopy(ctx, issue, begun); !errors.Is(err, ErrNewerCopyStands) {
+		t.Fatalf("the drop of the empty copy was answered %v, want %v", err, ErrNewerCopyStands)
+	}
+	if row := storedRunningCopy(t, s, issue); !bytes.Equal(row.bundle, saved.Bundle) || !row.at.Equal(moved.at) ||
+		row.restoreID != moved.restoreID {
+		t.Fatalf("the moved copy reads %+v, want %q left as the cancel wrote it at %s under %d",
+			row, saved.Bundle, moved.at, moved.restoreID)
+	}
+
+	// The next copy of that pod finds nothing unpushed, and its take began after the move.
+	if err := s.DeleteRunningWorkspaceCopy(ctx, issue, copyBegun(t, s)); err != nil {
+		t.Fatal(err)
+	}
+	if rows := runningCopyRows(t, s); rows != 0 {
+		t.Fatalf("the table holds %d rows after the drop, want none", rows)
+	}
+	// A drop handed no take's begin cannot be ordered against the row, and is refused.
+	if err := s.DeleteRunningWorkspaceCopy(ctx, issue, WorkspaceCopyBegun{}); err == nil {
+		t.Fatal("a drop with no time its take began was accepted")
 	}
 }
 
