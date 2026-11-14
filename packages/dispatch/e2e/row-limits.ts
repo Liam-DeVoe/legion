@@ -1179,8 +1179,7 @@ function unstatedRefusal(
         : `; it waits under the \`${limit.bound}\` bound of ${bounds[limit.bound]} ms, and ` +
           `\`rowLimit("${limit.bound}")\` is ${rowLimit(limit.bound)} ms`;
     return (
-      `${at} waits for ${waits} and states no limit, so ${clock}${reads}: ` +
-      waitingRemedy(limit)
+      `${at} waits for ${waits} and states no limit, so ${clock}${reads}: ` + waitingRemedy(limit)
     );
   }
   let widest = fileLimits[0];
