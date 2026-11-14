@@ -49,14 +49,7 @@ const view: DeliveryLiveView = {
   query: "repo=acme%2Fwidgets",
   window: { preset: 28 },
 };
-/** Each test starts a Bun process and loads the probe's imports; the box these run on is shared.
- *
- *  This limit is also the discriminator of the rotation row ("after a rotation close the probe
- *  reconnects at once and resumes with the change and revisions it holds"), whose margin is this
- *  limit divided by `NO_TIMER_SPREAD_MS`: 30 s of a day-long spread is one draw in 2,880. Raising
- *  it to 90 s for consistency with another file's limit would make that one draw in 960, three
- *  times the false passes, with nothing here red. Raise `NO_TIMER_SPREAD_MS` with it, or leave
- *  both. */
+/** Each test starts a Bun process and loads the probe's imports; the box these run on is shared. */
 const PROCESS_TEST_MS = 30_000;
 
 interface Script {
@@ -416,16 +409,17 @@ test(
   PROCESS_TEST_MS
 );
 
-// A spread far above this row's own limit (`PROCESS_TEST_MS`), so a probe that reconnected on a
-// timer could reach its second subscribe inside the row on about one draw in 2,880 and nothing
-// here reads a clock. The row's own limit is the discriminator.
-const NO_TIMER_SPREAD_MS = 24 * 3_600_000;
-
 // Once the first connection has opened, Dispatch's rotation (4001) is the one close the probe
 // answers by opening again at once: its restart (1012) waits within the first attempt's spread,
 // and any other close waits on the backoff. Two closes fall outside that: the close of a first
 // connection that never opened, which ends the watch with no wait, and the probe's own
 // replacement of a silent socket, which opens again at once.
+//
+// What tells a rotation answered at once from one answered on the reconnect timer is the close
+// line's `wait_ms`: the probe's timer path (`lost` in `delivery-live-probe.ts`) writes the wait it
+// computed, and the rotation branch writes null, so a probe that took the timer for a rotation
+// fails this row's line assertion whatever wait it drew. The row pins no spread, because the
+// probe it passes arms no reconnect timer.
 for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
   test(
     `after a ${what} close the probe reconnects at once and resumes with the change and revisions it holds`,
@@ -438,11 +432,7 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
           socket.close(code, reason);
         },
       });
-      const run = runProbe([
-        ...args(dispatch),
-        "--reconnect-spread-ms",
-        String(NO_TIMER_SPREAD_MS),
-      ]);
+      const run = runProbe(args(dispatch));
       await run.until(() => dispatch.received.length === 2);
       run.kill("SIGINT");
       expect(await run.exited()).toBe(0);
@@ -470,7 +460,7 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
 }
 
 test(
-  "after a restart close the probe reconnects and resumes with the change and revisions it holds",
+  "after a restart close the probe reconnects within the spread and resumes with the change and revisions it holds",
   async () => {
     const dispatch = probeDispatch({
       onSubscribe(socket, sub, count) {
@@ -481,11 +471,12 @@ test(
       },
     });
     // A 50 ms spread, pinned by the option, so the wait is the probe's own draw from [0, 50) ms
-    // and this row stays quick: bounded, not deterministic. The product's backoff shape is
-    // proven by its own unit row
-    // ("the first reconnect is spread over [0, 2 s); later ones back off within [d/2, d), capped
-    // at 30 s", web/src/api/live-socket.test.ts:612); what this row proves is the resume's
-    // content and order.
+    // and this row stays quick. The close line reports the wait the probe computed, so the row
+    // holds that wait inside the spread without reading a clock: a probe that answered the restart
+    // at once, which writes null, or on a later attempt's backoff, at least a second, fails it on
+    // every run. The backoff's own shape is held by its unit row ("the first reconnect is spread
+    // over [0, 2 s); later ones back off within [d/2, d), capped at 30 s",
+    // web/src/api/live-socket.test.ts), and the resume's content and order by the assertions here.
     const run = runProbe([...args(dispatch), "--reconnect-spread-ms", "50"]);
     await run.until(() => dispatch.received.length === 2);
     run.kill("SIGINT");
@@ -502,19 +493,20 @@ test(
         return line.type;
       })
     ).toEqual(["open null", "snapshot", "delta", "close 1012", `open ${change.seq}`]);
+    expect(closes(run.lines)[0].wait_ms).toBeWithin(0, 50);
   },
   PROCESS_TEST_MS
 );
 
-// The two steps that decide a reconnect's wait, neither of which a row above observes: the
+// The two steps that decide a reconnect's wait, which this row holds on every run: the
 // `--reconnect-spread-ms` the probe parsed reaching `reconnectWaitMs`, and a restart close setting
 // the attempt counter back to 0. A spread of 0 makes the first attempt's wait exactly 0 ms, so a
 // close line here reports 0 only while both hold. A probe that handed `reconnectWaitMs` the page's
-// own `RECONNECT_SPREAD_MS` instead draws from [0, 2 s) - the draw the rotation row's day-long
-// spread counts on - and a probe that left the counter alone waits the attempt-1 backoff, at least
-// a second; neither draws 0, which is why 0 is the value that tells the three apart. It takes two
-// closes: the first lands on attempt 0 whatever the restart does with the counter, so the second
-// is the counter's own, and the server sends no frame, since a frame resets that counter too.
+// own `RECONNECT_SPREAD_MS` instead draws from [0, 2 s), and a probe that left the counter alone
+// waits the attempt-1 backoff, at least a second; neither draws 0, which is why 0 is the value that
+// tells the three apart. It takes two closes: the first lands on attempt 0 whatever the restart
+// does with the counter, so the second is the counter's own, and the server sends no frame, since
+// a frame resets that counter too.
 test(
   "each close line reports the wait, which --reconnect-spread-ms 0 makes zero after a restart",
   async () => {
@@ -609,12 +601,9 @@ test(
   async () => {
     const dispatch = probeDispatch({ onSubscribe() {} });
     // A wait of more than 2^31-1 ms does not fit a timer: the runtime clamps it to 1 ms, so a
-    // spread whose draws pass that bound makes the probe reopen at once — the opposite of what
-    // the option says, and the opposite of what a row that pins a spread far above its own limit
-    // reads a reopen on a timer as. Measured with the rotation row above: at a spread of 1e12 ms
-    // a probe whose at-once reopen was removed passes that row 3 of 3 in about 1.5 s each, where
-    // at the row's own day it fails at 30 s. The probe refuses such a value rather than honouring
-    // it silently as its opposite.
+    // spread whose draws pass that bound makes the probe reopen at once, the opposite of what the
+    // option says. The probe refuses such a value rather than honouring it silently as its
+    // opposite.
     const run = runProbe([
       ...args(dispatch, TOKEN, "0.01"),
       "--reconnect-spread-ms",
