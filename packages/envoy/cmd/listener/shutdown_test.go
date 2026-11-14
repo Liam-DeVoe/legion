@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // errorLine matches an ERROR record in each format the listener's process writes: its own JSON
@@ -51,7 +53,8 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 		postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))
 		postListener(t, listener.port, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"`+role+`"}`)
 		holder := testnats.Connect(t, uri)
-		if _, err := holder.Subscribe(contracts.AgentSubject(sessionID), func(*natsgo.Msg) {}); err != nil {
+		var forwarded atomic.Uint64
+		if _, err := holder.Subscribe(contracts.AgentSubject(sessionID), func(*natsgo.Msg) { forwarded.Add(1) }); err != nil {
 			t.Fatalf("run %d: holder subscribe: %v", run, err)
 		}
 		if err := holder.Flush(); err != nil {
@@ -62,6 +65,9 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 		go func() {
 			defer close(trafficDone)
 			for index := 0; ; index++ {
+				// The cadence of a client's steady role traffic, which this stand-in sender copies:
+				// it keeps a forward in flight and more queued behind it at every moment of the
+				// shutdown, and bounds nothing.
 				select {
 				case <-stopTraffic:
 					return
@@ -81,7 +87,11 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 				_ = publisher.Publish(item.Topic, data)
 			}
 		}()
-		time.Sleep(time.Second)
+		// The signal arrives while traffic is flowing through the listener, which the holder's
+		// own count of the forwards it took says, rather than after a span of the machine's clock.
+		testwait.Eventually(t, "the role holder to take forwards through the listener before the signal", func() bool {
+			return forwarded.Load() >= 3
+		})
 
 		listener.Terminate(t)
 		listener.WaitExit(t, "SIGTERM")
@@ -349,11 +359,11 @@ func postListener(t *testing.T, port int, path, body string) {
 // process without an ordered shutdown.
 //
 // A listener that exits during its start-up fails this wait at once, naming its exit status and
-// its last output line, rather than waiting the whole 30 s out: a process that has exited answers
-// nothing, so every further poll reads the same closed port, and the health timeout the wait
-// would report names neither the exit nor its reason. Either failure also names the last /healthz
-// answer, so a listener still binding ("starting") reads differently from one whose dependency
-// is down ("unhealthy", with the error that endpoint reports).
+// its last output line, rather than being waited for until the test binary's own deadline: a
+// process that has exited answers nothing, so every further poll reads the same closed port, and
+// the wait's own give-up names neither the exit nor its reason. Either failure also names the
+// last /healthz answer, so a listener still binding ("starting") reads differently from one
+// whose dependency is down ("unhealthy", with the error that endpoint reports).
 func (p *listenerProcess) waitHealthy(t *testing.T) {
 	t.Helper()
 	if addr, own := listeningAddr(t, p.Process), "127.0.0.1:"+strconv.Itoa(p.port); addr != own {
@@ -362,12 +372,10 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
-	deadline := time.Now().Add(30 * time.Second)
 	answer := "none: no request to /healthz was answered"
-	// failIfExited ends the wait the moment the process is gone. It is read inside the loop and
-	// once more after it, because a listener that dies in the last sleep, or between the last poll
-	// and the deadline, would otherwise fall out below and be reported as still running, which is
-	// the misreading this helper exists to remove.
+	// failIfExited ends the wait the moment the process is gone, which is the misreading this
+	// helper exists to remove: without it a listener that died would be waited for until the
+	// test binary's deadline and then reported as still running.
 	failIfExited := func() {
 		t.Helper()
 		select {
@@ -379,7 +387,7 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 		default:
 		}
 	}
-	for time.Now().Before(deadline) {
+	testwait.Until(t, "the listener to answer /healthz healthy", func() (string, bool) {
 		response, err := client.Get(url)
 		if err == nil {
 			var health struct {
@@ -389,7 +397,7 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 			decodeErr := json.NewDecoder(response.Body).Decode(&health)
 			_ = response.Body.Close()
 			if decodeErr == nil && health.Status == "healthy" {
-				return
+				return answer, true
 			}
 			if decodeErr == nil {
 				answer = fmt.Sprintf("%d %q", response.StatusCode, health.Status)
@@ -401,11 +409,8 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 			}
 		}
 		failIfExited()
-		time.Sleep(200 * time.Millisecond)
-	}
-	failIfExited()
-	_ = p.Cmd.Process.Kill()
-	t.Fatalf("the listener never became healthy within 30s; it was still running, and the last /healthz answer was %s:\n%s", answer, p.Output.String())
+		return fmt.Sprintf("%s; the listener's last line was %q", answer, lastOutputLine(p.Output.String())), false
+	})
 }
 
 // lastOutputLine is the final non-empty line of a process's output, the one a start-up that ended

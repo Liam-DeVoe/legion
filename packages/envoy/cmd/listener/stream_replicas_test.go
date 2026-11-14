@@ -7,6 +7,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
@@ -90,7 +91,7 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 	// a moment after the stream is created that member can be one whose applied metadata does
 	// not hold the new stream's assignment yet, which is answered "stream not found". The start
 	// waits that out, so the test does; with nothing lagging it binds on the first attempt.
-	if _, err := bindListenerDurable(t.Context(), client, durable, func(*natsgo.Msg) {},
+	if _, err := bindListenerDurable(t.Context(), clock.Real(), client, durable, func(*natsgo.Msg) {},
 		listenerRigLogger(t, "durable bind"), durableBindInterval, durableBindDeadline); err != nil {
 		t.Fatalf("create and bind the listener's durable: %v", err)
 	}

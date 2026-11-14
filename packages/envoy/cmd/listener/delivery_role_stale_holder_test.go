@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // storeSessionHeartbeat registers sessionID with the heartbeat the test chose, by writing its
@@ -59,17 +60,7 @@ func newStaleHolderRig(t *testing.T, role, holder string, since time.Duration) s
 	if _, err := harness.registry.SetRole(holder, "test-machine", role, false); err != nil {
 		t.Fatalf("claim the role: %v", err)
 	}
-	forwards := make(chan *natsgo.Msg, 4)
-	received, err := harness.client.Conn.Subscribe(contracts.AgentSubject(holder), func(message *natsgo.Msg) {
-		select {
-		case forwards <- message:
-		default:
-		}
-	})
-	if err != nil {
-		t.Fatalf("subscribe the holder's subject: %v", err)
-	}
-	t.Cleanup(func() { _ = received.Unsubscribe() })
+	forwards := captureAgentSubject(t, harness.client, holder)
 	exceptions, err := harness.client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + role)
 	if err != nil {
 		t.Fatalf("subscribe to the exception lane: %v", err)
@@ -81,6 +72,33 @@ func newStaleHolderRig(t *testing.T, role, holder string, since time.Duration) s
 	return staleHolderRig{harness: harness, forwards: forwards, exceptions: exceptions}
 }
 
+// captureAgentSubject puts every message the holder's agent subject carries on a channel, as the
+// session's own process reads them. A send the channel has no room for is dropped rather than
+// held, because the send is made on the client's callback goroutine, which no test may block.
+func captureAgentSubject(t *testing.T, client *bus.Client, holder string) chan *natsgo.Msg {
+	t.Helper()
+	forwards := make(chan *natsgo.Msg, 4)
+	received, err := client.Conn.Subscribe(contracts.AgentSubject(holder), func(message *natsgo.Msg) {
+		select {
+		case forwards <- message:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("subscribe the holder's subject: %v", err)
+	}
+	t.Cleanup(func() { _ = received.Unsubscribe() })
+	return forwards
+}
+
+// staleHolderSettled is the span settled holds before it reads what the delivery made. The flush
+// above has the server holding every publication the delivery made, and the exception lane is
+// read from this test's own sync subscription; the forward, though, reaches this test on the
+// client's callback goroutine, which neither this test's state nor a later action of its own
+// reaches, since a delivery that forwarded nothing and one whose forward is still on that
+// goroutine look alike here.
+const staleHolderSettled = 500 * time.Millisecond
+
 // settled reads what the delivery just made of the message: the reason the role topic's exception
 // lane carried (empty for none), the forward the holder received (nil for none) and the session
 // the role's claim names now (empty once it is released).
@@ -89,7 +107,9 @@ func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason stri
 	if err := r.harness.client.Conn.Flush(); err != nil {
 		t.Fatalf("flush the delivery's publications: %v", err)
 	}
-	if message, err := r.exceptions.NextMsg(time.Second); err == nil {
+	testwait.Span(t, staleHolderSettled, "a forward reaches this test on the client's callback goroutine, which neither its state nor a later action of its own reaches")
+	// A timeout of zero reads what the subscription already holds and waits for nothing.
+	if message, err := r.exceptions.NextMsg(0); err == nil {
 		var exception contracts.Envelope
 		if err := json.Unmarshal(message.Data, &exception); err != nil {
 			t.Fatalf("decode the delivery exception envelope: %v", err)
@@ -104,7 +124,7 @@ func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason stri
 	}
 	select {
 	case forwarded = <-r.forwards:
-	case <-time.After(time.Second):
+	default:
 	}
 	claimant, err := r.harness.registry.RoleHolder(role)
 	if err != nil {

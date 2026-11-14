@@ -80,7 +80,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig) 
 			slog.String("session_id", holder))
 		go func() {
 			defer release()
-			handoverCtx, cancel := context.WithTimeout(ctx, roleKeepHandoverWindow)
+			handoverCtx, cancel := cfg.clk().WithTimeout(ctx, roleKeepHandoverWindow)
 			defer cancel()
 			reportKeptRoleDrain(cfg, role, handOverKeptRole(handoverCtx, cfg, role, time.Now))
 		}()

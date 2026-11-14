@@ -9,9 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The two processes one session id can be claimed under: the one that registered the session and
@@ -82,8 +82,7 @@ func (r *roleClaimProcessRig) lookup(role string) *httptest.ResponseRecorder {
 // holdingProcessOf is the process the stored claim names, read from the bucket itself.
 func (r *roleClaimProcessRig) holdingProcessOf(t *testing.T, role string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	claim, err := r.deps.registry.RoleClaim(ctx, role)
 	if err != nil {
 		t.Fatalf("read %s's claim: %v", role, err)

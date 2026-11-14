@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/id"
@@ -45,6 +46,12 @@ func shouldNAKFanoutDelivery(sessionLive bool, err error) bool {
 
 type listenerDeliveryHandlerConfig struct {
 	client *bus.Client
+	// clock is what the bounds the delivery paths hold in this process are measured on: the
+	// session reads of a role resolution and of an agent delivery. It is nil in production and
+	// in every test that does not drive time, and clk reads it as clock.Real then; a test that
+	// asserts one of those bounds hands a clocktest.Fake here. What nats.go times for itself is
+	// not here.
+	clock clock.Clock
 	// wakes publishes the wake reports an unplaceable agent delivery raises, off the delivery
 	// path and under the listener's own lifetime (wakeReporter); nil in a test that builds the
 	// handlers without it, which reports no wake.
@@ -107,6 +114,15 @@ type listenerDeliveryHandlerConfig struct {
 	// main.go makes one and sets it once, so every handler and every route built from that config
 	// guards one set of roles. A test that builds a config sets its own.
 	roleKeepDrains *roleKeepGuards
+}
+
+// clk is the clock cfg's own bounds are measured on: the one a test gave it, and clock.Real for a
+// configuration built without one.
+func (cfg listenerDeliveryHandlerConfig) clk() clock.Clock {
+	if cfg.clock == nil {
+		return clock.Real()
+	}
+	return cfg.clock
 }
 
 // wireRoleForwarder builds the role forwarder every delivery path hands its forwards to and
@@ -493,7 +509,7 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // and each of its two reads is bounded on its own by roleHolderReadTimeout: the claim read by
 // roleLaneClaims and the holder's session read by roleHolderSessions.Holder.
 func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, bool) {
-	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
+	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{SessionRegistry: cfg.sessions, clk: cfg.clk()}, role)
 	sessionID := resolved.Holder
 	// Every error the resolution returns is a *roles.ReadError naming the read that failed.
 	// One that is not would still be a read that failed, so it is logged as the claim read with
@@ -756,7 +772,7 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// entry is held and retried for the whole window before it is given up
 	// (unplaceableAgentDelivery), while the interest path's own failures NAK with an error
 	// instead and never reach that branch.
-	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone)
+	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.clk(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone)
 	var entryPtr *session.SessionEntry
 	if entryErr == nil {
 		entryPtr = &entry

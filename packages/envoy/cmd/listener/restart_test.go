@@ -2,15 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A NATS server restart leaves the listener following the interest registry, and a shutdown soon
@@ -30,7 +31,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 	writerSession := func(round int) string { return "ses_restart_writer_" + strconv.Itoa(round) }
 	// subscribe writes an interest through another listener's registry and waits for this
 	// listener's cache to list it, failing as round's write when it does not within 3s of since.
-	subscribe := func(round int, since time.Time) {
+	subscribe := func(round int) {
 		writer := testnats.Connect(t, uri)
 		registry, err := store.Open(writer)
 		if err != nil {
@@ -41,29 +42,20 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 			t.Fatalf("restart %d: subscribe through another listener: %v", round, err)
 		}
 		writer.Close()
-		deadline := time.Now().Add(3 * time.Second)
-		for !listsInterest(t, listener.port, sessionID) {
-			if time.Now().After(deadline) {
-				t.Fatalf("restart %d: %s after the listener reconnected, its interest cache still missed a subscription another listener wrote", round, time.Since(since).Round(time.Millisecond))
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		testwait.Eventually(t, fmt.Sprintf("restart %d: the interest cache to list %s another listener wrote", round, sessionID), func() bool {
+			return listsInterest(t, listener.port, sessionID)
+		})
 	}
 	// One interest before the first restart, so the read after the reconnect has a row to keep: an
 	// empty bucket's read keeps nothing and would prove nothing.
-	subscribe(0, time.Now())
+	subscribe(0)
 
-	for restart := 1; restart <= 3; restart++ {
+	for _, restart := range []int{1, 2, 3} {
 		server.Stop(t)
 		server.Start(t)
-		deadline := time.Now().Add(30 * time.Second)
-		for strings.Count(listener.Output.String(), "envoy nats reconnected") < restart {
-			if time.Now().After(deadline) {
-				t.Fatalf("restart %d: the listener never reconnected:\n%s", restart, listener.Output.String())
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		reconnectedAt := time.Now()
+		testwait.Eventually(t, fmt.Sprintf("restart %d: the listener to reconnect", restart), func() bool {
+			return strings.Count(listener.Output.String(), "envoy nats reconnected") >= restart
+		})
 
 		// Every watcher a watch installs reads the whole bucket again, and nothing empties the
 		// cache first (kvwatch.Cache): the reconnect hook's Rewatch does not resume after the last
@@ -86,7 +78,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 		}
 		kept()
 
-		subscribe(restart, reconnectedAt)
+		subscribe(restart)
 	}
 
 	listener.Terminate(t)
@@ -106,8 +98,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 // cache answers while the read it waits for runs.
 func interestWarmUp(t *testing.T, p *listenerProcess, n int, while func()) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	return testwait.Until(t, fmt.Sprintf("interest registry warm-up line %d", n), func() (map[string]any, bool) {
 		while()
 		var lines []map[string]any
 		for line := range strings.SplitSeq(p.Output.String(), "\n") {
@@ -117,13 +108,10 @@ func interestWarmUp(t *testing.T, p *listenerProcess, n int, while func()) map[s
 			}
 		}
 		if len(lines) >= n {
-			return lines[n-1]
+			return lines[n-1], true
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no interest registry warm-up line %d within 10s:\n%s", n, p.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return nil, false
+	})
 }
 
 // listsInterest reports whether the listener's GET /v1/interests/, which answers from its cache,

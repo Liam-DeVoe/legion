@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // errCreateFault is the error the tests' create fault fails a consumer create with.
@@ -48,14 +49,10 @@ func failCreates(t *testing.T, rig *relayRig, sessionID string, n int) <-chan st
 	return failed
 }
 
-// awaitCreateFailure waits up to 10 s for the next failure failCreates reports.
+// awaitCreateFailure waits for the next failure failCreates reports.
 func awaitCreateFailure(t *testing.T, failed <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-failed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the relay's restart never reached its create")
-	}
+	testwait.Receive(t, "the relay's restart to reach its create", failed)
 }
 
 // requireNoConsumer fails the test unless sessionID has no consumer.
@@ -84,11 +81,11 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 	})
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	written, floor := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), written)
+	requireFrames(t, standIn.collect(t, 1), written)
 	awaitAcked(t, rig.consumers, sessionID, floor)
 	holdNext.Store(true)
 	held, _ := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), held)
+	requireFrames(t, standIn.collect(t, 1), held)
 	awaitAckState(t, rig.consumers, sessionID, 1, floor)
 	return rig, sessionID, standIn, held, floor
 }
@@ -114,8 +111,8 @@ func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t 
 		item, _ := rig.storeEvent(t, agent)
 		missed = append(missed, item)
 	}
-	requireFrames(t, standIn.collect(t, 4, 10*time.Second), missed...)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.collect(t, 4), missed...)
+	standIn.none(t)
 	info, err := rig.consumers.Info(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("read the consumer the relay created again: %v", err)
@@ -151,8 +148,8 @@ func TestSessionConsumerRegistrationWhileARestartLeftNoConsumerCreatesItAtTheFlo
 		t.Fatalf("the registration created the consumer at %d, want the floor's next sequence %d, not the stream's end", info.Config.OptStartSeq, floor+1)
 	}
 
-	requireFrames(t, standIn.collect(t, 4, 10*time.Second), backlog...)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.collect(t, 4), backlog...)
+	standIn.none(t)
 }
 
 // burstSessions is how many sessions TestSessionConsumerBurstOfRestartsDeliversEveryBacklog
@@ -259,18 +256,11 @@ func registerConsumerSession(port int, sessionID string) error {
 // listener's relay has restarted it and pulls it.
 func awaitPulled(t *testing.T, consumers *bus.SessionConsumers, sessionIDs []string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
 	for _, sessionID := range sessionIDs {
-		for {
+		testwait.Until(t, "the consumer of "+sessionID+" to have a pull waiting", func() (string, bool) {
 			info, err := consumers.Info(context.Background(), sessionID)
-			if err == nil && info.NumWaiting > 0 {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the consumer of %s has no pull waiting after 30 s: %+v, %v", sessionID, info, err)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+			return fmt.Sprintf("%+v, %v", info, err), err == nil && info.NumWaiting > 0
+		})
 	}
 }
 
@@ -319,36 +309,16 @@ func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
 			t.Logf("the restarted listener's output:\n%s", restarted.Output.String())
 		}
 	})
-	startedAt := time.Now()
 	got := map[string][]burstFrame{}
-	deadline := time.After(10 * time.Second)
-	var last time.Time
-	for received := range burstSessions * perSession {
-		select {
-		case frame := <-standIn.frames:
-			got[frame.sessionID] = append(got[frame.sessionID], frame)
-			last = time.Now()
-		case <-deadline:
-			complete := 0
-			for _, sessionID := range sessionIDs {
-				if len(got[sessionID]) >= perSession {
-					complete++
-				}
-			}
-			t.Fatalf("10 s after the restart %d of %d frames arrived; %d of %d sessions have their whole backlog", received, burstSessions*perSession, complete, burstSessions)
-		}
+	for range burstSessions * perSession {
+		frame := testwait.Receive(t, "a backlog frame after the listener's restart", standIn.frames)
+		got[frame.sessionID] = append(got[frame.sessionID], frame)
 	}
-	t.Logf("every session had its backlog %s after the listener's restart", last.Sub(startedAt).Round(time.Millisecond))
-	// A frame relayed twice would arrive within this second.
-	extra := time.After(time.Second)
-	for waiting := true; waiting; {
-		select {
-		case frame := <-standIn.frames:
-			got[frame.sessionID] = append(got[frame.sessionID], frame)
-		case <-extra:
-			waiting = false
-		}
-	}
+	t.Logf("every session had its backlog after the listener's restart")
+	// A frame relayed twice would arrive promptly: the restarted listener delivers each backlog
+	// frame once, and no state read distinguishes none-yet from none on a live delivery stream.
+	testwait.Quiet(t, "a duplicate backlog frame", standIn.frames, time.Second,
+		"the restarted listener delivers each backlog frame once; a duplicate would arrive promptly, and no state read distinguishes none-yet from none on a live delivery stream")
 	for _, sessionID := range sessionIDs {
 		frames := got[sessionID]
 		events := make([]string, len(frames))
