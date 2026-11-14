@@ -416,7 +416,8 @@ func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, s
 // (TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequence). A restore from a
 // backup brings each consumer back at the backup's own floor, inside the restored stream, so it
 // does not reach that state. A start at the stream's first sequence can hand the session again
-// messages it was handed before the sequences went back, which its plugin's ledger drops.
+// messages it was handed before the sequences went back, which its plugin's ledger drops within
+// 72 hours (DELIVERY_DUPLICATE_WINDOW_MS) and 20,000 frames (DELIVERY_LEDGER_LIMIT).
 //
 // A restart that deletes makes the floor's next sequence the consumer's pending start until a
 // create at it is confirmed. It is recorded before the delete, so a delete that failed, its answer
@@ -950,7 +951,8 @@ func (s *SessionConsumers) updated(current jetstream.ConsumerConfig, filters []s
 // that and never handed to the session. Started at the stream's first sequence, the first message
 // the consumer hands over is the first the stream holds on its filters, so none of them is
 // skipped, and the session's plugin drops by identity, in its delivery ledger, any it was handed
-// before. A session that deregistered before such a loss comes back that way, with its resume
+// before, within 72 hours (DELIVERY_DUPLICATE_WINDOW_MS) and 20,000 frames (DELIVERY_LEDGER_LIMIT,
+// packages/envoy-client/src/delivery-ledger.ts). A session that deregistered before such a loss comes back that way, with its resume
 // point past the end and no record to lower it: a loss that cuts the stream below the record's
 // floor removes the record too, since the stream stored it after that floor. A target of the
 // sequence after the stream's last would skip every message stored between the loss and the
