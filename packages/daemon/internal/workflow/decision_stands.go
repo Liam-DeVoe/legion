@@ -45,6 +45,11 @@ type Decision struct {
 // its times (record.EventMark.After), never by the daemon's clock against Dispatch's. An approval
 // the gate's approval is (the same version, and a mark that can be the same event:
 // record.EventMark.Same) is no later word than itself, so it stands.
+//
+// One other function asks classify.ReviewSuperseded itself: requestStands
+// (awaiting_reconcile.go). It is no sender of a task or notice about a person's recorded decision.
+// It asks whether an architect's approval request of a document still waits on the person, a
+// different question that the same classifier answers, so it does not go through this predicate.
 func DecisionStands(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, d Decision) bool {
 	if d.Kind != record.DecisionDesignChangesRequested && d.Kind != record.DecisionDesignApproved {
 		return true
