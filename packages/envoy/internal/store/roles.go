@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
@@ -117,9 +118,9 @@ const (
 // A snapshot short of the bucket is missing claims that are in it, and each one it misses is a
 // restored holder that loses its grace and is released a session TTL early, so an incomplete scan
 // fails the caller, and only a complete one logs. A scan that delivers nothing for idle is one.
-func roleRevisions(kv bus.KeyValue, idle time.Duration, log *slog.Logger) (map[string]uint64, error) {
+func roleRevisions(kv bus.KeyValue, c clock.Clock, idle time.Duration, log *slog.Logger) (map[string]uint64, error) {
 	revisions := map[string]uint64{}
-	scan, err := kvwatch.ScanExistingKeys(context.Background(), kv, jetstream.AllKeys, "role revisions", idle, log, func(entry kvwatch.Entry) error {
+	scan, err := kvwatch.ScanExistingKeys(context.Background(), c, kv, jetstream.AllKeys, "role revisions", idle, log, func(entry kvwatch.Entry) error {
 		revisions[entry.Key] = entry.Revision
 		return nil
 	}, jetstream.MetaOnly())
@@ -176,7 +177,7 @@ type scannedRoleClaim struct {
 // claim's two strings and its two numbers - which at the fleet's ~5,000 claims is under about 1 MB.
 func (r *Registry) roleClaimsUntil(ctx context.Context) ([]scannedRoleClaim, error) {
 	claims := map[string]scannedRoleClaim{}
-	_, err := kvwatch.ScanExistingKeys(context.Background(), r.roles(), jetstream.AllKeys, "role claims", kvwatch.ScanIdleTimeout, r.logger(), func(entry kvwatch.Entry) error {
+	_, err := kvwatch.ScanExistingKeys(context.Background(), r.clock, r.roles(), jetstream.AllKeys, "role claims", kvwatch.ScanIdleTimeout, r.logger(), func(entry kvwatch.Entry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -298,7 +299,7 @@ func (c roleCache) CompleteRead(read kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
 	r.roleRepair.sweep(&r.roleHolders)
-	found := r.roleRepair.complete(read, r.now())
+	found := r.roleRepair.complete(read, r.clock.Now())
 	r.holdersMu.Unlock()
 	if found.putBack > 0 || found.tookOut > 0 {
 		r.logger().Info(fmt.Sprintf("role claim repair put back %d claims and took out %d", found.putBack, found.tookOut),
@@ -701,7 +702,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		return Interest{}, err
 	}
 
-	now := r.now().UnixMilli()
+	now := r.clock.Now().UnixMilli()
 	claim := RoleClaim{
 		HolderSessionID:   req.SessionID,
 		ClaimedAt:         now,

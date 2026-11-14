@@ -9,6 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -18,7 +19,7 @@ type Registry struct {
 	kvMu                  sync.RWMutex
 	roleKV                bus.KeyValue
 	log                   *slog.Logger
-	now                   func() time.Time
+	clock                 clock.Clock
 	openedAt              time.Time
 	restoredRoleRevisions map[string]uint64
 	mu                    sync.RWMutex
@@ -61,7 +62,7 @@ type OpenOption func(*openOpts)
 
 type openOpts struct {
 	replicas  int
-	now       func() time.Time
+	clock     clock.Clock
 	log       *slog.Logger
 	roleWatch []kvwatch.Option
 }
@@ -89,9 +90,9 @@ func WithReplicas(n int) OpenOption {
 
 // WithClock sets the registry's clock: the time every interest and role claim records, the reaper's
 // staleness window, and a restored role claim's grace window, which starts when Open returns. Tests
-// move it to end a window without waiting for it.
-func WithClock(now func() time.Time) OpenOption {
-	return func(o *openOpts) { o.now = now }
+// drive a clocktest.Fake to end a window without waiting for it; there is one clock for the module.
+func WithClock(c clock.Clock) OpenOption {
+	return func(o *openOpts) { o.clock = c }
 }
 
 // WithRoleClaimWatch adds options to the role claim watcher's own, after them, so a test sets the
@@ -103,7 +104,7 @@ func WithRoleClaimWatch(options ...kvwatch.Option) OpenOption {
 }
 
 func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
-	opts := openOpts{replicas: 1, now: time.Now, log: slog.Default()}
+	opts := openOpts{replicas: 1, clock: clock.Real(), log: slog.Default()}
 	for _, o := range options {
 		o(&opts)
 	}
@@ -119,7 +120,7 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	restoredRoleRevisions, err := roleRevisions(roleKV, kvwatch.ScanIdleTimeout, opts.log)
+	restoredRoleRevisions, err := roleRevisions(roleKV, opts.clock, kvwatch.ScanIdleTimeout, opts.log)
 	if err != nil {
 		return nil, err
 	}
@@ -127,8 +128,8 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 		roleKV:                roleKV,
 		log:                   opts.log,
 		index:                 newSubjectIndex(),
-		now:                   opts.now,
-		openedAt:              opts.now(),
+		clock:                 opts.clock,
+		openedAt:              opts.clock.Now(),
 		restoredRoleRevisions: restoredRoleRevisions,
 	}
 	r.cache = newInterestCopy(r)
