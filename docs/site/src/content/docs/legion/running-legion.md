@@ -118,24 +118,28 @@ account granted it. The mint reads that second set before each token and asks fo
 permissions cut down to it: a permission the account has not approved is left out of the
 request, and the daemon says so once on its stderr, naming the App, the owner and the
 permission. The daemon itself reads
-GitHub with the implement App too, in a pass as it starts and every two minutes after: it reads
-each open pull request's base branch and the checks that branch requires (its rulesets and its
-branch protection), since only those decide whether CI is red at a head, and so where Legion sends
-the issue. Whether the merge happens is GitHub's to decide, under those same rules.
+GitHub with the implement App too, but on no timer: no pass comes round over the served
+repositories, and it reads neither a base branch's rulesets nor its branch protection, since
+whether the merge happens is GitHub's to decide under that branch's own rules. A red check moves
+no issue either: when GitHub's checks settle, the daemon names every check GitHub reported, with
+the conclusion GitHub gave it, in one message to the tree's architect, the worker of the issue's
+current phase and the implementer, and judges none of them.
 
-The same pass applies what a GitHub event lost, or still waiting behind the daemon's GitHub
-consumer, would have carried, so such an event leaves the record behind for at most one pass:
+What it reads is one issue's pull request, at two moments and no other: as the workflow runtime
+starts, over every issue of the project with an open pull request recorded and every issue whose
+implementer completed with none open or merged recorded, which covers the deliveries GitHub made
+while the daemon was down; and once an agent's handoff has been recorded, for that issue alone,
+the moment the daemon next decides on the pull request's state. So a handoff costs the reads of
+its own pull request and no other. Each read applies what a GitHub event lost, or still waiting
+behind the daemon's GitHub consumer, would have carried:
 
-- **An opened or reopened pull request, in any phase.** Every pass lists each served repository's
-  open pull requests, a request per hundred of them. One on an issue's branch, `legion/<KEY>`, of
-  the repository itself (not a fork's) that the daemon does not record open is applied as its
-  opened webhook would be, a reopen when the record holds the same pull request: the workflow
-  records it in whatever phase the issue is, and moves an implementing issue whose implementer
-  completed on to testing.
-
-The daemon reads GitHub with the implement App too, but on no timer: no pass comes round over the
-served repositories, and the checks a base branch requires the daemon never reads at all, since
-whether the merge happens is GitHub's to decide under that branch's own rules.
+- **An opened or reopened pull request, in any phase.** An issue whose record holds no open pull
+  request is looked up by its branch, `legion/<KEY>`
+  (`GET /pulls?head=<owner>:<branch>&state=open`, where a listed pull request counts only when its
+  own `head.ref` is that branch). One of the repository itself (not a fork's) that the daemon does
+  not record open is applied as its opened webhook would be, a reopen when the record holds the
+  same pull request: the workflow records it in whatever phase the issue is, and moves an
+  implementing issue whose implementer completed on to testing.
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
   applied, or its merge with its merge commit: the merge closes an issue waiting on it in
   `merging` and otherwise tells the architect `pr-merged`, and a close without merging tells
