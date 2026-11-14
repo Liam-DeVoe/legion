@@ -145,10 +145,12 @@ func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
 }
 
 // subscribesAtOnce is how soon SubscribeCore must return while the client has never connected:
-// "at once", with room for a loaded machine. It is the subject of the row above, so it keeps its
-// own number rather than busWait's minute, under which a SubscribeCore that blocked on a bounded
-// wait for the connection (a flush's or a connect's timeout) would pass.
-const subscribesAtOnce = 5 * time.Second
+// "at once", with room for a loaded machine. It is the subject of the test above, so it keeps its
+// own number rather than busWait's minute. It is under a connect's 5 s timeout (connectTimeout)
+// and a flush's 10 s, so a SubscribeCore that blocked on either wait for the connection fails.
+// The test is serial, so no parallel test's load takes up the room this leaves a SubscribeCore
+// that returns at once.
+const subscribesAtOnce = 2 * time.Second
 
 // shortAcknowledgementClock bounds a publish's wait to its own duration, so a test sees the
 // deadline pass without waiting out the five seconds a publish has.

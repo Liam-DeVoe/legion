@@ -406,7 +406,8 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 // has not acked again and drop its answers to the frames it holds. A registration with a new epoch
 // after the run's restart still restarts it at the ack floor.
 func TestSessionConsumerNewEpochHeardAfterTheRunRestartedRestartsNothing(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a quiet window: the session gets no frame in the second after the
+	// loop hears the late registration, nor in the second after the frame is acked.
 	rig := newRelayRig(t)
 	const sessionID = "ses_epoch_heard_late"
 	agent := contracts.AgentSubject(sessionID)

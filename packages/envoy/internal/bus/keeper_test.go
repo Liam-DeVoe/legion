@@ -510,7 +510,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 // it never lowers either, and raises no bucket it names, at one copy as well. The update count is
 // read from the API subject itself.
 func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a quiet window: no stream update in six keeper periods (1.5 s).
 	cluster, js := startClusterJetStream(t)
 	startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit))
 	testnats.AwaitSettledStream(t, js, Stream)
@@ -687,6 +687,7 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 		{name: "drain", stop: func(client *Client) { _ = client.Drain(5 * time.Second) }},
 	} {
 		t.Run(stop.name, func(t *testing.T) {
+			// Serial: it checks that the stop returns within stopsAtOnce.
 			srv, uri := testnats.Start(t)
 			srv.Stop(t)
 			client, err := ConnectOwningStream([]string{uri}, WithConnectInBackground(), WithKeepInterval(time.Millisecond))
@@ -715,10 +716,12 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 }
 
 // stopsAtOnce is how soon Close and Drain of a client that never connected must return: "at
-// once", with room for a loaded machine. It is the subject of the row above, so it keeps its
-// own number rather than busWait's minute, under which a stop that waited on its background
-// connect or on a stream call's timeout would pass.
-const stopsAtOnce = 10 * time.Second
+// once", with room for a loaded machine. It is the subject of the test above, so it keeps its
+// own number rather than busWait's minute. It is under the 5 s of a background connect's dial
+// (connectTimeout) and of the drain row's own Drain, and under a stream call's 10 s MaxWait, so a
+// stop that waits out any of them fails. The test is serial, so no parallel test's load takes up
+// the room this leaves a stop that returns at once.
+const stopsAtOnce = 2 * time.Second
 
 // The keeper names the consumer cap it raised, with the deployed value and the new one, so an
 // operator who lowered the cap reads what put it back within a period instead of finding it

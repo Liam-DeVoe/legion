@@ -95,6 +95,8 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 			}
 		}
 		t.Run("publish/"+tc.name, func(t *testing.T) {
+			// Serial: its assertion is a time: the publish answers at sendRequestBudget and inside
+			// within.
 			state := open(t)
 			started := time.Now()
 			recorder, record := serveRecorded(t,
@@ -154,6 +156,7 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 		{name: "the claim read", stallGet: true, unanswered: "read role reviewer's claim: context deadline exceeded"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Serial: its assertion is a time: the lookup answers inside within.
 			client := setupPublishTestClient(t)
 			registry, sessions := setupSessionsTest(t, nil, nil)
 			if _, err := registry.SetRole(holder, "test-machine", role, false); err != nil {

@@ -376,8 +376,8 @@ func shiftedClock(t *testing.T, database *store.Store) *store.Store {
 //
 // Serial: its assertion is a time - in "no responders" the read of the next attempt and the second
 // scan must both fall inside the event's first one-second back-off (retry.BaseDelay), and in "a
-// stream that never answers" the probe after the thaw must answer within probeTimeout (2 s). The
-// subtests run beside each other alone, never beside a parallel batch of the package.
+// stream that never answers" the probe after the thaw must answer within probeTimeout (2 s).
+// "a lost connection" measures no span and runs in parallel.
 func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	seed := func(t *testing.T, database *store.Store) model.Event {
 		t.Helper()
@@ -402,7 +402,8 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	}
 
 	t.Run("no responders", func(t *testing.T) {
-		t.Parallel()
+		// Serial: its assertion is a time - the read of the next attempt and the second scan fall
+		// inside the event's first one-second back-off.
 		url := testnats.URL(t)
 		// A client that owns no stream, in an account that has none: no stream captures the subject.
 		client, err := bus.Connect([]string{url})
@@ -438,7 +439,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	})
 
 	t.Run("a stream that never answers", func(t *testing.T) {
-		t.Parallel()
+		// Serial: its assertion is a time - the probe after the thaw answers within probeTimeout.
 		server, url := testnats.Start(t)
 		client, err := bus.ConnectOwningStream([]string{url})
 		if err != nil {
@@ -449,9 +450,9 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		event := seed(t, database)
 		thaw := server.Freeze(t)
 		// The send's own answer is the thaw's cue: the window gave the acknowledgement up, and the
-		// flush probe that follows has not run yet, so the probe finds the connection answering.
-		// Sleeping past the window's five seconds waited for this same moment by the clock
-		// (dispatch://INFRA-1075).
+		// flush probe that follows has not run yet, so the probe finds the connection answering. A
+		// sleep past the window's five seconds would aim at the same moment by the clock, which a
+		// loaded machine moves.
 		clock := &sendClock{Client: client, onAnswer: sync.OnceFunc(thaw)}
 		holding(t, Deps{Store: database, Publisher: clock}).scan(context.Background(), unfenced{})
 		backedOff(t, database, event, bus.ErrNotAcknowledged.Error())

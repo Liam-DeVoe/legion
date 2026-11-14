@@ -78,6 +78,8 @@ func startEditNoticeHub(t *testing.T, database *store.Store) <-chan struct{} {
 // proves the production gap arms no sweep of its own. The rows below pass a gap of their own to
 // runEditNotices.
 func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
+	// Serial: its assertion is a quiet window: no statement over the production gap and two
+	// seconds. The loop must also stop within loopStopBound.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	held := createIssueDocument(t, database, 1, "Held.")
@@ -115,6 +117,9 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 // loop had no due time before the edit, so only the wake can have scheduled the sweep that sends
 // it. The sweep here starts passes 200 ms apart, not five seconds.
 func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
+	// Serial: its assertion is a quiet window and a time: no statement until shortly before the
+	// notice's due time, and the notice within the gap and a second of it. The loop must also
+	// stop within loopStopBound.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	const quiet = 3 * time.Second
@@ -175,6 +180,8 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 // keeps trying, every gap plus up to a tenth, until a sweep of its own runs, and that sweep sends
 // the due notice: the other process's pass may have read before it was due.
 func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
+	// Serial: it captures the default logger (captureLogs), a process-wide swap. The loop must
+	// also stop within loopStopBound.
 	database := storetest.Open(t)
 	document := createIssueDocument(t, database, 1, "First.")
 	addPersonsVersion(t, database, document, 2, "Second.\n", model.Actor{Kind: "user", ID: "alice@example.com"})

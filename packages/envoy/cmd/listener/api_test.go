@@ -1139,6 +1139,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		return holder
 	}
 	t.Run("lookup", func(t *testing.T) {
+		// Serial: its assertion is a time: the lookup answers within bound.
 		claimant, observer := trailingListeners(t)
 		claimRole(t, claimant, "ses_holder", "unread")
 		stallSessionReads(t, observer.sessions)
@@ -1153,6 +1154,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		}
 	})
 	t.Run("soft claim", func(t *testing.T) {
+		// Serial: its assertion is a time: the soft claim answers within bound.
 		claimant, observer := trailingListeners(t)
 		claimRole(t, claimant, "ses_holder", "unread")
 		if err := observer.sessions.Put("ses_resumer", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -1171,6 +1173,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		}
 	})
 	t.Run("role delivery", func(t *testing.T) {
+		// Serial: its assertion is a time: the delivery reports its failure within bound.
 		harness := newListenerDeliveryHarness(t)
 		claimant := &listenerDeps{client: harness.client, registry: harness.registry, delivery: &harness.config}
 		var err error
@@ -1214,6 +1217,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		}
 	})
 	t.Run("reaper", func(t *testing.T) {
+		t.Parallel()
 		claimant, observer := trailingListeners(t)
 		claimRole(t, claimant, "ses_holder", "unread")
 		stallSessionReads(t, observer.sessions)

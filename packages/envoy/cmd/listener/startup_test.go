@@ -454,17 +454,15 @@ func ciSettled(t *testing.T, client *bus.Client) bool {
 // cache not applicable instead of waiting on it. Seeded with a record any summary loop would settle,
 // it creates no consumer on the CI bucket's stream, publishes no settlement, and reports healthy.
 func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
-	// Serial: its assertion is a time window: nothing settles in the 5 s within which the
-	// positive control settles the same seed.
+	// Serial: its assertion is a quiet window: nothing settles within ciSettleBound of the
+	// listener turning healthy, the bound within which the positive control settles the same seed.
 	client := setupTestNATS(t)
 	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "no-github-route")
 	listener.waitHealthy(t)
-	// The positive control, TestAListenerWithAGitHubRouteSettlesTheCIBucket, settles this seed
-	// within a few one-second ticks of turning healthy; five seconds covers them.
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+	for deadline := time.Now().Add(ciSettleBound); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
 		consumers := 0
 		for range client.JS().ConsumerNames("KV_" + bus.CIStateBucket) {
 			consumers++
@@ -497,8 +495,8 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 // the record seedDueCIRecord leaves settles: the settlement reaches the stream and the record is
 // marked settled. It is the positive control for the test above.
 func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
-	// Serial: its assertion is a time (the seed settles within 15 s of the listener turning
-	// healthy).
+	// Serial: its assertion is a time: the seed settles within ciSettleBound of the listener
+	// turning healthy.
 	client := setupTestNATS(t)
 	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
@@ -507,8 +505,8 @@ func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 	listener.waitHealthy(t)
 	healthy := time.Now()
 	for !ciSettled(t, client) {
-		if time.Since(healthy) > 15*time.Second {
-			t.Fatalf("a listener with the GitHub route published no settlement on %s within 15s of turning healthy\n%s", ciChecksSubject, listener.Output.String())
+		if time.Since(healthy) > ciSettleBound {
+			t.Fatalf("a listener with the GitHub route published no settlement on %s within %s of turning healthy\n%s", ciChecksSubject, ciSettleBound, listener.Output.String())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -533,6 +531,15 @@ func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 		t.Fatalf("/healthz under a listener with the GitHub route: %s, want no ci_cache field, as before", health)
 	}
 }
+
+// ciSettleBound is how soon a listener with the GitHub route settles seedDueCIRecord's seed after
+// turning healthy (TestAListenerWithAGitHubRouteSettlesTheCIBucket), and how long a listener
+// without the route is watched for doing the same
+// (TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone). It is one bound for both, so a summary
+// loop that the first test proves settles the seed in time would settle it inside the second
+// test's window too. The loop ticks once a second, and the seed settles about a second after the
+// listener turns healthy.
+const ciSettleBound = 5 * time.Second
 
 // mustRequest builds an unauthenticated request.
 func mustRequest(t *testing.T, method, url string) *http.Request {

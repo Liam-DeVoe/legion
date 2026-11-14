@@ -173,9 +173,9 @@ func runExcerpts(t *testing.T, run func(ctx context.Context)) {
 
 // loopStopBound is how soon a reconciliation or sweep loop must return once its context ends
 // (runExcerpts, runEditNoticeLoop): those helpers are the one check that a loop stops on
-// cancellation, so the bound is that check's subject, the base's ten seconds, and never the
-// package's give-up wait (roomWait), which a loop that took a minute to notice would pass. Every
-// row that runs one of the loops is serial.
+// cancellation, so the bound is that check's subject, ten seconds, and never the package's
+// give-up wait (roomWait), which a loop that took a minute to notice would pass. Every row that
+// runs one of the loops is serial.
 const loopStopBound = 10 * time.Second
 
 // One document the reconciliation cannot read for any other reason than the two it records as no
@@ -381,7 +381,7 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 // and rebuild-refs write them, with no call in Go to announce them. Nothing but the notification
 // can store either one - with nothing owed and nothing deferred the loop holds no timer and polls
 // for no work - and the wake runs a pass no sooner than the gap after the last one began, so the
-// bound is the row's own schedule.minGap plus the base's three seconds: a wake served late fails.
+// bound is the row's own schedule.minGap plus three seconds: a wake served late fails.
 //
 // Serial: it measures the process, watching a window in which the woken loop must make no
 // statement once its boot pass is done, which a parallel neighbour's load moves this service's

@@ -744,6 +744,7 @@ func TestVersionAtLeastComparesEachPartAsANumber(t *testing.T) {
 		{version: "14.1", floor: "14.1.0", want: false},
 	} {
 		t.Run(c.version+" against "+c.floor, func(t *testing.T) {
+			t.Parallel()
 			if got := versionAtLeast(c.version, c.floor); got != c.want {
 				t.Fatalf("versionAtLeast(%q, %q) = %t, want %t", c.version, c.floor, got, c.want)
 			}
@@ -831,6 +832,7 @@ func TestSessionConsumerRefusalSaysWhatTheClientMustDo(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newSessionConsumerRig(t)
 
 			refusal := rig.refusedSubscribe(t, `{"session_id":"`+c.sessionID+`","self_subscribed":true,"topics":[],`+c.client+`}`)

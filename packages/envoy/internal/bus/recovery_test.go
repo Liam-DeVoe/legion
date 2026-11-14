@@ -717,7 +717,7 @@ func TestRecovery_ClosedTriggersWithoutPublish(t *testing.T) {
 // TestRecovery_AtMostOneSubscription verifies that after recovery, only one
 // subscription callback is active (no duplicate message delivery).
 func TestRecovery_AtMostOneSubscription(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a quiet window: no second delivery in the 2 s after the first.
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -767,7 +767,7 @@ func TestRecovery_AtMostOneSubscription(t *testing.T) {
 // do not spawn competing retry goroutines. The atomic recovering flag ensures
 // at most one recovery goroutine runs at a time.
 func TestRecovery_ConcurrentRecoverySerializes(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a quiet window: no second delivery in the 2 s after the first.
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {

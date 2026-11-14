@@ -317,7 +317,7 @@ func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	listener := probe.listener(database.Pool.Listener)
-	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, 10*time.Second
+	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, 2*DefaultPingTimeout
 	runListener(t, probe, listener)
 	probe.waitConnected(t, 5*time.Second, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()
@@ -595,7 +595,7 @@ func TestAListenerWithNoOnNotifyDropsItsNotificationsAndDoesNotPanic(t *testing.
 	probe := newListenerProbe()
 	listener := probe.listener(database.Pool.Listener)
 	listener.OnNotify = nil
-	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, 10*time.Second
+	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, 2*DefaultPingTimeout
 	runListener(t, probe, listener)
 	probe.waitConnected(t, 5*time.Second, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()

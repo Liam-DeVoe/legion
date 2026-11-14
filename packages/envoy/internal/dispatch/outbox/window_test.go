@@ -455,7 +455,7 @@ func issueSubjectOrder(t *testing.T, url string) (map[string][]int, []int64) {
 // id order on each, and no event counted an attempt.
 //
 // Serial: its assertion is a time - the cut must land before the first issue's events are marked,
-// about 25 sends of 150 ms each (3.7 s) after the first send, since a chain waits for each answer
+// about 25 sends of 150 ms each (3.75 s) after the first send, since a chain waits for each answer
 // before its next send and an owner is recorded only once its chains end; a parallel batch's load
 // can hold the test past that window between seeing the first message and cutting.
 func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {

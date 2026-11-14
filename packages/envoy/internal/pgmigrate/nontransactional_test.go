@@ -194,11 +194,15 @@ func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	migration := indexMigration()
+	// A short Locking, as every test of the retry runs under one of its own: production's 5 s
+	// timeout and 2 s pause would only lengthen the waits for the first attempt to time out and
+	// for the second to start.
+	short := Locking{Timeout: 300 * time.Millisecond, RetryPause: 50 * time.Millisecond}
 	var attempts int
 	var leftover uint32
-	runErr := Locking{}.RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
+	runErr := short.RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
 		attempts++
-		err := Locking{}.ExecNonTransactional(ctx, conn, migration, nil)
+		err := short.ExecNonTransactional(ctx, conn, migration, nil)
 		if attempts == 1 {
 			got := indexState(t, ctx, conn, "things_kind")
 			// The oid is the leftover's, read here and compared after the rebuild.

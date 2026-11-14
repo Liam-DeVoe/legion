@@ -157,7 +157,7 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 	// than waiting the limit out: a pass that starts inside the reset reads nothing at all,
 	// out of the limit the client recorded in the ledger every Dispatch process shares.
 	github.rateLimitNext(ciReconcileCursorSuitesPath(ciReconcileLimitedHead), ciReconcilePassInterval/2)
-	before := len(ciReconcilePasses(process.Output.String()))
+	before := len(ciReconcilePasses(process))
 	after := waitForCIReconcilePasses(t, process, "a pass GitHub's rate limit stopped",
 		func(passes []map[string]string) bool {
 			for _, pass := range passes[min(before, len(passes)):] {
@@ -248,9 +248,9 @@ func cycleCompleted(passes []map[string]string) int {
 // ciReconcilePasses is every "ci reconcile pass" line the process has logged, oldest first, each
 // as the fields of that line. The process logs in logfmt, and no value of this line holds a
 // space, so a field is what is left and right of the first `=` of each word.
-func ciReconcilePasses(output string) []map[string]string {
+func ciReconcilePasses(process *dispatchProcess) []map[string]string {
 	var passes []map[string]string
-	for _, line := range ciReconcilePassLines(output) {
+	for _, line := range process.logLines(ciReconcilePassMsg) {
 		fields := map[string]string{}
 		for _, word := range strings.Fields(line) {
 			key, value, ok := strings.Cut(word, "=")
@@ -264,17 +264,9 @@ func ciReconcilePasses(output string) []map[string]string {
 	return passes
 }
 
-// ciReconcilePassLines is every "ci reconcile pass" line the process has logged, oldest first,
-// as it was written: the line ciReconcilePasses answers as fields at the same index.
-func ciReconcilePassLines(output string) []string {
-	var lines []string
-	for line := range strings.Lines(output) {
-		if strings.Contains(line, `msg="ci reconcile pass"`) {
-			lines = append(lines, line)
-		}
-	}
-	return lines
-}
+// ciReconcilePassMsg is what every "ci reconcile pass" line holds: process.logLines of it is
+// every such line, oldest first, the line ciReconcilePasses answers as fields at the same index.
+const ciReconcilePassMsg = `msg="ci reconcile pass"`
 
 // waitForCIReconcilePasses waits for the pass lines the process has logged to satisfy enough,
 // and answers them. The passes run ciReconcilePassInterval apart, and the longest wait either
@@ -285,7 +277,7 @@ func waitForCIReconcilePasses(t *testing.T, process *dispatchProcess, what strin
 	t.Helper()
 	deadline := time.Now().Add(12 * ciReconcilePassInterval)
 	for {
-		passes := ciReconcilePasses(process.Output.String())
+		passes := ciReconcilePasses(process)
 		if enough(passes) {
 			return passes
 		}

@@ -35,8 +35,8 @@ import (
 const recoveryBound = 30 * time.Second
 
 // failFastBound is how soon a write on a failed room must answer ErrServiceUnavailable to be
-// failing fast, the base's ten seconds: a write that waited for the room's recovery on a timer
-// of its own before answering would pass the give-up of recoveryBound.
+// failing fast, ten seconds: a write that waited for the room's recovery on a timer of its own
+// before answering would pass the give-up of recoveryBound.
 const failFastBound = 10 * time.Second
 
 // seedFoldableText seeds the document as markdown in rows older than the tail, so a failed room's
@@ -202,8 +202,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 //
 // Serial: it releases the held load on a whole-process goroutine dump
 // (publishWaitsForALoadingRoom), which any test's publish parked on any loading room satisfies,
-// so a parallel neighbour's publish would let the load go before this row's publish reached it -
-// releasing it too early is the race this row used to lose.
+// so a parallel neighbour's publish would let the load go before this row's publish reached it.
 func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")

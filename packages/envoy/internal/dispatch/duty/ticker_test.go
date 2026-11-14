@@ -52,6 +52,7 @@ func (c *passClock) times() []time.Time {
 // not stay in step. Each pass is handed the moment its timer fired as its due time, the moment a
 // leased pass buckets its period by (Exclusive).
 func TestRunJitteredWaitsBetweenOneAndOnePointOneIntervalsAfterEveryPass(t *testing.T) {
+	// Serial: its rows set duty.JitterN (fixJitter), a package variable every jittered wait reads.
 	const interval = 5 * time.Minute
 	for _, tc := range []struct {
 		name string
@@ -62,6 +63,7 @@ func TestRunJitteredWaitsBetweenOneAndOnePointOneIntervalsAfterEveryPass(t *test
 		{name: "largest draw", draw: func(n time.Duration) time.Duration { return n - 1 }, gap: interval + interval/10 - 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Serial: it sets duty.JitterN (fixJitter), a package variable every jittered wait reads.
 			fixJitter(t, tc.draw)
 			synctest.Test(t, func(t *testing.T) {
 				var passes passClock
@@ -104,6 +106,7 @@ func TestRunJitteredWaitsBetweenOneAndOnePointOneIntervalsAfterEveryPass(t *test
 
 // A caller with nothing to do never starts the loop.
 func TestRunJitteredDoesNotStartWhenIdle(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ran := false
 		duty.RunJittered(context.Background(), time.Minute, func() bool { return true }, func(context.Context, time.Time) { ran = true })
@@ -125,6 +128,7 @@ const runLeasedDeadline = 30 * time.Second
 // indexed. And no tick may come sooner than its wait after the pass before it ended, which is what
 // keeps two of a lone loop's ticks out of one period.
 func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *testing.T) {
+	t.Parallel()
 	leases := leasesOf(t, storetest.Open(t))
 	const interval, step = time.Hour, 100 * time.Millisecond
 	const passes = 4
@@ -174,6 +178,7 @@ func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *te
 // first) - must not pass at start: the issue-ask repair's boot pass would run twice on each
 // deploy.
 func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
+	t.Parallel()
 	leases := leasesOf(t, storetest.Open(t))
 	const interval = 300 * time.Millisecond
 

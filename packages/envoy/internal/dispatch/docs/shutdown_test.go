@@ -205,13 +205,13 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 		t.Fatal("the held room's append never reached the store")
 	}
 
-	// Production's budget through Shutdown itself, and the deploy's 5 s reserve past it: a
-	// Shutdown that returns later than that is one the node takes away before it has.
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelShutdown()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
 	var shutdownErr error
+	// Production's budget through Shutdown itself, and the deploy's 5 s reserve past it: a
+	// Shutdown that returns later than that is one the node takes away before it has.
 	select {
 	case shutdownErr = <-shutdown:
 	case <-time.After(ShutdownDrainBudget + 5*time.Second):
@@ -295,8 +295,6 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	waitFor(t, 10*time.Second, "both appends to be recorded as outstanding", func() bool {
 		return service.room(artifactID).durableAppends.Load() >= 2
 	})
-	// Both appends stay queued past the pre-fix 5 s drain budget, and land with time to spare
-	// inside the 9 s per-room budget it was widened to.
 	time.Sleep(7 * time.Second)
 	first.let()
 	select {

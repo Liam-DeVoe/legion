@@ -431,8 +431,8 @@ func (w *roomLoads) count() int {
 
 // minPeerWrites and minProjections are the rounds TestTheUpdateObserverNeverRendersAWriteHalfWay
 // judges on: fewer than these says nothing about an observer under concurrent writes, whatever
-// the renders showed. They are dispatch://INFRA-985's numbers and are unchanged. The test runs its
-// loops for at least minRaceWindow, the base's two seconds, and on until it has these rounds.
+// the renders showed. The test runs its loops for at least minRaceWindow, two seconds, and on
+// until it has these rounds.
 const (
 	minPeerWrites  = 20
 	minProjections = 5
@@ -471,9 +471,9 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 	}
 	ctx := context.Background()
 	bob := model.Actor{Kind: "user", ID: "bob"}
-	// The three run for at least minRaceWindow, the two seconds the base ran them for, and on
-	// until the test has the rounds it judges on - minPeerWrites peer writes and minProjections
-	// projections. The window is the sample a fast machine takes: what this race test catches
+	// The three run for at least minRaceWindow, two seconds, and on until the test has the
+	// rounds it judges on - minPeerWrites peer writes and minProjections projections. The
+	// window is the sample a fast machine takes: what this race test catches
 	// grows with the rounds it runs, so it never stops at the floor. The floor is the sample a
 	// slow one is held to, since these two rounds cost wildly different things: a peer write is
 	// an in-memory Apply of a few milliseconds, while a projection's transaction also stores every

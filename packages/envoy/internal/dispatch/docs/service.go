@@ -157,11 +157,14 @@ type Service struct {
 	maxPendingItems int
 	// logger is where the service's own lines are written: every *Service method writes through
 	// s.log(), never through slog directly, so a test that gives its service a logger reads every
-	// line that service writes and no other test's. Nil is the package's default logger, read at
-	// each line rather than at New, so a test that captures the default logger after it built its
-	// service still sees them (log). A test that must read its own service's lines beside other
-	// tests sets one of its own instead, since slog.SetDefault is the whole process's and two
-	// tests capturing it at once read each other's.
+	// line those methods write and no other test's. The helpers the service drives that are not
+	// its methods (the awareness relay and the room queries among them) and New's own lines,
+	// written before the service exists, still go to the process default logger, so a test that
+	// reads one of those lines cannot read it through its service's logger. Nil is the package's
+	// default logger, read at each line rather than at New, so a test that captures the default
+	// logger after it built its service still sees them (log). A test that must read its own
+	// service's lines beside other tests sets one of its own instead, since slog.SetDefault is the
+	// whole process's and two tests capturing it at once read each other's.
 	logger *slog.Logger
 	// coldReadTimeout bounds a cold read's fold of the stored history (coldReadTimeout, whose
 	// comment states the rule). New sets it to that constant; the test of the timeout sets a

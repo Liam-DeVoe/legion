@@ -77,6 +77,7 @@ func requireConnections(t *testing.T, leases *pgxpool.Pool, total, idle int32, w
 
 // An unlock Postgres confirms gives the lock back and the connection back to its pool.
 func TestFreeSessionLockReturnsTheConnectionOnceItsUnlockAnsweredTrue(t *testing.T) {
+	// Serial: it holds an advisory lock open on purpose (heldSessionLock).
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7001)
@@ -91,6 +92,7 @@ func TestFreeSessionLockReturnsTheConnectionOnceItsUnlockAnsweredTrue(t *testing
 // An unlock that answers false leaves what the session holds unknown, so the connection is closed
 // rather than returned, and the lock it did hold goes with the session.
 func TestFreeSessionLockClosesTheConnectionWhenItsUnlockAnsweredFalse(t *testing.T) {
+	// Serial: it holds an advisory lock open on purpose (heldSessionLock).
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7002)
@@ -110,8 +112,10 @@ func TestFreeSessionLockClosesTheConnectionWhenItsUnlockAnsweredFalse(t *testing
 // statement below answers after a minute, and an unlock that waited for that answer returns no
 // error at all. The floor holds that the bound was not cut short, and the ceiling, ten seconds
 // past duty.LeaseCallTimeout, holds that no longer bound stood in for it - an unlock bounded by a
-// 30 s context would also answer DeadlineExceeded. The row runs serial, as every row of this
-// package does.
+// 30 s context would also answer DeadlineExceeded.
+//
+// Serial: its assertion is a time - the unlock returns between duty.LeaseCallTimeout and ten
+// seconds past it.
 func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
@@ -134,6 +138,7 @@ func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
 // unlock: its locks go with its session. FreeSessionLock gives it back, which destroys it, and
 // says so with ErrSessionClosed, so a caller whose own statement ended it can stay quiet.
 func TestFreeSessionLockAnswersErrSessionClosedForAConnectionAlreadyClosed(t *testing.T) {
+	// Serial: it holds an advisory lock open on purpose (heldSessionLock).
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7004)

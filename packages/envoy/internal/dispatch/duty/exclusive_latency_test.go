@@ -41,6 +41,7 @@ func (c slowWrites) Write(b []byte) (int, error) {
 // The period is this test's own argument to Exclusive, which takes it in the call; the stall is
 // delay, which is unchanged. cmd/dispatch passes each loop's own period.
 func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const name = "suggestion-outcomes"

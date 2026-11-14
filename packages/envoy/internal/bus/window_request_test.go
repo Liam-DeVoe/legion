@@ -84,10 +84,13 @@ func TestARequestIsAnsweredByTheStreamsAcknowledgementAlone(t *testing.T) {
 	}
 
 	// No stream subject captures a role lane (bus.StreamSubjects), so the receipt below is the
-	// only reply this Request gets.
+	// only reply this Request gets. The timeout is long enough for a loaded machine's receipt to
+	// arrive inside it: this leg proves the receipt is passed over, which a Request that ran out
+	// before the receipt came would not exercise. Nothing acknowledges the role subject, so the
+	// Request still runs out, at that cost.
 	const uncaptured = "notifications.role.request-receipt"
 	responder(t, url, uncaptured)
-	err := answerOf(t, window.Request(uncaptured, forwardEnvelope("receipt"), bus.RequestOptions{MsgID: bus.ForwardMsgID("receipt", uncaptured), Timeout: 300 * time.Millisecond}), 5*time.Second)
+	err := answerOf(t, window.Request(uncaptured, forwardEnvelope("receipt"), bus.RequestOptions{MsgID: bus.ForwardMsgID("receipt", uncaptured), Timeout: 5 * time.Second}), busWait)
 	if !errors.Is(err, bus.ErrNotAcknowledged) {
 		t.Fatalf("a Request its receiver answered with an empty receipt returned %v, want ErrNotAcknowledged: the stream stored nothing of it", err)
 	}

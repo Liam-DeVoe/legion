@@ -38,6 +38,7 @@ func leasesOf(t *testing.T, database *store.Store) *pgxpool.Pool {
 // multiprocess rows cost a day for want of exactly this (INFRA-1492). A pass with no period is
 // also a pass with no due, and names neither.
 func TestTheLinesAboutATickNameItsDueAndItsPeriod(t *testing.T) {
+	// Serial: it captures the default logger (logtest.SetDefault), a process-wide swap.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	var logs bytes.Buffer
@@ -85,6 +86,7 @@ func TestTheLinesAboutATickNameItsDueAndItsPeriod(t *testing.T) {
 // No period (0) in this row and the two below it: each is about the lease alone, and a period
 // would be a second reason to skip that would hide which one refused the caller.
 func TestExclusiveRefusesASecondCallerWhileTheFirstIsInsideItsPass(t *testing.T) {
+	// Serial: it holds a lease, an advisory lock, open on purpose while a second caller tries it.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -114,6 +116,7 @@ func TestExclusiveRefusesASecondCallerWhileTheFirstIsInsideItsPass(t *testing.T)
 
 // The lease is the pass's, not the process's: the next call takes it once the pass returns.
 func TestExclusiveFreesTheLeaseWhenThePassReturns(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -129,6 +132,7 @@ func TestExclusiveFreesTheLeaseWhenThePassReturns(t *testing.T) {
 // Each loop has a lease of its own, so one loop's long pass never keeps another loop's pass from
 // running: the second key is the name's hashtext.
 func TestExclusiveLeasesOfDifferentNamesDoNotExcludeEachOther(t *testing.T) {
+	// Serial: it holds a lease, an advisory lock, open on purpose while it takes another.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -149,6 +153,7 @@ func TestExclusiveLeasesOfDifferentNamesDoNotExcludeEachOther(t *testing.T) {
 // a process killed mid-pass - a deploy replacing its task - leaves nothing behind for the survivor
 // to wait out. A connection closed with the lease still locked is that death.
 func TestExclusiveTakesALeaseWhoseHolderDiedWithoutUnlocking(t *testing.T) {
+	// Serial: it takes a lease, an advisory lock, on a session of its own on purpose.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -204,6 +209,7 @@ func waitForRelease(t *testing.T, database *store.Store, name string) {
 // again. The pass the first recorded is what refuses it, for as long as the loop's own period,
 // and no longer: once that period has run out the next tick runs, whichever process makes it.
 func TestExclusiveSkipsASecondProcessInsideThePeriod(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	leases, otherLeases := leasesOf(t, database), leasesOf(t, second)
@@ -246,6 +252,7 @@ func TestExclusiveSkipsASecondProcessInsideThePeriod(t *testing.T) {
 // deliveries nobody lists - with nothing to show for it afterwards, and a rolling update's
 // SIGTERM is the ordinary way into it.
 func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	const name = "architecture-import"
@@ -283,6 +290,8 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 // the lease back with its unlock, and returns the connection to the lease pool. A first gate
 // leaves the period read prepared on that connection, as a running process's earlier ticks do.
 func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T) {
+	// Serial: it captures the default logger (logtest.SetDefault), a process-wide swap. It also
+	// holds an access exclusive lock on duty_passes open on purpose.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	var logs bytes.Buffer
@@ -371,6 +380,7 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 // because delivery imports duty and not the other way about. Every call runs while the lease is
 // free, and nothing is recorded for a later one to be judged by.
 func TestExclusiveWithoutAPeriodRunsWheneverTheLeaseIsFree(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -390,6 +400,7 @@ func TestExclusiveWithoutAPeriodRunsWheneverTheLeaseIsFree(t *testing.T) {
 // A period is its own loop's, as the lease is: the record is kept per lease, so the compaction
 // that has just run holds back no sweep.
 func TestExclusiveAPeriodHoldsBackOnlyItsOwnLoop(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -413,6 +424,7 @@ func TestExclusiveAPeriodHoldsBackOnlyItsOwnLoop(t *testing.T) {
 // the case that found this, when a stopped loop left every mention a version write could not cut,
 // and everything rebuild-refs inserted, showing the document's name instead of an excerpt.
 func TestExclusiveDoesNotLockOutALoopWhosePeriodGrows(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -455,6 +467,7 @@ func (s slowLeases) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 // delay are the fractions of it that make the tick late, so a shorter period reads the same late
 // tick in less time. cmd/dispatch passes each loop's own period.
 func TestExclusiveCountsALateTickInThePeriodItWasDueIn(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -521,6 +534,7 @@ func recordedPasses(t *testing.T, database *store.Store, name string) int {
 // long as a pass of another deployment on the same server held the lease
 // (cireconcile.RecentPasses).
 func TestALeaseHeldInAnotherDatabaseIsNotHeldHere(t *testing.T) {
+	// Serial: it holds a lease, an advisory lock, open on purpose in another database.
 	const name = "ci-reconcile"
 	database := storetest.Open(t)
 	elsewhere := storetest.Open(t)

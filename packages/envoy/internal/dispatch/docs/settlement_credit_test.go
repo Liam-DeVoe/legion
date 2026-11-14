@@ -538,8 +538,9 @@ const (
 	// with "shutdown document service: context deadline exceeded", after the test itself had
 	// passed. It is roomWaitMargin, which is what the binary's deadline keeps for a failed
 	// test's cleanups, so a teardown that spends its whole budget still leaves the package's
-	// later tests the deadline roomWait counts on. A test that is about the budget passes its
-	// own (shutdown_test.go's shutdownTestBudget).
+	// later tests the deadline roomWait counts on. A test that is about the budget runs
+	// production's ShutdownDrainBudget through Shutdown, or passes a budget of its own, as
+	// TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted does (shutdownTestBudget).
 	teardownDrainBudget = roomWaitMargin
 )
 

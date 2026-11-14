@@ -851,15 +851,22 @@ func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 
 	// Run's boot pass sends its canary from a goroutine of its own, and the row reads what Run
 	// left behind only once that pass has read the 404 and its loop has parked on the embedder's
-	// first answer with that answer still to come (Deps.coverageAwaitingAnswer). Stopping Run as
-	// soon as the fake held the request, which it records before it answers, read the rows before
-	// the pass could have acted on its answer, and passed a loop that took a failed canary for
-	// proof. Such a loop never parks there: it runs the identity steps again at once and settles
-	// with nothing owed (Deps.coverageWaiting), which fails the row here.
+	// first answer with that answer still to come (Deps.coverageParked, awaitingAnswer true).
+	// Stopping Run as soon as the fake held the request, which it records before it answers, read
+	// the rows before the pass could have acted on its answer, and passed a loop that took a
+	// failed canary for proof. Such a loop never parks there: it runs the identity steps again at
+	// once and settles with nothing owed (awaitingAnswer false), which fails the row here.
 	parked, settled := make(chan struct{}), make(chan struct{})
+	closeParked := sync.OnceFunc(func() { close(parked) })
+	closeSettled := sync.OnceFunc(func() { close(settled) })
 	running := deps
-	running.coverageAwaitingAnswer = sync.OnceFunc(func() { close(parked) })
-	running.coverageWaiting = sync.OnceFunc(func() { close(settled) })
+	running.coverageParked = func(awaitingAnswer bool) {
+		if awaitingAnswer {
+			closeParked()
+		} else {
+			closeSettled()
+		}
+	}
 	stop := runQueue(t, running)
 	select {
 	case <-parked:
@@ -1030,6 +1037,10 @@ func commitForeignVector(t *testing.T, database *store.Store, id string) {
 // rows, so the coverage loop runs the identity steps again after identityRecheckInterval, and a
 // vector the old configuration's process commits after the boot pass is dropped by that run and
 // embedded again under the new identity.
+//
+// Serial: its assertion is a time - with the recheck shortened to 3 s, ROLL-1 is embedded here
+// again within 15 s of the foreign commit. It also sets identityRecheckInterval, a package
+// variable the Run of every other test reads.
 func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPass(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "ROLL", "ROLL-1", "Rolling title")
@@ -1054,6 +1065,10 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 // embedded_hash is distinct from content_hash, which this row's is not, and search compares a
 // stored vector only with a query vector of its own identity - so without them the issue would
 // be matched by no meaning search for the life of the process.
+//
+// Serial: its assertion is a time - with the recheck shortened to 1 s, CLEAN-1 is embedded here
+// again within 20 s of the foreign commit. It also sets identityRecheckInterval, a package
+// variable the Run of every other test reads.
 func TestTheIdentityRecheckDropsAVectorCommittedAfterAPassThatFoundNone(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "CLEAN", "CLEAN-1", "Embedded here at boot")
@@ -1072,6 +1087,9 @@ func TestTheIdentityRecheckDropsAVectorCommittedAfterAPassThatFoundNone(t *testi
 
 // A boot pass that skipped the identity steps because the embedder had not answered its canary
 // runs them as soon as the queue's first embed succeeds, not identityRecheckInterval later.
+//
+// Serial: its assertion is a time - ANSR-2 is embedded here again within 20 s of the embedder
+// answering, where identityRecheckInterval would take ten minutes.
 func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "ANSR", "ANSR-1", "Pending here")
@@ -1212,6 +1230,7 @@ func notIndexedCountsOf(t *testing.T, report model.SearchCoverage) map[string]in
 // carrying the covered kinds alone cannot tell a kind nothing indexes from a covered kind with
 // nothing left to embed. None of them is in a total, and none changes a covered kind's counts.
 func TestCoverageNamesEveryKindItCoversNothingOfWithItsCount(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedEveryKind(t, database.Pool, "NIDX")
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
@@ -1278,6 +1297,7 @@ func TestCoverageNamesEveryKindItCoversNothingOfWithItsCount(t *testing.T) {
 // items all hold windows reads as covered with the whole-text rows gone. Without this the pass
 // would re-insert every retired row at every boot and pay an embedder for each.
 func TestTheCoveragePassDoesNotRestoreRetiredWholeTextRows(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedEveryKind(t, database.Pool, "RTRD")
 	// The rows the release before this one's triggers wrote, which its block index has retired

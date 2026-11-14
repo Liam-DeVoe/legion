@@ -229,10 +229,7 @@ func TestALoginBetweenARefusalAndItsLineIsAnOrdinaryRetry(t *testing.T) {
 func TestALoginWakesTheEnrollmentOfASessionRegisteredWithoutACredential(t *testing.T) {
 	// Serial: its assertion is a time: the session must sign within 1 s of the login, a span
 	// of real time the package's parallel rigs and helper subprocesses would stretch.
-	r := newRig(t, "", func(r *rig) {
-		r.srv.EnrollRetryMin = time.Second
-		r.srv.EnrollRetryMax = time.Minute
-	})
+	r := newRig(t, "", productionEnrollBackoff)
 	if reg := r.call(t, Request{Op: "register"}); !reg.OK || reg.Code != CodeNoCredential {
 		t.Fatalf("register with no credential: %+v", reg)
 	}
@@ -252,6 +249,14 @@ func TestALoginWakesTheEnrollmentOfASessionRegisteredWithoutACredential(t *testi
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// productionEnrollBackoff tunes a rig to production's enroll backoff, one second doubling to a
+// minute (defaultEnrollRetryMin, defaultEnrollRetryMax), for a row whose subject is the shape of
+// that backoff.
+func productionEnrollBackoff(r *rig) {
+	r.srv.EnrollRetryMin = defaultEnrollRetryMin
+	r.srv.EnrollRetryMax = defaultEnrollRetryMax
 }
 
 // TestSignAnswersNoCredentialWhileTheHelperHoldsNone: sign and sign-request for a registered
@@ -581,13 +586,13 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheCredentialWentAwayUnderTheRene
 // woken by a login alone leaves the renew unsent until the backoff comes round, and the
 // launcher gate spends its wait on a backoff this confirmation has no part in.
 func TestANameTakenDuringAnEnrollRetryConfirmsItsInheritedEnrollmentAtOnce(t *testing.T) {
+	// Serial: its assertion is a time: the named register must answer within 1 s, a span of real
+	// time the package's parallel rigs and helper subprocesses would stretch.
+	//
 	// At the production enroll backoff, one second doubling to a minute: the rig's own 20 ms to
 	// 100 ms retry would try again every 100 ms through the delay below, and any of those tries
 	// after the rename answers the register inside the second with no wake at all.
-	r, _, _, release := reclaimedIdentityRig(t, func(r *rig) {
-		r.srv.EnrollRetryMin = time.Second
-		r.srv.EnrollRetryMax = time.Minute
-	})
+	r, _, _, release := reclaimedIdentityRig(t, productionEnrollBackoff)
 	release() // nothing holds the confirming renew here: this fake answers it as a healthy broker does
 
 	// The unnamed register, which starts the enroll loop. Every enroll fails at once for want

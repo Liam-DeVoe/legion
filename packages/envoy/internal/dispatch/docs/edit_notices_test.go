@@ -721,13 +721,14 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	}
 
 	// Bob's settlement moved the notice on by this service's own quiet time, so the notice goes
-	// once that has passed: the bound is the quiet time and the base's ten seconds past it, not the
-	// package's give-up wait, which a notice moved on by production's thirty seconds would pass.
+	// once that has passed. The clock starts when the sweep that met the settlement ends, after
+	// the settlement. The bound is the quiet time and ten seconds, not the package's give-up wait,
+	// which a notice moved on by production's thirty seconds would pass.
 	sentBy := service.editNoticeQuiet + 10*time.Second
 	deadline := time.Now().Add(sentBy)
 	for len(humanEdits(t, service.store, artifactID)) == 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("no notice went within %v of bob's settlement, its quiet time of %v and ten seconds", sentBy, service.editNoticeQuiet)
+			t.Fatalf("no notice went within %v of the end of the sweep that met bob's settlement, its quiet time of %v and ten seconds", sentBy, service.editNoticeQuiet)
 		}
 		if _, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background())); err != nil {
 			t.Fatalf("sweep after the quiet time: %v", err)

@@ -1,9 +1,5 @@
 package main
 
-// TestThermoOpsListenerConfigDefaultsToLoopback and TestThermoOpsListenerConfigAllowsExplicitWidening
-// set listener settings with t.Setenv, which panics the process beside t.Parallel, so they are
-// serial (dispatch://INFRA-1075).
-
 import (
 	"context"
 	"errors"
@@ -19,6 +15,7 @@ import (
 )
 
 func TestThermoOpsListenerConfigDefaultsToLoopback(t *testing.T) {
+	// Serial: it sets listener settings with t.Setenv, which panics beside t.Parallel.
 	t.Setenv("ENVOY_MACHINE_ID", "thermo-ops")
 	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
 	t.Setenv("ENVOY_LISTEN_HOST", "")
@@ -47,6 +44,7 @@ func TestThermoOpsListenerConfigDefaultsToLoopback(t *testing.T) {
 }
 
 func TestThermoOpsListenerConfigAllowsExplicitWidening(t *testing.T) {
+	// Serial: it sets listener settings with t.Setenv, which panics beside t.Parallel.
 	t.Setenv("ENVOY_MACHINE_ID", "thermo-ops")
 	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
 	t.Setenv("ENVOY_LISTEN_HOST", "0.0.0.0")

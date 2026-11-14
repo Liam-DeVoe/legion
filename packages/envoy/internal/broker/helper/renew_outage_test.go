@@ -125,6 +125,8 @@ func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 		{"a lease that outlives it", 180 * outageUnit, false},
 	} {
 		t.Run(c.what, func(t *testing.T) {
+			// Serial: its assertion is a time: renewLoop's real timers land within 100 ms of the
+			// model's instants.
 			want := model.WorstFor(leasetime.RenewerHelper, c.lease, sweep)
 			if want.Survived() == c.wantLapse {
 				t.Fatalf("the model renews a lease of %v at %v, which survives %v; this row wants a lapse: %v", c.lease, want.Renewed, want.Survived(), c.wantLapse)

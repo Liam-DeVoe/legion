@@ -267,6 +267,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 		},
 	} {
 		t.Run(route.name, func(t *testing.T) {
+			// Serial: its assertion is a time: the answer lands inside within.
 			relay := startListenerRelay(t, testnats.URL(t))
 			client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
 			if err != nil {

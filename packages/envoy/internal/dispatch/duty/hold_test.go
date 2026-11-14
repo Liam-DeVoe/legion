@@ -62,6 +62,7 @@ func waitLost(t *testing.T, hold *duty.Hold, within time.Duration) {
 // nothing here waits for it to run out: a runner that descheduled the test for longer than a
 // short TTL, with the renewals behind it, would read a lapse as a take-over.
 func TestHoldRefusesASecondHolderWhileTheFirstHoldsItLive(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	opts := duty.HoldOptions{TTL: time.Minute, Renew: 500 * time.Millisecond, Margin: time.Second}
@@ -109,13 +110,16 @@ func waitForLapse(t *testing.T, db duty.Holds) {
 // ran, and that moment is at or after the lapse and inside the try that made it.
 //
 // The take-over is read from below, against the lapse the dying holder's row named, and from
-// above, against the database's clock read just before and just after the one try. The row
-// allowed a second after the lapse instead until this round, which measured the poll loop it
-// used to make the take with: a runner that descheduled the test between two tries moved the
-// take without the hold moving at all (dispatch://INFRA-1075). What the standby owes is a take
-// on the first try once the row has lapsed, recorded as that try's own moment, and that is what
-// the one try below reads - the try before the lapse is refused, the try after it must take the
-// name however late the runner lets it run, and the take it records must fall inside it.
+// above, against the database's clock read just before and just after the one try. It is not
+// read as a second after the lapse: that measures the poll loop that makes the take, and a
+// runner that descheduled the test between two tries would move the take without the hold
+// moving at all. What the standby owes is a take on the first try once the row has lapsed,
+// recorded as that try's own moment, and that is what the one try below reads - the try before
+// the lapse is refused, the try after it must take the name however late the runner lets it run,
+// and the take it records must fall inside it.
+//
+// Serial: its assertion is a time - the standby's first try must land inside the 2 s TTL the
+// dying holder's take wrote, to be refused.
 func TestHoldTakesOverOnTheFirstTryAfterTheLapse(t *testing.T) {
 	database := storetest.Open(t)
 	dying := storetest.SecondProcess(t, database)
@@ -183,6 +187,7 @@ func TestHoldTakesOverOnTheFirstTryAfterTheLapse(t *testing.T) {
 // process's, which load can only lengthen. That the timer closes Lost at that deadline is
 // TestHoldClosesLostAtItsDeadlineWhenNoRenewalIsAnswered's subject, on a fake clock.
 func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
+	// Serial: it holds the hold's row locked open on purpose, in a transaction of its own.
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
@@ -231,6 +236,9 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 // Release frees the name at once, so a standby takes it on its next try, and wakes every session
 // listening on HoldReleasedChannel with the name.
 func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
+	// Serial: the hold must stay live until Release, which its renewals keep only while each is
+	// confirmed inside the 2 s loss deadline (TTL less Margin); a parallel batch's load can
+	// starve them.
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
@@ -274,6 +282,8 @@ func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
 // A renewal that affects no row - the row taken over by another holder after a lapse - closes Lost
 // at once, long before the loss deadline, and the holder's Release then leaves the new holder's
 // row alone.
+//
+// Serial: its assertion is a time - the hold records its loss within 3 s of the take-over.
 func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -292,8 +302,7 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 	// goroutine reads once it is scheduled to see Lost closed: a runner that descheduled the test
 	// past the deadline would otherwise fail a row whose loss landed seconds before it. The loss
 	// is owed by the first renewal after the take-over, one Renew of 200 ms away, and the record
-	// must put it within 3 s of the take-over, the bound this row's wait on Lost held before
-	// dispatch://INFRA-1075; eventWait below is the give-up alone.
+	// must put it within 3 s of the take-over; eventWait below is the give-up alone.
 	deadline := hold.Deadline()
 	waitLost(t, hold, eventWait)
 	if !hold.Deadline().Before(deadline) {
@@ -314,6 +323,9 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 // The token the take records reads back, SetToken replaces it, and SetToken on a row another
 // holder has taken changes nothing and reports the loss.
 func TestHoldTokenReadsBack(t *testing.T) {
+	// Serial: the hold must stay live until the row is taken over, which its renewals keep only
+	// while each is confirmed inside the 2 s loss deadline (TTL less Margin); a parallel batch's
+	// load can starve them.
 	database := storetest.Open(t)
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.first"}
 	ctx := context.Background()
@@ -357,6 +369,9 @@ func TestHoldTokenReadsBack(t *testing.T) {
 // those two statements took still falls outside the bracket: the now() plus or minus one second
 // mutants of this issue's plan (INFRA-985, task T7) are caught.
 func TestHoldExpiryMatchesTheDatabaseClock(t *testing.T) {
+	// Serial: Expiry and the read it is compared with must both fall between two of the hold's
+	// renewals, 500 ms apart, since a renewal moves expires_at; a parallel batch's load widens the
+	// time between the two statements.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
@@ -426,6 +441,7 @@ func lapsedExpiry(t *testing.T, database *store.Store) {
 // Options under which no renewal could be confirmed before the loss deadline are refused before
 // any statement is sent.
 func TestHoldRefusesOptionsNoRenewalCouldBeConfirmedUnder(t *testing.T) {
+	t.Parallel()
 	for _, opts := range []duty.HoldOptions{
 		{TTL: 6 * time.Second, Renew: 4 * time.Second, Margin: 2 * time.Second},
 		{TTL: 2 * time.Second, Renew: time.Second, Margin: 2 * time.Second},
@@ -466,6 +482,7 @@ func (unreadRow) Scan(...any) error { return errors.New("renewalsUnanswered answ
 // holds the deadline Margin ahead of the expiry, and this one holds that the timer fires on it,
 // which no real clock under a loaded runner could show.
 func TestHoldClosesLostAtItsDeadlineWhenNoRenewalIsAnswered(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
 		sent := time.Now()

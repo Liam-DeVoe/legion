@@ -1402,7 +1402,7 @@ func restoreAskBodySeed(t *testing.T, service *Service, artifactID string) {
 	if reason := readAskBlockStrictly(restored); reason != nil || restored.Attrs["urgency"] != "med" {
 		t.Fatalf("the seed put back reads %v with urgency %v, want it valid at med", reason, restored.Attrs["urgency"])
 	}
-	assertAskRepaired(t, service, artifactID, "ask-lists", "Should we ship?", []model.AskOption{
+	assertAskRepairedAt(t, service, restored, artifactID, "ask-lists", "Should we ship?", []model.AskOption{
 		{Label: "Ship", Description: "Release it"},
 		{Label: "Hold", Description: "Wait for review"},
 	})
@@ -3738,7 +3738,14 @@ func assertShipAskRow(t *testing.T, service *Service, artifactID, blockID string
 // wrote question and options to its open row.
 func assertAskRepaired(t *testing.T, service *Service, artifactID, blockID, question string, options []model.AskOption) {
 	t.Helper()
-	if got, exists := firstAsk(liveTree(t, service, artifactID)).Attrs["invalid"]; exists {
+	assertAskRepairedAt(t, service, firstAsk(liveTree(t, service, artifactID)), artifactID, blockID, question, options)
+}
+
+// assertAskRepairedAt is assertAskRepaired of ask, the document's first ask as the caller already
+// read it from the live tree.
+func assertAskRepairedAt(t *testing.T, service *Service, ask *pmdoc.Node, artifactID, blockID, question string, options []model.AskOption) {
+	t.Helper()
+	if got, exists := ask.Attrs["invalid"]; exists {
 		t.Fatalf("repaired ask invalid = %#v, want it cleared", got)
 	}
 	state, gotQuestion, gotOptions := blockAskRow(t, service, artifactID, blockID)

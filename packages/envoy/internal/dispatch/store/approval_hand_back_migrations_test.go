@@ -184,7 +184,7 @@ func TestMigrate0064To0066RecordApprovalHandBacks(t *testing.T) {
 func TestMigrate0066GivesUpBeforeACommentWriteThatWritesAsksDeadlocks(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
-	store.Locking = pgmigrate.Locking{Timeout: pgmigrate.LockTimeout, Attempts: testLocking.Attempts, RetryPause: testLocking.RetryPause}
+	store.Locking.Timeout = pgmigrate.LockTimeout
 	migrateThrough(t, store, 65)
 	logs := captureLogs(t)
 	var askID string

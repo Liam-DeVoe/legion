@@ -532,16 +532,17 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 					return nil
 				})
 				return func() (time.Duration, error) {
+					var w writes
 					took, err := cpuTimeOf(func() func() {
 						doc := crdt.New()
 						written := doc.GetXmlFragment("prosemirror")
 						if seed != nil {
-							writeUpdate(t, doc, written, seed)
+							w.update(doc, written, seed)
 						}
 						fragment = written
-						return func() { writeUpdate(t, doc, written, want) }
+						return func() { w.update(doc, written, want) }
 					})
-					return took, errors.Join(err, readBack())
+					return took, errors.Join(err, w.err, readBack())
 				}
 			})
 		})
@@ -551,20 +552,22 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 			// Headings and paragraphs alternate, and every block becomes a paragraph: every heading
 			// is a run of its own, between two paragraphs Update keeps.
 			seed := repeatedBlocks(t, "#\n\na\n\n", blocks/2)
-			from := func() (*crdt.Doc, *crdt.YXmlFragment) {
+			from := func(w *writes) (*crdt.Doc, *crdt.YXmlFragment) {
 				doc := crdt.New()
 				fragment := doc.GetXmlFragment("prosemirror")
-				writeUpdate(t, doc, fragment, seed)
+				w.update(doc, fragment, seed)
 				return doc, fragment
 			}
 			want := repeatedBlocks(t, "a\n\n", blocks)
 			update := func() (time.Duration, error) {
 				var fragment *crdt.YXmlFragment // the last run's, which every run's write matches
+				var w writes
 				took, err := cpuTimeOf(func() func() {
-					doc, written := from()
+					doc, written := from(&w)
 					fragment = written
-					return func() { writeUpdate(t, doc, written, want) }
+					return func() { w.update(doc, written, want) }
 				})
+				err = errors.Join(err, w.err)
 				if got, readErr := Read(fragment); readErr != nil || !got.Equal(want) {
 					// Returned rather than failed here: this runs on runWithDeadline's goroutine
 					// (timedWithDeadline reports it on the test's own).
@@ -573,8 +576,9 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 				return took, err
 			}
 			walks := func() (time.Duration, error) {
-				return cpuTimeOf(func() func() {
-					doc, fragment := from()
+				var w writes
+				took, err := cpuTimeOf(func() func() {
+					doc, fragment := from(&w)
 					return func() {
 						doc.Transact(func(txn *crdt.Transaction) {
 							for index := 0; index < blocks; index += 2 {
@@ -584,6 +588,7 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 						})
 					}
 				})
+				return took, errors.Join(err, w.err)
 			}
 			// Each sample of Update is taken beside one of the walks, in turn, so a change in the
 			// machine's load during the test reaches both sides of the ratio alike; each side keeps
@@ -630,8 +635,23 @@ func repeatedBlocks(t *testing.T, unit string, blocks int) *Node {
 // writeUpdate writes tree into fragment in one transaction of doc.
 func writeUpdate(t *testing.T, doc *crdt.Doc, fragment *crdt.YXmlFragment, tree *Node) {
 	t.Helper()
-	if err := doc.TransactE(func(txn *crdt.Transaction) error { return Update(txn, fragment, tree) }); err != nil {
-		t.Fatalf("update: %v", err)
+	var w writes
+	w.update(doc, fragment, tree)
+	if w.err != nil {
+		t.Fatal(w.err)
+	}
+}
+
+// writes makes the writes of a call that runs on runWithDeadline's goroutine and keeps the first
+// one's error, for the call to return with its own: a t.Fatalf there would end that goroutine
+// rather than the test (timedWindow says why), so timedWithDeadline reports it on the test's own.
+type writes struct{ err error }
+
+// update writes tree into fragment in one transaction of doc, and keeps Update's error if it is
+// the first.
+func (w *writes) update(doc *crdt.Doc, fragment *crdt.YXmlFragment, tree *Node) {
+	if err := doc.TransactE(func(txn *crdt.Transaction) error { return Update(txn, fragment, tree) }); err != nil && w.err == nil {
+		w.err = fmt.Errorf("update: %w", err)
 	}
 }
 

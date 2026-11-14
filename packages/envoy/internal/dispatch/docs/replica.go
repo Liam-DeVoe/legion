@@ -390,13 +390,13 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 		}
 		r.touched.reset()
 		if err := crdt.ApplyUpdateV1(r.doc, update.Update, nil); err != nil {
-			r.writes().Error("dispatch: apply a committed update to the document's rendered copy", "room", room, "error", err)
+			r.logger().Error("dispatch: apply a committed update to the document's rendered copy", "room", room, "error", err)
 			r.recover(room, updates[i:], note)
 			return settles, changed, local
 		}
 		if update.Parked != nil {
 			if err := crdt.ApplyUpdateV1(r.doc, update.Parked, nil); err != nil {
-				r.writes().Error("dispatch: apply what a committed update parked to the document's rendered copy", "room", room, "error", err)
+				r.logger().Error("dispatch: apply what a committed update parked to the document's rendered copy", "room", room, "error", err)
 				r.recover(room, updates[i:], note)
 				return settles, changed, local
 			}
@@ -559,7 +559,7 @@ func (r *renderedReplica) standsAt(mark forkReadMark) bool {
 func (r *renderedReplica) start(room string, base []byte) {
 	doc := newDocumentCopy()
 	if err := crdt.ApplyUpdateV1(doc, base, nil); err != nil {
-		r.writes().Error("dispatch: make the document's rendered copy", "room", room, "error", err)
+		r.logger().Error("dispatch: make the document's rendered copy", "room", room, "error", err)
 		r.loaded = weak.Pointer[replicaRendering]{}
 		r.doc, r.fragment, r.rendering = nil, nil, nil
 		r.verdict.Store(int32(verdictUnknown))
@@ -649,7 +649,7 @@ func (r *renderedReplica) recover(room string, unplaced []crdt.LoggedUpdate, not
 	for _, update := range unplaced {
 		r.consumed(update)
 	}
-	r.writes().Error("dispatch: the document's rendered copy starts again at the room's next commit; updates it could not place count as content changes",
+	r.logger().Error("dispatch: the document's rendered copy starts again at the room's next commit; updates it could not place count as content changes",
 		"room", room, "updates", len(unplaced))
 	for _, update := range unplaced {
 		note(update, true, nil)
@@ -750,11 +750,6 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 	defer r.mu.Unlock()
 	settles, _, _ = r.drainLocked(room)
 	return r.seq, settles
-}
-
-// writes is where the replica logs: the service that keeps it.
-func (r *renderedReplica) writes() *slog.Logger {
-	return r.logger()
 }
 
 // keepReplica makes the replica live's update observer keeps, moving through log, live's update
@@ -925,9 +920,9 @@ func (r *renderedReplica) updateChangesMarkdown(room string) (bool, func() map[s
 	if err != nil {
 		r.rendering = nil
 		if errors.Is(err, ErrDocOutsideSchema) {
-			r.writes().Warn("dispatch: updated document outside Proof schema", "room", room, "error", err)
+			r.logger().Warn("dispatch: updated document outside Proof schema", "room", room, "error", err)
 		} else {
-			r.writes().Error("dispatch: read updated document", "room", room, "error", err)
+			r.logger().Error("dispatch: read updated document", "room", room, "error", err)
 		}
 		return true, nil
 	}
@@ -981,7 +976,7 @@ func (r *renderedReplica) spliceTouched(room string) (changed bool, asks func() 
 		for _, index := range layout.AskBlocks() {
 			block, err := read(index)
 			if err != nil {
-				r.writes().Error("dispatch: read a block of the updated document to list its ask blocks", "room", room, "error", err)
+				r.logger().Error("dispatch: read a block of the updated document to list its ask blocks", "room", room, "error", err)
 				return nil
 			}
 			addAskBlockIDs(ids, block)

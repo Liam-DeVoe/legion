@@ -89,19 +89,17 @@ type Deps struct {
 	// itself rather than through embeddings_enqueue, so no notification announces what it makes
 	// pending, and Run's scan loop wakes on this instead. Nil for a caller that builds Deps itself.
 	enqueued chan struct{}
-	// idle and coverageWaiting are the two ends of Run's work, for a test that must know the
+	// idle and coverageParked are the two ends of Run's work, for a test that must know the
 	// process has finished all of it: idle is called whenever the scan loop waits with nothing
-	// owed and nothing due (duty.WokenLoop.Idle), and coverageWaiting each time the coverage
-	// loop settles into its wait with nothing left to do (runCoverage). The coverage loop is
-	// not a thing that ends - it rechecks the identity for as long as the process runs - so
-	// what a test can wait for is the loop parked, not the loop returned. coverageAwaitingAnswer
-	// is the coverage loop's other wait: called each time it parks on the embedder's first
-	// answer after a pass that skipped the identity steps for want of one, while that answer is
-	// still to come (runCoverage). Nil in production and for a caller that builds Deps itself;
-	// a test of this package sets them (dispatch://INFRA-1075).
-	idle                   func()
-	coverageWaiting        func()
-	coverageAwaitingAnswer func()
+	// owed and nothing due (duty.WokenLoop.Idle), and coverageParked each time the coverage loop
+	// settles into a wait (runCoverage). The coverage loop is not a thing that ends - it
+	// rechecks the identity for as long as the process runs - so what a test can wait for is the
+	// loop parked, not the loop returned. awaitingAnswer names the wait: false for the wait with
+	// nothing left to do, true for the wait on the embedder's first answer after a pass that
+	// skipped the identity steps for want of one, while that answer is still to come. Nil in
+	// production and for a caller that builds Deps itself; a test of this package sets them.
+	idle           func()
+	coverageParked func(awaitingAnswer bool)
 }
 
 // proof is a record, set once, that an Embed call this process's queue made has succeeded.

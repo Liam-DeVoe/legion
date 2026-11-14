@@ -1,8 +1,5 @@
 package bus_test
 
-// Every test here but TestClientCountsSlowConsumers sets NATS_NKEY_SEED with t.Setenv, which
-// panics the process beside t.Parallel, so those are serial (dispatch://INFRA-1075).
-
 import (
 	"os"
 	"testing"
@@ -45,6 +42,7 @@ func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 
 // A user granted the shared role-lane queue group subscribes in it.
 func TestRoleLaneSubscribesInTheSharedQueueGroup(t *testing.T) {
+	// Serial: it sets NATS_NKEY_SEED with t.Setenv, which panics beside t.Parallel.
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, "_INBOX.>", contracts.RoleTopicPrefix+"> "+bus.RoleLaneQueue), []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)
@@ -67,6 +65,7 @@ func TestRoleLaneSubscribesInTheSharedQueueGroup(t *testing.T) {
 // is refused the shared group, and the lane subscribes in the machine's group instead and receives
 // role messages there.
 func TestRoleLaneFallsBackToTheMachinesQueueGroupWhenTheSharedOneIsRefused(t *testing.T) {
+	// Serial: it sets NATS_NKEY_SEED with t.Setenv, which panics beside t.Parallel.
 	seed, public := testnats.User(t)
 	machineQueue := bus.ListenerQueue(roleLaneMachine)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, "_INBOX.>", contracts.RoleTopicPrefix+"> "+machineQueue), []string{"-js"}, false)
@@ -88,6 +87,7 @@ func TestRoleLaneFallsBackToTheMachinesQueueGroupWhenTheSharedOneIsRefused(t *te
 
 // A user granted neither group gets an error, not a lane that delivers nothing.
 func TestRoleLaneWithNeitherQueueGroupGrantedIsAnError(t *testing.T) {
+	// Serial: it sets NATS_NKEY_SEED with t.Setenv, which panics beside t.Parallel.
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, "_INBOX.>"), []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)

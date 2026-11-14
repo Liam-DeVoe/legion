@@ -617,6 +617,7 @@ func TestProcessBatchNeverMarksARowPermanentWhenItsContextEndsMidBisection(t *te
 // runs - needed since bisecting a batch every one of whose rows fails can itself take minutes,
 // longer than claimWindow.
 func TestClaimRenewalExtendsNextAttemptAtPastClaimWindow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "RNWL", "RNWL-1", "A title")
 	ctx := context.Background()
@@ -708,6 +709,7 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 // claimRenewal still protects: a resolved row's next_attempt_at is untouched by a later renewal,
 // while an unresolved sibling's is still pushed out.
 func TestClaimRenewalResolveStopsRenewingACommittedRow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "RSLV", "RSLV-1", "A good title")
 	seedIssue(t, database, "RSLV", "RSLV-2", "A pending title")
@@ -1330,6 +1332,7 @@ func (e *wiringCheckEmbedder) Embed(ctx context.Context, texts []string, _ embed
 }
 
 func TestProcessBatchActuallyCallsRenewalAndReservesTokens(t *testing.T) {
+	// Serial: it sets renewClaimInterval, a package variable every claim renewal reads.
 	database := storetest.Open(t)
 	ids := []string{"WIRE-1", "WIRE-2"}
 	for i, id := range ids {
@@ -1477,8 +1480,8 @@ func runQueue(t *testing.T, deps Deps) (stop func()) {
 
 // runReturnBound is how soon Run must return once its context ends: its loops wait on nothing
 // that does not also end with it, so a statement in flight is cancelled and each loop returns
-// from its wait at once. Ten seconds is the bound runQueue held every Run to before
-// dispatch://INFRA-1075, kept for the one row whose subject it is.
+// from its wait at once. It is the subject of the one test below; runQueue's wait for every
+// other Run is eventWait, a hang guard.
 const runReturnBound = 10 * time.Second
 
 // Run returns within runReturnBound of its context ending, from its loops' waits: the scan loop
@@ -1488,16 +1491,16 @@ const runReturnBound = 10 * time.Second
 func TestRunReturnsWithinItsBoundOnceItsContextEnds(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "STOP", "STOP-1", "Embedded at boot")
-	coverageWaiting := make(chan struct{})
+	parked := make(chan struct{})
 	idle := make(chan struct{}, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		Run(ctx, Deps{
-			Store:           database,
-			Embedder:        newSyncEmbedder(configuredIdentity),
-			coverageWaiting: sync.OnceFunc(func() { close(coverageWaiting) }),
+			Store:          database,
+			Embedder:       newSyncEmbedder(configuredIdentity),
+			coverageParked: closeOnceSettled(parked),
 			idle: func() {
 				select {
 				case idle <- struct{}{}:
@@ -1516,7 +1519,7 @@ func TestRunReturnsWithinItsBoundOnceItsContextEnds(t *testing.T) {
 		}
 	})
 	select {
-	case <-coverageWaiting:
+	case <-parked:
 	case <-time.After(eventWait):
 		t.Fatalf("Run's coverage loop did not report itself parked within %s", eventWait)
 	}
@@ -1534,6 +1537,17 @@ func TestRunReturnsWithinItsBoundOnceItsContextEnds(t *testing.T) {
 		t.Logf("Run returned %s after its context ended", time.Since(ended).Round(time.Millisecond))
 	case <-time.After(runReturnBound):
 		t.Fatalf("Run did not return within %s of its context ending", runReturnBound)
+	}
+}
+
+// closeOnceSettled is a Deps.coverageParked that closes parked the first time the coverage loop
+// settles with nothing owed, and passes over its wait on the embedder's first answer.
+func closeOnceSettled(parked chan struct{}) func(awaitingAnswer bool) {
+	settled := sync.OnceFunc(func() { close(parked) })
+	return func(awaitingAnswer bool) {
+		if !awaitingAnswer {
+			settled()
+		}
 	}
 }
 
@@ -1572,7 +1586,7 @@ func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 //
 // It waits for the two ends of Run's own work, which Run reports, rather than for a window in
 // which nothing happened to be running. The coverage loop reports itself parked
-// (Deps.coverageWaiting) with its pass done, nothing owed and its next recheck
+// (Deps.coverageParked) with its pass done, nothing owed and its next recheck
 // identityRecheckInterval away, so it will write no more rows and signal no more wakes; and the
 // scan loop reports the state the woken shape exists for - nothing owed, nothing due, no timer
 // armed, no wake waiting (duty.WokenLoop.Idle). Neither can come early: the coverage loop
@@ -1586,30 +1600,30 @@ func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 // loop's last write says nothing about the rows it wrote. So this drops whatever report is in
 // hand and then wakes the queue itself (Deps.Wake), which buys one more pass, whose idle report
 // is necessarily made after everything the coverage pass wrote and after any wake it left in
-// the buffer. That is stronger than the quiet window this waited for on main, which failed at
-// random because a wake Cover left in the buffer earned a pass five seconds (retryInterval)
-// into the window the test had already called quiet (dispatch://INFRA-1075). The window below
-// is no longer what rules a period out - the two reports do that - but a guard on anything else
-// in the process that might still make a statement, and it stays far shorter than
+// the buffer. A quiet window alone would not do: a wake Cover left in the buffer earns a pass
+// five seconds (retryInterval) into a window the test has already called quiet. The window below
+// rules no period out - the two reports do that - but guards against anything else in the
+// process that might still make a statement, and it stays far shorter than
 // identityRecheckInterval, which this test leaves at its ten minutes.
 //
 // Real time, over a window longer than retryInterval: every statement it counts is one on a
 // Postgres pool, which no synctest bubble can hold, and the window is the test's own guard
 // rather than a constant any call takes.
 func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
+	// Serial: its assertion is a quiet window: no statement for 7 s once Run's two reports are in.
 	database := storetest.Open(t)
 	seedIssue(t, database, "IDLE", "IDLE-1", "Enqueued by its trigger")
 	insertCommentWithWindow(t, database.Pool, "IDLE-1", "A comment its indexer windowed")
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	coverageWaiting := make(chan struct{})
+	parked := make(chan struct{})
 	idle := make(chan struct{}, 1)
 	wake := make(chan struct{})
 	runQueue(t, Deps{
-		Store:           counted,
-		Embedder:        newSyncEmbedder(configuredIdentity),
-		Wake:            wake,
-		coverageWaiting: sync.OnceFunc(func() { close(coverageWaiting) }),
+		Store:          counted,
+		Embedder:       newSyncEmbedder(configuredIdentity),
+		Wake:           wake,
+		coverageParked: closeOnceSettled(parked),
 		idle: func() {
 			select {
 			case idle <- struct{}{}:
@@ -1618,7 +1632,7 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 		},
 	})
 	select {
-	case <-coverageWaiting:
+	case <-parked:
 	case <-time.After(30 * time.Second):
 		t.Fatal("Run's coverage loop did not report itself parked within 30s")
 	}
@@ -1648,6 +1662,8 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 // signal after its LISTEN earned has run, is embedded within 6 seconds, and nothing else would
 // have scanned for it. embeddings_enqueue_window announces on the same channel as
 // embeddings_enqueue, so a window wakes the queue exactly as a whole-text row did.
+//
+// Serial: its assertion is a time - the comment is embedded within 6 s of its write.
 func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "NTFY", "NTFY-1", "Written before the queue started")
@@ -1681,6 +1697,7 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 // claim lapses, by the scan the due time the queue read after its last scan arms: no write, no
 // wake and no ticker brings it.
 func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
+	// Serial: its assertion is a time - the row is embedded within 3 s of its claim lapsing.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "CLAM", "CLAM-1", "Claimed by a process that crashed")
@@ -1763,6 +1780,7 @@ func TestScanPassReturnsWhenThePendingRowsFallDue(t *testing.T) {
 // A throttled batch waits retryInterval plus its backoff before the next one, so a throttle
 // episode never sends calls more often than the scan ticker did.
 func TestAThrottledScanWaitsAtLeastRetryIntervalBeforeItsNextBatch(t *testing.T) {
+	// Serial: its assertion is a quiet window: no second batch inside retryInterval less 500 ms.
 	database := storetest.Open(t)
 	seedIssue(t, database, "THSC", "THSC-1", "A title")
 	embedder := &fakeEmbedder{err: embedtest.FakeThrottleError{Code: "ThrottlingException"}}

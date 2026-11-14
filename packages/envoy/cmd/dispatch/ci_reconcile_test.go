@@ -123,7 +123,7 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 	// The line carries those fields, with records, in the order the pass first wrote them: a
 	// field added to the line is written after the fields already there (cireconcile/counts.go,
 	// report), so a change of that order is a change to every reader of the line.
-	if line := ciReconcilePassLines(process.Output.String())[at]; !ciReconcilePassFieldOrder.MatchString(line) {
+	if line := process.logLines(ciReconcilePassMsg)[at]; !ciReconcilePassFieldOrder.MatchString(line) {
 		t.Errorf("the pass that read %s wrote its first eight fields out of their order, want %s: %s", head, ciReconcilePassFieldOrder, line)
 	}
 	// That head's record is changed once in the life of this process: the pass that first reads

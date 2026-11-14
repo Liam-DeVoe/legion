@@ -75,6 +75,7 @@ func (g *periodGate) periods() []time.Time {
 // every period, a property of the ratio and not of the second. cmd/dispatch passes each loop's
 // own interval.
 func TestRunLeasedServesEveryPeriodOfALoneLoopWhosePassesTakeTime(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		const name = "document-compaction"
 		const interval, passTime = 300 * time.Millisecond, 120 * time.Millisecond

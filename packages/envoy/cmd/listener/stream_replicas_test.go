@@ -59,6 +59,8 @@ func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsThe
 	// process beside t.Parallel.
 	for _, drift := range bustest.StreamDrifts() {
 		t.Run(drift.Name, func(t *testing.T) {
+			// Serial: listenerSettings sets the listener's settings with t.Setenv, which panics
+			// the process beside t.Parallel.
 			cluster := testnats.StartCluster(t, 3)
 			js := cluster.JetStream(t)
 			deployed := bustest.DeployedThreeCopyStream(drift.Change)

@@ -49,7 +49,7 @@ func shortTempDir(t *testing.T) string {
 // once, so the production second-to-a-minute enroll backoff and two-second revoke would be the
 // whole of a row's clock rather than anything it measures. A row whose subject is the shape of a
 // retry - that a login wakes one, that a backoff grows - passes tune and sets its own
-// (dispatch://INFRA-1075).
+// (productionEnrollBackoff).
 const (
 	testEnrollRetryMin = 20 * time.Millisecond
 	testEnrollRetryMax = 100 * time.Millisecond

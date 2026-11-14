@@ -565,16 +565,16 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // lost (lease.go:551-557), so a release inside the grace is a holder that gave the hold up early.
 // Load can only make that bound safer, since a loaded machine delays the release and never
 // hastens it. Above, the release must come within 500 ms of the grace, and the event written
-// after it must be published within 10 s of the cut, the bounds this row held before
-// dispatch://INFRA-1075: the cut closes the connection, so the loss is reported by the client's
-// own connection event (bus.Client.Connected reads the connection's status, nats.go:573-577) and
-// nothing polls on an interval, which leaves between the grace and the release only a run of
-// goroutine wakes - the client's callback, the holder's wake, the timer, serve's return and
-// publish's clearing of the hold (lease.go:443-451). A release well past the grace is a holder
-// that kept the hold through an outage it should have given up, and a wait on eventWait would
-// pass it. Those 500 ms ran out once under CI's eight concurrent go test calls (run
-// 42949344199); the row keeps them all the same, and keeps this package's other tests off the
-// machine while it runs.
+// after it must be published within 10 s of the cut: the cut closes the connection, so the loss
+// is reported by the client's own connection event (bus.Client.Connected reads the connection's
+// status, nats.go:573-577) and nothing polls on an interval, which leaves between the grace and
+// the release only a run of goroutine wakes - the client's callback, the holder's wake, the
+// timer, serve's return and publish's clearing of the hold (lease.go:443-451). A release well
+// past the grace is a holder that kept the hold through an outage it should have given up, and a
+// wait on eventWait would pass it. Those 500 ms ran out once under CI's eight concurrent go test
+// calls (run 42949344199); the row keeps them all the same. Running serial keeps this package's
+// parallel tests from running beside it, though the other packages' tests still share the
+// machine.
 //
 // Serial: its assertion is a time - the release must fall between natsLossGrace and 500 ms past
 // it, and the publish within 10 s of the cut (docs/testing.md). Besides, a holder whose renewals
@@ -819,16 +819,14 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	// reported here - so a scan is the reading that it ran the grace out, read the client's
 	// status and served on. The wait is a hang guard, eventWait: how long after the grace the
 	// scan lands is this machine's to say, and the row asserts that it happened at all and that
-	// serve never returned, never that it landed inside a second of the grace's end
-	// (dispatch://INFRA-1075). serve ending settles the wait too, so the row fails as what it
-	// is rather than at the guard.
+	// serve never returned, never that it landed inside a second of the grace's end. serve
+	// ending settles the wait too, so the row fails as what it is rather than at the guard.
 	waitFor(t, eventWait, "the holder scanning once the grace ended with its client connected", func() bool {
 		return outbox.claims.Load() > 0 || len(ended) > 0
 	})
 	// Serving on is more than the one scan: a holder that scanned as the grace ended and gave
 	// the hold up a moment later would pass a read taken at the scan. So serve must not end for
-	// a second after it, as the base required for natsLossGrace and a second after the
-	// reconnect; load can only lengthen this window, never cut it short.
+	// a second after it; load can only lengthen this window, never cut it short.
 	select {
 	case end := <-ended:
 		t.Fatalf("the holder stopped serving (%s) though its client read connected when the grace ended", end)
