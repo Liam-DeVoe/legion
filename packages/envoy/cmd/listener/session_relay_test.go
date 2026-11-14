@@ -1123,7 +1123,7 @@ accounts {
 }
 `
 	_, uri := testnats.StartConfig(t, config, []string{"-js"}, false)
-	uri = strings.Replace(uri, "nats://", "nats://listener:listener@", 1)
+	uri = asListenerUser(t, uri)
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "session-consumers-refused")
 	listener.WaitExit(t, "its start")
