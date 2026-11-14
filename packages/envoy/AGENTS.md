@@ -6055,6 +6055,13 @@ against this one that exception costs a launch the time the confirmation in flig
 A broker that accepts the connection and never answers would otherwise hold each launch for the helper's whole client timeout (`leasetime.RenewClientTimeout`, 30 s), so the bound is what keeps an outage from spending a launcher gate's ten seconds, launch after launch, for as long as it lasts.
 With `--wait N --exec`, a session the helper cannot enroll for want of a credential starts with a warning that its `agent-secrets` calls fail until the machine is logged in.
 
+The helper gives every connection it accepts 5 s to carry its request and its reply, and a `register --wait N` that 5 s plus the wait.
+Each pass-through broker call — `login`, `enroll-session-key` and `unenroll-session-key` — runs under `DefaultBrokerCallBound` (20 s; `Server.SetBrokerCallBound` names another, which only a test does), and the connection's deadline is moved to that bound plus 5 s, so the reply of a call that ran the whole bound is still written.
+A call that runs out of the bound is answered with its own op's code (`LOGIN_FAILED`, `ENROLL_FAILED` or `UNENROLL_FAILED`) saying it timed out, never with an empty reply.
+The bound sits under the 30 s `agent-secrets enroll --helper` and `unenroll --helper` give one call (`enrollRetryingDrain`), which is what the defect cost: the call ran to the HTTP client's own 30 s (`leasetime.RenewClientTimeout`), the enrollment was made, its reply could not be written past the 5 s deadline, and the launcher read an empty reply and exited 1 (dispatch://INFRA-49/comment/9bf092b6).
+`Broker.Login` carries the caller's deadline into the device authorization POST as that one call's HTTP client timeout (`deviceAuthContext`), because x/oauth2 builds that request without the context and a deadline alone cannot cut it.
+`agent-secrets machine login` waits 10 s for its own call, so against a broker slower than that it gives up before the bound; the login the helper started goes on, and the next `machine login` reports that pending login's code.
+
 `agent-secrets machine list|revoke` and `agent-secrets grant list|revoke` (`machine.go`, `grant.go`, dispatched by `cmdGroup` from the `commands` rows) are the operator routes from the person's own shell, under this machine's login:
 the CLI asks the helper for a launcher proof with the `sign-launcher` op (`launcherSigner`), whose key never leaves the helper, and calls `/v1/operator/*` with it.
 The helper signs only the four operator routes under its own `AGENT_SECRETS_URL` (`operatorRoute`;

@@ -42,6 +42,13 @@ type Server struct {
 	// the rows that read a reclaimed identity sets a minute, so their own ordering cannot race
 	// the bound, and the row that reads the bound itself sets one short enough to be quick.
 	FirstConfirmBound time.Duration
+	// brokerCallBoundNS is DefaultBrokerCallBound unless SetBrokerCallBound names another: how
+	// long one pass-through broker call (passThroughOps) may run before the helper answers that
+	// it timed out. Atomic for the reason dormantGraceNS is: a test sets it on a Server that is
+	// already serving, and the handler goroutine that reads it is reached over a socket, which
+	// -race sees no happens-before across. The rows that prove an 8-second broker is answered
+	// name none, so they run against the real bound.
+	brokerCallBoundNS atomic.Int64
 	// dormantGraceNS is DefaultDormantGrace unless SetDormantGrace names another: how long a
 	// named session's identity is kept for it to come back to before SweepDormant revokes it.
 	// Atomic, because a test sets it while the Server's own goroutines (retire, Recover's log
@@ -75,6 +82,12 @@ func (s *Server) Serve(ctx context.Context, ln *net.UnixListener) error {
 // 6.5) still enrols a box's key and still logs this machine in.
 var peerOps = map[string]bool{"register": true, "sign": true, "sign-request": true, "sign-launcher": true, "unregister": true}
 
+// passThroughOps are the ops whose whole work is one call to the broker: each runs under
+// brokerCallBound, and the connection's deadline is moved past that bound so the reply of a
+// call that ran the whole of it can still be written. login-status is not one of them: it
+// answers from what the Broker already holds and makes no call.
+var passThroughOps = map[string]bool{"login": true, "enroll-session-key": true, "unenroll-session-key": true}
+
 func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
@@ -99,6 +112,16 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 			s.reply(conn, Response{Code: CodeUnidentified, Error: "the peer exited before it was identified"})
 			return
 		}
+	}
+	// A pass-through op's broker call runs under the bound, and the connection stays writable
+	// past it: the request has been read, so this deadline is the reply's (brokerCallBound).
+	callCtx := ctx
+	if passThroughOps[req.Op] {
+		bound := s.brokerCallBound()
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, bound)
+		defer cancel()
+		_ = conn.SetDeadline(time.Now().Add(bound + replyWriteSlack))
 	}
 	var resp Response
 	switch req.Op {
@@ -144,7 +167,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		// login, login-status, enroll-session-key and unenroll-session-key are pass-through broker
 		// calls, not registry-session ops: a key the helper does not hold is not a registry session
 		// (see Broker.EnrollSessionKey), so none of these needs peer's pid at all.
-		resp = s.login(ctx)
+		resp = s.login(callCtx)
 	case "login-status":
 		resp = s.loginStatus()
 	case "enroll-session-key":
@@ -152,9 +175,9 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 			resp = drainingResponse
 			break
 		}
-		resp = s.enrollSessionKey(ctx, req.RuntimeID, req.Thumbprint, req.SessionID)
+		resp = s.enrollSessionKey(callCtx, req.RuntimeID, req.Thumbprint, req.SessionID)
 	case "unenroll-session-key":
-		resp = s.unenrollSessionKey(ctx, req.EnrollmentID)
+		resp = s.unenrollSessionKey(callCtx, req.EnrollmentID)
 	default:
 		resp = Response{Code: CodeBadRequest, Error: "unknown op " + req.Op}
 	}
@@ -709,13 +732,69 @@ func (s *Server) drain() Response {
 	return Response{OK: true, Sessions: infos}
 }
 
+// DefaultBrokerCallBound is how long a pass-through op's broker call (passThroughOps) may run
+// before the helper answers that it timed out: 20 s, one bound for all three, because all
+// three are the same thing — one round trip to the broker that a person or a launcher is
+// waiting on at the other end of the socket.
+//
+// The number comes from the client's wait, not from the call. `agent-secrets enroll --helper`
+// and `unenroll --helper` give one call 30 s (helper.Call in cmd/agent-secrets/enroll.go), and
+// the reply has to be written inside that: 20 s of call plus replyWriteSlack is 25 s, which
+// leaves the client's dial and the reply itself the 5 s that are left. Nothing else bounded
+// these calls, so until now they ran to the HTTP client's own whole-call timeout
+// (leasetime.RenewClientTimeout, 30 s), which is longer than the client waits at all: the
+// enrollment was made, the reply could not be written, and the client read an empty one
+// (dispatch://INFRA-49/comment/9bf092b6).
+//
+// It is far past a healthy call. An enrollment is one POST the broker answers in a fraction of
+// a second (DefaultFirstConfirmBound's note measures the same round trip), so a call that
+// reaches 20 s is a broker that took the connection and is not answering, and the bound is
+// what turns that into an answer the caller can act on rather than silence.
+//
+// `agent-secrets machine login` waits 10 s for its own call (cmd/agent-secrets/machine.go), so
+// against a broker slower than that it still gives up before the bound. That costs it nothing:
+// the login the helper started goes on, and the next `machine login` reports that pending
+// login's own code (Broker.Login). A bound short enough for that client would be shorter than
+// a slow enrollment that must still answer, which is the call this bound exists for.
+const DefaultBrokerCallBound = 20 * time.Second
+
+// replyWriteSlack is how long past a bounded broker call the connection stays writable, so the
+// reply of a call that ran its whole bound can always be written: the 5 s the request's own
+// read is given, which is the slack a `register --wait` adds to its wait as well.
+const replyWriteSlack = 5 * time.Second
+
+// SetBrokerCallBound chooses this Server's bound on one pass-through broker call; zero restores
+// DefaultBrokerCallBound. Safe to call while the Server runs, which is why the field behind it
+// is atomic.
+func (s *Server) SetBrokerCallBound(d time.Duration) { s.brokerCallBoundNS.Store(int64(d)) }
+
+// brokerCallBound is this Server's bound for one pass-through broker call, DefaultBrokerCallBound
+// when it names none.
+func (s *Server) brokerCallBound() time.Duration {
+	if ns := s.brokerCallBoundNS.Load(); ns > 0 {
+		return time.Duration(ns)
+	}
+	return DefaultBrokerCallBound
+}
+
+// brokerCallFailure is the error a pass-through op's refusal carries. Where the bound ended the
+// call rather than the broker answering, it says the call timed out and names the bound: the
+// caller must be able to tell a broker that refused from one that did not answer, and the
+// context's own `context deadline exceeded` says neither who stopped waiting nor for how long.
+func (s *Server) brokerCallFailure(ctx context.Context, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Sprintf("the call to the broker timed out after %s: %v", s.brokerCallBound(), err)
+	}
+	return err.Error()
+}
+
 // login starts (or reports the running) machine login and returns its human-facing
 // confirmation code and the page where a person types it (the broker's verification_uri). A pass-through broker call: it needs no registered session, so the
 // dispatcher closes peer before calling it.
 func (s *Server) login(ctx context.Context) Response {
 	code, err := s.Broker.Login(ctx, s.Hostname)
 	if err != nil {
-		return Response{Code: CodeLoginFailed, Error: err.Error()}
+		return Response{Code: CodeLoginFailed, Error: s.brokerCallFailure(ctx, err)}
 	}
 	ls := s.Broker.LoginStatus()
 	return Response{OK: true, Code: code, LoginState: ls.State, VerificationURI: ls.VerificationURI}
@@ -818,7 +897,7 @@ func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint str
 		if s.lacksCredential(err) {
 			s.Log.Error(cannotEnrollMsg, "runtime_id", runtimeID, "why", s.Broker.noCredentialReason())
 		}
-		return Response{Code: CodeEnrollFailed, Error: err.Error()}
+		return Response{Code: CodeEnrollFailed, Error: s.brokerCallFailure(ctx, err)}
 	}
 	return Response{OK: true, EnrollmentID: id, LeaseExpires: lease.UTC().Format(time.RFC3339Nano)}
 }
@@ -830,7 +909,7 @@ func (s *Server) unenrollSessionKey(ctx context.Context, enrollmentID string) Re
 		return Response{Code: CodeBadRequest, Error: "unenroll-session-key needs enrollment_id"}
 	}
 	if err := s.Broker.Revoke(ctx, enrollmentID); err != nil {
-		return Response{Code: CodeUnenrollFailed, Error: err.Error()}
+		return Response{Code: CodeUnenrollFailed, Error: s.brokerCallFailure(ctx, err)}
 	}
 	return Response{OK: true}
 }

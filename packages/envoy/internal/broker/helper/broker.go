@@ -280,6 +280,27 @@ func (b *Broker) httpClient() *http.Client {
 	return b.HTTP
 }
 
+// deviceAuthContext is ctx carrying the client the device authorization POST is sent with.
+// x/oauth2 builds that one request WITHOUT the context — retrieveDeviceAuth
+// (golang.org/x/oauth2@v0.37.0, deviceauth.go) calls internal.ContextClient(ctx).Do(req) on a
+// request it never attaches ctx to — so a caller's deadline cannot cut the call and only the
+// client's own Timeout bounds it. This gives the client the caller's deadline as that timeout
+// where the caller has one, so a login the helper bounds (Server.brokerCallBound) ends at its
+// bound rather than running on under a broker that took the connection and does not answer. A
+// caller with no deadline keeps whatever timeout b.HTTP carries, and the token endpoint needs
+// none of this: x/oauth2 does attach the context to those requests.
+func (b *Broker) deviceAuthContext(ctx context.Context) context.Context {
+	client := b.httpClient()
+	if deadline, ok := ctx.Deadline(); ok {
+		bounded := *client
+		// A Timeout of zero or less is no timeout at all, so a deadline already passed gets the
+		// shortest one there is instead of none.
+		bounded.Timeout = max(time.Until(deadline), time.Nanosecond)
+		client = &bounded
+	}
+	return context.WithValue(ctx, oauth2.HTTPClient, client)
+}
+
 // tokenContext is ctx carrying the client x/oauth2 sends token requests with: b.HTTP's transport
 // and timeout, with a DPoP proof of key on every request, as the broker's token endpoint requires.
 func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) context.Context {
@@ -354,7 +375,7 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 		return "", err
 	}
 	cfg := b.oauthConfig()
-	da, err := cfg.DeviceAuth(context.WithValue(ctx, oauth2.HTTPClient, b.httpClient()),
+	da, err := cfg.DeviceAuth(b.deviceAuthContext(ctx),
 		oauth2.SetAuthURLParam("request", compact), oauth2.SetAuthURLParam("dpop_jkt", thumbprint))
 	if err != nil {
 		return "", oauthBrokerError(redact.Error(err, b.URL))

@@ -155,6 +155,37 @@ type fakeBroker struct {
 	// refuseKinds answers an enroll naming one of these kinds 400 INVALID_KIND, as a broker before
 	// the session kind refuses "session".
 	refuseKinds map[string]bool
+	// answerDelay, set through slowAnswers, holds each call of the three pass-through ops — the
+	// enroll POST, the revoke DELETE and the device authorization — for that long before it is
+	// answered, so a test can drive a broker slower than the helper's own bound
+	// (DefaultBrokerCallBound) without touching the calls its rig's own login and sessions make.
+	// A caller that gives up ends the wait (hold reads its request's context), so a row past the
+	// bound costs the fake nothing after the helper has answered it.
+	answerDelay time.Duration
+}
+
+// slowAnswers makes this broker take d to answer every call of the three pass-through ops, from
+// now on; zero makes it quick again.
+func (f *fakeBroker) slowAnswers(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answerDelay = d
+}
+
+// hold waits out answerDelay, or until the caller gives up, whichever comes first. Deliberately
+// outside f.mu: a slow call must not stop this broker answering anything else, and the helper's
+// own loops keep calling while one is held.
+func (f *fakeBroker) hold(r *http.Request) {
+	f.mu.Lock()
+	d := f.answerDelay
+	f.mu.Unlock()
+	if d <= 0 {
+		return
+	}
+	select {
+	case <-time.After(d):
+	case <-r.Context().Done():
+	}
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -165,6 +196,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/enrollments", func(w http.ResponseWriter, r *http.Request) {
+		f.hold(r)
 		f.mu.Lock()
 		f.enrollArrivals++
 		gate := f.enrollGate
@@ -233,6 +265,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		writeJSON(w, 201, map[string]string{"enrollment_id": id, "lease_expires_at": lease.UTC().Format(time.RFC3339Nano)})
 	})
 	mux.HandleFunc("DELETE /v1/enrollments/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.hold(r)
 		if r.Header.Get("Proof") == "" {
 			writeJSON(w, 401, map[string]string{"code": "LAUNCHER_INVALID", "error": "no proof presented"})
 			return
@@ -342,6 +375,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		writeJSON(w, 200, map[string]string{"lease_expires_at": lease.UTC().Format(time.RFC3339Nano)})
 	})
 	mux.HandleFunc("POST /v1/oauth/device_authorization", func(w http.ResponseWriter, r *http.Request) {
+		f.hold(r)
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		_ = r.ParseForm()
