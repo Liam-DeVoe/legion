@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -548,6 +549,92 @@ func TestARefusalsLineCountsTheNamesAsItWritesThem(t *testing.T) {
 	}
 	if left := len(named) - len(listed); line.Omitted == nil || *line.Omitted != left {
 		t.Fatalf("secrets_omitted = %v, want %d, the names the line left out", line.Omitted, left)
+	}
+}
+
+// Every text field of a line the broker writes about a request is cut to its first 256 bytes where
+// it enters the line (answer.ClipFields), so the line stays under the 262,144 bytes of one Cloud
+// Logging entry whatever the caller sends (ca-refusal-record, Verification v15). Each row sends
+// 300 KB through one field: the API port's method and X-Correlation-Id, through the recorder; a
+// correlation id handed to answer.RefusalLine whole; a port's own field before correlation_id and
+// one after it, as the airlock's proxy port names its host and its slot; and a field of a line
+// built by answer.ClipFields alone, as the airlock's call line is, both a string and an error,
+// as the airlock's upstream failure line names the transport's. Each row writes its line through
+// the broker's own JSON handler (logging.NewCloudHandler), reads its length, and reads the field
+// back as the first 256 bytes of what was sent. The airlock's own rows, sent through its proxy,
+// are airlockproxy's TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote.
+//
+// The named revert: let one field pass answer.ClipFields uncut; that field's row writes a line of
+// about 300 KB and fails.
+func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
+	const entryLimit = 256 << 10
+	// The caller's text: not one byte repeated, so its first 256 bytes are no other 256 of it.
+	sent := strings.Repeat("abcdefghij", 30000)
+	want := sent[:256]
+	// refused is one request to the API port, changed by edit, that its route refuses.
+	refused := func(edit func(*http.Request)) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/requests", nil)
+		edit(req)
+		answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
+		}), nil).ServeHTTP(httptest.NewRecorder(), req)
+	}
+	// airlockLine is a refusal's line as the airlock's proxy port fills it (refusalFields).
+	airlockLine := answer.RefusalLine{ID: answer.NewID(), Status: http.StatusForbidden, Code: "NOT_ALLOWED",
+		Method: http.MethodGet, CallerClass: answer.CallerAirlock}
+	driven := 0
+	for _, row := range []struct {
+		name, field string
+		// write writes the row's one line.
+		write func()
+	}{
+		{"the API port's method", "method", func() {
+			refused(func(req *http.Request) { req.Method = sent })
+		}},
+		{"the API port's X-Correlation-Id", "correlation_id", func() {
+			refused(func(req *http.Request) { req.Header.Set("X-Correlation-Id", sent) })
+		}},
+		{"a correlation id handed to the line whole", "correlation_id", func() {
+			line := airlockLine
+			line.Correlation = sent
+			slog.Warn(answer.RefusalMessage, line.Fields(nil)...)
+		}},
+		{"a port's own field before correlation_id", "host", func() {
+			slog.Warn(answer.RefusalMessage, airlockLine.Fields([]any{"host", sent, "reason", "not allowed by rule", "path", "/v1/"})...)
+		}},
+		{"a port's own field after correlation_id", "slot", func() {
+			slog.Warn(answer.RefusalMessage, airlockLine.Fields(nil, "issue", "INFRA-1352", "slot", sent)...)
+		}},
+		{"a field of a line built by answer.ClipFields", "path", func() {
+			slog.Info("a call line", answer.ClipFields([]any{"answer_id", answer.NewID(), "method", http.MethodGet, "path", sent, "status", http.StatusOK})...)
+		}},
+		{"an error of a line built by answer.ClipFields", "error", func() {
+			slog.Warn("an upstream line", answer.ClipFields([]any{"host", "example.com", "path", "/v1/", "error", errors.New(sent)})...)
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			driven++
+			out := &logtest.Buffer{}
+			logtest.SetDefault(t, logging.NewCloudHandler(out))
+			row.write()
+			lines := slices.Collect(strings.Lines(out.String()))
+			if len(lines) != 1 {
+				t.Fatalf("the row wrote %d lines, want 1", len(lines))
+			}
+			if size := len(lines[0]); size >= entryLimit {
+				t.Fatalf("the line is %d bytes, want under the %d bytes of one Cloud Logging entry", size, entryLimit)
+			}
+			var fields map[string]any
+			if err := json.Unmarshal([]byte(lines[0]), &fields); err != nil {
+				t.Fatalf("the line is not one JSON object: %v", err)
+			}
+			if kept, _ := fields[row.field].(string); kept != want {
+				t.Fatalf("the line's %s is %d bytes, want the first 256 of the %d sent: %.80q", row.field, len(kept), len(sent), kept)
+			}
+		})
+	}
+	if driven != 7 {
+		t.Fatalf("the table drove %d fields, want 7", driven)
 	}
 }
 

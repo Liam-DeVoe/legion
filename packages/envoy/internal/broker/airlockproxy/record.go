@@ -1,11 +1,14 @@
 // packages/envoy/internal/broker/airlockproxy/record.go
-// What every answer of the proxy port records: an answer id, which the answer carries in its
-// X-Broker-Answer-Id header (answer.Header); its count on broker_answers_total under caller
-// class airlock, the counter the API port's answers are counted on (answer.Count); and, for a
-// refusal, the one line refuse writes (bound.go). The API port's recorder is answer.Middleware;
-// this port has its own, because what its refusals name - the host, the reason, the grant - is
-// this package's, and because its answers are tunnels, joins and streams that a recorder holding
-// a body back would break.
+// What each answer a handler of the proxy port writes records: an answer id, which the answer
+// carries in its X-Broker-Answer-Id header (answer.Header); its count on broker_answers_total
+// under caller class airlock, the counter the API port's answers are counted on (answer.Count);
+// and, for a refusal, the one line refuse writes (bound.go). The answers net/http writes itself
+// before any handler runs - a 400 for a malformed request, a 431, a 417, and the inner server's
+// 400 "Client sent an HTTP request to an HTTPS server" to plain HTTP on a decrypted connection -
+// record none of these. The API port's recorder is answer.Middleware; this port has its own,
+// because what its refusals name - the host, the reason, the grant - is this package's, and
+// because its answers are tunnels, joins and streams that a recorder holding a body back would
+// break.
 package airlockproxy
 
 import (

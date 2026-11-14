@@ -43,6 +43,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -123,8 +124,10 @@ type Options struct {
 	// Log is where the line for each call to a bound host goes, and the line for each refusal of
 	// this port. Nil is slog.Default().
 	Log *slog.Logger
-	// Answers is broker_answers_total (answer.NewAnswers), which every answer of this port is
-	// counted on under caller class airlock, beside the API port's answers. Nil counts nothing.
+	// Answers is broker_answers_total (answer.NewAnswers), which each answer a handler of this
+	// port writes is counted on under caller class airlock, beside the API port's answers; an
+	// answer net/http writes itself before any handler runs is counted nowhere. Nil counts
+	// nothing.
 	Answers *metrics.Counter
 	// Dial is how every upstream connection is made; nil is a net.Dialer. It is handed the
 	// address the proxy resolved and checked, never a host name, so a replacement of it
@@ -177,7 +180,8 @@ type Server struct {
 	dial   func(ctx context.Context, network, addr string) (net.Conn, error)
 	now    func() time.Time
 
-	// answers is Options.Answers, which record counts every answer of the port on.
+	// answers is Options.Answers, which record counts each answer a handler of the port writes
+	// on.
 	answers *metrics.Counter
 	// resolve answers the addresses a host has, the ones refuseLocalAddress reads. It is
 	// Options.Resolve, and net.DefaultResolver's lookup for a proxy given none.
@@ -322,16 +326,21 @@ func New(o Options) *Server {
 	// routing it through the broker's logger keeps it out of a bare stderr write.
 	errorLog := log.New(slogWriter{log: s.log}, "", 0)
 	s.outer = &http.Server{
-		// Every answer of this server is recorded (record): a CONNECT the proxy takes over
-		// answers 200 on the connection itself.
+		// Every answer a handler of this server writes is recorded (record): a CONNECT the
+		// proxy takes over answers 200 on the connection itself. net/http's own answers, which
+		// it writes before any handler runs (a 400 for a malformed request, a 431, a 417), are
+		// not.
 		Handler:           s.record(http.StatusOK, s.serveProxy),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
 		ErrorLog:          errorLog,
 	}
 	s.inner = &http.Server{
-		// Every answer of this server is recorded (record): an upgrade ReverseProxy joins to
-		// its service answers 101 on the connection itself.
+		// Every answer a handler of this server writes is recorded (record): an upgrade
+		// ReverseProxy joins to its service answers 101 on the connection itself. net/http's
+		// own answers, which it writes before any handler runs, are not: a 400 for a malformed
+		// request, a 431, a 417, and the 400 "Client sent an HTTP request to an HTTPS server"
+		// to plain HTTP on a connection the proxy decrypts.
 		Handler:           s.record(http.StatusSwitchingProtocols, s.serveBound),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
@@ -746,12 +755,18 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	proxy.ServeHTTP(w, r)
 }
 
+// upstreamMessage is the message of the line a call the proxy could not carry to its service logs
+// (badGateway).
+const upstreamMessage = "airlock proxy: upstream"
+
 // badGateway answers a service that could not be reached or did not answer: a failure, which it
 // logs and counts, and no refusal. The error is the transport's own and carries no header of the
-// request, so nothing of the grant is in it.
+// request, so nothing of the grant is in it. The path, and on a plain request the host, are the
+// caller's, and the error may quote the host, so the line passes answer.ClipFields as a call's
+// line does, and stays one Cloud Logging entry whatever the caller sent.
 func (s *Server) badGateway(host, path string) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, _ *http.Request, err error) {
-		s.log.Warn("airlock proxy: upstream", "host", host, "path", path, "error", err)
+		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", err})...)
 		fail(w, http.StatusBadGateway, codeUpstream, host+": "+err.Error())
 	}
 }

@@ -1,7 +1,10 @@
-// Package answer records every answer of the broker's API port. Middleware wraps the mux that
-// port serves (cmd/broker puts only the request deadline, which writes no answer, outside it), so
-// it sees the answer of every route, of the OAuth provider's library, of the approval page and of
-// the mux's own 404 and 405, whichever writer wrote it. For each answer it:
+// Package answer records each answer a handler of the broker's API port writes. Middleware wraps
+// the mux that port serves (cmd/broker puts only the request deadline, which writes no answer,
+// outside it), so it sees the answer of every route, of the OAuth provider's library, of the
+// approval page and of the mux's own 404 and 405, whichever of them wrote it. It never sees the
+// answers net/http writes itself before any handler runs - a 400 for a malformed request, a 431
+// for headers over its limit, a 417 for an Expect it does not know - so those carry no answer id,
+// are counted nowhere and write no line. For each answer it sees it:
 //
 //   - mints an answer id, which the answer carries in its X-Broker-Answer-Id header and, in a
 //     JSON refusal body, as answer_id, so a refused caller has a thing to quote;
@@ -10,7 +13,9 @@
 //     status, the code, the method, the route, the caller's class and identity, the secret names
 //     the request named (SecretNames: the first of them, up to 32 KiB of names as the line writes
 //     them, and how many it named), and the caller's X-Correlation-Id when it sent one. Those
-//     fields are RefusalLine's, which the airlock's proxy port writes its refusal line by too.
+//     fields are RefusalLine's, which the airlock's proxy port writes its refusal line by too, and
+//     each text field of them is cut to fieldBytes (ClipFields), so whatever the caller sends,
+//     the line stays one Cloud Logging entry.
 //
 // A refusal is an answer with a status from 400 to 499. Three of them are counted and write no
 // line, because a caller is told each again and again while nothing changes: a 429, and the OAuth
@@ -56,15 +61,18 @@ import (
 // reader filters the broker's refusals on.
 const RefusalMessage = "broker: answer refused"
 
-// Header is the answer's own header naming its answer id, which every answer of the port carries.
+// Header is the answer's own header naming its answer id, which every answer a handler of either
+// port writes carries, and no answer net/http writes itself before any handler runs.
 const Header = "X-Broker-Answer-Id"
 
 // correlationHeader is the header a caller names its own request id in, which the refusal line
 // carries as correlation_id, at most fieldBytes of it.
 const correlationHeader = "X-Correlation-Id"
 
-// fieldBytes bounds each piece of caller-written text a refusal's line keeps (Clip): the
-// correlation id, the method, each secret name, and on the airlock's proxy port the host and path.
+// fieldBytes bounds each text field of a line the broker writes about a request (clip,
+// ClipFields): whatever the caller wrote into it - the method, the path, the host, a reason or
+// an error that quotes the host or its address, the correlation id, each secret name, a form
+// field or a person a relay names - is at most this many bytes of it.
 const fieldBytes = 256
 
 // secretNamesBytes bounds the secret names a refusal's line lists (SecretNames), counted as the
@@ -257,7 +265,7 @@ func (rec *Recorder) NoteSecrets(names ...string) {
 }
 
 // SecretNames is the secret names a request named as a refusal's line lists them: the first of
-// them, in the request's order and each cut by Clip, up to secretNamesBytes of names as the line
+// them, in the request's order and each cut by clip, up to secretNamesBytes of names as the line
 // writes them (listedBytes), and a count of the names after them. The first name that would pass
 // the bound ends the list, so the list is always a prefix of what the request named, and the
 // names it leaves out are counted, never kept. Middleware's Recorder notes the API port's names on
@@ -275,7 +283,7 @@ type SecretNames struct {
 func (n *SecretNames) Note(names ...string) {
 	for _, name := range names {
 		if n.omitted == 0 {
-			name = Clip(name)
+			name = clip(name)
 			if written := listedBytes(name); n.bytes+written <= secretNamesBytes {
 				n.listed = append(n.listed, name)
 				n.bytes += written
@@ -346,7 +354,7 @@ type RefusalLine struct {
 	// Status is the answer's status, and Code the code it names.
 	Status int
 	Code   string
-	// Method is the request's method, which the line cuts by Clip.
+	// Method is the request's method, which the line cuts as it cuts every text field (Fields).
 	Method string
 	// Route is the pattern of the route the API port's mux matched, and empty for none.
 	Route string
@@ -365,13 +373,18 @@ type RefusalLine struct {
 // caller sent one, then trailing, a port's own fields that come after it. The API port has none of
 // either; the airlock's proxy port names its host, reason and path as extras, and its issue and
 // slot as trailing.
+//
+// Every text field of the line, extras and trailing included, is cut by clip here (ClipFields),
+// where it enters the line, rather than by each writer: the method, the host and the path are
+// the caller's own text, and a reason may quote the host, so a field a writer adds later is cut
+// with them. The secret names are a list, which SecretNames bounds.
 func (l RefusalLine) Fields(extras []any, trailing ...any) []any {
 	fields := make([]any, 0, 22+len(extras)+len(trailing))
 	fields = append(fields,
 		"answer_id", l.ID,
 		"status", l.Status,
 		"code", l.Code,
-		"method", Clip(l.Method),
+		"method", l.Method,
 		"route", l.Route,
 		"caller_class", l.CallerClass,
 		"caller", l.Caller,
@@ -381,7 +394,7 @@ func (l RefusalLine) Fields(extras []any, trailing ...any) []any {
 	if l.Correlation != "" {
 		fields = append(fields, "correlation_id", l.Correlation)
 	}
-	return append(fields, trailing...)
+	return ClipFields(append(fields, trailing...))
 }
 
 // NoteCode names the code of the refusal about to be written, for a writer whose body names none
@@ -539,8 +552,9 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 // Count counts one answer the broker wrote on answers (nil counts nothing): an answer of status
 // naming answerCode, which is HTTP_<status> when it names none codePattern accepts, for a caller
 // of class. Its outcome is read from the two (outcomeOf). It is the one rule of
-// broker_answers_total's labels: Middleware counts every answer of the API port by it, and the
-// airlock's proxy port every answer it writes itself.
+// broker_answers_total's labels: Middleware counts by it each answer a handler of the API port
+// writes, and the airlock's proxy port each answer it writes itself. An answer net/http writes
+// before any handler runs is counted by neither.
 func Count(answers *metrics.Counter, status int, answerCode, class string) {
 	if !codePattern.MatchString(answerCode) {
 		answerCode = httpCode(status)
@@ -648,8 +662,8 @@ func withAnswerID(body []byte, id string) []byte {
 	return append(out, body[end:]...)
 }
 
-// NewID is a fresh answer id: 16 random bytes, in hex. Middleware mints one for each answer of
-// the API port, and the airlock's proxy port one for each of its own.
+// NewID is a fresh answer id: 16 random bytes, in hex. Middleware mints one for each answer it
+// records, and the airlock's proxy port one for each of its own.
 func NewID() string {
 	var id [16]byte
 	_, _ = rand.Read(id[:])
@@ -670,11 +684,44 @@ func CorrelationID(r *http.Request) string {
 	return string(kept)
 }
 
-// Clip cuts caller-written text to fieldBytes, dropping a rune the cut splits: what a refusal's
-// line keeps of the method, a secret name, and on the airlock's proxy port the host and the path.
-func Clip(text string) string {
+// clip cuts caller-written text to its first fieldBytes, dropping a rune the cut splits: what a
+// line written for an answer keeps of each text field (ClipFields), and a refusal's line of each
+// secret name (SecretNames).
+func clip(text string) string {
 	if len(text) <= fieldBytes {
 		return text
 	}
 	return strings.ToValidUTF8(text[:fieldBytes], "")
+}
+
+// ClipFields cuts each text value of fields, a line's attributes as slog takes them, by clip, in
+// place, and answers fields. It is where the caller's text enters a line the broker writes about
+// a request: the refusal line of either port (RefusalLine.Fields), the airlock's call line and its
+// upstream failure line, and the API port's and the approval page's lines that name a form
+// field, an approver or a provider's error pass their whole list through it. So each text field
+// - the method, the path, the host, a reason or an error that quotes the host or its address,
+// the correlation id, and any field a line adds later - is at most fieldBytes, and the line stays
+// under the 262,144 bytes of one Cloud Logging entry whatever the caller sends. A text value is a
+// string, or an error, whose text a longer one is written as once cut; a value that is neither,
+// such as the secret names' list, is written as it is. It reads the list as slog does: a string
+// is a key and the value after it, and anything else in a key's place, a slog.Attr, is an
+// argument of its own.
+func ClipFields(fields []any) []any {
+	for i := 0; i < len(fields); i++ {
+		if _, key := fields[i].(string); !key || i+1 == len(fields) {
+			continue
+		}
+		i++
+		switch value := fields[i].(type) {
+		case string:
+			if len(value) > fieldBytes {
+				fields[i] = clip(value)
+			}
+		case error:
+			if text := value.Error(); len(text) > fieldBytes {
+				fields[i] = clip(text)
+			}
+		}
+	}
+	return fields
 }

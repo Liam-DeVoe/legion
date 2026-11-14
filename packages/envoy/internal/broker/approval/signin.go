@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
@@ -119,7 +120,9 @@ func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) 
 		return
 	}
 	if providerError := query.Get("error"); providerError != "" {
-		slog.Warn("approval sign-in refused by the provider", "error", providerError)
+		// The error is the callback's query, which whoever holds the browser writes, so the line
+		// cuts it (answer.ClipFields).
+		slog.Warn("approval sign-in refused by the provider", answer.ClipFields([]any{"error", providerError})...)
 		writeMessage(w, http.StatusForbidden, codeSignInProviderRefused, say("Not signed in",
 			"The sign-in provider did not sign you in. Open the request again to try once more."))
 		return

@@ -624,11 +624,12 @@ func main() {
 			}
 		}})
 	// The answer recorder wraps the mux itself, inside the request deadline, which writes no
-	// answer, so it sees every answer of this port, whichever writer wrote it: the API's routes,
-	// the OAuth provider's library, the approval page and the mux's own 404 and 405
-	// (answer.Middleware), and reads each one's route from the request it hands the mux. Its
-	// counter is built on the registry the metrics port serves, and the airlock's proxy port
-	// counts its answers on it too.
+	// answer, so it sees every answer a handler of this port writes, whichever writer wrote it:
+	// the API's routes, the OAuth provider's library, the approval page and the mux's own 404
+	// and 405 (answer.Middleware), and reads each one's route from the request it hands the mux.
+	// It sees none of the answers net/http writes itself before any handler runs, such as its
+	// 400 for a malformed request, 431 and 417. Its counter is built on the registry the metrics
+	// port serves, and the airlock's proxy port counts its answers on it too.
 	answers := answer.NewAnswers(registry)
 	srv := &http.Server{
 		Handler:           withRequestDeadline(answer.Middleware(mux, answers), requestDeadline),

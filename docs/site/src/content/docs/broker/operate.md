@@ -922,9 +922,9 @@ Its fields:
   for that refusal, else `HTTP_<status>`, which is what a path no route serves (`404`) and a
   method a route does not take (`405`) are written as. A code is a letter and then at most 63
   letters, digits and underscores, and anything else is written as `HTTP_<status>`.
-- `method` and `route`: the request's method, and the API route that took it, such as
-  `POST /v1/requests`. The route is empty where no route took the request, and on the airlock's
-  proxy port.
+- `method` and `route`: the request's method, at most its first 256 bytes, and the API route
+  that took it, such as `POST /v1/requests`. The route is empty where no route took the request,
+  and on the airlock's proxy port.
 - `caller_class` and `caller`: how the broker learnt who sent the request, and who that is.
   - `public`: a route that takes no credential, or a path no route serves. `caller` is empty, but
     on the OAuth token route, where it is the OAuth client the token request named.
@@ -953,9 +953,10 @@ Its fields:
 
 A refusal of the airlock's proxy port has more fields:
 
-- `host`: the host the call was for.
-- `reason`: the proxy's own words for the refusal, such as `not allowed by rule`.
-- `path`: the request's path, without its query.
+- `host`: the host the call was for, at most its first 256 bytes.
+- `reason`: the proxy's own words for the refusal, such as `not allowed by rule`, at most its
+  first 256 bytes, since some of them name the host the caller asked for.
+- `path`: the request's path, without its query, at most its first 256 bytes.
 - `issue`: the issue key the grant's reason named, once a grant is proved.
 - `slot`: which of the secret's values the call used, where the line names one.
 
@@ -965,6 +966,10 @@ A refused call to a bound host writes this line in place of its call line,
 shows both). A `429` that the Azure token endpoint answers and the proxy forwards is no refusal:
 it keeps its call line at INFO, which names its answer id and its status, and writes no refusal
 line.
+
+Each field whose text the caller chose, on this line and on the call line alike, is cut to its
+first 256 bytes: the method, the path, the host, a reason that names the host, and the
+correlation id. So whatever a caller sends, each line stays within one Cloud Logging entry.
 
 No refusal line holds a secret's value or a placeholder, and the API port's line holds no message
 text either: it names the code. Each answer, a refusal or not, also counts in

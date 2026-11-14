@@ -594,8 +594,10 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status i
 // port's rule (answer.SecretNames) - and beside them the host, the reason and the path before the
 // caller's correlation id, and the issue the grant was given for and the slot after it. Never the
 // placeholder and never the value, as callFields: the reason is the broker's own words, which name
-// neither. The method, the host and the path are the caller's, each cut as the API port's line
-// cuts its method (answer.Clip).
+// neither. The method, the host and the path are the caller's, and a reason may quote the host
+// (serveConnect's target that is no host and port, and checkedAddresses' name that does not
+// resolve): RefusalLine.Fields cuts each of them, as it cuts every text field of the line
+// (answer.ClipFields).
 func (s *Server) refusalFields(id string, c call, r *http.Request, status int, code, reason string) []any {
 	line := answer.RefusalLine{ID: id, Status: status, Code: code, Method: r.Method,
 		CallerClass: answer.CallerAirlock, Caller: callerOf(c.grant), Correlation: answer.CorrelationID(r)}
@@ -610,10 +612,10 @@ func (s *Server) refusalFields(id string, c call, r *http.Request, status int, c
 		trailing = append(trailing, "slot", slot)
 	}
 	return line.Fields([]any{
-		"host", answer.Clip(c.host),
+		"host", c.host,
 		"reason", reason,
 		// The path alone, as callFields: a query can carry anything a command put in it.
-		"path", answer.Clip(r.URL.Path),
+		"path", r.URL.Path,
 	}, trailing...)
 }
 
@@ -622,7 +624,8 @@ func (s *Server) refusalFields(id string, c call, r *http.Request, status int, c
 // handled for, where it went, and how it ended. Never the placeholder and never the value - the
 // airlock exists so that neither is ever written down, and a log line is the first place one
 // would leak. The reason is there for a call that was not carried alone, so a line reads as
-// allowed, or as not and why.
+// allowed, or as not and why. Every text field is cut by answer.ClipFields, as the refusal line's
+// are, so whatever method and path the caller sent, the line stays one Cloud Logging entry.
 func (s *Server) callFields(id string, c call, r *http.Request, status int, reason string) []any {
 	fields := []any{
 		"answer_id", id,
@@ -643,7 +646,7 @@ func (s *Server) callFields(id string, c call, r *http.Request, status int, reas
 	if reason != "" {
 		fields = append(fields, "reason", reason)
 	}
-	return fields
+	return answer.ClipFields(fields)
 }
 
 // pair is one (name, slot) of a grant: which secret a request may be handled for, and which of

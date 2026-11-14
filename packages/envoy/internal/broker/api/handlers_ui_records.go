@@ -143,7 +143,9 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	if !requireApprover(w, body.Approver) {
 		return
 	}
-	slog.Info("decision relayed", "caller", who.account.Name, "approver", body.Approver, "record", recordID, "approve", approve)
+	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
+	// (answer.ClipFields).
+	slog.Info("decision relayed", answer.ClipFields([]any{"caller", who.account.Name, "approver", body.Approver, "record", recordID, "approve", approve})...)
 	s.decideMachineLogin(w, r, recordID, approve, body)
 }
 

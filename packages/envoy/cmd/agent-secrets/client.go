@@ -80,9 +80,10 @@ func newClient(baseURL string) *client {
 
 // apiError is the broker's {"code":...,"error":...,"answer_id":...} error envelope, plus the HTTP
 // status it came with. AnswerID is the id the broker's own record of the answer names: the body's
-// answer_id, else the X-Broker-Answer-Id header every answer carries, so a refusal whose body is
-// not the envelope (the broker's 404 for a path it does not serve) still names it. A broker from
-// before the id sends neither.
+// answer_id, else the X-Broker-Answer-Id header every answer the broker itself writes carries, so
+// a refusal whose body is not the envelope (the broker's 404 for a path it does not serve) still
+// names it. A broker from before the id sends neither, and neither does an answer net/http writes
+// before any of the broker's code runs, such as its 400 for a malformed request, 431 and 417.
 type apiError struct {
 	Status   int
 	Code     string
@@ -258,8 +259,9 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	return resp.StatusCode, data, nil
 }
 
-// answerIDHeader is the header every answer of the broker names its answer id in
-// (answer.Header in internal/broker/answer, which this client does not link).
+// answerIDHeader is the header every answer the broker itself writes names its answer id in
+// (answer.Header in internal/broker/answer, which this client does not link); net/http's own
+// 400, 431 and 417, written before any of the broker's code runs, carry none.
 const answerIDHeader = "X-Broker-Answer-Id"
 
 // errNothingSent is the cause of a call this client could not even build a request for.
