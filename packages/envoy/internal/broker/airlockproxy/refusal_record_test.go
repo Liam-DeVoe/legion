@@ -10,6 +10,7 @@ package airlockproxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -442,10 +443,11 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 }
 
 // TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote: a refusal's line, a call's line, a joined
-// connection's line and an upstream failure's line on the proxy port each fit one Cloud Logging
-// entry, 262,144 bytes, whatever the caller sends, because each text field of them is cut to its
-// first 256 bytes where it enters the line (answer.ClipFields; ca-refusal-record, Verification
-// v15). Each row sends 300 KB through one field the caller chose, on the real proxy of the rig:
+// connection's line, an upstream failure's line and net/http's own line on the proxy port each fit
+// one Cloud Logging entry, 262,144 bytes, whatever the caller sends, because each text field of
+// them is cut to its first 256 bytes where it enters the line (answer.ClipFields;
+// ca-refusal-record, Verification v15). Each row sends, through one field the caller chose, text
+// that writes that line at about 300 KB uncut, on the real proxy of the rig:
 //
 //   - of a refusal's line, the method, the host, the path and the X-Correlation-Id of a request
 //     that is no proxy request, and the reason in both its forms that quote the host - a CONNECT
@@ -458,12 +460,16 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 //     each joined and then closed by a grant that stopped carrying it;
 //   - of the upstream failure's line (badGateway), the path and the host of a plain proxy request
 //     whose service cannot be reached, and the error of one whose name answers the check and
-//     nothing to the transport's own lookup, which quotes that host.
+//     nothing to the transport's own lookup, which quotes that host;
+//   - of net/http's own line (slogWriter, the ErrorLog of both servers), the error of a TLS
+//     handshake that failed on a bound connection, whose ClientHello offers only protocols the
+//     proxy does not speak, which crypto/tls's error quotes whole.
 //
 // Each row writes its line through the broker's own JSON handler (logging.NewCloudHandler), reads
 // its length, and reads the field back as the first 256 bytes of the text it held, which for a
-// reason or an error is the proxy's words around the host. The table records which field of which
-// line it drove, and fails when it drove fewer than all of them.
+// reason or an error is the proxy's words around the host, and for net/http's error its words
+// around the client's address and the protocols it offered. The table records which field of
+// which line it drove, and fails when it drove fewer than all of them.
 //
 // The named revert: let one field pass answer.ClipFields uncut; that field's row writes a line of
 // about 300 KB and fails.
@@ -518,12 +524,25 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 	anyMethod := airlock.Rules{Secrets: []airlock.SecretRule{{
 		Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
 	}}}
+	// protocols is an ALPN list without http/1.1 that crypto/tls's client still sends: 240 names
+	// of 255 bytes, the most one name holds, which keeps the ClientHello under the 65,536 bytes
+	// crypto/tls's server reads of one handshake message. Each byte is one %q writes as four
+	// (\x00) and the JSON handler as five, so net/http's line quoting the list is about 300 KB
+	// uncut.
+	protocols := make([]string, 240)
+	for i := range protocols {
+		protocols[i] = strings.Repeat("\x00", 255)
+	}
+	// handshakeError is what net/http's line holds before the cut. It names the client's own
+	// address, which only the row's dial picks, so the row's send writes it.
+	var handshakeError string
 	// fields is every field of each line that holds the caller's text, each of which a row drives.
 	fields := map[string][]string{
 		answer.RefusalMessage: {"method", "host", "path", "correlation_id", "reason"},
 		callMessage:           {"method", "path"},
 		joinMessage:           {"method", "path"},
 		upstreamMessage:       {"path", "host", "error"},
+		netHTTPMessage:        {"error"},
 	}
 	drove := map[string]bool{}
 	driven := 0
@@ -532,7 +551,10 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 		// message is the line's, field the field the caller's text goes into, and held what that
 		// field holds before the cut.
 		message, field, held string
-		status               int
+		// heldBy, where set, answers held once send has run, for a field whose text names what
+		// only the row's own dial picks.
+		heldBy func() string
+		status int
 		// options is the rig's; the zero value is the plain rig every other row drives.
 		options Options
 		send    func(t *testing.T, r *rig) *http.Response
@@ -600,6 +622,20 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 				response, _ := r.get(r.client(workerPlaceholder), "http://"+sent+"/")
 				return response
 			}},
+		{name: "Go's HTTP server's error: a TLS handshake on a bound connection whose ClientHello offers no protocol the proxy speaks", message: netHTTPMessage, field: "error",
+			heldBy: func() string { return handshakeError }, status: http.StatusOK,
+			send: func(t *testing.T, r *rig) *http.Response {
+				response, conn, _ := r.connectRaw(boundHost+":443", basic(workerPlaceholder))
+				// net/http names the client by the address its CONNECT came from, this end of the
+				// connection, and crypto/tls quotes every protocol the client offered.
+				handshakeError = fmt.Sprintf("http: TLS handshake error from %s: tls: client requested unsupported application protocols (%q)",
+					conn.LocalAddr(), protocols)
+				client := tls.Client(conn, &tls.Config{ServerName: boundHost, RootCAs: r.trust, NextProtos: protocols})
+				if err := client.Handshake(); err == nil {
+					t.Fatal("the proxy finished a handshake whose ClientHello offered no protocol it speaks; want it refused")
+				}
+				return response
+			}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
@@ -611,9 +647,9 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 				t.Fatalf("the answer is %d with answer id %q, want %d with one", response.StatusCode, id, row.status)
 			}
 			// A call's line is written once its answer has been copied to the client, so it
-			// can come a moment after the client has read the answer. The upstream failure's line
-			// names no answer id, so it is read by its message alone: each row has a rig of its
-			// own.
+			// can come a moment after the client has read the answer, and net/http's once the
+			// handshake has failed. The upstream failure's line and net/http's name no answer id,
+			// so each is read by its message alone: each row has a rig of its own.
 			var lines []string
 			for deadline := time.Now().Add(10 * time.Second); len(lines) == 0 && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
 				for _, record := range r.logs.Records() {
@@ -643,8 +679,12 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			if err := json.Unmarshal([]byte(lines[0]), &written); err != nil {
 				t.Fatalf("the line is not one JSON object: %v", err)
 			}
-			if kept, _ := written[row.field].(string); kept != row.held[:256] {
-				t.Fatalf("the line's %s is %d bytes, want the first 256 of the %d it held: %.80q", row.field, len(kept), len(row.held), kept)
+			held := row.held
+			if row.heldBy != nil {
+				held = row.heldBy()
+			}
+			if kept, _ := written[row.field].(string); kept != held[:256] {
+				t.Fatalf("the line's %s is %d bytes, want the first 256 of the %d it held: %.80q", row.field, len(kept), len(held), kept)
 			}
 		})
 	}
@@ -656,8 +696,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			}
 		}
 	}
-	if driven != 14 || len(missing) != 0 {
-		t.Fatalf("the table drove %d fields, want 14; it never drove %v", driven, missing)
+	if driven != 15 || len(missing) != 0 {
+		t.Fatalf("the table drove %d fields, want 15; it never drove %v", driven, missing)
 	}
 }
 

@@ -697,12 +697,12 @@ func clip(text string) string {
 // ClipFields cuts each text value of fields, a line's attributes as slog takes them, by clip, in
 // place, and answers fields. It is where the caller's text enters a line the broker writes about
 // a request: the refusal line of either port (RefusalLine.Fields), the airlock's call line, its
-// joined connection's line and its upstream failure line, and the API port's and the approval
-// page's lines that name a form field, an approver or a provider's error pass their whole list
-// through it. So each text field - the method, the path, the host, a reason or an error that
-// quotes the host or its address, the correlation id, and any field a line adds later - is at
-// most fieldBytes, and the line stays under the 262,144 bytes of one Cloud Logging entry
-// whatever the caller sends.
+// joined connection's line, its upstream failure line and the line net/http writes through its
+// ErrorLog, and the API port's and the approval page's lines that name a form field, an approver
+// or a provider's error pass their whole list through it. So each text field - the method, the
+// path, the host, a reason or an error that quotes the host or its address, the correlation id,
+// and any field a line adds later - is at most fieldBytes, and the line stays under the 262,144
+// bytes of one Cloud Logging entry whatever the caller sends.
 //
 // It reads the list as slog does, so that what it cuts is what the line writes: a string is a
 // key and the value after it, a string with no value after it is written as the value of

@@ -793,11 +793,21 @@ func hijack(hijacker http.Hijacker) (net.Conn, error) {
 	return conn, nil
 }
 
-// slogWriter is net/http's ErrorLog as one slog line each.
+// netHTTPMessage is the message of the line net/http writes through the ErrorLog of either
+// server (slogWriter): a connection that failed before a handler saw it, such as a TLS handshake
+// on a bound connection that failed.
+const netHTTPMessage = "airlock proxy: net/http"
+
+// slogWriter is net/http's ErrorLog as one slog line each, under netHTTPMessage with net/http's
+// own text as its error. That text can quote what the client sent: a handshake that failed on a
+// bound connection is logged with crypto/tls's error, which for an ALPN list without http/1.1
+// quotes the client's whole list, up to about 64 KB of protocol names, each byte of which %q may
+// write as four and the JSON handler then escapes again. So the error passes answer.ClipFields as
+// a call's line does, and the line stays one Cloud Logging entry whatever the client sent.
 type slogWriter struct{ log *slog.Logger }
 
 func (w slogWriter) Write(p []byte) (int, error) {
-	w.log.Warn("airlock proxy: " + strings.TrimSuffix(string(p), "\n"))
+	w.log.Warn(netHTTPMessage, answer.ClipFields([]any{"error", strings.TrimSuffix(string(p), "\n")})...)
 	return len(p), nil
 }
 
