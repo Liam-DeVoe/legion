@@ -12,15 +12,19 @@
  *
  *  Every row that runs the driver puts a `bun` of its own first on PATH, which leaves a marker
  *  file and exits 1, so a guard that lets a string through starts no real Dispatch and truncates
- *  nothing, and every refusal row asserts the marker is absent. LEGION_TEST_PG_DSN passes through
- *  to the driver where it is set, so the guard compares with the shared database in a pod.
+ *  nothing, and every refusal row asserts the marker is absent and the reason the guard gave.
+ *  The reason is what makes a refusal the guard's: the driver refuses before its guard, with the
+ *  same exit 2 and nothing started, when a command it requires is not on PATH
+ *  (require_commands). LEGION_TEST_PG_DSN passes through to the driver where it is set, so the
+ *  guard compares with the shared database in a pod.
  *
- *  The rows that need a server skip where LEGION_TEST_PG_DSN names none, as in CI's `dispatch`
- *  job; the two of them the guard lets through run on a scratch database they make and drop on
- *  that server, as psql-session.test.ts does. The refusal rows that need none hold strings psql
- *  gets no answer through: a database named `mine`, which the pod's server does not hold, a port
- *  nothing listens on, or a string libpq refuses outright. One more row reads two source files and
- *  runs nothing.
+ *  Every row that runs the driver skips where psql is not on PATH: the driver requires it before
+ *  its guard and the guard asks each server through it. The rows that need a server also skip
+ *  where LEGION_TEST_PG_DSN names none, as in CI's `dispatch-ui` job; the two of them the guard
+ *  lets through run on a scratch database they make and drop on that server, as
+ *  psql-session.test.ts does. The refusal rows that need none hold strings psql gets no answer
+ *  through: a database named `mine`, which the pod's server does not hold, a port nothing listens
+ *  on, or a string libpq refuses outright. One more row reads two source files and runs nothing.
  */
 
 import { expect, test } from "bun:test";
@@ -42,15 +46,26 @@ const driverTimeout = 30_000;
 /** A spawn of the driver between the creation and the drop of a scratch database. */
 const scratchTimeout = 60_000;
 
+/** LEGION_TEST_PG_DSN as this run has it, quotes and all, which `drive` hands the driver
+ *  unchanged, so the guard reads it through the driver's own strip of its quotes. */
+const exportedServer = process.env.LEGION_TEST_PG_DSN ?? "";
 /** The pod's shared test database, and the server the rows that need one make a database on. An
- *  issue pod names it, a developer names it, and CI's `dispatch` job has no Postgres, so those rows
- *  skip there. */
-const server = process.env.LEGION_TEST_PG_DSN ?? "";
+ *  issue pod names it, a developer names it, and CI's `dispatch-ui` job has no Postgres, so those
+ *  rows skip there. It is LEGION_TEST_PG_DSN with one `"` or `'` taken off its start and one off
+ *  its end, each whether or not the other was there. That is the same rule as the driver's own
+ *  strip of it, `${shared_dsn#[\"\']}` then `${shared_dsn%[\"\']}` in
+ *  e2e/acceptance/replace-blocks.sh, before its guard reads it, so every row here reads the string
+ *  the driver reads. */
+const server = exportedServer.replace(/^["']/, "").replace(/["']$/, "");
+/** Whether psql is missing from this host's PATH. The driver's DATABASE_URL branch requires it
+ *  before its guard runs, so without it every row that runs the driver would see that refusal and
+ *  not the guard's: they skip. */
+const withoutPsql = hostTool("psql") === null;
 /** Everything the rows that need a server need and this host or run does not have, in one list,
  *  so a host missing both reads one line naming both (psql-session.test.ts composes it the same
  *  way). */
 const missing = [
-  ...(hostTool("psql") === null ? ["psql on this host's PATH"] : []),
+  ...(withoutPsql ? ["psql on this host's PATH"] : []),
   ...(server === ""
     ? [
         "LEGION_TEST_PG_DSN, naming the shared test database on a server this run may create a database on",
@@ -60,8 +75,9 @@ const missing = [
 const live = missing.length === 0;
 if (!live) {
   console.warn(
-    `Skipped the tests in ${import.meta.path} that need a database server. This run does not ` +
-      `have: ${missing.join("; ")}. Supply what is missing and run the tests again.`
+    `Skipped the tests in ${import.meta.path} that ` +
+      `${withoutPsql ? "run the driver" : "need a database server"}. This run does not have: ` +
+      `${missing.join("; ")}. Supply what is missing and run the tests again.`
   );
 }
 
@@ -109,11 +125,11 @@ async function withScratchDatabase(
 
 const fakeBunDirectories = temporaryDirectories("replace-blocks-fake-bun");
 
-/** The driver run from the package root with `databaseUrl`, LEGION_TEST_PG_DSN where this run has
- *  it, and no other Dispatch, Envoy or libpq variable, so what it does is the guard's own. A `bun`
- *  of the row's own stands first on PATH: it leaves a marker file, prints `log` as the instance's
- *  output, and exits 1, so a string the guard lets through starts nothing. `started` is whether
- *  that `bun` ran. */
+/** The driver run from the package root with `databaseUrl`, LEGION_TEST_PG_DSN as this run has it
+ *  where it has one, and no other Dispatch, Envoy or libpq variable, so what it does is the guard's
+ *  own. A `bun` of the row's own stands first on PATH: it leaves a marker file, prints `log` as the
+ *  instance's output, and exits 1, so a string the guard lets through starts nothing. `started` is
+ *  whether that `bun` ran. */
 async function drive(
   databaseUrl: string,
   log = ""
@@ -136,7 +152,7 @@ async function drive(
       HOME: process.env.HOME ?? "",
       PATH: `${bin}:${process.env.PATH ?? ""}`,
       ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
-      ...(server === "" ? {} : { LEGION_TEST_PG_DSN: server }),
+      ...(exportedServer === "" ? {} : { LEGION_TEST_PG_DSN: exportedServer }),
     },
     stderr: "pipe",
     stdin: "ignore",
@@ -150,17 +166,55 @@ async function drive(
   return { code, stdout, stderr, started: existsSync(marker) };
 }
 
-/** A refusal row: the driver exits 2 and the fake `bun` never ran, and stderr holds none of
- *  `secrets`. */
-async function expectRefusal(databaseUrl: string, secrets: readonly string[]): Promise<string> {
+/** The reason the driver's `unread_dsn` gives for a DATABASE_URL psql got no answer through. */
+const unreadReason =
+  "DATABASE_URL could not be read: psql, asking through it which database it reaches, got no answer this run can read.";
+
+/** The reason the driver's `shared_database` gives for a DATABASE_URL that reaches a database
+ *  named `database`, as LEGION_TEST_PG_DSN does. */
+function sharedReason(database: string): string {
+  return `DATABASE_URL reaches a database named ${database}, as LEGION_TEST_PG_DSN does`;
+}
+
+/** The reason the guard owes `url`, a string for the shared database on the shared server that
+ *  carries a made-up password. Whether the server takes that password decides it. A server that
+ *  trusts the loopback, as this pod's does, answers through the string, so the run would have
+ *  reached the shared database and must name it; one that checks passwords answers nothing, so
+ *  the string reaches no database and the run refuses it as unread. Asked here with psql and the
+ *  flags the driver's read gives it, rather than assumed. */
+async function sharedDatabaseRefusal(url: string): Promise<string> {
+  const asked = Bun.spawn(["psql", "-XAtqw", `--dbname=${url}`, "-c", "select 1"], {
+    stderr: "ignore",
+    stdout: "pipe",
+  });
+  return (await asked.exited) === 0
+    ? sharedReason(decodeURIComponent(sharedServer().database))
+    : unreadReason;
+}
+
+/** A refusal row: the driver exits 2, the fake `bun` never ran, stderr gives `reason`, one of the
+ *  guard's own two (unreadReason, sharedReason), and stderr holds none of `secrets`. The reason is
+ *  what makes the refusal the guard's: the driver's require_commands also exits 2 and starts
+ *  nothing when a command the driver needs is not on PATH, and a row that asserted the rest alone
+ *  would pass without the guard running. Where stderr gives another reason, the row's failure
+ *  shows the first line of stderr in its place. */
+async function expectRefusal(
+  databaseUrl: string,
+  reason: string,
+  secrets: readonly string[]
+): Promise<void> {
   const { code, stderr, started } = await drive(databaseUrl);
   expect(
-    { code, printed: secrets.filter((secret) => stderr.includes(secret)), started },
-    "The refusal wrote part of the connection string to stderr, or the guard let the string " +
-      "through to `bun run dispatch:local`. A refusal names what is wrong and prints no part of " +
-      "the connection string."
-  ).toEqual({ code: 2, printed: [], started: false });
-  return stderr;
+    {
+      code,
+      reason: stderr.includes(reason) ? reason : stderr.split("\n", 1)[0],
+      printed: secrets.filter((secret) => stderr.includes(secret)),
+      started,
+    },
+    "The refusal is not the guard's, wrote part of the connection string to stderr, or the " +
+      "guard let the string through to `bun run dispatch:local`. A refusal of the guard's names " +
+      "what is wrong and prints no part of the connection string."
+  ).toEqual({ code: 2, reason, printed: [], started: false });
 }
 
 for (const { shape, databaseUrl, secret } of [
@@ -205,25 +259,22 @@ for (const { shape, databaseUrl, secret } of [
     secret: "sekrit",
   },
 ]) {
-  test(
+  test.skipIf(withoutPsql)(
     `a refusal writes no password to stderr: ${shape}`,
     async () => {
-      await expectRefusal(databaseUrl, [secret]);
+      await expectRefusal(databaseUrl, unreadReason, [secret]);
     },
     driverTimeout
   );
 }
 
-test(
+test.skipIf(withoutPsql)(
   "a refusal of a string no reader can parse names the reason and none of the string",
   async () => {
     // A person who meant user:password and left the host out: libpq reads `qq` as the port,
     // refuses it as no integer, and connects nowhere, so the guard refuses what it could not read.
     const afterScheme = "zz-unparseable:qq";
-    const stderr = await expectRefusal(`postgres://${afterScheme}`, [afterScheme]);
-    expect(stderr).toContain(
-      "DATABASE_URL could not be read: psql, asking through it which database it reaches, got no answer"
-    );
+    await expectRefusal(`postgres://${afterScheme}`, unreadReason, [afterScheme]);
   },
   driverTimeout
 );
@@ -232,9 +283,8 @@ test.skipIf(!live)(
   "a refusal writes no password to stderr: a password of letters, with a percent escape in its query that reaches the shared database",
   async () => {
     const shared = sharedServer();
-    await expectRefusal(withPassword("sekrit", `?db%6Eame=${shared.database}`, shared.authority), [
-      "sekrit",
-    ]);
+    const url = withPassword("sekrit", `?db%6Eame=${shared.database}`, shared.authority);
+    await expectRefusal(url, await sharedDatabaseRefusal(url), ["sekrit"]);
   },
   driverTimeout
 );
@@ -250,22 +300,7 @@ test.skipIf(!live)(
     const hidden = "x?a=b&dbname=mine&";
     const shared = sharedServer();
     const url = withPassword(hidden, shared.database, shared.authority);
-    const stderr = await expectRefusal(url, [hidden, "a=b", "dbname=mine"]);
-    // Whether the server takes the made-up password decides which refusal is right. A server
-    // that trusts the loopback, as this pod's does, answers through the string, so the run would
-    // have reached the shared database and must name it; one that checks passwords answers
-    // nothing, so the string reaches no database and the run refuses it as unread. Asked here
-    // with psql, as the driver asks, rather than assumed.
-    const asked = Bun.spawn(["psql", "-XAtqw", `--dbname=${url}`, "-c", "select 1"], {
-      stderr: "ignore",
-      stdout: "pipe",
-    });
-    const answered = (await asked.exited) === 0;
-    expect(stderr, "The refusal does not give the reason the server's answer calls for.").toContain(
-      answered
-        ? `DATABASE_URL reaches a database named ${decodeURIComponent(shared.database)}, as LEGION_TEST_PG_DSN does`
-        : "DATABASE_URL could not be read"
-    );
+    await expectRefusal(url, await sharedDatabaseRefusal(url), [hidden, "a=b", "dbname=mine"]);
   },
   driverTimeout
 );

@@ -114,21 +114,27 @@ readonly instance_seconds=900
 # database it is, and the port it answers on, and judges those answers.
 #
 # server_answer CONNECTION: psql's answer through CONNECTION to `select current_database(),
-# inet_server_port()`, one line holding the database's name and the port with a `|` between them,
-# in the environment it is called in. -X reads no psqlrc, -w never prompts for a password and stdin
-# is empty, so nothing waits on a person. CONNECTION is the value of --dbname, which psql reads as
-# a connection string or a database name and never as an option, whatever it opens with. psql's
-# stderr goes nowhere: its errors name the user and the host of the string, and a refusal prints
-# no part of it.
+# inet_server_port()`, one line holding the database's name and the port with a `|` between them.
+# It asks the server CONNECTION names: PGHOSTADDR is dropped, since libpq connects to the address
+# it holds in place of the string's host, as e2e/psql.ts and the psql reads of
+# e2e/acceptance/ci-check.sh and e2e/run-broker.sh drop it. Every other PG* variable of the
+# environment it is called in stays, but PGCONNECT_TIMEOUT, which it sets to ten seconds: libpq
+# takes that where CONNECTION names no connect_timeout of its own, so a server that does not take
+# the connection within it is a refusal (unread_dsn) and not a hang. -X reads no psqlrc, -w never
+# prompts for a password and stdin is empty, so nothing waits on a person. CONNECTION is the value
+# of --dbname, which psql reads as a connection string or a database name and never as an option,
+# whatever it opens with. psql's stderr goes nowhere: its errors name the user and the host of the
+# string, and a refusal prints no part of it.
 server_answer() {
-  psql -XAtqw --dbname="$1" -c 'select current_database(), inet_server_port()' \
+  env -u PGHOSTADDR PGCONNECT_TIMEOUT=10 \
+    psql -XAtqw --dbname="$1" -c 'select current_database(), inet_server_port()' \
     </dev/null 2>/dev/null
 }
 
-# scrubbed_server_answer CONNECTION: server_answer with every PG* variable unset, as the scrub
-# below leaves them for the instance, so libpq fills in nothing from them that the instance would
-# not, and with a PGCONNECT_TIMEOUT of this run's own, so a server that never answers is a refusal
-# and not a hang.
+# scrubbed_server_answer CONNECTION: server_answer with every PG* variable unset first, as the
+# scrub below leaves them for the instance, so libpq fills in nothing from them that the instance
+# would not: the one it reads there is server_answer's own PGCONNECT_TIMEOUT, which bounds the
+# connection and moves it nowhere.
 scrubbed_server_answer() {
   (
     local name
@@ -137,7 +143,6 @@ scrubbed_server_answer() {
     for name in "${inherited[@]}"; do
       [[ "$name" != PG* ]] || unset "$name"
     done
-    export PGCONNECT_TIMEOUT=10
     server_answer "$1"
   )
 }
@@ -199,9 +204,13 @@ if [[ -n "$database_url" ]]; then
   shared_dsn="${LEGION_TEST_PG_DSN-}"
   shared_dsn="${shared_dsn#[\"\']}"
   shared_dsn="${shared_dsn%[\"\']}"
-  # Each string is read by asking its server, before anything starts. DATABASE_URL is read with no
-  # PG* variable set, as the instance reads it after the scrub below (scrubbed_server_answer), and
-  # LEGION_TEST_PG_DSN in the caller's environment, as the pod's other checks read it.
+  # Each string is read by asking its server, before anything starts, through server_answer,
+  # which drops PGHOSTADDR and bounds the connection with a PGCONNECT_TIMEOUT of ten seconds.
+  # DATABASE_URL is read with no other PG* variable set, as the instance reads it after the scrub
+  # below (scrubbed_server_answer). LEGION_TEST_PG_DSN is read with every other PG* variable of
+  # the caller's, since the caller's own server may need them (a PGPASSWORD the string does not
+  # carry, say); PGHOSTADDR alone goes, because libpq connects to the address it holds in place of
+  # the string's host, so with it the read would reach an address the string does not name.
   #
   # A read that fails refuses: a string this run cannot read is one it cannot say it would write
   # through, so it fails closed (unread_dsn).
