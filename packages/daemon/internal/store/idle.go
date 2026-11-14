@@ -537,6 +537,9 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, err
 	}
 	view.BundleUnrestored = unrestored
+	if view.BundleRefusal, view.Head, err = workspaceBundleRefusal(ctx, tx, issue); err != nil {
+		return pods.IdleView{}, err
+	}
 	holding, err := openPodHold(ctx, tx, project, issue)
 	if err != nil {
 		return pods.IdleView{}, err

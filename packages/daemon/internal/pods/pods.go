@@ -132,6 +132,17 @@ type IdleRoot struct {
 	Answered       bool
 }
 
+// BundleRefusal is the save of an issue's release that found the workspace's unpushed work over
+// the bound a release carries (outbox's bundleIssueWorkspace, workflow.IdleHoldBundleTooLarge):
+// the moment the release was marked, and the head of the issue's pull request when the save was
+// refused, "" with no pull request. The idle rule reads it against the claims and the head now
+// (workflow.IdleRelease): the next save finds the same work until a role of the pod does
+// something or the branch moves.
+type BundleRefusal struct {
+	At   time.Time
+	Head string
+}
+
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
 // the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
 // in the workflow and its tree root's. Found is false for an issue the record does not hold,
@@ -161,6 +172,13 @@ type IdleView struct {
 	// again would store a bundle over it, taken from a workspace that never had that work, so
 	// the rule keeps it until the restore is confirmed.
 	BundleUnrestored bool
+	// BundleRefusal is the last save of the issue's release that found the work over the bound,
+	// nil when there is none or a later save stored the work or found none to store (store's
+	// workspace_bundle_refusals). Head is the head of the issue's pull request as the daemon
+	// recorded it, "" with no pull request; it is read only beside a refusal, the one thing
+	// that is compared with it.
+	BundleRefusal *BundleRefusal
+	Head          string
 	// Holding is whether a hold streak of this pod is running (store's pod_holds). The rule
 	// never reads it: it is here because the daemon's pass needs it to know whether it has a
 	// streak to end, and the view is the one read of the pod that pass already makes.

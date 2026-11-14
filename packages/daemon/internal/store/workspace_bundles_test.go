@@ -372,6 +372,80 @@ func TestAStoredBundleReadsAsUnrestoredUntilItsConfirmation(t *testing.T) {
 	}
 }
 
+// A bundle refusal is one row per issue that the idle view reads, and it queues the rows that
+// tell the worker only for the first refusal at a head: a second refusal of the same work tells
+// nobody. A save that stores the work, and a delete of the issue's bundle, end it, so the next
+// refusal tells the worker again.
+func TestABundleRefusalTellsOnceAndEndsWithTheNextSaveOrDelete(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	const issue = "INFRA-945"
+	tell := []IdleReleaseRow{{Kind: "role_message", Payload: []byte(`{"role":"legion-infra-infra-945-implementer","body":"push"}`)}}
+	refuse := func() bool {
+		t.Helper()
+		told, err := s.RecordBundleRefusal(ctx, "infra", issue, tell)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return told
+	}
+	refused := func() bool {
+		t.Helper()
+		var found bool
+		if err := s.Tx(ctx, func(tx pgx.Tx) error {
+			r, _, err := workspaceBundleRefusal(ctx, tx, issue)
+			found = r != nil
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	messages := func() int {
+		t.Helper()
+		var n int
+		if err := s.Pool().QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'role_message'`,
+			issue).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	if refused() {
+		t.Fatal("an issue never refused reads a refusal")
+	}
+	if !refuse() || refuse() {
+		t.Fatal("two refusals of the same work at the same head did not tell the worker exactly once")
+	}
+	if got := messages(); got != 1 {
+		t.Fatalf("messages queued = %d, want 1", got)
+	}
+	if !refused() {
+		t.Fatal("the refusal is not read back")
+	}
+
+	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		At: time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC), PodUID: releasedPodUID}
+	if err := s.PutWorkspaceBundle(ctx, issue, 11, savedRepo, saved); err != nil {
+		t.Fatal(err)
+	}
+	if refused() {
+		t.Fatal("a save that stored the work left the refusal")
+	}
+	if !refuse() {
+		t.Fatal("the first refusal after a stored save did not tell the worker")
+	}
+	if err := s.DeleteWorkspaceBundle(ctx, issue); err != nil {
+		t.Fatal(err)
+	}
+	if refused() {
+		t.Fatal("a delete of the issue's bundle left the refusal")
+	}
+	if got := messages(); got != 2 {
+		t.Fatalf("messages queued = %d, want 2", got)
+	}
+}
+
 // recordIssueOn records the issue on repo, as the daemon's record holds it: the one column the
 // take reads of the issues table, with the rest of the row as a running root's.
 func recordIssueOn(t *testing.T, s *Store, issue, repo string) {

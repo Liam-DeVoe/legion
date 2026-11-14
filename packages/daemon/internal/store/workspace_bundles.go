@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -37,6 +38,9 @@ import (
 // is the one the work is in. An empty repo is an issue the workflow does not record, since the
 // caller falls back to the record's repository where the runtime answers none; it is stored as
 // it is given and refuses nothing, which is what a row saved before this column reads as.
+//
+// The save ends the issue's bundle refusal in the same statement (RecordBundleRefusal): the
+// work fit this time, so nothing is left for the idle rule to hold the pod for.
 func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release int64, repo string, b runtime.WorkspaceBundle) error {
 	if issue == "" {
 		return errors.New("a workspace bundle needs its issue")
@@ -51,7 +55,8 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 	if err != nil {
 		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
 	}
-	_, err = s.pool.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks, repo)
+	_, err = s.pool.Exec(ctx, `with ended as (delete from workspace_bundle_refusals where issue = $1)
+		insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks, repo)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		on conflict (issue) do update set release_id = excluded.release_id, source_pod_uid = excluded.source_pod_uid,
 			bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
@@ -228,9 +233,11 @@ func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, boo
 // DeleteWorkspaceBundle drops issue's bundle whatever release saved it: the release saved a
 // workspace with nothing unpushed, or the issue's work is over. A cancelled release deletes its
 // own bundle in its cancel's transaction (CancelIssueRelease), not here. Deleting one the table
-// does not hold is success, so a retried delete finishes.
+// does not hold is success, so a retried delete finishes. The issue's bundle refusal goes in the
+// same statement (RecordBundleRefusal), since either reason leaves no work for one to be about.
 func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
-	if _, err := s.pool.Exec(ctx, `delete from workspace_bundles where issue = $1`, issue); err != nil {
+	if _, err := s.pool.Exec(ctx, `with ended as (delete from workspace_bundle_refusals where issue = $1)
+		delete from workspace_bundles where issue = $1`, issue); err != nil {
 		return fmt.Errorf("delete the workspace bundle of %s: %w", issue, err)
 	}
 	return nil
@@ -272,6 +279,83 @@ func workspaceBundleUnrestored(ctx context.Context, tx pgx.Tx, issue string) (bo
 		return false, fmt.Errorf("read whether the workspace bundle of %s is unrestored: %w", issue, err)
 	}
 	return unrestored, nil
+}
+
+// RecordBundleRefusal records that the save of issue's release found the workspace's unpushed
+// work over the bound a release carries (workflow.IdleHoldBundleTooLarge). It keeps the moment
+// that release was marked and the head of the issue's pull request now, which the idle rule
+// reads to mark no release of the issue again until a claim of the pod is written after that
+// moment or the head moves (workspaceBundleRefusal, workflow.IdleRelease). The moment is the
+// mark's and not the refusal's, so a turn that ran while the bundle was built counts as a turn
+// after it. The caller writes this before it cancels the release, so a cancel that fails and
+// runs again finds the refusal already recorded, and a daemon restart reads it. A save that
+// failed for a reason of its own records nothing here: no push or turn cures it, so its release
+// is marked again on the next tick.
+//
+// tell is the rows that tell the issue's worker about the refusal, encoded by the caller, as
+// every row the store queues for the outbox is (IdleReleaseRow). They are queued in the same
+// transaction, and only when the issue's last refusal was at another head, or there was none:
+// the worker is told once for each head the work was refused at, however many saves are refused
+// at it. It answers whether they were queued.
+func (s *Store) RecordBundleRefusal(ctx context.Context, project, issue string, tell []IdleReleaseRow) (bool, error) {
+	if project == "" || issue == "" {
+		return false, errors.New("a bundle refusal needs its project and its issue")
+	}
+	var told bool
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		told = false
+		var head string
+		if err := tx.QueryRow(ctx, `select coalesce((select head_sha from pull_requests where issue = $1), '')`,
+			issue).Scan(&head); err != nil {
+			return fmt.Errorf("read the head of %s's pull request: %w", issue, err)
+		}
+		var earlierHead string
+		err := tx.QueryRow(ctx, `select head from workspace_bundle_refusals where issue = $1 for update`,
+			issue).Scan(&earlierHead)
+		known := err == nil
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("read the last bundle refusal of %s: %w", issue, err)
+		}
+		if _, err := tx.Exec(ctx, `insert into workspace_bundle_refusals (issue, at, head)
+			values ($1, coalesce((select marked_at from issue_releases where project = $2 and issue = $1), now()), $3)
+			on conflict (issue) do update set at = excluded.at, head = excluded.head`,
+			issue, project, head); err != nil {
+			return fmt.Errorf("record the bundle refusal of %s: %w", issue, err)
+		}
+		if known && earlierHead == head {
+			return nil
+		}
+		for _, row := range tell {
+			if _, err := insertOutboxRow(ctx, tx, issue, row); err != nil {
+				return err
+			}
+		}
+		told = len(tell) > 0
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return told, nil
+}
+
+// workspaceBundleRefusal is issue's last bundle refusal (RecordBundleRefusal), nil when there is
+// none, and the head of the issue's pull request now, read beside it for the idle rule's view
+// (readIdleView, pods.IdleView.BundleRefusal). The head is "" with no pull request, as the
+// refusal records it, so an issue that has none compares equal until one is opened.
+func workspaceBundleRefusal(ctx context.Context, tx pgx.Tx, issue string) (*pods.BundleRefusal, string, error) {
+	var refusal pods.BundleRefusal
+	var head string
+	err := tx.QueryRow(ctx, `select r.at, r.head, coalesce(p.head_sha, '')
+		from workspace_bundle_refusals r left join pull_requests p on p.issue = r.issue
+		where r.issue = $1`, issue).Scan(&refusal.At, &refusal.Head, &head)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("read the bundle refusal of %s: %w", issue, err)
+	}
+	return &refusal, head, nil
 }
 
 // bundleJSON renders the two members the row keeps as jsonb. Each is written even when empty — a

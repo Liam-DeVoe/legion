@@ -71,9 +71,13 @@ const (
 	// nothing (store's workspaceBundleUnrestored).
 	IdleHoldBundleUnrestored
 	// IdleHoldBundleTooLarge: the workspace's unpushed work does not fit the bundle a release
-	// carries (runtime.MaxWorkspaceBundleBytes), so the pod is kept and the work with it.
+	// carries (runtime.MaxWorkspaceBundleBytes), so the pod is kept and the work with it. The
+	// save that finds it tells the issue's worker once, and the idle rule keeps the pod under it
+	// until a role of the pod does something or the branch moves (pods.BundleRefusal).
 	IdleHoldBundleTooLarge
 	// IdleHoldBundleSave: the bundle could not be built or could not be saved, so the pod is kept.
+	// The next idle tick marks the release again: such a cause is no worker's to cure, so the
+	// rule waits for no push or turn, which could keep an idle pod for as long as nobody acts.
 	IdleHoldBundleSave
 	// IdleHoldOvertaken: the pod was given work after its release was marked — a claim of it was
 	// started or resumed, or holds a process, at any of the release's role stops or at its
@@ -251,7 +255,19 @@ type IdleDecision struct {
 //     phase worker's phase is open when the issue's current phase is that worker's role and its
 //     claim serves the current generation;
 //
-//   - the pod has done nothing the daemon recorded for the whole idle period.
+//   - the pod has done nothing the daemon recorded for the whole idle period;
+//
+//   - the save of the issue's last release did not find the work over the bound a release
+//     carries (IdleHoldBundleTooLarge) since anything changed what the next save would find
+//     (view.BundleRefusal). The next save finds the same work until a role of the pod does
+//     something, which writes its claim after the moment the refused release was marked, or the
+//     head of the issue's pull request moves, which is a push. Until one of the two, the pod is
+//     held under IdleHoldBundleTooLarge, because each release marked on the clock alone cost a
+//     bundle of the workspace over the worker stream and a hold record, once a tick. A turn or a
+//     push ends the hold, and the release is then marked once the pod is quiet again for the idle
+//     period. A save that failed for a reason of its own (IdleHoldBundleSave) is no such hold:
+//     no push or turn cures a database error or a runtime that answers nothing, so its release
+//     is marked again on the next tick, as it always was.
 //
 // A pod round is a live claim's, as the claim records it, and a claim that left the round keeps
 // the round it left (supervise.Claim.UpdateRound): the round is over for every claim of it only
@@ -330,6 +346,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldNotIdle}
 	}
+	if r := view.BundleRefusal; r != nil && r.Head == view.Head && !since.After(r.At) {
+		return IdleDecision{Hold: IdleHoldBundleTooLarge}
+	}
 	return IdleDecision{Release: true, Roles: roles}
 }
 
@@ -395,7 +414,8 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     claim row of the issue (view.QuietSince, compared as IdleRelease compares it)
 //     (IdleHoldUnownedNotIdle).
 //
-// The quiet conjunct is last, as the idle rule's is, so that a pass records a hold only for a pod
+// The quiet conjunct is last, as it is in the idle rule but for that rule's refusal conjunct,
+// which reads the quiet moment itself. So a pass records a hold only for a pod
 // that has already stood past the period: a pod inside it is simply not this rule's yet, while
 // every other hold names something true of a pod that has stood past it.
 //

@@ -2272,12 +2272,17 @@ Store migration 20261112215432_delivery_resume adds `pending_task_deliveries.res
 A design decision's notice now carries where Dispatch recorded the review (`review`, `record.Notice.Review`), and a kept spec decision takes its time and sequence from it.
 The same migration adds `issues.awaiting_answered_version`, the version of the changes request that answered a root's wait, and `issues.awaiting_answered_version_at`, the answer's moment it was written with, so the resume task reads the reviewed version as a number rather than out of the answer's detail text.
 It gives each wait a changes request answered before it its version, read once from the detail every earlier release wrote (`version <n>: "<reason>"`); every other row keeps both columns null.
+The same migration creates `workspace_bundle_refusals`, one row per issue whose last release's save found the work over 40 MiB: the moment that release was marked, and the head of the issue's pull request then.
+The idle rule marks no release of such an issue again until a role of its pod does something after that moment or the head moves ([Idle release](#idle-release)), and the refusal tells the issue's worker in a `role_message` row, whose payload carries only the `role` and `body` an earlier release's `record.RoleMessage` already names.
+A save that failed for another reason writes no row, and its release is marked again on the next idle tick, as before.
 
 To roll this release back, re-pin the earlier image (contract 111 at the base this release was written on).
 There is no `legion.yaml` key to put back and no column to drop:
-the earlier release names every column it reads and writes, so it boots with the nine in place, reads none of them and writes none of them.
+the earlier release names every column it reads and writes, so it boots with the nine and the new table in place, reads none of them and writes none of them.
 Its write of a later answer to a root's wait leaves `awaiting_answered_version` and `awaiting_answered_version_at` as they stood, and when this release is pinned again it reads that answer as one with no version, since the moment beside the version is no longer the answer's: the resume then asks whether the person's approval followed that changes request at the version the gate holds approved, as it asks of a kept decision.
 It never reads `workspace_bundles_refused` either, so a bundle this release refused for its repository stays in that table through the roll back, and no row of `workspace_bundles` is a refused one that its idle rule could hold a pod for.
+It never reads `workspace_bundle_refusals` either, so its idle rule marks the release of an issue whose save was refused again on each pass, as it did before this release: each pass asks the pod's shim for a bundle and records one more hold, for as long as the work stays over 40 MiB.
+A row this release wrote to that table holds no pod once this release is pinned again and a role of the pod has done something since.
 Going back costs three things, and the first loses work unless you act before the earlier image is pinned.
 
 - A resume task, or a design decision's notice, that this release queued and has not sent reaches its architect with no text, or not at all.
@@ -4784,7 +4789,12 @@ A commit a remote bookmark or a tag reaches is left out: the new pod's workspace
 Its base commits are the ones a new pod's workspace fetch already has: the default branch and the issue's branch on the remote.
 It never reaches GitHub.
 sjawhar/legion is public and a working copy holds every file that is not ignored, so a save to a branch would publish files no agent chose to push and could start CI; the daemon's database is private and starts nothing.
-A bundle above 40 MiB, or a save that fails, stops the release, and the daemon records that reason.
+A bundle above 40 MiB, or a save that fails, stops the release, and the daemon records that reason (`bundle_too_large` or `bundle_save_failed`).
+The next save would find work over 40 MiB again until something changes it, so after a `bundle_too_large` the daemon marks no release of that issue again until a role of the pod does something after the refused release was marked, which a turn and an activity report each record on the role's claim, or the head of the issue's pull request moves, which is a push.
+Until then each idle pass holds the pod under `bundle_too_large`; after either, the release is marked once the pod is quiet again for the idle period.
+A daemon restart keeps this, since the refusal is a row of `workspace_bundle_refusals`, and a save that stores the work or finds none deletes that row, as the end of the issue's work does.
+The refusal also tells the issue's worker, once for each head of the branch it was refused at, in a role message that names the size and the bound and asks for a push; the worker is the one whose phase is open when its claim is live, and otherwise the role the save was asked of.
+A `bundle_save_failed` waits for no such event: no push or turn cures a database error or a runtime that answers nothing, so its release is marked again on the next idle tick.
 Only the pod's own launcher receives the bundle, over the launcher's authenticated connection, in `launcher_bundle` frames each under the 1 MiB frame limit (`shimwire.MaxFrameBytes`), and the launcher restores it in the roles container before any role starts, never in the token-holding `workspace-fetch` container.
 The daemon deletes the bundle once the launcher confirms the restore, and deletes it too, in the cancel's own transaction, when a wake cancels the release.
 A bundle is offered to one pod and one only: the first pod of the issue that is not the pod the work came off to ask for it, which in an ordinary release is the pod the teardown's next launch made.

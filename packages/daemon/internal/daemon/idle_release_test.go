@@ -4,15 +4,19 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -760,6 +764,155 @@ func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
 				t.Fatal("the stopped release left its mark behind")
 			}
 		})
+	}
+}
+
+// A release refused because the workspace's unpushed work is over the bound a release carries is
+// not marked again on the clock. Until something changes the workspace or the branch, every
+// later save finds the same work over the same bound: each idle tick that marked the release
+// again asked the pod's shim for a bundle over the worker stream and wrote one more hold, about
+// one a minute (BET-487's pod had 18 such releases between 13:42:50Z and 13:59:49Z on
+// 2026-11-13). So the rule marks it again only after an event that can change the outcome: a
+// push, which moves the head of the issue's pull request, or a turn of a role of the pod, which
+// writes its claim after the refusal. The worker is told once for each head a release was
+// refused at, with the size and the bound, since only a push of its own can end the hold.
+func TestABundleOverTheBoundIsAskedForAgainOnlyAfterAPushOrATurn(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	size := runtime.MaxWorkspaceBundleBytes + 1
+	rig.rt.bundle = runtime.WorkspaceBundle{Bundle: make([]byte, size), Head: "abc", Tips: []string{"abc"},
+		At: time.Now().UTC(), PodUID: releasedPodUID}
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		return rig.issues.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: rig.issue.Key,
+			Repo: "acme/widgets", Number: 42, Branch: claim.IssueBranch(rig.issue.Key), HeadSHA: "head-one"})
+	}); err != nil {
+		t.Fatalf("seed the issue's pull request: %v", err)
+	}
+	attempts := func() int {
+		bundled, _ := rig.rt.reads()
+		return len(bundled)
+	}
+	pass := func() {
+		rig.w.releaseIdlePods(ctx)
+		rig.drain(t)
+	}
+	told := func() []string {
+		var bodies []string
+		for _, p := range rig.runner.notices.(*outboxPublisher).publishes() {
+			if p.topic == notify.RoleTopicPrefix+string(rig.token) {
+				bodies = append(bodies, p.message)
+			}
+		}
+		return bodies
+	}
+
+	pass()
+	if got := attempts(); got != 1 {
+		t.Fatalf("bundle attempts after the first idle tick = %d, want 1", got)
+	}
+	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
+		t.Fatalf("the claim = %s by %s, want the refused release to have left it running", got.State, got.SuspendedBy)
+	}
+
+	// Three more ticks with no push and no turn: the work is what it was, so nothing is asked.
+	for range 3 {
+		pass()
+	}
+	if got := attempts(); got != 1 {
+		t.Fatalf("bundle attempts after three more idle ticks with no push and no turn = %d, want the first one alone", got)
+	}
+	bodies := told()
+	if len(bodies) != 1 {
+		t.Fatalf("the implementer was told %d times (%q), want once for the refusal", len(bodies), bodies)
+	}
+	for _, want := range []string{rig.issue.Key, strconv.Itoa(size), strconv.Itoa(runtime.MaxWorkspaceBundleBytes), "Push"} {
+		if !strings.Contains(bodies[0], want) {
+			t.Errorf("the message to the implementer does not name %q:\n%s", want, bodies[0])
+		}
+	}
+	if rig.marked(t) {
+		t.Fatal("a release is marked while nothing changed since the refusal")
+	}
+
+	// A push moves the head of the issue's pull request: the next tick asks once, and the
+	// worker is told again, since the work it pushed did not bring the rest under the bound.
+	if _, err := rig.pool.Exec(ctx, `update pull_requests set head_sha = 'head-two' where issue = $1`, rig.issue.Key); err != nil {
+		t.Fatal(err)
+	}
+	pass()
+	pass()
+	if got := attempts(); got != 2 {
+		t.Fatalf("bundle attempts after a push and two idle ticks = %d, want 2", got)
+	}
+	if got := len(told()); got != 2 {
+		t.Fatalf("the implementer was told %d times after the push, want twice", got)
+	}
+
+	// A turn after the refusal, ended and then quiet for the idle period: the next tick asks
+	// once, and the worker is not told again, since the head is the one it was told about.
+	if _, err := rig.pool.Exec(ctx, `update workspace_bundle_refusals set at = at - interval '1 hour' where issue = $1`,
+		rig.issue.Key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rig.pool.Exec(ctx, `update claims set updated_at = now() - interval '20 minutes',
+		activity_at = now() - interval '19 minutes' where issue = $1`, rig.issue.Key); err != nil {
+		t.Fatal(err)
+	}
+	pass()
+	pass()
+	if got := attempts(); got != 3 {
+		t.Fatalf("bundle attempts after a turn and two idle ticks = %d, want 3", got)
+	}
+	if got := len(told()); got != 2 {
+		t.Fatalf("the implementer was told %d times after the turn, want still twice", got)
+	}
+}
+
+// A refusal over the bound holds the pod past the ticks that follow, and past a daemon restart:
+// the refusal is a row of the store, not a field of the process, so the first tick of the daemon
+// that starts after it asks the pod for nothing either.
+func TestABundleRefusalHoldsThePodAcrossTicksAndARestart(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.rt.bundle = runtime.WorkspaceBundle{Bundle: make([]byte, runtime.MaxWorkspaceBundleBytes+1), PodUID: releasedPodUID}
+	for range 3 {
+		rig.w.releaseIdlePods(ctx)
+		rig.drain(t)
+	}
+
+	// A new workflow runtime over the same store is the daemon after a restart: it holds
+	// nothing in memory of the ticks before.
+	restarted := &workflowRuntime{pool: rig.pool, records: rig.issues, projectID: "legion", dispatchProject: "LEGION",
+		log: quietLogger(), idleStore: rig.st, idleRuntime: rig.rt, idlePeriod: rig.w.idlePeriod,
+		idleRepositoryDrifted: rig.w.idleRepositoryDrifted}
+	restarted.releaseIdlePods(ctx)
+	rig.drain(t)
+	if bundled, _ := rig.rt.reads(); len(bundled) != 1 {
+		t.Fatalf("bundle attempts after three ticks and a restart's first tick = %d, want the first one alone", len(bundled))
+	}
+	if got := len(rig.runner.notices.(*outboxPublisher).publishes()); got != 1 {
+		t.Fatalf("messages published = %d, want the one that told the worker", got)
+	}
+}
+
+// A save that failed for a reason of its own — the launcher answered nothing, the database
+// refused a write — is tried again on the next idle tick, as before. No push and no turn cures
+// such a cause, so waiting for one would keep an idle pod for as long as no role of it acts,
+// which is the cost the release exists to end. Nothing tells the worker either: the failure
+// names nothing a worker can do.
+func TestASaveThatFailedIsTriedAgainOnTheNextIdleTick(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.rt.bundleErr = errors.New("the launcher answered nothing")
+	for range 3 {
+		rig.w.releaseIdlePods(ctx)
+		rig.drain(t)
+	}
+	if bundled, _ := rig.rt.reads(); len(bundled) != 3 {
+		t.Fatalf("bundle attempts after three idle ticks over a save that fails = %d, want one each tick", len(bundled))
+	}
+	if got := len(rig.runner.notices.(*outboxPublisher).publishes()); got != 0 {
+		t.Fatalf("messages published = %d, want none", got)
 	}
 }
 

@@ -276,6 +276,35 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			}(),
 			image: true, want: IdleHoldNotIdle,
 		},
+		{
+			name: "the last save was over the bound and nothing happened since",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Head = "head-one"
+				v.BundleRefusal = &pods.BundleRefusal{At: idleNow.Add(-15 * time.Minute), Head: "head-one"}
+				return v
+			}(),
+			image: true, want: IdleHoldBundleTooLarge,
+		},
+		{
+			name: "a role of the pod did something after the refused save",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.BundleRefusal = &pods.BundleRefusal{At: idleNow.Add(-16 * time.Minute)}
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+		},
+		{
+			name: "the branch moved after the refused save",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Head = "head-two"
+				v.BundleRefusal = &pods.BundleRefusal{At: idleNow.Add(-15 * time.Minute), Head: "head-one"}
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, tc.drifted, idleContract)

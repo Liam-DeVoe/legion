@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  An idle release whose save finds the workspace's unpushed work over the 40 MiB a release carries
+  is not marked again every minute. The daemon marks it again only after a role of the pod does
+  something or the head of the issue's pull request moves, and the refusal is kept in
+  `workspace_bundle_refusals` across a restart. The refusal tells the issue's worker once for each
+  head, naming the size and the bound. A save that fails for another reason is still tried again on
+  the next idle tick.
