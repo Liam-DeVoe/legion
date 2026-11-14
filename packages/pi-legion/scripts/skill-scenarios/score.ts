@@ -253,6 +253,11 @@ interface Row {
    * `writes_seen=` (specRow). A flagged run is counted; the flag says what to read before trusting
    * it. */
   flagged?: boolean;
+  /** red-at-the-head alone: whether the run read the head's CI at all (READ_CI, or the page it
+   * opened). A run that read none never met the red, so the rule never applied to it: it is left
+   * out of the pass and pass+ref denominators and reported on the never-read-CI line of its own.
+   * Undefined for every other scenario, each of whose rows is counted. */
+  readCI?: boolean;
 }
 
 /** A Dispatch scenario's row: its asks, each printed whole under the row because a person judges
@@ -895,6 +900,15 @@ const SLEEPS = /(?:^|[\s;&|(])sleep[ \t]+[\d$]/;
  * the commit, a by-hand one among them. */
 const COUNTED_READ =
   /^pr checks\b|^pr view\b[\s\S]*statusCheckRollup|^api\b[\s\S]*graphql[\s\S]*statusCheckRollup/;
+/** A read of the head's CI, whatever it answered: everything COUNTED_READ holds (`gh pr checks`,
+ * the `pr view` read and the GraphQL read of the head's statusCheckRollup), an `api` read of the
+ * commit's `check-runs` or of `actions/runs` (which carries a run, its jobs and its attempts),
+ * and `gh run view` or `gh run list`. Broader than "no `gh pr checks` and no `check-runs` read"
+ * on purpose: a run that ran `gh run view` read CI, and that narrower list would call it a run
+ * that never read CI. */
+const READ_CI = new RegExp(
+  `${COUNTED_READ.source}|^api\\b[\\s\\S]*(?:check-runs|actions/runs)|^run (?:view|list)\\b`
+);
 
 /** The turns of a red-at-the-head run, as run_red_at_the_head wrote them to <run>/turns.txt, one
  * line per turn: `<turn> <assignment|settlement|report> <the moment the turn ended, RFC 3339>
@@ -1046,7 +1060,10 @@ function submittedReview(
  * subscription, the poll, the three steps of the disposal and the failing line itself — and,
  * where the record is not the one the page asks for, `recordProblems`, which names the facts its
  * best entry does not carry; a world-`l` run adds the rig's report and what the two halves of
- * `reported` were read from. `ref`: the agent read
+ * `reported` were read from. The row also carries whether the run read the head's CI at all
+ * (`readCI`, the first segment's last word): a gh call of READ_CI, or the page it opened. A run
+ * that read neither never met the red, so the rule never applied to it, and the counts leave it
+ * out of their denominators. `ref`: the agent read
  * skill://legion-worker/references/red-at-the-head.md, the page this rule is on. */
 function redAtTheHead(runDir: string, run: string, label: string, dirWorld: string): Row {
   const world = readFileSync(path.join(runDir, "world.txt"), "utf8").trim();
@@ -1265,8 +1282,11 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     (world !== "k" || !declined) &&
     reported;
   const { ref, refs } = workerReads(entries, "red-at-the-head.md");
+  // Whether the run met the red at all: a gh call that read the head's CI, or the page it
+  // opened, which carries the red it came for.
+  const readCI = ref || calls.some((call) => call.as === "gh" && READ_CI.test(call.argv.join(" ")));
   const notes = [
-    `world=${world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told} declined=${declined} reported=${reported}`,
+    `world=${world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told} declined=${declined} reported=${reported} readCI=${readCI}`,
     `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"}`,
     `searched=${searched} posted=${posted} controller=${toController !== undefined} filed=${filed} failingLine=${JSON.stringify(failing)}`,
     ...(wrote ? [] : [`recordProblems=${JSON.stringify(problems)}`]),
@@ -1278,7 +1298,15 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     refs,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
-  return { run, scenario: `red-at-the-head:${world}`, label, pass, ref, notes: notes.join(" ") };
+  return {
+    run,
+    scenario: `red-at-the-head:${world}`,
+    label,
+    pass,
+    ref,
+    readCI,
+    notes: notes.join(" "),
+  };
 }
 
 /** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
@@ -3981,13 +4009,33 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   ];
   for (const key of keys) {
     const group = rows.filter((row) => `${row.scenario}\t${row.label}` === key);
-    const passed = group.filter((row) => row.pass);
+    // The runs the rule under test applied to: every row but a red-at-the-head run that never
+    // read the head's CI and so never met the red (readCI, Row). A row of any other scenario
+    // carries no readCI and is counted, so its key prints the counts it always printed.
+    const counted = group.filter((row) => row.readCI !== false);
+    const passed = counted.filter((row) => row.pass);
     const withRef = passed.filter((row) => row.ref);
     const failed = errors.filter((error) => error.key === key).length;
     const flagged = group.filter((row) => row.flagged).length;
     console.log(
-      `${key}\t${passed.length}/${group.length}\t${withRef.length}/${group.length}\t${failed}\t${flagged}`
+      `${key}\t${passed.length}/${counted.length}\t${withRef.length}/${counted.length}\t${failed}\t${flagged}`
     );
+  }
+  // The runs left out of those denominators, reported beside them: for each key whose rows say
+  // whether they read the head's CI, how many met the red and how many never did.
+  const ciKeys = [
+    ...new Set(
+      rows.flatMap((row) => (row.readCI === undefined ? [] : [`${row.scenario}\t${row.label}`]))
+    ),
+  ];
+  if (ciKeys.length > 0) {
+    console.log("\nscenario\tlabel\tread CI\tnever read CI");
+    for (const key of ciKeys) {
+      const group = rows.filter((row) => `${row.scenario}\t${row.label}` === key);
+      const read = group.filter((row) => row.readCI === true).length;
+      const never = group.filter((row) => row.readCI === false).length;
+      console.log(`${key}\t${read}/${group.length}\t${never}/${group.length}`);
+    }
   }
   // For each source and label, the median fault count of its spec runs (faults.json): the count
   // that compares two versions of the skills on the same source.
@@ -4027,6 +4075,10 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",
       "           unjudged=): each is",
       "           in the counts and medians, and its notes say what to read before trusting it",
+      "read CI    red-at-the-head: the runs of the key whose gh calls read the head's CI or that",
+      "           opened the page, and those that read neither. A run that never read CI never met",
+      "           the red, so it is neither a pass nor a failure of the rule: it is left out of the",
+      "           pass and pass+ref denominators above",
       "ran=false  a tester-proof run the bun stand-in saw no greet.ts run in: read its transcript",
       "           before believing it, since the stand-in sees only a bun reached through PATH",
     ].join("\n")

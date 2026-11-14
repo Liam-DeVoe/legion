@@ -4518,6 +4518,41 @@ redRun("trial-a-head-14", {}, [
 ]);
 // Wrote the red down and re-ran nothing, in a world whose red is not the change's.
 redRun("trial-a-head-15", { "calls.jsonl": calls([redLogCall]) });
+// Never read the head's CI: the gh stand-in recorded no call of this run's, and it opened no
+// page. It met no red, so the rule never applied to it, and it wrote the phase's ordinary record
+// and completed. A third of the tester's live runs on both arms did this.
+redRun("trial-a-base-2", { "calls.jsonl": calls([]), "handoffs.json": handoffs(testRecord()) }, [
+  ...header,
+  turn[0],
+  writeHandoff,
+  ...redComplete("pass", "The phase's tests pass."),
+]);
+// The one CI read is a `gh run view` of the failing run, which is no read of the counted set,
+// and the run opened no page: that call alone says it met the red.
+redRun(
+  "trial-a-head-21",
+  {
+    "calls.jsonl": calls([
+      { at: "2026-09-30T17:27:40.000Z", as: "gh", argv: ["run", "view", "7001001"], exit: 0 },
+      redRerunCall(),
+    ]),
+  },
+  [
+    ...header,
+    turn[0],
+    toolCall("call-r", "read", { path: "skill://legion-worker" }),
+    toolCall("call-log", "bash", { command: "gh run view 7001001" }),
+    result("call-log", `test (notify)\tfailure\t${redLine}`),
+    writeHandoff,
+    toolCall("call-rr", "bash", { command: "gh run rerun 7001001 --failed" }),
+    redSubscribe,
+    redSearch,
+    result("call-s", "No issues found."),
+    redComment,
+    redTold(`Clear defect from tester. ${redTest} failed at the head and passed on the re-run.`),
+    ...redComplete("pass", "The re-run of test (notify) passed."),
+  ]
+);
 
 /** A run of another world: its world.txt and world.json, over the world-`a` defaults. */
 function redWorldRun(
@@ -4890,6 +4925,45 @@ test("a red-at-the-head run's label is read past its world, and ref is the page 
   // The counts are per world and label: the label is `base`, never `a-base`.
   expect(out).toContain("red-at-the-head:a\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).not.toContain("\ta-base\t");
+});
+
+// Catches: a pass rate that counts a run the rule never applied to. This run never met the red,
+// so it is neither a pass nor a failure of the rule; with the readCI filter gone from the
+// aggregate, its key's pass line prints 1/2 and the run is read as the rule failing.
+test("a run that never read the head's CI leaves the pass rate and is reported beside it", () => {
+  expect(rowOf("trial-a-base-2")).toMatch(/^trial-a-base-2\tpass=false\t/);
+  expect(rowOf("trial-a-base-2")).toContain("reported=true readCI=false");
+  // The pass counts are over the one run of the key that met the red.
+  expect(out).toContain("red-at-the-head:a\tbase\t1/1\t0/1\t0\t0\n");
+  // And the run is reported on a line of its own, never as a column of the table above.
+  expect(out).toContain("\nscenario\tlabel\tread CI\tnever read CI\n");
+  expect(out).toContain("red-at-the-head:a\tbase\t1/2\t1/2\n");
+});
+
+// Catches: a READ_CI that holds the counted set alone (`gh pr checks`, a `check-runs` read).
+// This run met the red through `gh run view` and opened no page, and that narrower list would
+// call it a run that never read CI.
+test("a run whose one CI read is gh run view read CI", () => {
+  expect(rowOf("trial-a-head-21")).toMatch(/^trial-a-head-21\tpass=true\tref=false\t/);
+  expect(rowOf("trial-a-head-21")).toContain("readCI=true");
+});
+
+// Catches: the block printed for a batch whose rows carry no readCI, where every line of it
+// would say 0 of 0 runs never read CI.
+test("a batch of another scenario prints no never-read-CI block", () => {
+  const scored = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "score.ts"),
+    "runs",
+    runs,
+    "tester-proof",
+  ]);
+  const text = scored.stdout.toString();
+  expect(scored.exitCode).toBe(0);
+  expect(text).toContain("tester-proof\thead\t0/1\t0/1\t1\t0\n");
+  // The legend names the block whatever the batch holds, so the block is its heading.
+  expect(text).not.toContain("\nscenario\tlabel\tread CI\tnever read CI\n");
+  expect(text).not.toContain("readCI=");
 });
 
 /** A red-at-the-head row of a run that failed its world: the row says so, and its notes say what
