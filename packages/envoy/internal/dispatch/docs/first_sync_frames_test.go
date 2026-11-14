@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"runtime"
+	"runtime/debug"
+	"runtime/metrics"
 	"strings"
 	"testing"
 	"time"
@@ -313,9 +316,11 @@ const (
 // the rung at a thousand clients is short enough that the fixed cost of an answer is a visible
 // part of it, so the ratio measured over this step is above eight without any walk being
 // quadratic. Three is the slack pmdoc's linear-time rows allow (linearSlack) and leaves the bound,
-// twenty-four, well clear on both sides of what was measured on a two-processor pod: 11 ms and
-// 120 ms, a ratio of 10.9, at the pin this was written for, and 58 ms and 5.45 s, a ratio of
-// 94.0, at v1.55.1-sami.6, whose cut is the one whose walk grows with the square of the clients.
+// twenty-four, well clear on both sides of what was measured on a two-processor pod, thirty runs
+// of this row each with the collector stopped in its windows: 8.0 to 10.7 at the pin this was
+// written for, 8.7 to 10.5 under GODEBUG=checkfinalizers=1 and 7.7 to 10.8 under -race, against
+// 77.3 to 98.3 (about 55 ms and 4.8 s) at v1.55.1-sami.6, whose cut is the one whose walk grows
+// with the square of the clients.
 const chainedClientsSlack = 3
 
 // chainedClientsSamples is how many times the row below times each rung before keeping that
@@ -323,7 +328,8 @@ const chainedClientsSlack = 3
 // samples than the other, since a minimum over more draws is systematically lower and would
 // inflate the ratio by the sampling rather than by the walk. Three is pmdoc's count for the same
 // job (sampleCount), and each sample is a window of as many answers as the clock needs to
-// resolve (cputest.Measure) rather than one answer.
+// resolve (cputest.Measure): one on a Linux runner, whose clock moves in steps far under a
+// millisecond, and dozens at the small rung under gVisor's 10 ms step.
 const chainedClientsSamples = 3
 
 // Answering a browser's SyncStep1 costs no more than linearly in the clients whose structs chain,
@@ -344,13 +350,16 @@ const chainedClientsSamples = 3
 // nothing: the answer at chainedClientsLarge may cost no more than chainedClientsSlack times the
 // growth of the clients over the answer at chainedClientsSmall. Each rung is timed in this
 // process's CPU, which the room's cut spends on the goroutine of the socket this row reads
-// (cputest.Measure), and both rungs are timed the same number of times, in turn, keeping the
-// fastest of each: a cold start or a load spike reaches the rung it lands on rather than the
-// ratio, and neither side of the ratio draws from more samples than the other. The asymmetric
-// draw this row made at first - the faster of two timings at the small rung against a single
-// timing at the large one - biased the small rung low and so inflated the ratio with no walk
-// growing at all, which is how it failed CI at 24.5 against a bound of 24 (pmdoc's sampleCount
-// records the same finding against the same mistake). No test in this package calls t.Parallel.
+// (cputest.Measure), with the garbage collector stopped (timedWithoutCollections), and both rungs
+// are timed the same number of times, in turn, keeping the fastest of each: a cold start or a load
+// spike reaches the rung it lands on rather than the ratio, and neither side of the ratio draws
+// from more samples than the other. The asymmetric draw this row made at first - the faster of two
+// timings at the small rung against a single timing at the large one - biased the small rung low
+// and so inflated the ratio with no walk growing at all, which is how it failed CI at 24.5 against
+// a bound of 24 (pmdoc's sampleCount records the same finding against the same mistake). With the
+// draw made even it failed at 24.5 again, in envoy-go-docs-finalizers, because the collector's
+// time was still in the reading (timedWithoutCollections has that account). No test in this
+// package calls t.Parallel.
 func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *testing.T) {
 	service, small := newTestService(t)
 	service.settle = time.Hour
@@ -384,15 +393,16 @@ func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *t
 		t.Cleanup(func() { _ = connection.Close() })
 		readToPong(t, connection, rung.room)
 		answers[i] = func() time.Duration {
-			// A batch has no error of its own to report: a frame that does not arrive, or does
-			// not read, fails the test where it is read.
-			took, _ := cputest.Measure(func(runs int) (time.Duration, error) {
-				before := cputest.Process()
-				for range runs {
-					askForTheDocument(t, connection, rung.room)
-				}
-				return cputest.Process() - before, nil
+			took, err := cputest.Measure(func(runs int) (time.Duration, error) {
+				return timedWithoutCollections(func() {
+					for range runs {
+						askForTheDocument(t, connection, rung.room)
+					}
+				})
 			})
+			if err != nil {
+				t.Fatalf("time the answer at %d chained clients: %v", rung.clients, err)
+			}
 			return took
 		}
 	}
@@ -410,13 +420,74 @@ func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *t
 	grew := float64(largeTook) / float64(smallTook)
 	bound := float64(chainedClientsSlack * chainedClientsLarge / chainedClientsSmall)
 	t.Logf("answering a SyncStep1: %s at %d chained clients, %s at %d, %.1f times for %d times the clients (at most %.0f)",
-		smallTook.Round(time.Millisecond), chainedClientsSmall, largeTook.Round(time.Millisecond), chainedClientsLarge,
+		smallTook.Round(100*time.Microsecond), chainedClientsSmall, largeTook.Round(100*time.Microsecond), chainedClientsLarge,
 		grew, chainedClientsLarge/chainedClientsSmall, bound)
 	if grew > bound {
 		t.Fatalf("answering a SyncStep1 took %s at %d chained clients and %s at %d, %.1f times for %d times the clients: a cut whose walk is linear in them may grow %.0f times at most (chainedClientsSlack)",
-			smallTook.Round(time.Millisecond), chainedClientsSmall, largeTook.Round(time.Millisecond), chainedClientsLarge,
+			smallTook.Round(100*time.Microsecond), chainedClientsSmall, largeTook.Round(100*time.Microsecond), chainedClientsLarge,
 			grew, chainedClientsLarge/chainedClientsSmall, bound)
 	}
+}
+
+// timedWithoutCollections is the CPU time this process spends running work, with the garbage
+// collector settled before work starts and stopped while it runs, so the time is work's own. It is
+// pmdoc's timedWindow, which a test file of that package cannot lend this one.
+//
+// A collection's CPU time is the heap's and not the answer's: it marks everything the process
+// holds, which in the package's CI jobs is every room the tests before this row left behind, and
+// under GODEBUG=checkfinalizers=1, which envoy-go-docs-finalizers runs, each cycle adds partial
+// stop-the-world collections on one processor. A cycle lands in the answer whose allocation trips
+// it, and an answer at chainedClientsLarge allocates about eight times what one at
+// chainedClientsSmall does (27 MiB against 3.2 MiB on a two-processor pod). That job's log prints
+// a cycle every 35 to 70 ms all through this row, where an answer at the small rung took 3 to 6 ms
+// of CPU and one at the large rung tens of milliseconds, and a Linux runner's clock moves in steps
+// far under a millisecond (cputest's resolution), so a window there holds a single answer: the
+// fastest of three at the small rung is one a cycle missed, while an answer at the large rung
+// spans about a cycle's interval. Over nine CI runs of cybermonklabs/legion#2697 that job read the
+// large rung at 34 to 99 ms and the ratio at 8.7 to 24.5, while envoy-go-race-docs read it at 11.2
+// to 12.4 over the same runs, and run 43599260655 failed at 24.5.
+//
+// Stopping the collector hides nothing a quadratic walk would show: the cut walks on the
+// goroutine that answers the socket, inside the window, and none of that walk is the collector's.
+// The window may grow the heap by answerWindowGrowth while the collector is stopped, so a window
+// that allocates without bound is collected rather than killing the process, and it comes back
+// with an error naming its collections, since their time would be in its reading.
+func timedWithoutCollections(work func()) (time.Duration, error) {
+	runtime.GC()
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	limit := min(debug.SetMemoryLimit(-1), heldMemory()+answerWindowGrowth)
+	defer debug.SetMemoryLimit(debug.SetMemoryLimit(limit))
+	cycles := gcCycles()
+	before := cputest.Process()
+	work()
+	took := cputest.Process() - before
+	if collected := gcCycles() - cycles; collected != 0 {
+		return took, fmt.Errorf("%d collections ran inside a timed window, which grew the memory the runtime holds to the %d MiB limit; their CPU time is in its %s", collected, limit>>20, took.Round(time.Millisecond))
+	}
+	return took, nil
+}
+
+// answerWindowGrowth is how much memory timedWithoutCollections lets a window add to what the
+// runtime holds as the window opens, unless the process already runs under a lower limit. The
+// limit is the held memory plus this rather than a number of its own because the package's CI
+// jobs run this row in one process with the package's other tests, whose rooms the runtime may
+// still hold. The largest window measured on a two-processor pod, whose 10 ms clock step makes a
+// window of 64 to 126 answers at the small rung (cputest.Measure), grew the heap by 395 MiB.
+const answerWindowGrowth = 1 << 30
+
+// heldMemory is the memory the Go runtime holds from the system, the figure its memory limit is
+// held to: everything it has mapped, less the heap it has handed back.
+func heldMemory() int64 {
+	samples := []metrics.Sample{{Name: "/memory/classes/total:bytes"}, {Name: "/memory/classes/heap/released:bytes"}}
+	metrics.Read(samples)
+	return int64(samples[0].Value.Uint64() - samples[1].Value.Uint64())
+}
+
+// gcCycles is how many collections this process has completed.
+func gcCycles() uint64 {
+	sample := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}}
+	metrics.Read(sample)
+	return sample[0].Value.Uint64()
 }
 
 // chainedClientsUpdate is the state of a document clients have appended a paragraph to in turn:
