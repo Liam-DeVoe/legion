@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,12 +52,18 @@ const waveSize = 40
 // heldClock (supervision_test.go) fires by the exact wait a timer was armed for, which no wave can
 // name: the daemon jitters every paced release, so the forty waits of one wave are forty different
 // numbers.
-type waveClock struct{ *clocktest.Fake }
+type waveClock struct {
+	*clocktest.Fake
+	// settle waits, once a daemon runs on this clock (startWaveDaemon), until that daemon's
+	// machines have nothing left to decide (awaitQuiet); advanceTo calls it before every move.
+	// nil while no daemon does, and then a move waits for nothing.
+	settle func()
+}
 
 // newWaveClock starts at the wall clock, as heldClock does, so nothing the daemon compares
 // against the database's own now reads as years out.
 func newWaveClock() *waveClock {
-	return &waveClock{clocktest.New(time.Now().UTC())}
+	return &waveClock{Fake: clocktest.New(time.Now().UTC())}
 }
 
 // Sleep returns at once, as the daemon tests' clocks do: a launch backoff is not what these tests
@@ -66,7 +73,18 @@ func (*waveClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx
 // advanceTo moves the clock to at, or leaves it where it stands when at is not after it, and runs
 // every timer due by then, earliest first, until none is left: a wake's turn arms the next thing
 // the claim waits for, and a test that advanced past that moment has to see it fire too.
-func (c *waveClock) advanceTo(at time.Time) { c.Advance(max(at.Sub(c.Now()), 0)) }
+//
+// It moves only once the daemon's machines have nothing left to decide (settle). A decision in
+// flight can stand between the moment it reads the clock and the timer it arms from that reading
+// — a paced wake's park arms what is left of its wait from the clock's present (supervise's
+// reserveWake, parkWake) — and a move landing between the two arms that timer the move's length
+// past the turn the state names for it, which then never comes at that turn.
+func (c *waveClock) advanceTo(at time.Time) {
+	if c.settle != nil {
+		c.settle()
+	}
+	c.Advance(max(at.Sub(c.Now()), 0))
+}
 
 // waveRuntime is the fake runtime with the moment of every launch on the test's clock: what the
 // wave's consumer sees is when each process started, and the fake records the call alone.
@@ -253,15 +271,38 @@ func liveClaim(i int, token claim.Token, contract int) supervise.Claim {
 // startWaveDaemon runs a daemon over rt whose machines keep clock's time and whose log is
 // written as JSON to logged. Every periodic loop of the daemon is armed on clock too, so a pass
 // of one runs when the test moves that clock past its interval or asks for it (passTriggers,
-// which tune hooks), and never on a cadence of the wall clock's own.
+// which tune hooks), and never on a cadence of the wall clock's own. The daemon hands over its
+// supervisor's reading of the work its machines still hold (overrides.supervising): every settled
+// reading of the wakes is taken across it (settledWakes), and every move of clock waits for it to
+// say the machines are quiet (waveClock.advanceTo, awaitQuiet).
 func startWaveDaemon(t *testing.T, cfg config.Config, clock *waveClock, rt *waveRuntime, logged *syncBuffer, tune func(*overrides)) *daemon {
 	t.Helper()
 	o := fakeRuntime(rt, &built{})
 	o.clock = clock
+	var quiet atomic.Pointer[func() supervisionQuiet]
+	o.supervising = func(read func() supervisionQuiet) { quiet.Store(&read) }
 	if tune != nil {
 		tune(&o)
 	}
-	return startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logged, nil)))
+	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logged, nil)))
+	read := quiet.Load()
+	if read == nil {
+		t.Fatal("the daemon reported itself ready without handing over its supervisor's reading (overrides.supervising)")
+	}
+	d.quiet = *read
+	clock.settle = func() { awaitQuiet(t, d) }
+	return d
+}
+
+// awaitQuiet waits until the daemon's machines have nothing left to decide: every event the
+// supervisor queued for one decided, and none deciding an event from any source
+// (supervisionQuiet).
+func awaitQuiet(t *testing.T, d *daemon) {
+	t.Helper()
+	testwait.Until(t, "the daemon's machines to have nothing left to decide", func() (supervisionQuiet, bool) {
+		reading := d.quiet()
+		return reading, reading.posted == reading.decided && len(reading.deciding) == 0
+	})
 }
 
 // waitingWakes is the wakes the daemon's state says the pacing holds, earliest first: the queue as
@@ -271,6 +312,51 @@ func waitingWakes(t *testing.T, d *daemon) []api.WakeWaiting {
 	waiting := d.state().WakesWaiting
 	slices.SortStableFunc(waiting, func(a, b api.WakeWaiting) int { return a.DueAt.Compare(b.DueAt) })
 	return waiting
+}
+
+// wakesReading is one reading of the waiting wakes and the supervisor's reading of its machines'
+// work on each side of it, which a failed wait prints.
+type wakesReading struct {
+	wakes         []api.WakeWaiting
+	before, after supervisionQuiet
+}
+
+// settledWakes is the wakes the daemon's state says the pacing holds (waitingWakes), read once a
+// reading of them is settled and holds is true of it. A wave's sites fan out over one goroutine
+// per claim — the boot's launchUnfinished, the sweep's posts, the runtime's observations — and a
+// machine publishes its wake only at the end of the decision that parked it
+// (supervise.Machine.publish), so a reading taken while a decision is in flight can lack a wake
+// whose turn the limiter has already given, or hold one whose credit is already free. A reading is
+// settled when the supervisor reports, on each side of it, that every event it queued for a
+// machine has been decided, that it queued and decided nothing in between, and that no machine is
+// deciding (quietAcross): then no decision ran across the reading, which holds what every decision
+// before it published.
+func settledWakes(t *testing.T, d *daemon, what string, holds func([]api.WakeWaiting) bool) []api.WakeWaiting {
+	t.Helper()
+	return testwait.Until(t, what+", read settled", func() (wakesReading, bool) {
+		reading := wakesReading{before: d.quiet()}
+		reading.wakes = waitingWakes(t, d)
+		reading.after = d.quiet()
+		return reading, quietAcross(reading.before, reading.after) && holds(reading.wakes)
+	}).wakes
+}
+
+// quietAcross is whether supervision did no work between two of its readings: no event it queued
+// undecided at the first, the same counts at the second, and no machine deciding at either.
+func quietAcross(before, after supervisionQuiet) bool {
+	return before.posted == before.decided && after.posted == before.posted && after.decided == before.decided &&
+		len(before.deciding) == 0 && len(after.deciding) == 0
+}
+
+// refreshesOf is the wakes of the stale-plugin refresh lane among wakes, in their order.
+func refreshesOf(wakes []api.WakeWaiting) []api.WakeWaiting {
+	var refreshes []api.WakeWaiting
+	for _, wake := range wakes {
+		if wake.Kind == supervise.WakePluginRefresh {
+			refreshes = append(refreshes, wake)
+		}
+	}
+	return refreshes
 }
 
 // claimIndex is one read of the daemon's own claim list, by token and by tree: what a row needs
@@ -389,20 +475,17 @@ func assertQueueLeft(t *testing.T, d *daemon, why string, before []api.WakeWaiti
 // awaitWave waits until the whole wave has reserved its turn: one wake out at once, which the
 // burst lets through, and the rest waiting in the state. It returns the queue, earliest first.
 //
-// The queue must be read twice alike before it is believed. A wave's sites fan out over one
-// goroutine per claim (the boot's launchUnfinished, the sweep's posts, the outbox's lanes), so
-// the count can reach the wave's size while a straggler is still between its reserve and the
-// write the state reads it from, and a queue read in that moment names one claim the turns do
-// not. Two equal reads in a row say the fan-out is over, and every caller then advances the
-// clock to the moments this returned.
+// The queue is believed only from a settled reading (settledWakes), and every caller then
+// advances the clock to the moments this returned. A count of the rest is not enough alone: a
+// wave's sites fan out over one goroutine per claim, and the claim the burst let out reserved its
+// turn first, so it can still be inside the decision that launches it once every other claim has
+// published its wake. A settled reading of count-1 wakes has every wake that waits published and
+// that launch made, since no machine was deciding on either side of it.
 func awaitWave(t *testing.T, d *daemon, count int) []api.WakeWaiting {
 	t.Helper()
-	var waiting, settled []api.WakeWaiting
-	testwait.Eventually(t, fmt.Sprintf("the pacing to hold %d of the wave's %d wakes", count-1, count), func() bool {
-		waiting, settled = waitingWakes(t, d), waiting
-		return len(waiting) == count-1 && slices.Equal(waiting, settled)
+	return settledWakes(t, d, fmt.Sprintf("the pacing to hold %d of the wave's %d wakes", count-1, count), func(waiting []api.WakeWaiting) bool {
+		return len(waiting) == count-1
 	})
-	return waiting
 }
 
 // wakeMoments is the moment each wake of a wave runs at: the first at origin, which the burst let
@@ -1318,27 +1401,17 @@ func staleController(t *testing.T, cfg config.Config) claim.Token {
 // (supervise.WakePluginRefresh, api.State.WakesWaiting).
 func refreshWakesWaiting(t *testing.T, d *daemon) []api.WakeWaiting {
 	t.Helper()
-	var refreshes []api.WakeWaiting
-	for _, wake := range waitingWakes(t, d) {
-		if wake.Kind == supervise.WakePluginRefresh {
-			refreshes = append(refreshes, wake)
-		}
-	}
-	return refreshes
+	return refreshesOf(waitingWakes(t, d))
 }
 
-// awaitGate waits until the lane holds exactly count refreshes in the pacing and the reading
-// settles, and returns them. It is awaitWave's discipline — two reads alike in a row, since a
-// wave's posts fan out over one goroutine per claim — over the gate's own K rather than over a
-// whole wave, which no gated lane ever holds at once.
+// awaitGate waits until a settled reading of the pacing (settledWakes) holds exactly count
+// refreshes, and returns them: awaitWave's settled reading over the gate's own K rather than over
+// a whole wave, which no gated lane ever holds at once.
 func awaitGate(t *testing.T, d *daemon, count int) []api.WakeWaiting {
 	t.Helper()
-	var waiting, settled []api.WakeWaiting
-	testwait.Eventually(t, fmt.Sprintf("the gate to hold %d refreshes in the pacing", count), func() bool {
-		waiting, settled = refreshWakesWaiting(t, d), waiting
-		return len(waiting) == count && slices.Equal(waiting, settled)
-	})
-	return waiting
+	return refreshesOf(settledWakes(t, d, fmt.Sprintf("the gate to hold %d refreshes in the pacing", count), func(waiting []api.WakeWaiting) bool {
+		return len(refreshesOf(waiting)) == count
+	}))
 }
 
 // gateFullLines is every line a stale-plugin pass wrote for the claims it left to a later sweep:

@@ -201,6 +201,11 @@ type overrides struct {
 	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
 	// own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// supervising receives the supervisor's reading of the work its machines still hold
+	// (supervisor.quiet) once supervision is built, before any machine decides anything: a test's
+	// way to read a state its machines' decisions have all published into, rather than one taken
+	// while a decision is in flight. nil, in production, is nothing.
+	supervising func(quiet func() supervisionQuiet)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -796,6 +801,8 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// supervising is overrides.supervising; nil hands the reading to nobody.
+	supervising func(quiet func() supervisionQuiet)
 }
 
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
@@ -869,6 +876,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, observe: o.observe,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		supervising: o.supervising,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1408,6 +1416,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	draining, endDrain := context.WithCancel(context.Background())
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
+	if p.supervising != nil {
+		p.supervising(sup.quiet)
+	}
 	listener, err := stream.Listen(draining, p.stream,
 		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
 	if err != nil {

@@ -252,21 +252,16 @@ func (w *waveTurn) endTurn() {
 // kind, with the gate's bound asserted on it: no reading of api.State.WakesWaiting holds more
 // wakes of that kind than worker_wakes_per_minute (check c-bound, supervise.RefreshGate).
 //
-// Settled means two readings alike in a row, which is the discipline awaitWave and awaitGate use
-// and which decision P8 of dispatch://INFRA-2712/artifact/plan-md asks of exactly this assertion:
-// the machines publish their views at the end of each decision (supervise's publish, read by the
-// daemon's waitingWakes), so a single reading taken while a decision is in flight can hold the
-// wake of a claim whose credit is already free and would read K+1 for a gate that never granted
-// more than K. what is the moment of the run this reading is of, named in the failure.
+// Decision P8 of dispatch://INFRA-2712/artifact/plan-md asks that this assertion read a settled
+// pacing, and settledWakes' reading is one: the machines publish their views at the end of each
+// decision (supervise's publish, read by the daemon's waitingWakes), so a single reading taken
+// while a decision is in flight can hold the wake of a claim whose credit is already free and
+// would read K+1 for a gate that never granted more than K, and a reading the supervisor reports
+// no decision ran across holds none such. what is the moment of the run this reading is of, named
+// in the failure.
 func settledRefreshes(t *testing.T, d *daemon, what string) []api.WakeWaiting {
 	t.Helper()
-	var waiting, settled []api.WakeWaiting
-	reads := 0
-	testwait.Eventually(t, "a settled reading of the refreshes the pacing holds at "+what, func() bool {
-		waiting, settled = refreshWakesWaiting(t, d), waiting
-		reads++
-		return reads > 1 && slices.Equal(waiting, settled)
-	})
+	waiting := refreshesOf(settledWakes(t, d, "a reading of the refreshes the pacing holds at "+what, func([]api.WakeWaiting) bool { return true }))
 	if len(waiting) > testWakeRate {
 		t.Fatalf("the lane holds %d refreshes in the pacing at %s, want at most the rate, %d: the gate grants one minute of the pacing at a time; the wakes are %+v",
 			len(waiting), what, testWakeRate, waiting)

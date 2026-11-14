@@ -36,6 +36,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -67,8 +68,11 @@ var (
 
 // testOptions are the options every test starts from: production's shape — a store that keeps
 // sessions in a database included, which configure requires, here the postgres one with its URL key
-// — both pods' reservations at the daemon's defaults (reservations), with budgets short enough that
-// a wait the test expects to end never slows the suite.
+// — both pods' reservations at the daemon's defaults (reservations). The boot timeout and the
+// adoption's bound are the daemon's defaults too (worker_boot_timeout_seconds and
+// slow_command_timeout_seconds): every wait they bound ends on its event in a row, which a loaded
+// machine only delays, and a row whose subject is such a bound running out runs in a synctest
+// bubble, whose clock is the row's own, or moves the runtime's own fake past it (withClock).
 func testOptions() Options {
 	return Options{
 		Namespace:    testNamespace,
@@ -87,17 +91,19 @@ func testOptions() Options {
 			GH: "/usr/local/bin/gh", Git: "/usr/bin/git", JJ: "/usr/local/bin/jj", Legion: "/opt/legion/bin/legion",
 			AgentSecrets: "/opt/legion/bin/agent-secrets",
 		},
-		BootTimeout:           2 * time.Second,
+		BootTimeout:           120 * time.Second,
 		RegistrationIntervals: 3,
 		BusyBackoff:           time.Millisecond,
 		TerminationGrace:      200 * time.Millisecond,
-		ProbeInterval:         time.Hour,
-		AdoptTimeout:          time.Minute,
-		Tokens:                staticTokens{},
-		GitHubCredential:      staticCredential,
-		ControllerCredential:  staticControllerCredential,
-		GitHubDirs:            func(ghrepo.Repository, []appauth.AppRole) []string { return staticDirs },
-		Conns:                 fake.NewConns(),
+		// An hour, past production's 30 s, keeps the watch's periodic pass away: a row that needs
+		// that pass sets its own interval inside a synctest bubble (watch_test.go).
+		ProbeInterval:        time.Hour,
+		AdoptTimeout:         5 * time.Minute,
+		Tokens:               staticTokens{},
+		GitHubCredential:     staticCredential,
+		ControllerCredential: staticControllerCredential,
+		GitHubDirs:           func(ghrepo.Repository, []appauth.AppRole) []string { return staticDirs },
+		Conns:                fake.NewConns(),
 		RepositoryCache: RepositoryCache{
 			Volume: resource.MustParse("20Gi"), Refresh: 10 * time.Minute, Retain: 168 * time.Hour,
 			Resources: reservations().Controller,
@@ -522,6 +528,22 @@ type rig struct {
 type rigOption func(*rig, *Options)
 
 func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options) { edit(o) } }
+
+// withBubbleBoot gives a row that runs in a synctest bubble a boot timeout of 2 s on the bubble's
+// clock. There its length decides nothing but how many of the controller stand-in's 5 ms ticks the
+// row's waits span, and the arithmetic a row states over it holds (launcher_wait_test.go's
+// provisioning bound). Outside a bubble a boot timeout this short would be a real limit a loaded
+// machine passes, which the rig's own (testOptions) keeps away.
+func withBubbleBoot() rigOption {
+	return withOptions(func(o *Options) { o.BootTimeout = 2 * time.Second })
+}
+
+// withClock runs the runtime's bounded waits on fake (Options.Clock): each wait's deadline then
+// passes only when the row moves fake past it, once the row has read that nothing else will end
+// the wait.
+func withClock(fake *clocktest.Fake) rigOption {
+	return withOptions(func(o *Options) { o.Clock = fake })
+}
 
 // withTerminationLag has the controller stand-in leave each pod it deletes terminating for lag
 // before it ends, as a cluster's kubelet takes a while to stop a pod's containers (terminationLag).

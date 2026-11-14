@@ -51,6 +51,10 @@ type supervisor struct {
 	// mu, replaces the slice with a longer copy, and the stop's log lines read it without mu, which
 	// Create holds through a store write.
 	all atomic.Pointer[[]*supervise.Machine]
+	// posted counts every event the supervisor has queued for a machine (post, wakeIssue), and
+	// decided every one of them a machine's goroutine has finished handling: the supervisor's own
+	// ledger of the work it handed its machines, which quiet reports.
+	posted, decided atomic.Uint64
 }
 
 // member is one claim's machine, the queue its events wait in, and the issue the claim is of.
@@ -128,6 +132,7 @@ func (s *supervisor) wakeIssue(token claim.Token) {
 	}
 	for other, m := range s.machines {
 		if other != token && m.issue == ended.issue {
+			s.posted.Add(1)
 			m.inbox.put(supervise.IssueTurnEnded{Claim: other})
 		}
 	}
@@ -270,6 +275,9 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 			if _, ended := ev.(supervise.StreamTurnEnd); ended {
 				s.wakeIssue(token)
 			}
+			// Counted once what handling ev posted is posted too, so no reading of the ledger
+			// finds it settled between this decision and the events it hands on (quiet).
+			s.decided.Add(1)
 		}
 	}()
 }
@@ -301,6 +309,26 @@ func (s *supervisor) inDecision() []string {
 	return busy
 }
 
+// supervisionQuiet is the supervisor's reading of the work its machines still hold: how many
+// events it has queued for them in all (posted), how many of those their goroutines have decided
+// (decided), and every claim whose machine is deciding an event now, whoever handed it the event
+// (inDecision). A test reads it through overrides.supervising, on each side of a read of the
+// daemon's state: no queued event undecided, counts unmoved between the two readings and no
+// machine deciding at either say that no decision ran across the read, so it holds what every
+// decision before it published (supervise.Machine.publish).
+type supervisionQuiet struct {
+	posted, decided uint64
+	deciding        []string
+}
+
+// quiet is the supervisor's supervisionQuiet now. It waits on no decision and no lock a decision
+// holds. decided is read before posted, so an event posted between the two reads leaves posted
+// ahead of decided rather than a reading that claims more decided than was ever posted.
+func (s *supervisor) quiet() supervisionQuiet {
+	decided := s.decided.Load()
+	return supervisionQuiet{posted: s.posted.Load(), decided: decided, deciding: s.inDecision()}
+}
+
 // post queues ev for the claim's machine. An event for a claim the daemon does not supervise, or
 // one that arrives once supervision is stopping, goes nowhere.
 func (s *supervisor) post(token claim.Token, ev supervise.Event) {
@@ -315,6 +343,7 @@ func (s *supervisor) post(token claim.Token, ev supervise.Event) {
 			"event", fmt.Sprintf("%T", ev))
 		return
 	}
+	s.posted.Add(1)
 	m.inbox.put(ev)
 }
 

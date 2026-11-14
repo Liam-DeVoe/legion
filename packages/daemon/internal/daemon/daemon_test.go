@@ -829,6 +829,10 @@ type daemon struct {
 	client    *http.Client
 	base      string
 	stopped   bool
+	// quiet is the supervisor's reading of the work its machines still hold (supervisionQuiet),
+	// for a test that started the daemon with overrides.supervising (startWaveDaemon); nil
+	// otherwise.
+	quiet func() supervisionQuiet
 }
 
 // startDaemon runs the daemon until the test stops it, and returns once it reports itself ready to
