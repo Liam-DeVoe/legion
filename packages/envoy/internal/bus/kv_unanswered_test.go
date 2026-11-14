@@ -54,6 +54,9 @@ func accountInfoSubject() string { return "$JS.API.INFO" }
 // about its own bucket; accountInfoSubject holds no bucket name, so only a row that makes one
 // call may drop it. The sends a row's setup makes are counted apart from the sends of the call
 // it is about (arm).
+//
+// drop cuts every link the relay holds, as a pod's TCP connection dies under it: the client reads
+// EOF and reconnects through the relay, which accepts the new link as it accepted the first.
 type unansweredRelay struct {
 	subject  string
 	url      string
@@ -62,6 +65,14 @@ type unansweredRelay struct {
 	pass     int
 	drops    int
 	sends    int
+	// links holds both ends of every link the relay has joined, under mu, for drop.
+	links []net.Conn
+	// pings counts the PINGs the client sent and the relay passed on, pongs the PONGs the server
+	// answered and the relay handed the client, both under mu; pingsAtDrop is pings when the last
+	// drop was made. The server answers PINGs in order, so the PONG that takes pongs past
+	// pingsAtDrop answers the first PING sent after the dropped request: the flush behind it
+	// (flushedSinceDrop).
+	pings, pongs, pingsAtDrop int
 }
 
 // startUnansweredRelayOn relays to the NATS server at target, a client URL such as testnats.URL
@@ -138,9 +149,32 @@ func (r *unansweredRelay) send(subject string) bool {
 	}
 	if r.drops > 0 {
 		r.drops--
+		r.pingsAtDrop = r.pings
 		return true
 	}
 	return false
+}
+
+// flushedSinceDrop reports whether the server has answered, and the relay handed the client, the
+// first PING the client sent after the request the relay last dropped: a flush behind that
+// request has its answer in the client's socket, ahead of anything the relay does after.
+func (r *unansweredRelay) flushedSinceDrop() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pongs > r.pingsAtDrop
+}
+
+// drop closes both ends of every link the relay has joined so far: a real cut of the client's
+// connection, which nats.go reads as EOF, rather than its own ForceReconnect, which also fails
+// every request its response subscription is waiting on (a KV read among them) and so would hide
+// the request a cut leaves waiting.
+func (r *unansweredRelay) drop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, link := range r.links {
+		_ = link.Close()
+	}
+	r.links = nil
 }
 
 // serve joins each connection the relay accepts to the server until the listener closes.
@@ -155,12 +189,11 @@ func (r *unansweredRelay) serve(target string) {
 			_ = client.Close()
 			continue
 		}
+		r.mu.Lock()
+		r.links = append(r.links, client, server)
+		r.mu.Unlock()
 		go r.filter(server, client)
-		go func() {
-			_, _ = io.Copy(client, server)
-			_ = client.Close()
-			_ = server.Close()
-		}()
+		go r.toClient(client, server)
 	}
 }
 
@@ -187,6 +220,11 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 			if _, err := io.WriteString(server, line); err != nil {
 				return
 			}
+			if strings.EqualFold(strings.TrimSpace(line), "PING") {
+				r.mu.Lock()
+				r.pings++
+				r.mu.Unlock()
+			}
 			continue
 		}
 		size, err := strconv.Atoi(fields[len(fields)-1])
@@ -205,6 +243,50 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 		}
 		if _, err := server.Write(payload); err != nil {
 			return
+		}
+	}
+}
+
+// toClient relays what the server sends to the client, a protocol message at a time, counting
+// each PONG once it is in the client's socket (flushedSinceDrop). A message the server delivers,
+// `MSG <subject> <sid> [reply] <bytes>` or `HMSG <subject> <sid> [reply] <header bytes> <bytes>`,
+// is passed on with the payload its header counts, so no payload is read as a PONG; every other
+// line is passed on as it is.
+func (r *unansweredRelay) toClient(client, server net.Conn) {
+	defer func() {
+		_ = client.Close()
+		_ = server.Close()
+	}()
+	reader := bufio.NewReader(server)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		fields := strings.Fields(line)
+		var payload []byte
+		if len(fields) >= 4 && (strings.EqualFold(fields[0], "MSG") || strings.EqualFold(fields[0], "HMSG")) {
+			size, err := strconv.Atoi(fields[len(fields)-1])
+			if err != nil {
+				return
+			}
+			payload = make([]byte, size+2)
+			if _, err := io.ReadFull(reader, payload); err != nil {
+				return
+			}
+		}
+		if _, err := io.WriteString(client, line); err != nil {
+			return
+		}
+		if payload != nil {
+			if _, err := client.Write(payload); err != nil {
+				return
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(line), "PONG") {
+			r.mu.Lock()
+			r.pongs++
+			r.mu.Unlock()
 		}
 	}
 }

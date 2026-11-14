@@ -175,7 +175,8 @@ type SessionConsumers struct {
 	// streamMu guards streamNext and streamReading (streamState).
 	streamMu sync.Mutex
 	// streamNext is the stream read the streamState calls made since the last one began wait for;
-	// nil when none waits. streamReading is set while a goroutine sends the reads.
+	// nil when none waits. streamReading is set while a goroutine starts the reads
+	// (readStreamStates).
 	streamNext    *streamRead
 	streamReading bool
 }

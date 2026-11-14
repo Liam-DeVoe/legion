@@ -19,7 +19,7 @@ import (
 )
 
 // Delete deletes sessionID's entry at the revision it reads (bus.KeyValue.DeleteAtRead), each
-// bucket call waiting no longer than ctx (bus.Bounded): DELETE /v1/sessions/<session_id> passes its
+// bucket call waiting no longer than ctx (bus.BoundedOn): DELETE /v1/sessions/<session_id> passes its
 // request's own context. A delete ctx abandoned may still land after this answer, and that is safe:
 // it deletes only the revision it read, so a registration that landed since is kept, and an entry
 // the read found absent is left alone rather than deleted at no revision, which would take the
@@ -31,7 +31,7 @@ func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
+	read, answered, err := bus.BoundedOn(ctx, kv, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
 	if !answered {
 		return fmt.Errorf("delete session %s from the bucket: %w", sessionID, err)
 	}
@@ -124,7 +124,7 @@ func (c DeleteConditions) keeps(stored SessionEntry) DeleteOutcome {
 
 // DeleteIf deletes sessionID's entry only while the stored entry meets every condition conditions
 // names (DeleteConditions.keeps), and reports what it did, each bucket call waiting no longer
-// than ctx (bus.Bounded).
+// than ctx (bus.BoundedOn).
 //
 // Every comparison holds at the revision it deletes: the entry is read for its value and its
 // revision together, and the delete names that revision (nats.LastRevision), so a registration
@@ -150,7 +150,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 	fence := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	for attempt := 0; ; attempt++ {
-		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+		entry, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 		}
@@ -181,7 +181,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 		if kept := conditions.keeps(stored); kept != EntryDeleted {
 			return kept, nil
 		}
-		_, answered, err = bus.Bounded(ctx, func() (struct{}, error) {
+		_, answered, err = bus.BoundedOn(ctx, kv, func() (struct{}, error) {
 			return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
 		})
 		if !answered {

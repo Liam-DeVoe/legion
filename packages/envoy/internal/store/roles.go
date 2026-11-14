@@ -411,7 +411,7 @@ const (
 // writeRoleClaim sends w over claim, the record its caller read, conditional on the revision
 // that read returned, and sends it again over a re-read of the record while the write loses
 // that condition and w allows another attempt. Each bucket call waits no longer than ctx
-// (bus.Bounded); a call ctx abandoned may still land after this answer, and it is conditional on
+// (bus.BoundedOn); a call ctx abandoned may still land after this answer, and it is conditional on
 // the revision it was sent at, so it touches no record written since - each caller says what
 // that costs it.
 //
@@ -426,7 +426,7 @@ func (r *Registry) writeRoleClaim(ctx context.Context, claim RoleClaim, w roleCl
 		}
 		at := claim
 		epoch := r.roleViewEpoch()
-		revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return w.send(at) })
+		revision, answered, err := bus.BoundedOn(ctx, r.roles(), func() (uint64, error) { return w.send(at) })
 		switch {
 		case !answered:
 			return roleClaimWriteFailed, claim, err
@@ -650,7 +650,7 @@ func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, superse
 // the very process that handed it back is that process's to renew from this write on, which is
 // how a holder takes back a role it gave up without waiting out the role claim reaper.
 //
-// Each bucket call waits no longer than ctx (bus.Bounded): POST /v1/roles/set passes its request's
+// Each bucket call waits no longer than ctx (bus.BoundedOn): POST /v1/roles/set passes its request's
 // own context. A call ctx abandoned may still land after this answer. A hard claim that names no
 // IfClaimRevision is last-claim-wins, so its write names no revision: it lands whatever the bucket
 // holds, and two honest concurrent claimants both land, the later write holding the role. A soft
@@ -744,7 +744,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	// revision it requires is weighed a second time by the write itself, so a claim that landed
 	// between this call's read and its write refuses this one rather than being overwritten by it.
 	// Both losers are answered below.
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) {
+	revision, answered, err := bus.BoundedOn(ctx, roles, func() (uint64, error) {
 		switch {
 		case !req.Soft && req.IfClaimRevision == nil:
 			return roles.Put(req.Role, data)
@@ -847,7 +847,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	return item, nil
 }
 
-// RoleClaim reads role's claim from the bucket, waiting no longer than ctx (bus.Bounded). The
+// RoleClaim reads role's claim from the bucket, waiting no longer than ctx (bus.BoundedOn). The
 // claim it returns carries the entry's revision (RoleClaim.Revision), which is what a conditional
 // claim and GET /v1/roles/<role> compare against, and the time the entry was stored
 // (RoleClaim.Created), which is what a claim's grace is weighed by; a role with no claim record
@@ -860,7 +860,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 // claim.Revision, as releaseReadRoleClaim already does.
 func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error) {
 	roles := r.roles()
-	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return roles.Get(role) })
+	entry, answered, err := bus.BoundedOn(ctx, roles, func() (nats.KeyValueEntry, error) { return roles.Get(role) })
 	if !answered {
 		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
 	}

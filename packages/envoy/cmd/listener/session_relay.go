@@ -155,10 +155,11 @@ const (
 	// wait while it is still this listener's.
 	relayRetry
 	// relayReconnected: the pull's request was lost with its connection
-	// (bus.ErrSessionPullReconnected), which is no failure of the session's or of its consumer's.
-	// The relay restarts at the ack floor at once, with no wait, and its retry backoff starts
-	// again from relayRetryFirst: the failures before this reconnect say nothing about the pull
-	// the new connection makes (sessionRelays.relay).
+	// (bus.ErrSessionPullReconnected), or a consumer call of the restart before it was
+	// (bus.ErrRequestLostWithConnection), which is no failure of the session's or of its
+	// consumer's. The relay restarts at the ack floor at once, with no wait, and its retry backoff
+	// starts again from relayRetryFirst: the failures before this reconnect say nothing about the
+	// calls and the pull the new connection makes (sessionRelays.relay).
 	relayReconnected
 	// relayPaused: the session answered no frame within relayReceiptWait; the relay restarts at the
 	// ack floor after the pause backoff, or at the session's next registration, whichever is first.
@@ -1022,7 +1023,9 @@ func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrot
 }
 
 // restartFailed is the outcome of a restart (sessionRelays.restart) whose call or pull failed
-// with err.
+// with err. A call lost with its connection (bus.ErrRequestLostWithConnection) restarts at once,
+// as a pull lost that way does (pullEnded): the call is sent again on the connection that came
+// back, and the backoff a failure of the session's own would earn says nothing about it.
 func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err error) (bus.SessionConsumerStart, *bus.SessionPull, relayOutcome) {
 	switch {
 	case ctx.Err() != nil:
@@ -1030,6 +1033,9 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 	case errors.Is(err, bus.ErrSessionConsumerNotFound) || errors.Is(err, bus.ErrNoSessionConsumerName):
 		m.logger.Info("session relay paused: the session has no consumer; its next registration creates one", slog.String("session_id", sessionID))
 		return bus.SessionConsumerStart{}, nil, relayEnded
+	case errors.Is(err, bus.ErrRequestLostWithConnection):
+		m.logger.Info("session relay restart lost a call with its connection; restarting at the ack floor at once", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return bus.SessionConsumerStart{}, nil, relayReconnected
 	case consumerGrantRefused(err):
 		m.delivery.refused(sessionID, err)
 		return bus.SessionConsumerStart{}, nil, relayEnded

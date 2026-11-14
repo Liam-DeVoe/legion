@@ -982,14 +982,16 @@ const listenerGrant = "infra/core ListenerPermissions"
 
 // natsConnectionError reports whether err is a failure to reach NATS, or to get an answer from it,
 // that a later attempt can get past: no server answered the dial or closed it during the
-// handshake, a request ran out of time or found no responder, the connection closed or is
-// reconnecting, or JetStream answered that it is not available yet. Any other error, a credential
-// or configuration the connect refuses before it dials among them, is not one.
+// handshake, a request ran out of time, found no responder or was lost with its connection
+// (bus.ErrRequestLostWithConnection), the connection closed or is reconnecting, or JetStream
+// answered that it is not available yet. Any other error, a credential or configuration the
+// connect refuses before it dials among them, is not one.
 func natsConnectionError(err error) bool {
 	for _, transient := range []error{
 		io.EOF, io.ErrUnexpectedEOF, syscall.ECONNREFUSED, syscall.ECONNRESET, context.DeadlineExceeded,
 		nats.ErrNoServers, nats.ErrTimeout, nats.ErrNoResponders, nats.ErrNoStreamResponse,
 		nats.ErrConnectionClosed, nats.ErrDisconnected, nats.ErrConnectionReconnecting, nats.ErrStaleConnection,
+		bus.ErrRequestLostWithConnection,
 	} {
 		if errors.Is(err, transient) {
 			return true

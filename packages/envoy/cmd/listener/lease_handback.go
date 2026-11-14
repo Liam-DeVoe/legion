@@ -64,7 +64,7 @@ func (l *lease) MarkHandBack(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("encode the hand-back mark: %w", err)
 	}
 	key := l.handBackKey(revision)
-	if _, _, err := bus.Bounded(ctx, func() (uint64, error) { return l.kv.Put(key, value) }); err != nil {
+	if _, _, err := bus.BoundedOn(ctx, l.kv, func() (uint64, error) { return l.kv.Put(key, value) }); err != nil {
 		return false, fmt.Errorf("write the hand-back mark %s: %w", key, err)
 	}
 	return true, nil
@@ -84,7 +84,7 @@ func (l *lease) HandBackMarked(ctx context.Context, term uint64) (bool, error) {
 		return false, nil
 	}
 	key := l.handBackKey(revision)
-	entry, _, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return l.kv.Get(key) })
+	entry, _, err := bus.BoundedOn(ctx, l.kv, func() (nats.KeyValueEntry, error) { return l.kv.Get(key) })
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return false, nil
 	}

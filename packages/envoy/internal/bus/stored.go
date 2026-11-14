@@ -38,7 +38,9 @@ type StoredMessage struct {
 // nats.ErrMsgNotFound (nothing at or after seq on subject) and nats.ErrStreamNotFound (no such
 // stream); nats.ErrNoResponders when no JetStream answers; ErrPublishDenied, wrapping the server's
 // permissions violation, when the connection's user may not make the read, reported as soon as the
-// server refuses it rather than once the wait runs out; and ctx's error when ctx ends first.
+// server refuses it rather than once the wait runs out; ErrRequestLostWithConnection when the
+// connection the read went out on is lost before the answer comes (requestConfirmed); and ctx's
+// error when ctx ends first.
 func (c *Client) NextStoredMessage(ctx context.Context, subject string, seq uint64) (StoredMessage, error) {
 	return c.storedMessage(ctx, struct {
 		Seq     uint64 `json:"seq"`
@@ -56,7 +58,8 @@ func (c *Client) NextStoredMessage(ctx context.Context, subject string, seq uint
 // Its errors are NextStoredMessage's: the stream's own API errors as *nats.APIError, so errors.Is
 // matches nats.ErrMsgNotFound (the stream holds nothing on subject) and nats.ErrStreamNotFound (no
 // such stream); nats.ErrNoResponders when no JetStream answers; ErrPublishDenied when the
-// connection's user may not make the read; and ctx's error when ctx ends first.
+// connection's user may not make the read; ErrRequestLostWithConnection when its connection is
+// lost before the answer comes; and ctx's error when ctx ends first.
 func (c *Client) LastStoredMessage(ctx context.Context, subject string) (StoredMessage, error) {
 	return c.storedMessage(ctx, struct {
 		LastFor string `json:"last_by_subj"`
@@ -238,6 +241,13 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // out its whole deadline, since core NATS answers a denied publish to no one but the async error
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders.
+//
+// A request whose connection is lost before its reply comes - the connection replaced, closed,
+// or reconnected in place (connWatch.lostRequest) - returns ErrRequestLostWithConnection at that
+// event rather than waiting out ctx: the server dropped the request or its reply with the
+// connection, and nats.go wakes no sync subscription when its connection drops, so the reply
+// would never come. That covers the request whose publish and flush passed before the
+// connection dropped, which nothing else fails.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -247,7 +257,8 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err
 	}
-	conn := c.Connection()
+	watch := c.watchConnection()
+	conn := watch.conn
 	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
@@ -258,10 +269,15 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}
-	reply, waitErr := replies.NextMsgWithContext(ctx)
+	waitCtx, stopWatching := watch.bound(ctx)
+	defer stopWatching()
+	reply, waitErr := replies.NextMsgWithContext(waitCtx)
 	if waitErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, cmp.Or(err, ctxErr)
+		}
+		if lostWithConnection(waitCtx) {
+			return nil, fmt.Errorf("bus: request to %q: %w", subject, ErrRequestLostWithConnection)
 		}
 		return nil, waitErr
 	}

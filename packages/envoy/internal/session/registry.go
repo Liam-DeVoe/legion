@@ -796,7 +796,7 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 }
 
 // PutWithin writes entry as sessionID's registration, each bucket call waiting no longer than ctx
-// (bus.Bounded): an HTTP route passes its request's own context. Several live processes can hold the
+// (bus.BoundedOn): an HTTP route passes its request's own context. Several live processes can hold the
 // same session (shared on-disk state) - a harness can keep a session's state on shared disk - and
 // each heartbeats a claim of its own. The route follows whichever wrote last: the write stamps the
 // entry with the moment it was made (stampClaim), so a reader weighing the route's freshness
@@ -855,7 +855,7 @@ func (r *SessionRegistry) Amend(ctx context.Context, sessionID string, base Sess
 // the bucket entry and merges onto that: Update at its revision, or Create when there is none. After
 // writeAttempts refused writes it returns ErrWriteConflict, having written nothing.
 //
-// Each bucket call waits no longer than ctx (bus.Bounded). A write ctx abandoned may still land after
+// Each bucket call waits no longer than ctx (bus.BoundedOn). A write ctx abandoned may still land after
 // this answer. That is safe: it is a compare-and-set at the revision it read, so it replaces only that
 // revision and never a write that landed since, and it writes the entry the caller's retry merges
 // again. The write reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made
@@ -879,7 +879,7 @@ func (r *SessionRegistry) write(ctx context.Context, sessionID string, merge fun
 			return err
 		}
 		at := revision
-		written, answered, err := bus.Bounded(ctx, func() (uint64, error) {
+		written, answered, err := bus.BoundedOn(ctx, kv, func() (uint64, error) {
 			if at == 0 {
 				return kv.Create(sessionID, buf)
 			}
@@ -922,13 +922,13 @@ func (r *SessionRegistry) cachedEntry(epoch uint64, sessionID string) (SessionEn
 	return cs.entry, revision, true
 }
 
-// readStored reads sessionID's registration from the bucket for a write, within ctx (bus.Bounded), and
+// readStored reads sessionID's registration from the bucket for a write, within ctx (bus.BoundedOn), and
 // applies it to the cache as a delivered record is applied (kvwatch.Copy.Apply: Get answers only a
 // stored value, never a delete marker). revision is the one to write at, 0 when the bucket holds no
 // value. A value that does not decode is found false, as the cache, which evicts it, sees no
 // registration either, and the write replaces it at its revision.
 func (r *SessionRegistry) readStored(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string) (SessionEntry, uint64, bool, error) {
-	stored, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	stored, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
 		return SessionEntry{}, 0, false, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}
@@ -1017,8 +1017,8 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 // (bus.ErrRefused), `ses:bad` among them, which is outside nats.go's key alphabet and which an
 // earlier build or a direct bucket write could leave as a role holder. Any other error is a read
 // that did not answer, ctx's end among them: nats.go's KV read takes no context and waits out
-// the JetStream MaxWait (10 s), so Refresh stops waiting when ctx ends and lets that read
-// finish on its own (bus.Bounded).
+// the JetStream MaxWait (10 s), so Refresh stops waiting when ctx ends, or when the read's
+// connection is lost (bus.BoundedOn), and lets that read finish on its own.
 //
 // A direct get of a clustered bucket is answered by any copy near enough to current, so this
 // read can report a record the bucket holds as missing while the copy answering catches up. A
@@ -1033,7 +1033,7 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 // marker, a value that does not decode and a row past its TTL are not found.
 func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
-	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}

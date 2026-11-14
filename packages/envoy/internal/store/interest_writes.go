@@ -14,7 +14,7 @@ import (
 )
 
 // deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead),
-// each bucket call waiting no longer than ctx (bus.Bounded). A delete ctx abandoned may still land
+// each bucket call waiting no longer than ctx (bus.BoundedOn). A delete ctx abandoned may still land
 // after this answer, and that is safe: it deletes only the revision it read, so a write that landed
 // since is kept. A record the read found absent is left alone, delete and all, so a registration
 // that stored the session's row between that read and this delete keeps it; the cache is brought
@@ -26,7 +26,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
+	read, answered, err := bus.BoundedOn(ctx, kv, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
@@ -41,7 +41,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 // revision, and reports whether the bucket took the delete: a bucket that refused it holds a row
 // stored since, which is no error here (JetStream's wrong last sequence, 10071, which nats.go
 // names nats.ErrKeyExists), and that row stands. Each bucket call waits no longer than ctx
-// (bus.Bounded). A delete ctx abandoned may still land after this answer, and that is safe: it
+// (bus.BoundedOn). A delete ctx abandoned may still land after this answer, and that is safe: it
 // deletes the one revision it names, so a write that landed since is kept.
 //
 // A revision of 0 fences nothing - nats.go sends no expected-last-sequence header for it, so the
@@ -54,7 +54,7 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 		return false, nil
 	}
 	kv, epoch := r.watcher.Handle()
-	_, answered, err := bus.Bounded(ctx, func() (struct{}, error) {
+	_, answered, err := bus.BoundedOn(ctx, kv, func() (struct{}, error) {
 		return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
 	})
 	if !answered {
@@ -108,7 +108,7 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 }
 
 // UpsertWithin merges topics into item.SessionID's interest record (mergeForUpsert) and writes it,
-// stamped with the registry's clock, each bucket call waiting no longer than ctx (bus.Bounded): an
+// stamped with the registry's clock, each bucket call waiting no longer than ctx (bus.BoundedOn): an
 // HTTP route passes its request's own context. It returns the record as it now stands. A record
 // this build cannot decode (ErrMalformedInterest) is replaced by item and topics alone, and the
 // registry logs that at WARN naming the session.
@@ -348,12 +348,12 @@ func (r *Registry) recordInterest(merged Interest, revision, epoch uint64, getEr
 // whether the bucket took the write: a bucket that refused it holds another writer's row since,
 // which is no error here (nats.ErrKeyExists, the wrong-last-sequence answer a Create and an
 // Update share), and the caller plans again over that row. Each call waits no longer than ctx
-// (bus.Bounded); a write ctx abandoned may still land, and is safe for the same reason a
+// (bus.BoundedOn); a write ctx abandoned may still land, and is safe for the same reason a
 // conditional delete is: it stores only over the very revision it read, so it cannot undo a write
 // that landed after it.
 func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []byte, revision uint64) (uint64, uint64, bool, error) {
 	kv, epoch := r.watcher.Handle()
-	written, answered, err := bus.Bounded(ctx, func() (uint64, error) {
+	written, answered, err := bus.BoundedOn(ctx, kv, func() (uint64, error) {
 		if revision == 0 {
 			return kv.Create(sessionID, value)
 		}
@@ -428,7 +428,7 @@ func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan I
 // reads no claim and is refused for none.
 //
 // Each such role is decided by its own claim record, read from the bucket once however many of
-// the sets name its lane, waiting no longer than ctx (RoleClaim, bus.Bounded), and never by the
+// the sets name its lane, waiting no longer than ctx (RoleClaim, bus.BoundedOn), and never by the
 // role claim copy (RolesHeldBy). The row decided here drives the session's consumer filter, so a
 // copy that lost the controller's claim would drop the lane from its holder's filter, and a copy
 // that still names a session the claim has left would hand that session another controller's
@@ -470,7 +470,7 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 
 // Remove releases the role claims of sessionID that release authorises (RoleReleaseAuthority)
 // and removes topics from its interest record, or deletes the record when topics is empty, each
-// bucket call waiting no longer than ctx (bus.Bounded): an HTTP route passes its request's own
+// bucket call waiting no longer than ctx (bus.BoundedOn): an HTTP route passes its request's own
 // context. A write or delete ctx abandoned may still land after this answer;
 // releaseReadRoleClaim, deleteInterest and removeInterestTopics each say why that is safe. A
 // record this build cannot decode (ErrMalformedInterest) is deleted all the same; removing some

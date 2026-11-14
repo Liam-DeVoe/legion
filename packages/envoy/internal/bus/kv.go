@@ -697,6 +697,72 @@ func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 	return entry, invalidKey(key, err)
 }
 
+// BoundedOn is Bounded for call, a call on kv - a read, a write or a delete of its bucket, or any
+// run of them - that also ends when the connection kv's calls go out on is lost before call
+// answers: replaced by another its client dialled, closed, or reconnected in place
+// (connWatch.lostRequest). It then answers false with an error wrapping
+// ErrRequestLostWithConnection rather than waiting out ctx. nats.go's KV calls wait on its
+// shared response subscription until its own MaxWait and fail no request its connection drops
+// (it fails only the pending flushes, and only ForceReconnect and a close clear the requests),
+// while the server dropped the request or its answer with that connection, so no answer will
+// come; the caller sends it again on the connection that came back.
+//
+// Everything else is Bounded's: answered is false when ctx ended first, with ctx's error, and the
+// abandoned call runs on to its own end, so a write or a delete it sent may still land after the
+// caller has answered, exactly as one whose ctx ended may. A call lost with its connection is not
+// answered either: the server may have taken it before its answer was lost. The one difference is
+// a ctx that can never end: Bounded runs call in the caller's goroutine then, and BoundedOn waits
+// for it from another, since the connection can still end the wait.
+//
+// The watch is the one of the client that owns the connection kv was opened on (watchConnection);
+// a handle whose connection no client serves with - one a test opened on its own, or one its
+// client has since replaced, which is closed, so nats.go fails a call on it at once - is waited
+// for as Bounded waits.
+func BoundedOn[T any](ctx context.Context, kv KeyValue, call func() (T, error)) (T, bool, error) {
+	if kv.streams == nil {
+		return Bounded(ctx, call)
+	}
+	return BoundedOnConnection(ctx, kv.streams.Conn(), call)
+}
+
+// BoundedOnConnection is BoundedOn for a call that reaches its bucket through a handle it opens
+// itself, on conn, the connection the caller reads before the call (roles.Buckets opens its
+// handle inside the read it bounds). A connection no client owns is waited for as Bounded waits.
+func BoundedOnConnection[T any](ctx context.Context, conn *nats.Conn, call func() (T, error)) (T, bool, error) {
+	watch, ok := watchOwnedConnection(conn)
+	if !ok {
+		return Bounded(ctx, call)
+	}
+	callCtx, stopWatching := watch.bound(ctx)
+	defer stopWatching()
+	value, answered, err := Bounded(callCtx, call)
+	if answered {
+		return value, true, err
+	}
+	if ended := ctx.Err(); ended != nil {
+		return value, false, ended
+	}
+	if lostWithConnection(callCtx) {
+		return value, false, fmt.Errorf("bus: a KV call: %w", ErrRequestLostWithConnection)
+	}
+	return value, false, err
+}
+
+// watchOwnedConnection watches conn through the client that serves with it (clientOwning), and
+// reports false when no client does, or when that client serves with another connection by the
+// time the watch reads it.
+func watchOwnedConnection(conn *nats.Conn) (connWatch, bool) {
+	owner := clientOwning(conn)
+	if conn == nil || owner == nil {
+		return connWatch{}, false
+	}
+	watch := owner.watchConnection()
+	if watch.conn != conn {
+		return connWatch{}, false
+	}
+	return watch, true
+}
+
 // RefusesRead answers the refusal a Get of key through this handle would answer before anything is
 // sent, and nil when a read of key would reach the bucket. It sends nothing itself.
 //

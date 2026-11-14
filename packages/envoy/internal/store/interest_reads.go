@@ -19,7 +19,9 @@ var ErrMalformedInterest = errors.New("malformed interest record")
 // Get returns the Interest for a session. Cache first, direct KV read on miss.
 // The KV fallback also repopulates the cache, bridging the warm-up window after
 // Open() before watch() has fully populated the cache. A cache hit answers in the
-// caller's goroutine; only the bucket read on a miss waits on ctx (bus.Bounded). The cache holds
+// caller's goroutine; only the bucket read on a miss waits on ctx (bus.BoundedOn), and it
+// ends at once with bus.ErrRequestLostWithConnection when its connection is lost before the answer
+// comes, rather than waiting out ctx for an answer nothing will send. The cache holds
 // only records it decoded (interestCache.Apply evicts the rest), so only the bucket read can meet
 // a record this build cannot decode: that is ErrMalformedInterest, logged at WARN with the session
 // it belongs to. A read of a bucket since recreated, or one the revision fence drops, is answered
@@ -72,7 +74,7 @@ func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBu
 		}
 	}
 	kv, epoch := r.watcher.Handle()
-	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	entry, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
 		return Interest{}, 0, fmt.Errorf("read %s's interest record: %w", sessionID, err)
 	}

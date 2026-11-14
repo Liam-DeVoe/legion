@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+    A short NATS outage no longer costs every session registration in flight a 503. When a
+    listener's NATS connection dropped and came back, a request it had already sent on that
+    connection - a session consumer call, the read of the notification stream's state, or a read
+    or write of a session's record, its interests or a role claim - waited out its whole deadline
+    (a registration's 3.5 s budget, 5 s for a relay restart), because the NATS client library
+    never fails a request whose connection drops. Such a request now fails as soon as the
+    connection reconnects, with `ErrRequestLostWithConnection`: a registration whose own request
+    was lost answers its 503 at once rather than at the end of its budget, so the client's retry
+    goes out on the new connection sooner, and a relay restart that lost a call this way starts
+    again without a retry wait. And one session's lost read of the stream's state no longer
+    delays the other sessions: every consumer create waited for that read, so one read lost for
+    5 s made every registration behind it run past its 3.5 s budget and answer 503. The next read
+    now starts once the lost one has been out 250 ms, and the creates that arrive together still
+    share one read.
+time: 2026-11-14T16:00:00.000000000Z
+custom:
+    Issue: pr2404
