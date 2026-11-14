@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 import {
   closeServers,
   daemonStub,
@@ -668,21 +669,22 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
         stdout: "ignore",
         stderr: "ignore",
       });
-      let postExecCmdline: Buffer | undefined;
-      // Real wait: the exec is a real kernel transition on a real pid, not an in-process timer.
-      for (let i = 0; i < 500; i++) {
-        try {
-          const buf = await Bun.file(`/proc/${realProc.pid}/cmdline`).arrayBuffer();
-          if (Buffer.from(buf).equals(Buffer.from("sleep\x00999\x00"))) {
-            postExecCmdline = Buffer.from(buf);
-            break;
-          }
-        } catch {
-          /* the process may not be visible yet */
-        }
-        await Bun.sleep(20);
-      }
       try {
+        // The exec is a real kernel transition on a real pid, not an in-process timer.
+        const postExecCmdline = await until(
+          "the install wrapper's exec into the agent's argv",
+          async () => {
+            try {
+              const buf = Buffer.from(
+                await Bun.file(`/proc/${realProc.pid}/cmdline`).arrayBuffer()
+              );
+              return buf.equals(Buffer.from("sleep\x00999\x00")) ? buf : undefined;
+            } catch {
+              // The process may not be visible yet.
+              return undefined;
+            }
+          }
+        );
         expect(postExecCmdline).toEqual(Buffer.from("sleep\x00999\x00"));
         const result = await scenario({
           buildTree: (environ) => {
@@ -710,7 +712,7 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
             const agentDir = join(root, "9");
             mkdirSync(agentDir, { recursive: true });
             writeFileSync(join(agentDir, "status"), "Name:\tproc9\nPPid:\t7\n");
-            writeFileSync(join(agentDir, "cmdline"), postExecCmdline as Buffer);
+            writeFileSync(join(agentDir, "cmdline"), postExecCmdline);
             const pairs = Object.entries(environ).map(([k, v]) => `${k}=${v}`);
             writeFileSync(join(agentDir, "environ"), `${pairs.join("\0")}\0`);
             writeProcEntry(root, "10", { ppid: "9", cmdline: ["bash", "-c", "sleep 1"] });

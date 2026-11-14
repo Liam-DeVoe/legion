@@ -7,6 +7,7 @@ import { join } from "node:path";
 import tls from "node:tls";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 
 // The probe runs as an operator runs it, a process of its own, against a local TLS server that
 // does or does not advertise SETTINGS_ENABLE_CONNECT_PROTOCOL. The certificate is made per run by
@@ -156,38 +157,40 @@ test.skipIf(skip)("a certificate the probe cannot verify is no answer, exit 2", 
 
 // The handshake and the server's first SETTINGS share one 10 s deadline: a server that chooses h2
 // and then sends nothing, and one that accepts the connection and never answers the handshake, are
-// no answer. Both run at once, so the row waits the deadline once.
-test.skipIf(skip)(
-  "a server that sends no SETTINGS within 10 s is no answer, exit 2",
-  async () => {
-    const chosen: (string | false)[] = [];
-    const silentH2 = tls.createServer({ ...tlsFiles, ALPNProtocols: ["h2"] });
-    // Holds the connection and writes nothing on it: no SETTINGS, no close.
-    silentH2.on("secureConnection", (socket) => chosen.push(socket.alpnProtocol ?? false));
-    const silentTcp = net.createServer();
-    const ports = [await listen(silentH2), await listen(silentTcp)];
+// no answer. Both run at once, so the row waits the deadline once. The probe is a process of its
+// own whose only clock is that deadline's timer, so the row reads the wait from the probe's own
+// record of it: the line only the deadline timer prints, with the delay it was armed with and how
+// long after arming it fired, on the probe's clock. A probe that printed the same first words on
+// another path, or before its deadline, does not leave that record.
+test.skipIf(skip)("a server that sends no SETTINGS within 10 s is no answer, exit 2", async () => {
+  const chosen: (string | false)[] = [];
+  const silentH2 = tls.createServer({ ...tlsFiles, ALPNProtocols: ["h2"] });
+  // Holds the connection and writes nothing on it: no SETTINGS, no close.
+  silentH2.on("secureConnection", (socket) => chosen.push(socket.alpnProtocol ?? false));
+  const silentTcp = net.createServer();
+  const ports = [await listen(silentH2), await listen(silentTcp)];
 
-    const runs = await Promise.all(
-      ports.map(async (port) => {
-        const started = Date.now();
-        const result = await run([`https://localhost:${port}`]);
-        return { ...result, ms: Date.now() - started, port };
-      })
-    );
-    // The probe offered h2 and the silent server chose it, so its wait was for the SETTINGS alone.
-    expect(chosen).toEqual(["h2"]);
-    for (const result of runs) {
-      expect(result.code).toBe(2);
-      expect(result.stdout).toBe("");
-      expect(result.stderr).toBe(
-        `h2-settings: https://localhost:${result.port} sent no SETTINGS within 10s\n`
-      );
-      expect(result.ms).toBeGreaterThanOrEqual(10_000);
-      expect(result.ms).toBeLessThan(15_000);
-    }
-  },
-  20_000
-);
+  const runs = await settled(
+    "the probe's exits at its deadline",
+    Promise.all(
+      ports.map(async (port) => ({ ...(await run([`https://localhost:${port}`])), port }))
+    )
+  );
+  // The probe offered h2 and the silent server chose it, so its wait was for the SETTINGS alone.
+  expect(chosen).toEqual(["h2"]);
+  for (const result of runs) {
+    expect(result.code).toBe(2);
+    expect(result.stdout).toBe("");
+    const record = new RegExp(
+      `^h2-settings: https://localhost:${result.port} sent no SETTINGS within 10s ` +
+        "\\(the deadline timer, armed for (\\d+) ms, fired (\\d+) ms after it was armed\\)\\n$"
+    ).exec(result.stderr);
+    expect(record, result.stderr).not.toBeNull();
+    const [armed, fired] = [Number(record?.[1]), Number(record?.[2])];
+    expect(armed).toBe(10_000);
+    expect(fired).toBeGreaterThanOrEqual(armed);
+  }
+});
 
 test("anything but one https URL is a usage error, exit 2", async () => {
   for (const args of [[], ["http://localhost:1"], ["https://a.example", "https://b.example"]]) {

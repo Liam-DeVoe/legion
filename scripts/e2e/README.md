@@ -6364,9 +6364,10 @@ It offers `h2` and `http/1.1` over TLS as a browser does and prints one JSON lin
 `url`, `alpn` (the protocol the server chose, `false` for none) and `settings` (the server's SETTINGS as Node's HTTP/2 client reads them, `null` without HTTP/2).
 It exits 1 when `settings.enableConnectProtocol` is true, naming the origin on stderr;
 0 when it is false or the server speaks no HTTP/2; 2 on a usage error, or when it has no answer: a TLS or certificate failure, or no SETTINGS within 10 s.
+The line the 10 s deadline prints carries the probe's own record of that wait: the delay its timer was armed with and how many milliseconds after arming it fired.
 Certificates are verified, so a proxy behind a private CA needs `NODE_EXTRA_CA_CERTS`.
 `h2-settings.test.ts` (`bun test scripts/e2e/lib`) runs it against a TLS server that writes a SETTINGS frame advertising extended CONNECT by hand (the pinned Bun's `http2.createSecureServer` sends none), against a local `http2.createSecureServer` that does not advertise it, against an https server with no HTTP/2, against a certificate it cannot verify, and against two servers that answer nothing
-— one that chooses h2 and sends no SETTINGS, one that never finishes the handshake — which it leaves after the 10 s deadline with exit 2.
+— one that chooses h2 and sends no SETTINGS, one that never finishes the handshake — which it leaves at the 10 s deadline with exit 2, the row reading from that record that the deadline timer fired, and no sooner than it was armed for.
 
 ## lib/dispatch-live-events.ts
 
