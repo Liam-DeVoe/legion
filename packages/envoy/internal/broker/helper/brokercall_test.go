@@ -277,3 +277,40 @@ func TestUnregisterAnswersBeforeItsRevokeEnds(t *testing.T) {
 		t.Fatalf("the revoke after unregister deleted %v once the broker let it; want %s", deletes, reg.EnrollmentID)
 	}
 }
+
+// TestA2xxAnswerTheHelperCannotReadIsUnknown: a 2xx the broker answers but the helper cannot read
+// is an unknown outcome, since the broker answered it and may have acted. An enroll answered 200
+// with no enrollment_id makes enroll-session-key answer ENROLL_OUTCOME_UNKNOWN; a device
+// authorization answered 200 with no device_code or user_code makes login answer LOGIN_FAILED. Each
+// answer's error says the outcome is unknown.
+func TestA2xxAnswerTheHelperCannotReadIsUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		set   func(f *fakeBroker)
+		req   Request
+		login bool
+		code  string
+	}{
+		{name: "an enroll answered 200 with no enrollment_id", set: func(f *fakeBroker) { f.enrollEmpty2xx = true },
+			req: Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}, login: true, code: CodeEnrollUnknown},
+		{name: "a device authorization answered 200 with no device_code or user_code", set: func(f *fakeBroker) { f.deviceAuthEmpty2xx = true },
+			req: Request{Op: "login"}, login: false, code: CodeLoginFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, "")
+			if tc.login {
+				r.login(t)
+			}
+			r.fake.mu.Lock()
+			tc.set(r.fake)
+			r.fake.mu.Unlock()
+			resp, err := Call(r.sock, tc.req, BrokerCallWait)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.req.Op, err)
+			}
+			if resp.OK || resp.Code != tc.code || !strings.Contains(resp.Error, "the outcome is unknown") {
+				t.Fatalf("%s: %+v; want %s saying the outcome is unknown", tc.req.Op, resp, tc.code)
+			}
+		})
+	}
+}
