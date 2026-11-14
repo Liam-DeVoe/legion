@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -120,5 +121,55 @@ func TestAPairWhoseNewOwnerHasNoDirectoryRefusesNamingThePair(t *testing.T) {
 	if code, stdout, _ := runGitCredentialHere(t, "protocol=https\nhost=github.com\npath=/sjawhar/ygo.git\n\n", "get"); code != 0 ||
 		stdout != "username=x-access-token\npassword=ghs_implement_write_sjawhar\n" {
 		t.Fatalf("legion git-credential get for /sjawhar/ygo.git = exit %d, stdout %q; want sjawhar's own token", code, stdout)
+	}
+}
+
+// A bundle root with no pairs file routes by owner, which is exactly what the daemon before this
+// change did: the file arrives in a running pod only with the pod, since the gh volume is an
+// itemised Secret projection (runtime/sandbox's manifest.go), so a pod launched by the daemon
+// before it holds none. Refusing there would take every `gh` call and every push of such a pod
+// for as long as the roll lasted, and the drift check replaces that pod on its own
+// (sandbox's movedGhDirs reads the file's presence).
+func TestABundleWithNoPairsFileRoutesByOwnerAsTheDaemonBeforeItWrote(t *testing.T) {
+	root := pairRoutedBundle(t)
+	if err := os.Remove(filepath.Join(root, ghconfig.PairsFile)); err != nil {
+		t.Fatal(err)
+	}
+	if dir, err := ghConfigDirFor(root, "sjawhar", "legion"); err != nil || dir != ghconfig.Dir(root, "sjawhar") {
+		t.Fatalf("ghConfigDirFor with no %s = %q, %v; want sjawhar's own directory", ghconfig.PairsFile, dir, err)
+	}
+	t.Setenv("GH_CONFIG_DIR", ghconfig.Dir(root, "sjawhar"))
+	t.Setenv("LEGION_GH_OWNERS_DIR", root)
+	code, stdout, stderr := runGitCredentialHere(t, "protocol=https\nhost=github.com\npath=/sjawhar/legion.git\n\n", "get")
+	want := "username=x-access-token\npassword=ghs_implement_write_sjawhar\n"
+	if code != 0 || stdout != want || stderr != "" {
+		t.Fatalf("legion git-credential get with no %s = exit %d, stdout %q, stderr %q; want exit 0 and %q", ghconfig.PairsFile, code, stdout, stderr, want)
+	}
+}
+
+// A pairs file that is present and holds a line that is no pair refuses, naming the line: the
+// file is the daemon's own writing, so a line it cannot read means the bundle is not the one the
+// daemon wrote, and routing by owner there would hand a request for a moved repository the lease
+// that cannot reach it. The absent file above is the older daemon's bundle; this is a damaged
+// one, which is why the two answer differently.
+func TestAMalformedPairsFileRefusesNamingTheLine(t *testing.T) {
+	root := pairRoutedBundle(t)
+	if err := os.WriteFile(filepath.Join(root, ghconfig.PairsFile), []byte("sjawhar/legion cybermonklabs/legion\nsjawhar/ygo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if dir, err := ghConfigDirFor(root, "sjawhar", "legion"); err == nil {
+		t.Fatalf("ghConfigDirFor answered %q, want a refusal: line 2 of %s is no pair", dir, ghconfig.PairsFile)
+	} else {
+		for _, want := range []string{"line 2", ghconfig.PairsFile, "sjawhar/ygo"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("ghConfigDirFor refused with %q, want it to name %q", err, want)
+			}
+		}
+	}
+	t.Setenv("GH_CONFIG_DIR", ghconfig.Dir(root, "sjawhar"))
+	t.Setenv("LEGION_GH_OWNERS_DIR", root)
+	code, stdout, stderr := runGitCredentialHere(t, "protocol=https\nhost=github.com\npath=/sjawhar/legion.git\n\n", "get")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "line 2") {
+		t.Fatalf("legion git-credential get over a damaged %s = exit %d, stdout %q, stderr %q; want exit 1, nothing answered and the line named", ghconfig.PairsFile, code, stdout, stderr)
 	}
 }
