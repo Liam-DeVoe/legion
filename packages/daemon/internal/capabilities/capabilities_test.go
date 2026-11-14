@@ -378,6 +378,30 @@ func TestRedactedCutLineMasksAUserinfoTheCutLeavesOpenToTheEnd(t *testing.T) {
 	t.Logf("%d of %d details with no scheme", plain, len(fixture.Patterns))
 }
 
+// An API-key or bare bearer value that is a URL's scheme with other value characters glued
+// before it (`Bearer _http://…`, `api-key: 1http://…`) stands the rule back no more than a value
+// that is no URL at all, so the rule masks the whole value with the scheme in it. The userinfo
+// rule anchors on the scheme alone (`[a-z][a-z0-9+.-]*://`, which the same text without the label
+// matches after the glued characters), and `***://` is no scheme, so where a control rune parts the
+// userinfo from its `@` and only a later pass can reach that `@`, the password shows. Measured in
+// a gVisor issue pod on 2026-11-14 at e9af0140: `curl -H Bearer _http://u:SECRETPASS\x07
+// Authorization:a b)@h` gave `curl -H Bearer ***://u:SECRETPASS Authorization:***)@h`, while
+// `curl _http://u:SECRETPASS\x07Authorization:a b)@h` gave `curl _http://***@h`; the plugin's
+// cleanDetail gave the same two lines.
+func TestRedactedLineMasksAUserinfoAfterALabelWhoseValueGluesTextToItsScheme(t *testing.T) {
+	for _, label := range []string{"Bearer ", "api-key: ", "application-key=", "ocp-apim-subscription-key: ", "x-subscription-token: "} {
+		for _, glued := range []string{"_", "x_", "~", "/", "=", "*", "1", "+", ".", "-"} {
+			text := "curl -H " + label + glued + "http://u:SECRETPASS\x07Authorization:a b)@h"
+			if got := RedactedLine(text); strings.Contains(got, "SECRETPASS") {
+				t.Errorf("RedactedLine(%q) = %q, which shows the password", text, got)
+			}
+			if got := RedactedCutLine(text); strings.Contains(got, "SECRETPASS") {
+				t.Errorf("RedactedCutLine(%q) = %q, which shows the password", text, got)
+			}
+		}
+	}
+}
+
 // cutBoundaryPads are the lengths of the run of letters a case whose cleaned text is `cleaned`
 // bytes long is pushed by, so that the MaxReportDetail cut lands at each boundary of that text in
 // turn. A sweep of every length between them cleans each case ten thousand times over and reads
