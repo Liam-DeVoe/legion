@@ -838,11 +838,8 @@ func TestAstraCrashBetweenTurnStartAndDeliveryPersistence(t *testing.T) {
 // same text, and applies nothing of the take a second time — no write, no second telling of the
 // workflow, no change of the take the record holds (departure 7 of dispatch://INFRA-2811).
 func TestTakeRepeatedAfterARestartIsAnsweredTheSameAndRecordsNothing(t *testing.T) {
-	h := newBareHarness(t)
 	confirmed := 0
-	h.deps.TaskConfirmed = func(Claim) { confirmed++ }
-	h.store.PutClaim(h.ctx, queuedClaim())
-	h.start(queuedClaim())
+	h := newHarnessOf(t, queuedClaim(), func(d *Deps) { d.TaskConfirmed = func(Claim) { confirmed++ } })
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
 	first := h.wantPrompts(1)[0]

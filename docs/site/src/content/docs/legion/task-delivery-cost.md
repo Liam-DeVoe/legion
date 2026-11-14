@@ -142,14 +142,14 @@ So each figure that names a task names its claim too.
 
 ## An example
 
-The repository holds a sample of the daemon's log: `packages/daemon/internal/supervise/testdata/task-cost.log`.
+The repository holds a sample of the daemon's log: `packages/daemon/internal/supervise/testdata/task-cost.jsonl`.
 A test reads this page and runs each command below over that sample.
 The test fails when the output is not the output on this page.
 
 This command reads the whole sample, from the repository's root:
 
 ```sh
-legion task-cost --from 2026-11-14T09:00:00Z --to 2026-11-14T10:00:00Z < packages/daemon/internal/supervise/testdata/task-cost.log
+legion task-cost --from 2026-11-14T09:00:00Z --to 2026-11-14T10:00:00Z < packages/daemon/internal/supervise/testdata/task-cost.jsonl
 ```
 
 ```text
@@ -192,7 +192,7 @@ The sample shows these points:
 This command reads one claim of the sample:
 
 ```sh
-legion task-cost --from 2026-11-14T09:00:00Z --to 2026-11-14T10:00:00Z --claim legion-infra-infra-2811-implementer < packages/daemon/internal/supervise/testdata/task-cost.log
+legion task-cost --from 2026-11-14T09:00:00Z --to 2026-11-14T10:00:00Z --claim legion-infra-infra-2811-implementer < packages/daemon/internal/supervise/testdata/task-cost.jsonl
 ```
 
 ```text

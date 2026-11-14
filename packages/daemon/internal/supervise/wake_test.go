@@ -789,7 +789,7 @@ func TestTakeBackByAStaleAddressKeepsTheNumberAcrossTheParkedLaunch(t *testing.T
 // wake raised (replaceNow, interrupted), and the task is still taken under the id the store holds.
 // A claim that dropped the take in memory while the store kept it would answer the worker's next
 // take from a record nobody holds, and serve no run for the turn the worker is about to start.
-func TestATakeBackTheStoreRefusesAtTheTurnRetiresNoTask(t *testing.T) {
+func TestATakeBackTheStoreRefusesWhereTheLaunchIsDecidedRetiresNoTask(t *testing.T) {
 	const task = "implement the plan"
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
@@ -834,7 +834,7 @@ func TestATakeBackTheStoreRefusesAtTheTurnRetiresNoTask(t *testing.T) {
 // take-back: the claim then names this daemon's contract for a relaunch whose take-back the store
 // refused, and the re-registration takes the charged path, which this test reads at the mark and
 // at the budgets.
-func TestATakeBackTheStoreRefusesAtTheTurnLeavesNoMarkBehind(t *testing.T) {
+func TestATakeBackTheStoreRefusesWhereTheLaunchIsDecidedLeavesNoMarkBehind(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 
@@ -1981,7 +1981,7 @@ func TestAnOperatorsDeliveryOverAParkedLaunchArmsTheNextProcessesTimers(t *testi
 // the suspension rather than launching (wakeNow, endHeld), which is not what a task asks for,
 // and the suspension is what decides the process either way: it stops it, and the claim's next
 // resume launches onto a process the task goes to. So the task is taken where it arrives, queued
-// and held exactly as a held claim's task is (sendPending), and the launch keeps its turn.
+// and held exactly as a held claim's task is (claimHold), and the launch keeps its turn.
 //
 // The negative control is the hold test reverted (runParkedLaunchNow's held): the launch is then
 // run inside the hold, which relaunches the claim and drops with the process the suspension the

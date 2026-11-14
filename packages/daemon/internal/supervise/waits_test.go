@@ -32,39 +32,14 @@ func withWaits(d *Deps) { d.Timeouts.Take, d.Timeouts.TurnStart = takeBound, tur
 // machine's deps before it is built.
 func waitsHarness(t *testing.T, set ...func(*Deps)) *harness {
 	t.Helper()
-	h := newBareHarness(t)
-	withWaits(&h.deps)
-	for _, change := range set {
-		change(&h.deps)
-	}
-	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
-		t.Fatal(err)
-	}
-	h.start(queuedClaim())
-	return h
-}
-
-// outage is the daemon stopped for d and started again: the machine goes with everything it
-// held in memory, its timers with it, the time passes with no daemon to see any of it, and a new
-// machine is built from what the store holds.
-func (h *harness) outage(d time.Duration) {
-	h.t.Helper()
-	h.m.Wait()
-	h.clock.dropAll()
-	h.clock.Advance(d)
-	h.start(h.store.load(h.token))
+	return newHarnessOf(t, queuedClaim(), append([]func(*Deps){withWaits}, set...)...)
 }
 
 // charges is the why of every charge the machine made, in order: each prompt failure, and each
 // retirement a charge at the limit made.
 func (h *harness) charges() []string {
-	h.records.mu.Lock()
-	defer h.records.mu.Unlock()
 	var whys []string
-	for _, r := range h.records.kept {
-		if r.message != "supervise: prompt failure" && r.message != "supervise: retired after prompt failures" {
-			continue
-		}
+	for _, r := range h.records.ofAny(promptFailed, retiredAfterLimit) {
 		why, _ := r.attr("why")
 		whys = append(whys, why.String())
 	}
@@ -256,7 +231,7 @@ func TestChargeATakeWithNoTurnWithinTheSecondBoundTakesItBack(t *testing.T) {
 		t.Fatalf("the claim records written %d at revision %d, want %d at the rewrite's %d",
 			c.TaskWritten, c.TaskWrittenRevision, taken.Number, written[1].Revision)
 	}
-	if back := h.records.of("supervise: a task was taken back"); len(back) != 1 {
+	if back := h.records.of(takenBackLiteral); len(back) != 1 {
 		t.Fatalf("logged %d take-backs, want one", len(back))
 	} else if cause, _ := back[0].attr("cause"); cause.String() != WaitTurnStart {
 		t.Fatalf("the take-back names cause %q, want %q", cause, WaitTurnStart)

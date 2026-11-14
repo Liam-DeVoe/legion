@@ -3,6 +3,7 @@ package supervise
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -35,8 +36,8 @@ import (
 //   - the numbers written, by the origin of the task each names, from the value writes
 //     (valueWrittenLine); and of those, the numbers written to a claim that had finished the last
 //     task written to it in the session it ran (finished), which is a task written to a claim
-//     whose phase waited (decision 19 and task T14 of the plan). The silence repair's writes
-//     (OriginSilence) are an origin of their own, read apart from a resume's;
+//     whose phase waited (R7 and R9's waited figure). The silence repair's writes (OriginSilence)
+//     are an origin of their own, read apart from a resume's;
 //   - the numbers taken, from the accepted answers to a take (takeAnsweredLine), less an answer
 //     that repeats one from the record (repeat), which applied nothing;
 //   - the numbers finished, from taskFinishedLine, by what finished each;
@@ -48,7 +49,7 @@ import (
 //   - no charge of a worker whose turn began within the second bound after its take: a charge made
 //     while an accepted take of the claim stood, where a turn of the claim started after that take
 //     and no later than the bound after it (the charge's own bound, for a charge of the second
-//     wait) or, for a charge that names no bound, than the charge itself;
+//     wait that names one) or, for every other charge, than the charge itself;
 //   - no write of origin resume to a claim that had finished its last task in its session (a value
 //     write of origin resume whose finished is true); a silence repair's write is not one;
 //   - each number taken once for each time the record owed it: a number is owed once when it is
@@ -148,17 +149,17 @@ type TaskTurns struct {
 // time, its message, and the attributes of the lines it counts. Task and Sequence are pointers
 // because their absence is the answer (a turn of no cause, a turn's end that is no report).
 type costLine struct {
-	Time     time.Time `json:"time"`
-	Msg      string    `json:"msg"`
-	Task     *uint64   `json:"task"`
-	Sequence *uint64   `json:"sequence"`
-	Origin   string    `json:"origin"`
-	Finished bool      `json:"finished"`
-	Outcome  string    `json:"outcome"`
-	Repeat   bool      `json:"repeat"`
-	By       string    `json:"by"`
-	Wait     string    `json:"wait"`
-	Bound    int64     `json:"bound"`
+	Time     time.Time   `json:"time"`
+	Msg      string      `json:"msg"`
+	Task     *uint64     `json:"task"`
+	Sequence *uint64     `json:"sequence"`
+	Origin   string      `json:"origin"`
+	Finished bool        `json:"finished"`
+	Outcome  TakeOutcome `json:"outcome"`
+	Repeat   bool        `json:"repeat"`
+	By       string      `json:"by"`
+	Wait     string      `json:"wait"`
+	Bound    int64       `json:"bound"`
 }
 
 // costedLines are the messages the reading decodes whole.
@@ -221,9 +222,7 @@ func ReadTaskCost(r io.Reader, from, to time.Time, claim string) (TaskCost, erro
 	lines := bufio.NewReader(r)
 	for {
 		raw, err := lines.ReadBytes('\n')
-		if len(raw) > 0 {
-			reading.line(raw)
-		}
+		reading.line(raw)
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -296,10 +295,13 @@ func (c *costReading) costed(l costLine, claim string) {
 		if l.Task == nil {
 			return
 		}
-		mark(c.written, l.Origin, key)
-		if _, owed := c.owed[key]; !owed {
-			c.owed[key] = 1
+		// A claim's value names its one pending task, so a write of another number than the open
+		// take's is of a task queued after that take's task went, whether or not a line said so: a
+		// queue retires a task whose turn has run with no take-back or finish line (retirePending).
+		if open, ok := c.open[claim]; ok && open.number != key.number {
+			delete(c.open, claim)
 		}
+		mark(c.written, l.Origin, key)
 		if l.Finished {
 			mark(c.waited, l.Origin, key)
 			if _, listed := c.resume[key]; l.Origin == OriginResume && !listed {
@@ -307,7 +309,7 @@ func (c *costReading) costed(l costLine, claim string) {
 			}
 		}
 	case takeAnsweredLine:
-		if l.Task == nil || l.Outcome != string(TakeOutcomeAccepted) || l.Repeat {
+		if l.Task == nil || l.Outcome != TakeOutcomeAccepted || l.Repeat {
 			return
 		}
 		c.taken[key]++
@@ -325,15 +327,12 @@ func (c *costReading) costed(l costLine, claim string) {
 		c.finished[key] = l.By
 		c.closeTake(claim, key.number)
 	case promptFailureLine, promptRetiredLine:
-		wait := l.Wait
-		if wait == "" {
-			wait = "none"
-		}
+		wait := cmp.Or(l.Wait, "none")
 		c.cost.ChargesByWait[wait]++
 		if l.Msg == promptRetiredLine {
 			c.cost.Retirements++
 		}
-		c.charges = append(c.charges, costCharge{claim: claim, at: l.Time, wait: l.Wait,
+		c.charges = append(c.charges, costCharge{claim: claim, at: l.Time, wait: wait,
 			bound: time.Duration(l.Bound), take: c.open[claim]})
 	}
 }
@@ -356,12 +355,9 @@ func mark(sets map[string]map[costKey]bool, origin string, key costKey) {
 // done derives the figures and the verdicts from what the lines left.
 func (c *costReading) done() TaskCost {
 	cost := c.cost
-	for key, turns := range c.turns {
-		cost.TurnsOfTask = append(cost.TurnsOfTask, TaskTurns{Claim: key.claim, Task: key.number, Turns: turns})
+	for _, key := range slices.SortedFunc(maps.Keys(c.turns), cmpKey) {
+		cost.TurnsOfTask = append(cost.TurnsOfTask, TaskTurns{Claim: key.claim, Task: key.number, Turns: c.turns[key]})
 	}
-	slices.SortFunc(cost.TurnsOfTask, func(a, b TaskTurns) int {
-		return cmpKey(costKey{a.Claim, a.Task}, costKey{b.Claim, b.Task})
-	})
 	for origin, keys := range c.written {
 		cost.WrittenByOrigin[origin] = len(keys)
 	}
@@ -419,16 +415,7 @@ func (c *costReading) turnWithinBound(charge costCharge) (time.Time, bool) {
 
 // cmpKey orders tasks by claim and then by number.
 func cmpKey(a, b costKey) int {
-	if a.claim != b.claim {
-		return strings.Compare(a.claim, b.claim)
-	}
-	switch {
-	case a.number < b.number:
-		return -1
-	case a.number > b.number:
-		return 1
-	}
-	return 0
+	return cmp.Or(strings.Compare(a.claim, b.claim), cmp.Compare(a.number, b.number))
 }
 
 // lineTime is a line's time as the daemon's log writes it, to the millisecond.

@@ -206,9 +206,9 @@ func TestARefreshWhoseClaimIsInATurnAtItsTurnRelaunchesNothingAndIsAdmittedAgain
 	h.mustRefreshPass(gate, "sweep")
 	waiting := h.wantWaitingWake(WakePluginRefresh)
 
-	// The claim takes a task and starts a turn inside the wait. The task waits for the process
-	// the relaunch would start, as every task delivered over a waiting launch does (sendPending),
-	// so the turn is one of the worker's own.
+	// The claim is given a task and starts a turn inside the wait. The task waits for the process
+	// the relaunch would start, as every task delivered over a waiting launch does (claimHold's
+	// launchWaits), so the turn is one of the worker's own.
 	h.must(RequestDeliver{Claim: h.token, Task: next, ID: "outbox:42", Row: 42, Generation: 7})
 	h.must(StreamTurnStart{Claim: h.token})
 	h.wantState(StateWorking)
@@ -595,7 +595,7 @@ func TestARefreshWhoseTurnEndsAHeldSuspensionGivesItsCreditBack(t *testing.T) {
 	waiting := h.wantWaitingWake(WakePluginRefresh)
 
 	// A task starts a turn inside the wait — the task itself waits for the process the relaunch
-	// would start (sendPending) — and the operator's suspend is held for that turn's end
+	// would start (claimHold's launchWaits) — and the operator's suspend is held for that turn's end
 	// (holdSuspension). The hold is still standing when the wake's turn comes.
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", ID: "outbox:42", Row: 42, Generation: 7})
 	h.must(StreamTurnStart{Claim: h.token})
@@ -686,17 +686,15 @@ func TestARefreshTheLaunchPathRefusesGivesItsCreditBack(t *testing.T) {
 }
 
 // taskTheAgentTook hands the claim a task its worker takes, before anything of this lane is
-// decided, and answers the task's number: the take is accepted and its turn has not started, so
-// the claim is idle with the task in the worker's hands, which is what a stale-plugin relaunch
-// takes back before it replaces the process (replaceProcess, interrupted).
-func (h *harness) taskTheAgentTook() uint64 {
+// decided: the take is accepted and its turn has not started, so the claim is idle with the task
+// in the worker's hands, which is what a stale-plugin relaunch takes back before it replaces the
+// process (replaceProcess, interrupted).
+func (h *harness) taskTheAgentTook() {
 	h.t.Helper()
 	h.must(RequestDeliver{Claim: h.token, Task: "review the pull request", ID: "outbox:42", Row: 42, Generation: 7})
-	p := h.pending()
-	if !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsTurn() {
 		h.t.Fatalf("the task is %+v, want its take accepted and its turn still to come", p)
 	}
-	return p.Number
 }
 
 // wantTakeBackRefused is the tail of a refused take-back: one claim standing exactly as the
@@ -715,8 +713,9 @@ func (h *harness) taskTheAgentTook() uint64 {
 // The negative control is the credit check removed from the end of a decision (endRefreshLane):
 // the uncredited post that follows then raises its relaunch having asked the gate nothing, which
 // this tail reads at the asks and at the wake the claim holds.
-func (h *harness) wantTakeBackRefused(gate *fakeAdmitter, kept runtime.Locator, why string) {
+func (h *harness) wantTakeBackRefused(gate *fakeAdmitter, kept runtime.Locator) {
 	h.t.Helper()
+	const why = "the take-back the store refused at the relaunch's own decision"
 	h.wantState(StateIdle)
 	h.wantStarts(h.token, 1)
 	h.wantCalls("Resume", 0)
@@ -768,5 +767,5 @@ func TestATakeBackTheStoreRefusesAtTheRelaunchsOwnDecisionGivesTheCreditBack(t *
 	if got := h.claim(); got.PluginRelaunchFor != 0 {
 		t.Fatalf("PluginRelaunchFor after the refused take-back = %d, want 0: only a launch that starts a process writes the mark", got.PluginRelaunchFor)
 	}
-	h.wantTakeBackRefused(gate, kept, "the take-back the store refused at the relaunch's own decision")
+	h.wantTakeBackRefused(gate, kept)
 }

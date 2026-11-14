@@ -9,10 +9,10 @@ import (
 )
 
 // A turn that ends in a provider error does not finish its task (dispatch://INFRA-956 R2). The
-// work is still owed: the claim used to go idle holding nothing, and the only way to give the
-// task back was an edit of the daemon's store. The task is kept here, under its number, and its
-// value is written again for the same session after a wait that grows to a limit, with no attempt
-// limit and no new session.
+// work is still owed, and a claim left idle holding nothing could be given it back only by an
+// edit of the daemon's store. The task is kept here, under its number, and its value is written
+// again for the same session after a wait that grows to a limit, with no attempt limit and no new
+// session.
 //
 // Two bounds and one count make that up, and this file holds all three.
 const (
@@ -64,7 +64,7 @@ func (m *Machine) providerErrored(ctx context.Context, pe ProviderError) error {
 		"task", m.claim.Pending.Number, "retryable", pe.Retryable, "httpStatus", pe.Status,
 		"provider", pe.Provider, "model", pe.Model, "providerErrorRun", m.claim.ProviderErrorRun)
 	m.tellControllerOfProviderErrors(pe.Model, cause)
-	if err := m.takeBack(ctx, "provider-error"); err != nil {
+	if err := m.takeBack(ctx, takenBackProviderError); err != nil {
 		return err
 	}
 	if holdsTheIssue(pe.Status) {

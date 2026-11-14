@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -149,10 +148,21 @@ func (r *unansweredSuspend) Suspend(ctx context.Context, loc runtime.Locator) er
 // which charges each take's prompt budget (refusedAdoption).
 func refuseAdoptions(h *harness) {
 	h.t.Helper()
-	h.m.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
-		return runtime.GitIdentity{Name: "legion-architect[bot]"}, nil
-	}
+	h.m.deps.Identity = adoptingIdentity
 	h.rt.FailAdoptWorkingCopy(adoptRefusal(staleLockRefusal))
+}
+
+// refusedShortOfTheLimit brings the claim to a phase task whose every adoption the shim refuses,
+// charged one refused adoption short of the prompt failure limit: the worker's take of the task,
+// and the takes the sweep offers again after it.
+func (h *harness) refusedShortOfTheLimit() {
+	h.t.Helper()
+	h.reach(StateReady)
+	refuseAdoptions(h)
+	h.must(RequestDeliver{Claim: h.token, Task: "the task", Phase: phase.Implementing, Generation: 7})
+	for range testLimits().PromptFailures - 2 {
+		h.observe(runtime.Alive)
+	}
 }
 
 // A retirement whose relaunch the tree lifecycle refuses — the registration deadline's, or the
@@ -179,15 +189,8 @@ func TestARetirementWhoseRelaunchTheTreeLifecycleRefusesLeavesNoLiveClaimWithout
 			state:  StateRegistered, kept: Budgets{}, retired: Budgets{},
 		},
 		{
-			name: "a refused adoption's retirement",
-			reach: func(h *harness) {
-				h.reach(StateReady)
-				refuseAdoptions(h)
-				// The worker's take of the phase task, and the take the sweep offers again after
-				// it: two charges.
-				h.must(RequestDeliver{Claim: h.token, Task: "the task", Phase: phase.Implementing, Generation: 7})
-				h.observe(runtime.Alive)
-			},
+			name:   "a refused adoption's retirement",
+			reach:  func(h *harness) { h.refusedShortOfTheLimit() },
 			retire: func(h *harness) { h.observe(runtime.Alive) },
 			state:  StateReady, kept: Budgets{PromptFailures: 2}, retired: Budgets{PromptRetires: 1},
 		},
@@ -305,15 +308,8 @@ func TestARetirementWhoseRelaunchTheStoreDoesNotCheckKeepsItsTaskAndRelaunchesAt
 			left:   Budgets{}, relaunched: Budgets{LaunchFailures: 1},
 		},
 		{
-			name: "a prompt retirement",
-			reach: func(h *harness) {
-				h.reach(StateReady)
-				refuseAdoptions(h)
-				h.must(RequestDeliver{Claim: h.token, Task: "the task", Phase: phase.Implementing, Generation: 7})
-				for range testLimits().PromptFailures - 2 {
-					h.observe(runtime.Alive)
-				}
-			},
+			name:  "a prompt retirement",
+			reach: func(h *harness) { h.refusedShortOfTheLimit() },
 			retire: func(h *harness) {
 				h.observe(runtime.Alive)
 				h.rt.FailAdoptWorkingCopy(nil)
@@ -525,12 +521,7 @@ func TestWhatLetsAWaitingRelaunchsClaimGoDropsTheRelaunchWithItsTimer(t *testing
 func TestAPromptRetirementTheTreeLifecycleRefusesIsTriedAgainAtTheNextPromptFailure(t *testing.T) {
 	store := &epochStore{epoch: 1}
 	h := lifecycleHarness(t, store, queuedClaim())
-	h.reach(StateReady)
-	refuseAdoptions(h)
-	h.must(RequestDeliver{Claim: h.token, Task: "the task", Phase: phase.Implementing, Generation: 7})
-	for range testLimits().PromptFailures - 2 {
-		h.observe(runtime.Alive)
-	}
+	h.refusedShortOfTheLimit()
 	store.reserved = true
 	h.observe(runtime.Alive)
 	h.wantCalls("Suspend", 0)

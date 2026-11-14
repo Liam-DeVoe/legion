@@ -19,11 +19,18 @@ import (
 //
 // The tags are the shape the store keeps the window in (the claims table's turn_outcomes), which
 // is the one place a report is written.
+//
+// Unapplied says that what the report says of the claim's task (reportedTask) was never done: the
+// write of the report failed, which ends the decision before that step. It is the one thing that
+// tells a report the producer sends again under the same key from a report already applied
+// (turnOutcome), and it is written with the window, so a daemon that read the window back tells
+// the two apart as the daemon that recorded it would.
 type TurnOutcome struct {
 	Generation uint64 `json:"generation"`
 	Sequence   uint64 `json:"sequence"`
 	Refused    bool   `json:"refused"`
 	Message    string `json:"message,omitempty"`
+	Unapplied  bool   `json:"unapplied,omitempty"`
 }
 
 // compareTurnOutcomes orders reports as their turns ran: by generation, and within a generation by
@@ -51,10 +58,13 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 
 // recordTurnOutcome puts a report in the claim's window, in (generation, sequence) order, and
 // trims the window to its bound (turnOutcomeWindow). A report whose key the window already holds
-// replaces it, so a producer that repeats one changes nothing. No count is kept anywhere: every
-// reader derives what it needs from the window as it stands (RefusedRun), which is what makes a
-// late report and an in-order one leave the same answer.
-func (m *Machine) recordTurnOutcome(o TurnOutcome) {
+// replaces it and answers repeat: the producer sent it again because it heard no answer, and its
+// first attempt was applied. The one exception is a first attempt whose write failed
+// (TurnOutcome.Unapplied), which never reached the task, so the report sent again is its first
+// application rather than a repeat. No count is kept anywhere: every reader derives what it needs
+// from the window as it stands (RefusedRun), which is what makes a late report and an in-order
+// one leave the same answer.
+func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
 	if len(o.Message) > maxRefusalMessage {
 		if runes := []rune(o.Message); len(runes) > maxRefusalMessage {
 			o.Message = string(runes[:maxRefusalMessage]) + "…"
@@ -62,12 +72,22 @@ func (m *Machine) recordTurnOutcome(o TurnOutcome) {
 	}
 	at, found := slices.BinarySearchFunc(m.claim.TurnOutcomes, o, compareTurnOutcomes)
 	if found {
+		repeat = !m.claim.TurnOutcomes[at].Unapplied
 		m.claim.TurnOutcomes[at] = o
 	} else {
 		m.claim.TurnOutcomes = slices.Insert(m.claim.TurnOutcomes, at, o)
 	}
 	if extra := len(m.claim.TurnOutcomes) - m.turnOutcomeWindow(); extra > 0 {
 		m.claim.TurnOutcomes = slices.Delete(m.claim.TurnOutcomes, 0, extra)
+	}
+	return repeat
+}
+
+// unappliedTurnOutcome marks the window's entry for o's key as a report that never reached the
+// claim's task (TurnOutcome.Unapplied). A report the window trimmed away has no entry to mark.
+func (m *Machine) unappliedTurnOutcome(o TurnOutcome) {
+	if at, found := slices.BinarySearchFunc(m.claim.TurnOutcomes, o, compareTurnOutcomes); found {
+		m.claim.TurnOutcomes[at].Unapplied = true
 	}
 }
 
@@ -108,9 +128,18 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // being done and every later turn of that session would be refused the same way
 // (dispatch://INFRA-714). A run short of the limit is the report written, and then what the
 // report says of the claim's task (reportedTask).
+//
+// A repeat (recordTurnOutcome) is written and goes no further. The producer sends a report again
+// when its first attempt had no answer, which a daemon restart in the middle of the request
+// leaves too, so the repeat can find a claim the first attempt already changed: a task that
+// attempt took back and that the restarted daemon has given again. Applying the repeat to that
+// task would take back a take no turn has run on, and count the provider error a second time. A
+// report whose write fails is marked as never applied (TurnOutcome.Unapplied), so the producer's
+// repeat of it still does what it says of the task.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
-	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
+	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message}
+	repeat := m.recordTurnOutcome(o)
 	run := m.claim.RefusedRun()
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
 		"refused", r.Refused, "refusedRun", run, "limit", m.deps.Limits.LaunchFailures)
@@ -118,7 +147,15 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 		return m.fail(ctx, CauseProviderError, refusalCause(run, m.claim.LastRefusal()))
 	}
 	if err := m.persist(ctx); err != nil {
+		if !repeat {
+			m.unappliedTurnOutcome(o)
+		}
 		return err
+	}
+	if repeat {
+		m.log.Info("supervise: a turn's report repeats one already applied; it changes nothing more",
+			"generation", r.Generation, "sequence", r.Sequence, "task", r.Task)
+		return nil
 	}
 	return m.reportedTask(ctx, r)
 }
@@ -163,7 +200,7 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 				"task", p.Number, "providerErrorRun", m.claim.ProviderErrorRun)
 			m.claim.ProviderErrorRun = 0
 		}
-		if err := m.finishTask(ctx, "report"); err != nil {
+		if err := m.finishTask(ctx, finishedByReport); err != nil {
 			return err
 		}
 	}

@@ -29,21 +29,6 @@ func restoredRootTask() Claim {
 	return c
 }
 
-// restore builds the machine over restored, which the store holds with its pending delivery and
-// the bucket with its value, as a restart finds them.
-func (h *harness) restore(restored Claim) {
-	h.t.Helper()
-	h.token = restored.Token
-	h.seedValue(&restored)
-	if err := h.store.PutClaim(h.ctx, restored); err != nil {
-		h.t.Fatal(err)
-	}
-	if err := h.store.PutDelivery(h.ctx, restored.Token, *restored.Pending); err != nil {
-		h.t.Fatalf("seed the restored delivery: %v", err)
-	}
-	h.start(restored)
-}
-
 // A take of a root architect's held task is refused while its root has nobody to hear it
 // (root-hears): the decisions it names are told by an accepted take, so a take accepted now
 // would tell them to a worker no person can answer. A turn the agent starts on its own meanwhile
@@ -58,10 +43,9 @@ func TestTakeIsRefusedByRootHearsUntilTheRootHasAnArchitect(t *testing.T) {
 		}
 		return hears, nil
 	}
-	h.conns.Register(rootToken, h.conn)
 	h.restore(restoredRootTask())
 
-	h.must(RequestReady{Claim: rootToken, Generation: 3, Session: session})
+	h.ready()
 
 	h.wantPrompts(0)
 	if answers := h.worker.answers; len(answers) != 1 || answers[0].Outcome != TakeOutcomeRefused || answers[0].Hold != HoldRootHears {
@@ -84,7 +68,7 @@ func TestTakeIsRefusedByRootHearsUntilTheRootHasAnArchitect(t *testing.T) {
 
 	// The root runs again, and the take of the task it held is accepted.
 	hears = true
-	h.must(RequestReady{Claim: rootToken, Generation: 3, Session: session})
+	h.ready()
 	if sent := h.wantPrompts(1)[0]; sent.Message != "a person decided on the tree" || sent.Number != 1 {
 		t.Fatalf("take = %+v, want task 1, held while the root had nobody to hear it", sent)
 	}

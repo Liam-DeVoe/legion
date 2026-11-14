@@ -136,9 +136,7 @@ func (h *harness) olderDaemonsAsk(round string, set ...func(*Delivery)) Delivery
 		c.TaskSeenEpoch, c.TaskSeenRevision, c.TaskTakeState = c.TaskWrittenEpoch, c.TaskWrittenRevision, TakeAccepted
 		value := TaskValue{Number: ask.Number, Epoch: c.TaskWrittenEpoch, Revision: c.TaskWrittenRevision}
 		w := h.worker
-		if w.generation != c.Generation || w.seen == nil {
-			w.generation, w.seen, w.asked = c.Generation, map[TaskValue]bool{}, map[TaskValue]bool{}
-		}
+		w.at(c.Generation)
 		w.seen[value], w.asked[value] = true, true
 	}
 	if err := h.store.PutClaimAndDelivery(h.ctx, c, ask); err != nil {
@@ -159,11 +157,13 @@ func carriesAsk(p taken, ask Delivery) bool {
 	return asks || strings.Contains(p.Message, ask.Task)
 }
 
-// dropped is whether the worker's last take was answered dropped: the record no longer owes the
-// task the value named, and the value is gone.
-func (h *harness) dropped() bool {
-	answers := h.worker.answers
-	return len(answers) > 0 && answers[len(answers)-1].Outcome == TakeOutcomeDropped
+// wantDropped fails the test unless the worker's last take was answered dropped: the record no
+// longer owes the task the value named, and the value is gone.
+func (h *harness) wantDropped() {
+	h.t.Helper()
+	if answers := h.worker.answers; len(answers) == 0 || answers[len(answers)-1].Outcome != TakeOutcomeDropped {
+		h.t.Fatalf("the worker's takes were answered %+v, want the last one dropped", answers)
+	}
 }
 
 // asksRound is whether a delivery id is an ask of round. Each ask of a round has an id of its own
@@ -435,9 +435,7 @@ func TestPodUpdateTheEndOfTheTurnOfAnOlderDaemonsAskIsNoAnswer(t *testing.T) {
 					t.Fatalf("take %+v carries the older daemon's ask %s, want it dropped and never taken", p, ask.ID)
 				}
 			}
-			if !h.dropped() {
-				t.Fatalf("the worker's takes were answered %+v, want the last one dropped", h.worker.answers)
-			}
+			h.wantDropped()
 			c := h.wantRound(testRound)
 			if c.Pending != nil {
 				t.Fatalf("pending = %+v, want the older daemon's ask dropped at the end of the turn", c.Pending)
@@ -502,9 +500,7 @@ func TestPodUpdateAnOperatorsSuspendedClaimDropsTheOlderDaemonsAskAtItsResume(t 
 		}
 	}
 	h.wantPrompts(sent)
-	if !h.dropped() {
-		t.Fatalf("the worker's takes were answered %+v, want the last one dropped", h.worker.answers)
-	}
+	h.wantDropped()
 	c := h.wantRound(testRound)
 	if c.Pending != nil {
 		t.Fatalf("pending = %+v after the resume, want the older daemon's ask dropped", c.Pending)
@@ -1347,9 +1343,7 @@ func TestTakeBackOfAnAskKeepsItsRound(t *testing.T) {
 			t.Fatalf("take %+v carries the older daemon's ask, want it dropped and never taken", p)
 		}
 	}
-	if !h.dropped() {
-		t.Fatalf("the worker's takes were answered %+v, want the last one dropped", h.worker.answers)
-	}
+	h.wantDropped()
 	if p := h.claim().Pending; p != nil {
 		t.Fatalf("pending after the relaunch's ready = %+v, want the older daemon's ask dropped", p)
 	}
@@ -1400,9 +1394,7 @@ func TestPodUpdateAnUnansweredClaimRelaunchedIntoAnotherPodIsAskedNothingMore(t 
 	h.diesIntoPod(testOtherPod)
 
 	h.wantPrompts(0)
-	if !h.dropped() {
-		t.Fatalf("the worker's takes were answered %+v, want the last one dropped", h.worker.answers)
-	}
+	h.wantDropped()
 	if p := h.claim().Pending; p != nil {
 		t.Fatalf("pending = %+v, want the older daemon's ask dropped rather than taken in the new pod", p)
 	}
@@ -1474,9 +1466,7 @@ func TestTakeOfAnAskOfARoundTheClaimLeftIsDroppedAndItsValueDeleted(t *testing.T
 	if p := h.claim().Pending; p != nil {
 		t.Fatalf("pending = %+v, want the dead pod's ask dropped in the new pod", p)
 	}
-	if !h.dropped() {
-		t.Fatalf("the worker's takes were answered %+v, want the last one dropped", h.worker.answers)
-	}
+	h.wantDropped()
 	if _, held := h.values.value(h.token); held {
 		t.Error("the bucket still holds the dropped ask's value")
 	}
@@ -1661,6 +1651,9 @@ func TestTakeIsRefusedByAnUpdateRoundOnlyOnceTheWorkerAnsweredIt(t *testing.T) {
 			}
 			if tc.answers {
 				answers := h.worker.answers
+				if len(answers) == 0 {
+					t.Fatal("the worker asked to take nothing after the answer, want its take refused")
+				}
 				if last := answers[len(answers)-1]; last.Outcome != TakeOutcomeRefused || last.Hold != HoldUpdateRound {
 					t.Fatalf("the take of the task after the answer = %+v, want it refused by %q", last, HoldUpdateRound)
 				}

@@ -31,7 +31,7 @@ type CheckLook struct {
 }
 
 // Delivery is a claim's pending task: at most one per claim, persisted, and handed to the claim's
-// worker as a value it takes (take.go) rather than a prompt the daemon sends.
+// worker as a value it takes (take.go).
 //
 // Number is the task number the record queued it under, and the value the bucket holds for the
 // claim names it. QueuedAt is when the task was queued; ConfirmedAt is when a take of it was
@@ -44,7 +44,8 @@ type CheckLook struct {
 // after it (finishTask) — or until the record drops it.
 //
 // The id is the daemon's and never changes: an outbox delivery id, an operator's minted one, or
-// the round an update round's ask is of (updateTaskID), which is what names that ask's round.
+// the round an update round's ask is of (updateTaskPrefix, updateRoundOf), which is what names
+// that ask's round.
 //
 // Phase is the issue phase the task was queued for, which is what says whether the task is still
 // the work to do: it is carried here, persisted, because the task text is the workflow's to
@@ -258,7 +259,7 @@ func pendingID(p *Delivery) string {
 
 // queue gives the claim the task a deliver request carries, with the phase and the entry it
 // was queued for, under the next task number the claim's record has (Claim.TaskWritten), and
-// writes the claim's value under that number (writeValue): the value is the worker's one signal to
+// writes the claim's value under that number (putValue): the value is the worker's one signal to
 // ask. An outbox repeats its row id after a crash before FinishOutbox; the same task and id are
 // therefore accepted without changing the persisted delivery, its number or its value.
 //
@@ -318,10 +319,9 @@ func pendingID(p *Delivery) string {
 // replaces the owed one). The newer task takes its place: it is work for this claim, queued
 // since, and R2 has the newer of the two go.
 //
-// The replaced task's row ends as any other retirement ends it, and the question a restart armed
-// for that task is answered in the same step, which is the one path both places a task replaces
-// an owed one take (replaceOwedTask): the delete releases what that task held of a person's
-// decisions for whichever tree is owed them (the claim store's RetireDelivery and
+// The replaced task's row ends as any other retirement ends it, on the one path both places a
+// task replaces an owed one take (replaceOwedTask): the delete releases what that task held of a
+// person's decisions for whichever tree is owed them (the claim store's RetireDelivery and
 // releaseKeptDecisions), where a row overwritten in place would leave them held by a delivery id
 // that is gone, or move them to a task whose text never named them. The wait ends with the task,
 // and the newer task's own value is what the worker is handed next.
@@ -417,10 +417,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	if err := m.putClaimAndDelivery(ctx, stored, d); err != nil {
 		return err
 	}
-	m.claim.DeliveredRows, m.claim.GivenEntry = stored.DeliveredRows, stored.GivenEntry
-	m.claim.TaskWritten = stored.TaskWritten
-	m.claim.TaskWrittenEpoch, m.claim.TaskWrittenRevision = stored.TaskWrittenEpoch, stored.TaskWrittenRevision
-	m.claim.Pending, m.unsaved = &d, false
+	m.claim, m.unsaved = stored, false
+	m.claim.Pending = &d
 	return nil
 }
 
@@ -487,7 +485,7 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 	if task == "" {
 		m.log.Info("supervise: everything this held task named is owed to another tree now; it is dropped rather than taken",
 			"task", p.Number, "delivery", p.ID, "issue", m.claim.Issue, "run", p.Generation)
-		return false, m.dropPending(ctx, "dropped")
+		return false, m.dropPending(ctx, valueDeletedDropped)
 	}
 	next := *p
 	next.Task, next.Kept = task, kept
@@ -656,6 +654,13 @@ func (m *Machine) putPending(ctx context.Context) error {
 	return m.saved(m.putDelivery(ctx, *m.claim.Pending))
 }
 
+// putClaimAndPendingOwed writes the claim with its pending delivery as memory holds them, for a
+// decision that leaves both standing in memory: a write that fails owes the claim write (owes)
+// and leaves the delivery unsaved (saved), so the next decision writes both again.
+func (m *Machine) putClaimAndPendingOwed(ctx context.Context) error {
+	return m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx)))
+}
+
 // streaming asks the agent whether a turn is in flight; answered is false when the agent could not
 // say (the ask failed or timed out). Its one caller is the question a restart leaves over a claim
 // stored working (askTurnOver).
@@ -694,6 +699,16 @@ func (m *Machine) issueInTurn() (claim.Token, bool) {
 		return "", false
 	}
 	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token)
+}
+
+// adoptionWaits names the claim of this issue in a turn that a take of the pending task waits
+// behind (issueInTurn), when there is one. Only a task that adopts the working copy the issue's
+// roles share waits for another role's turn (adopts).
+func (m *Machine) adoptionWaits() (claim.Token, bool) {
+	if !m.adopts(*m.claim.Pending) {
+		return "", false
+	}
+	return m.issueInTurn()
 }
 
 // adopt hands the working copy the role's App identity before the phase task's take is
@@ -762,17 +777,13 @@ func (m *Machine) settle(ctx context.Context) error {
 			m.log.Warn("supervise: the pending delivery is still not written", "delivery", p.ID, "error", err)
 		}
 	}
-	switch m.claim.State {
-	case StateWorking, StateReady, StateIdle:
-	default:
-		if p.turnStarted() {
-			return m.finishTask(ctx, "end-frame")
-		}
+	if !SaidReady(m.claim.State) && p.turnStarted() {
+		return m.finishTask(ctx, finishedByEndFrame)
 	}
 	if m.claim.State != StateSuspended || p.Phase == "" || !m.claim.SuspendedBy.RetiresPhaseTask() {
 		return nil
 	}
-	return m.dropPending(ctx, "suspended")
+	return m.dropPending(ctx, valueDeletedSuspended)
 }
 
 // interruptedTask begins the text of a task taken again because the process running its turn
@@ -879,7 +890,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	}
 	inTurn := m.claim.State == StateWorking
 	if p.turnStarted() && !inTurn {
-		return m.finishTask(ctx, "end-frame")
+		return m.finishTask(ctx, finishedByEndFrame)
 	}
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "task", p.Number, "delivery", p.ID)
 	next := *p

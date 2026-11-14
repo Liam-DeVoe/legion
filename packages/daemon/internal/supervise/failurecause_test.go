@@ -1,7 +1,6 @@
 package supervise
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -168,12 +167,8 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 			name: "prompt retirements that run out",
 			drive: func(t *testing.T) (*harness, time.Time) {
 				h := newHarness(t)
-				h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
-					return runtime.GitIdentity{Name: "legion-implementer[bot]"}, nil
-				}
-				h.start(h.store.load(h.token))
-				h.rt.FailAdoptWorkingCopy(adoptRefusal(staleLockRefusal))
 				h.reach(StateReady)
+				refuseAdoptions(h)
 				// The worker's take, whose adoption the shim refuses, and the two takes the sweep
 				// offers after it: the third charge retires the process and relaunches the same
 				// session.

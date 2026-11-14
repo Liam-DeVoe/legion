@@ -1392,7 +1392,7 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	if err := m.settle(ctx); err != nil {
 		return err
 	}
-	if pass, err := m.fence(ctx, ev); !pass {
+	if pass, err := m.fence(ev); !pass {
 		return err
 	}
 	if actOf(ev) {
@@ -1808,9 +1808,9 @@ func (m *Machine) stoppingProcess() func() {
 // and changes none of them. The sections that defer it are Handle, which every event and every
 // timer of this package comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold,
 // PodUpdateAsked), StartedBy, ReadProcess and Retree; the sections that take mu without it are
-// Claim, OnDurableState, Wait, compaction and the two goroutine tails in delivery.go and
-// secrets.go. It is that rule a section added later has to keep, rather than this list of the
-// sections there are now.
+// Claim, OnDurableState, Wait, compaction, Machine.Take's own sections and takeDecided (take.go),
+// and the goroutine tail in secrets.go. It is that rule a section added later has to keep, rather
+// than this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.armWaits()
@@ -1850,8 +1850,8 @@ func (m *Machine) report(c Claim, state ClaimState) {
 // wrote the three steps out itself and left the owing off would lose its report in silence,
 // which is the fault the mark exists to end.
 //
-// write is the decision's own claim write: persist for most of them, and confirm for a turn
-// start that confirms the delivery whose turn it is.
+// write is the decision's own claim write: persist for most of them, and startTakesTurn, which
+// writes the claim with its delivery, for the start of an accepted take's turn.
 func (m *Machine) durableWrite(ctx context.Context, state ClaimState, write func(context.Context) error) error {
 	if err := write(ctx); err != nil {
 		m.oweDurableState(state)
@@ -1861,8 +1861,8 @@ func (m *Machine) durableWrite(ctx context.Context, state ClaimState, write func
 	return nil
 }
 
-// turnStartedLine is the message a turn's start is logged under, at Info, on each of the three
-// paths that put a claim in working. It is pinned as a constant because an operator and a
+// turnStartedLine is the message a turn's start is logged under, at Info, wherever a turn is
+// recorded starting (startTurn). It is pinned as a constant because an operator and a
 // production check read it whole: with turnEndedLine it is how what the daemon did between a
 // turn's start and its end is read out of the log at all, and a message reworded or extended at
 // a call site would answer that search with a part of the answer. What differs between the call
@@ -1937,7 +1937,7 @@ func (m *Machine) Wait() {
 // no claim records, or it is the process a relaunch waiting at the probe interval let go
 // (relaunchLater) or a wake waiting its turn in the pacing let go (reserveWake), which that
 // relaunch and that wake each wait out.
-func (m *Machine) fence(_ context.Context, ev Event) (bool, error) {
+func (m *Machine) fence(ev Event) (bool, error) {
 	pending := m.claim.Pending
 	switch ev := ev.(type) {
 	case RuntimeObservation:
@@ -2709,12 +2709,12 @@ func (m *Machine) retire(ctx context.Context) error {
 	}
 	m.clearUpdate()
 	if drops {
-		return m.dropPending(ctx, "retired")
+		return m.dropPending(ctx, valueDeletedRetired)
 	}
 	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
 		p.ConfirmedAt, p.TakenText = time.Time{}, ""
-		m.log.Info(takenBackLine, "task", p.Number, "cause", "retired")
-		return m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx)))
+		m.log.Info(takenBackLine, "task", p.Number, "cause", takenBackRetired)
+		return m.putClaimAndPendingOwed(ctx)
 	}
 	return m.persist(ctx)
 }
@@ -3039,11 +3039,13 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // because the claim the store took is the claim the repair would have written (settleOwedWrite)
 // — which is the whole of repair's success path, since the repair it makes is the one this call
 // settles. It marks nothing owed: the callers that owe their claim write say so themselves
-// (confirm, repair).
+// (putClaimAndPendingOwed, repair).
 //
-// Its three callers are the decisions that write both of memory's own rows: confirm, settle's
-// write of a delivery an earlier write left unsaved, and repair's branch for a claim that holds
-// a pending delivery. Each has a pending delivery by the time it calls, which is what this reads.
+// Its callers are the decisions that write both of memory's own rows: an accepted take (accept),
+// the start of its turn (startTakesTurn), a retirement that takes back a take whose turn has not
+// started (retire), settle's write of a delivery an earlier write left unsaved, and repair's
+// branch for a claim that holds a pending delivery. Each has a pending delivery by the time it
+// calls, which is what this reads.
 func (m *Machine) putClaimAndPending(ctx context.Context) error {
 	if err := m.putClaimAndDelivery(ctx, m.stored(), *m.claim.Pending); err != nil {
 		return err

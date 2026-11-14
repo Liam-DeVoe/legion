@@ -130,13 +130,13 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 	return errors.Join(err, m.persist(ctx))
 }
 
-// watchAgain arms again what watches the process the claim records, where that is not armed: the
-// timers the claim's state calls for, which are the ones a restart reading this claim back from
-// the store would arm for it (NewMachine). Its one caller is the refusal a parked launch's turn
-// meets (runWake), over a claim that keeps its process with the launch that was to replace it
-// gone: the park disarmed the boot interval, the registration deadline and the probe interval of
-// that process (parkWake), the claim keeps it and the wake is spent, so a booting process whose
-// agent never registers would meet no deadline.
+// watchAgain arms again what watches the process the claim records while its agent comes up,
+// where that is not armed: the boot interval and the registration deadline, as a restart reading
+// a claim still coming up back from the store arms them (NewMachine). Its one caller is the
+// refusal a parked launch's turn meets (runWake), over a claim that keeps its process with the
+// launch that was to replace it gone: the park disarmed the boot interval, the registration
+// deadline and the probe interval of that process (parkWake), the claim keeps it and the wake is
+// spent, so a booting process whose agent never registers would meet no deadline.
 //
 // A claim still coming up is watched by its boot interval and its registration deadline, a
 // registered one by the deadline alone, and a claim whose agent is ready by neither: a live

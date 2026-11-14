@@ -20,7 +20,7 @@ package supervise
 // operator's own task runs where it arrives
 // (TestAnOperatorsDeliveryOverAParkedLaunchRunsThatLaunchNow). The sixth reader, the pending
 // delivery a waiting launch holds back, is already driven by this lane and names the kind there
-// (TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStarts, sendPending).
+// (TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStarts, claimHold).
 //
 // The negative control for all of the second half is the predicate narrowed to the launch kind
 // (StartsProcess): every one of those decisions then reads a parked refresh as no launch at all

@@ -44,9 +44,7 @@ const staleLockRefusalWithRawByte = "Command failed (exit 1): jj metaedit: the g
 func adoptingHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)
-	h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
-		return runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}, nil
-	}
+	h.deps.Identity = adoptingIdentity
 	h.restart()
 	h.reach(StateReady)
 	return h
@@ -77,7 +75,7 @@ func TestTakeWhoseAdoptionFailsIsRefusedAndOnlyTheShimsRefusalIsCharged(t *testi
 	}{
 		{name: "the shim refuses the adoption",
 			fail:    func(h *harness) { h.rt.FailAdoptWorkingCopy(adoptRefusal(staleLockRefusal)) },
-			logged:  `msg="supervise: the shim refused to adopt the working copy; the take is refused"`,
+			logged:  `msg="` + adoptRefusedLine + `"`,
 			text:    staleLockRefusal,
 			budgets: Budgets{PromptFailures: 1}},
 		{name: "the transport loses the adoption",
@@ -141,7 +139,7 @@ func TestTakeWhoseAdoptionFailsIsRefusedAndOnlyTheShimsRefusalIsCharged(t *testi
 		h.wantCalls("AdoptWorkingCopy", 6)
 		h.wantPrompts(0)
 		if lines := h.logs.lines("level=WARN",
-			`msg="supervise: the shim refused to adopt the working copy; the take is refused"`,
+			`msg="`+adoptRefusedLine+`"`,
 			staleLockRefusal); len(lines) != 6 {
 			t.Fatalf("logged %d adoption refusals, want one per take naming the shim's own words:\n%s",
 				len(lines), strings.Join(lines, "\n"))
@@ -263,7 +261,7 @@ func TestTakeWhoseAdoptionFailsIsRefusedAndOnlyTheShimsRefusalIsCharged(t *testi
 						stored.LastSendError, ok)
 				}
 				if lines := h.logs.lines("level=WARN",
-					`msg="supervise: the shim refused to adopt the working copy; the take is refused"`,
+					`msg="`+adoptRefusedLine+`"`,
 					tc.logged); len(lines) != 1 {
 					t.Fatalf("logged %d warnings carrying %q, want the one refusal with the far side's whole text",
 						len(lines), tc.logged)

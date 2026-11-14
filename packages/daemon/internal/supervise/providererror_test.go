@@ -329,9 +329,7 @@ func TestAQuestionTheLadderKeptForAnOlderDaemonIsDroppedRatherThanSentAgain(t *t
 	if p := h.claim().Pending; p != nil {
 		t.Fatalf("the claim holds %+v, want the older daemon's question %s dropped", *p, owed.ID)
 	}
-	if !h.dropped() {
-		t.Fatalf("the worker's takes were answered %+v, want the last one dropped", h.worker.answers)
-	}
+	h.wantDropped()
 	h.wantPrompts(sent)
 	if d, ok := h.store.delivery(testToken); ok {
 		t.Errorf("the store holds %+v, want the dropped question's row gone", d)

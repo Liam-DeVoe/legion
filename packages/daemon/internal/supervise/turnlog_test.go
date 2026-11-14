@@ -17,8 +17,7 @@ const (
 
 // turnLines is every record of line that is a turn line: the turn-outcome report writes the same
 // end message with a sequence attribute of its own (turnoutcome.go), and a reader counting a
-// turn's start against its end skips it, as the daemon's cost reading does (T14 of
-// dispatch://INFRA-2811).
+// turn's start against its end skips it, as the daemon's cost reading does (costReading.costed).
 func turnLines(h *harness, line string) []loggedRecord {
 	var kept []loggedRecord
 	for _, r := range h.records.of(line) {

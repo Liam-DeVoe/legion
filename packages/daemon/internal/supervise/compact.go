@@ -316,7 +316,7 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
 		m.log.Info("supervise: the compaction aborts the turn this task's take was to start; the task goes back to waiting",
 			"task", p.Number)
-		if err := m.takeBack(ctx, "compaction"); err != nil {
+		if err := m.takeBack(ctx, takenBackCompaction); err != nil {
 			return err
 		}
 	}

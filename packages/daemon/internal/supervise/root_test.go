@@ -95,7 +95,7 @@ func TestARootExitWhoseSuspendFailsStillSuspendsIt(t *testing.T) {
 // started — taken, its turn still to come — is retired with it: the next resume starts with its
 // new phase's task, never the finished one's. That holds whether or not the runtime could suspend
 // the process.
-func TestARootsExitRetiresItsPhasesUnconfirmedTask(t *testing.T) {
+func TestARootsExitRetiresItsPhasesTaskWhoseTurnHasNotStarted(t *testing.T) {
 	for _, failSuspend := range []bool{false, true} {
 		name := "suspend ok"
 		if failSuspend {
@@ -119,7 +119,7 @@ func TestARootsExitRetiresItsPhasesUnconfirmedTask(t *testing.T) {
 
 			h.wantState(StateSuspended)
 			if p := h.claim().Pending; p != nil {
-				t.Errorf("pending %+v, want the unconfirmed task retired with the root's exit", p)
+				t.Errorf("pending %+v, want the task whose turn had not started retired with the root's exit", p)
 			}
 			if d, ok := h.store.delivery(rootToken); ok {
 				t.Errorf("stored delivery %+v, want it retired", d)

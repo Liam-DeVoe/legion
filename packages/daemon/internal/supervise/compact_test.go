@@ -600,8 +600,8 @@ func TestACompactionWhoseDisplacedRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTur
 // pacing can park that replacement over a session being compacted. The compaction ran on a
 // process that is still running, so it is the claim's own to the end: the claim is given back,
 // its run of provider-error turns starts again, and the answer is the compaction's own. What
-// waits is the owed task, which goes at the turn of the launch parked over the process a send
-// would reach (sendPending), not into a process that turn is about to replace.
+// waits is the owed task, which goes at the turn of the launch parked over the process a take
+// would reach (claimHold's launchWaits), not into a process that turn is about to replace.
 //
 // Read as a lost process — which a parked launch alone says nothing about — the caller would be
 // told its compaction failed for a compaction that ran, the claim would be left working with

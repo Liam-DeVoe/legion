@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -23,9 +24,10 @@ func adoptingIdentity(context.Context, claim.Role, string) (runtime.GitIdentity,
 	return runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}, nil
 }
 
-// Each of the seven holds a send used to stop at refuses a take by its own name, leaves the task
-// untaken and its value in the bucket, and records the refusal at the value's revision, which is
-// how the end of the hold knows to write the value again (offerPending).
+// Each of the seven holds a state of the claim, its issue or its tree puts on a task refuses a
+// take by its own name, leaves the task untaken and its value in the bucket, and records the
+// refusal at the value's revision, which is how the end of the hold knows to write the value again
+// (offerPending).
 func TestTakeIsRefusedByEachHoldByName(t *testing.T) {
 	for _, tc := range []struct {
 		hold string
@@ -85,11 +87,9 @@ func TestTakeIsRefusedByEachHoldByName(t *testing.T) {
 			return h
 		}},
 		{hold: HoldRootHears, arrange: func(t *testing.T) *harness {
-			h := newBareHarness(t)
-			h.token = rootToken
-			h.deps.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return false, nil }
-			h.store.PutClaim(h.ctx, rootClaim())
-			h.start(rootClaim())
+			h := newHarnessOf(t, rootClaim(), func(d *Deps) {
+				d.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return false, nil }
+			})
 			h.manualTakes()
 			h.reach(StateReady)
 			h.must(RequestDeliver{Claim: rootToken, Task: "a person decided on the tree", Generation: 2, Row: 7})
@@ -131,6 +131,9 @@ func TestTakeIsRefusedInTurnAndNotReady(t *testing.T) {
 		h.must(StreamTurnStart{Claim: h.token})
 		h.must(RequestDeliver{Claim: h.token, Task: "after this turn"})
 		h.wantRefused(HoldInTurn)
+		if got := h.claim().TaskTakeState; got != TakeRefused {
+			t.Fatalf("the claim records the take %q, want it refused at the value's revision", got)
+		}
 	})
 	t.Run(HoldNotReady, func(t *testing.T) {
 		h := newHarness(t)
@@ -138,6 +141,9 @@ func TestTakeIsRefusedInTurnAndNotReady(t *testing.T) {
 		h.reach(StateRegistered)
 		h.must(RequestDeliver{Claim: h.token, Task: "the task"})
 		h.wantRefused(HoldNotReady)
+		if got := h.claim().TaskTakeState; got != TakeRefused {
+			t.Fatalf("the claim records the take %q, want it refused at the value's revision", got)
+		}
 	})
 }
 
@@ -151,11 +157,10 @@ func TestTakeDropsATaskTheRecordNoLongerOwesAndDeletesItsValue(t *testing.T) {
 		arrange func(t *testing.T) *harness
 	}{
 		{name: "the issue has left the task's phase", arrange: func(t *testing.T) *harness {
-			h := newBareHarness(t)
 			holds := true
-			h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return holds, nil }
-			h.store.PutClaim(h.ctx, queuedClaim())
-			h.start(queuedClaim())
+			h := newHarnessOf(t, queuedClaim(), func(d *Deps) {
+				d.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return holds, nil }
+			})
 			h.manualTakes()
 			h.reach(StateReady)
 			h.must(RequestDeliver{Claim: h.token, Task: "test the branch", Phase: phase.Testing, Generation: 7})
@@ -163,12 +168,10 @@ func TestTakeDropsATaskTheRecordNoLongerOwesAndDeletesItsValue(t *testing.T) {
 			return h
 		}},
 		{name: "a root architect's task that names nothing now", arrange: func(t *testing.T) *harness {
-			h := newBareHarness(t)
-			h.token = rootToken
-			h.deps.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return true, nil }
-			h.deps.RootTask = func(context.Context, Claim, Delivery) (string, []byte, error) { return "", nil, nil }
-			h.store.PutClaim(h.ctx, rootClaim())
-			h.start(rootClaim())
+			h := newHarnessOf(t, rootClaim(), func(d *Deps) {
+				d.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return true, nil }
+				d.RootTask = func(context.Context, Claim, Delivery) (string, []byte, error) { return "", nil, nil }
+			})
 			h.manualTakes()
 			h.reach(StateReady)
 			h.must(RequestDeliver{Claim: rootToken, Task: "a person decided on the tree", Generation: 2, Row: 7})
@@ -205,14 +208,12 @@ func TestTakeDropsATaskTheRecordNoLongerOwesAndDeletesItsValue(t *testing.T) {
 // root hears again: the take is answered with what it still names (Deps.RootTask), and the
 // delivery is written narrowed, so a take sent again is answered the same narrowed text.
 func TestTakeOfARootTaskIsNarrowedToWhatItStillNames(t *testing.T) {
-	h := newBareHarness(t)
-	h.token = rootToken
-	h.deps.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return true, nil }
-	h.deps.RootTask = func(context.Context, Claim, Delivery) (string, []byte, error) {
-		return "a person decided on this tree only", []byte(`{"decisions":[]}`), nil
-	}
-	h.store.PutClaim(h.ctx, rootClaim())
-	h.start(rootClaim())
+	h := newHarnessOf(t, rootClaim(), func(d *Deps) {
+		d.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return true, nil }
+		d.RootTask = func(context.Context, Claim, Delivery) (string, []byte, error) {
+			return "a person decided on this tree only", []byte(`{"decisions":[]}`), nil
+		}
+	})
 	h.manualTakes()
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: rootToken, Task: "a person decided on two trees", Generation: 2, Row: 7,
@@ -302,56 +303,52 @@ func TestTakeAcceptedHoldsTheIssueInTurnForAnotherRoleUntilItsTurnEnds(t *testin
 }
 
 // A take sent again while the first is still being answered — its adoption of the working copy
-// still running — waits for that answer and is answered from it: one adoption, one acceptance.
+// still running — waits for that answer and is answered from it: one adoption, one acceptance,
+// and one answer logged, which is no repeat from the record (answerAgain). The test runs in a
+// bubble, so it reads the moment both takes are blocked rather than sleeping until they may be.
 func TestTakeSentTwiceWhileTheFirstIsAnsweredWaitsForItsAnswer(t *testing.T) {
-	h := newHarness(t)
-	gate := newGatedAdopt(h.rt)
-	h.deps.Runtime = gate
-	h.deps.Identity = adoptingIdentity
-	h.restart()
-	h.manualTakes()
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
-	value := h.seen()
-	request := RequestTake{Claim: testToken, Generation: h.generation(), Session: session,
-		Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		gate := newGatedAdopt(h.rt)
+		h.deps.Runtime = gate
+		h.deps.Identity = adoptingIdentity
+		h.restart()
+		h.manualTakes()
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
+		value := h.seen()
+		request := RequestTake{Claim: testToken, Generation: h.generation(), Session: session,
+			Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}
 
-	var wg sync.WaitGroup
-	answers := make([]TakeAnswer, 2)
-	errs := make([]error, 2)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		answers[0], errs[0] = h.m.Take(h.ctx, request)
-	}()
-	select {
-	case <-gate.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the first take's adoption never started")
-	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		answers[1], errs[1] = h.m.Take(h.ctx, request)
-	}()
-	// The second take has the time it needs to reach the machine while the first's adoption is
-	// held at the gate; a take that did not wait would start an adoption of its own here.
-	time.Sleep(50 * time.Millisecond)
-	select {
-	case <-gate.entered:
-		t.Fatal("the second take started an adoption of its own while the first was being answered")
-	default:
-	}
-	gate.release <- struct{}{}
-	wg.Wait()
-	h.m.Wait()
-
-	for i := range answers {
-		if errs[i] != nil || answers[i].Outcome != TakeOutcomeAccepted || answers[i].Text != "implement the plan" {
-			t.Fatalf("take %d = %+v, %v, want it accepted with the task's text", i+1, answers[i], errs[i])
+		var wg sync.WaitGroup
+		answers := make([]TakeAnswer, 2)
+		errs := make([]error, 2)
+		for i := range answers {
+			wg.Go(func() { answers[i], errs[i] = h.m.Take(h.ctx, request) })
+			// Every goroutine of the bubble is blocked now: the first take at the gate in its
+			// adoption, and the second waiting for the first's answer — where a take that did not
+			// wait would be at the gate with an adoption of its own.
+			synctest.Wait()
 		}
-	}
-	h.wantCalls("AdoptWorkingCopy", 1)
+		if started := len(gate.entered); started != 1 {
+			t.Fatalf("%d adoptions started while the first take was being answered, want the first's alone", started)
+		}
+		gate.release <- struct{}{}
+		wg.Wait()
+		h.m.Wait()
+
+		for i := range answers {
+			if errs[i] != nil || answers[i].Outcome != TakeOutcomeAccepted || answers[i].Text != "implement the plan" {
+				t.Fatalf("take %d = %+v, %v, want it accepted with the task's text", i+1, answers[i], errs[i])
+			}
+		}
+		h.wantCalls("AdoptWorkingCopy", 1)
+		answered := h.records.of(answeredLine)
+		if len(answered) != 1 {
+			t.Fatalf("%q was logged %d times, want once: the second take is answered from the first's answer", answeredLine, len(answered))
+		}
+		wantAttr(t, answered[0], "repeat", "false")
+	})
 }
 
 // A take of a number already accepted whose turn has not started is a take whose answer was lost:
@@ -395,31 +392,33 @@ func TestTaskNumberOfAnotherTaskIsRefusedAndRecordsNothing(t *testing.T) {
 	value := h.seen()
 	before, puts := h.claim(), len(h.store.history())
 
-	for _, number := range []uint64{value.Number + 1, value.Number + 41} {
-		other := value
-		other.Number = number
-		answer, err := h.takeValue(other)
-		if err != nil || answer.Outcome != TakeOutcomeRefused || answer.Hold != HoldNotOwed {
-			t.Fatalf("the take of task %d = %+v, %v, want it refused not-owed", number, answer, err)
-		}
+	// At a revision newer than the one seen, which a take of the owed task records as seen.
+	later := TaskValue{Number: value.Number + 1, Epoch: value.Epoch, Revision: value.Revision + 1}
+	if answer, err := h.takeValue(later); err != nil || answer.Outcome != TakeOutcomeRefused || answer.Hold != HoldNotOwed {
+		t.Fatalf("the take of task %d = %+v, %v, want it refused not-owed", later.Number, answer, err)
 	}
 	after := h.claim()
 	if after.TaskTakeState != before.TaskTakeState || after.TaskSeenRevision != before.TaskSeenRevision || after.TaskTaken != 0 {
-		t.Fatalf("the claim moved from %+v to %+v, want nothing of the refused takes recorded", before, after)
+		t.Fatalf("the claim moved from %+v to %+v, want nothing of the refused take recorded", before, after)
 	}
 	if got := len(h.store.history()); got != puts {
-		t.Fatalf("the refused takes wrote the claim %d times, want none", got-puts)
+		t.Fatalf("the refused take wrote the claim %d times, want none", got-puts)
 	}
 	if p := h.pending(); p.taken() {
 		t.Fatalf("pending %+v, want the owed task untaken", p)
 	}
 
-	// The task finished, a take of its number is not owed either.
+	// The task finished, a take of its number is not owed either: nothing is pending, and then
+	// the next task is.
 	h.mustTake()
 	h.must(StreamTurnStart{Claim: testToken})
 	h.must(StreamTurnEnd{Claim: testToken})
 	if answer, err := h.takeValue(value); err != nil || answer.Outcome != TakeOutcomeRefused || answer.Hold != HoldNotOwed {
 		t.Fatalf("the take of the finished task = %+v, %v, want it refused not-owed", answer, err)
+	}
+	h.must(RequestDeliver{Claim: testToken, Task: "the next task"})
+	if answer, err := h.takeValue(value); err != nil || answer.Outcome != TakeOutcomeRefused || answer.Hold != HoldNotOwed {
+		t.Fatalf("the take of the earlier task with the next pending = %+v, %v, want it refused not-owed", answer, err)
 	}
 }
 
@@ -460,6 +459,47 @@ func TestTakeAfterAProviderErrorCarriesItsNote(t *testing.T) {
 	text := h.wantPrompts(2)[1].Message
 	if !strings.HasPrefix(text, note) || !strings.HasSuffix(text, providerErrorTaskText) {
 		t.Fatalf("the take after the wait was answered %q, want the note %q in front of the task", text, note)
+	}
+
+	h.must(StreamTurnStart{Claim: h.token})
+	h.must(StreamTurnEnd{Claim: h.token})
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("pending %+v after the turn ended with no error, want the task finished", p)
+	}
+	h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
+	if next := h.wantPrompts(3)[2].Message; next != "the next task" {
+		t.Fatalf("the next task's take was answered %q, want the task alone", next)
+	}
+}
+
+// A write of the claim's value the bucket refuses fails nothing of the decision that made it: the
+// task is queued all the same, and the value is written at the claim's next chance, whatever the
+// worker last asked (valueUnwritten) — here the agent's ready.
+func TestTakeValueTheBucketRefusedIsWrittenAtTheNextChance(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.values.fail("Write", errBoom)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	if _, held := h.values.value(testToken); held {
+		t.Fatal("the bucket holds a value it refused to write")
+	}
+	if lines := h.logs.lines("supervise: the task value could not be written"); len(lines) != 1 {
+		t.Fatalf("logged %q, want the refused write named once", lines)
+	}
+	number := h.pending().Number
+
+	h.values.fail("Write", nil)
+	h.ready()
+
+	value, held := h.values.value(testToken)
+	if !held || value.Number != number {
+		t.Fatalf("the bucket holds %+v (held %v) after the next chance, want task %d's value", value, held, number)
+	}
+	if c := h.claim(); c.TaskWrittenRevision != value.Revision {
+		t.Fatalf("the claim records the write at revision %d, want the bucket's %d", c.TaskWrittenRevision, value.Revision)
+	}
+	if text := h.wantPrompts(1)[0].Message; text != "the task" {
+		t.Fatalf("the worker took %q, want the task", text)
 	}
 }
 

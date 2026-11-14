@@ -1,9 +1,9 @@
 package supervise
 
-// The lines R7 of dispatch://INFRA-2811 asks for (task T14 of its plan): every turn line names its
-// cause, every value write names its number, its claim, its task's origin and whether the claim
-// had finished the last task written to it, the take's answer, its take-back and its finish are
-// each a line, and every message an operator and the cost reading search for is pinned.
+// The lines R7 of dispatch://INFRA-2811 asks for: every turn line names its cause, every value
+// write names its number, its claim, its task's origin and whether the claim had finished the last
+// task written to it, the take's answer, its take-back and its finish are each a line, and every
+// message an operator and the cost reading search for is pinned.
 
 import (
 	"log/slog"
@@ -39,7 +39,7 @@ func wantAttr(t *testing.T, r loggedRecord, key, want string) {
 // A turn line names its cause: the number of the accepted take the turn started for, or none at
 // all. The take's turn names its task when it starts and when it ends; a turn after it that no
 // take started — an Envoy notice, the worker's own — carries no task key on either line, and no
-// turn line names a delivery any more.
+// turn line names a delivery.
 func TestTurnLineNamesTheTakesNumberOrNoCause(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -227,7 +227,7 @@ func TestTurnLogPinnedMessagesAreUnchanged(t *testing.T) {
 }
 
 // Both charge lines name the wait the charge is for, beside the bound that wait waited: the first
-// wait's and the second's, and none for a refused adoption, which is charged at the shim's answer.
+// wait's and the second's, and 0s for a refused adoption, which is charged at the shim's answer.
 func TestChargeLogNamesItsWaitAndBound(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

@@ -134,9 +134,7 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 	if m.deps.Timeouts.Take <= 0 || m.awaitsAct || p == nil || p.taken() || c.TaskWrittenRevision == 0 {
 		return firstWait{}, false
 	}
-	switch c.State {
-	case StateReady, StateIdle, StateWorking:
-	default:
+	if !SaidReady(c.State) {
 		return firstWait{}, false
 	}
 	written := firstWait{epoch: c.TaskWrittenEpoch, revision: c.TaskWrittenRevision}
@@ -144,13 +142,11 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 		written.unseen = true
 		return written, true
 	}
-	if c.State == StateWorking || c.TaskTakeState != "" || m.claimHold() != "" {
+	if c.TaskTakeState != "" || m.claimHold() != "" {
 		return firstWait{}, false
 	}
-	if m.adopts(*p) {
-		if _, inTurn := m.issueInTurn(); inTurn {
-			return firstWait{}, false
-		}
+	if _, inTurn := m.adoptionWaits(); inTurn {
+		return firstWait{}, false
 	}
 	return written, true
 }
@@ -161,11 +157,6 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 func (m *Machine) secondWaitNow() (time.Time, bool) {
 	p := m.claim.Pending
 	if m.deps.Timeouts.TurnStart <= 0 || m.awaitsAct || p == nil || !p.awaitsTurn() {
-		return time.Time{}, false
-	}
-	switch m.claim.State {
-	case StateReady, StateIdle:
-	default:
 		return time.Time{}, false
 	}
 	if m.claimHold() != "" {
@@ -233,9 +224,8 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	if err := m.takeBack(ctx, WaitTurnStart); err != nil {
 		return err
 	}
-	if m.claim.State != StateReady && m.claim.State != StateIdle {
-		return nil
-	}
+	// A charge that retired the process leaves a claim no take can reach, which offerPending's
+	// holds refuse (claimHold), so the value is written again only where the process stays.
 	return m.offerPending(ctx)
 }
 

@@ -27,8 +27,9 @@ const (
 	// the repository root is four directories up.
 	taskCostPage = "../../../../docs/site/src/content/docs/legion/task-delivery-cost.md"
 	// taskCostSample is the sample log the page's examples read, from this package's directory,
-	// and taskCostSampleFromRoot the same file as the page names it, from the repository root.
-	taskCostSample         = "testdata/task-cost.log"
+	// and taskCostSampleFromRoot the same file as the page names it, from the repository root. It
+	// is named .jsonl, the daemon's JSON lines, because the repository's .gitignore ignores *.log.
+	taskCostSample         = "testdata/task-cost.jsonl"
 	taskCostSampleFromRoot = "packages/daemon/internal/supervise/" + taskCostSample
 	// taskCostCommand is the command the page gives in one fenced block.
 	taskCostCommand = "kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost --from <from> --to <to> [--claim <token>]"
@@ -414,7 +415,9 @@ func costLogLine(t *testing.T, at time.Time, msg, claim string, attrs ...any) st
 // worker whose turn began within the second bound after its take, a resume written to a claim
 // that had finished its last task in its session, and a number taken twice for one time owed. A
 // repeated answer from the record is no second take, a take-back opens a second time owed, and a
-// silence repair's write to a waiting claim is no resume.
+// silence repair's write to a waiting claim is no resume. The charges are counted by wait, "none"
+// for a line that names no wait, and a charge at the limit that retired the process is counted
+// among the retirements too; a charge made under no take fails no verdict.
 func TestTaskCostLogVerdictsListWhatFailsThem(t *testing.T) {
 	const claim = "legion-infra-infra-2811-tester"
 	at := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
@@ -422,9 +425,13 @@ func TestTaskCostLogVerdictsListWhatFailsThem(t *testing.T) {
 		return costLogLine(t, at.Add(offset), valueWrittenLine, claim, "task", task, "origin", origin, "finished", finished, "cause", TaskValueQueued)
 	}
 	accepted := func(offset time.Duration, task uint64, repeat bool) string {
-		return costLogLine(t, at.Add(offset), takeAnsweredLine, claim, "task", task, "outcome", "accepted", "hold", "", "repeat", repeat)
+		return costLogLine(t, at.Add(offset), takeAnsweredLine, claim, "task", task, "outcome", TakeOutcomeAccepted, "hold", "", "repeat", repeat)
 	}
 	lines := []string{
+		// Before any task: a charge that names no wait, as an older daemon's line does, and a
+		// retirement at the limit.
+		costLogLine(t, at, promptFailureLine, claim),
+		costLogLine(t, at, promptRetiredLine, claim, "wait", WaitAdoption),
 		// Task 1: an accepted take charged five seconds after it, inside its bound, whose turn
 		// began thirty seconds after it.
 		written(0, 1, OriginPhaseStart, false),
@@ -452,6 +459,9 @@ func TestTaskCostLogVerdictsListWhatFailsThem(t *testing.T) {
 	if len(cost.ChargedWithinBound) != 1 || !strings.HasPrefix(cost.ChargedWithinBound[0], claim+" task 1: taken 2026-11-14T09:00:01.000Z, a turn started 2026-11-14T09:00:31.000Z") {
 		t.Fatalf("the first verdict fails on %q, want task 1's charge with the turn that began inside its bound", cost.ChargedWithinBound)
 	}
+	if want := map[string]int{"none": 1, WaitAdoption: 1, WaitTurnStart: 1}; !maps.Equal(cost.ChargesByWait, want) || cost.Retirements != 1 {
+		t.Errorf("charges by wait %v and %d retirements, want %v and the one retirement", cost.ChargesByWait, cost.Retirements, want)
+	}
 	if want := []string{claim + " task 2: written 2026-11-14T09:02:00.000Z"}; !slices.Equal(cost.ResumeToFinished, want) {
 		t.Errorf("the resume verdict fails on %q, want %q", cost.ResumeToFinished, want)
 	}
@@ -463,10 +473,37 @@ func TestTaskCostLogVerdictsListWhatFailsThem(t *testing.T) {
 		"verdict: no charge of a worker whose turn began within the second bound after its take: fail\n  " + cost.ChargedWithinBound[0] + "\n",
 		"verdict: no write of origin resume to a claim that finished its last task in its session: fail\n  " + claim + " task 2:",
 		"verdict: each number taken once for each time the record owed it: fail\n  " + claim + " task 2: taken 2 times, owed 1\n",
+		"retirements: 1\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the reading prints\n%s\nwhich does not hold %q", text, want)
 		}
+	}
+}
+
+// A take stands only for the task it took. A queue that replaces a task whose turn has started
+// retires it with neither a take-back nor a finish line (retirePending), so the newer number's
+// write is what ends the older take's time owed. A charge of the first wait on the newer number is
+// then made under no take, and the older task's own turn is no turn within its bound.
+func TestTaskCostLogEndsATakeWhenANewerNumberIsWritten(t *testing.T) {
+	const claim = "legion-infra-infra-2811-tester"
+	at := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+	lines := []string{
+		costLogLine(t, at, valueWrittenLine, claim, "task", 1, "origin", OriginPhaseStart, "finished", false, "cause", TaskValueQueued),
+		costLogLine(t, at.Add(time.Second), takeAnsweredLine, claim, "task", 1, "outcome", TakeOutcomeAccepted, "hold", "", "repeat", false),
+		costLogLine(t, at.Add(2*time.Second), turnStartedLine, claim, "generation", 1, "task", 1),
+		costLogLine(t, at.Add(5*time.Minute), valueWrittenLine, claim, "task", 2, "origin", OriginPhaseStart, "finished", false, "cause", TaskValueQueued),
+		costLogLine(t, at.Add(6*time.Minute), promptFailureLine, claim, "wait", WaitTake, "bound", int64(time.Minute)),
+	}
+	cost, err := ReadTaskCost(strings.NewReader(strings.Join(lines, "\n")+"\n"), at, at.Add(time.Hour), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(cost.ChargesByWait, map[string]int{WaitTake: 1}) {
+		t.Fatalf("charges by wait %v, want the one charge of the first wait", cost.ChargesByWait)
+	}
+	if len(cost.ChargedWithinBound) != 0 {
+		t.Errorf("the first verdict fails on %q, want the charge on task 2 held to no take of task 1", cost.ChargedWithinBound)
 	}
 }
 

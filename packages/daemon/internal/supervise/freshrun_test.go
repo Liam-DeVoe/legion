@@ -5,7 +5,7 @@ package supervise
 // whole testing round in that turn, and its handoff_complete was refused 409 HANDOFF_NO_RUN —
 // "this claim has taken none" — because the daemon's phase task had not been delivered yet.
 //
-// A task is taken now, and a turn before the take reads no text of it: the claim answers for no
+// A task is taken, and a turn before the take reads no text of it: the claim answers for no
 // run of a task it holds untaken (serving's rule 3), and the completion route's own fallback is
 // what credits such a worker's completion to a held task of its issue's current run and phase
 // (api/handoff.go). What this pins of the machine is that half, and that the task the issue has
@@ -18,15 +18,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-func TestAFreshClaimsFirstTurnIsCreditedTheTaskTheDaemonHasNotSentYet(t *testing.T) {
-	h := newBareHarness(t)
+func TestAFreshClaimsFirstTurnServesNoRunAndTheTaskIsDroppedOnceThePhaseLeft(t *testing.T) {
 	issuePhase := phase.Testing
 	generation := uint64(0)
-	h.deps.PhaseHolds = func(_ context.Context, _ string, p phase.Phase, run uint64) (bool, error) {
-		return p == issuePhase && run == generation, nil
-	}
-	h.store.PutClaim(h.ctx, queuedClaim())
-	h.start(queuedClaim())
+	h := newHarnessOf(t, queuedClaim(), func(d *Deps) {
+		d.PhaseHolds = func(_ context.Context, _ string, p phase.Phase, run uint64) (bool, error) {
+			return p == issuePhase && run == generation, nil
+		}
+	})
 	h.manualTakes()
 	h.reach(StateReady)
 

@@ -174,9 +174,9 @@ type wake struct {
 // is not cosmetic: the outbox's start row delivers its task after the launch call, and a task
 // delivered to a claim left failed is a named ignore, while one delivered to a claim left
 // suspended launches it a second time (deliverResuming). At launching the task is queued
-// (deliverLater) and goes at the next ready. A claim that still records its process is left
-// exactly as it is, so a restart never finds it launching with a live process; the launch lets
-// that process go when its turn comes (launchNow).
+// (deliver), and the next process's worker takes it once it is ready. A claim that still records
+// its process is left exactly as it is, so a restart never finds it launching with a live
+// process; the launch lets that process go when its turn comes (launchNow).
 //
 // Exempt is the request saying so (exemptWake) or the claim being the project controller's: a
 // death, a stale address or a displaced pod reaches a launch through displaced and repoint with
@@ -332,11 +332,11 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 //     that starts a process writes the mark (wake.pluginMark, launchNow).
 //   - A turn the process it replaces may have started is taken back first (interrupted), exactly
 //     as replaceProcess takes one back before it relaunches. The gate let this wake park over a
-//     live process, and that process can have confirmed a task since: letting it go without the
-//     take-back would leave a confirmed task in a launching claim, which settle retires as served
-//     though no turn of it ever finished (retirePending). The other half of that race is a
-//     take accepted inside the wait, which claimHold refuses for as long as a launch waits
-//     over the process it would reach (launchWaits, take.go).
+//     live process, and that process can have taken a task since: letting it go without the
+//     take-back would leave the task taken in a launching claim, where settle finishes a task
+//     whose turn started by its end frame though the turn never finished (finishTask). The
+//     other half of that race is a take accepted inside the wait, which claimHold refuses for
+//     as long as a launch waits over the process it would reach (launchWaits, take.go).
 func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	m.wake = nil
@@ -411,18 +411,19 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // the sweep's own stale-plugin pass raises for a claim that is still stale when it next reads
 // it.
 //
-// The difference between the two steps is what the store is reached for: only a delivery a turn
-// has confirmed is taken back (interrupted), a turn is confirmed in a ready or idle claim
-// alone, and the confirmation itself leaves that claim working — the table ignores a turn start
-// in every state a process is still coming up in (turnStarted, unready), and no live claim goes
-// back to one of them (helloed). So the claim at the second step's return is working or idle,
-// which calls for neither the boot interval nor the registration deadline a park takes from a
-// claim still coming up; its confirmed task waits on no turn bound, because the confirmation
-// disarms that bound where it sets ConfirmedAt (confirm); and the probe interval an uncertain
-// answer may have armed is one the sweep's next observation arms again (observe, judge). What
-// such a claim is left without is the relaunch this wake held, which is what the lifecycle
-// refusal leaves owing too: the next report of the process, or the sweep's own stale-plugin
-// pass, raises one again.
+// The difference between the two steps is what the store is reached for: only a task a take
+// holds is taken back (interrupted, Delivery.taken), and a take is accepted in a ready or idle
+// claim alone, whose turn's start then moves it to working — the table refuses a take and ignores
+// a turn start in every state a process is still coming up in (takeNotReady, turnStarted,
+// unready), and no live claim goes back to one of them (helloed). So the claim at the second
+// step's return is ready, idle or working, which calls for neither the boot interval nor the
+// registration deadline a park takes from a claim still coming up. What a take of its task waits
+// on is not the park's either: the second wait is armed again for the claim this decision leaves
+// (armWaits, TimerTurnStart), and the end-frame bound is one the park never disarms
+// (TimerFinish). The probe interval an uncertain answer may have armed is one the sweep's next
+// observation arms again (observe, judge). What such a claim is left without is the relaunch
+// this wake held, which is what the lifecycle refusal leaves owing too: the next report of the
+// process, or the sweep's own stale-plugin pass, raises one again.
 func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error {
 	if waiting.kind == WakePluginRefresh && m.refreshOverturned() {
 		m.log.Info("supervise: the fact this claim's plugin refresh was raised for is gone; its relaunch is left to the next stale-plugin pass",
@@ -578,17 +579,17 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // (Handle). Both halves of what the operator is owed hold only this way. A person is waiting on
 // the task they have just given the claim, so it may not wait out a paced turn that is tens of
 // minutes away in a wave; and the task may not reach the process that launch is about to let go,
-// since the launch would kill the turn it had just begun and settle would retire the task as
-// served (claimHold's launchWaits, retirePending). Running the launch here leaves the claim
-// exactly where an unpaced daemon's would have left it — launching, over a process let go, with
-// the next one's timers armed — so the row the task then reaches queues it for the process this
-// launch starts (deliverLater), and it goes at that process's ready.
+// since the launch would cut off the turn it had just begun (claimHold's launchWaits). Running
+// the launch here leaves the claim exactly where an unpaced daemon's would have left it —
+// launching, over a process let go, with the next one's timers armed — so the row the task then
+// reaches queues it for the process this launch starts (deliver), and that process's worker
+// takes it once it is ready.
 //
 // Dropping the wake instead would leave the claim recording a process nothing retires: the park
-// disarmed that process's boot interval, registration deadline, probe interval and turn wait
-// (parkWake), the launch that was to replace it would be gone, and every report of it decides
-// nothing while no launch waits only because one does (judge). The next report of that process
-// would charge another launch failure, the death it already charged excepted (died).
+// disarmed that process's boot interval, registration deadline and probe interval (parkWake),
+// the launch that was to replace it would be gone, and every report of it decides nothing while
+// no launch waits only because one does (judge). The next report of that process would charge
+// another launch failure, the death it already charged excepted (died).
 //
 // Three things it does not touch. A request the table refuses or ignores decides nothing, so it
 // starts no launch either: the row is read here, before anything runs, exactly as Handle reads

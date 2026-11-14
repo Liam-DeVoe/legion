@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -305,4 +306,98 @@ func TestTheReportsSurviveARestartAndTheRunGoesOnFromThem(t *testing.T) {
 	h.wantRefusedRun(2)
 	h.report(3, true, "refused after the restart")
 	h.wantState(StateFailed)
+}
+
+// repeatReport sends the turn-outcome report r again, as the worker's plugin sends a report whose
+// first attempt had no answer, and fails the test on an error.
+func (h *harness) repeatReport(r RequestTurnOutcome) {
+	h.t.Helper()
+	if err := h.m.Handle(h.ctx, r); err != nil {
+		h.t.Fatalf("send the report of task %d again: %v", r.Task, err)
+	}
+	h.m.Wait()
+}
+
+// A report the worker's plugin sends again, because a daemon restart cut off the answer to its
+// first attempt, is applied once. The first attempt took the task back after a provider error.
+// The restart dropped the ladder's wait, so the restarted daemon gives the task again at the
+// shim's hello, and the worker takes it. The repeat must not take that take back: the run of
+// provider errors and the ladder stay at one, and the take's own turn finishes the task.
+func TestTurnOutcomeRepeatedAfterARestartIsAppliedOnce(t *testing.T) {
+	h := workingClaim(t)
+	number := h.pending().Number
+	pe := ProviderError{Message: "overloaded_error", Status: 529}
+	h.errorTurn(pe)
+	first := RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+		Task: number, ProviderError: &pe}
+
+	h.restart()
+	h.connect()
+	h.wantPrompts(2)
+	if p := h.pending(); !p.awaitsTurn() || p.Number != number {
+		t.Fatalf("after the restart the task is %+v, want task %d taken again and its turn not started", p, number)
+	}
+
+	h.repeatReport(first)
+	if p := h.pending(); !p.awaitsTurn() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
+		t.Fatalf("after the repeated report the task is %+v with a run of %d provider errors, want the take standing, one retry and a run of one",
+			p, h.claim().ProviderErrorRun)
+	}
+	if lines := h.logs.lines("a turn's report repeats one already applied", "task="); len(lines) != 1 {
+		t.Errorf("the lines that say the report was a repeat are %q, want one", lines)
+	}
+
+	h.must(StreamTurnStart{Claim: h.token})
+	h.must(StreamTurnEnd{Claim: h.token})
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("pending %+v after the take's own turn was reported, want task %d finished", p, number)
+	}
+	if run := h.claim().ProviderErrorRun; run != 0 {
+		t.Fatalf("the run of provider errors is %d after a turn with none, want 0", run)
+	}
+}
+
+// A report whose first attempt the store did not write is applied in full when the worker's
+// plugin sends it again: the failed write ended the decision before it reached the task, so the
+// report sent again is its first application, not a repeat. That holds in the daemon whose write
+// failed and in a daemon restarted after the write owed was made, which reads the mark back from
+// the window.
+func TestTurnOutcomeRepeatedAfterItsWriteFailedIsApplied(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in the same daemon", true: "after a restart"}[restart], func(t *testing.T) {
+			h := workingClaim(t)
+			number := h.pending().Number
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			h.worker.sequence++
+			report := RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+				Task: number, ProviderError: &ProviderError{Message: "overloaded_error", Status: 529}}
+
+			h.store.fail("PutClaim", errBoom)
+			if err := h.m.Handle(h.ctx, report); !errors.Is(err, errBoom) {
+				t.Fatalf("the report whose write failed = %v, want %v", err, errBoom)
+			}
+			h.m.Wait()
+			h.store.fail("PutClaim", nil)
+			if p := h.pending(); !p.turnStarted() || h.claim().ProviderErrorRun != 0 {
+				t.Fatalf("after the failed write the task is %+v with a run of %d, want it still taken and no provider error counted",
+					p, h.claim().ProviderErrorRun)
+			}
+			if restart {
+				h.seen()
+				if kept := h.store.load(h.token).TurnOutcomes; len(kept) != 1 || !kept[0].Unapplied {
+					t.Fatalf("the store keeps %+v once the owed write was made, want the report marked unapplied", kept)
+				}
+				h.restart()
+			}
+
+			h.repeatReport(report)
+			if p := h.pending(); p.taken() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
+				t.Fatalf("after the report was sent again the task is %+v with a run of %d, want it taken back once and a run of one",
+					p, h.claim().ProviderErrorRun)
+			}
+			if kept := h.store.load(h.token).TurnOutcomes; len(kept) != 1 || kept[0].Unapplied {
+				t.Fatalf("the store keeps %+v, want the report applied", kept)
+			}
+		})
+	}
 }

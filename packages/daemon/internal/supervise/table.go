@@ -511,9 +511,11 @@ type RequestExit struct {
 // ended in, nil for none, which keeps the task under its number and starts the ladder's wait
 // (providerErrored).
 //
-// Neither is fenced. A report naming a generation the claim has left is not stale: it is a turn of
-// that generation, which belongs in its own place in the order the run is derived in, and the
-// secret the route authenticates is the current registration's either way.
+// Neither is fenced by generation. A report naming a generation the claim has left is not stale:
+// it is a turn of that generation, which belongs in its own place in the order the run is derived
+// in, and the secret the route authenticates is the current registration's either way. What is
+// fenced is a repeat: a report under a key the window already holds, from an attempt that was
+// applied, changes nothing more (turnOutcome).
 type RequestTurnOutcome struct {
 	Claim         claim.Token
 	Generation    uint64
@@ -1003,13 +1005,13 @@ func fillTable(t *builder) {
 	// claim can hold an open round in.
 	inRound := []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected,
 		StateRegistered, StateReady, StateWorking, StateIdle, StateSuspended}
-	t.row(onPodUpdateOpen, "record the update round, and send the task the old round's answer held; the sweep publishes the round's ask", openPodUpdate,
-		[]ClaimState{StateWorking}, inRound...)
+	t.row(onPodUpdateOpen, "record the update round, and offer the task the old round's answer held; the sweep publishes the round's ask", openPodUpdate,
+		nil, inRound...)
 	t.ignore(onPodUpdateOpen, "the claim failed; what happens to it next is not the supervisor's decision, and no process of it would read the ask", StateFailed)
 	t.ignore(onPodUpdateOpen, "the claim is retired; nothing of it runs on the pod being replaced", StateRetired)
 
 	t.row(onPodUpdateEnded, "the update round is over: clear it, and relaunch the process or release the task it held", endPodUpdate,
-		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, append(slices.Clone(inRound), StateFailed)...)
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, append(slices.Clone(inRound), StateFailed)...)
 	t.ignore(onPodUpdateEnded, "the claim is retired; its update round ended with it", StateRetired)
 
 	// The worker's answer to the round's ask: its work is pushed and its process may be
@@ -1041,8 +1043,8 @@ func fillTable(t *builder) {
 	t.ignore(onRegister, failedClaim, StateFailed)
 	t.ignore(onRegister, retiredClaim, StateRetired)
 
-	t.row(onReady, "the agent is ready", ready, []ClaimState{StateReady, StateWorking, StateSuspended}, StateRegistered)
-	t.row(onReady, "the agent said ready again", reready, []ClaimState{StateWorking}, StateReady, StateIdle, StateWorking)
+	t.row(onReady, "the agent is ready", ready, []ClaimState{StateReady, StateSuspended}, StateRegistered)
+	t.row(onReady, "the agent said ready again", reready, nil, StateReady, StateIdle, StateWorking)
 	t.ignore(onReady, notRegistered, booting...)
 	t.ignore(onReady, "no launch has minted a boot token", StateQueued)
 	t.ignore(onReady, "the previous launch's pane is still uncertain", StateLaunchUncertain)
@@ -1414,8 +1416,8 @@ func toolStepped(m *Machine, ctx context.Context, ev Event) error {
 // was replaced while the frame waited. The shim's replay of the frames it held while no daemon
 // was attached is not one of them — it arrives on the next connection, which is the claim's live
 // one, so those frames are stamped at receipt (store's PutClaimStep). Connections are compared
-// by the order they were registered in, as a replayed refusal is (takesBackConfirmed): the order
-// the machine handles their events in says nothing.
+// by the order they were registered in (ConnSequence against the live connection's Sequence):
+// the order the machine handles their events in says nothing.
 func (m *Machine) staleStep(s StreamToolStep) bool {
 	conn, connected := m.deps.Conns.Conn(m.claim.Token)
 	return !connected || s.ConnSequence < conn.Sequence()
@@ -1463,14 +1465,15 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 // runs what was held for the turn (afterTurn). A suspension held for the turn ends the process
 // before any report could come, so the task whose turn this was is finished first, by this end.
 //
-// A stale-plugin relaunch held for this turn (refreshPlugin) runs here, before the queued task's
-// send: the claim's process speaks a plugin contract that cannot answer an update round, so it is
-// replaced now that its worker has finished the turn, and the task waiting behind it goes to the
-// process the relaunch starts rather than to the one it replaces. The settlement runs first, so
-// the turn's own finished task retires before the relaunch rather than being taken back and sent
+// A stale-plugin relaunch held for this turn (refreshPlugin) runs once the turn is over for its
+// task too (afterTurn): here for a turn that was no task's, and at the task's finish for a task's
+// turn. The claim's process speaks a plugin contract that cannot answer an update round, so it is
+// replaced now that its worker has finished the turn, and the task waiting behind it is taken by
+// the process the relaunch starts rather than by the one it replaces. Waiting for the finish is
+// what has the turn's own task retire before the relaunch rather than be taken back and given
 // again to a worker that already did it. refreshPlugin is what decides it, not relaunchStale: by
-// now a registration may have recorded this daemon's contract, and the claim's state and held
-// suspension are what they are at this moment, not what they were when the sweep found it.
+// then a registration may have recorded this daemon's contract, and the claim's state and held
+// suspension are what they are at that moment, not what they were when the sweep found it.
 //
 // That re-decision can come to nothing at all — the registration above is exactly the case
 // (holdStaleRelaunch) — so the offer runs after it rather than in its place: a take left refused
@@ -2149,7 +2152,7 @@ func (m *Machine) dropUpdateTask(ctx context.Context) error {
 	}
 	m.log.Info("supervise: the update round is over for this claim; the ask an older daemon queued as a task and nothing took is dropped",
 		"round", m.claim.UpdateRound, "task", m.claim.Pending.Number, "delivery", m.claim.Pending.ID)
-	return m.dropPending(ctx, "dropped")
+	return m.dropPending(ctx, valueDeletedDropped)
 }
 
 // endPodUpdate is the round over for this claim (PodUpdateEnded): the ask it left unread goes,

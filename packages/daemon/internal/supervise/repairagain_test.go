@@ -46,12 +46,11 @@ func TestWhenTheRepairFailsAgainTheDecisionStillGoesOn(t *testing.T) {
 	}
 }
 
-// A turn start that confirms a task writes the claim and the delivery in one transaction, so a
+// The start of an accepted take's turn writes the claim and the delivery in one transaction, so a
 // failure leaves both unwritten and both owed. The repair makes that one write again — not the
-// claim alone, which would leave a working claim whose delivery is unconfirmed, and not two
-// writes, which would leave the row in between — and it makes the report the confirming decision
-// owed. Before this change that half of the turn start had its delivery written again by settle
-// and never made its report, so the daemon was never told the woken role took its work.
+// claim alone, which would leave a working claim whose delivery still awaits its turn, and not two
+// writes, which would leave the row in between — and it makes the report the turn start owed, so
+// the daemon is told the woken role took its work.
 func TestAConfirmOwedWriteIsMadeWholeWithItsReport(t *testing.T) {
 	h, counted := newCountedHarness(t)
 	reports := watchReports(h)
@@ -88,8 +87,8 @@ func TestAConfirmOwedWriteIsMadeWholeWithItsReport(t *testing.T) {
 	if stored.State != StateWorking {
 		t.Fatalf("the repaired row reads %s, want working", stored.State)
 	}
-	if stored.Pending == nil || stored.Pending.ID != delivery || stored.Pending.ConfirmedAt.IsZero() {
-		t.Fatalf("the stored delivery is %+v, want %s written confirmed beside the working claim", stored.Pending, delivery)
+	if stored.Pending == nil || stored.Pending.ID != delivery || !stored.Pending.turnStarted() {
+		t.Fatalf("the stored delivery is %+v, want %s written with its turn started beside the working claim", stored.Pending, delivery)
 	}
 	if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady, StateWorking}) {
 		t.Fatalf("the daemon was told %v, want the confirmation's owed working made when its write landed", seen)
