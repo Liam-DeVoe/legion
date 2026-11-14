@@ -52,12 +52,6 @@
 // marker's effect, then read). Only when none of the three reaches the code does a test hold a
 // span, through Span or Quiet, whose why says which of them does not reach it and why. They refuse
 // an empty why.
-//
-// # Kept until every caller moves
-//
-// WithinPolling, Holds, Bounded and Poll take or name a bound or a pace of the caller's, which this
-// package no longer offers. They stay only until every caller has moved to the waits above, and
-// then they go.
 package testwait
 
 import (
@@ -390,52 +384,4 @@ func announce(name, what string, reading func() string) string {
 func gaveUp(t testing.TB, what string, reading func() string) {
 	t.Helper()
 	t.Fatalf("%s", announce(t.Name(), what, reading))
-}
-
-// Poll is the package's pace, 10 ms. It is kept only until every caller of WithinPolling and
-// Holds has moved to Eventually or Until, which take no pace.
-const Poll = pace
-
-// Bounded is bound, or what is left of the test binary's own deadline less margin when that is
-// sooner. It is kept only until every caller has moved to Eventually, Until, Receive, Next or
-// Context, whose one bound is the binary's deadline less this package's own margin.
-func Bounded(t *testing.T, bound, margin time.Duration) time.Duration {
-	if testDeadline, ok := t.Deadline(); ok {
-		if left := time.Until(testDeadline) - margin; left < bound {
-			bound = left
-		}
-	}
-	return bound
-}
-
-// WithinPolling waits for condition under the caller's own bound and its own pace, failing the
-// test with what it waited for when the bound passes. It is kept only until every caller has moved
-// to Eventually or Until, which take neither.
-func WithinPolling(t *testing.T, bound, poll time.Duration, what string, condition func() bool) {
-	t.Helper()
-	if waitUntil(time.Now().Add(bound), poll, condition) {
-		return
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
-
-// Holds reports whether condition held before bound passed, asked every poll, and fails nothing
-// itself. It is kept only until every caller has moved to Until, whose reading carries the
-// failure text such a caller builds.
-func Holds(bound, poll time.Duration, condition func() bool) bool {
-	return waitUntil(time.Now().Add(bound), poll, condition)
-}
-
-// waitUntil asks condition every poll until it holds or deadline passes, reporting which. It
-// asks once more after the deadline, so a condition that came true during the last sleep is not
-// reported false: the alternative loses a race against the thing it waits for, and the cost is
-// one more question on the path where the wait has already failed.
-func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bool {
-	for time.Now().Before(deadline) {
-		if condition() {
-			return true
-		}
-		time.Sleep(poll)
-	}
-	return condition()
 }
