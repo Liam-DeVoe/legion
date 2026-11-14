@@ -7075,8 +7075,9 @@ console.log(JSON.stringify(args));
     // confirmed again rather than going on unconfirmed for the life of the connection. The open
     // is a session switch's relay subject, one of the two subjects the connection still holds.
     process.env.ENVOY_SUBSCRIBE_FLUSH_TIMEOUT_MS = "50";
-    // Half a second, so the first background ask comes long after the switch this row counts
-    // round trips across, and the count is the switch's own.
+    // The background confirmation sleeps this long before each ask. The row runs on Bun's fake
+    // clock, so no ask comes while the clock is held, and the count across the switch below is the
+    // switch's own; the row moves the clock past the sleep once the server answers again.
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "500";
     let live = sessionContext("ses_background_mark");
     let stop: (() => Promise<unknown>) | undefined;
@@ -7088,17 +7089,33 @@ console.log(JSON.stringify(args));
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, live);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
-      await fixture.handlers.get("session_start")?.({}, live);
+      jest.useFakeTimers();
+      // The start's first open waits out its 50 ms bound for an answer the connection never
+      // gives, which marks the connection and starts the background confirmation's sleep. The
+      // clock moves 10 ms at a time until the start returns, well short of that sleep.
+      let startReturned = false;
+      const started = Promise.resolve(fixture.handlers.get("session_start")?.({}, live)).finally(
+        () => {
+          startReturned = true;
+        }
+      );
+      while (!startReturned) {
+        await settle();
+        jest.advanceTimersByTime(10);
+      }
+      await started;
 
       natsState.flushes.length = 0;
       live = sessionContext("ses_background_mark_b");
       await fixture.handlers.get("session_switch")?.({}, live);
       expect(natsState.flushes.length).toBe(0);
 
-      // The server answers again. The background confirmation, and nothing else, notices.
+      // The server answers again. The background confirmation, and nothing else, notices: its
+      // sleep ends on the clock, and its ask is answered.
       natsState.heldFlush = undefined;
-      await until("the background confirmation's ask", () => natsState.flushes.length > 0);
+      jest.advanceTimersByTime(500);
       await settle();
+      expect(natsState.flushes.length).toBeGreaterThan(0);
       natsState.flushes.length = 0;
       live = sessionContext("ses_background_mark_c");
       await fixture.handlers.get("session_switch")?.({}, live);
@@ -7106,6 +7123,8 @@ console.log(JSON.stringify(args));
       expect(natsState.flushes.length).toBeGreaterThan(0);
     } finally {
       natsState.heldFlush = undefined;
+      // The shutdown runs on the real clock, so nothing it waits for is held.
+      jest.useRealTimers();
       await stop?.();
       delete process.env.ENVOY_SUBSCRIBE_FLUSH_TIMEOUT_MS;
       delete process.env.ENVOY_RESUBSCRIBE_DELAY_MS;

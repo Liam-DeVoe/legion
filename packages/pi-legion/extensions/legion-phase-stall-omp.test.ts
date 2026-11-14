@@ -8,6 +8,7 @@ import {
   call,
   type LegionPane,
   type LegionPaneOptions,
+  type LegionPaneProgress,
   ompNatsGuard,
   type Reply,
   type Request,
@@ -57,6 +58,15 @@ function daemonRoutes(pane: LegionPane): string[] {
     .map((request) => request.path)
     .filter((requested) => requested.startsWith("/legion/") && requested !== ACTIVITY_ROUTE);
 }
+
+/** How many requests the pane has made to `route` so far: what a case's `settledWhen` reads. */
+function calls(pane: LegionPaneProgress, route: string): number {
+  return pane.requests.filter((request) => request.path === route).length;
+}
+
+const COMPLETE_ROUTE = "/legion/v1/handoff/complete";
+const STATE_ROUTE = "/legion/v1/state";
+const ASKS_ROUTE = "/api/v1/asks/open";
 
 /**
  * The reminder count each phase-stall entry recorded, with a repeat of the value before it
@@ -205,10 +215,10 @@ function legionToolDescription(request: Request): string {
 }
 
 /** How one pane differs from the implementer pane the phase-stall cases run: the runner's
- * `legion`, `quietMs`, `selfCheck` and environment, what the stand-in answers ahead of this
+ * `legion`, `settledWhen`, `selfCheck` and environment, what the stand-in answers ahead of this
  * file's own routes, and the stand-in's open-ask snapshot. */
 interface PaneOptions
-  extends Pick<LegionPaneOptions, "legion" | "quietMs" | "selfCheck" | "env" | "answer"> {
+  extends Pick<LegionPaneOptions, "legion" | "settledWhen" | "selfCheck" | "env" | "answer"> {
   /** The count the stand-in Dispatch's open-ask snapshot answers with. */
   readonly openAsks?: number;
   /** The held ask questions the stand-in returns in the session's open-ask snapshot. */
@@ -243,7 +253,7 @@ async function stallPane(
       prompt: "Implement STALL-2.",
       dispatch: true,
       legion: options.legion,
-      quietMs: options.quietMs,
+      settledWhen: options.settledWhen,
       selfCheck: options.selfCheck,
       env: {
         ...PANE_IDENTITY,
@@ -440,7 +450,13 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500", LEGION_STALL_ARCHITECT_AFTER: "2" },
-        quietMs: 6_000,
+        // The two reminders after the first come on the pane's own timer, each after its run has
+        // settled, so the run ends on the turn the completion leads to: the completion closed the
+        // phase, which leaves no reminder to follow that turn.
+        settledWhen: {
+          what: "the completion and the reply to its tool result, the fifth turn",
+          done: (progress) => calls(progress, COMPLETE_ROUTE) >= 1 && progress.turns().length >= 5,
+        },
       }
     );
 
@@ -491,7 +507,12 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_WAITING_MS: String(waitMs) },
-        quietMs: 4_000,
+        // The reminder comes on the pane's own timer once the wait is over, after its run has
+        // settled, so the run ends on the turn the completion leads to, which closed the phase.
+        settledWhen: {
+          what: "the completion and the reply to its tool result, the third turn",
+          done: (progress) => calls(progress, COMPLETE_ROUTE) >= 1 && progress.turns().length >= 3,
+        },
         answer: (url, body) => {
           seen.push({ path: url.pathname, body });
           return undefined;
@@ -587,7 +608,16 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500", LEGION_STALL_ARCHITECT_AFTER: "2" },
-        quietMs: 6_000,
+        // The reminders after the first come on the pane's own timer, each after its run has
+        // settled, so the run ends on the turn the completion leads to, once the listener has
+        // taken the notice: the completion closed the phase, which leaves no reminder to follow.
+        settledWhen: {
+          what: "the notice the listener took, the completion and the reply to its tool result",
+          done: (progress) =>
+            calls(progress, "/v1/messages/publish") >= 2 &&
+            calls(progress, COMPLETE_ROUTE) >= 1 &&
+            progress.turns().length >= 7,
+        },
         // No live session holds the architect's role the first time, as the listener answers
         // while that architect is between sessions; the second is taken.
         answer: (url) => {
@@ -646,7 +676,12 @@ test.skipIf(skip)(
           LEGION_STALL_ARCHITECT_AFTER: "3",
           LEGION_STALL_WAITING_MS: "600000",
         },
-        quietMs: 4_000,
+        // The reminders come on the pane's own timer, each after its run has settled, so the run
+        // ends on the sixth turn, whose WAITING line arms the next reminder ten minutes ahead.
+        settledWhen: {
+          what: "the sixth turn, whose WAITING line arms the next reminder ten minutes ahead",
+          done: (progress) => progress.turns().length >= 6,
+        },
       }
     );
 
@@ -678,14 +713,20 @@ test.skipIf(skip)(
         [{ type: "text", text: "Understood." }],
       ],
       {
-        quietMs: 4_000,
+        // The record check runs in `session_stop`, whose follow-up the host starts under the same
+        // run (the first case's three turns in one run), so the host ending the run after its one
+        // turn is its own word that the check started no continuation.
+        settledWhen: {
+          what: "the record check that read the phase moved on, after the prompt's turn",
+          done: (progress) => calls(progress, STATE_ROUTE) >= 1 && progress.turns().length >= 1,
+        },
         answer: (url) =>
           url.pathname === "/legion/v1/state" ? Response.json(MOVED_ON) : undefined,
       }
     );
 
-    // One turn, the prompt's own, and the wait proves no second: the record check read the
-    // phase as the reviewer's, so `session_stop` ran no continuation at all.
+    // One turn, the prompt's own, and no second: the record check read the phase as the
+    // reviewer's, so `session_stop` ran no continuation at all.
     expect(pane.turns()).toHaveLength(1);
     expect(pane.publishes()).toEqual([]);
     expect(pane.completions()).toEqual([]);
@@ -708,7 +749,19 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500" },
-        quietMs: 4_000,
+        // The timer fires once the second run has settled, and its record check is the stand-in's
+        // second state read. A reminder it sent anyway would start a run of its own after that
+        // read, which no record of the pane rules out, so a span follows the read.
+        settledWhen: {
+          what: "the timer's record check, after the continuation reminder's turn",
+          done: (progress) => reads >= 2 && progress.turns().length >= 2,
+          quiet: {
+            ms: 4_000,
+            why:
+              "a reminder the timer sent after its record check would start a run of its own, " +
+              "and the pane reports nothing that tells a dropped reminder from one on its way",
+          },
+        },
         answer: (url) => {
           if (url.pathname !== "/legion/v1/state") return undefined;
           reads += 1;
@@ -748,10 +801,27 @@ test.skipIf(skip)(
       // than as the gateway's "no reply scripted" refusal.
       [[{ type: "text", text: "Done." }], [{ type: "text", text: "Understood." }]],
       // An ordinary session, not a Legion pane: a Legion-driven one is excluded from the nudge.
-      { legion: false, openAsks: 0, selfCheck: "PROCEEDING", quietMs: 8_000 }
+      {
+        legion: false,
+        openAsks: 0,
+        selfCheck: "PROCEEDING",
+        settledWhen: {
+          what: "the run-end self-check and both open-ask reads, after the prompt's turn",
+          done: (progress) =>
+            progress.selfChecks().length >= 1 &&
+            calls(progress, ASKS_ROUTE) >= 2 &&
+            progress.turns().length >= 1,
+          quiet: {
+            ms: 8_000,
+            why:
+              "a nudge's steer starts its turn after the run's terminal agent_end, and a " +
+              "PROCEEDING verdict leaves no record the stand-in sees that no steer is coming",
+          },
+        },
+      }
     );
 
-    // One turn, and the wait proves no second: the user's own. The agent said it is not waiting
+    // One turn, and the span proves no second: the user's own. The agent said it is not waiting
     // on anyone, so the whole stop cost one hidden call the user never saw.
     expect(pane.turns()).toHaveLength(1);
     // Both entries loaded but no LEGION_* in the environment: a person's own session gets no
@@ -780,12 +850,24 @@ test.skipIf(skip)(
         legion: false,
         openAskQuestions: [heldQuestion],
         selfCheck: "WAITING",
-        quietMs: 8_000,
+        settledWhen: {
+          what: "the self-check, both open-ask reads and the one nudge continuation",
+          done: (progress) =>
+            progress.selfChecks().length >= 1 &&
+            calls(progress, ASKS_ROUTE) >= 2 &&
+            progress.turns().length >= 2,
+          quiet: {
+            ms: 8_000,
+            why:
+              "the continuation's own stop would run a second self-check after its run's " +
+              "terminal agent_end, and a stop that runs none leaves no record the stand-in sees",
+          },
+        },
       }
     );
 
     const turns = pane.turns();
-    // Two, and the wait proves no third: the user's turn, and the one nudge continuation.
+    // Two, and the span proves no third: the user's turn, and the one nudge continuation.
     expect(turns).toHaveLength(2);
     expect(userText(turns[0] as Request)).not.toContain("no open ask in Dispatch");
     expect(userText(turns[1] as Request)).toContain(
@@ -820,8 +902,15 @@ test.skipIf(skip)(
         [{ type: "text", text: "I started the build; I will be woken when it is done." }],
         [{ type: "text", text: "WAITING: nothing more." }],
       ],
-      // Longer than the job, so the pane settles on the woken turn rather than before it.
-      { quietMs: 12_000 }
+      // The job's end wakes the third turn after the second run has settled: the run ends on
+      // that turn, whose WAITING line arms the next reminder the default fifteen minutes ahead.
+      {
+        settledWhen: {
+          what: "the turn the background job's result wakes",
+          done: (progress) =>
+            progress.turns().some((turn) => userText(turn).includes("background-done")),
+        },
+      }
     );
 
     const turns = pane.turns();

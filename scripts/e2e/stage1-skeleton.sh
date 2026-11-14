@@ -61,20 +61,27 @@ cleanup() {
   return 0
 }
 
-# stop_daemon: $1 is how it was asked to stop. Bounded, and the exit status read and judged
-# (daemon.Run returns 0 on a cancelled context, so a non-zero status is a defect, not a stop).
+# daemon_exited is whether the daemon ($pid) has exited, for stop_daemon's wait_for.
+daemon_exited() {
+  kill -0 "$pid" 2>/dev/null || return 0
+  echo "the daemon ($pid) is still running"
+  return 1
+}
+# kill_daemon is stop_daemon's timeout_hook: SIGKILL on the way out of a wait the daemon never
+# ended, since a leaked daemon holds the port and, under $(...) or a pipe, the caller.
+kill_daemon() {
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  pid=
+}
+# stop_daemon: $1 is how it was asked to stop. It waits for the exit through wait_for, so a daemon
+# that ignores the stop fails the run by name at the guard's deadline, killed on the way out, and
+# then reads and judges the exit status (daemon.Run returns 0 on a cancelled context, so a
+# non-zero status is a defect, not a stop).
 stop_daemon() {
-  for i in $(seq 1 50); do
-    kill -0 "$pid" 2>/dev/null || break
-    # SIGKILL on the way out: a leaked daemon holds the port and, under $(...) or a pipe, the caller.
-    [ "$i" = 50 ] && {
-      echo "daemon ignored $1"
-      kill -KILL "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      exit 1
-    }
-    sleep 0.2
-  done
+  timeout_hook=kill_daemon
+  wait_for "the daemon ($pid) to exit on $1" daemon_exited
+  timeout_hook=
   st=0
   wait "$pid" || st=$?
   [ "$st" = 0 ] || {
