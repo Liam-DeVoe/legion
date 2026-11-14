@@ -66,12 +66,12 @@ expect.extend(reportableJestDomMatchers());
 // `e2e/__tests__` lane loads no preload at all, so there the flag is the only deadline those
 // files get. It cuts no deadline a row sets for itself, measured rather than assumed: a row
 // carrying `}, 5_000)` slept 1.2 s and passed under `bun test --timeout 200`, so a row's own
-// number wins over the flag whichever is larger. Rows that set one today are
-// `e2e/__tests__/compare-recordings-refusal.test.ts:28`, `stub-web-server.test.ts:43` and
-// `psql-session.test.ts:61,70` at 60 s, equal to the flag, and `MarkdownBody.test.tsx`'s 40 s,
-// above the 25 s wait that row must let run out. The list is not a superlative and is not
-// checked by anything: a row added tomorrow may set more, as dispatch://INFRA-1571 does with
-// a 90 s limit of its own. What lowering the flag would cut is every row that sets none.
+// number wins over the flag whichever is larger. That is why no row or hook under `web/src` sets
+// one, nor calls `setDefaultTimeout`: the wait budget below is read from the flag alone, so a
+// row that ran past it on a number of its own would outlive the deadline its waits end by. The
+// `e2e/__tests__` rows that set one today (`compare-recordings-refusal.test.ts`,
+// `stub-web-server.test.ts`, `psql-session.test.ts`) set 60 s, equal to the flag. What lowering
+// the flag would cut is every row of the command.
 //
 // The wait budget is set as each wait starts, from the row's own deadline. Every `waitFor` and
 // `findBy*` runs inside Testing Library's `asyncWrapper` and reads `asyncUtilTimeout` as the wait
