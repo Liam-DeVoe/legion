@@ -441,6 +441,7 @@ jobs:
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
+              - 'packages/envoy/internal/clock/*'
               - 'packages/envoy/internal/contracts/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
@@ -462,6 +463,8 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
+              # internal/testpg's template waits through it.
+              - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
@@ -495,6 +498,7 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/cistore/*'
+              - 'packages/envoy/internal/clock/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
@@ -579,6 +583,7 @@ jobs:
               - 'packages/daemon/internal/classify/*'
               - 'packages/daemon/internal/claudebridge/*'
               - 'packages/daemon/internal/claudelaunch/*'
+              - 'packages/daemon/internal/clock/*'
               - 'packages/daemon/internal/config/*'
               - 'packages/daemon/internal/controller/*'
               - 'packages/daemon/internal/credential/*'
@@ -661,6 +666,7 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/cistore/*'
+              - 'packages/envoy/internal/clock/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dedupe/*'
@@ -704,6 +710,8 @@ jobs:
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/cistore/*'
+              - 'packages/envoy/internal/clock/*'
+              - 'packages/envoy/internal/clock/clocktest/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/envconf/*'
@@ -726,6 +734,9 @@ jobs:
               - 'packages/envoy/internal/routing/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
+              # internal/dispatch/store/storetest clones each test's database from internal/testpg's
+              # template.
+              - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testsocks5/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
@@ -1354,6 +1365,8 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
+              # internal/testpg's template waits through it.
+              - 'packages/envoy/internal/testwait/*'
             # The dashboard's and the proof editor's fast checks (dispatch-ui): what their lint,
             # typecheck, unit tests and the dashboard's build and asset checks read. No Go and no
             # Dispatch server: the job runs neither.
@@ -1547,6 +1560,8 @@ jobs:
               # The race step runs the package under this sampler (the step's comment says why).
               - '.github/scripts/race_memory.py'
               - *go_workspace
+              - 'packages/envoy/internal/clock/*'
+              - 'packages/envoy/internal/clock/clocktest/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/contracts/testdata/**'
               - 'packages/envoy/internal/dispatch/accesslog/*'
@@ -1588,6 +1603,9 @@ jobs:
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/stacktest/*'
+              # internal/dispatch/store/storetest clones each test's database from internal/testpg's
+              # template.
+              - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # internal/dispatch/docs/approval_carry_test.go:26.
@@ -1645,6 +1663,7 @@ jobs:
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/brokertoken/brokertokentest/*'
               - 'packages/envoy/internal/bus/bustest/*'
+              - 'packages/envoy/internal/clock/clocktest/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/testdata/**'
               - 'packages/envoy/internal/dispatch/accesslog/*'
@@ -1657,6 +1676,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/architecture/notes/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
+              - 'packages/envoy/internal/dispatch/benchtime/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
               # The API's CI-reconcile passes route reads cireconcile's own record, so the soak's
               # Dispatch server compiles that package too (go list -deps ./cmd/listener).
@@ -1752,7 +1772,10 @@ jobs:
               # through brokertoken.
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/buildversion/*'
+              - 'packages/envoy/internal/clock/*'
+              - 'packages/envoy/internal/clock/clocktest/*'
               - 'packages/envoy/internal/cmdtest/*'
+              - 'packages/envoy/internal/dispatch/benchtime/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
@@ -4046,13 +4069,14 @@ jobs:
       # without one (.github/actions/install-uv).
       - uses: ./.github/actions/install-uv
 
-      # The daemon's NATS tests start testnats.Image and, for its grant test, Envoy's HubImage
-      # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
+      # The daemon's NATS tests run their servers in the test process. Its grant test,
+      # TestDaemonPermissionsOnRealServers, runs Envoy's two published NATS images, Image and
+      # HubImage (packages/envoy/testnatsimages), pulled first for the reason the action gives.
       - name: Pull the NATS test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
-            packages/daemon/internal/testnats/nats.go Image
+            packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
 
       # internal/launcher's role-namespace tests start each role generation in unprivileged user,
@@ -5879,7 +5903,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_e2e_local == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Its setup, the longest of 105 green runs up to 2026-11-14 at 56 s besides the two steps below,
+    # plus each script's guard: e2e-local.test.sh's 360 s and e2e-local.sh's 300 s, which each
+    # script carries with its reading. 716 s in all.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

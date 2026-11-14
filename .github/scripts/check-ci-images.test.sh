@@ -98,7 +98,7 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/docker" \
     "$root/.github/actions/pull-test-images" \
     "$root/packages/envoy/docker" "$root/packages/envoy/infra/host/heldportwrapper" \
-    "$root/packages/daemon/docker" "$root/packages/daemon/internal/testnats" \
+    "$root/packages/daemon/docker" \
     "$root/packages/envoy/internal/testnats" "$root/packages/envoy/internal/testpg" \
     "$root/packages/envoy/internal/tests3" "$root/packages/envoy-client/src/__tests__" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
@@ -185,8 +185,7 @@ FROM $REGISTRY@$BUN_SLIM AS plugin
 RUN bun install
 YAML
   local go_file
-  for go_file in packages/daemon/internal/testnats/nats.go \
-    packages/envoy/internal/testnats/nats.go packages/envoy/internal/testpg/testpg.go \
+  for go_file in packages/envoy/internal/testnats/nats.go packages/envoy/internal/testpg/testpg.go \
     packages/envoy/internal/tests3/seaweedfs.go; do
     cat > "$root/$go_file" <<YAML
 package testimage
