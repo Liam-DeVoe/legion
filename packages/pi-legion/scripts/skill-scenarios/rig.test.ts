@@ -1,5 +1,13 @@
 import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -2021,7 +2029,7 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
         `worker_repo=${RED_REPO}`,
         "services_env=$R/services.env",
         ': >"$services_env"',
-        'run_red_at_the_head "red-at-the-head-$2-s1-2" 2 3 1740000000 "$2"',
+        'run_red_at_the_head "trial-$2-s1-2" 2 3 1740000000 "$2"',
       ].join("\n"),
       [run, world]
     );
@@ -2089,6 +2097,7 @@ run_red_at_the_head() {
       [
         fn("fail"),
         fn("cmd_run"),
+        fn("run_prefix"),
         runStandIns,
         "work=$1",
         'mkdir -p "$work"',
@@ -2106,18 +2115,56 @@ run_red_at_the_head() {
   // name than the one it was named for.
   test("the run's name and directory carry its world, so two worlds keep their own runs", () => {
     const work = freshDir("red-run-work");
-    expect(run(work, "a", "1").stdout).toBe("red-at-the-head-a-s1-1: exit=0\n");
-    expect(run(work, "b", "1").stdout).toBe("red-at-the-head-b-s1-1: exit=0\n");
+    expect(run(work, "a", "1").stdout).toBe("trial-a-s1-1: exit=0\n");
+    expect(run(work, "b", "1").stdout).toBe("trial-b-s1-1: exit=0\n");
     expect(readFileSync(path.join(work, "calls"), "utf8")).toBe(
-      "run_red_at_the_head red-at-the-head-a-s1-1 1 3 1740000000 a\n" +
-        "run_red_at_the_head red-at-the-head-b-s1-1 1 3 1740000000 b\n"
+      "run_red_at_the_head trial-a-s1-1 1 3 1740000000 a\n" +
+        "run_red_at_the_head trial-b-s1-1 1 3 1740000000 b\n"
     );
-    expect(existsSync(path.join(work, "runs/red-at-the-head-a-s1-1"))).toBe(true);
-    expect(existsSync(path.join(work, "runs/red-at-the-head-b-s1-1"))).toBe(true);
+    expect(existsSync(path.join(work, "runs/trial-a-s1-1"))).toBe(true);
+    expect(existsSync(path.join(work, "runs/trial-b-s1-1"))).toBe(true);
+  });
+
+  // A red-at-the-head run's pane.env (base_env) holds every agent-visible path — HOME, TMPDIR,
+  // PATH and SKILL_SCENARIO_RUN — and each lives under the run directory, named by run_prefix.
+  // The prefix is `trial`, off the page's own name, so no such path names the page under test.
+  // Catches: a run directory, or a pane.env value, that names skills/legion-worker/references/
+  // red-at-the-head.md — which, in an agent-visible path, cues the change arm (119 of 120
+  // record-batch runs opened the page before any CI read).
+  test("no agent-visible path of a red-at-the-head run names the page it tests", () => {
+    const work = freshDir("red-pane-work");
+    const result = bash(
+      [
+        fn("fail"),
+        fn("base_env"),
+        fn("cmd_run"),
+        fn("run_prefix"),
+        'load_label() { P=$work/profiles/$1; mkdir -p "$P/home"; printf \'commit\\n\' >"$P/built-from"; }',
+        "on_exit() { :; }",
+        "run_red_at_the_head() { base_env; printf 'exit=0\\n' >\"$R/out.txt\"; }",
+        "work=$1",
+        'mkdir -p "$work"',
+        "services_env=$work/services.env",
+        ': >"$services_env"',
+        "shift",
+        'cmd_run "$@"',
+      ].join("\n"),
+      [work, "red-at-the-head", "s1", "1", "3", "1740000000"],
+      { SKILL_SCENARIOS_RED_WORLD: "a" }
+    );
+    expect(result.code).toBe(0);
+    const made = readdirSync(path.join(work, "runs"));
+    expect(made).toHaveLength(1);
+    const runName = made[0] ?? "";
+    expect(runName).not.toContain("red-at-the-head");
+    const env = readFileSync(path.join(work, "runs", runName, "pane.env"), "utf8").trimEnd();
+    for (const line of env.split("\n")) {
+      expect(line.slice(line.indexOf("=") + 1)).not.toContain("red-at-the-head");
+    }
   });
 
   // Catches: a run of a world red_fixture has no red for, which would fail inside the run with
-  // its services up, and a run named `red-at-the-head--s1-1` when the variable is unset.
+  // its services up, and a run named `trial--s1-1` when the variable is unset.
   test("cmd_run refuses a world that is not one of the twelve, naming them, and makes no run", () => {
     const work = freshDir("red-run-refused");
     const named = "not a, b, c, d, e, f, g, h, i, j, k or l";

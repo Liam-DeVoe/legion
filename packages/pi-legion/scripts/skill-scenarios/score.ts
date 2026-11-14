@@ -813,12 +813,14 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
 /** The twelve worlds of rig.sh's red_fixture, each the same change under a different red, as
  * <run>/world.txt names the one a run ran. */
 const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
-/** A red-at-the-head run's directory, red-at-the-head-<world>-<label>-<n>: the world comes before
+/** A red-at-the-head run's directory, trial-<world>-<label>-<n>: the world comes before
  * the label, as an askgate case does (ASKGATE_RUN), so the worlds' batches of one label, each
  * numbered from 1, never share a directory. A world is one letter, so the label is whatever
  * follows it, hyphens and all; the run's own world.txt is what the score reads the world from, and
- * a directory whose letter is not that world is a rig error (redAtTheHead). */
-const RED_RUN = new RegExp(`^red-at-the-head-(${RED_WORLDS.join("|")})-(.+)-\\d+$`);
+ * a directory whose letter is not that world is a rig error (redAtTheHead). The prefix is `trial`,
+ * not the scenario's name, kept by rig.sh's run_prefix so the page under test (red-at-the-head.md)
+ * sits in no run path; the row this builds stays keyed red-at-the-head:<world> all the same. */
+const RED_RUN = new RegExp(`^trial-(${RED_WORLDS.join("|")})-(.+)-\\d+$`);
 /** The worlds whose role re-runs the red. The other three re-run nothing: in `d` the failing test
  * is of the package the change touches, in `e` a run of that head whose `run_attempt` is 2 has
  * already spent the head's one re-run, and in `f` the title check judges the pull request rather
@@ -3615,7 +3617,7 @@ function unscored(
       // stand-in answering it, the seed, this scorer or its own world.json could pass on what it
       // learned of the fixture rather than on the page. The label rule above cannot see it for
       // the head arm, whose checkout the rig runs from. Measured on 2026-11-12:
-      // red-at-the-head-g-head-2 read its world.json, fixture.json, fixtures.json and the
+      // trial-g-head-2 read its world.json, fixture.json, fixtures.json and the
       // stand-in's source before its record and its re-run, and scored a pass.
       if (read === RIG_DIR || read.startsWith(`${RIG_DIR}/`))
         return `a ${call.tool} call reads the rig itself: ${read}`;
@@ -3864,9 +3866,9 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   }
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
-  // Each scenario's scorer, keyed by the name its runs' directories start with, and taking the
-  // name its directory carries before the label: an askgate run's case (ASKGATE_RUN), a
-  // red-at-the-head run's world (RED_RUN), and nothing for every other scenario.
+  // Each scenario's scorer, keyed by the scenario's own word, and taking the name its directory
+  // carries before the label: an askgate run's case (ASKGATE_RUN), a red-at-the-head run's world
+  // (RED_RUN), and nothing for every other scenario.
   const scorers: Record<string, (dir: string, run: string, label: string, subName: string) => Row> =
     {
       "ask-on-message": askOnMessage,
@@ -3878,12 +3880,23 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
       "red-at-the-head": redAtTheHead,
     };
-  const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
+  // The prefix each scenario's runs' directories start with, mapped back to the scenario's word.
+  // Every prefix is the scenario's own word, save red-at-the-head's, which is `trial` (rig.sh's
+  // run_prefix), so the page under test does not sit in a run's agent-visible paths; the scorer,
+  // the `only` filter, the rows and the keys stay the scenario's own word all the same.
+  const scenarioOf: Record<string, string> = Object.fromEntries(
+    Object.keys(scorers).map((scenario) => [
+      scenario === "red-at-the-head" ? "trial" : scenario,
+      scenario,
+    ])
+  );
+  const name = new RegExp(`^(${Object.keys(scenarioOf).join("|")})-(.+)-(\\d+)$`);
   for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
     const match = name.exec(run);
-    const score = scorers[match?.[1] ?? ""];
+    const scenario = scenarioOf[match?.[1] ?? ""] ?? "";
+    const score = scorers[scenario];
     if (!match || !score) continue;
-    const [, scenario = "", named = ""] = match;
+    const [, , named = ""] = match;
     if (only && scenario !== only) continue;
     const dir = path.join(runsDir, run);
     // null for an askgate directory that names no case, or a red-at-the-head one that names no
@@ -3902,7 +3915,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
         throw new Error(
           scenario === "askgate"
             ? "the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
-            : "the directory names no world: a red-at-the-head run's directory is red-at-the-head-<world>-<label>-<n>"
+            : "the directory names no world: a red-at-the-head run's directory is trial-<world>-<label>-<n>"
         );
       const dispatch = dispatchOf(dir);
       const calls = runCalls(dir);

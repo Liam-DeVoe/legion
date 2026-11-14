@@ -115,7 +115,7 @@
 #                   second failing run of that same check name at the commit, a by-hand
 #                   `workflow_dispatch` run's, which the counted set does not hold; `l` `a` with a
 #                   counted set that has not reported the check when the role first reads it. The
-#                   world is in the run's name, red-at-the-head-<world>-<label>-<n>, so each
+#                   world is in the run's name, trial-<world>-<label>-<n> (run_prefix), so each
 #                   world's batch keeps its own runs, and each run writes it to <run>/world.txt
 #                   (run_red_at_the_head, red_fixture). A world that expects a re-run takes two
 #                   turns: the architect's assignment, then, once the re-run has reached
@@ -2149,6 +2149,17 @@ run_red_at_the_head() {
   seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
+# run_prefix SCENARIO prints the prefix a run of SCENARIO carries in its directory and its tmux
+# session name. Every scenario uses its own name, save red-at-the-head, which uses `trial`: its
+# page, skills/legion-worker/references/red-at-the-head.md, is the file under test, and when that
+# name sat in an agent-visible path (a run's cwd, HOME, TMPDIR, LEGION_WORKSPACE, PATH and
+# SKILL_SCENARIO_RUN all live under the run directory) it cued the change arm — 119 of 120
+# record-batch runs opened the page before any CI read, which lifted that arm alone. `trial` names
+# neither the scenario nor the page.
+run_prefix() {
+  case $1 in red-at-the-head) echo trial ;; *) echo "$1" ;; esac
+}
+
 cmd_run() {
   [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|red-at-the-head> <label> <n> <index> <start>"
   local scenario=$1 n=$3 index=$4 start=$5 name
@@ -2161,7 +2172,7 @@ cmd_run() {
   if [ "$scenario" = askgate ]; then
     case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried)
-      name=$scenario-$SKILL_SCENARIOS_ASKGATE_CASE-${P##*/}-$n
+      name=$(run_prefix "$scenario")-$SKILL_SCENARIOS_ASKGATE_CASE-${P##*/}-$n
       ;;
     *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
     esac
@@ -2169,12 +2180,12 @@ cmd_run() {
     # A red-at-the-head run's name carries its world, for the same reason.
     case ${SKILL_SCENARIOS_RED_WORLD:-} in
     a | b | c | d | e | f | g | h | i | j | k | l)
-      name=$scenario-$SKILL_SCENARIOS_RED_WORLD-${P##*/}-$n
+      name=$(run_prefix "$scenario")-$SKILL_SCENARIOS_RED_WORLD-${P##*/}-$n
       ;;
     *) fail "SKILL_SCENARIOS_RED_WORLD is '${SKILL_SCENARIOS_RED_WORLD:-}', not a, b, c, d, e, f, g, h, i, j, k or l" ;;
     esac
   else
-    name=$scenario-${P##*/}-$n
+    name=$(run_prefix "$scenario")-${P##*/}-$n
   fi
   R=$work/runs/$name
   evidence=$R
@@ -2202,7 +2213,7 @@ stop_batch() {
   local s sessions=()
   stop_tree "${runs_pid:-}"
   for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null || true); do
-    case $s in "$tag-$batch_scenario"-*) sessions+=("$s") ;; esac
+    case $s in "$tag-$(run_prefix "$batch_scenario")"-*) sessions+=("$s") ;; esac
   done
   for s in "${sessions[@]}"; do stop_panes "$s"; done
   stop_env_processes "$work/runs"
