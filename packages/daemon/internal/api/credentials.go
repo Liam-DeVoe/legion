@@ -56,11 +56,9 @@ func writeFailure(w http.ResponseWriter, status int, code, message string) {
 // shape every credential and workflow refusal takes. The claim and operator routes refuse with
 // their sentence alone (requireFields).
 func requireFailureFields(w http.ResponseWriter, fields ...field) bool {
-	for _, f := range fields {
-		if strings.TrimSpace(f.value) == "" {
-			writeFailure(w, http.StatusBadRequest, "MISSING_FIELD", f.name+" is required")
-			return false
-		}
+	if name, blank := blankField(fields...); blank {
+		writeFailure(w, http.StatusBadRequest, "MISSING_FIELD", name+" is required")
+		return false
 	}
 	return true
 }

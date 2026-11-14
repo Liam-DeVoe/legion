@@ -591,7 +591,7 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		provider_error_retries = excluded.provider_error_retries,
 		provider_error_note = excluded.provider_error_note`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
-		int64(d.Number), d.Origin, text(d.TakenText),
+		int64(d.Number), d.Origin, d.TakenText,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt,
 		instant(d.ConfirmedAt), d.Interrupted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
@@ -797,15 +797,14 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	}
 	if deliveryID != nil {
 		c.Pending = &supervise.Delivery{
-			ID:         *deliveryID,
-			Task:       *task,
-			Phase:      phase.Phase(*deliveryPhase),
-			Generation: uint64(orZeroInt(deliveryGeneration)),
-			Entry:      orZeroInt(deliveryEntry),
-			Number:     uint64(orZeroInt(deliveryNumber)),
-			Origin:     *deliveryOrigin,
-			// Null is a task no take of has been accepted, which the delivery holds as no text.
-			TakenText:   orEmpty(takenText),
+			ID:          *deliveryID,
+			Task:        *task,
+			Phase:       phase.Phase(*deliveryPhase),
+			Generation:  uint64(orZeroInt(deliveryGeneration)),
+			Entry:       orZeroInt(deliveryEntry),
+			Number:      uint64(orZeroInt(deliveryNumber)),
+			Origin:      *deliveryOrigin,
+			TakenText:   *takenText,
 			CheckLook:   supervise.CheckLook{Look: *deliveryCheckLook, OpenedAt: orZero(deliveryCheckOpened)},
 			QueuedAt:    *queuedAt,
 			ConfirmedAt: orZero(confirmed),
@@ -831,22 +830,6 @@ func instant(t time.Time) *time.Time {
 		return nil
 	}
 	return &t
-}
-
-// text is a string as a nullable column: the empty string is "none", which SQL says as null.
-func text(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
-// orEmpty is a nullable text column read as the empty string when null.
-func orEmpty(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
 }
 
 // keptDecisions is a delivery's kept-decision record as the column holds it and as the delivery

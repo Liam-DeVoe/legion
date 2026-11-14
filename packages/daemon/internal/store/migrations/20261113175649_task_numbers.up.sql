@@ -21,8 +21,8 @@
 -- write of the value. A revision is carried beside its epoch because a bucket created again counts
 -- its revisions from 1 again. pending_task_deliveries.number is the number the pending task was
 -- queued under, origin the source that queued it, and taken_text the text the accepted take of it
--- was answered with, null while no take has been accepted, so a take sent again after its answer
--- was lost is answered with that same text.
+-- was answered with, empty while no accepted take awaits its turn — none was accepted, or its turn
+-- has started — so a take sent again after its answer was lost is answered with that same text.
 --
 -- The fill numbers what the release before this one left as each claim's first task. A claim
 -- holding a pending row holds task 1: the row is number 1 and the claim's task_written is 1, and
@@ -33,7 +33,7 @@
 -- is that session. Every other claim was given nothing and stays at 0 throughout. The epochs and
 -- revisions start empty, because no value in the bucket is the record's yet, so the first boot
 -- writes every owed value once. origin starts empty, which names no source: the task was queued
--- before the record kept one. taken_text starts null, since no take of such a task was ever
+-- before the record kept one. taken_text starts empty, since no take of such a task was ever
 -- answered.
 --
 -- Once this migration has run, the daemon of the release before it cannot read the claims table
@@ -142,7 +142,7 @@ alter table claims add column task_written_epoch text not null default '';
 alter table claims add column task_written_revision bigint not null default 0;
 alter table pending_task_deliveries add column number bigint not null default 0;
 alter table pending_task_deliveries add column origin text not null default '';
-alter table pending_task_deliveries add column taken_text text;
+alter table pending_task_deliveries add column taken_text text not null default '';
 
 -- Every pending row is its claim's task 1, written; a confirmed one is taken as well.
 update pending_task_deliveries set number = 1;

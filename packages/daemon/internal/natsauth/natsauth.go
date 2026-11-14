@@ -239,7 +239,6 @@ func LogEvents(log *slog.Logger) nats.Option {
 		o.AsyncErrorCB = func(_ *nats.Conn, sub *nats.Subscription, err error) {
 			operation, subject, refused := RefusedPermission(err)
 			if !refused {
-				subject := ""
 				if sub != nil {
 					subject = sub.Subject
 				}

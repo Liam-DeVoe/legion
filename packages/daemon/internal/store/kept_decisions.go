@@ -80,13 +80,14 @@ func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Tok
 }
 
 // holdKeptDecisions marks every row the delivery names held by this claim and delivery id, and
-// moves to this delivery id whatever the claim's previous delivery held — a task a death took back
-// comes back under a new id, and what it names is the same (supervise's interrupted,
-// takeBackPending). It takes only rows this delivery owns: one claimed by a start row whose task
-// this claim queued (claims.delivered_rows, which the claim's write puts down first), one this
-// claim already holds, or one nobody claims or holds whose issue stands in this claim's tree (what
-// this delivery names of its own tree that nothing else has taken). A row another start, catch-up
-// or delivery owns now — the tree a moved issue stands in has claimed or held it — stays theirs.
+// moves to this delivery id whatever the claim's previous delivery held: the claim holds one
+// pending task, and this write is the one that replaces it. A task taken back keeps its id
+// (supervise's interrupted), so what it names stays held where it was. It takes only rows this
+// delivery owns: one claimed by a start row whose task this claim queued (claims.delivered_rows,
+// which the claim's write puts down first), one this claim already holds, or one nobody claims or
+// holds whose issue stands in this claim's tree (what this delivery names of its own tree that
+// nothing else has taken). A row another start, catch-up or delivery owns now — the tree a moved
+// issue stands in has claimed or held it — stays theirs.
 //
 // It puts no row back: a row the task names and the table does not hold is
 // putBackARetakenConfirmation's, which runs before the write of the delivery this holds for and

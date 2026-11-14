@@ -28,12 +28,7 @@ func (h *harness) readyClaim(issue string, role claim.Role) takeClaim {
 	h.t.Helper()
 	token, boot := h.launch(issue, role)
 	session := "ses_" + string(role)
-	registered := h.registered(boot, session)
-	if recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: registered.Generation,
-	}, nil); recorder.Code != http.StatusNoContent {
-		h.t.Fatalf("ready %s = %d; body %s", token, recorder.Code, recorder.Body)
-	}
+	registered := h.ready(token, session, h.machine(token).Claim().Generation)
 	return takeClaim{token: token, boot: boot, session: session, secret: registered.Secret, generation: registered.Generation}
 }
 
@@ -250,9 +245,9 @@ func TestTakeRouteRefusesAnUnknownCallerWithACodeAndRecordsNothing(t *testing.T)
 
 // A claim whose plugin speaks another contract, while the daemon relaunches it onto the current
 // one, has its take answered refused with the hold `stale-plugin` rather than the stale-contract
-// 409 its ready gets: c2's seventh hold has an answer, and the worker waits it out like any other
-// hold. Its read of its value and its seen report are answered as any claim's are, so a worker on
-// an older contract is never left with nothing to do but fail its boot.
+// 409 its ready gets: the stale-plugin hold has an answer, and the worker waits it out like any
+// other hold. Its read of its value and its seen report are answered as any claim's are, so a
+// worker on an older contract is never left with nothing to do but fail its boot.
 func TestTakeRouteAnswersAStaleClaimRefusedStalePluginRatherThan409(t *testing.T) {
 	h := newHarness(t)
 	c := h.readyClaim("LEGION-209", claim.RoleImplementer)

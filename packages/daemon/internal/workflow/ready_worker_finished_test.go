@@ -78,6 +78,13 @@ func finishedTester() workerRecord {
 		written: finishedTask, finished: finishedTask, finishedIn: finishedSession}
 }
 
+// neverWrittenTester is finishedTester to which the record never wrote a task.
+func neverWrittenTester() workerRecord {
+	rec := finishedTester()
+	rec.written, rec.finished, rec.finishedIn = 0, 0, ""
+	return rec
+}
+
 // seedTesterIssue records LEGION-208 as every case reads it: in testing, holding its slot, with
 // its tester's phases row on the seeded entry. It answers the tester's claim token.
 func seedTesterIssue(t *testing.T, pool *pgxpool.Pool) claim.Token {
@@ -128,12 +135,19 @@ func seedTester(t *testing.T, pool *pgxpool.Pool, rec workerRecord) claim.Token 
 	return token
 }
 
-// readyTester applies the ready of the tester's launch generation, through engine.
+// readyTester applies the ready of LEGION-208's tester at launch generation, through engine.
 func readyTester(t *testing.T, pool *pgxpool.Pool, engine *Engine, generation uint64) {
 	t.Helper()
-	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", fmt.Sprintf("supervise:tester:%d:ready", generation), intake.ClaimReady{
-		Issue: entryIssue, Role: claim.RoleTester, Launch: generation}, engine, admissionStub{}); err != nil {
-		t.Fatalf("apply the ready of launch %d: %v", generation, err)
+	claimReady(t, pool, engine, entryIssue, claim.RoleTester, int(generation))
+}
+
+// recordFinishedInSession records token's claim as having finished its last task, finishedTask,
+// the last the record wrote it, in the session it holds.
+func recordFinishedInSession(t *testing.T, pool *pgxpool.Pool, token claim.Token) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `update claims set task_written = $2, task_taken = $2, task_finished = $2,
+		task_finished_session = session where token = $1`, string(token), int64(finishedTask)); err != nil {
+		t.Fatalf("record %s's last task as finished in its session: %v", token, err)
 	}
 }
 
@@ -196,14 +210,14 @@ func relaunchClaim(t *testing.T, pool *pgxpool.Pool, token claim.Token, generati
 	}
 }
 
-// queueTask records task as token's pending task under number, as the claim's machine queues a
-// start row's task when the outbox hands it over (supervise's queue): the delivery and the record's
-// highest written number in one write.
-func queueTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, number uint64, task, origin string, taskPhase phase.Phase, generation uint64) {
+// queueTask records the task start carries as token's pending task under number, as the claim's
+// machine queues a start row's task when the outbox hands it over (supervise's queue): the
+// delivery and the record's highest written number in one write.
+func queueTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, number uint64, start record.SuperviseRequest) {
 	t.Helper()
 	if _, err := pool.Exec(t.Context(), `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation,
 		queued_at, number, origin) values ($1, 'outbox:1', $2, $3, $4, now(), $5, $6)`,
-		string(token), task, string(taskPhase), int64(generation), int64(number), origin); err != nil {
+		string(token), start.Task, string(start.Phase), int64(start.Generation), int64(number), start.Origin); err != nil {
 		t.Fatalf("queue %s task %d: %v", token, number, err)
 	}
 	if _, err := pool.Exec(t.Context(), `update claims set task_written = $2 where token = $1`, string(token), int64(number)); err != nil {
@@ -213,8 +227,7 @@ func queueTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, number uint6
 
 // A worker that finished its last task in the session it runs, ready again with nothing pending,
 // is given nothing at the ready its relaunch reaches, whichever relaunch that was, and the ready
-// says so in its journal, naming the claim and the task it finished. Before, each such ready
-// queued the phase's resume task, a turn of work the worker had already done.
+// says so in its journal, naming the claim and the task it finished.
 //
 // The negative control is this test on the merge base: the ready of every relaunch queues the
 // testing phase's resume task.
@@ -331,6 +344,10 @@ func TestReadyWorkerTaskGivesAnAbandonedSessionReplacedItsResumeTask(t *testing.
 	pool := migratedPool(t)
 	rec := finishedTester()
 	rec.session = "ses-replacement"
+	// The relaunch that gave the session up recorded it as abandoned, the session it finished its
+	// last task in.
+	rec.mark = fmt.Sprintf(`abandoned_session = '{"session": %q, "sessionFile": "/sessions/tester.jsonl", `+
+		`"why": "the session file is gone", "at": "2026-11-13T17:00:00Z"}'`, finishedSession)
 	seedTester(t, pool, rec)
 
 	readyTester(t, pool, testEngine(config.DesignGateRootIssues, nil), rec.generation)
@@ -342,8 +359,7 @@ func TestReadyWorkerTaskGivesAnAbandonedSessionReplacedItsResumeTask(t *testing.
 // as before: it has finished nothing, and the resume is the work of the phase it holds.
 func TestReadyWorkerTaskGivesAClaimNeverWrittenATaskItsResumeTask(t *testing.T) {
 	pool := migratedPool(t)
-	rec := finishedTester()
-	rec.written, rec.finished, rec.finishedIn = 0, 0, ""
+	rec := neverWrittenTester()
 	seedTester(t, pool, rec)
 
 	readyTester(t, pool, testEngine(config.DesignGateRootIssues, nil), rec.generation)
@@ -370,8 +386,9 @@ func TestReadyWorkerTaskStillWritesAPhaseStartAndAWakeTaskOnce(t *testing.T) {
 		readyTester(t, pool, engine, 4)
 		wantOnlyTask(t, pool, entryIssue, task, supervise.OriginPhaseStart, "the ready while the phase start waits")
 
+		started := tasksQueued(t, pool, entryIssue)[0]
 		deleteStarts(t, pool, entryIssue)
-		queueTask(t, pool, token, finishedTask+1, task, supervise.OriginPhaseStart, phase.Testing, resumeRuleIssue.Generation)
+		queueTask(t, pool, token, finishedTask+1, started)
 		relaunchClaim(t, pool, token, 5)
 		readyTester(t, pool, engine, 5)
 		wantNothingQueued(t, pool, entryIssue, "the ready of a worker holding its phase start's task")
@@ -380,10 +397,7 @@ func TestReadyWorkerTaskStillWritesAPhaseStartAndAWakeTaskOnce(t *testing.T) {
 	t.Run("a wake's task", func(t *testing.T) {
 		rig := newWakeRig(t)
 		implementer := wakeToken(t, claim.RoleImplementer)
-		if _, err := rig.pool.Exec(t.Context(), `update claims set task_written = $2, task_taken = $2, task_finished = $2,
-			task_finished_session = session where token = $1`, string(implementer), int64(finishedTask)); err != nil {
-			t.Fatalf("record the implementer's last task as finished in its session: %v", err)
-		}
+		recordFinishedInSession(t, rig.pool, implementer)
 		rig.apply("settled", settlement("head1", "build"))
 		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "head1", "build")
 		woken := tasksQueued(t, rig.pool, "LEGION-208")
@@ -392,7 +406,7 @@ func TestReadyWorkerTaskStillWritesAPhaseStartAndAWakeTaskOnce(t *testing.T) {
 		}
 
 		deleteStarts(t, rig.pool, "LEGION-208")
-		queueTask(t, rig.pool, implementer, finishedTask+1, woken[0].Task, supervise.OriginWake, "", wakeIssueGeneration)
+		queueTask(t, rig.pool, implementer, finishedTask+1, woken[0])
 		relaunchClaim(t, rig.pool, implementer, 2)
 		rig.apply("ready", intake.ClaimReady{Issue: "LEGION-208", Role: claim.RoleImplementer, Launch: 2})
 		wantNothingQueued(t, rig.pool, "LEGION-208", "the ready of a woken worker holding its wake's task")
@@ -548,16 +562,14 @@ func TestWaitingWorkerAfterMigrationIsGivenNothingAtItsRelaunch(t *testing.T) {
 
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	for index, key := range []string{retired, holding} {
-		seedIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key,
-			Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
+		issue := resumeRuleIssue
+		issue.Key, issue.Tree = key, key
+		seedIssue(t, pool, issue)
 		seedSlot(t, pool, record.Slot{Issue: key, Index: index})
 		seedPhase(t, pool, record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: testerToken(t, key), Entry: seededEntry,
 			EntryTask: seededEntryTask, EntryRaisedAt: seededRaisedAt})
 		relaunchClaim(t, pool, testerToken(t, key), 2)
-		if _, err := intake.ApplyFact(ctx, pool, "supervise", "supervise:"+key+":tester:2:ready",
-			intake.ClaimReady{Issue: key, Role: claim.RoleTester, Launch: 2}, engine, admissionStub{}); err != nil {
-			t.Fatalf("apply the ready of %s's relaunched tester: %v", key, err)
-		}
+		claimReady(t, pool, engine, key, claim.RoleTester, 2)
 		wantNothingQueued(t, pool, key, "the ready of "+key+"'s relaunched tester")
 	}
 	var number int64
@@ -602,10 +614,7 @@ func TestWaitingWorkerSilenceRepairWritesOriginSilenceInBothBranches(t *testing.
 			issue := seedSilence(t, pool, rec)
 			// seedSilence's claim runs session 'ses': it finished its last task, the second the
 			// record wrote it, in that same session.
-			if _, err := pool.Exec(t.Context(), `update claims set task_written = $2, task_taken = $2, task_finished = $2,
-				task_finished_session = session where token = $1`, string(silenceToken(t, claim.RoleTester)), int64(finishedTask)); err != nil {
-				t.Fatalf("record the silent tester's finished task: %v", err)
-			}
+			recordFinishedInSession(t, pool, silenceToken(t, claim.RoleTester))
 
 			if err := applySilence(t, pool, testEngine(config.DesignGateRootIssues, nil), aSilenceOf(claim.RoleTester, 1)); err != nil {
 				t.Fatalf("apply the silence: %v", err)

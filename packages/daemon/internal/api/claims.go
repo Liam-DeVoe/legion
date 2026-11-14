@@ -110,7 +110,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	c := m.Claim()
 	s.log.Info("api: claim registered", "claim", c.Token, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
-	current := s.currentTask(ctx, m)
+	current := s.currentTask(ctx, c.Token, m)
 	writeJSON(w, http.StatusOK, claim.RegisterResponse{
 		ClaimToken:   c.Token,
 		Tree:         c.Tree,
@@ -130,11 +130,11 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 // launch for a value it is handed again anyway. The answer then carries no value and the failure
 // is logged; the worker learns the value from its relay, and a value nobody reported seeing is
 // written again once per first bound (supervise's takeBoundOver), which the relay hands it.
-func (s *server) currentTask(ctx context.Context, m *supervise.Machine) claim.TaskResponse {
+func (s *server) currentTask(ctx context.Context, token claim.Token, m *supervise.Machine) claim.TaskResponse {
 	current, err := m.CurrentTask(ctx)
 	if err != nil {
 		s.log.Warn("api: the registration answers no task value: the task bucket could not be read",
-			"claim", m.Claim().Token, "error", err)
+			"claim", token, "error", err)
 		return claim.TaskResponse{Finished: m.View().TaskFinished}
 	}
 	return taskResponseOf(current)
@@ -279,8 +279,8 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("outcome %q is neither %q nor %q", req.Outcome, claim.TurnClean, claim.TurnRefused)))
 		return
 	}
-	caller, named := req.Caller()
-	token, m, refusal := s.claimCaller(r, "turn outcome", caller, named, req.Generation)
+	caller, _ := req.Caller()
+	token, m, refusal := s.claimCaller(r, "turn outcome", caller, req.Generation)
 	if refusal != nil {
 		writeJSON(w, refusal.status, errorBody(refusal.message))
 		return
@@ -293,7 +293,7 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	err := m.Handle(ctx, supervise.RequestTurnOutcome{
 		Claim: token, Generation: req.Generation, Sequence: req.Sequence,
 		Refused: req.Outcome == claim.TurnRefused, Message: req.Message,
-		Task: req.Task, ProviderError: providerErrorOf(req.ProviderError),
+		Task: req.Task, ProviderError: (*supervise.ProviderError)(req.ProviderError),
 	})
 	if err != nil {
 		s.claimFailure(w, "turn outcome", token, err)
@@ -306,17 +306,6 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 			"generation", req.Generation, "sequence", req.Sequence, "refusedRun", run, "failure", c.Failure)
 	}
 	writeJSON(w, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: run, Failed: c.State == supervise.StateFailed})
-}
-
-// providerErrorOf is a turn outcome's provider error as the claim's machine reads it, nil for a
-// report that carries none.
-func providerErrorOf(pe *claim.ProviderError) *supervise.ProviderError {
-	if pe == nil {
-		return nil
-	}
-	return &supervise.ProviderError{
-		Status: pe.Status, Provider: pe.Provider, Model: pe.Model, Message: pe.Message, Retryable: pe.Retryable,
-	}
 }
 
 // callerRefusal is why a worker's request was not resolved to a claim (claimCaller): the status
@@ -358,17 +347,16 @@ func refusalCode(refusal claim.Refusal) string {
 //
 // A stale plugin is no part of the resolution: the turn outcome refuses a stale claim's secret
 // itself (refuseIfStaleClaim), and the task routes answer a stale claim as any other (take.go).
-func (s *server) claimCaller(r *http.Request, request string, caller claim.Caller, named bool, generation uint64) (claim.Token, *supervise.Machine, *callerRefusal) {
-	if named {
-		switch caller := caller.(type) {
-		case claim.BootCaller:
-			return s.callerByBootToken(r, request, caller, generation)
-		case claim.AgentCaller:
-			return s.callerBySecret(caller)
-		}
+func (s *server) claimCaller(r *http.Request, request string, caller claim.Caller, generation uint64) (claim.Token, *supervise.Machine, *callerRefusal) {
+	switch caller := caller.(type) {
+	case claim.BootCaller:
+		return s.callerByBootToken(r, request, caller, generation)
+	case claim.AgentCaller:
+		return s.callerBySecret(caller)
 	}
-	// The body named neither caller, or both — and, were a third ever added to claim without
-	// this route, one this route cannot act on, which is the same answer.
+	// The body named neither caller, or both, which claim's Caller reads as no caller at all —
+	// and, were a third ever added to claim without this route, one this route cannot act on,
+	// which is the same answer.
 	return "", nil, &callerRefusal{status: http.StatusBadRequest, code: "INVALID_CALLER",
 		message: fmt.Sprintf("a %s names its caller with claimToken, sessionId and secret, or with bootToken; give one", request)}
 }
@@ -402,12 +390,10 @@ func (s *server) callerByBootToken(r *http.Request, request string, caller claim
 // callerBySecret is the claim the body names, authenticated by the secret its registration was
 // issued, as the ready and the exit are.
 func (s *server) callerBySecret(caller claim.AgentCaller) (claim.Token, *supervise.Machine, *callerRefusal) {
-	for _, f := range []field{
-		{"claimToken", string(caller.ClaimToken)}, {"sessionId", caller.SessionID}, {"secret", caller.Secret},
-	} {
-		if strings.TrimSpace(f.value) == "" {
-			return "", nil, &callerRefusal{status: http.StatusBadRequest, code: "MISSING_FIELD", message: f.name + " is required"}
-		}
+	if name, blank := blankField(
+		field{"claimToken", string(caller.ClaimToken)}, field{"sessionId", caller.SessionID}, field{"secret", caller.Secret},
+	); blank {
+		return "", nil, &callerRefusal{status: http.StatusBadRequest, code: "MISSING_FIELD", message: name + " is required"}
 	}
 	m, _, ok := s.authenticated(caller.ClaimToken, caller.Secret)
 	if !ok {
@@ -835,15 +821,24 @@ func (s *server) claimSecretCheck(w http.ResponseWriter, r *http.Request, body [
 
 type field struct{ name, value string }
 
+// blankField is the wire name of the first field that is blank, and false when none is: the test
+// requireFields, requireFailureFields and callerBySecret each answer in their own shape.
+func blankField(fields ...field) (string, bool) {
+	for _, f := range fields {
+		if strings.TrimSpace(f.value) == "" {
+			return f.name, true
+		}
+	}
+	return "", false
+}
+
 // requireFields refuses the first field that is blank, by its wire name, with the sentence alone:
 // the claim and operator routes' refusal shape (the credential and workflow routes add a code,
 // requireFailureFields).
 func requireFields(w http.ResponseWriter, fields ...field) bool {
-	for _, f := range fields {
-		if strings.TrimSpace(f.value) == "" {
-			writeJSON(w, http.StatusBadRequest, errorBody(f.name+" is required"))
-			return false
-		}
+	if name, blank := blankField(fields...); blank {
+		writeJSON(w, http.StatusBadRequest, errorBody(name+" is required"))
+		return false
 	}
 	return true
 }

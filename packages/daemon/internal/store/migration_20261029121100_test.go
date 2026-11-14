@@ -58,3 +58,28 @@ func TestAClaimsTurnOutcomesRoundTrip(t *testing.T) {
 			got.RefusedRun(), got.LastRefusal())
 	}
 }
+
+// A report whose write failed is kept in the window marked Unapplied, and the mark survives a
+// restart: a new pool and a new store over the same database, with nothing of the first carried
+// in memory (reopenStore). The mark is what tells the producer's repeat of that report, under the
+// same key, from a report already applied (supervise's turnOutcome), so a daemon that read the
+// window back without it would take the repeat for a report it had applied and leave undone what
+// the report says of the claim's task.
+func TestAnUnappliedTurnOutcomeRoundTripsMarked(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	c.TurnOutcomes = []supervise.TurnOutcome{
+		{Generation: 1, Sequence: 6, Refused: false},
+		{Generation: 1, Sequence: 7, Refused: true, Message: "the provider refused the turn", Unapplied: true},
+	}
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the claim with a report never applied: %v", err)
+	}
+
+	got := onlyClaim(t, reopenStore(t, store))
+	if len(got.TurnOutcomes) != 2 || got.TurnOutcomes[0].Unapplied || !got.TurnOutcomes[1].Unapplied {
+		t.Fatalf("the window read back after a restart = %+v, want the second report alone marked unapplied", got.TurnOutcomes)
+	}
+	sameClaim(t, got, c)
+}

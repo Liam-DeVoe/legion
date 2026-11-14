@@ -337,9 +337,9 @@ type ParkedDecision struct {
 }
 
 // DeliveryHold is the claim token and delivery id of a start's task queued on an architect's
-// claim, which holds what that task names until that delivery is confirmed (the rows are told),
-// retired (the hold is cleared and the rows are KEPT again) or taken back under a new id (the
-// hold moves to it). The zero value is no hold.
+// claim, which holds what that task names until that delivery is confirmed (the rows are told) or
+// retired (the hold is cleared and the rows are KEPT again). A task taken back keeps its delivery
+// id, and with it the hold. The zero value is no hold.
 type DeliveryHold struct {
 	Claim    string
 	Delivery string

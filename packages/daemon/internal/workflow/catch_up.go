@@ -257,11 +257,15 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	return nil
 }
 
-// finishedInItsSession is whether held finished the last task written to it in the session it
-// runs now: the record has written it a task, and the session it finished its last one in is
-// the session it holds (dispatch://INFRA-2811 R4). The phase's resume task is queued for a claim
-// of which this is false — one never written a task, or whose session is new since it finished —
-// and for no other, at a ready (readyWorkerTask) and at the boot (booted).
+// finishedInItsSession is the resume rule's test of a claim (dispatch://INFRA-2811 R4): the
+// record has written it a task, and the session it finished its latest finished task in
+// (TaskFinishedSession) is the session it holds. It compares no numbers, so a claim whose latest
+// task was dropped unfinished after it finished an earlier one in this session passes it too.
+// supervise's finishedLastTask, which the `finished` of the value-written line reads, also asks
+// that the last task finished be the last one written, and so reads such a claim as not finished.
+// The phase's resume task is queued for a claim of which this is false — one never written a
+// task, or whose session is new since it finished — and for no other, at a ready
+// (readyWorkerTask) and at the boot (booted).
 func finishedInItsSession(held record.RoleClaim) bool {
 	return held.TaskWritten != 0 && held.Session == held.TaskFinishedSession
 }

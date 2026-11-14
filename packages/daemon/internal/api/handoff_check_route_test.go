@@ -184,7 +184,7 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 // no look, and a done issue runs no phase for it to complete either: it is refused
 // CHECK_LOOK_NOT_SERVED, before the phase path, with nothing recorded and the check left open at
 // its look.
-func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t *testing.T) {
+func TestATestingVerdictBehindAnUntakenLooksTaskIsNoReportOnTheProductionCheck(t *testing.T) {
 	h, facts, tester, machine := mergedCloseBehindATestingTurn(t)
 	ctx := context.Background()
 	if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: tester.token}); err != nil {

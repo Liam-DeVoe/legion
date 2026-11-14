@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	configpkg "github.com/sjawhar/legion/daemon/internal/config"
 )
@@ -180,21 +179,26 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 }
 
 // The example's two commented wait bounds, uncommented as the file ships them, pass the check
-// and are read as the defaults they state: R5's first bound of five minutes and second of
-// twenty-five. The lines stay commented in the file itself, as the silence key's do.
+// and are read as the defaults they state: the example as it ships, which names neither key, reads
+// the same two bounds, so a default changed in the loader and not in the example fails here. The
+// lines stay commented in the file itself, as the silence key's do.
 func TestShippedLegionYAMLExampleCheckConfigReadsTheTwoWaitBoundsItStates(t *testing.T) {
-	config := checkShippedExample(t, func(example string) string {
+	stated, err := configpkg.LoadForValidation(checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example,
 			"# worker_take_timeout_seconds: 300",
 			"# worker_turn_start_timeout_seconds: 1500",
 		)
-	})
-	cfg, err := configpkg.LoadForValidation(config, nil)
+	}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.WorkerTakeTimeout != 5*time.Minute || cfg.WorkerTurnStartTimeout != 25*time.Minute {
-		t.Fatalf("the example's wait bounds read as %s and %s, want 5m0s and 25m0s", cfg.WorkerTakeTimeout, cfg.WorkerTurnStartTimeout)
+	defaults, err := configpkg.LoadForValidation(stageShippedExample(t, func(example string) string { return example }), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stated.WorkerTakeTimeout != defaults.WorkerTakeTimeout || stated.WorkerTurnStartTimeout != defaults.WorkerTurnStartTimeout {
+		t.Fatalf("the example's wait bounds read as %s and %s, want the defaults a file naming neither key reads, %s and %s",
+			stated.WorkerTakeTimeout, stated.WorkerTurnStartTimeout, defaults.WorkerTakeTimeout, defaults.WorkerTurnStartTimeout)
 	}
 }
 

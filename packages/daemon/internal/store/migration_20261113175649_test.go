@@ -61,6 +61,10 @@ func columnStands(t *testing.T, store *Store, table, column string) bool {
 	return standing
 }
 
+// taskNumbersFormat is the one line taskNumbersOf and taskNumbersLine both print a claim's nine
+// task columns in.
+const taskNumbersFormat = "written %d taken %d finished %d in %q, seen %q/%d take %q, wrote %q/%d"
+
 // taskNumbersOf is the claim's nine task columns as the store holds them, in one line a failure
 // prints whole.
 func taskNumbersOf(t *testing.T, store *Store, token string) string {
@@ -73,15 +77,14 @@ func taskNumbersOf(t *testing.T, store *Store, token string) string {
 		&seenEpoch, &seenRevision, &takeState, &writtenEpoch, &writtenRevision); err != nil {
 		t.Fatalf("read the task numbers of %s: %v", token, err)
 	}
-	return fmt.Sprintf("written %d taken %d finished %d in %q, seen %q/%d take %q, wrote %q/%d",
+	return fmt.Sprintf(taskNumbersFormat,
 		written, taken, finished, session, seenEpoch, seenRevision, takeState, writtenEpoch, writtenRevision)
 }
 
 // taskNumbersLine is taskNumbersOf's line for a claim whose epochs and revisions are empty, which
 // is every claim the fill writes.
 func taskNumbersLine(written, taken, finished int, session string) string {
-	return fmt.Sprintf("written %d taken %d finished %d in %q, seen %q/%d take %q, wrote %q/%d",
-		written, taken, finished, session, "", 0, "", "", 0)
+	return fmt.Sprintf(taskNumbersFormat, written, taken, finished, session, "", 0, "", "", 0)
 }
 
 // 20261113175649 numbers the task each claim an earlier release left holds as its first. The fill
@@ -183,13 +186,13 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	for _, token := range []string{"legion-LEGION-301-implementer", "legion-LEGION-302-implementer"} {
 		var number int64
 		var origin string
-		var taken *string
+		var taken string
 		if err := store.pool.QueryRow(ctx, `select number, origin, taken_text from pending_task_deliveries
 			where claim_token = $1`, token).Scan(&number, &origin, &taken); err != nil {
 			t.Fatalf("read the pending task of %s after the migration: %v", token, err)
 		}
-		if number != 1 || origin != "" || taken != nil {
-			t.Errorf("the pending task of %s = number %d, origin %q, taken text %v; want task 1 of no recorded origin, which no take was ever answered for",
+		if number != 1 || origin != "" || taken != "" {
+			t.Errorf("the pending task of %s = number %d, origin %q, taken text %q; want task 1 of no recorded origin, which no take was ever answered for",
 				token, number, origin, taken)
 		}
 	}
@@ -200,7 +203,8 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 		}
 	}
 	// The take state holds the four the record names and no other.
-	if _, err := store.pool.Exec(ctx, "update claims set task_take_state = 'made' where token = 'legion-LEGION-305-reviewer'"); err != nil {
+	if _, err := store.pool.Exec(ctx, "update claims set task_take_state = $1 where token = 'legion-LEGION-305-reviewer'",
+		string(supervise.TakeMade)); err != nil {
 		t.Fatalf("recording a take made at the seen revision: %v", err)
 	}
 	_, err = store.pool.Exec(ctx, "update claims set task_take_state = 'taken' where token = 'legion-LEGION-305-reviewer'")
@@ -214,7 +218,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 // carries every one of its nine task fields and its pending task its number, its origin and the
 // text its accepted take was answered with, which is what lets a take sent again after a lost
 // answer, or after a daemon restart, be answered the same text without being taken a second time.
-// The text is stored as null while no take has been accepted, and two numbers no bigint holds are
+// The text is stored empty while no take has been accepted, and two numbers no bigint holds are
 // refused before anything is written.
 func TestTaskNumberSurvivesAStoreRestartWithEveryColumn(t *testing.T) {
 	ctx := context.Background()
@@ -227,7 +231,7 @@ func TestTaskNumberSurvivesAStoreRestartWithEveryColumn(t *testing.T) {
 	want.Pending = &supervise.Delivery{
 		ID: "outbox:71", Task: "Implement the change. Issue: LEGION-209. Phase: implementing.",
 		Phase: phase.Implementing, Generation: 4, Entry: 3, QueuedAt: at(1), ConfirmedAt: at(2),
-		Number: 7, Origin: "phase-start",
+		Number: 7, Origin: supervise.OriginPhaseStart,
 		TakenText: "Your last turn was interrupted.\n\nImplement the change. Issue: LEGION-209. Phase: implementing.",
 	}
 	if err := store.PutClaimAndDelivery(ctx, want, *want.Pending); err != nil {
@@ -239,18 +243,18 @@ func TestTaskNumberSurvivesAStoreRestartWithEveryColumn(t *testing.T) {
 		// The claim's next task, queued under the next number and not yet taken: nothing has
 		// confirmed it, and no take of it has been answered.
 		queued := *want.Pending
-		queued.ID, queued.Number, queued.Origin, queued.TakenText = "outbox:72", 8, "wake", ""
+		queued.ID, queued.Number, queued.Origin, queued.TakenText = "outbox:72", 8, supervise.OriginWake, ""
 		queued.ConfirmedAt = time.Time{}
 		if err := store.PutDelivery(ctx, want.Token, queued); err != nil {
 			t.Fatalf("put the queued task: %v", err)
 		}
-		var null bool
-		if err := store.pool.QueryRow(ctx, "select taken_text is null from pending_task_deliveries where claim_token = $1",
-			string(want.Token)).Scan(&null); err != nil {
+		var stored string
+		if err := store.pool.QueryRow(ctx, "select taken_text from pending_task_deliveries where claim_token = $1",
+			string(want.Token)).Scan(&stored); err != nil {
 			t.Fatalf("read the queued task's taken text: %v", err)
 		}
-		if !null {
-			t.Error("a task no take has been accepted for stores a taken text, want null")
+		if stored != "" {
+			t.Errorf("a task no take has been accepted for stores the taken text %q, want none", stored)
 		}
 		held := want
 		held.Pending = &queued
@@ -434,7 +438,7 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 	taken.TaskWritten, taken.TaskTaken, taken.TaskTakeState = 7, 7, supervise.TakeAccepted
 	taken.TaskSeenEpoch, taken.TaskSeenRevision = "2026-11-13T17:56:49Z", 12
 	task := supervise.Delivery{ID: "outbox:71", Task: "Implement the change.", Phase: phase.Implementing,
-		Generation: 4, QueuedAt: at(1), ConfirmedAt: at(2), Number: 7, Origin: "phase-start", TakenText: "Implement the change."}
+		Generation: 4, QueuedAt: at(1), ConfirmedAt: at(2), Number: 7, Origin: supervise.OriginPhaseStart, TakenText: "Implement the change."}
 	if err := store.PutClaimAndDelivery(ctx, taken, task); err != nil {
 		t.Fatalf("put the claim holding its taken task: %v", err)
 	}
@@ -528,12 +532,12 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 	}
 	var number int64
 	var origin string
-	var takenText *string
+	var takenText string
 	if err := store.pool.QueryRow(ctx, "select number, origin, taken_text from pending_task_deliveries where claim_token = $1",
 		string(taken.Token)).Scan(&number, &origin, &takenText); err != nil {
 		t.Fatalf("read the pending task after the roll-forward: %v", err)
 	}
-	if number != 1 || origin != "" || takenText != nil {
-		t.Errorf("the pending task after the roll-forward = number %d, origin %q, taken text %v; want task 1 as the second fill writes it", number, origin, takenText)
+	if number != 1 || origin != "" || takenText != "" {
+		t.Errorf("the pending task after the roll-forward = number %d, origin %q, taken text %q; want task 1 as the second fill writes it", number, origin, takenText)
 	}
 }

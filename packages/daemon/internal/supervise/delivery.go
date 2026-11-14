@@ -80,9 +80,9 @@ type Delivery struct {
 	// origin: its ask is the sweep's Envoy message (record.UpdateAsk).
 	Origin string
 	// TakenText is the text the daemon's accepted take of this task was answered with, and ""
-	// while no take of it has been accepted. A take of the same number sent again after its answer
-	// was lost is answered this same text, across a daemon restart too, so it is persisted (the
-	// store writes "" as null).
+	// while no accepted take awaits its turn: none was accepted, or its turn has started. A take
+	// of the same number sent again after its answer was lost is answered this same text, across
+	// a daemon restart too, so it is persisted.
 	TakenText string
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). It is what says a

@@ -780,11 +780,12 @@ func TestACompactionOfAClaimThatLosesItsProcessSaysItWasNotGivenBack(t *testing.
 	h.ready(token, "ses_implementer", 2)
 
 	settled(h, token)
+	// The relaunched claim's value stands where the queue wrote it — the compaction's end wrote
+	// nothing — and its worker takes the task it names.
 	if value, held := h.taskValues().Value(token); !held || value.Number != owed {
 		t.Fatalf("the bucket holds %+v (held %v) for the relaunched claim, want task %d, the one it owed", value, held, owed)
 	}
-	m, _ := h.supervisor.Machine(token)
-	acceptTake(t, m)
+	acceptTake(t, h.machine(token))
 }
 
 // The reason a compaction did not run is words the daemon did not write — Oh My Pi's, and

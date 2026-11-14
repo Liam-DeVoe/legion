@@ -416,8 +416,8 @@ func (h *harness) registered(bootToken, session string) claim.RegisterResponse {
 }
 
 // ready registers session on the claim's latest launch and has its agent say it is ready, at the
-// generation that launch carried.
-func (h *harness) ready(token claim.Token, session string, generation uint64) {
+// generation that launch carried. It answers what the registration told the agent.
+func (h *harness) ready(token claim.Token, session string, generation uint64) claim.RegisterResponse {
 	h.t.Helper()
 	registered := h.registered(h.bootToken(token), session)
 	if recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
@@ -425,6 +425,7 @@ func (h *harness) ready(token claim.Token, session string, generation uint64) {
 	}, nil); recorder.Code != http.StatusNoContent {
 		h.t.Fatalf("ready %s at generation %d = %d; body %s", token, generation, recorder.Code, recorder.Body)
 	}
+	return registered
 }
 
 // registerContract registers session on the launch bootToken names, declaring contract as the
@@ -535,14 +536,12 @@ func (h *harness) openTree(t *testing.T, project, tree string) {
 
 // acceptTake is the claim's worker taking the task its claim holds, as its plugin does once its host
 // is idle: the take of the pending number at the value the bucket holds, which must be accepted.
-// It answers the text the take was answered with.
-func acceptTake(t *testing.T, machine *supervise.Machine) string {
+func acceptTake(t *testing.T, machine *supervise.Machine) {
 	t.Helper()
 	answer := takePending(t, machine)
 	if answer.Outcome != supervise.TakeOutcomeAccepted {
 		t.Fatalf("the take of %s's task = %+v, want it accepted", machine.Claim().Token, answer)
 	}
-	return answer.Text
 }
 
 // takePending is the claim's worker taking the task its claim holds: the take of the pending
@@ -569,7 +568,9 @@ func takePending(t *testing.T, machine *supervise.Machine) supervise.TakeAnswer 
 }
 
 // finishTurn ends the turn of the claim's taken task as its worker does: the agent_end, and behind
-// it the turn-outcome report naming the task, which is what finishes it.
+// it the turn-outcome report naming the task, which is what finishes it. The report is the first
+// its producer makes at the claim's generation (sequence 1), so it is for a claim no turn has been
+// reported of yet.
 func finishTurn(t *testing.T, machine *supervise.Machine) {
 	t.Helper()
 	c := machine.Claim()
@@ -579,12 +580,8 @@ func finishTurn(t *testing.T, machine *supervise.Machine) {
 	if c.Pending == nil {
 		return
 	}
-	turns++
 	if err := machine.Handle(context.Background(), supervise.RequestTurnOutcome{Claim: c.Token, Generation: c.Generation,
-		Sequence: turns, Task: c.Pending.Number}); err != nil {
+		Sequence: 1, Task: c.Pending.Number}); err != nil {
 		t.Fatalf("report the turn of task %d on %s: %v", c.Pending.Number, c.Token, err)
 	}
 }
-
-// turns is the sequence the workers' turn-outcome reports carry, which only rises.
-var turns uint64

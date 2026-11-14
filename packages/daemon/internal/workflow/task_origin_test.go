@@ -117,8 +117,7 @@ func inLevelTester(build func(ctx context.Context, tx pgx.Tx, e *Engine) error) 
 func readyOfTester(given int64) func(t *testing.T) (*pgxpool.Pool, string) {
 	return func(t *testing.T) (*pgxpool.Pool, string) {
 		pool := migratedPool(t)
-		rec := finishedTester()
-		rec.written, rec.finished, rec.finishedIn = 0, 0, ""
+		rec := neverWrittenTester()
 		token := seedTester(t, pool, rec)
 		seedGivenEntry(t, pool, token, given)
 		readyTester(t, pool, testEngine(config.DesignGateRootIssues, nil), rec.generation)
@@ -131,8 +130,7 @@ func readyOfTester(given int64) func(t *testing.T) (*pgxpool.Pool, string) {
 func bootOfTester(given int64) func(t *testing.T) (*pgxpool.Pool, string) {
 	return func(t *testing.T) (*pgxpool.Pool, string) {
 		pool := migratedPool(t)
-		rec := finishedTester()
-		rec.written, rec.finished, rec.finishedIn = 0, 0, ""
+		rec := neverWrittenTester()
 		rec.state, rec.suspendedBy = supervise.StateSuspended, supervise.SuspendedByDaemon
 		token := seedTester(t, pool, rec)
 		seedGivenEntry(t, pool, token, given)

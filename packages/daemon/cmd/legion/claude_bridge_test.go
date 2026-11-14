@@ -259,8 +259,7 @@ func (p *claudeBridgeProcess) send(f shimwire.Frame) {
 
 // deliver writes one Envoy delivery to the bridge's inbox, as claude-envoy's channel server does,
 // over a connection of its own that stays open until the test ends. Between turns it starts a turn
-// of the bridge's own with content as its user message, which is how a turn of the bridge's begins:
-// the daemon pushes no task on the stream.
+// of the bridge's own with content as its user message.
 func (p *claudeBridgeProcess) deliver(id, content string) {
 	p.t.Helper()
 	sockets, _ := filepath.Glob(filepath.Join(p.tmp, "legion-claude-*", "inbox.sock"))

@@ -173,9 +173,10 @@ func TestADeliveryRewriteDoesNotTakeARowAnotherTreeHolds(t *testing.T) {
 		t.Fatalf("queue the new tree's task: %v", err)
 	}
 
-	// The old tree's task is taken back under a new id after its process died.
+	// The old tree's task is written again after its process died: the same delivery under its
+	// own id, marked interrupted (supervise's interrupted).
 	takenBack := oldTask
-	takenBack.ID = "outbox:1-interrupted"
+	takenBack.Interrupted = true
 	if err := r.store.PutDelivery(r.ctx, oldArchitect.Token, takenBack); err != nil {
 		t.Fatalf("take the old task back: %v", err)
 	}

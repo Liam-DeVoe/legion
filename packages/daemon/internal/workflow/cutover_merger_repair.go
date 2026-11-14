@@ -59,8 +59,9 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // queued root's members for its promotion, each of which starts every mid-phase member (admit's
 // startMidPhaseMembers); its phase is not finished (PhaseFinished), since a merged pull request's
 // merge closes the issue and leaves the merger nothing to do; and the owner's claim at the issue's
-// generation stands suspended, or has a process (liveOwner). Of those owners it selects each
-// merger the old build left so, by all of these (cutoverLeftMerger):
+// generation stands suspended, or has a process (supervise's Claim.RunsNothing, read the other
+// way). Of those owners it selects each merger the old build left so, by all of these
+// (cutoverLeftMerger):
 //   - the issue stands in merging, whose owner is the merger. The migration put every
 //     awaiting_merge issue there, and a hold from merging is the architect's to retry, which
 //     starts the merger (restart).

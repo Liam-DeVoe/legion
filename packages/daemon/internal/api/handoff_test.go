@@ -1545,9 +1545,6 @@ func TestACompletionFromATakenTaskWhoseTurnTheDaemonHasNotSeenNamesItsRun(t *tes
 		t.Fatalf("deliver: %v", err)
 	}
 	acceptTake(t, machine)
-	if p := machine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the take = %+v, want it taken", p)
-	}
 
 	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion from the take's turn = %d, want 200; body %s", recorder.Code, recorder.Body)
@@ -1565,7 +1562,7 @@ func TestACompletionFromATakenTaskWhoseTurnTheDaemonHasNotSeenNamesItsRun(t *tes
 // refused HANDOFF_NO_RUN. The first case holds a task that names no phase, which places it in no
 // phase's work; the second holds a task of the issue's own generation and phase, and the worker
 // that went on and did that phase's work in the turn before its take is not made to lose it.
-func TestACompletionInAForeignTurnIsNotTheRefusedTasksRun(t *testing.T) {
+func TestACompletionInAForeignTurnIsNotTheUntakenTasksRun(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		taskPhase phase.Phase
@@ -1658,7 +1655,7 @@ func TestAnOperatorsTaskLeavesTheRunTheClaimIsServing(t *testing.T) {
 // The next run's task has not been taken, so a completion arriving in a foreign turn is still the
 // old run's — and the route refuses it as stale, rather than crediting the new run with a
 // completion of a task nobody has read.
-func TestATakenBackConfirmationDoesNotMoveTheRunTheClaimIsServing(t *testing.T) {
+func TestATaskNotYetTakenDoesNotMoveTheRunTheClaimIsServing(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
 	// The tester served run 1, and the child is re-entered at run 2 once that turn ends.

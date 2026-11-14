@@ -101,7 +101,7 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 		t.Fatalf("spawn answered locator %+v, want the launch's", got.Locator)
 	}
 	if got.Pending == nil || got.Pending.Task != "Say hello." || got.Pending.ConfirmedAt != nil {
-		t.Fatalf("spawn answered pending %+v, want the task queued and not yet sent", got.Pending)
+		t.Fatalf("spawn answered pending %+v, want the task queued and not yet taken", got.Pending)
 	}
 	spawns := h.runtime.CallsOf("Spawn")
 	if len(spawns) != 1 || spawns[0].Spec.Claim != architectToken || spawns[0].Spec.Project != testProject {
@@ -1562,8 +1562,9 @@ func TestAnOperatorAnswerWhoseStepReadFailsCarriesNoRecordRatherThanTheMachinesC
 // A claim's view carries the record of the sends of its task that never reached a turn — how
 // many failed, when the last of them failed and the error it failed with — beside the queued and
 // confirmed times. Without it, a claim that has waited days on a send which never lands says so
-// only in a log line inside its own pod (INFRA-1480). The three are omitempty, and the send that
-// reaches a turn clears them, so a task no send has failed for carries none of them on the wire.
+// only in a log line inside its own pod (INFRA-1480). The three are omitempty, and the accepted
+// take clears them (supervise's accept), so a task no send has failed for carries none of them on
+// the wire.
 func TestClaimViewCarriesTheSendFailures(t *testing.T) {
 	h := newHarness(t)
 	token := claim.Token("legion-legion-legion-209-implementer")
@@ -1596,8 +1597,8 @@ func TestClaimViewCarriesTheSendFailures(t *testing.T) {
 		t.Fatalf("pending %+v, want the record beside the two times, of which only the queue has happened", pending)
 	}
 
-	// The send that reached a turn: the task is confirmed, and supervise's confirm cleared all
-	// three with the budgets.
+	// The take that was accepted: the task is confirmed, and supervise's accept cleared all three.
+	// The prompt budgets it leaves alone, to the take's turn start.
 	confirmed := failing
 	confirmed.ConfirmedAt = failedAt.Add(2 * time.Second)
 	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""

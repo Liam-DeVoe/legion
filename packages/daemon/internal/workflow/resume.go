@@ -175,8 +175,9 @@ type phaseOwners struct {
 // Accepting's owner is the tree's architect, which admission starts with the tree, so no issue
 // there is given one. An owner is answered as suspended while its claim at the issue's generation
 // stands suspended, whatever the source: which sources a start may act on is each caller's to
-// judge. It is answered as live while that claim has a process (liveOwner), which only the
-// cutover's repair reads: booted starts no live claim.
+// judge. It is answered as live while that claim has a process, launching or up (supervise's
+// Claim.RunsNothing, read the other way), which only the cutover's repair reads: booted starts no
+// live claim.
 func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
@@ -236,22 +237,11 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		case held == nil:
 		case held.State == supervise.StateSuspended:
 			owners.suspended = append(owners.suspended, owner)
-		case liveOwner(held.State):
+		case !(supervise.Claim{State: held.State}).RunsNothing():
 			owners.live = append(owners.live, owner)
 		}
 	}
 	return owners, nil
-}
-
-// liveOwner is whether a phase owner's claim in state has a process: it is launching, or its
-// agent is up. A queued claim has none yet, and a failed or retired one has none any more.
-func liveOwner(state supervise.ClaimState) bool {
-	switch state {
-	case supervise.StateLaunching, supervise.StateLaunchUncertain, supervise.StateShimConnected,
-		supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle:
-		return true
-	}
-	return false
 }
 
 // startSuspendedOwner owes owner the start the boot gives a phase owner, built from the entry row

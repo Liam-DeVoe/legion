@@ -1463,7 +1463,7 @@ type UnseenTaskValue struct {
 func UnseenTaskValuesOf(unseen []supervise.UnseenTaskValue) []UnseenTaskValue {
 	var values []UnseenTaskValue
 	for _, v := range unseen {
-		values = append(values, UnseenTaskValue{Claim: v.Claim, Issue: v.Issue, Role: v.Role, Task: v.Task, WrittenAt: v.WrittenAt})
+		values = append(values, UnseenTaskValue(v))
 	}
 	slices.SortStableFunc(values, func(a, b UnseenTaskValue) int { return cmp.Compare(a.Claim, b.Claim) })
 	return values

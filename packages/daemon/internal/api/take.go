@@ -35,13 +35,12 @@ import (
 // and the number of the last task the claim finished (supervise's Machine.CurrentTask).
 func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	var req claim.TaskRequest
-	if !s.readTaskBody(w, r, &req) || !requireTaskGeneration(w, req.Generation) {
+	if !s.readTaskBody(w, r, &req) {
 		return
 	}
-	caller, named := req.Caller()
-	token, m, refusal := s.claimCaller(r, "task read", caller, named, req.Generation)
-	if refusal != nil {
-		writeFailure(w, refusal.status, refusal.code, refusal.message)
+	caller, _ := req.Caller()
+	token, m, ok := s.taskCaller(w, r, "task read", caller, req.Generation)
+	if !ok {
 		return
 	}
 	current, err := m.CurrentTask(r.Context())
@@ -55,24 +54,19 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 
 // taskResponseOf is the claim's current task as the wire carries it.
 func taskResponseOf(current supervise.CurrentTask) claim.TaskResponse {
-	response := claim.TaskResponse{Finished: current.Finished}
-	if v := current.Value; v != nil {
-		response.Task = &claim.TaskValue{Number: v.Number, Epoch: v.Epoch, Revision: v.Revision}
-	}
-	return response
+	return claim.TaskResponse{Task: (*claim.TaskValue)(current.Value), Finished: current.Finished}
 }
 
 // taskSeen is the worker reporting the value it was handed at an epoch and revision, whether or
 // not its host is idle (supervise's RequestTaskSeen). It answers 204.
 func (s *server) taskSeen(w http.ResponseWriter, r *http.Request) {
 	var req claim.TaskSeenRequest
-	if !s.readTaskBody(w, r, &req) || !requireTaskGeneration(w, req.Generation) {
+	if !s.readTaskBody(w, r, &req) {
 		return
 	}
-	caller, named := req.Caller()
-	token, m, refusal := s.claimCaller(r, "seen report", caller, named, req.Generation)
-	if refusal != nil {
-		writeFailure(w, refusal.status, refusal.code, refusal.message)
+	caller, _ := req.Caller()
+	token, m, ok := s.taskCaller(w, r, "seen report", caller, req.Generation)
+	if !ok {
 		return
 	}
 	ctx, decided := s.decision(r, token)
@@ -94,13 +88,12 @@ func (s *server) taskSeen(w http.ResponseWriter, r *http.Request) {
 // (logged by the machine) is the rest of the decision's.
 func (s *server) take(w http.ResponseWriter, r *http.Request) {
 	var req claim.TakeRequest
-	if !s.readTaskBody(w, r, &req) || !requireTaskGeneration(w, req.Generation) {
+	if !s.readTaskBody(w, r, &req) {
 		return
 	}
-	caller, named := req.Caller()
-	token, m, refusal := s.claimCaller(r, "take", caller, named, req.Generation)
-	if refusal != nil {
-		writeFailure(w, refusal.status, refusal.code, refusal.message)
+	caller, _ := req.Caller()
+	token, m, ok := s.taskCaller(w, r, "take", caller, req.Generation)
+	if !ok {
 		return
 	}
 	ctx, decided := s.decision(r, token)
@@ -127,6 +120,20 @@ func callerSession(caller claim.Caller) string {
 		return agent.SessionID
 	}
 	return ""
+}
+
+// taskCaller is a task route's claim and its machine once its body is decoded: the generation is
+// required, and the caller resolved (claimCaller), each refused in the coded shape (Failure).
+func (s *server) taskCaller(w http.ResponseWriter, r *http.Request, request string, caller claim.Caller, generation uint64) (claim.Token, *supervise.Machine, bool) {
+	if !requireTaskGeneration(w, generation) {
+		return "", nil, false
+	}
+	token, m, refusal := s.claimCaller(r, request, caller, generation)
+	if refusal != nil {
+		writeFailure(w, refusal.status, refusal.code, refusal.message)
+		return "", nil, false
+	}
+	return token, m, true
 }
 
 // readTaskBody decodes a task route's one JSON object strictly, refusing a member the route does
