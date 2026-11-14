@@ -1,9 +1,12 @@
 kind: Changed
 body: |-
   `legion controller start` now sets `PERSON_SIGNIN_TRADE=off` for the controller, under
-  `dispatch_token_broker` and `dispatch_token_file` alike. So the controller's own Dispatch and
-  Envoy credentials trade the machine and never the operator's `agent-secrets login` sign-in, and
-  the controller never writes or speaks in its operator's name. Its `agent-secrets` secret reads
+  `dispatch_token_broker` and `dispatch_token_file` alike. `off` is that variable's one value,
+  and any other value fails every broker call of the process that sets it. So every credential
+  the controller trades at the secrets broker is this machine's and never the operator's
+  `agent-secrets login` sign-in: its Dispatch credential under `dispatch_token_broker`, and its
+  Envoy credential where no Envoy bearer names one. A bearer the operator's own environment or
+  `envoy.json` gives the controller is presented as it is today. Its `agent-secrets` secret reads
   are unchanged.
 custom:
     Issue: pr4029

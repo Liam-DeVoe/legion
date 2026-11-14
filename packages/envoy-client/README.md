@@ -749,9 +749,12 @@ it reads no sign-in at all. Unset or blank, the person trade is on. Any other va
 with an error that names the variable. `legion controller start` sets it for the controller
 under every configuration. So the controller's own Dispatch credential, and its Envoy
 credential where no Envoy bearer is set, trade the machine even where the operator ran
-`agent-secrets login`, and the controller never writes or speaks in its operator's name. Only
-this client reads the setting, so the controller's `agent-secrets` secret reads are signed as
-they would be without it. Its name lies outside `AGENT_SECRETS_*` because
+`agent-secrets login`, and no credential the controller trades at the broker acts in its
+operator's name. A bearer the controller is given is presented as it is at main: the token
+`dispatch_token_file` names, and an Envoy bearer from the operator's environment or from the
+`envoy.json` under the HOME the controller keeps, each of which resolves before the broker
+route. Only this client reads the setting, so the controller's `agent-secrets` secret reads are
+signed as they would be without it. Its name lies outside `AGENT_SECRETS_*` because
 `agent-secrets NAME -- <cmd>` strips most variables of that prefix from its child, so a
 `dispatch` command the controller runs under `agent-secrets NAME --` keeps it.
 

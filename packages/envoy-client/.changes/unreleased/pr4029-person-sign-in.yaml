@@ -11,7 +11,8 @@ body: |-
 
   While a sign-in record is on the machine, the client never trades the machine in its place. A
   process whose environment sets `PERSON_SIGNIN_TRADE=off`, as `legion controller start` sets it
-  for the controller, trades the machine even where a person signed in. An error fails the call,
+  for the controller, trades the machine even where a person signed in; `off` is that variable's
+  one value, and any other value fails every call. An error fails the call,
   and a refusal that a new sign-in cures names `agent-secrets login`. A final refusal of the
   sign-in is kept for the life of the process: later calls fail with the same words and send
   nothing to the issuer or the broker until a new `agent-secrets login`. When Dispatch answers
