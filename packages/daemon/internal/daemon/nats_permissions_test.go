@@ -138,12 +138,11 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 
 				logs := &syncBuffer{}
 				cfg := daemonGrantConfig(uri)
-				attempt, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				attempt, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				w := grantWorkflow(t, logs)
-				if err := w.connect(attempt, cfg, natsConnection{seed: daemonSeed}); err == nil {
-					t.Fatal("the daemon connected without the dispatch consumer-create permission")
-				}
+				connected := make(chan error, 1)
+				go func() { connected <- w.connect(attempt, cfg, natsConnection{seed: daemonSeed}) }()
 
 				denied := "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS." + dispatchGrantConsumer
 				var daemonLine, serverLine string
@@ -151,6 +150,12 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 					daemonLine = matchingLogLine(logs.String(), "NATS refused the daemon a permission", denied)
 					return daemonLine != ""
 				})
+				// The refusal is reported. A connect still waiting for the answer of the publish the
+				// server refused, which never comes, is ended here, where the test chooses.
+				cancel()
+				if err := testwait.Receive(t, "the daemon's connect to return", connected); err == nil {
+					t.Fatal("the daemon connected without the dispatch consumer-create permission")
+				}
 				var serverLogErr error
 				testwait.Eventually(t, "the server log naming the refused JetStream API publish", func() bool {
 					var serverLog string
@@ -299,7 +304,7 @@ func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.
 	}); err != nil {
 		t.Fatalf("encode the daemon permissions: %v", err)
 	}
-	server, uri := testnats.StartNkeyAuthorizedUsers(t, image,
+	server, uri := testnats.StartImage(t, image,
 		testnats.NkeyUser{Public: daemonPublic, Permissions: strings.TrimSpace(permissions.String())},
 		testnats.NkeyUser{Public: adminPublic})
 	admin, err := natsauth.Connect([]string{uri}, adminSeed, t.Name()+" admin", nats.Timeout(5*time.Second))

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -264,13 +265,18 @@ func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
 	t.Run("no write access, after the window", func(t *testing.T) {
 		limitFirst, calls = false, 0
 		w := reviewPermissionRuntime(pool, server.URL, quietLogger())
-		w.permissionTTL = time.Millisecond
-		for range 2 {
-			read(t, w, "a-reader", false)
-			time.Sleep(2 * w.permissionTTL)
+		clk := clocktest.New(time.Date(2026, 10, 8, 22, 0, 0, 0, time.UTC))
+		w.clock = clk
+		read(t, w, "a-reader", false)
+		clk.Advance(reviewPermissionTTL - time.Nanosecond)
+		read(t, w, "a-reader", false)
+		if calls != 1 {
+			t.Fatalf("GitHub was asked %d times for two reviews within one window, want once", calls)
 		}
+		clk.Advance(time.Nanosecond)
+		read(t, w, "a-reader", false)
 		if calls != 2 {
-			t.Fatalf("GitHub was asked %d times for two reviews a window apart, want twice", calls)
+			t.Fatalf("GitHub was asked %d times once the window had passed, want twice", calls)
 		}
 	})
 	t.Run("write access is read every time", func(t *testing.T) {
@@ -286,18 +292,21 @@ func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
 	t.Run("while the rate limit stands", func(t *testing.T) {
 		limitFirst, calls = true, 0
 		w := reviewPermissionRuntime(pool, server.URL, quietLogger())
+		clk := clocktest.New(time.Date(2026, 10, 8, 22, 0, 0, 0, time.UTC))
+		w.clock = clk
 		if _, err := w.reviewerCanWrite(context.Background(), review("a-writer")); err == nil {
 			t.Fatal("a rate-limited read answered; want its error")
 		}
 		_, err := w.reviewerCanWrite(context.Background(), review("another-writer"))
 		var later *intake.RetryLater
-		if !errors.As(err, &later) || later.After <= 0 {
-			t.Fatalf("a read while the limit stands = %v; want the wait left", err)
+		if !errors.As(err, &later) || later.After != time.Second {
+			t.Fatalf("a read while the limit stands = %v; want the wait left, the second GitHub asked for", err)
 		}
 		if calls != 1 {
 			t.Fatalf("GitHub was asked %d times while its limit stood, want once: the limit itself", calls)
 		}
-		time.Sleep(1100 * time.Millisecond)
+		// GitHub asked for a second (Retry-After: 1), which the clock now passes.
+		clk.Advance(time.Second)
 		read(t, w, "a-writer", true)
 		if calls != 2 {
 			t.Fatalf("GitHub was asked %d times once the wait had passed, want twice", calls)

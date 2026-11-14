@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -453,13 +454,16 @@ func TestTheReadJudgesEachReviewOnce(t *testing.T) {
 		return "read"
 	}, &outsiderReads).URL
 	w := reviewReadRuntime(pool, api)
-	w.permissionTTL = time.Nanosecond
+	clk := clocktest.New(time.Date(2026, 10, 8, 22, 20, 0, 0, time.UTC))
+	w.clock = clk
 	readCapture(t, w)
 	if got, _ := capturePhase(t, pool); got != phase.Reviewing || outsiderReads.Load() != 1 {
 		t.Fatalf("after the first read the issue is in %s and the outsider's permission was read %d times, want reviewing and once", got, outsiderReads.Load())
 	}
 	promoted.Store(true)
-	time.Sleep(time.Millisecond)
+	// The permission answer's own window passes, so only the review judged once keeps a second
+	// read from asking about the account again.
+	clk.Advance(reviewPermissionTTL)
 	readCapture(t, w)
 	if got, _ := capturePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the account was given write access the issue is in %s, want reviewing: its approval was judged when the account could not write", got)

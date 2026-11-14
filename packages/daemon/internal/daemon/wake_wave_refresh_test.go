@@ -25,7 +25,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -59,20 +58,6 @@ const (
 	// over for as long as the round stands (refreshStalePlugins, InPodRound) and which the count
 	// of claims left to refresh leaves out (claimsToRefresh).
 	refreshWaveRounded = refreshWaveTurns + 1
-	// refreshWaveSweep is the orphan sweep of these cases, on the wall clock as the daemon's own
-	// ticker is: the sweep is what re-fills the gate, so a wave of fifteen minutes' refresh would
-	// otherwise take fifteen minutes of the test's own time.
-	//
-	// It is half a second rather than the tenth the rig next door uses, because the gate's
-	// correction rests on a sweep being long enough for the admissions of the pass before it to
-	// have reached the machines' published views: the floor it holds is the admissions granted
-	// since the previous correction, so a wake still unparked two corrections after it was
-	// admitted is counted by neither and the gate hands its credit out a second time (reading 6
-	// and decision P2 of dispatch://INFRA-2712/artifact/plan-md). On the shipped daemon that is
-	// a minute against the milliseconds a post takes; at a tenth of a second, over a hundred and
-	// thirty machines and the race detector, it is not, and the lane was measured holding the
-	// rate and one.
-	refreshWaveSweep = 500 * time.Millisecond
 	// refreshWaveRounds is the most rounds of the gate the drain of the fleet may take, a round
 	// being one sweep's worth of admissions run to their turns. The lane's own number is the
 	// claims it has to refresh divided by the rate — 118 at 8 is 15 — and this allows two thirds
@@ -122,13 +107,15 @@ func refreshWaveConfig(t *testing.T) config.Config {
 // configuration carries: without it this daemon reads itself as one that can relaunch onto no
 // plugin at all, and the lane posts nothing whatever the gate holds (prepare's pluginRelaunchable,
 // refreshStalePlugins).
-func startRefreshWaveDaemon(t *testing.T, cfg config.Config, clock *waveClock, rt *waveRuntime, logged *syncBuffer) *daemon {
+func startRefreshWaveDaemon(t *testing.T, cfg config.Config, clock *waveClock, rt *waveRuntime, logged *syncBuffer) (*daemon, *passer) {
 	t.Helper()
 	relaunchable := true
-	return startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) {
-		o.orphanSweep = refreshWaveSweep
+	var passes *passer
+	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) {
 		o.pluginRelaunchable = &relaunchable
+		passes = triggering(o)
 	})
+	return d, passes
 }
 
 // waveStreamAddress is the worker stream this daemon serves, read from the line it writes when it
@@ -293,18 +280,21 @@ func settledRefreshes(t *testing.T, d *daemon, what string) []api.WakeWaiting {
 // end of the run whether they were read, and a lane that cannot fill its gate at a sweep has
 // the drain assertion to answer for, which is where that failure belongs rather than in a wait
 // that timed out.
-func awaitFullGate(t *testing.T, d *daemon) bool {
+func awaitFullGate(t *testing.T, d *daemon, passes *passer) bool {
 	t.Helper()
-	// The bound is generous rather than a few sweeps, because what it waits on is a pass over
-	// every machine of the rig and then each admitted machine's own park, published through each
-	// machine's view: a run of this package whole, with the race detector on and every other
-	// test's goroutines beside it, takes that longer than a run of this test alone. A tight
-	// bound read a gate the pass had not finished filling and reported a run that never filled
-	// one, which left assertions 2 and 5 unread and failed the case at its end for a fault of
-	// the wait rather than of the lane.
-	return testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return len(refreshWakesWaiting(t, d)) == testWakeRate
-	})
+	// What it waits on is a pass over every machine of the rig and then each admitted
+	// machine's own park, published through each machine's view, so each reading is taken once
+	// the posts have settled, and a sweep of this test's own is run while the gate is short: a
+	// reading taken inside a pass's fan-out would report a run that never filled a gate, which
+	// left assertions 2 and 5 unread and failed the case at its end for a fault of the wait
+	// rather than of the lane.
+	for range 3 {
+		if len(settledRefreshes(t, d, "the gate a sweep fills")) == testWakeRate {
+			return true
+		}
+		passes.pass(t, passOrphans)
+	}
+	return len(settledRefreshes(t, d, "the gate a sweep fills")) == testWakeRate
 }
 
 // staleClaimsListed is how many claims the stale-plugin lane still has to refresh, counted from
@@ -406,7 +396,7 @@ func baselineRootLaunches(t *testing.T) []time.Duration {
 	rt := newWaveRuntime(clock)
 	origin := clock.Now()
 
-	d := startRefreshWaveDaemon(t, cfg, clock, rt, logged)
+	d, _ := startRefreshWaveDaemon(t, cfg, clock, rt, logged)
 	defer d.stop()
 
 	waiting := awaitWave(t, d, refreshWaveRoots)
@@ -477,7 +467,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 	rt := newWaveRuntime(clock)
 	origin := clock.Now()
 
-	d := startRefreshWaveDaemon(t, cfg, clock, rt, logged)
+	d, passes := startRefreshWaveDaemon(t, cfg, clock, rt, logged)
 
 	// The eight agents in a turn, each on its own claim's process: the daemon asks each whether
 	// the turn an earlier daemon saw begin is still running, and each says it is.
@@ -522,22 +512,25 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		if left == 0 {
 			break
 		}
-		// A round is a sweep's worth of admissions, so it waits for the gate to fill where the
-		// lane has more than the rate left: the pass posts its round over one goroutine per
-		// claim, and a reading taken inside that fan-out holds part of a round and would count
-		// the drain below in rounds of its own making rather than the lane's. The wait is
-		// bounded and its failure is no failure of its own: a lane that cannot fill the gate is
-		// what the drain assertion is there to report.
+		// A round is a sweep's worth of admissions, so it runs sweeps where the lane has more
+		// than the rate left, until the gate fills: the pass posts its round over one goroutine
+		// per claim, and a reading taken inside that fan-out holds part of a round and would
+		// count the drain below in rounds of its own making rather than the lane's. Three
+		// sweeps at most are run, and a gate that never fills is no failure of its own: a lane
+		// that cannot fill the gate is what the drain assertion is there to report.
 		if left > testWakeRate {
-			testwait.Holds(3*refreshWaveSweep+time.Second, testwait.Poll, func() bool {
-				return len(refreshWakesWaiting(t, d)) >= testWakeRate
-			})
+			for range 3 {
+				if len(refreshWakesWaiting(t, d)) >= testWakeRate {
+					break
+				}
+				passes.pass(t, passOrphans)
+			}
 		}
 		waiting := settledRefreshes(t, d, fmt.Sprintf("round %d", rounds+1))
 		if len(waiting) == 0 {
 			// The lane has claims left and nothing of its own in the pacing: the sweep that
 			// follows posts the next round's worth, and every wake it raises is the gate's.
-			testwait.Eventually(t, "the sweep after an empty gate to admit the next round", func() bool {
+			passes.until(t, passOrphans, "the sweep after an empty gate to admit the next round", func() bool {
 				return len(refreshWakesWaiting(t, d)) > 0 || claimsLeftToRefresh(t, d, "an empty gate") == 0
 			})
 			continue
@@ -556,7 +549,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		// wait here reports rather than fails — and the end of this case requires the refusal to
 		// have been read for every one of the eight turns, so nothing is quietly skipped.
 		if turnsEnded == 0 && rounds > 0 {
-			full := awaitFullGate(t, d)
+			full := awaitFullGate(t, d, passes)
 			waiting = settledRefreshes(t, d, "the gate the turns end against")
 			for _, turn := range turns {
 				turn.endTurn()
@@ -611,7 +604,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		// It reads a full gate too, and waits for one in the same way, for the same reason: a
 		// lane that never fills one has the drain below to answer for, and the end of this case
 		// requires this part to have been read at all.
-		if killed == "" && turnsEnded > 0 && rounds <= 4 && awaitFullGate(t, d) {
+		if killed == "" && turnsEnded > 0 && rounds <= 4 && awaitFullGate(t, d, passes) {
 			waiting = settledRefreshes(t, d, "the gate the kill reads")
 			killed, drained = waiting[len(waiting)-1].Claim, waiting[0].Claim
 			killedClaim := d.claim(killed)
@@ -635,24 +628,18 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 
 			// The credit the dropped wake gives back, and the sweep that spends it on another
 			// claim: what this segment measures is the release inside the suspension's own
-			// decision followed by the next sweep's admission. The sweeps are counted from the
-			// moment the wake is seen gone rather than from the request that dropped it,
-			// because the sweep runs on the wall clock while the drop and the reading of it are
-			// the test's own round trips: what is being measured is that pass's own first acts
-			// (refreshStalePlugins), not how long this test took to see the wake go.
-			status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(drained)+"/suspend", nil, true)
-			if status != http.StatusOK {
-				t.Fatalf("the suspend of %s, which holds an admitted refresh wake, = %d; body %s", drained, status, body)
-			}
-			testwait.Eventually(t, fmt.Sprintf("the refresh wake of %s to go with the process its suspension ended", drained), func() bool {
-				return !claimsOfWakes(refreshWakesWaiting(t, d))[drained]
-			})
+			// decision followed by the next sweep's admission. The sweeps are this test's own,
+			// counted from the moment the wake is seen gone, each read once its posts have
+			// settled, since a pass posts its round over one goroutine per claim.
 			sweptAt := len(rt.fake().CallsOf("ReconcileOrphans"))
-			testwait.Eventually(t, "the credit that suspension took away to come back and admit another claim", func() bool {
-				return len(refreshWakesWaiting(t, d)) == testWakeRate
-			})
+			for range 3 {
+				if len(settledRefreshes(t, d, "the credit coming back")) == testWakeRate {
+					break
+				}
+				passes.pass(t, passOrphans)
+			}
 			creditBackIn = len(rt.fake().CallsOf("ReconcileOrphans")) - sweptAt
-			if creditBackIn > 2 {
+			if creditBackIn > 2 || len(settledRefreshes(t, d, "the credit coming back")) != testWakeRate {
 				t.Fatalf("the credit the suspension of %s took away came back %d sweeps after the wake was seen gone, want the next sweep and no later than the one after it: the pass that follows the drop corrects the gate from the wakes the machines hold and admits another claim on it",
 					drained, creditBackIn)
 			}
@@ -868,9 +855,10 @@ func TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst(t *testing.
 	rt := newWaveRuntime(clock)
 
 	relaunchable := true
+	var passes *passer
 	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) {
-		o.orphanSweep = refreshWaveSweep
 		o.pluginRelaunchable = &relaunchable
+		passes = triggering(o)
 	})
 
 	wave := append(append([]claim.Token{}, stale...), roots...)
@@ -886,7 +874,7 @@ func TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst(t *testing.
 	for round := 1; round <= refreshWaveRounds && launched() < len(wave); round++ {
 		waiting := waitingWakes(t, d)
 		if len(waiting) == 0 {
-			testwait.Eventually(t, "the sweep after an empty queue to raise the next wakes", func() bool {
+			passes.until(t, passOrphans, "the sweep after an empty queue to raise the next wakes", func() bool {
 				return len(waitingWakes(t, d)) > 0 || launched() == len(wave)
 			})
 			continue

@@ -9,7 +9,7 @@
 // packages/envoy's cmd/dispatch and runs it, as packages/dispatch/e2e/run-server.sh does, on a
 // database of its own on LEGION_TEST_PG_DSN's server, with NATS off and the agent token the daemon
 // and the CLI present; it stops it and starts it again on the same database and port for A10. The
-// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
+// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonLogging),
 // booted with dispatch_url at that server, so every Dispatch read and write it makes - the
 // repository mapping, the issue list, its status writes and messages, and the read of the record a
 // completion names - goes to the real routes. The worker side is the real `dispatch` CLI
@@ -158,7 +158,7 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 2*time.Minute)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 	return r
@@ -596,15 +596,16 @@ func (r *handoffRecordsLive) a10Restarted() {
 	}
 }
 
-// holdPhase holds that key is still in want, for liveSettle, as the refusal left it.
+// holdPhase holds that key is still in want, as the refusal left it. One read is the whole proof:
+// the completion route applies a completion's fact inside the request (api's answerCompletion,
+// intake.ApplyFact), so the refusal it answered has done all it will, and it tells nobody to read
+// the pull request (Options.HandoffCompleted is told of taken completions only). Each refusal's
+// control step then completes the same phase and is taken, which a phase the refusal had moved
+// would refuse.
 func (r *handoffRecordsLive) holdPhase(key string, want phase.Phase) {
 	r.t.Helper()
-	deadline := time.Now().Add(liveSettle)
-	for time.Now().Before(deadline) {
-		if got := r.issue(key).Phase; got != want {
-			r.t.Fatalf("%s moved to %s after the refusal, want it to stay in %s", key, got, want)
-		}
-		time.Sleep(100 * time.Millisecond)
+	if got := r.issue(key).Phase; got != want {
+		r.t.Fatalf("%s moved to %s after the refusal, want it to stay in %s", key, got, want)
 	}
 	r.note("read back: %s is still in %s", key, want)
 }
@@ -942,13 +943,7 @@ func (c *handoffClaimant) endTurn() {
 // awaitPrompt waits for the next task the daemon prompts this claim with.
 func (c *handoffClaimant) awaitPrompt() shimwire.Prompt {
 	c.r.t.Helper()
-	select {
-	case prompt := <-c.prompts:
-		return prompt
-	case <-time.After(2 * time.Minute):
-		c.r.t.Fatalf("%s was prompted with no task within 2m", c.token)
-		return shimwire.Prompt{}
-	}
+	return testwait.Receive(c.r.t, string(c.token)+"'s next task prompt", c.prompts)
 }
 
 // complete posts a completion for this claim with a grant minted for it now, as the `legion`

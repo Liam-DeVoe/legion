@@ -67,9 +67,8 @@ import (
 //     takes back and nothing else, so step 8 cannot pass by checking everything;
 //  10. the roots of step 8 are admitted when that blocker closes.
 func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
-	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
-	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
-	// from.
+	// The NATS server is taken first: Dispatch reconciles ENVOY_NOTIFICATIONS on the test's own
+	// server (testnats.URL) on its first connection, which the daemon then consumes from.
 	natsURL := testnats.URL(t)
 	baseURL, token := startScratchDispatchWithNATS(t, natsURL)
 
@@ -86,9 +85,8 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// nothing is waiting in. Each step that needs a free slot says so against the cap itself.
 	cfg.AdmissionCap = 16
 	// The controller tick admits a root whose blocker is done whatever the event did, so it must
-	// not be what step 6 sees: an hour before the runtime's first tick (o.controllerFirstWake,
-	// below) and an hour between ticks mean this run applies no tick at all.
-	cfg.ControllerWakeInterval = time.Hour
+	// not be what step 6 sees: the daemon's clock is held still (fakeRuntime's stillClock), so the
+	// runtime's first tick (firstControllerTick) never comes and this run applies no tick at all.
 	// Gating no step, the architect's own registration opens its tree, which is what makes
 	// starting a released child possible at all.
 	cfg.Gates.Design = config.DesignGateOff.Steps()
@@ -108,7 +106,6 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = blockersGitHub(t)
-	o.controllerFirstWake = time.Hour
 	d := startDaemon(t, cfg, o)
 
 	// The blocker is itself a root Legion works, which is what a blocked_by link between two
@@ -550,10 +547,9 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 		t.Fatalf("Legion keeps a record of %s, which nobody handed to it\nstate %s", outside, body)
 	}
 
-	// The tick cannot be what admits the root: the first tick is an hour after the runtime starts
-	// and the next an hour after that, so no tick runs in this test at all, and the judgement below
-	// that none was applied between the close and the admission holds by construction, not by when
-	// the close happens to land.
+	// The tick cannot be what admits the root: the daemon's clock is held still, so no tick runs in
+	// this test at all, and the judgement below that none was applied between the close and the
+	// admission holds by construction, not by when the close happens to land.
 	ticks := func() int {
 		t.Helper()
 		var n int
@@ -823,29 +819,28 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 }
 
-// settled polls the daemon's state until want holds and returns it with the JSON it was read
+// settled reads the daemon's state until want holds and returns it with the JSON it was read
 // from, so every assertion over it quotes the very answer it judged. The daemon is event-driven:
 // nothing here waits a fixed span, and a condition that never holds fails naming the state the
-// last poll read — what Legion was doing instead.
+// last read found — what Legion was doing instead.
 func settled(t *testing.T, d *daemon, what string, want func(api.State) bool) (api.State, string) {
 	t.Helper()
-	var state api.State
-	var body []byte
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, 20*time.Second), 20*time.Millisecond, func() bool {
-		status, read := d.request(http.MethodGet, "/legion/v1/state", nil, false)
-		body = read
+	type read struct {
+		state api.State
+		body  string
+	}
+	got := testwait.Until(t, "Legion to "+what, func() (read, bool) {
+		status, body := d.request(http.MethodGet, "/legion/v1/state", nil, false)
 		if status != http.StatusOK {
 			t.Fatalf("GET the state = %d; body %s", status, body)
 		}
-		state = api.State{}
+		var state api.State
 		if err := json.Unmarshal(body, &state); err != nil {
 			t.Fatalf("decode the state %s: %v", body, err)
 		}
-		return want(state)
-	}) {
-		t.Fatalf("Legion did not %s; its state is %s", what, body)
-	}
-	return state, string(body)
+		return read{state: state, body: string(body)}, want(state)
+	})
+	return got.state, got.body
 }
 
 // blockedOn is what the state says issue waits on, and whether it names it at all.

@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -44,92 +45,28 @@ import (
 // waveSize is how many claims each wave wakes at once.
 const waveSize = 40
 
-// waveClock is the machines' time, held still until a test moves it: a timer is due at a moment
-// rather than after a wait, because a paced wake is armed for the turn the limiter gave it and a
-// test that advances to that turn must fire that timer and no other. heldClock
-// (supervision_test.go) fires by the exact wait a timer was armed for, which no wave can name: the
-// daemon jitters every paced release, so the forty waits of one wave are forty different numbers.
-type waveClock struct {
-	mu     sync.Mutex
-	now    time.Time
-	timers []*waveTimer
-}
-
-// waveTimer is one armed timer: the moment it is due and what runs then.
-type waveTimer struct {
-	clock *waveClock
-	due   time.Time
-	f     func()
-	done  bool
-}
+// waveClock is the machines' time, held still until a test moves it: a clocktest.Fake, whose
+// timers are due at a moment rather than after a wait, because a paced wake is armed for the turn
+// the limiter gave it and a test that advances to that turn must fire that timer and no other.
+// heldClock (supervision_test.go) fires by the exact wait a timer was armed for, which no wave can
+// name: the daemon jitters every paced release, so the forty waits of one wave are forty different
+// numbers.
+type waveClock struct{ *clocktest.Fake }
 
 // newWaveClock starts at the wall clock, as heldClock does, so nothing the daemon compares
 // against the database's own now reads as years out.
 func newWaveClock() *waveClock {
-	return &waveClock{now: time.Now().UTC()}
-}
-
-func (c *waveClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
+	return &waveClock{clocktest.New(time.Now().UTC())}
 }
 
 // Sleep returns at once, as the daemon tests' clocks do: a launch backoff is not what these tests
 // measure, and a sleep on a clock a test drives would never return.
-func (c *waveClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+func (*waveClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
-func (c *waveClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	timer := &waveTimer{clock: c, due: c.now.Add(d), f: f}
-	c.timers = append(c.timers, timer)
-	return timer
-}
-
-func (t *waveTimer) Stop() bool {
-	t.clock.mu.Lock()
-	defer t.clock.mu.Unlock()
-	if t.done {
-		return false
-	}
-	t.done = true
-	return true
-}
-
-// advanceTo moves the clock to at and runs every timer due by then, earliest first, until none is
-// left: a wake's turn arms the next thing the claim waits for, and a test that advanced past that
-// moment has to see it fire too.
-func (c *waveClock) advanceTo(at time.Time) {
-	c.mu.Lock()
-	if at.After(c.now) {
-		c.now = at
-	}
-	c.mu.Unlock()
-	for {
-		c.mu.Lock()
-		var next *waveTimer
-		for _, timer := range c.timers {
-			if timer.done || timer.due.After(c.now) {
-				continue
-			}
-			if next == nil || timer.due.Before(next.due) {
-				next = timer
-			}
-		}
-		if next != nil {
-			next.done = true
-		}
-		c.mu.Unlock()
-		if next == nil {
-			return
-		}
-		next.f()
-	}
-}
-
-// advance moves the clock on by d.
-func (c *waveClock) advance(d time.Duration) { c.advanceTo(c.Now().Add(d)) }
+// advanceTo moves the clock to at, or leaves it where it stands when at is not after it, and runs
+// every timer due by then, earliest first, until none is left: a wake's turn arms the next thing
+// the claim waits for, and a test that advanced past that moment has to see it fire too.
+func (c *waveClock) advanceTo(at time.Time) { c.Advance(max(at.Sub(c.Now()), 0)) }
 
 // waveRuntime is the fake runtime with the moment of every launch on the test's clock: what the
 // wave's consumer sees is when each process started, and the fake records the call alone.
@@ -314,18 +251,17 @@ func liveClaim(i int, token claim.Token, contract int) supervise.Claim {
 }
 
 // startWaveDaemon runs a daemon over rt whose machines keep clock's time and whose log is
-// written as JSON to logged, with its orphan sweep an hour out unless tune moves it: a sweep on
-// the wall clock while a test holds the machines' own would reap and re-post on a cadence of its
-// own.
+// written as JSON to logged. Every periodic loop of the daemon is armed on clock too, so a pass
+// of one runs when the test moves that clock past its interval or asks for it (passTriggers,
+// which tune hooks), and never on a cadence of the wall clock's own.
 func startWaveDaemon(t *testing.T, cfg config.Config, clock *waveClock, rt *waveRuntime, logged *syncBuffer, tune func(*overrides)) *daemon {
 	t.Helper()
 	o := fakeRuntime(rt, &built{})
 	o.clock = clock
-	o.orphanSweep = time.Hour
 	if tune != nil {
 		tune(&o)
 	}
-	return startDaemonWithin(t, cfg, o, slog.New(slog.NewJSONHandler(logged, nil)), 30*time.Second)
+	return startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logged, nil)))
 }
 
 // waitingWakes is the wakes the daemon's state says the pacing holds, earliest first: the queue as
@@ -904,9 +840,10 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A claim of this project the operator suspended, and the controller's own claim, retired by
-	// a daemon that could not keep it: the keeper retries it on a wait of its own, which falls
-	// while the wave is still waiting.
+	// A claim of this project the operator suspended, and the controller's own claim, suspended
+	// by the daemon itself: the daemon keeps its controller running by rule, which an operator's
+	// suspension would hold and the daemon's own does not, so the keeper's next look resumes it,
+	// and that wake falls while the wave is still waiting.
 	suspended, err := claim.NewToken(project, cfg.Project+"-901", claim.RoleArchitect)
 	if err != nil {
 		t.Fatal(err)
@@ -919,17 +856,16 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 	writePrompt(t, cfg, suspended)
 	controller := claim.ControllerToken(project)
 	putClaim(t, cfg, supervise.Claim{
-		Token: controller, Project: project, Role: claim.RoleController, Generation: 1, State: supervise.StateRetired,
+		Token: controller, Project: project, Role: claim.RoleController, Generation: 1,
+		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
 	})
 	writePrompt(t, cfg, controller)
 
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)
 	origin := clock.Now()
-	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) {
-		o.orphanSweep = 100 * time.Millisecond
-		o.controllerRetry = 200 * time.Millisecond
-	})
+	var passes *passer
+	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { passes = triggering(o) })
 
 	waiting := awaitWave(t, d, waveSize)
 	promised := map[claim.Token]time.Time{}
@@ -950,9 +886,9 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 		t.Fatalf("the resumed claim is still %s, want its launch made at once", c.State)
 	}
 
-	// The controller's keeper: its retry comes while the wave waits, and the controller's own
-	// claim is the one wake the pacing never holds whoever asks for it.
-	testwait.Eventually(t, "the controller's keeper to launch the project's controller", func() bool {
+	// The controller's keeper: the rule that keeps it running resumes it while the wave waits,
+	// and the controller's own claim is the one wake the pacing never holds whoever asks for it.
+	passes.until(t, passControllerKeeper, "the controller's keeper to launch the project's controller", func() bool {
 		return rt.launchesOf(controller) == 1
 	})
 	for _, launch := range rt.launches() {
@@ -1250,7 +1186,8 @@ func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing
 	rt := newWaveRuntime(clock)
 	origin := clock.Now()
 
-	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
+	var passes *passer
+	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { passes = triggering(o) })
 
 	waiting := awaitWave(t, d, testWakeRate)
 	running := map[claim.Token]runtime.Locator{}
@@ -1274,9 +1211,7 @@ func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing
 
 	// The sweep knows every waiting claim's process, so nothing reaps it: a reconciliation that
 	// did not know it would end it as an orphan of no claim.
-	testwait.Eventually(t, "a sweep's reconciliation after the wave was raised", func() bool {
-		return len(rt.fake().CallsOf("ReconcileOrphans")) > 1
-	})
+	passes.pass(t, passOrphans)
 	calls := rt.fake().CallsOf("ReconcileOrphans")
 	known := map[claim.Token]runtime.Locator{}
 	for _, each := range calls[len(calls)-1].Known {
@@ -1471,10 +1406,16 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)
 
-	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
+	var passes *passer
+	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { passes = triggering(o) })
 
 	// The boot pass posted the rate: the one line it wrote for the rest names every claim it
 	// left, and the lane holds no more than the rate in the pacing at any reading after it.
+	// The boot's own burst lets one refresh straight out, so the gate fills at a sweep after it:
+	// this test runs those sweeps, the daemon's own being a minute out on its clock.
+	passes.until(t, passOrphans, "the sweeps after the boot pass to fill the gate", func() bool {
+		return len(refreshWakesWaiting(t, d)) >= testWakeRate
+	})
 	first := awaitGate(t, d, testWakeRate)
 	refusals := gateFullLines(t, logged)
 	if len(refusals) == 0 {
@@ -1485,9 +1426,10 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 			boot["claims"], boot["trigger"], stale-testWakeRate)
 	}
 	sweeps := len(rt.fake().CallsOf("ReconcileOrphans"))
-	testwait.Eventually(t, "three sweeps over the claims the boot pass left", func() bool {
-		return len(rt.fake().CallsOf("ReconcileOrphans")) >= sweeps+3
-	})
+	passes.passes(t, passOrphans, 3)
+	if got := len(rt.fake().CallsOf("ReconcileOrphans")) - sweeps; got < 3 {
+		t.Fatalf("three sweeps over the claims the boot pass left made %d reconciliations, want one each", got)
+	}
 	if held := refreshWakesWaiting(t, d); len(held) > testWakeRate {
 		t.Fatalf("the lane holds %d refreshes in the pacing after three more sweeps, want at most the rate, %d",
 			len(held), testWakeRate)
@@ -1513,7 +1455,11 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 		})
 	}
 
-	// The sweep that follows posts the next rate's worth, over claims the first round left.
+	// The sweep that follows posts the next rate's worth, over claims the first round left: this
+	// test runs it, the daemon's own being a minute out on the clock the turns above reached.
+	passes.until(t, passOrphans, "a sweep after the first round to post the next rate's worth", func() bool {
+		return len(refreshWakesWaiting(t, d)) >= testWakeRate
+	})
 	next := awaitGate(t, d, testWakeRate)
 	refreshed := claimsOfWakes(first)
 	for _, token := range tokens {
@@ -1580,7 +1526,8 @@ func TestAStaleClaimInATurnIsPostedWithNoCreditWhileTheIdleClaimsTakeTheRate(t *
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)
 
-	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
+	var passes *passer
+	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { passes = triggering(o) })
 
 	// The boot pass left exactly the idle claims it had no credit for: a claim in a turn is in
 	// none of that count, since nothing refused it. It is read before the pacing is, because it
@@ -1596,6 +1543,11 @@ func TestAStaleClaimInATurnIsPostedWithNoCreditWhileTheIdleClaimsTakeTheRate(t *
 	}
 
 	// Every credit the pass granted went to a claim the lane can relaunch now.
+	// The boot's own burst lets one refresh straight out, so the gate fills at a sweep after it:
+	// this test runs those sweeps, the daemon's own being a minute out on its clock.
+	passes.until(t, passOrphans, "the sweeps after the boot pass to fill the gate", func() bool {
+		return len(refreshWakesWaiting(t, d)) >= testWakeRate
+	})
 	first := awaitGate(t, d, testWakeRate)
 	working := claimsOfTokens(inATurn)
 	for _, wake := range first {
@@ -1831,9 +1783,10 @@ func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
 	// the wake's timer was armed for is its turn less this.
 	reservedAt := tree.clock.Now()
 	tree.commit(t, "architect-start", tree.start(t, claim.RoleArchitect))
-	testwait.Eventually(t, "the start row to finish while the wake it raised waits", func() bool {
-		return outboxRows(t, tree.pool) == 0
-	})
+	tree.obs.settled(t, rowOf{issue: tree.root.Key, kind: record.OutboxKindSupervise, outcome: settledFinished})
+	if rows := outboxRows(t, tree.pool); rows != 0 {
+		t.Fatalf("%d rows are left once the start row finished while the wake it raised waits, want none", rows)
+	}
 	machine, wake := waitingWakeOf(t, tree, claim.RoleArchitect)
 	if wake.Kind != "launch" || wake.At.Sub(tree.clock.Now()) < testWakeInterval {
 		t.Fatalf("the wake the start raised is %+v, want a launch at least one interval out from %s", wake, tree.clock.Now())
@@ -1847,9 +1800,10 @@ func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
 	// them is held behind a wake.
 	tree.commit(t, "board-status", mustOutboxRow(t, tree.root.Key,
 		record.OrdinaryStatusWrite("in_progress", "todo", ""), tree.clock.Now()))
-	testwait.Eventually(t, "the board row of the same issue to run while the wake waits", func() bool {
-		return tree.client.count() == 1 && outboxRows(t, tree.pool) == 0
-	})
+	tree.obs.settled(t, rowOf{issue: tree.root.Key, kind: record.OutboxKindDispatchStatus, outcome: settledFinished})
+	if writes, rows := tree.client.count(), outboxRows(t, tree.pool); writes != 1 || rows != 0 {
+		t.Fatalf("once the board row of the same issue finished while the wake waits: %d writes with %d rows left, want its one write and no row", writes, rows)
+	}
 
 	// Two minutes of lease ticks with the wake still waiting — the harness holds every timer, the
 	// wake's own among them — and no row of the issue is held behind a running one, so nothing is
@@ -1877,9 +1831,10 @@ func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
 	suspend := mustOutboxRow(t, tree.root.Key, record.SuperviseRequest{Op: "suspend", Tree: tree.root.Tree,
 		Role: claim.RoleArchitect, Generation: tree.root.Generation}, tree.clock.Now())
 	tree.commit(t, "architect-suspend", suspend)
-	testwait.Eventually(t, "the suspend row to finish with the claim whose wake waited", func() bool {
-		return outboxRows(t, tree.pool) == 0
-	})
+	tree.obs.settled(t, rowOf{issue: tree.root.Key, kind: record.OutboxKindSupervise, outcome: settledFinished})
+	if rows := outboxRows(t, tree.pool); rows != 0 {
+		t.Fatalf("%d rows are left once the suspend row finished with the claim whose wake waited, want none", rows)
+	}
 	if c := machine.Claim(); c.State != supervise.StateSuspended || c.SuspensionHeld {
 		t.Fatalf("the claim whose wake waited is %s with suspensionHeld %v, want %s with nothing held",
 			c.State, c.SuspensionHeld, supervise.StateSuspended)
@@ -1914,13 +1869,17 @@ func TestASecondStartOfAWaitingClaimTakesNoTokenAndStartsNoSecondLaunch(t *testi
 	tree, limiter := pacedLaneTree(t, nil)
 
 	tree.commit(t, "architect-start", tree.start(t, claim.RoleArchitect))
-	testwait.Eventually(t, "the start row to finish while the wake it raised waits", func() bool {
-		return outboxRows(t, tree.pool) == 0
-	})
+	tree.obs.settled(t, rowOf{issue: tree.root.Key, kind: record.OutboxKindSupervise, outcome: settledFinished})
+	if rows := outboxRows(t, tree.pool); rows != 0 {
+		t.Fatalf("%d rows are left once the start row finished while the wake it raised waits, want none", rows)
+	}
 	_, wake := waitingWakeOf(t, tree, claim.RoleArchitect)
 
 	tree.commit(t, "architect-start-again", tree.start(t, claim.RoleArchitect))
-	testwait.Eventually(t, "the second start row to finish", func() bool { return outboxRows(t, tree.pool) == 0 })
+	tree.obs.settled(t, rowOf{issue: tree.root.Key, kind: record.OutboxKindSupervise, outcome: settledFinished})
+	if rows := outboxRows(t, tree.pool); rows != 0 {
+		t.Fatalf("%d rows are left once the second start row finished, want none", rows)
+	}
 
 	if spawned := spawnedRoles(tree.rt); len(spawned) != 0 {
 		t.Fatalf("the second start launched %v, want nothing: the claim is already launching", spawned)

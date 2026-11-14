@@ -14,6 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -91,10 +93,11 @@ func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
+	fake := clocktest.New(time.Now().UTC())
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
 		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
-		controllerWake: time.Hour, controllerFirstWake: 10 * time.Millisecond,
+		controllerWake: time.Hour, clock: fake,
 	}
 	processed := func() bool {
 		var n int
@@ -103,9 +106,15 @@ func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
 		}
 		return n == 1
 	}
+	started := fake.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { w.tickController(ctx); close(done) }()
+	armed := fake.AwaitArmed(t, "the runtime's first controller tick", 1)
+	if want := started.Add(firstControllerTick); !armed[0].Equal(want) {
+		t.Fatalf("the first tick is armed for %s, want %s: shortly after the runtime starts, an hour before the interval's own tick", armed[0], want)
+	}
+	fake.Advance(firstControllerTick)
 	testwait.Eventually(t, "the first tick, an hour before the interval's", processed)
 	cancel()
 	<-done
@@ -183,7 +192,7 @@ func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 	}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil,
-		newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, repositoriesGitHub(t), nil)
+		newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, repositoriesGitHub(t), nil, clock.Real())
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}

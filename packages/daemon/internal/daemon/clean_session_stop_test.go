@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // storedRegistration is what the fake listener's registry holds for the session under test: the
@@ -173,11 +174,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 
 	stop("ses_dead")
 
-	select {
-	case <-listener.settled:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the clean stop never reached the listener's session route")
-	}
+	testwait.Receive(t, "the clean stop to reach the listener's session route", listener.settled)
 	if !listener.entryRemoved {
 		t.Fatalf("the listener kept the registration asked for with %q, want the dead process's last heartbeat deleted rather than taken for a successor's",
 			listener.delete.query)
@@ -384,16 +381,8 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 		close(returned)
 	}()
 
-	select {
-	case <-returned:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the clean stop held the machine's decision until the listener answered")
-	}
-	select {
-	case <-arrived:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the clean stop never reached the listener")
-	}
+	testwait.Receive(t, "the clean stop to return to the machine's decision", returned)
+	testwait.Receive(t, "the clean stop to reach the listener", arrived)
 }
 
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone

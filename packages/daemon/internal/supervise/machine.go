@@ -658,6 +658,8 @@ type Clock interface {
 	AfterFunc(d time.Duration, f func()) clock.Timer
 	// Sleep waits d, or returns ctx's error once ctx ends first.
 	Sleep(ctx context.Context, d time.Duration) error
+	// WithTimeout is ctx ending d from now: the claim-write deadline (Machine.write).
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 // Timeouts are every wait a machine times.
@@ -2901,19 +2903,19 @@ func (m *Machine) forgetSend() {
 	m.send, m.helloDuringSend, m.askFirst = nil, false, false
 }
 
-// write runs one store write of a decision under the claim-write deadline, derived from the
-// decision's own context so the daemon's stop still ends the write at once. Every claim and
-// delivery write a decision makes while it holds the machine's lock goes through it, and those
-// are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and
-// take no deadline: what they wait on is an advisory lock another transaction holds, so a
-// deadline there would fail a launch that was only queued behind its predecessor. So do the reads
-// of the record — PhaseHolds, RootHears, RootTask, TreeClosable — which decide what the next
-// write will say rather than hold the row, and whose failure costs the decision and nothing
-// after it. The deadline is what keeps a database that has stopped answering from holding the
-// machine's lock for the length of the outage; a write it cuts short is owed and made again at
-// the claim's next decision (owes, repair).
+// write runs one store write of a decision under the claim-write deadline, armed on the machine's
+// clock and derived from the decision's own context so the daemon's stop still ends the write at
+// once. Every claim and delivery write a decision makes while it holds the machine's lock goes
+// through it, and those are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep
+// today's behaviour and take no deadline: what they wait on is an advisory lock another
+// transaction holds, so a deadline there would fail a launch that was only queued behind its
+// predecessor. So do the reads of the record — PhaseHolds, RootHears, RootTask, TreeClosable —
+// which decide what the next write will say rather than hold the row, and whose failure costs the
+// decision and nothing after it. The deadline is what keeps a database that has stopped answering
+// from holding the machine's lock for the length of the outage; a write it cuts short is owed and
+// made again at the claim's next decision (owes, repair).
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
-	writing, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	writing, cancel := m.deps.Clock.WithTimeout(ctx, m.deps.claimWrite())
 	defer cancel()
 	return call(writing)
 }

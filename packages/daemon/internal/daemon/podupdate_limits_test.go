@@ -472,11 +472,7 @@ func TestPodUpdateMaxOpenRoundsChargesNoSecondSlotForAnOpeningStillInFlight(t *t
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the architect's machine never reached the Resume this test holds it in")
-	}
+	testwait.Receive(t, "the architect's machine to reach the Resume this test holds it in", entered)
 
 	// The first sweep opens the round of the held issue and spends the minute's budget on it.
 	// Nothing of it reaches any claim's record: the one machine it was posted to is relaunching.
@@ -574,11 +570,7 @@ func podChangedUnderAnOpening(t *testing.T, changed, second string) *fleetRig {
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the architect's machine never reached the Resume this test holds it in")
-	}
+	testwait.Receive(t, "the architect's machine to reach the Resume this test holds it in", entered)
 
 	// The sweep opens the round over the pod the implementer records and charges the project's
 	// one slot for it, which leaves the issue behind it waiting for that slot.

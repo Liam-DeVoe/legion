@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // repositoryGitHub is GitHub's REST API answering GET /repos/acme/widgets with defaultBranch, or
@@ -168,14 +169,7 @@ func TestDefaultBranchesSharesOneReadInFlight(t *testing.T) {
 			answers <- got.DefaultBranch
 		})
 	}
-	deadline := time.After(10 * time.Second)
-	for github.reads.Load() == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("no read reached GitHub")
-		case <-time.After(time.Millisecond):
-		}
-	}
+	testwait.Eventually(t, "a read to reach GitHub", func() bool { return github.reads.Load() != 0 })
 	close(github.release)
 	wg.Wait()
 	close(answers)

@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -70,7 +69,7 @@ func TestTheMergeStateLadderReadsFiveTimesAndThenStops(t *testing.T) {
 	approvedCapture(t, pool)
 	var reads atomic.Int32
 	w := readRuntime(pool, countingPullStandIn(t, "unknown", &reads).URL, quietLogger())
-	w.mergeStateRetry = 10 * time.Millisecond
+	passes := triggeringRuntime(w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go w.readMergeStates(ctx)
@@ -78,19 +77,23 @@ func TestTheMergeStateLadderReadsFiveTimesAndThenStops(t *testing.T) {
 	if _, err := intake.ApplyFact(ctx, pool, "github", "checks-on-code", settledChecksOnCode(), w.handlers...); err != nil {
 		t.Fatalf("apply the CI settlement: %v", err)
 	}
-	testwait.Eventually(t, "the ladder read GitHub five times", func() bool { return reads.Load() >= mergeStateLadderReads })
+	// The first read is the ladder's own; the four after it are this test's, in place of the
+	// half minute the ladder waits between reads of a state GitHub has not computed.
+	passes.next(t, passMergeState)
+	passes.passes(t, passMergeState, mergeStateLadderReads-1)
 
-	// Past the fifth `unknown` nothing reads again, however long the ladder's wait is given.
-	time.Sleep(20 * w.mergeStateRetry)
+	// Past the fifth `unknown` the ladder is gone: nothing is queued for a read and no ladder
+	// runs, so no sixth read can be made whatever time passes.
+	testwait.Eventually(t, "the ladder ended after its fifth unknown", func() bool {
+		w.mergeStateMu.Lock()
+		defer w.mergeStateMu.Unlock()
+		return len(w.mergeStateRunning) == 0
+	})
 	if got := reads.Load(); got != mergeStateLadderReads {
 		t.Fatalf("GitHub was read %d times, want exactly %d: the ladder stops after the fifth unknown", got, mergeStateLadderReads)
 	}
-	w.mergeStateMu.Lock()
-	running := len(w.mergeStateRunning)
-	w.mergeStateMu.Unlock()
-	wanted := w.mergeStates.waiting()
-	if wanted != 0 || running != 0 {
-		t.Fatalf("%d issues are queued for a read and %d ladders are running, want none standing behind the last read", wanted, running)
+	if wanted := w.mergeStates.waiting(); wanted != 0 {
+		t.Fatalf("%d issues are queued for a read, want none standing behind the last read", wanted)
 	}
 	got, pr := capturePhase(t, pool)
 	if got != phase.Reviewing || pr.MergeState != record.MergeStateUnknown {
@@ -106,7 +109,6 @@ func TestTheMergeStateReadMovesAnApprovedIssueToAccepting(t *testing.T) {
 	approvedCapture(t, pool)
 	var reads atomic.Int32
 	w := readRuntime(pool, countingPullStandIn(t, "clean", &reads).URL, quietLogger())
-	w.mergeStateRetry = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go w.readMergeStates(ctx)
@@ -131,7 +133,7 @@ func TestNoMergeStateIsReadWithoutAnApprovalStanding(t *testing.T) {
 		record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim"})
 	var reads atomic.Int32
 	w := readRuntime(pool, countingPullStandIn(t, "clean", &reads).URL, quietLogger())
-	w.mergeStateRetry = 10 * time.Millisecond
+	passes := triggeringRuntime(w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go w.readMergeStates(ctx)
@@ -139,9 +141,16 @@ func TestNoMergeStateIsReadWithoutAnApprovalStanding(t *testing.T) {
 	if _, err := intake.ApplyFact(ctx, pool, "github", "checks-on-code", settledChecksOnCode(), w.handlers...); err != nil {
 		t.Fatalf("apply the CI settlement: %v", err)
 	}
-	time.Sleep(20 * w.mergeStateRetry)
+	// A request for an issue with no record of its own is the marker: its climb reads no GitHub
+	// and reports its pass, and the reader takes the requests it is given in the order they were
+	// made, so a read the settlement had asked for would have been made by then.
+	w.queueMergeState("CAPTURE-NOTHING")
+	passes.next(t, passMergeState)
 	if got := reads.Load(); got != 0 {
 		t.Fatalf("GitHub was read %d times, want none: no approval stands on the head", got)
+	}
+	if queued := w.mergeStates.waiting(); queued != 0 {
+		t.Fatalf("%d issues are queued for a merge-state read, want none", queued)
 	}
 }
 
@@ -171,7 +180,6 @@ func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	w := readRuntime(pool, server.URL, quietLogger())
-	w.mergeStateRetry = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	defer close(release)

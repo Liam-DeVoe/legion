@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -371,15 +372,15 @@ func cacheView(cache sandbox.CacheStatus) api.CacheView {
 }
 
 // readMapping reads Dispatch's repository mapping (listMapping) and checks it for project
-// against both GitHub Apps' installations and Dispatch's (checkMapping), over renames, the
-// deployment's configured pairs, so a caller of this helper reads the mapping under exactly the
-// rule loadMapping and refreshMapping read it under, the partner read among it.
-func readMapping(ctx context.Context, client dispatch.Client, project string, installs appauth.Installations, renames ghrepo.Renames) ([]mappedRepository, []refusedRepository, []webhookAppGap, error) {
+// against both GitHub Apps' installations and Dispatch's (checkMapping, each read bound on clk),
+// over renames, the deployment's configured pairs, so a caller of this helper reads the mapping
+// under exactly the rule loadMapping and refreshMapping read it under, the partner read among it.
+func readMapping(ctx context.Context, clk clock.Clock, client dispatch.Client, project string, installs appauth.Installations, renames ghrepo.Renames) ([]mappedRepository, []refusedRepository, []webhookAppGap, error) {
 	mappings, err := listMapping(ctx, client)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return checkMapping(ctx, client, mappings, project, installs, renames)
+	return checkMapping(ctx, clk, client, mappings, project, installs, renames)
 }
 
 // listMapping is Dispatch's repository mapping, every project's.
@@ -439,8 +440,8 @@ func listMapping(ctx context.Context, client dispatch.Client) ([]dispatch.RepoPr
 // events GitHub does not send by the pass. The reads run at once, mappingReads at a time, so a
 // check takes about as long as its slowest read, twice where a partner read is made, rather than
 // the sum of them: the partner reads are one more round, made only for the entries that asked
-// for one.
-func checkMapping(ctx context.Context, client dispatch.Client, mappings []dispatch.RepoProject, project string, installs appauth.Installations, renames ghrepo.Renames) ([]mappedRepository, []refusedRepository, []webhookAppGap, error) {
+// for one. Each read's bound, installReadAttempt, runs on clk.
+func checkMapping(ctx context.Context, clk clock.Clock, client dispatch.Client, mappings []dispatch.RepoProject, project string, installs appauth.Installations, renames ghrepo.Renames) ([]mappedRepository, []refusedRepository, []webhookAppGap, error) {
 	// nameReads is both Apps' answers for one name of an entry: installed and failed are in
 	// appauth.Roles order, and each read sets exactly one of the two.
 	type nameReads struct {
@@ -477,7 +478,7 @@ func checkMapping(ctx context.Context, client dispatch.Client, mappings []dispat
 	readBoth := func(group *errgroup.Group, reads *nameReads) {
 		for index, role := range appauth.Roles {
 			group.Go(func() error {
-				read, cancel := context.WithTimeout(ctx, installReadAttempt)
+				read, cancel := clk.WithTimeout(ctx, installReadAttempt)
 				defer cancel()
 				reads.installed[index], reads.failed[index] = installs.InstalledOn(read, role, reads.repo)
 				return nil
@@ -495,7 +496,7 @@ func checkMapping(ctx context.Context, client dispatch.Client, mappings []dispat
 			repo: m.repo, installed: make([]bool, len(appauth.Roles)), failed: make([]error, len(appauth.Roles))})
 		readBoth(&group, &m.reads[0])
 		group.Go(func() error {
-			read, cancel := context.WithTimeout(ctx, installReadAttempt)
+			read, cancel := clk.WithTimeout(ctx, installReadAttempt)
 			defer cancel()
 			m.webhookGap = checkWebhookApp(read, client, m.repo)
 			return nil
@@ -683,7 +684,7 @@ var installReadRetry = bootprobe.Retry{Initial: 30 * time.Second, Max: 10 * time
 // recoveryHoldBound is how long a recovery's release waits stay untold while its listing is held
 // for the Dispatch consumer (recoverRepositories): the hold watchdog's warning interval
 // (defaultHoldWarnEvery), by which a hold that has not released is a fault worth naming.
-var recoveryHoldBound = defaultHoldWarnEvery
+const recoveryHoldBound = defaultHoldWarnEvery
 
 // installReadAttempt bounds one installation read: as long as any one GitHub call the boot waits
 // for (appMintAttempt), so a GitHub that answers slowly is still answered for, while a read GitHub
@@ -691,7 +692,7 @@ var recoveryHoldBound = defaultHoldWarnEvery
 // rather than holding up the mapping. It bounds the webhook App check (checkWebhookApp) the same
 // way. Nothing bounds the check as a whole: mappingReads reads run at once, so a check of n
 // repositories, three reads each, takes at most ceil(3n / mappingReads) of these.
-var installReadAttempt = 15 * time.Second
+const installReadAttempt = 15 * time.Second
 
 // readFailures is the refusals of refused that a failed installation read made (readErr).
 func readFailures(refused []refusedRepository) []refusedRepository {
@@ -754,7 +755,7 @@ func nameAccepted(ctx context.Context, accepted []mappedRepository, named *defau
 // spelling.
 func (w *workflowRuntime) loadMapping(ctx context.Context) error {
 	var mappings []dispatch.RepoProject
-	err := bootprobe.Run(ctx, "repository mapping read", readinessRetry, w.log, readinessAttempt(func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, w.timers(), "repository mapping read", readinessRetry, w.log, readinessAttempt(w.timers(), func(ctx context.Context) error {
 		var err error
 		mappings, err = listMapping(ctx, w.dispatch)
 		return err
@@ -762,7 +763,7 @@ func (w *workflowRuntime) loadMapping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	accepted, refused, gaps, err := checkMapping(ctx, w.dispatch, mappings, w.dispatchProject, w.installs, w.repositories.renames)
+	accepted, refused, gaps, err := checkMapping(ctx, w.timers(), w.dispatch, mappings, w.dispatchProject, w.installs, w.repositories.renames)
 	if err != nil {
 		return err
 	}
@@ -827,7 +828,7 @@ func (w *workflowRuntime) logUnservedCommitIssueTrailerRepos(accepted []mappedRe
 // retry, and logs the mapping the daemon serves.
 func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 	var named []mappedRepository
-	err := bootprobe.Run(ctx, "repository read", appMintRetry, w.log, readinessAttempt(func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, w.timers(), "repository read", appMintRetry, w.log, readinessAttempt(w.timers(), func(ctx context.Context) error {
 		var err error
 		named, err = nameAccepted(ctx, w.repositories.Mapped(), w.defaultBranches)
 		return err
@@ -853,7 +854,8 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 // of the mapping. One left out whose read fails stays left out, with the new failure. Dispatch's
 // read, and the naming and publication after the check, are each bounded by appMintAttempt; the
 // check itself is bounded per read (installReadAttempt), so a GitHub that answers slowly is
-// answered for whatever the mapping's size. Each repository the mapping as last read left out for
+// answered for whatever the mapping's size. Every bound runs on the runtime's clock (timers).
+// Each repository the mapping as last read left out for
 // its failed read, and that this read no longer does (now served, refused for a missing App, or no
 // longer mapped), is to be recovered (recoverRepositories): an event of an issue on it applied
 // while it was unread said nothing and recorded nothing, so the issues it left are taken from
@@ -869,13 +871,13 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	w.mappingMu.Lock()
 	defer w.mappingMu.Unlock()
-	listing, cancel := context.WithTimeout(ctx, appMintAttempt)
+	listing, cancel := w.timers().WithTimeout(ctx, appMintAttempt)
 	mappings, err := listMapping(listing, w.dispatch)
 	cancel()
 	if err != nil {
 		return err
 	}
-	accepted, refused, gaps, err := checkMapping(ctx, w.dispatch, mappings, w.dispatchProject, w.installs, w.repositories.renames)
+	accepted, refused, gaps, err := checkMapping(ctx, w.timers(), w.dispatch, mappings, w.dispatchProject, w.installs, w.repositories.renames)
 	if err != nil {
 		return err
 	}
@@ -902,7 +904,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 			"repo", mapped.Repo.String(), "error", failed.readErr)
 		return true
 	})
-	ctx, cancel = context.WithTimeout(ctx, appMintAttempt)
+	ctx, cancel = w.timers().WithTimeout(ctx, appMintAttempt)
 	defer cancel()
 	if accepted, err = nameAccepted(ctx, accepted, w.defaultBranches); err != nil {
 		return err
@@ -1076,21 +1078,20 @@ func (w *workflowRuntime) requestMappingRead() uint64 {
 // for a failed installation read (recoverRepositories). While a failed installation read leaves a
 // repository as it stands (awaitingRead: left out for now, or served on its last answer), or a
 // recovery has not committed yet, it reads the mapping again of its own on installReadRetry's
-// backoff, 30 s doubling to 10 min, reset once nothing waits, so the repository is served, or
-// confirmed, and its issues recovered, once GitHub answers, with no restart and no mapping change.
-// While a held recovery has release waits to tell and time left to recoveryHoldBound
-// (recoveryHoldLeft), the next wait is cut to that time, so the bound is checked when it falls, not
-// up to a backoff later; such a cut wait does not move the backoff on. Once the bound has passed,
-// a run that did not tell the waits (its listing or its notice failed) waits the backoff as any
-// failed read does, so a failure past the bound never turns the refresher into a busy loop.
+// backoff, 30 s doubling to 10 min, reset once nothing waits, armed on the runtime's clock
+// (timers), so the repository is served, or confirmed, and its issues recovered, once GitHub
+// answers, with no restart and no mapping change. While a held recovery has release waits to tell
+// and time left to recoveryHoldBound (recoveryHoldLeft), the next wait is cut to that time, so the
+// bound is checked when it falls, not up to a backoff later; such a cut wait does not move the
+// backoff on. Once the bound has passed, a run that did not tell the waits (its listing or its
+// notice failed) waits the backoff as any failed read does, so a failure past the bound never
+// turns the refresher into a busy loop.
 func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
-	after := w.recheckAfter
-	if after == nil {
-		after = time.After
-	}
+	timers := w.timers()
 	recheckIn := installReadRetry.Initial
 	for {
 		var recheck <-chan time.Time
+		var armed clock.Timer
 		waiting := append(w.repositories.awaitingRead(), w.recoveringReasons()...)
 		wait, cut := recheckIn, false
 		if len(waiting) == 0 {
@@ -1099,12 +1100,21 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 			if left, held := w.recoveryHoldLeft(); held && left > 0 && left < wait {
 				wait, cut = left, true
 			}
-			recheck = after(wait)
+			armed = timers.NewTimer(wait)
+			recheck = armed.C()
 		}
 		select {
 		case <-ctx.Done():
+			if armed != nil {
+				armed.Stop()
+			}
 			return
 		case <-w.mappingChanged:
+			// A request came before the wait ended: the wait is dropped, and the next one is
+			// armed after the read.
+			if armed != nil {
+				armed.Stop()
+			}
 		case <-recheck:
 			w.log.Info("workflow: reading the repository mapping again for what a failed installation read left as it stands",
 				"waiting", waiting, "waited", wait.String())
@@ -1168,8 +1178,9 @@ func (w *workflowRuntime) markRecovered(before, after []refusedRepository) {
 	}
 }
 
-// recoveryHoldLeft is the time left to recoveryHoldBound for a recovery whose listing is held with
-// release waits to tell, zero once the bound has passed, and whether one is.
+// recoveryHoldLeft is the time left to recoveryHoldBound, on the runtime's clock, for a recovery
+// whose listing is held with release waits to tell, zero once the bound has passed, and whether
+// one is.
 func (w *workflowRuntime) recoveryHoldLeft() (time.Duration, bool) {
 	w.recoveringMu.Lock()
 	defer w.recoveringMu.Unlock()
@@ -1183,7 +1194,7 @@ func (w *workflowRuntime) recoveryHoldLeft() (time.Duration, bool) {
 	if !waits {
 		return 0, false
 	}
-	return max(0, recoveryHoldBound-time.Since(w.recoveryHeldSince)), true
+	return max(0, recoveryHoldBound-w.timers().Now().Sub(w.recoveryHeldSince)), true
 }
 
 // recoveringReasons is every repository still to recover, as the refresher logs what it waits on.
@@ -1236,7 +1247,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 		return
 	}
 	names := slices.Sorted(maps.Keys(repos))
-	attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+	attempt, cancel := w.timers().WithTimeout(ctx, appMintAttempt)
 	defer cancel()
 	issues, err := w.dispatch.ListIssues(attempt, w.dispatchProject, nil)
 	if err == nil {
@@ -1247,10 +1258,11 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 		// recorded yet: the waits are told once it is released, or once the hold has lasted
 		// recoveryHoldBound, whichever comes first.
 		w.recoveringMu.Lock()
+		now := w.timers().Now()
 		if w.recoveryHeldSince.IsZero() {
-			w.recoveryHeldSince = time.Now()
+			w.recoveryHeldSince = now
 		}
-		bounded := time.Since(w.recoveryHeldSince) >= recoveryHoldBound
+		bounded := now.Sub(w.recoveryHeldSince) >= recoveryHoldBound
 		w.recoveringMu.Unlock()
 		if !bounded {
 			w.log.Info("workflow: the recovery's listing waits on the Dispatch consumer; its release waits are told once it is released", "repositories", names)

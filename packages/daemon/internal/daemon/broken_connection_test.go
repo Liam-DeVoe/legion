@@ -79,9 +79,8 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 	// The agent starts a turn. The claim stands working in the daemon's memory; its write meets
 	// the connection the kill ended, and the row is behind what memory holds.
 	sh.send(shimwire.AgentStart{})
-	testwait.Eventually(t, "the turn start's claim write to fail on the broken connection", func() bool {
-		return strings.Contains(logs.String(), loggedMessage(owedWriteFailedLine))
-	})
+	testwait.Next(t, "the turn start's claim write to fail on the broken connection",
+		logs.Stream(), func(line string) bool { return strings.Contains(line, loggedMessage(owedWriteFailedLine)) })
 	if got := storedClaimState(t, pool, token); got != supervise.StateReady {
 		t.Fatalf("the row reads %s straight after the broken write, want the ready row it left", got)
 	}
@@ -90,11 +89,13 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 	// a turn already in flight, which the table ignores — the repair at the head of the decision is
 	// the whole of what this drives.
 	sh.send(shimwire.AgentStart{})
-	testwait.Eventually(t, "the claim to read working in the database", func() bool {
-		return storedClaimState(t, pool, token) == supervise.StateWorking
-	})
-	if !strings.Contains(logs.String(), loggedMessage(owedWriteMadeLine)) {
-		t.Fatalf("the daemon never logged %q: %s", owedWriteMadeLine, logs.String())
+	// The line comes after the row: settleOwedWrite logs it once PutClaim has committed, so a wait
+	// for the row and a read of the log would race the line. The log is what this waits on, and
+	// the row is read after it.
+	testwait.Next(t, "the daemon's report that it made the write the database did not take",
+		logs.Stream(), func(line string) bool { return strings.Contains(line, loggedMessage(owedWriteMadeLine)) })
+	if got := storedClaimState(t, pool, token); got != supervise.StateWorking {
+		t.Fatalf("the row reads %s once the daemon made the write it owed, want working", got)
 	}
 
 	// No daemon was restarted: the one boot this test started is the one that wrote the row.

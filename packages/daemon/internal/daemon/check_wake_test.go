@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -169,37 +170,32 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 }
 
 // boot runs the daemon as the release build over the rig until the test ends, returning once it
-// answers /healthz and its boot fact has been applied: whatever the boot does for an open
-// production check, it has done by then.
+// reports itself ready to serve and its boot fact's admission pass has committed: whatever the
+// boot does for an open production check, it has done by then.
 func (rig *checkWakeRig) boot(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	o := overrides{
+		listen: heldListen, runtime: fakeRuntime(rig.rt, rig.built).runtime, clock: newStillClock(),
+		workflowTokens: &workflowTokenRecorder{}, githubAPI: rig.github.url,
+	}
+	// Two observers, each read on its own: the boot fact is applied beside the serving API, so
+	// its admission pass may be reported before the daemon reports itself ready.
+	obs, booted := observing(&o), observing(&o)
 	go func() {
-		done <- run(ctx, rig.cfg, slog.New(slog.NewJSONHandler(rig.logs, nil)), overrides{
-			listen: heldListen, runtime: fakeRuntime(rig.rt, rig.built).runtime, clock: stillClock{},
-			workflowTokens: &workflowTokenRecorder{}, githubAPI: rig.github.url,
-		})
+		done <- run(ctx, rig.cfg, slog.New(slog.NewJSONHandler(rig.logs, nil)), o)
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
+		if err := testwait.Receive(t, "the daemon's run to return once cancelled", done); err != nil {
+			t.Errorf("run: %v", err)
 		}
 	})
-	awaitHealthz(t, rig.cfg, done)
-	testwait.Eventually(t, "the daemon's boot fact applied", func() bool {
-		var applied bool
-		if err := rig.pool.QueryRow(context.Background(),
-			`select exists (select 1 from processed_events where source = 'daemon' and event_id like 'boot:%')`).Scan(&applied); err != nil {
-			t.Fatalf("read whether the boot fact was applied: %v", err)
-		}
-		return applied
+	obs.ready(t, done)
+	booted.admissionPasses(t, "the daemon's boot fact (intake.DaemonBooted)", 1, func(fact intake.Fact) bool {
+		_, ok := fact.(intake.DaemonBooted)
+		return ok
 	})
 }
 

@@ -52,7 +52,7 @@ func newPluginSupervisor(t *testing.T, contract int, relaunchable bool) (*superv
 	rt := fake.NewRuntime()
 	sup := newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: fake.NewConns(), Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+		Runtime: rt, Conns: fake.NewConns(), Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 		Limits:             supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:           supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract:     contract,
@@ -185,7 +185,7 @@ func TestAStalePluginRelaunchTheLaunchPathRefusesIsRetriedAtTheNextSweep(t *test
 	)
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 20 * time.Millisecond
+	passes := triggering(&o)
 	var refuse atomic.Bool
 	refuse.Store(true)
 	var asked atomic.Int64
@@ -200,7 +200,7 @@ func TestAStalePluginRelaunchTheLaunchPathRefusesIsRetriedAtTheNextSweep(t *test
 
 	startDaemonLogging(t, cfg, o, jsonLogger(logs))
 
-	testwait.Eventually(t, "the launch gate asked more than once while refusing "+string(stale), func() bool {
+	passes.until(t, passOrphans, "the launch gate asked more than once while refusing "+string(stale), func() bool {
 		return asked.Load() > 1
 	})
 	if c := storedClaim(t, cfg, stale); c.PluginRelaunchFor != 0 || c.State != supervise.StateIdle || c.Generation != 1 {
@@ -218,7 +218,7 @@ func TestAStalePluginRelaunchTheLaunchPathRefusesIsRetriedAtTheNextSweep(t *test
 
 	refuse.Store(false)
 
-	testwait.Eventually(t, "the sweep's retry of "+string(stale), func() bool {
+	passes.until(t, passOrphans, "the sweep's retry of "+string(stale), func() bool {
 		return len(resumesOf(rt, stale)) == 1
 	})
 	resume := resumesOf(rt, stale)[0]

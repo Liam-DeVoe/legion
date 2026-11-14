@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -188,16 +189,26 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		// The listener reports a wake only for a role topic nobody holds and for an agent
 		// subject nothing can place; a topic a session took with envoy_subscribe is neither, so
 		// the pod stays released and its role waits for the backstop instead.
-		idleRigSettle(t, 8*time.Second, func() {
-			state := rig.api.claim(token)
-			if state.State != string(supervise.StateSuspended) || state.SuspendedBy != string(supervise.SuspendedByReleased) {
-				t.Fatalf("%s is %s (suspended by %q) after an event on its subscribed topic, want it still released",
-					issue.key, state.State, state.SuspendedBy)
-			}
-			if rig.kube.pod(issue.pod) {
-				t.Fatalf("a pod came back for %s after an event on its subscribed topic", issue.key)
-			}
-		})
+		//
+		// Nothing the daemon does says when this publish has been decided against: the listener
+		// decides inside the publish whether to report a wake at all, so there is no state of
+		// the daemon's that would have made the wake happen to read, and a publish that
+		// reported nothing leaves no later action whose effect proves this one was passed over
+		// — the one message that would travel the same durable consumer behind it is the
+		// listener's own ready report, which only a restart of the listener raises, and a
+		// restart is a change to the rig the rest of this run reads. synctest reaches none of
+		// it: the listener is a process of its own and the daemon's consumer is a real NATS
+		// client. So the pod is left alone for a span and then read; the pod's start count,
+		// which only grows, catches a pod that came back inside the span as well.
+		testwait.Span(t, 8*time.Second, "the Envoy listener decides inside the publish whether to report a wake, so no state of the daemon's, no later action's effect and no pass of its own says that this publish reported none")
+		state := rig.api.claim(token)
+		if state.State != string(supervise.StateSuspended) || state.SuspendedBy != string(supervise.SuspendedByReleased) {
+			t.Fatalf("%s is %s (suspended by %q) after an event on its subscribed topic, want it still released",
+				issue.key, state.State, state.SuspendedBy)
+		}
+		if rig.kube.pod(issue.pod) {
+			t.Fatalf("a pod came back for %s after an event on its subscribed topic", issue.key)
+		}
 		if started := rig.pods.starts(issue.pod); started != before {
 			t.Errorf("%s's pod started %d times, want the %d it had: a subscribed topic wakes nothing", issue.key, started, before)
 		}
@@ -223,18 +234,21 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		})
 		idleRigKept(t, status, body, idleRigRoleUnclaimed)
 		rig.awaitResumed(issue, 2)
-		idleRigEventually(t, idleRigRecordWait, "the resume of "+issue.key+" recorded", func() bool {
+		testwait.Eventually(t, "the resume of "+issue.key+" recorded", func() bool {
 			return len(rig.resumesOf(issue)) == 1
 		})
 		// The clock the stuck pass reads is the wake's own recorded moment against the daemon's
 		// now (warnStuckResumes), so the test moves the wake ten minutes into the past. The role
 		// process acknowledged its task and started no turn, so no first turn was ever stamped.
 		rig.ageResume(issue, 11*time.Minute)
-		idleRigEventually(t, idleRigWarningWait, "the warning about the resume with no first turn", func() bool {
+		// The rig's clock fires no wake pass of the daemon's own, so this test runs the one that
+		// reads the aged resume and marks it stuck (tickWakes: warnStuckResumes).
+		rig.wakePass()
+		testwait.Eventually(t, "the warning about the resume with no first turn", func() bool {
 			return rig.logged("wake: a released pod's resume has had no first turn since its wake",
 				map[string]string{"issue": issue.key, "role": string(issue.role)}) == 1
 		})
-		idleRigEventually(t, idleRigStuckWait, "the stuck resume on the record", func() bool {
+		testwait.Eventually(t, "the stuck resume on the record", func() bool {
 			for _, resume := range rig.resumesOf(issue) {
 				if resume.Stuck {
 					return true
@@ -288,7 +302,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		// The resume is the claim's; the task reaches its agent once the replacement pod is up and
 		// the delivery's own retry has found it, which is a few seconds later. Either wake may be
 		// the one that took it, so this waits for the task rather than for one wake's wording.
-		idleRigEventually(t, idleRigRecordWait, "the task the wake gave "+issue.key+"'s woken role", func() bool {
+		testwait.Eventually(t, "the task the wake gave "+issue.key+"'s woken role", func() bool {
 			return len(rig.newPrompts(issue)) > 0
 		})
 		prompts := rig.newPrompts(issue)
@@ -388,9 +402,11 @@ func idleRigWakeAll(t *testing.T, rig *idleWakeRig) {
 	}
 
 	// 5. The backstop, which needs nothing sent: it was armed by the release itself, and the
-	//    test brings its due time forward rather than waiting the period out.
+	//    test brings its due time forward rather than waiting the period out, then runs the wake
+	//    pass that fires it (tickWakes: fireDueBackstops), since the rig's clock fires none.
 	backstop := rig.issue(idleRigBackstop)
 	rig.dueBackstop(backstop)
+	rig.wakePass()
 	for _, issue := range []idleRigIssue{delivery, checks, role, agent, backstop} {
 		rig.awaitResumed(issue, 2)
 	}
@@ -501,7 +517,7 @@ func idleRigRetryPublish(t *testing.T, rig *idleWakeRig, issue idleRigIssue, mes
 		})
 		return status
 	}
-	idleRigUntil(t, idleRigPodWait, "a role message reaching the live holder of "+issue.key, func() bool {
+	testwait.Eventually(t, "a role message reaching the live holder of "+issue.key, func() bool {
 		return publish() == http.StatusOK
 	})
 	idleRigDeliveredOnce(t, rig, issue, message)
@@ -517,7 +533,7 @@ func idleRigRetrySend(t *testing.T, rig *idleWakeRig, issue idleRigIssue, messag
 		})
 		return status
 	}
-	idleRigUntil(t, idleRigPodWait, "a direct message reaching the live session of "+issue.key, func() bool {
+	testwait.Eventually(t, "a direct message reaching the live session of "+issue.key, func() bool {
 		return send() == http.StatusOK
 	})
 	idleRigDeliveredOnce(t, rig, issue, message)
@@ -542,7 +558,7 @@ func idleRigDeliveredOnce(t *testing.T, rig *idleWakeRig, issue idleRigIssue, me
 	recorded := func(text string) int {
 		return idleRigCount(rig.agents.messages(issue.key, string(issue.role)), text)
 	}
-	idleRigEventually(t, idleRigRecordWait, "the message reaching the woken session of "+issue.key, func() bool {
+	testwait.Eventually(t, "the message reaching the woken session of "+issue.key, func() bool {
 		return recorded(message) >= 1
 	})
 	// The text is the session's own message count, which only grows, so each of this row's
@@ -557,7 +573,7 @@ func idleRigDeliveredOnce(t *testing.T, rig *idleWakeRig, issue idleRigIssue, me
 		t.Fatalf("the message sent to the live session of %s after %q answered %d %s, want 200",
 			issue.key, message, status, body)
 	}
-	idleRigEventually(t, idleRigRecordWait, "the message sent to "+issue.key+" after the one its wake was for", func() bool {
+	testwait.Eventually(t, "the message sent to "+issue.key+" after the one its wake was for", func() bool {
 		return recorded(after) >= 1
 	})
 	if got := recorded(message); got != 1 {
@@ -566,40 +582,12 @@ func idleRigDeliveredOnce(t *testing.T, rig *idleWakeRig, issue idleRigIssue, me
 	}
 }
 
-// idleRigUntil is idleRigEventually at a sender's pace: a second between attempts, so a retry
-// loop that is itself a wake does not send a hundred of them a second. Its span is its caller's,
-// clamped by the run's own deadline as idleRigEventually's is (idleRigWaiting).
-func idleRigUntil(t *testing.T, within time.Duration, what string, attempt func() bool) {
-	t.Helper()
-	idleRigWaiting(t, within, what, time.Second, attempt)
-}
-
 // awaitTask waits until the issue's woken role has been given a task carrying want.
 func (r *idleWakeRig) awaitTask(issue idleRigIssue, want string) {
 	r.t.Helper()
-	idleRigEventually(r.t, idleRigRecordWait, "the woken role of "+issue.key+" given its wake's task", func() bool {
+	testwait.Eventually(r.t, "the woken role of "+issue.key+" given its wake's task", func() bool {
 		return idleRigCount(r.newPrompts(issue), want) >= 1
 	})
-}
-
-// idleRigSettle runs check now and again for the whole of within, so a test that must see
-// nothing happen watches for it rather than reading once and moving on. Its span is not a bound
-// on a fault, as every other wait of the row carries, but the watch itself: it has one caller,
-// the subscribed topic, whose claim is that nothing was woken. The listener decides whether to
-// raise a wake report inside the publish this follows, so what the span covers is the daemon's
-// own pass over the reports it raised — and a publish that raised none leaves nothing positive
-// to wait for. Every other wait of the row is for something that does happen, and gives up at
-// its own span instead (idleRigEventually).
-func idleRigSettle(t *testing.T, within time.Duration, check func()) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		check()
-		if t.Failed() || time.Now().After(deadline) {
-			return
-		}
-		time.Sleep(idleRigPoll)
-	}
 }
 
 // idleRigTexts is what a failure prints of the messages a role recorded.

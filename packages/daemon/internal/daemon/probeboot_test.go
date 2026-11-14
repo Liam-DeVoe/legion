@@ -12,13 +12,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"k8s.io/client-go/rest"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // probeBootConfig is a Kubernetes daemon's configuration over the cluster at server, with the whole
@@ -27,8 +27,10 @@ import (
 // asked Dispatch anything would fail or show it.
 func probeBootConfig(t *testing.T, server string) (config.Config, *atomic.Int32) {
 	t.Helper()
-	t.Setenv("LEGION_TEST_PG_DSN", "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1")
 	cfg := kubernetesConfig(t, server)
+	// Nothing listens on 127.0.0.1:1, so a probe-boot that opened its store fails here rather
+	// than writing the run's own database.
+	cfg.PostgresDSN = "postgres://legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1"
 	var dispatched atomic.Int32
 	dispatch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		dispatched.Add(1)
@@ -162,8 +164,7 @@ func TestProbeBootRunsTheDaemonsImageProbeAfterTheClusterCheck(t *testing.T) {
 	var checkedFirst bool
 	census := "GET /apis/agents.x-k8s.io/v1beta1/namespaces/" + cfg.Runtime.Kubernetes.Namespace + "/sandboxes"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	report, err := probeBoot(ctx, cfg, lookup(nil), quietLogger(),
 		func(_ context.Context, _ *rest.Config, opts sandbox.Options) (imageProber, error) {
 			mu.Lock()

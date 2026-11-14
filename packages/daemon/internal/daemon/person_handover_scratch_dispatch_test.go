@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -241,9 +240,8 @@ const personHandoverSpec = "# Plan\n\nThe service ships behind a flag.\n"
 // boot proof writes to Dispatch before the first boot. admissionCap is the daemon's cap.
 func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	t.Helper()
-	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
-	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
-	// from.
+	// The NATS server is taken first: Dispatch reconciles ENVOY_NOTIFICATIONS on the test's own
+	// server (testnats.URL) on its first connection, which the daemon then consumes from.
 	natsURL := testnats.URL(t)
 	baseURL, token := startScratchDispatchWithNATS(t, natsURL)
 	cfg := workflowConfig(t, natsURL)
@@ -252,12 +250,12 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
 	cfg.PostgresDSN = blockersDatabase(t)
 	cfg.AdmissionCap = admissionCap
-	// No controller tick runs: the first is an hour after the runtime starts (controllerFirstWake,
-	// in boot) and the next an hour after that, so every decision below is an event's or the boot
-	// listing's. The design gate stays at its default, root-issues, so a registered gate stays
-	// registrable and closed until a person approves; EnvoyURL stays the rig's unreachable
-	// default, so every notice row the daemon queues stays in its outbox for the proof to count.
-	cfg.ControllerWakeInterval = time.Hour
+	// No controller tick runs: the daemon's clock is held still (fakeRuntime's stillClock), so the
+	// runtime's first tick (firstControllerTick) never comes, and every decision below is an
+	// event's or the boot listing's. The design gate stays at its default, root-issues, so a
+	// registered gate stays registrable and closed until a person approves; EnvoyURL stays the
+	// rig's unreachable default, so every notice row the daemon queues stays in its outbox for
+	// the proof to count.
 	cfg.DispatchURL = baseURL
 	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the scratch Dispatch bearer: %v", err)
@@ -288,7 +286,6 @@ func (r *personHandoverRig) boot() {
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
-	o.controllerFirstWake = time.Hour
 	r.rt = rt
 	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }

@@ -116,9 +116,7 @@ func TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot(t *tes
 	defer apiServer.Close()
 	cfg := kubernetesConfig(t, apiServer.URL)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	err := run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
+	err := run(testwait.Context(t), cfg, quietLogger(), overrides{clock: newStillClock(), listen: heldListen})
 	if err == nil {
 		t.Fatal("the daemon booted on a cluster without Agent Sandbox")
 	}
@@ -180,9 +178,7 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 	cfg := kubernetesConfig(t, apiServer.URL)
 	cfg.PostgresDSN = "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	err := run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
+	err := run(testwait.Context(t), cfg, quietLogger(), overrides{clock: newStillClock(), listen: heldListen})
 	if err == nil || !strings.Contains(err.Error(), "legacy issue Sandbox "+legacy) {
 		t.Fatalf("boot = %v, want the refusal naming the legacy Sandbox %s", err, legacy)
 	}
@@ -207,9 +203,7 @@ func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T)
 		return bootprobe.ImageReport{}, errors.New("worker image ghcr.io/cybermonklabs/legion-worker@sha256:aaaa refused: the plugin declares contract 3")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	err := run(ctx, cfg, quietLogger(), o)
+	err := run(testwait.Context(t), cfg, quietLogger(), o)
 	if err == nil || !strings.Contains(err.Error(), "the plugin declares contract 3") {
 		t.Fatalf("boot = %v, want the image probe's refusal", err)
 	}
@@ -238,6 +232,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 	logger := slog.New(slog.NewJSONHandler(&logged, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	obs := observing(&o)
 	go func() { done <- run(ctx, cfg, logger, o) }()
 	defer func() {
 		cancel()
@@ -245,7 +240,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 			t.Errorf("run: %v", err)
 		}
 	}()
-	awaitHealthz(t, cfg, done)
+	obs.ready(t, done)
 
 	record.mu.Lock()
 	address, apps, repository, mapped := record.address, record.apps, record.repository, record.mapped
@@ -385,6 +380,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 	o.workflowTokens, o.githubAPI = &workflowTokenRecorder{}, repositoriesGitHub(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	obs := observing(&o)
 	go func() { done <- run(ctx, cfg, quietLogger(), o) }()
 	defer func() {
 		cancel()
@@ -392,7 +388,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 			t.Errorf("run: %v", err)
 		}
 	}()
-	awaitHealthz(t, cfg, done)
+	obs.ready(t, done)
 
 	record.mu.Lock()
 	address := record.address
@@ -812,31 +808,6 @@ func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) 
 	}
 }
 
-// awaitHealthz returns once the daemon answers /healthz, and fails if it exits first.
-func awaitHealthz(t *testing.T, cfg config.Config, done chan error) {
-	t.Helper()
-	var err error
-	if !testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
-		var response *http.Response
-		response, err = pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode == http.StatusOK {
-				return true
-			}
-		}
-		select {
-		case exited := <-done:
-			done <- exited
-			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
-		default:
-		}
-		return false
-	}) {
-		t.Fatalf("the daemon never answered /healthz: %v", err)
-	}
-}
-
 // Each duration key reaches the runtime option that takes it, under either runtime: every value
 // here is distinct, so feeding an option from its neighbouring key fails a row.
 // worker_stop_timeout_seconds in particular has no other test: it is tmux's stop grace and the
@@ -986,13 +957,11 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	if enroller == nil || client == nil {
 		t.Fatal("want an enroller and a client")
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") || client.LoginStatus().State != "issued" {
-		if time.Now().After(deadline) {
-			t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testwait.Until(t, "the token login logged and issued", func() (string, bool) {
+		held, state := logged.String(), client.LoginStatus().State
+		return fmt.Sprintf("log = %s, state %q", held, state),
+			strings.Contains(held, "agent-secrets: logged in with the daemon's ServiceAccount token") && state == "issued"
+	})
 	mu.Lock()
 	defer mu.Unlock()
 	if len(tokens) != 1 || tokens[0] != "the-daemon's-token" {

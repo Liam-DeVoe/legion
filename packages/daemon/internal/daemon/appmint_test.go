@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"strconv"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +20,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -110,95 +112,120 @@ func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Reques
 	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client()}), standIn
 }
 
-// quickAppMints shortens a boot mint's attempt and its retry for the test, restoring them after.
-func quickAppMints(t *testing.T) {
-	attempt, retry := appMintAttempt, appMintRetry
-	appMintAttempt, appMintRetry = 500*time.Millisecond, bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 10 * time.Millisecond, Attempts: 3}
-	t.Cleanup(func() { appMintAttempt, appMintRetry = attempt, retry })
-}
-
 func installed(w http.ResponseWriter) {
 	fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
 }
 
-// bootsOrExits runs the daemon until it answers /healthz or run returns, and says which.
-func bootsOrExits(t *testing.T, cfg config.Config, tokens appauth.Tokens, within time.Duration) error {
+// booting is a daemon a test boots through run, whose boot it may drive before it waits for the
+// daemon to be ready or for run to return (readyOrExit).
+type booting struct {
+	obs  *observer
+	done chan error
+	// returned is set once a wait took run's result, so the cleanup waits for no second one.
+	returned bool
+}
+
+// bootOn runs the daemon on cfg until the test ends, its App tokens from tokens and its time from
+// clk, and returns at once, so the test can drive clk while the boot waits on it.
+func bootOn(t *testing.T, cfg config.Config, tokens appauth.Tokens, clk clock.Clock, log *slog.Logger) *booting {
 	t.Helper()
-	return bootsOrExitsLogging(t, cfg, tokens, within, quietLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	b := &booting{done: make(chan error, 1)}
+	o := overrides{
+		listen:         heldListen,
+		runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
+		clock:          clk,
+		workflowTokens: tokens,
+		githubAPI:      repositoriesGitHub(t),
+	}
+	b.obs = observing(&o)
+	go func() { b.done <- run(ctx, cfg, log, o) }()
+	t.Cleanup(func() {
+		cancel()
+		if b.returned {
+			return
+		}
+		if err := testwait.Receive(t, "run to return once the test ended", b.done); err != nil {
+			t.Errorf("run after the test: %v", err)
+		}
+	})
+	return b
+}
+
+// readyOrExit waits until the daemon reports itself ready to serve or run returns, and says which:
+// nil for the first, and run's error for the second, which must be one.
+func (b *booting) readyOrExit(t *testing.T) error {
+	t.Helper()
+	returned, err := b.obs.readyOrReturned(t, b.done)
+	if !returned {
+		return nil
+	}
+	b.returned = true
+	if err == nil {
+		t.Fatal("run returned nil before the daemon was ready to serve")
+	}
+	return err
+}
+
+// bootsOrExits runs the daemon until it reports itself ready to serve or run returns, and says
+// which: nil for the first, and run's error for the second, which must be one. Its clock is the
+// still one, whose waits between a boot's attempts end at once.
+func bootsOrExits(t *testing.T, cfg config.Config, tokens appauth.Tokens) error {
+	t.Helper()
+	return bootsOrExitsLogging(t, cfg, tokens, quietLogger())
 }
 
 // bootsOrExitsLogging is bootsOrExits with the daemon logging to log.
-func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens, within time.Duration, log *slog.Logger) error {
+func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens, log *slog.Logger) error {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, log, overrides{
-			listen:         heldListen,
-			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
-			clock:          stillClock{},
-			workflowTokens: tokens,
-			githubAPI:      repositoriesGitHub(t),
-		})
-	}()
-	stopped := false
-	t.Cleanup(func() {
-		cancel()
-		if stopped {
-			return
-		}
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run after the test: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
-		}
+	return bootOn(t, cfg, tokens, newStillClock(), log).readyOrExit(t)
+}
+
+// fireArmed waits until the daemon has armed a timer on clk for d past clk's present, what names
+// it, and moves clk to that moment, which fires it and any timer due no later. A fake made by
+// clocktest.New stands still between moves, so the deadline a wait of d arms is known exactly.
+func fireArmed(t *testing.T, clk *clocktest.Fake, what string, d time.Duration) {
+	t.Helper()
+	due := clk.Now().Add(d)
+	testwait.Until(t, fmt.Sprintf("%s armed for %s on the fake clock", what, d), func() ([]time.Time, bool) {
+		armed := clk.Armed()
+		return armed, slices.ContainsFunc(armed, due.Equal)
 	})
-	var exited error
-	answered := testwait.Holds(within, 20*time.Millisecond, func() bool {
-		select {
-		case err := <-done:
-			stopped = true
-			if err == nil {
-				t.Fatal("run returned nil before the daemon answered /healthz")
-			}
-			exited = err
-			return true
-		default:
-		}
-		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz"); err == nil {
-			response.Body.Close()
-			if response.StatusCode == http.StatusOK {
-				return true
-			}
-		}
-		return false
-	})
-	if exited != nil {
-		return exited
+	clk.Set(due)
+}
+
+// fireBackoff fires, one after another, the first n waits of retry's backoff a boot probe arms on
+// clk (bootprobe.Run): retry.Initial, doubling, capped at retry.Max.
+func fireBackoff(t *testing.T, clk *clocktest.Fake, what string, retry bootprobe.Retry, n int) {
+	t.Helper()
+	wait := retry.Initial
+	for attempt := range n {
+		fireArmed(t, clk, fmt.Sprintf("%s (wait %d of %d)", what, attempt+1, n), wait)
+		wait = min(2*wait, retry.Max)
 	}
-	if !answered {
-		t.Fatalf("the daemon neither answered /healthz nor exited within %s", within)
-	}
-	return nil
 }
 
 // A GitHub request at boot that never answers is GitHub's trouble, not the App's: the boot mints
 // again and comes up. Before, the one request ran until the boot budget ran out, and the daemon
 // exited (a Stage 3 restart died exactly so: "mint implement GitHub App token at boot: GitHub App
-// installation discovery: ... context deadline exceeded", #1347).
+// installation discovery: ... context deadline exceeded", #1347). The attempt's bound and the wait
+// before the next attempt are the daemon's clock's, which the test moves past each.
 func TestABootWaitsOutAGitHubRequestThatNeverAnswers(t *testing.T) {
-	quickAppMints(t)
+	hung := make(chan struct{})
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
 		if app == "1" && n == 1 {
+			close(hung)
 			<-r.Context().Done()
 			return
 		}
 		installed(w)
 	})
-	if err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second); err != nil {
+	clk := clocktest.New(time.Now())
+	boot := bootOn(t, workflowConfig(t, workflowNATS(t)), tokens, clk, quietLogger())
+	testwait.Receive(t, "the implement App's first installation discovery", hung)
+	fireArmed(t, clk, "the mint attempt's bound", appMintAttempt)
+	fireArmed(t, clk, "the wait before the mint's next attempt", appMintRetry.Initial)
+	if err := boot.readyOrExit(t); err != nil {
 		t.Fatalf("boot = %v, want it to mint again after one GitHub request that never answered", err)
 	}
 	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 2, "2": 1}) {
@@ -209,11 +236,10 @@ func TestABootWaitsOutAGitHubRequestThatNeverAnswers(t *testing.T) {
 // A definitive answer (the App's key refused) is refused at once, naming it and the repository the
 // boot minted for (workflowConfig's mapping, acme/widgets): no retry changes it.
 func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
-	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, _ string, _ int) {
 		http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
 	})
-	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second)
+	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens)
 	if err == nil || !strings.Contains(err.Error(), "mint implement GitHub App token at boot for acme/widgets: ") || !strings.Contains(err.Error(), "(401)") {
 		t.Fatalf("boot = %v, want the refusal naming the implement mint, the repository acme/widgets and GitHub's 401", err)
 	}
@@ -224,11 +250,12 @@ func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 
 // Both Apps' tokens share one retry budget, so a boot waits at most appMintRetry before it refuses,
 // however the failures fall between the two mints. Here the implement App's discovery fails twice
-// and then answers, and the review App's never does: the budget's three attempts are spent before
-// the review token is asked for more than once. With a budget per App the boot would wait both out,
-// twice as long, which is what outlasted Stage 3's wait for /healthz.
+// and then answers, and the review App's never does: the budget's attempts are spent with the
+// review token asked only for the attempts the implement App's two failures left. With a budget per
+// App the review App would be asked the whole budget's number of times, and the boot would wait
+// both out, twice as long, which is what outlasted Stage 3's wait for /healthz. Each wait between
+// attempts is the daemon's clock's, which the test moves past.
 func TestABootGivesBothAppTokensOneRetryBudget(t *testing.T) {
-	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
 		if app == "1" && n > 2 {
 			installed(w)
@@ -236,11 +263,15 @@ func TestABootGivesBothAppTokensOneRetryBudget(t *testing.T) {
 		}
 		http.Error(w, "{}", http.StatusBadGateway)
 	})
-	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second)
-	if err == nil || !strings.Contains(err.Error(), "retry budget (3 attempts)") || !strings.Contains(err.Error(), "mint review GitHub App token at boot") {
-		t.Fatalf("boot = %v, want the refusal after the one budget's three attempts, naming the review mint", err)
+	clk := clocktest.New(time.Now())
+	boot := bootOn(t, workflowConfig(t, workflowNATS(t)), tokens, clk, quietLogger())
+	fireBackoff(t, clk, "the wait before the mint's next attempt", appMintRetry, appMintRetry.Attempts-1)
+	err := boot.readyOrExit(t)
+	budget := fmt.Sprintf("retry budget (%d attempts)", appMintRetry.Attempts)
+	if err == nil || !strings.Contains(err.Error(), budget) || !strings.Contains(err.Error(), "mint review GitHub App token at boot") {
+		t.Fatalf("boot = %v, want the refusal after the one budget's %d attempts, naming the review mint", err, appMintRetry.Attempts)
 	}
-	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 3, "2": 1}) {
-		t.Errorf("installation discoveries by App = %v, want the implement App's three and the review App's one", got)
+	if got, want := standIn.Discoveries(), map[string]int{"1": 3, "2": appMintRetry.Attempts - 2}; !maps.Equal(got, want) {
+		t.Errorf("installation discoveries by App = %v, want %v: the implement App's three and the review App's in the attempts left of one budget", got, want)
 	}
 }

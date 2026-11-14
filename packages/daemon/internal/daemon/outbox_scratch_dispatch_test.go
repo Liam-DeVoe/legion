@@ -290,10 +290,9 @@ func startScratchDispatch(t *testing.T) (string, string) {
 }
 
 // startScratchDispatchWithNATS is startScratchDispatch with its events turned on: the same server,
-// publishing every issue event on natsURL, which is the NATS server the test holds
-// (testnats.URL). Dispatch reconciles the ENVOY_NOTIFICATIONS stream there on its first
-// connection, which it makes in the background once it starts, so the caller creates none — and
-// must take the NATS server before this call, since testnats.URL empties it of every stream.
+// publishing every issue event on natsURL, the test's own NATS server (testnats.URL). Dispatch
+// reconciles the ENVOY_NOTIFICATIONS stream there on its first connection, which it makes in the
+// background once it starts, so the caller creates none.
 func startScratchDispatchWithNATS(t *testing.T, natsURL string) (string, string) {
 	t.Helper()
 	if natsURL == "" {
@@ -370,12 +369,9 @@ func (d *scratchDispatch) start() {
 	t := d.t
 	t.Helper()
 	// Readiness is a server process starting and migrating a fresh database, whose time is the
-	// machine's load: bounded by the test binary's own deadline rather than a fixed span, so a
-	// slow start is not read as a server that will never answer.
-	deadline := time.Now().Add(2 * time.Minute)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-10*time.Second).Before(deadline) {
-		deadline = testDeadline.Add(-10 * time.Second)
-	}
+	// machine's load: waited for through the shared wait, so a slow start is not read as a server
+	// that will never answer.
+	//
 	// Dispatch serves on a socket held here (DISPATCH_LISTEN_FD), so no other process can take the
 	// port before Dispatch serves it: the first start on a port the kernel chose (heldSocket), a
 	// restart on the port it served before (holdPortAgain).
@@ -384,7 +380,7 @@ func (d *scratchDispatch) start() {
 		held, d.port = heldSocket(t)
 		d.base = fmt.Sprintf("http://127.0.0.1:%d", d.port)
 	} else {
-		held = d.holdPortAgain(deadline)
+		held = d.holdPortAgain()
 	}
 	command := exec.Command(d.binary)
 	command.Dir = d.dir
@@ -432,7 +428,7 @@ func (d *scratchDispatch) start() {
 	exited := make(chan error, 1)
 	go func() { exited <- command.Wait() }()
 	d.command, d.exited, d.output = command, exited, output
-	if !testwait.Holds(time.Until(deadline), 50*time.Millisecond, func() bool {
+	testwait.Eventually(t, "scratch Dispatch to answer GET /api/v1 with 200", func() bool {
 		select {
 		case err := <-exited:
 			d.command = nil
@@ -448,41 +444,32 @@ func (d *scratchDispatch) start() {
 			}
 		}
 		return false
-	}) {
-		t.Fatalf("scratch Dispatch did not become ready:\n%s", output.String())
-	}
+	})
 }
 
 // holdPortAgain takes the socket of the port the server served on before its stop (takeSocket), as
 // heldSocket takes one of a port the kernel chooses. From the stop until here the port is any
 // process's, so a run that finds it still held by another process (EADDRINUSE) binds it again
-// until deadline. Every other failure of takeSocket, such as the descriptor the listener could not
-// give, is this run's own and fails the test at once: binding again would never clear it.
-func (d *scratchDispatch) holdPortAgain(deadline time.Time) *os.File {
+// until it is free. Every other failure of takeSocket, such as the descriptor the listener could
+// not give, is this run's own and fails the test at once: binding again would never clear it.
+func (d *scratchDispatch) holdPortAgain() *os.File {
 	d.t.Helper()
 	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(d.port))
-	var held *os.File
-	var last error
-	if !testwait.Holds(time.Until(deadline), 500*time.Millisecond, func() bool {
+	type bound struct {
+		held *os.File
+		err  error
+	}
+	return testwait.Until(d.t, fmt.Sprintf("scratch Dispatch's port %d to be free to hold again", d.port), func() (bound, bool) {
 		file, _, err := takeSocket(address)
-		switch {
-		case err == nil:
-			held = file
-			return true
-		case !errors.Is(err, syscall.EADDRINUSE):
+		if err != nil && !errors.Is(err, syscall.EADDRINUSE) {
 			d.t.Fatalf("hold scratch Dispatch's port %d again: %v", d.port, err)
 		}
-		last = err
-		d.t.Logf("scratch Dispatch's port %d is still taken (%v); binding it again", d.port, err)
-		return false
-	}) {
-		d.t.Fatalf("scratch Dispatch's port %d was still taken at the deadline: %v", d.port, last)
-	}
-	return held
+		return bound{held: file, err: err}, err == nil
+	}).held
 }
 
-// stop interrupts the running server and waits for it to exit, killing it after ten seconds. A
-// server that is not running is left as it is.
+// stop interrupts the running server and waits for it to exit, and kills it when the wait gives
+// up. A server that is not running is left as it is.
 func (d *scratchDispatch) stop() {
 	if d.command == nil {
 		return
@@ -490,15 +477,17 @@ func (d *scratchDispatch) stop() {
 	command := d.command
 	d.command = nil
 	_ = command.Process.Signal(os.Interrupt)
-	select {
-	case err := <-d.exited:
-		if err != nil {
-			d.t.Errorf("scratch Dispatch stopped: %v\n%s", err, d.output.String())
+	exited := false
+	// A server the wait gave up on is killed rather than left running past the test.
+	defer func() {
+		if !exited {
+			_ = command.Process.Kill()
 		}
-	case <-time.After(10 * time.Second):
-		_ = command.Process.Kill()
-		<-d.exited
-		d.t.Error("scratch Dispatch did not stop after SIGINT")
+	}()
+	err := testwait.Receive(d.t, "scratch Dispatch to exit after SIGINT", d.exited)
+	exited = true
+	if err != nil {
+		d.t.Errorf("scratch Dispatch stopped: %v\n%s", err, d.output.String())
 	}
 }
 

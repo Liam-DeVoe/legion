@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A webhook GitHub never delivers leaves the record at a head GitHub has moved past, and every
@@ -126,16 +127,11 @@ func TestAHandoffCompletionReadsThatIssuesPullRequestAlone(t *testing.T) {
 	}()
 
 	w.handoffCompleted("CAPTURE-1")
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		if _, pr := capturePhase(t, pool); pr.HeadSHA == "pushed" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the completion's read did not follow CAPTURE-1's head; GitHub was read %v", github.counts())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// The reading is what GitHub was read for so far.
+	testwait.Until(t, "the completion's read to follow CAPTURE-1's head", func() (map[string]int, bool) {
+		_, pr := capturePhase(t, pool)
+		return github.counts(), pr.HeadSHA == "pushed"
+	})
 	if got := github.count("/repos/acme/widgets/pulls/86"); got != 1 {
 		t.Fatalf("the completion read pull request 86 %d times, want 1", got)
 	}

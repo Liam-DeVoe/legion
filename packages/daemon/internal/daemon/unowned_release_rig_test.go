@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The issues of this rig, one pod each and one per subtest: each subtest has its own issue's pod
@@ -96,11 +98,10 @@ func idleRigEarlierBundle(issue string, at time.Time) runtime.WorkspaceBundle {
 func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testing.T) {
 	rig := newIdleWakeRig(t, idleRigOperatorRetry, idleRigFreshSession, idleRigQueuedStart)
 	rig.launchAll()
-	// From here no pod of the rig is released for being idle. The gate is shut now and kept
-	// shut by a goroutine of the rig's for the rest of the test, because the listener
-	// republishes a ready report every five minutes and the claim rows this test back-dates
-	// stay back-dated: a report left standing for a tick of the daemon would open the gate on
-	// pods that are quiet.
+	// From here no pod of the rig is released for being idle: the listener's report is aged out of
+	// its window before every idle pass the rig runs (keepListenerGateShut, idlePass), so a pass
+	// never finds the gate open on the pods this test holds quiet. Only the release of a pod no
+	// claim owns, which runs outside that gate, takes a pod here.
 	rig.keepListenerGateShut()
 
 	t.Run("TheOperatorsRetryMakesThePodAgainInTheClaimsOwnSession", func(t *testing.T) {
@@ -240,23 +241,26 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 //
 // The order is the whole of what it reads. The other pods are waited for as idle-release
 // candidates first, because a pod the idle rule would keep for a reason of its own says nothing
-// about the gate; the count of the line the daemon logs at the gate is taken after that wait,
-// so the lines read after the release belong to the ticks that made it.
+// about the gate; the gate line's count is taken after that wait, so the lines read after the
+// release belong to the passes that made it.
 func releasedWithNoLiveClaim(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {
 	t.Helper()
 	others := idleRigOtherIssues(rig, issue)
 	idleRigAwaitIdleCandidates(t, rig, others)
 	gated := rig.logged(idleRigGateTooOld, nil)
-	teardowns := rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key})
 
 	rig.awaitUnownedReleased(issue)
 
-	if now := rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key}); now != teardowns+1 {
-		t.Errorf("the daemon logged the teardown of %s's pod %d times, want the %d it had and this release's one",
-			issue.key, now, teardowns+1)
-	}
+	// The teardown's own line, taken off the log stream: awaitUnownedReleased has waited for the
+	// release row to settle, so the line releaseIssue writes just before it settled is there.
+	testwait.Next(t, "the daemon's teardown of "+issue.key+"'s unowned pod", rig.logs.Stream(),
+		func(line string) bool {
+			return strings.Contains(line, loggedMessage(idleRigUnownedTeardown)) && strings.Contains(line, issue.key)
+		})
+	// The gate line is the idle pass's own, written in the pass that released the unowned pod, so
+	// it is in the log by the time that pass reported; its count is read once, after the release.
 	if now := rig.logged(idleRigGateTooOld, nil); now <= gated {
-		t.Errorf("the daemon read the listener gate %d times, want more than the %d it had read when the gate was shut: the idle release must have returned at it in the ticks that took the unowned pod",
+		t.Errorf("the daemon read the listener gate %d times, want more than the %d it had read when the gate was shut: the idle release must have returned at it in the passes that took the unowned pod",
 			now, gated)
 	}
 	idleRigIdleCandidatesStand(t, rig, others)
@@ -288,7 +292,7 @@ func idleRigAwaitIdleCandidates(t *testing.T, rig *idleWakeRig, issues []idleRig
 			t.Logf("the rig's other pods, as the wait last read them: %s", stood)
 		}
 	}()
-	idleRigEventually(t, idleRigRecordWait, "the rig's other pods standing as pods the idle release would take", func() bool {
+	testwait.Eventually(t, "the rig's other pods standing as pods the idle release would take", func() bool {
 		claims := rig.api.claims()
 		for _, issue := range issues {
 			state := listedClaim(t, claims, rig.token(issue)).State
@@ -341,7 +345,7 @@ func idleRigPodMadeAgain(t *testing.T, rig *idleWakeRig, issue idleRigIssue, reg
 			t.Log(rig.diagnose())
 		}
 	}()
-	idleRigEventually(t, idleRigPodWait, "the pod of "+issue.key+" made again with its role registered", func() bool {
+	testwait.Eventually(t, "the pod of "+issue.key+" made again with its role registered", func() bool {
 		return rig.agents.role(issue.key, string(issue.role)).Registered >= registrations &&
 			idleRigWorking(rig.api.claim(token).State)
 	})
@@ -365,7 +369,7 @@ func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 	if status != http.StatusOK && status != http.StatusAccepted {
 		r.t.Fatalf("the operator's stop of %s = %d %s", token, status, body)
 	}
-	idleRigEventually(r.t, idleRigRecordWait, "the stopped role of "+issue.key+" recording no process", func() bool {
+	testwait.Eventually(r.t, "the stopped role of "+issue.key+" recording no process", func() bool {
 		stopped := r.api.claim(token)
 		return stopped.State == string(supervise.StateRetired) && stopped.Locator == nil
 	})
