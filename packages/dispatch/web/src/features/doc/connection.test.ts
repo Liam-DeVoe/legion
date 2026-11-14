@@ -1,5 +1,9 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
-import { DOCUMENT_BUSY_CLOSE_CODE, DOCUMENT_TOO_LARGE_CLOSE_CODE } from "@legion/contracts";
+import {
+  DOCUMENT_BUSY_CLOSE_CODE,
+  DOCUMENT_REBUILT_CLOSE_REASON,
+  DOCUMENT_TOO_LARGE_CLOSE_CODE,
+} from "@legion/contracts";
 import { waitFor } from "@testing-library/react";
 import { createDecoder, readVarString, readVarUint, readVarUint8Array } from "lib0/decoding";
 import * as Y from "yjs";
@@ -12,6 +16,8 @@ import {
   isSchemaReadOnly,
   loadDocumentTransport,
   pendingNotice,
+  type ReconnectWait,
+  reconnectingNotice,
   refusedEditNotice,
   wsUrl,
 } from "./connection";
@@ -22,6 +28,7 @@ import {
   closeStores,
   frame,
   paragraphText,
+  rebuiltRoom,
   rowsOf,
   savedChanges,
   savedEdit,
@@ -161,6 +168,8 @@ interface ProviderHarness {
   busy: boolean[];
   /** The reason of each refused edit the host was told of (`DOCUMENT_TOO_LARGE_CLOSE_CODE`). */
   refusals: string[];
+  /** Each reconnect wait the host was told of, and each `undefined` taking one back, in order. */
+  waits: (ReconnectWait | undefined)[];
   /** Whether the host was told that the first admission's restore finished. */
   synced(): boolean;
   /** The `index`th socket the provider opened, once the provider has written to it. */
@@ -194,12 +203,14 @@ async function withProvider(
     const pending: PendingState[] = [];
     const busy: boolean[] = [];
     const refusals: string[] = [];
+    const waits: (ReconnectWait | undefined)[] = [];
     connection = connect(artifact, {
       onAdmission: (readOnly) => admissions.push(readOnly),
       onBusy: (waiting) => busy.push(waiting),
       onEditRefused: (reason) => refusals.push(reason),
       onOutsideSchema() {},
       onPending: (state) => pending.push(state),
+      onReconnectWait: (wait) => waits.push(wait),
       onStatus() {},
       onSynced: () => {
         synced = true;
@@ -218,6 +229,7 @@ async function withProvider(
         return OpenSocket.opened[index] as OpenSocket;
       },
       synced: () => synced,
+      waits,
     });
   } finally {
     connection?.destroy();
@@ -699,50 +711,254 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 10; i += 1) await Promise.resolve();
 }
 
-test("a document's first connect opens at once, and each reconnect after a server close waits a fresh draw of the 2 s spread", async () => {
+/**
+ * Runs `body` over the real transport on a held clock (`jest.useFakeTimers()`), every draw of the
+ * reconnect backoff half way unless `body` draws again. The page's first socket has been made by
+ * then, and opened.
+ */
+async function onHeldClock(
+  body: (held: { artifact: string; first: OpenSocket; harness: ProviderHarness }) => Promise<void>,
+  socketClass: typeof OpenSocket = OpenSocket
+): Promise<void> {
   const artifact = artifactId();
   try {
     await withProvider(
       artifact,
-      async ({ draw }) => {
+      async (harness) => {
         // The page's first connect waits nothing, whatever the draw would be.
         expect(OpenSocket.opened).toHaveLength(1);
-
-        // The socket opens with the draw at 0.5: the reconnect after it waits 0.5 of 2 s.
         jest.useFakeTimers();
-        draw(0.5);
+        harness.draw(0.5);
         await settle();
-        const first = OpenSocket.opened[0] as OpenSocket;
-        first.receive(authenticatedFrame("read-write", artifact));
-        // Dispatch restarts: the server closes the socket.
-        first.drop();
-        await settle();
-        expect(OpenSocket.opened).toHaveLength(1);
-        jest.advanceTimersByTime(999);
-        await settle();
-        expect(OpenSocket.opened).toHaveLength(1);
-        // The next socket opens with a fresh draw: 0.25 of 2 s.
-        draw(0.25);
-        jest.advanceTimersByTime(1);
-        await settle();
-        expect(OpenSocket.opened).toHaveLength(2);
-
-        const second = OpenSocket.opened[1] as OpenSocket;
-        second.receive(authenticatedFrame("read-write", artifact));
-        second.drop();
-        await settle();
-        jest.advanceTimersByTime(499);
-        await settle();
-        expect(OpenSocket.opened).toHaveLength(2);
-        jest.advanceTimersByTime(1);
-        await settle();
-        expect(OpenSocket.opened).toHaveLength(3);
+        await body({ artifact, first: OpenSocket.opened[0] as OpenSocket, harness });
       },
-      0.999
+      0.999,
+      socketClass
     );
   } finally {
     jest.useRealTimers();
   }
+}
+
+/**
+ * Runs the held clock `wait` ms on and requires the provider's next socket to be made at that
+ * moment and not a millisecond before it, then returns that socket, opened. The wait is part of
+ * what each check compares, so a failure names the wait it was reading.
+ */
+async function nextSocketAfter(wait: number): Promise<OpenSocket> {
+  const before = OpenSocket.opened.length;
+  jest.advanceTimersByTime(wait - 1);
+  await settle();
+  expect({ opened: OpenSocket.opened.length - before, wait }).toEqual({ opened: 0, wait });
+  jest.advanceTimersByTime(1);
+  await settle();
+  expect({ opened: OpenSocket.opened.length - before, wait }).toEqual({ opened: 1, wait });
+  return OpenSocket.opened[before] as OpenSocket;
+}
+
+/** The server answers `socket`, which then stays up `upFor` ms before it drops as a reset drops it. */
+async function answerThenDrop(socket: OpenSocket, artifact: string, upFor = 0): Promise<void> {
+  socket.receive(authenticatedFrame("read-write", artifact));
+  jest.advanceTimersByTime(upFor);
+  socket.drop();
+  await settle();
+}
+
+// A pod that admits the page and then dies, again and again (dispatch://INFRA-179): every socket
+// is answered, then dropped. The provider's own backoff restarts at a socket's first frame, so it
+// brought the page back within the first attempt's 2 s spread after every one of them, for ever.
+// The connection's own backoff restarts only after a socket that stayed up 30 s. At half-way draws
+// it waits the spread's 1 s, then 1.5, 3, 6 and 12 s, and 22.5 s from the 30 s cap on.
+test("a document's first connect opens at once, and its reconnects after answered sockets back off until one stays up 30 s", async () => {
+  await onHeldClock(async ({ artifact, first }) => {
+    let socket = first;
+    for (const wait of [1_000, 1_500, 3_000, 6_000, 12_000, 22_500, 22_500]) {
+      await answerThenDrop(socket, artifact);
+      socket = await nextSocketAfter(wait);
+    }
+    // A socket up a millisecond short of 30 s leaves the backoff at its cap...
+    await answerThenDrop(socket, artifact, 29_999);
+    socket = await nextSocketAfter(22_500);
+    // ...and one up for 30 s starts it over: the spread, then the second attempt's 1.5 s.
+    await answerThenDrop(socket, artifact, 30_000);
+    socket = await nextSocketAfter(1_000);
+    await answerThenDrop(socket, artifact);
+    await nextSocketAfter(1_500);
+  });
+});
+
+// A pod that is down: each socket after the first closes before the server answers it. The
+// provider would try again on its own backoff, 1 s and then a draw between 1 s and a doubling
+// ceiling: 1, 1.5 and 2.5 s at these draws. The connection cancels that retry and waits its own
+// backoff instead, 1.5, 3 and 6 s, so one policy decides every wait.
+test("a socket that closes before the server answers it waits the connection's backoff, not the provider's", async () => {
+  await onHeldClock(async ({ artifact, first }) => {
+    await answerThenDrop(first, artifact);
+    let socket = await nextSocketAfter(1_000);
+    for (const wait of [1_500, 3_000, 6_000]) {
+      socket.drop();
+      await settle();
+      socket = await nextSocketAfter(wait);
+    }
+  });
+});
+
+// A busy close after the admission, as the server's refusal of the edit a full pod cannot take
+// gives it: the edit waits for room, and the reconnects that carry it back off as any other.
+test("busy closes after admissions back off, and the busy notice stays up across them", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    let socket = first;
+    for (const wait of [1_000, 1_500, 3_000]) {
+      socket.receive(authenticatedFrame("read-write", artifact));
+      socket.dispatchEvent(
+        new CloseEvent("close", { code: DOCUMENT_BUSY_CLOSE_CODE, reason: "DOC_BUSY" })
+      );
+      await settle();
+      socket = await nextSocketAfter(wait);
+    }
+    expect(harness.busy).toEqual([true]);
+  });
+});
+
+// A readmission is the page's own close, so it says nothing of the server: its reconnect waits
+// the first attempt's spread, as it did before the connection kept a backoff of its own.
+test("a readmission reconnects within the first attempt's spread, whatever backoff earlier closes built", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    await answerThenDrop(first, artifact);
+    let socket = await nextSocketAfter(1_000);
+    await answerThenDrop(socket, artifact);
+    socket = await nextSocketAfter(1_500);
+    socket.receive(authenticatedFrame("read-write", artifact));
+    harness.connection.readmit();
+    await settle();
+    await nextSocketAfter(1_000);
+  }, ClosingSocket);
+});
+
+// The provider stops for good after a close it takes as final: an unauthorized one, one forbidden
+// and a message too big. The connection's backoff reconnects only where the provider would have.
+for (const code of [4401, 4403, 1009]) {
+  test(`a socket closed ${code} after its admission is not reconnected`, async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onHeldClock(async ({ artifact, first }) => {
+        first.receive(authenticatedFrame("read-write", artifact));
+        first.dispatchEvent(new CloseEvent("close", { code }));
+        await settle();
+        jest.advanceTimersByTime(60_000);
+        await settle();
+        expect(OpenSocket.opened).toHaveLength(1);
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+}
+
+/**
+ * Requires the last wait the host was told of to be `attempt`'s and to end `inMs` from now. The
+ * end is read against the clock rather than compared exactly: the held clock's `Date.now` still
+ * takes the odd real millisecond, and a wait is a span to show a person, not a stamp.
+ */
+function expectWait(harness: ProviderHarness, attempt: number, inMs: number): void {
+  const wait = harness.waits.at(-1);
+  const left = wait === undefined ? undefined : wait.at - Date.now();
+  expect({ attempt: wait?.attempt, left: Math.round((left ?? Number.NaN) / 100) * 100 }).toEqual({
+    attempt,
+    left: inMs,
+  });
+}
+
+// What the page shows while a wait runs rests on being told of it: the wait, the attempt it is,
+// and when it ends, taken back as the socket it waited for is made.
+test("each reconnect wait is told to the host with its attempt and end, and taken back as its socket is made", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    await answerThenDrop(first, artifact);
+    expect(harness.waits).toHaveLength(1);
+    expectWait(harness, 0, 1_000);
+    const second = await nextSocketAfter(1_000);
+    expect(harness.waits).toHaveLength(2);
+    expect(harness.waits.at(-1)).toBeUndefined();
+
+    await answerThenDrop(second, artifact);
+    expectWait(harness, 1, 1_500);
+    await nextSocketAfter(1_500);
+    expect(harness.waits.at(-1)).toBeUndefined();
+  });
+});
+
+// The person who will not wait out a grown backoff presses Retry now. It sends the socket that
+// wait was for and nothing else: the attempt was counted as the wait began, so a socket that
+// closes again waits the attempt after it, and the growth the storm's bound rests on is kept.
+test("reconnectNow sends the waiting socket at once and leaves the backoff where it stands", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    let socket = first;
+    for (const wait of [1_000, 1_500, 3_000]) {
+      await answerThenDrop(socket, artifact);
+      socket = await nextSocketAfter(wait);
+    }
+    // The fourth wait is 6 s away; the person presses the button a second into it.
+    await answerThenDrop(socket, artifact);
+    expectWait(harness, 3, 6_000);
+    jest.advanceTimersByTime(1_000);
+    await settle();
+    expect(OpenSocket.opened).toHaveLength(4);
+
+    harness.connection.reconnectNow();
+    jest.advanceTimersByTime(1);
+    await settle();
+    expect(OpenSocket.opened).toHaveLength(5);
+    expect(harness.waits.at(-1)).toBeUndefined();
+    socket = OpenSocket.opened[4] as OpenSocket;
+    // The wait the press cut short opens nothing when its own 6 s would have been up.
+    jest.advanceTimersByTime(6_000);
+    await settle();
+    expect(OpenSocket.opened).toHaveLength(5);
+
+    // The socket it sent closes as the others did: the next wait is the attempt after it, 12 s,
+    // not the 6 s this press spent and not the spread a reset would give.
+    await answerThenDrop(socket, artifact);
+    expectWait(harness, 4, 12_000);
+    await nextSocketAfter(12_000);
+  });
+});
+
+test("reconnectNow does nothing while a socket is open and after the connection is destroyed", async () => {
+  await onHeldClock(async ({ artifact, first, harness }) => {
+    // No wait is on: the socket is up, and the press opens no second socket.
+    harness.connection.reconnectNow();
+    await settle();
+    expect(OpenSocket.opened).toHaveLength(1);
+
+    await answerThenDrop(first, artifact);
+    expectWait(harness, 0, 1_000);
+    // A destroyed connection takes its wait back and opens nothing, pressed or not.
+    harness.connection.destroy();
+    expect(harness.waits.at(-1)).toBeUndefined();
+    harness.connection.reconnectNow();
+    jest.advanceTimersByTime(60_000);
+    await settle();
+    expect(OpenSocket.opened).toHaveLength(1);
+  });
+});
+
+test("the reconnecting notice says what this browser keeps of the typing", () => {
+  const pending = { count: 2, readOnly: false, rebuiltAt: undefined, stored: true, unsent: false };
+  expect(reconnectingNotice(pending, 23)).toBe(
+    "Reconnecting to the document in 23 s. Your edits are kept in this browser until they are sent."
+  );
+  expect(reconnectingNotice(pending)).toBe(
+    "Reconnecting to the document. Your edits are kept in this browser until they are sent."
+  );
+  expect(reconnectingNotice({ ...pending, stored: false }, 4)).toBe(
+    "Reconnecting to the document in 4 s. Your edits stay on this page, but a reload would lose them."
+  );
+  // A read-only admission takes no typing, and a document whose rows are not known yet promises
+  // nothing of them.
+  expect(reconnectingNotice({ ...pending, readOnly: true }, 4)).toBe(
+    "Reconnecting to the document in 4 s."
+  );
+  expect(reconnectingNotice(undefined, 4)).toBe("Reconnecting to the document in 4 s.");
 });
 
 /**
@@ -823,6 +1039,62 @@ for (const refusal of [
     });
   });
 }
+
+// The rebuilt room refuses the history it replaced and closes the socket at once, and the
+// connection's reset can overtake that close: in Chromium the page then sees an abnormal closure
+// with no reason, and at times without the refusal's SyncStatus either (document-refusals.e2e.ts's
+// used-up row). The room's state reached the page before it, so the page knows its document holds
+// that history, and a reconnect would hand it back to the same refusal.
+test("a document holding the history a rebuild replaced is not reconnected when the room's refusal reaches it as an abnormal closure", async () => {
+  const artifact = artifactId();
+  const history = serverWith("before the rebuild", 100);
+  await withProvider(artifact, async ({ refusals, socket, synced }) => {
+    const first = await socket(0);
+    serveInYgoOrder(first, history, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+
+    // Someone else rebuilds the document: the room closes the page's socket, and the page's
+    // reconnect meets the rebuilt room, whose SyncStep1 it answers with the history it holds.
+    const rebuilt = rebuiltRoom(history, "after the rebuild", 300);
+    first.drop();
+    const second = await socket(1);
+    second.receive(syncStep1Frame(Y.encodeStateVector(rebuilt), artifact));
+    const handed = syncPayloads(second, artifact, 1).at(0);
+    if (handed === undefined) {
+      throw new Error("the provider answers the rebuilt room's SyncStep1 with a SyncStep2");
+    }
+    expect(Y.decodeUpdate(handed).structs.some(({ id }) => id.client === 100)).toBe(true);
+    // The room sends its state, then refuses that answer, and the page sees the socket end with
+    // no SyncStatus and no reason.
+    second.receive(authenticatedFrame("read-write", artifact));
+    second.receive(syncStep2Frame(Y.encodeStateAsUpdate(rebuilt), artifact));
+    second.drop();
+
+    await waitFor(() => expect(refusals).toEqual([DOCUMENT_REBUILT_CLOSE_REASON]));
+    // The provider's own close handler starts a reconnect before the connection's runs; the
+    // connection's disconnect closes it, so no socket is left to hand the history back on.
+    expect(OpenSocket.opened.slice(2).every((opened) => opened.closed)).toBe(true);
+  });
+});
+
+// A document the host built afresh from the rebuilt room holds the room's list of retired clients
+// and none of their history, so a dropped socket is reconnected as any other. This row passes
+// without the connection's check of that history too: it guards how far the check reaches, and a
+// check that read the list alone (`doc.share.has("retired")`) fails it.
+test("a document built afresh from a rebuilt room reconnects after its socket drops", async () => {
+  const artifact = artifactId();
+  const rebuilt = rebuiltRoom(serverWith("before the rebuild", 100), "after the rebuild", 300);
+  await withProvider(artifact, async ({ refusals, socket, synced }) => {
+    const first = await socket(0);
+    serveInYgoOrder(first, rebuilt, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+
+    first.drop();
+    const second = await socket(1);
+    expect(second.closed).toBe(false);
+    expect(refusals).toEqual([]);
+  });
+});
 
 test("a real provider closed as busy reconnects, keeps the edit, and says when it is taken", async () => {
   const artifact = artifactId();

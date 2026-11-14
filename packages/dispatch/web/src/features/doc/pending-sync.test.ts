@@ -10,6 +10,7 @@ import {
   frame,
   NAME,
   paragraphText,
+  rebuiltRoom,
   rowsOf,
   savedChanges,
   savedEdit,
@@ -24,8 +25,10 @@ import {
   updateFrame,
 } from "./pending-fixture";
 import {
+  holdsReplacedHistory,
   type PendingState,
   type PendingSync,
+  retiredClients,
   startPendingSync,
   UNSENT_NOTICE_MS,
 } from "./pending-sync";
@@ -691,6 +694,41 @@ test("a stale row does not let a later row from the same lost history through", 
   expect(doc.store.pendingStructs).toBeNull();
   expect(await rowsOf(artifact)).toEqual([[artifact, doc.clientID, 1]]);
   expect(states.at(-1)?.rebuiltAt).toBeDefined();
+});
+
+// A rebuilt document lists the clients of the history it replaced (the server's `rebuiltSeed`).
+// A page that held that history and took the rebuilt room's state holds both, and the room
+// refuses the history it replaced; a page built afresh from the room holds the list alone.
+test("a document holds the history a rebuild replaced only while it holds a client the rebuild retired", () => {
+  const history = serverWith("before the rebuild", 100);
+  const rebuilt = rebuiltRoom(history, "after the rebuild", 300);
+  expect(retiredClients(rebuilt)).toEqual(new Map([[100, Y.getState(history.store, 100)]]));
+
+  // Asking a document no rebuild has replaced gives it no root it lacked.
+  expect(holdsReplacedHistory(history)).toBe(false);
+  expect(history.share.has("retired")).toBe(false);
+
+  const fresh = new Y.Doc();
+  Y.applyUpdate(fresh, Y.encodeStateAsUpdate(rebuilt));
+  expect(holdsReplacedHistory(fresh)).toBe(false);
+
+  Y.applyUpdate(history, Y.encodeStateAsUpdate(rebuilt));
+  expect(holdsReplacedHistory(history)).toBe(true);
+});
+
+// The list is read as the server reads it (`retiredClientsOf`): an entry that does not read as a
+// client and a clock of at least one is not the rebuild's.
+test("a retired entry that is not a client and a clock of at least one retires nothing", () => {
+  const history = serverWith("before the rebuild", 100);
+  const rebuilt = serverWith("after the rebuild", 300);
+  const retired = rebuilt.getMap("retired");
+  retired.set("100", 0);
+  retired.set("one hundred", 5);
+  retired.set("300", "5");
+  Y.applyUpdate(history, Y.encodeStateAsUpdate(rebuilt));
+
+  expect(retiredClients(history)).toEqual(new Map());
+  expect(holdsReplacedHistory(history)).toBe(false);
 });
 
 /** The paragraph the rows below chain onto: its last character is the left origin of both the

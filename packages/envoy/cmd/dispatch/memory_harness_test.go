@@ -1093,16 +1093,9 @@ func (p *memoryServer) openBrowser(t *testing.T, artifactID string) *browser {
 // the room budget's refusal, which completes the upgrade only to close it (refuseOverRoomBudget) -
 // returns the *gws.CloseError it was closed with.
 func (p *memoryServer) tryOpenBrowser(artifactID string) (*browser, error) {
-	connection, err := p.dialDocument(artifactID)
+	opened, err := p.connectBrowser(artifactID)
 	if err != nil {
 		return nil, err
-	}
-	opened := &browser{
-		room:       artifactID,
-		connection: connection,
-		answers:    make(chan browserAnswer, 4),
-		ended:      make(chan struct{}),
-		left:       make(chan struct{}),
 	}
 	go opened.read()
 	// The room hands a joining peer its state only once the peer asks for it (reearth/ygo#342),
@@ -1128,6 +1121,22 @@ func (p *memoryServer) tryOpenBrowser(artifactID string) (*browser, error) {
 		return nil, err
 	}
 	return opened, nil
+}
+
+// connectBrowser connects to the document's room and does nothing else: it sends nothing, and
+// reads nothing until its caller starts its read loop (browser.read).
+func (p *memoryServer) connectBrowser(artifactID string) (*browser, error) {
+	connection, err := p.dialDocument(artifactID)
+	if err != nil {
+		return nil, err
+	}
+	return &browser{
+		room:       artifactID,
+		connection: connection,
+		answers:    make(chan browserAnswer, 4),
+		ended:      make(chan struct{}),
+		left:       make(chan struct{}),
+	}, nil
 }
 
 func (b *browser) read() {

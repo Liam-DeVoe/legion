@@ -10,10 +10,13 @@ const INITIAL = "# Offline edits\n\nOriginal paragraph.\n";
  *  ladder would first see it a quarter-second late. */
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-/** Spends the document socket's reconnect draw - a uniform [0, RECONNECT_SPREAD_MS) set at the
- *  previous open (`web/src/features/doc/connection.ts`) - on the page's own clock. The close that
- *  arms the draw may not have reached the page when the first jump lands, so the jump repeats
- *  until the page is connected again. */
+/** Spends the document socket's reconnect wait on the page's own clock: the backoff
+ *  `web/src/features/doc/connection.ts` draws as a socket closes, a uniform
+ *  [0, RECONNECT_SPREAD_MS) for the page's first reconnect and the first after a socket that
+ *  stayed up 30 s, then [1, 2) s, [2, 4) s and on up to [15, 30) s for each reconnect after a
+ *  socket that closed sooner. The close that draws it may not have reached the page when the first
+ *  jump lands, and a later reconnect's wait outlasts one jump, so the jump repeats until the page
+ *  is connected again. */
 async function reconnectNow(page: Parameters<typeof documentTransport>[0]): Promise<void> {
   await expect
     .poll(async () => {

@@ -4,7 +4,7 @@ import { messageYjsSyncStep2, messageYjsUpdate } from "y-protocols/sync";
 import * as Y from "yjs";
 
 import type { PendingEdits, PendingKey, RestoredEdit } from "./pending-edits";
-import { FRAGMENT_NAME, MARKS_MAP_NAME } from "./roots";
+import { FRAGMENT_NAME, MARKS_MAP_NAME, RETIRED_MAP_NAME } from "./roots";
 import { readField } from "./sync-frame";
 
 export interface PendingState {
@@ -175,6 +175,43 @@ function addsParking(scratch: Y.Doc, update: Uint8Array): boolean {
     (client) => !beforeMissing.has(client)
   );
   return addsMissingClient || addsPendingDeletes(beforeDeletes, scratch.store.pendingDs);
+}
+
+/**
+ * The clients a rebuild of `doc`'s document retired, each with the clock it had reached in the
+ * history the rebuild replaced, as the rebuilt history lists them (`RETIRED_MAP_NAME`), read as the
+ * server reads the list (`retiredClientsOf`): an entry that is not a client and a clock of at least
+ * one retires nothing. Empty for a document no rebuild has replaced. The list is asked for by its
+ * class only once the document holds it, so a live document is never given a root it lacks.
+ */
+export function retiredClients(doc: Y.Doc): Map<number, number> {
+  const retired = new Map<number, number>();
+  if (!doc.share.has(RETIRED_MAP_NAME)) {
+    return retired;
+  }
+  doc.getMap(RETIRED_MAP_NAME).forEach((clock, key) => {
+    const client = Number(key);
+    if (Number.isSafeInteger(client) && client >= 0 && typeof clock === "number" && clock >= 1) {
+      retired.set(client, clock);
+    }
+  });
+  return retired;
+}
+
+/**
+ * Whether `doc` holds the history a rebuild of its document replaced: a struct of a client the
+ * rebuilt history retired. A client's structs run from clock 0, below any clock the list names,
+ * and the rebuilt room holds none of them, so this document's answer to the room's SyncStep1
+ * would carry them and the room would refuse it (`DOCUMENT_REBUILT_CLOSE_REASON`). A document
+ * built afresh from the rebuilt room holds the list and none of those clients.
+ */
+export function holdsReplacedHistory(doc: Y.Doc): boolean {
+  for (const client of retiredClients(doc).keys()) {
+    if (Y.getState(doc.store, client) > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** An object's entries ordered by key, so the order Yjs keeps them in does not count. */
