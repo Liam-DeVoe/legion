@@ -66,12 +66,15 @@ const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
 // subscribed to the event feed, and one on an agent's page holds that conversation's agent view on
 // its socket too. SIGTERM closes each socket with 1012, ending every subscription it carries, so
 // http.Server.Shutdown returns once the requests in flight have, and the document service settles
-// the document an edit has just left owing a settlement. An edit's settlement runs two seconds after
-// it (docs.Deps.Settle's default), so a signal sent as soon as the edit answers reaches the document
-// service with that settlement still owed, and Shutdown is the one that runs it.
+// the document an edit has just left owing a settlement. The child's own settle timer would run
+// that settlement two seconds after the edit (docs.Deps.Settle's default), and on a loaded machine
+// the signal can reach the document service after it, so this child is given a settle delay longer
+// than its whole stop: the edit's settlement is still owed when the signal comes, and Shutdown is
+// always the one that runs it.
 func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T) {
 	database := storetest.Open(t)
-	process := startDispatchProcess(t, database.Pool.Config().ConnString())
+	// Lengthened only, to keep the settle timer from running before the stop does.
+	process := startDispatchProcessWithSettleDelay(t, database.Pool.Config().ConnString(), 5*time.Minute)
 	process.waitHealthy(t)
 	_, artifactID := process.createIssue(t)
 

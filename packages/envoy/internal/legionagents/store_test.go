@@ -573,7 +573,8 @@ func TestReopenMovesTheStoreToANewConnection(t *testing.T) {
 }
 
 // heldReads holds the first n reads of key until all n have arrived, so n writes of one session all
-// read it before any of them claims it.
+// read it before any of them claims it. A test that starts fewer than n such reads leaves them held,
+// and its own wait for the writes names that.
 type heldReads struct {
 	natsgo.KeyValue
 	key     string
@@ -597,10 +598,7 @@ func (h *heldReads) Get(key string) (natsgo.KeyValueEntry, error) {
 		close(h.release)
 	}
 	h.mu.Unlock()
-	select {
-	case <-h.release:
-	case <-time.After(5 * time.Second):
-	}
+	<-h.release
 	return entry, err
 }
 
@@ -653,7 +651,12 @@ func TestConcurrentWritesOfOneSessionRecordItOnce(t *testing.T) {
 	for i, entry := range writes {
 		wg.Go(func() { _, errs[i] = r.store.Put(c, entry) })
 	}
-	wg.Wait()
+	written := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(written)
+	}()
+	testwait.Receive(t, "both writes to finish, each having read the session key the hold releases once both have", written)
 	won, lost := 0, 1
 	if errs[0] != nil {
 		won, lost = 1, 0

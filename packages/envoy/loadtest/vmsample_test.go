@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // vmTestTarget is the target of these tests: two containers on one VM, so its samples carry the
@@ -365,9 +368,11 @@ func TestVMSampleRestartsADeadSSH(t *testing.T) {
 }
 
 // TestVMSampleTakesASilentSSHForDead: a VM whose script is wedged holds its ssh open and prints
-// nothing; the stream is killed once it has been silent for the sampler's silence and says so,
-// rather than reporting the kill as an ssh that died. The timer goroutine writes that fact and
-// the stream reads it after the ssh ends, so this is also what the race detector reads.
+// nothing; the stream is killed once it has been silent for vmSampleSilence, counted from its last
+// reading, and says so, rather than reporting the kill as an ssh that died. The silence runs on the
+// sampler's clock, a fake here that the test moves past it once the timer is armed. The timer
+// goroutine writes that fact and the stream reads it after the ssh ends, so this is also what the
+// race detector reads.
 func TestVMSampleTakesASilentSSHForDead(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "fake-ssh")
@@ -378,9 +383,30 @@ func TestVMSampleTakesASilentSSHForDead(t *testing.T) {
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	s := &vmSampler{ssh: []string{fake}, interval: 100 * time.Millisecond, silence: 150 * time.Millisecond,
-		now: time.Now, lg: log.New(io.Discard, "", 0), out: io.Discard}
-	err := s.stream(t.Context(), vmTestTarget(t))
+	start := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	clk := clocktest.New(start)
+	s := &vmSampler{ssh: []string{fake}, interval: 5 * time.Second, clock: clk, lg: log.New(io.Discard, "", 0), out: io.Discard}
+	ended := make(chan error, 1)
+	go func() { ended <- s.stream(t.Context(), vmTestTarget(t)) }()
+
+	// The reading re-arms the silence timer, so once it is written the one timer pending is the
+	// silence counted from it.
+	testwait.Eventually(t, "the one reading the VM prints before it goes silent", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.written == 1
+	})
+	armed := clk.AwaitArmed(t, "the stream's silence timer", 1)
+	if want := start.Add(vmSampleSilence); len(armed) != 1 || !armed[0].Equal(want) {
+		t.Fatalf("the stream armed %v, want the one silence timer at %s, vmSampleSilence after its reading", armed, want)
+	}
+	select {
+	case err := <-ended:
+		t.Fatalf("the stream ended (%v) before its VM had been silent for vmSampleSilence", err)
+	default:
+	}
+	clk.Advance(vmSampleSilence)
+	err := testwait.Receive(t, "the stream to end once its VM has been silent for vmSampleSilence", ended)
 	if err == nil || !strings.Contains(err.Error(), "printed nothing for") {
 		t.Fatalf("a wedged VM ended the stream with %v, want the silence it was taken for dead after", err)
 	}

@@ -20,6 +20,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // vmSampleScript is vm/sample.sh, the script every sampled VM runs. The collector sends it on
@@ -183,11 +185,11 @@ func (ts *vmTargets) Set(value string) error {
 type vmSampler struct {
 	ssh      []string
 	interval time.Duration
-	// silence is how long a stream may print nothing before it is taken for dead: the run's is
-	// vmSampleSilence, and a test shortens it rather than waiting half a minute.
-	silence time.Duration
-	now     func() time.Time
-	lg      *log.Logger
+	// clock is the time the samples are stamped on and the silence of a stream (vmSampleSilence)
+	// is measured on: clock.Real for the collector, a test's clocktest.Fake for a test that moves
+	// it past that silence itself.
+	clock clock.Clock
+	lg    *log.Logger
 
 	mu      sync.Mutex
 	out     io.Writer
@@ -359,13 +361,13 @@ func (s *vmSampler) stream(ctx context.Context, t *vmTarget) error {
 	// A VM whose script is wedged prints nothing and its ssh never ends, so the stream is killed
 	// once it has been silent for vmSampleSilence and started again, as any dead one is.
 	var silent atomic.Bool
-	idle := time.AfterFunc(s.silence, func() {
+	idle := s.clock.AfterFunc(vmSampleSilence, func() {
 		silent.Store(true)
 		_ = cmd.Process.Kill()
 	})
 	defer idle.Stop()
-	parseErr := parseVMReadings(stdout, t, s.now, func(sample cgroupSample) {
-		idle.Reset(s.silence)
+	parseErr := parseVMReadings(stdout, t, s.clock.Now, func(sample cgroupSample) {
+		idle.Reset(vmSampleSilence)
 		s.write(sample)
 	})
 	waitErr := cmd.Wait()
@@ -373,7 +375,7 @@ func (s *vmSampler) stream(ctx context.Context, t *vmTarget) error {
 	case ctx.Err() != nil:
 		return ctx.Err()
 	case silent.Load():
-		return fmt.Errorf("the VM printed nothing for %s", seconds(s.silence))
+		return fmt.Errorf("the VM printed nothing for %s", seconds(vmSampleSilence))
 	case parseErr != nil:
 		return parseErr
 	case waitErr != nil:
@@ -391,12 +393,12 @@ func (s *vmSampler) follow(ctx context.Context, t *vmTarget) {
 		if ctx.Err() != nil {
 			return
 		}
-		at := s.now()
+		at := s.clock.Now()
 		for _, r := range t.series() {
 			s.write(vmErrorSample(at, r.role, t.host, r.container, fmt.Sprintf("the sampler's ssh to %s ended, so this series has a gap: %v", t.ssh, err)))
 		}
 		s.lg.Printf("%s: %v; another ssh in %s", t.ssh, err, seconds(s.interval))
-		sleepUntil(ctx, s.now().Add(s.interval))
+		sleepUntilOn(ctx, s.clock, s.clock.Now().Add(s.interval))
 	}
 }
 
@@ -458,8 +460,7 @@ func runVMSample(args []string) error {
 	s := &vmSampler{
 		ssh:      sshFields,
 		interval: *interval,
-		silence:  vmSampleSilence,
-		now:      time.Now,
+		clock:    clock.Real(),
 		lg:       log.New(os.Stderr, "loadgen vm-sample: ", log.LstdFlags),
 		out:      f,
 	}
