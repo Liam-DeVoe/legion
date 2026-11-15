@@ -365,24 +365,28 @@ func (n goingNamed) holds(argument string, value any, arguments map[string]any, 
 	return read && current[argument] == given
 }
 
-// uploads reports whether an upload under name may run at once: the words write the name
-// (goingWordsName), so the person asked for that document whether its owner holds one or not, or
-// the owner the upload reaches (goingUploadOwner) holds no document whose name or slug it is, so
-// the upload makes one. A name the owner already holds that only stored text wrote would write
-// that document's next version, so it is an offer; so is one whose owner could not be read. This
-// is the proposal's mark; the write holds an upload sent at once to it again when it runs
-// (goingUploadsOver), since a document of the name may be made between the two.
+// uploads reports whether an upload under name may run at once: the owner the upload reaches
+// (goingUploadOwner) holds no document whose name or slug it is, so the upload makes one, or the
+// person asked for the document it finds (goingUploadAskedFor) - name is the name that document is
+// stored under and the words write it. A name that finds a held document only as its slug, or
+// that only stored text wrote, would write that document's next version, so it is an offer. Where
+// the owner cannot be read, nothing says which document the name finds, and the words writing it
+// decide. This is the proposal's mark; the write holds an upload sent at once to it again when it
+// runs (goingUploadsOver), since a document of the name may be made between the two.
 func (n goingNamed) uploads(name string, arguments map[string]any, session string, document goingDocumentHeld) bool {
 	name = strings.TrimSpace(name)
-	if goingWordsName(n.words, name) {
-		return true
-	}
 	owner, known := goingUploadOwner(arguments, session)
 	if !known || document == nil {
-		return false
+		return goingWordsName(n.words, name)
 	}
 	held, read := document(owner, name)
-	return read && held == nil
+	switch {
+	case !read:
+		return goingWordsName(n.words, name)
+	case held == nil:
+		return true
+	}
+	return goingUploadAskedFor(n.words, name, held.Name)
 }
 
 // goingUploadOwner is the owner an upload's arguments reach, as its rows are tried in order: the
@@ -416,18 +420,22 @@ func goingRouteUploadOwner(route GoingRoute, values map[string]string) (artifact
 }
 
 // goingUploadsOver reports whether an upload the write is about to send would, or may, write the
-// next version of a document only stored text named: the read before it (uploadedOver), made
-// under the owner its route writes to as the store stands when the write runs, found a document of
-// its name, or could name no owner to read, which it holds as one that may, as the proposal holds
-// an owner it could not read (goingNamed.uploads); and the person's typed words do not write that
-// name.
+// next version of a document the person did not ask for: the read before it (uploadedOver), made
+// under the owner its route writes to as the store stands when the write runs, found a document
+// the upload's name is not the stored name of, or whose stored name the person's typed words do
+// not write (goingUploadAskedFor); or it could name no owner to read, which it holds as one that
+// may, as the proposal holds an owner it could not read (goingNamed.uploads), unless the words
+// write the upload's name.
 func goingUploadsOver(prepared goingPrepared, before goingObservation, words string) bool {
 	argument, uploads := goingUploadNames[prepared.action]
 	if !uploads {
 		return false
 	}
-	_, held := before.value.(goingUploadBefore)
-	return (held || before.ownerUnnamed) && !goingWordsName(words, goingText(prepared.arguments, argument))
+	name := goingText(prepared.arguments, argument)
+	if held, found := before.value.(goingUploadBefore); found {
+		return !goingUploadAskedFor(words, name, held.Name)
+	}
+	return before.ownerUnnamed && !goingWordsName(words, name)
 }
 
 // goingUploadForceRefusal is the refusal of an upload the write is about to send, however the
@@ -477,18 +485,17 @@ func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) er
 // which would write that document's next version over the text it holds. Without force every
 // write of it is refused (goingUploadForceRefusal), and the bar has no control that sets force;
 // with force, a pick would replace the document whole, which nothing the bar shows says before the
-// person picks it, unless the person asked for that document themselves: their own words write, as
-// a whole word and whatever its case (goingWordsName), the very name the answer wrote for the
-// upload - the stored name or the slug the upload finds the document by. The document's other
-// name counts for nothing, nor does its name without the extension: an issue's own spec is stored
-// as spec.md under the slug spec, so "add a note to the spec" writes its slug and offers no upload
-// named spec.md, while "replace spec.md with this" does, and "replace the spec with this" offers
-// only an upload named spec; "add a note" writes the stem of note.md, a word typed for every other
-// reason. A wrong match costs an offer to replace a document whole, a missed one only the person
-// writing the name. So it is offered only with force and words writing that name, and otherwise
-// withheld, the person changing the document with an edit or uploading with the dispatch command.
-// An owner the proposal could not read is offered, and held to the write's own checks when it runs
-// (goingSendRefusal, goingUploadCondition).
+// person picks it, unless the person asked for that document themselves (goingUploadAskedFor): the
+// answer wrote the name the document is stored under, its file name, and their own words write
+// that name. An upload that finds the document by its slug is withheld whatever the words, its
+// reason naming the stored name the person would have to write: every issue's spec is stored as
+// spec.md under the slug spec, so "replace spec.md with this" offers an upload named spec.md,
+// while "replace the spec with this" and "add a note to the spec" offer none, named spec or
+// spec.md. Nor does the stored name without its extension count: "add a note" writes the stem of
+// note.md, a word typed for every other reason. So it is offered only with force and the stored
+// name both written, and otherwise withheld, the person changing the document with an edit or
+// uploading with the dispatch command. An owner the proposal could not read is offered, and held
+// to the write's own checks when it runs (goingSendRefusal, goingUploadCondition).
 func goingUploadWithheld(action string, arguments map[string]any, session string, words string, document goingDocumentHeld) string {
 	argument, uploads := goingUploadNames[action]
 	if !uploads || document == nil {
@@ -503,11 +510,30 @@ func goingUploadWithheld(action string, arguments map[string]any, session string
 	if !read || held == nil {
 		return ""
 	}
-	if arguments["force"] == true && goingWordsName(words, name) {
+	if arguments["force"] == true && goingUploadAskedFor(words, name, held.Name) {
 		return ""
+	}
+	if name != held.Name {
+		return fmt.Sprintf("%s under %q is not offered: %q is the slug of %s, which %s already holds, and an upload under it would write that document's next version over the text it holds, which the bar offers only with force under the name the document is stored under, where your own words write that name: write %s to ask for it. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force.",
+			action, name, name, held.Name, artifactOwnerText(owner), held.Name)
 	}
 	return fmt.Sprintf("%s under %q is not offered: %s already holds %s (slug %s), and an upload would write its next version over the text it holds, which the bar offers only with force where your own words name that document. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force.",
 		action, name, artifactOwnerText(owner), held.Name, held.Slug)
+}
+
+// goingUploadAskedFor reports whether the person asked, in their own typed words, for the
+// document an upload under name would write the next version of, one its owner holds stored under
+// stored: name is that stored name, exactly as the store holds it, and the words write it as a
+// whole word, whatever its case (goingWordsName). A name that finds the document only as its slug
+// asks for nothing, whatever the words: a slug is a word people type for every other reason - an
+// issue's spec is stored as spec.md under the slug spec, and "add a note to the spec" asks for no
+// upload that replaces it - and a wrong match costs the document's whole text, a missed one only
+// the person writing the stored name. The proposal's offer (goingUploadWithheld), its mark of an
+// upload that runs at once (goingNamed.uploads) and the write sent at once (goingUploadsOver) each
+// hold an upload over a held document to it.
+func goingUploadAskedFor(words, name, stored string) bool {
+	name = strings.TrimSpace(name)
+	return name == stored && goingWordsName(words, name)
 }
 
 // goingActorText names an actor as the dispatch command names a document's author: its kind and
@@ -543,8 +569,8 @@ func goingIsUUID(value string) bool {
 // in them, with case ignored, and neither end runs on into a letter, a digit, a hyphen or an
 // underscore, so "the notes" writes notes and not notes-old, and "spec." writes spec. To name a
 // document an argument points at (goingNamed.names) it is read only beside the document's owner,
-// since a name alone is no reference; an upload's name (goingNamed.uploads, goingUploadsOver) it
-// reads alone, since the words writing the name a document is made or written under is the
+// since a name alone is no reference; an upload's name (goingNamed.uploads, goingUploadAskedFor)
+// it reads alone, since the words writing the name a document is made or stored under is the
 // person asking for that document by it.
 func goingWordsName(words, name string) bool {
 	haystack, needle := strings.ToLower(words), strings.ToLower(strings.TrimSpace(name))

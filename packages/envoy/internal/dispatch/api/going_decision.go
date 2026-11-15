@@ -346,8 +346,9 @@ type goingMissingArgument struct {
 // is marked automatic by what the words name and what holds reads of the store now
 // (goingAutomatic); a holds that reads nothing leaves a hand-over and an upload's name to run at
 // once only where the words name it. An upload under the name of a document its owner holds, as
-// holds reads it, is withheld and the offer says why, unless it carries force and the person's own
-// words write the very name the answer wrote for the upload (goingUploadWithheld).
+// holds reads it, is withheld and the offer says why, unless it carries force, the answer wrote the
+// name that document is stored under - never its slug - and the person's own words write that name
+// (goingUploadWithheld).
 func goingPropose(decision goingDecision, final *going.Final, start goingRunStart, holds goingHolds) goingProposal {
 	written := map[string]json.RawMessage{}
 	if final != nil && final.Arguments != "" {

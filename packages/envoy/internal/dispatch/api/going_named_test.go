@@ -2,7 +2,8 @@
 // typed words name: an item is named only by a reference to it as Dispatch reads references in
 // text, a document only under an owner so named, a hand-over of the work - its route, its
 // assignee - only where the words name it or the issue already holds it, and an upload over a
-// document its owner holds only where the words write its name.
+// document its owner holds only where its name is the one that document is stored under and the
+// words write it.
 package api
 
 import (
@@ -245,15 +246,15 @@ func TestGoingAutomaticHoldsAnUploadsNameToTheWordsWhereItsOwnerHoldsThatDocumen
 }
 
 // TestGoingUploadOverAHeldDocumentIsOfferedWhereTheWordsNameItAsItIsStored (deep review round 5,
-// finding D; review round 6, finding C; the deep review of round 7): an upload with force under the
-// name of a document the issue holds is offered only where the person's words write, as a whole
-// word, the very name the answer wrote for the upload, which is the stored name or the slug the
-// upload finds that document by; a stored name or a slug the answer did not write counts for
-// nothing. So "replace spec.md with this" offers spec.md, "replace the spec with this" offers it
-// only where the answer wrote the name spec, and "add a note to the spec" never offers a forced
-// upload named spec.md over the issue's own spec, whose slug is spec. Words that write only the
-// document's name without its extension name nothing: "add a note" (note.md), "add a todo for the
-// release" (todo.md) and "add a note to the plan" (plan.md) offer none of them.
+// finding D; review round 6, finding C; review round 7, finding 1): an upload with force under the
+// name of a document the issue holds is offered only where the answer wrote the name that document
+// is stored under, its file name, and the person's words write that name as a whole word. An
+// upload that finds the document by its slug is always withheld, whatever the words: every issue's
+// spec is stored as spec.md under the slug spec, so "replace spec.md with this" offers spec.md,
+// while "replace the spec with this" and "add a note to the spec" offer no upload named spec or
+// spec.md. Words that write only the document's name without its extension name nothing: "add a
+// note" (note.md), "add a todo for the release" (todo.md) and "add a note to the plan" (plan.md)
+// offer none of them.
 func TestGoingUploadOverAHeldDocumentIsOfferedWhereTheWordsNameItAsItIsStored(t *testing.T) {
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "DEMO", "An issue holding notes", "The spec says hello.\n").Key
@@ -266,13 +267,14 @@ func TestGoingUploadOverAHeldDocumentIsOfferedWhereTheWordsNameItAsItIsStored(t 
 		force, offered      bool
 	}{
 		{"the name itself", "replace notes.md with this text", "notes.md", true, true},
-		{"the slug, where the answer wrote the slug", "replace notes-md with this", "notes-md", true, true},
+		{"the slug, where the answer wrote the slug", "replace notes-md with this", "notes-md", true, false},
 		{"the slug, where the answer wrote the name", "replace notes-md with this", "notes.md", true, false},
 		{"the stored name, where the answer wrote the slug", "overwrite notes.md with this text", "notes-md", true, false},
 		{"another document's name", "replace note.md with this", "note.md", true, true},
 		{"the name without its extension", "overwrite the notes with this text", "notes.md", true, false},
 		{"the spec's name as the answer wrote it", "replace spec.md with this", "spec.md", true, true},
-		{"the spec's slug as the answer wrote it", "replace the spec with this", "spec", true, true},
+		{"the spec's slug as the answer wrote it", "replace the spec with this", "spec", true, false},
+		{"a note to the spec, where the answer wrote its slug", "add a note to the spec", "spec", true, false},
 		{"the spec's slug, where the answer wrote spec.md", "replace the spec with this", "spec.md", true, false},
 		{"a note to the spec", "add a note to the spec", "spec.md", true, false},
 		{"a note", "add a note", "note.md", true, false},
@@ -310,12 +312,13 @@ func TestGoingUploadOverAHeldDocumentIsOfferedWhereTheWordsNameItAsItIsStored(t 
 }
 
 // TestGoingUploadOverAHeldDocumentIsWithheldUnlessTheWordsWriteTheNameTheAnswerWrote (review round
-// 6, finding C; the deep review of round 7): goingUploadWithheld offers an upload with force over a
-// held document only where the words write, as a whole word and whatever its case, the name the
-// answer wrote for the upload. The document's other name - its slug where the answer wrote its
-// stored name, or its stored name where the answer wrote its slug - and its name without the
-// extension count for nothing, so "add a note to the spec" withholds an upload named spec.md over
-// a spec stored as spec.md under the slug spec, and "add a note" one named note.md or a.md.
+// 6, finding C; review round 7, finding 1): goingUploadWithheld offers an upload with force over a
+// held document only where the answer wrote the name that document is stored under and the words
+// write it, as a whole word and whatever its case. An upload that finds the document by its slug
+// is withheld however the words read, its reason naming the stored name the person would have to
+// write; the document's name without the extension counts for nothing. So "add a note to the
+// spec" and "replace the spec with this" withhold an upload named spec or spec.md over a spec
+// stored as spec.md under the slug spec, and "add a note" one named note.md or a.md.
 func TestGoingUploadOverAHeldDocumentIsWithheldUnlessTheWordsWriteTheNameTheAnswerWrote(t *testing.T) {
 	issue := "DEMO-12"
 	for _, tc := range []struct {
@@ -325,13 +328,15 @@ func TestGoingUploadOverAHeldDocumentIsWithheldUnlessTheWordsWriteTheNameTheAnsw
 		{"spec.md", "spec", "spec.md", "add a note to the spec", true, false},
 		{"spec.md", "spec", "spec.md", "replace the spec with this", true, false},
 		{"spec.md", "spec", "spec.md", "replace SPEC.MD with this", true, true},
-		{"spec.md", "spec", "spec", "replace the spec with this", true, true},
+		{"spec.md", "spec", "spec", "replace the spec with this", true, false},
+		{"spec.md", "spec", "spec", "add a note to the spec", true, false},
+		{"spec.md", "spec", "spec", "replace spec.md with this", true, false},
 		{"spec.md", "spec", "spec", "replace the specification with this", true, false},
 		{"note.md", "note-md", "note.md", "add a note", true, false},
 		{"a.md", "a-md", "a.md", "add a note", true, false},
 		{"a.md", "a-md", "a.md", "overwrite a.md with this", true, true},
 		{"notes.md", "notes-md", "notes.md", "replace notes-md with this", true, false},
-		{"notes.md", "notes-md", "notes-md", "replace notes-md with this", true, true},
+		{"notes.md", "notes-md", "notes-md", "replace notes-md with this", true, false},
 		{"notes.md", "notes-md", "notes.md", "overwrite the notes with this text", true, false},
 		{"notes.md", "notes-md", "notes.md", "overwrite notes.md with this text", false, false},
 	} {
@@ -350,14 +355,18 @@ func TestGoingUploadOverAHeldDocumentIsWithheldUnlessTheWordsWriteTheNameTheAnsw
 			t.Errorf("%q uploading as %q over %s (slug %s, force %v) is withheld %q, want offered=%v",
 				tc.words, tc.upload, tc.stored, tc.slug, tc.force, withheld, tc.offered)
 		}
+		if withheld != "" && !strings.Contains(withheld, tc.stored) {
+			t.Errorf("%q uploading as %q over %s (slug %s) is withheld %q, which never names %s, the name to write",
+				tc.words, tc.upload, tc.stored, tc.slug, withheld, tc.stored)
+		}
 	}
 }
 
 // TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt (deep review round 5,
-// finding D): an upload with force the proposal offers because the words write the name the answer
-// wrote for it - the held document's stored name or its slug - is one the person can run: picked
-// as the bar picks an offer (approved person), the write is made and the document's next version
-// written, whichever of the two names the upload went under.
+// finding D): an upload with force the proposal offers because the answer wrote the held
+// document's stored name and the words write it, whatever its case, is one the person can run:
+// picked as the bar picks an offer (approved person), the write is made and the document's next
+// version written.
 func TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "An issue holding notes", "The spec.\n").Key
@@ -365,7 +374,7 @@ func TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt(t *
 	holds := rig.served.goingHoldsBy(context.Background())
 	for index, tc := range []struct{ words, upload string }{
 		{"overwrite notes.md with this text", "notes.md"},
-		{"replace notes-md with this", "notes-md"},
+		{"replace NOTES.MD with this", "notes.md"},
 	} {
 		words := tc.words
 		t.Run(words, func(t *testing.T) {
@@ -397,6 +406,44 @@ func TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt(t *
 				t.Fatalf("notes.md holds %d versions after the picked upload under %q, want %d", versions, words, index+2)
 			}
 		})
+	}
+}
+
+// TestGoingAutomaticNeverRunsAnUploadOverADocumentByItsSlug (review round 7, finding 1): an upload
+// runs at once where its owner holds no document of its name, or where the answer wrote the name
+// the document it finds is stored under and the words write that name. One whose name finds a
+// held document only as its slug is never automatic, whatever the words: every issue's spec is
+// stored as spec.md under the slug spec, so words that write "the spec" never run an upload named
+// spec at once over it. Where the owner cannot be read, the words writing the name still decide.
+func TestGoingAutomaticNeverRunsAnUploadOverADocumentByItsSlug(t *testing.T) {
+	spec := func(owner artifactTarget, name string) (*goingHeldDocument, bool) {
+		if owner.IssueKey == nil || *owner.IssueKey != "DEMO-12" || (name != "spec.md" && name != "spec") {
+			return nil, true
+		}
+		return &goingHeldDocument{Name: "spec.md", Slug: "spec"}, true
+	}
+	unread := func(artifactTarget, string) (*goingHeldDocument, bool) { return nil, false }
+	chip := &goingContext{Path: "/issues/DEMO-12", Project: "DEMO", Issue: "DEMO-12"}
+	for _, tc := range []struct {
+		words, upload string
+		holds         goingDocumentHeld
+		automatic     bool
+	}{
+		{"replace the spec with this", "spec", spec, false},
+		{"add a note to the spec", "spec", spec, false},
+		{"replace spec.md with this", "spec", spec, false},
+		{"replace spec.md with this", "spec.md", spec, true},
+		{"replace the spec with this", "spec.md", spec, false},
+		{"save this as the summary", "summary", spec, true},
+		{"save this as a doc", "summary", spec, true},
+		{"save this as the summary", "summary", unread, true},
+		{"save this as a doc", "summary", unread, false},
+	} {
+		arguments := map[string]any{"issue": "DEMO-12", "name": tc.upload, "content": "# Held\n\nNew words.\n", "force": true}
+		named := goingNamedBy(tc.words, testServerURL)
+		if got := goingAutomatic("dispatch_artifact", arguments, chip, "", named, goingHolds{document: tc.holds}); got != tc.automatic {
+			t.Errorf("%q uploading as %q is automatic=%v, want %v", tc.words, tc.upload, got, tc.automatic)
+		}
 	}
 }
 

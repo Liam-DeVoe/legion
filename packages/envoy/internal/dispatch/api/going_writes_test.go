@@ -1502,6 +1502,40 @@ func TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns(t *test
 	}
 }
 
+// TestGoingWriteOfAnUploadAtOnceIsRefusedWhereItsNameIsOnlyADocumentsSlug (review round 7,
+// finding 1): an upload with force the proposal marked automatic, its words writing its name
+// plan-md and the issue then holding no document of it, is refused 409 GOING_NOT_AUTOMATIC when
+// sent at once after plan.md - whose slug is plan-md - was made on the issue: the upload would now
+// replace plan.md whole, a document the answer and the words name only by its slug, never by the
+// name it is stored under. Nothing is written.
+func TestGoingWriteOfAnUploadAtOnceIsRefusedWhereItsNameIsOnlyADocumentsSlug(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "A plan made meanwhile", "The spec.\n").Key
+	start := goingBrowserStart(t)
+	start.words = "save this as plan-md"
+	start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
+	written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {{"issue": issue, "name": "plan-md", "content": "# Plan\n\nWritten by the model.\n", "force": true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
+		&going.Final{Answer: "Saved.", Arguments: string(written)}, start, rig.served.goingHoldsBy(context.Background()))
+	if len(proposal.Offers) != 1 || len(proposal.Offers[0].Invocations) != 1 || !proposal.Offers[0].Invocations[0].Automatic {
+		t.Fatalf("the run proposed %+v, want the one upload, automatic, as the issue holds no plan yet", proposal)
+	}
+	run := rig.recorded(t, "alice", true, "dispatch_artifact", start.words, proposal)
+	// Between the proposal and the write, plan.md is made on the issue, its slug plan-md.
+	slug := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "plan.md", "# Plan\n\nMade meanwhile.\n").Artifact.Slug
+	if slug != "plan-md" {
+		t.Fatalf("plan.md was stored under the slug %q, want plan-md, the name the upload goes under", slug)
+	}
+
+	rig.goingWriteRefusedNotAutomatic(t, run, "dispatch_artifact", nil)
+	if versions := rig.goingDocumentVersions(t, issue, slug); versions != 1 {
+		t.Fatalf("plan.md holds %d versions after the upload sent at once, want its one", versions)
+	}
+}
+
 // TestGoingWriteOfAnUploadWithoutForceNeverWritesOverADocumentMadeAsItRuns (review round 6,
 // finding 3): an upload without force is sent as a create alone (goingCondition.ExpectNew, on the
 // request's context), decided by its route

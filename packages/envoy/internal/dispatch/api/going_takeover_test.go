@@ -663,6 +663,71 @@ func TestGoingUndoLandedWholeAfterItsProcessEndedAnswersEachFieldAsItsWriteBack(
 	}
 }
 
+// TestGoingUndoTakenOverWhoseWriteBackRecordedNoPreviousIsLoggedAsAFailure (review round 7,
+// finding 2): a title change's undo writes the title back, and its process ends after that write
+// back committed, before its record. Past the claim's bound the next undo reads the title off the
+// answer the write back's route recorded beside its landing. Where that record holds no answer,
+// an answer that does not decode, or one with no previous, the title is answered unsettled - 409
+// GOING_UNDO_UNSETTLED, nothing sent again - as before, and the bad record is a failure of the
+// record, logged at Error naming the run and the write, never at Info.
+func TestGoingUndoTakenOverWhoseWriteBackRecordedNoPreviousIsLoggedAsAFailure(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, tc := range []struct {
+		name, answer string
+	}{
+		{"no answer", ""},
+		{"an answer that does not decode", `7`},
+		{"an answer with no previous", `{"key": "DEMO-1", "title": "Titled by the turn"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := rig.issue(t, "Titled before the turn, "+tc.name)
+			run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "title": "Titled by the turn, " + tc.name}, nil)
+			patch := http.MethodPatch + " /api/v1/issues/" + issue
+			rig.served.inProcess = goingDiesAfter(inner, patch)
+			rig.dieUndoing(t, run, nil)
+			rig.served.inProcess = inner
+			garble := `update going_runs set undos = jsonb_set(undos, '{0,requests,0,answer}', $2::jsonb) where id = $1::uuid`
+			arguments := []any{run, tc.answer}
+			if tc.answer == "" {
+				garble = `update going_runs set undos = jsonb_set(undos, '{0,requests,0}', (undos->0->'requests'->0) - 'answer') where id = $1::uuid`
+				arguments = arguments[:1]
+			}
+			if tag, err := rig.database.Pool.Exec(context.Background(), garble, arguments...); err != nil || tag.RowsAffected() != 1 {
+				t.Fatalf("garble the answer the write back recorded: %v (%d rows)", err, tag.RowsAffected())
+			}
+			rig.ageGoingUndos(t, run)
+			writeID := rig.record(t, "alice", run).Writes[0].ID
+			sent := map[string]int{}
+			rig.served.inProcess = goingCommittedThenRefused(inner, "", sent)
+			recorder := &logtest.Recorder{}
+			logtest.SetDefault(t, recorder)
+			line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+			rig.served.inProcess = inner
+			if line.Outcome.Code != codeGoingUndoUnsettled || len(line.Fields) != 1 || line.Fields[0].Field != "title" || line.Fields[0].OK || sent[patch] != 0 {
+				t.Fatalf("the undo taken over answered %+v with the write back sent %d times, want the title unsettled, %s, and nothing sent", line, sent[patch], codeGoingUndoUnsettled)
+			}
+			var levels []slog.Level
+			for _, record := range recorder.Records() {
+				namesWrite, namesRun := false, false
+				record.Attrs(func(attr slog.Attr) bool {
+					namesWrite = namesWrite || attr.Key == "write" && attr.Value.String() == writeID
+					namesRun = namesRun || attr.Key == "run" && attr.Value.String() == run
+					return true
+				})
+				if namesWrite && namesRun {
+					levels = append(levels, record.Level)
+				}
+			}
+			if !slices.Contains(levels, slog.LevelError) || slices.Contains(levels, slog.LevelInfo) {
+				t.Fatalf("the bad record of write %s's write back was logged at %v naming run %s, want Error and never Info", writeID, levels, run)
+			}
+		})
+	}
+}
+
 // TestGoingWriteTakenOverWhoseRouteRecordedNothingItLeftIsLoggedAsAFailure (review round 6,
 // finding D): a title change whose process ended after its request committed is taken over past
 // the claim's bound, and the record of that landing holds nothing of what the route answered, so

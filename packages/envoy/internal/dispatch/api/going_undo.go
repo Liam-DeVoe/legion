@@ -229,7 +229,7 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		if dead, adopt := taken[write.ID]; adopt {
 			landed = goingLanded(dead.Requests)
 			if dead.Sends > 0 && len(landed) >= dead.Sends {
-				line = goingUndoLandedLine(write, dead, landed)
+				line = goingUndoLandedLine(run.ID, write, dead, landed)
 			}
 		}
 		if line.WriteID == "" {
@@ -335,14 +335,15 @@ func goingUndoIDs(writes []goingRunWrite, unsettled map[string]time.Time) []stri
 // back's from the fields its claim marked left as another writer left them, refused naming what
 // changed, and from what its write back's route answered it wrote (goingUndoWriteBackLanded); every
 // other undo is one change its route decided whole under its own condition, so its landing is the
-// outcome of every field the write changed.
-func goingUndoLandedLine(write goingRunWrite, dead goingRunUndo, landed []goingWriteRequest) goingUndoLine {
+// outcome of every field the write changed. run is the run the write is of, which a record that
+// does not say what the write back wrote is logged naming.
+func goingUndoLandedLine(run string, write goingRunWrite, dead goingRunUndo, landed []goingWriteRequest) goingUndoLine {
 	outcome := goingWriteOutcome{OK: true, Status: cmp.Or(landed[len(landed)-1].Outcome.Status, http.StatusOK),
 		Message: "this undo landed while the process making it was down, and is recorded done: nothing was sent again"}
 	line := goingUndoLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Undo: write.Undo,
 		Now: json.RawMessage("null"), requests: landed}
 	if write.Undo == goingUndoWriteBack && (write.Action == "dispatch_issue_update" || write.Action == "dispatch_edit_ask") {
-		line.Outcome, line.Fields = goingUndoWriteBackLanded(write, dead, landed[0], outcome)
+		line.Outcome, line.Fields = goingUndoWriteBackLanded(run, write, dead, landed[0], outcome)
 		return line
 	}
 	names := write.Fields
@@ -362,14 +363,28 @@ func goingUndoLandedLine(write goingRunWrite, dead goingRunUndo, landed []goingW
 // whole is 409 GOING_UNDO_CHANGED; a field the PATCH's route answered it wrote - a key of the
 // previous it recorded beside the landing (issueUpdated, askEdited) - was put back; and a field
 // neither says is unread, refused for the person to read, never put back, which makes the whole 409
-// GOING_UNDO_UNSETTLED, never undone again. done is the outcome where every field was put back.
-func goingUndoWriteBackLanded(write goingRunWrite, dead goingRunUndo, back goingWriteRequest, done goingWriteOutcome) (goingWriteOutcome, []goingUndoField) {
+// GOING_UNDO_UNSETTLED, never undone again. done is the outcome where every field was put back. A
+// record that cannot say what the PATCH wrote - an answer that is missing or does not decode, or
+// one with no previous, which every such route records - or a write's own record of what it left
+// that does not decode, is no refusal but a failure of the record: the fields are answered as
+// above, and the failure is logged at Error naming the run, the write and its cause, as a write
+// taken over whose route recorded nothing it left is (goingWriteClaim.landedWhole).
+func goingUndoWriteBackLanded(run string, write goingRunWrite, dead goingRunUndo, back goingWriteRequest, done goingWriteOutcome) (goingWriteOutcome, []goingUndoField) {
 	var after map[string]json.RawMessage
-	_ = json.Unmarshal(write.After, &after)
+	if err := json.Unmarshal(write.After, &after); err != nil {
+		slog.Error("dispatch: what a going write left cannot be read off its record, so its undo taken over after its process ended names none of its fields",
+			"run", run, "write", write.ID, "error", err)
+	}
 	var answered struct {
 		Previous map[string]json.RawMessage `json:"previous"`
 	}
-	_ = json.Unmarshal(back.Answer, &answered)
+	if err := json.Unmarshal(back.Answer, &answered); err != nil || answered.Previous == nil {
+		if err == nil {
+			err = errors.New("the answer holds no previous")
+		}
+		slog.Error("dispatch: what the write back of a going undo taken over after its process ended wrote cannot be read off the answer its route recorded, so its fields are unsettled",
+			"run", run, "write", write.ID, "error", err)
+	}
 	left := map[string]string{}
 	for _, field := range dead.Fields {
 		if !field.OK {

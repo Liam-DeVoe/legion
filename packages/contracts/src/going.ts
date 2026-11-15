@@ -246,8 +246,9 @@ export interface GoingInvocation {
  *  where no invocation survived the checks, which leaves `invocations` empty. `withheld`, where
  *  present, says why each invocation the answer wrote that the person would otherwise have been
  *  offered was not: an upload under the name of a document its owner already holds, which would
- *  write that document's next version, and which the bar offers only where it carries `force`
- *  and the person's own words write the name. */
+ *  write that document's next version, and which the bar offers only where it carries `force`,
+ *  its name is the one the document is stored under, never its slug, and the person's own words
+ *  write that name. */
 export interface GoingOffer {
   readonly action: string;
   readonly invocations: readonly GoingInvocation[];

@@ -259,8 +259,9 @@ type goingWriteLine struct {
 // call's own write whatever its arguments; and one planned whose record names none landed is 409
 // GOING_WRITE_UNSETTLED, since its request may have run. A press refused before it compares its
 // call with the write it took over - by its session lookup, its translation or its encode -
-// cannot tell that write's record from its own, so it writes nothing onto it, names none of its
-// landings, and gives its claim back (goingWriteClaim.giveBack). A write that was refused does not
+// cannot tell that write's record from its own, so it writes nothing onto it and gives its claim
+// back (goingWriteClaim.giveBack), and its refusal names only the landings proved to be its own
+// requests, by method, path and body digest (goingResumeAfter). A write that was refused does not
 // stop another. The run must have proposed or
 // ended (409 GOING_RUN_UNPROPOSED), and the action and the invocation must be in its proposal (409
 // GOING_NOT_PROPOSED). `auto` is refused, 409
@@ -268,7 +269,8 @@ type goingWriteLine struct {
 // decision chose at or above the action threshold, 409 GOING_NOT_AUTOMATIC for an invocation the
 // proposal did not mark automatic (goingAutomatic), one sent with arguments replacing its own, and
 // an upload that would now write the next version of a document of its name its route's owner
-// holds, or whose owner it cannot name, and the words do not name (goingUploadsOver), and 409
+// holds, unless its name is the name that document is stored under and the words write it, or
+// whose owner it cannot name, where the words do not write its name (goingUploadsOver), and 409
 // GOING_CONFIRMATION_REQUIRED where the caller turned confirm_writes on. The value before is read,
 // the write performed and the value after read, each in-process as the caller; the write, refused
 // or not, is recorded in the place of its claim, with how each request it sent went and the undo
@@ -351,9 +353,9 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	// taken is the write whose process ended and whose claim this request took over
 	// (claimGoingWrite), nil for a claim of its own. Whether its record is this call's is known
 	// only once the call is, and is compared with what that write landed: a refusal before then -
-	// by the session lookup, the translation or the encode - writes nothing onto it, names none of
-	// its landings and gives its claim back (goingWriteClaim.giveBack), so the press that does
-	// reach the comparison settles it.
+	// by the session lookup, the translation or the encode - writes nothing onto it and gives its
+	// claim back (goingWriteClaim.giveBack), naming only the landings proved to be its own
+	// requests, so the press that does reach the comparison settles it.
 	taken := goingPendingWrite(run, write.ID)
 	uncompared := func(err error) {
 		if taken != nil {
@@ -967,8 +969,9 @@ func (c goingWriteClaim) refuse(before goingObservation, err error) {
 // giveBack answers a refusal a press met before it compared its call with taken, the write whose
 // process ended and whose claim it took over (claimGoingWrite): its session lookup's, its
 // translation's or its encode's. Whether taken's record is this call's is not known yet, so nothing
-// is written onto it and none of its landings is named: the refusal is answered as it stands - a
-// route's or a read's in that route's words, the call's own schema or translation 400
+// is written onto it: the refusal is answered as it stands - a route's or a read's in that route's
+// words, naming only the landings proved to be the call's own requests, by method, path and body
+// digest (goingResumeAfter), the call's own schema or translation 400
 // GOING_ARGUMENTS, anything else the server's own failure - and taken's claim is given back, moved
 // back to the moment it held (restoreGoingRunWrite), so taken stands byte for byte as it was, for
 // the press that does reach the comparison to resume or to settle.
@@ -1086,16 +1089,18 @@ func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, input going
 // goingSendRefusal is why a write whose read before is in may not be sent, nil where it may, for
 // the write as approved: an upload under the name of a document its owner holds and no force,
 // however the write came to run (goingUploadForceRefusal); and for one sent at once, an upload
-// that would write the next version of a document its owner holds, or may hold where it cannot
-// name its owner, and the words do not name (goingUploadsOver). Each is read now, under the owner
-// the upload's route writes to: a document of its name may have been made since the proposal.
+// that would write the next version of a document its owner holds and the person did not ask for,
+// its name not the name that document is stored under or the words not writing that name, or may
+// hold where it cannot name its owner and the words do not write the name (goingUploadsOver).
+// Each is read now, under the owner the upload's route writes to: a document of its name may have
+// been made since the proposal.
 func goingSendRefusal(approved string, prepared goingPrepared, before goingObservation, words string) error {
 	if refused := goingUploadForceRefusal(prepared, before); refused != nil {
 		return refused
 	}
 	if approved == goingApprovedAuto && goingUploadsOver(prepared, before, words) {
 		return errorf(http.StatusConflict, codeGoingNotAutomatic,
-			"%s would write the next version of %q, a document its owner holds now, or may hold where the write cannot name its owner, and the words do not name, so it runs only when the person picks it: send it as approved person or confirmed",
+			"%s under %q would write the next version of a document its owner holds now, which the words do not ask for by the name it is stored under, or may hold where the write cannot name its owner, so it runs only when the person picks it: send it as approved person or confirmed",
 			prepared.action, goingText(prepared.arguments, goingUploadNames[prepared.action]))
 	}
 	return nil
