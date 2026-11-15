@@ -77,9 +77,10 @@ const (
 	// holdExpiry is how long name's hold has left, in microseconds on the database's clock.
 	holdExpiry = `select (extract(epoch from expires_at - now()) * 1000000)::bigint
 		from duty_holds where name = $1`
-	// holdToken is the token name's row records, and whether a holder holds it live, on the
+	// holdToken is the token name's row records, and how long it has left, in microseconds on the
 	// database's clock.
-	holdToken = `select token, expires_at > now() from duty_holds where name = $1`
+	holdToken = `select token, (extract(epoch from expires_at - now()) * 1000000)::bigint
+		from duty_holds where name = $1`
 )
 
 // Hold is one process's hold on a name: a row of duty_holds naming this holder, which the hold
@@ -230,19 +231,22 @@ func Expiry(ctx context.Context, db Holds, name string) (remaining time.Duration
 	return time.Duration(micros) * time.Microsecond, true, nil
 }
 
-// HoldToken reads the token name's hold records, and whether a holder holds it live on the
-// database's clock. A lapsed row that nobody has taken over or released answers its token with
-// held false; no row answers "" and false. TryHold records its own token as it takes a lapsed
-// hold, so a holder that needs the token the lapsed hold recorded reads it here first.
-func HoldToken(ctx context.Context, db Holds, name string) (token string, held bool, err error) {
-	err = db.QueryRow(ctx, holdToken, name).Scan(&token, &held)
+// HoldToken reads the token name's hold records, and how long it has left as expires_at - now() on
+// the database's clock: positive while a holder holds it live, so a standby that finds it held can
+// arm one timer to its lapse, as with Expiry, from the same read. A lapsed row that nobody has
+// taken over or released answers its token with remaining zero or negative; no row answers "" and
+// zero. TryHold records its own token as it takes a lapsed hold, so a holder that needs the token
+// the lapsed hold recorded reads it here first.
+func HoldToken(ctx context.Context, db Holds, name string) (token string, remaining time.Duration, err error) {
+	var micros int64
+	err = db.QueryRow(ctx, holdToken, name).Scan(&token, &micros)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
+		return "", 0, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("read hold %q token: %w", name, err)
+		return "", 0, fmt.Errorf("read hold %q token: %w", name, err)
 	}
-	return token, held, nil
+	return token, time.Duration(micros) * time.Microsecond, nil
 }
 
 // renew renews the hold every Renew until ctx ends or the hold is lost. Each renewal waits at most

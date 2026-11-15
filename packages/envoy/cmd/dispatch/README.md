@@ -860,7 +860,7 @@ What the two processes share, and what each keeps to itself:
 
 - The two delivery durables keep their shape, and each delivers to one process at a time:
   the process that holds that durable's hold (`duty.Hold`, migration `20261101143201_duty_holds`, a row with a 15-second lease on the database's clock, renewed every five seconds).
-  The other processes stand by and try for the hold every two seconds.
+  The other processes stand by and try for the hold every two seconds, and again the moment a hold they found live lapses.
   A process that stops hands back every message it was delivered and did not handle and releases the hold, so another process takes the durable over at once and is redelivered those messages within seconds;
   a process that dies is replaced within the hold's 15 seconds and one try.
   A take-over recreates the durable at its ack floor on a fresh deliver subject, which fences the old holder off:
