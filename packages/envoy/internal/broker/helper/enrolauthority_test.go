@@ -170,9 +170,9 @@ func machineIdentityBroker(t *testing.T, f *enrolBroker) (*Broker, *ecdsa.Privat
 	}
 	t.Cleanup(b.Close)
 	credential := f.mint("credential-of-this-machine", key)
-	b.credMu.Lock()
+	b.lockCred()
 	b.installCredential(&machineCredential{key: key, id: credential, expiresAt: time.Now().Add(24 * time.Hour), gone: make(chan struct{})}, &loginState{State: "issued"})
-	b.credMu.Unlock()
+	b.unlockCred()
 	return b, key, credential
 }
 
@@ -196,13 +196,14 @@ func (s *stubSignIns) Current(context.Context) (*brokerclient.Authority, error) 
 	return s.authority, s.err
 }
 
-func (s *stubSignIns) Refused(credentialID string) {
+func (s *stubSignIns) Refused(_ context.Context, credentialID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refused = append(s.refused, credentialID)
 	if s.onRefused != nil {
 		s.onRefused()
 	}
+	return nil
 }
 
 // signedIn is the authority of a person signed in on this box: a box key of their own and the
@@ -254,9 +255,9 @@ func TestAMachineLoginsSessionStillStatesItsApprover(t *testing.T) {
 	}
 	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
-	b.credMu.Lock()
+	b.lockCred()
 	b.installCredential(&machineCredential{key: key, id: f.mint("credential-of-the-machine-login", key), expiresAt: time.Now().Add(24 * time.Hour), gone: make(chan struct{})}, &loginState{State: "issued"})
-	b.credMu.Unlock()
+	b.unlockCred()
 
 	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil); err != nil {
 		t.Fatal(err)
