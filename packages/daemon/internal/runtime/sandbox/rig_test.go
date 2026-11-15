@@ -533,7 +533,9 @@ func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options
 // clock. There its length decides nothing but how many of the controller stand-in's 5 ms ticks the
 // row's waits span, and the arithmetic a row states over it holds (launcher_wait_test.go's
 // provisioning bound). Outside a bubble a boot timeout this short would be a real limit a loaded
-// machine passes, which the rig's own (testOptions) keeps away.
+// machine passes, which the rig's own (testOptions) keeps away. Inside a bubble too, a boot timeout
+// must outlast the runtime's recheckInterval (500 ms): a launcher's first state frame wakes no wait,
+// so a launch whose pod event came first reads the launcher ready only at the next recheck.
 func withBubbleBoot() rigOption {
 	return withOptions(func(o *Options) { o.BootTimeout = 2 * time.Second })
 }

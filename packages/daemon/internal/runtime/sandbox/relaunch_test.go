@@ -1464,8 +1464,9 @@ func TestAFailedLauncherBindingReadNeverLeavesASupervisedRoleChildRunning(t *tes
 // than holding its launch for ever.
 func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T) {
 	for name, tc := range map[string]struct {
-		// bootTimeout is the rig's boot timeout on the bubble's clock, 0 for the rig's own.
-		bootTimeout time.Duration
+		// bubbleBoot gives the rig withBubbleBoot's boot timeout on the bubble's clock; the other
+		// cases keep the rig's own.
+		bubbleBoot bool
 		// answer is the server's answer to an address record after refused refusals, nil to apply it.
 		answer func(refused int32) error
 		// err is what the relaunch fails with, "" for a relaunch that launches uncharged; one that
@@ -1495,11 +1496,20 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 			err:     "record the addresses its generation is handed",
 			refused: func(n int32) bool { return n == 3 }, want: "3, once per charged try",
 		},
+		// The case waits out the launch's own deadline, so its boot timeout is a short one on the
+		// bubble's clock: withBubbleBoot's 2 s, never one below the runtime's recheckInterval
+		// (500 ms). A launcher's first state wakes no wait of the runtime (await wakes on informer
+		// events and on each recheck), so the setup's launch reads its launcher ready either at its
+		// pod's informer event or at the next recheck, whichever order the scheduler gives the
+		// launcher's goroutines and the informer's. A boot timeout of 300 ms with a termination grace
+		// of 200 ms had the start step's deadline at that recheck, and the generation-1 launch then
+		// failed and was charged, leaving the claim at generation 2 before the setup registered
+		// generation 1.
 		"a throttle past the launch's deadline, charged once per try": {
-			bootTimeout: 300 * time.Millisecond,
-			answer:      func(int32) error { return apierrors.NewInternalError(errors.New(etcdThrottle)) },
-			err:         "etcdserver: throttle: too many requests",
-			refused:     func(n int32) bool { return n > 3 }, want: "more than 3, each try sending it again while the throttle lasted",
+			bubbleBoot: true,
+			answer:     func(int32) error { return apierrors.NewInternalError(errors.New(etcdThrottle)) },
+			err:        "etcdserver: throttle: too many requests",
+			refused:    func(n int32) bool { return n > 3 }, want: "more than 3, each try sending it again while the throttle lasted",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1507,8 +1517,8 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 			// deadline, which passes on the bubble's clock, so no real clock decides it.
 			synctest.Test(t, func(t *testing.T) {
 				var options []rigOption
-				if tc.bootTimeout != 0 {
-					options = append(options, withOptions(func(o *Options) { o.BootTimeout = tc.bootTimeout }))
+				if tc.bubbleBoot {
+					options = append(options, withBubbleBoot())
 				}
 				g := newRig(t, nil, options...)
 				spec := workerSpec(t)
