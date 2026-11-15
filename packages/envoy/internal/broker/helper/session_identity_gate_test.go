@@ -1007,15 +1007,21 @@ func TestARegisterWaitingWhenItsSessionRetiresIsNotASuccess(t *testing.T) {
 	}
 	r.srv.Registry.Add(sess) // live and unenrolled, so the wait does not return at once
 	done := make(chan Response, 1)
-	go func() { done <- r.srv.registerReply(sess, 5*time.Second) }()
-	// Retire it while the reply is mid-wait; Remove closes its stop, which wakes the wait.
+	// The reply's own wait is an hour, so nothing ends it but the retire: the Remove below may land
+	// before the wait begins or during it, and either way the wait's select finds the session's
+	// stop closed. With a 5 s wait, Remove had to land inside those 5 s or the reply found the
+	// session still held and answered OK; and a reply that never woke on the stop raced the 5 s
+	// guard below with an answer of its own 5 s later, which found the session gone and passed.
+	// The guard is now the only bound, and it is the ten seconds this package's waitFor gives the
+	// same waits: a reply the retire does not wake fails there.
+	go func() { done <- r.srv.registerReply(sess, time.Hour) }()
 	r.srv.Registry.Remove(sess)
 	select {
 	case resp := <-done:
 		if resp.OK || resp.Code != CodeNotASession {
 			t.Fatalf("a register whose session retired mid-wait got %+v, want NOT_A_SESSION", resp)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("registerReply did not return after its session retired")
 	}
 }

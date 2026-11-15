@@ -70,16 +70,26 @@ func (g gatedRoleClaims) CompleteRead(read kvwatch.Read) { roleCache{g.r}.Comple
 // stallFirstKV stalls the first watch it hands out after `after` entries, as a first scan that
 // delivers part of the bucket and then nothing does (earlyEndKV), and hands the real bucket's
 // watcher to every watch after it: the watcher reads the bucket again itself once its first read
-// times out, so the view becomes servable with no Rewatch.
+// times out, so the view becomes servable with no Rewatch. When rescan is not nil, every watch
+// after the first waits for it to close (or for its context to end), so a test reads the view
+// between the timed-out scan and the read after it for as long as it takes.
 type stallFirstKV struct {
 	jetstream.KeyValue
 
 	after   int
+	rescan  <-chan struct{}
 	stalled atomic.Bool
 }
 
 func (k *stallFirstKV) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
 	if k.stalled.Swap(true) {
+		if k.rescan != nil {
+			select {
+			case <-k.rescan:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		return k.KeyValue.Watch(ctx, keys, opts...)
 	}
 	return earlyEndKV{KeyValue: k.KeyValue, after: k.after}.Watch(ctx, keys, opts...)
@@ -237,16 +247,15 @@ func TestRolesHeldByRefusesWhenItsViewCannotAnswer(t *testing.T) {
 
 // heldOnceComplete asks RolesHeldBy(sessionID) until it answers want, and fails the test the first
 // time it answers anything else: a view that is not complete refuses (ErrRoleViewNotReady), and
-// never reports the session without its roles. It returns how many refusals came first.
-func heldOnceComplete(t *testing.T, reg *Registry, sessionID string, want []string) int {
+// never reports the session without its roles.
+func heldOnceComplete(t *testing.T, reg *Registry, sessionID string, want []string) {
 	t.Helper()
-	refusals := 0
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		roles, err := reg.RolesHeldBy(sessionID)
 		switch {
 		case err == nil && slices.Equal(roles, want):
-			return refusals
+			return
 		case err == nil:
 			t.Fatalf("RolesHeldBy(%s) answered %v, want %v or ErrRoleViewNotReady: a holder reported without its role", sessionID, roles, want)
 		case !errors.Is(err, ErrRoleViewNotReady):
@@ -254,7 +263,6 @@ func heldOnceComplete(t *testing.T, reg *Registry, sessionID string, want []stri
 		case time.Now().After(deadline):
 			t.Fatalf("RolesHeldBy(%s) still refuses after 30 s: %v", sessionID, err)
 		}
-		refusals++
 		time.Sleep(5 * time.Millisecond)
 	}
 }
@@ -274,10 +282,10 @@ func waitForHeld(t *testing.T, reg *Registry, sessionID string, want ...string) 
 // first read's own idle bound ends its scan: the view is emptied and followed again by a watcher
 // whose first read delivers delivered claims and then stalls until that bound ends it. The
 // watcher reads the bucket again itself after such a read (stallFirstKV), so the view becomes
-// servable without a Rewatch, as the product's does. It takes conn because the stalling handle is
-// built on the bucket's own jetstream handles (bus.WrapKeyValue), which a raw nats.go handle has
-// no route to.
-func restartRoleViewTimingOutAfter(t *testing.T, conn *natsgo.Conn, reg *Registry, rawRoles natsgo.KeyValue, delivered int) {
+// servable without a Rewatch, as the product's does; a rescan that is not nil holds that read
+// until it closes. It takes conn because the stalling handle is built on the bucket's own
+// jetstream handles (bus.WrapKeyValue), which a raw nats.go handle has no route to.
+func restartRoleViewTimingOutAfter(t *testing.T, conn *natsgo.Conn, reg *Registry, rawRoles natsgo.KeyValue, delivered int, rescan <-chan struct{}) {
 	t.Helper()
 	reg.roleWatcher.Stop()
 	reg.resetRoleHolders()
@@ -285,7 +293,7 @@ func restartRoleViewTimingOutAfter(t *testing.T, conn *natsgo.Conn, reg *Registr
 	if err != nil {
 		t.Fatalf("wrap the role bucket: %v", err)
 	}
-	stalling := bus.NewKeyValue(rawRoles, &stallFirstKV{KeyValue: roles.WatchHandle(), after: delivered}, roles.Streams())
+	stalling := bus.NewKeyValue(rawRoles, &stallFirstKV{KeyValue: roles.WatchHandle(), after: delivered, rescan: rescan}, roles.Streams())
 	reg.roleWatcher = kvwatch.New("role claims", stalling, roleCache{reg}, kvwatch.WithScanIdleTimeout(200*time.Millisecond))
 	reg.roleWatcher.Start()
 }
@@ -295,6 +303,11 @@ func restartRoleViewTimingOutAfter(t *testing.T, conn *natsgo.Conn, reg *Registr
 // ready rather than report the holder of a claim the scan did not deliver without its roles. The
 // watcher reads the bucket again itself, a re-read of the timed-out scan (kvwatch's rereadDelay
 // after it), and the view answers once that read completes.
+//
+// The re-read is held until the test has read the view short of it, so that read is the refusal
+// however long the test takes to make it. Free, the re-read came rereadDelay (5 s) after the
+// timed-out scan, and a test slowed past that between the view's readiness and its read found
+// the view already complete, and failed as a view that answered at once.
 func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *testing.T) {
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
@@ -319,14 +332,19 @@ func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *tes
 	// is the only one short of them.
 	waitForHeld(t, reg, "ses_holder", "planner", "reviewer")
 
-	restartRoleViewTimingOutAfter(t, conn, reg, rawRoles, 1)
+	rescan := make(chan struct{})
+	var letRescan sync.Once
+	release := func() { letRescan.Do(func() { close(rescan) }) }
+	// Registered after StopWatch's cleanup, so it runs before it: a row that fails before the
+	// release must not leave the held read in the way of the watcher's stop.
+	t.Cleanup(release)
+	restartRoleViewTimingOutAfter(t, conn, reg, rawRoles, 1, rescan)
 	waitFor(t, 5*time.Second, reg.roleWatcher.Ready)
 	if roles, err := reg.RolesHeldBy("ses_holder"); !errors.Is(err, ErrRoleViewNotReady) {
 		t.Fatalf("after a first scan the idle timer ended, RolesHeldBy(ses_holder) = %v, %v; want ErrRoleViewNotReady", roles, err)
 	}
-	if refusals := heldOnceComplete(t, reg, "ses_holder", []string{"planner", "reviewer"}); refusals == 0 {
-		t.Fatal("the view answered at once; the test needs it refused until the rescan completes")
-	}
+	release()
+	heldOnceComplete(t, reg, "ses_holder", []string{"planner", "reviewer"})
 	if got := heldRoles(t, reg, "ses_other"); !slices.Equal(got, []string{"architect"}) {
 		t.Fatalf("after the rescan ses_other holds %v, want [architect]", got)
 	}
@@ -364,7 +382,7 @@ func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 	}
 	waitForHeld(t, reg, "ses_holder", "planner", "reviewer")
 
-	restartRoleViewTimingOutAfter(t, conn, reg, rawRoles, 1)
+	restartRoleViewTimingOutAfter(t, conn, reg, rawRoles, 1, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -174,6 +174,42 @@ func waitBackendGone(t *testing.T, database *store.Store, pid uint32, within tim
 	}
 }
 
+// databaseNow is the database's own clock, the one pg_stat_activity dates a statement's start on.
+func databaseNow(t *testing.T, database *store.Store) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return now
+}
+
+// waitForPings waits for the backend pid to run n pings that began after since, on the database's
+// own clock, and fails the test with the backend's last statement when they have not within 5 s,
+// recv's bound. Each ping is a statement of its own and moves the backend's query_start, so the
+// distinct starts pg_stat_activity shows beside "-- ping" are pings the backend ran; a loaded
+// machine can only make a read miss some, and the wait then longer. A connection the listener
+// replaced runs no more pings on pid, so the wait fails rather than count the replacement's.
+func waitForPings(t *testing.T, database *store.Store, pid uint32, since time.Time, n int) {
+	t.Helper()
+	pings := map[int64]bool{}
+	var query string
+	for deadline := time.Now().Add(5 * time.Second); len(pings) < n; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener's backend ran %d pings after %s within 5s, want %d; its last statement is %q",
+				len(pings), since.Format(time.RFC3339Nano), n, query)
+		}
+		var started time.Time
+		if err := database.Pool.QueryRow(context.Background(),
+			`select query, query_start from pg_stat_activity where pid = $1`, int(pid)).Scan(&query, &started); err != nil {
+			t.Fatalf("read the listener's backend %d: %v", pid, err)
+		}
+		if query == "-- ping" && started.After(since) {
+			pings[started.UnixMicro()] = true
+		}
+	}
+}
+
 func TestTheListenerReconnectsAfterItsBackendIsKilled(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -304,14 +340,17 @@ func databaseAddress(database *store.Store) string {
 }
 
 // A healthy connection the listener has been idle on for several idle periods is pinged, not
-// replaced: one dial, one OnConnected, the backend's last statement the ping, and a notification
-// still reaches OnNotify on it.
+// replaced: three pings on the first connection's backend, one dial, one OnConnected, and a
+// notification still reaches OnNotify on it.
 //
 // Real time, at the idle period and ping timeout this sets: both are waits on a live Postgres
 // connection, which no synctest bubble can hold. The ping timeout is ten seconds, twice
 // DefaultPingTimeout: the row runs beside a parallel batch, and a ping that outlasted a short
 // timeout under that load would replace the connection and fail the row on the machine's speed.
 // What the row holds - a healthy idle connection is pinged and kept - needs no short timeout.
+// For the same reason the row waits for the pings themselves, as the backend runs them, rather
+// than sleeping out seven idle periods and then requiring the backend's last statement to be a
+// ping: the sleep was a window the pings had to land in.
 func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -322,21 +361,14 @@ func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 	probe.waitConnected(t, 5*time.Second, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()
 
-	time.Sleep(1500 * time.Millisecond)
+	waitForPings(t, database, pid, time.Time{}, 3)
 	if dials := probe.dials.Load(); dials != 1 {
-		t.Fatalf("dials after seven idle periods = %d, want 1", dials)
+		t.Fatalf("dials after three idle periods = %d, want 1", dials)
 	}
 	select {
 	case <-probe.connected:
 		t.Fatal("OnConnected fired again on an idle, healthy connection")
 	default:
-	}
-	var query string
-	if err := database.Pool.QueryRow(context.Background(), `select query from pg_stat_activity where pid = $1`, int(pid)).Scan(&query); err != nil {
-		t.Fatalf("read the listener's backend: %v", err)
-	}
-	if query != "-- ping" {
-		t.Fatalf("the idle listener's last statement = %q, want its ping", query)
 	}
 	notifyChannel(t, database, "dispatch_events", "")
 	if note := probe.waitNote(t, 5*time.Second, "a notification after the idle periods"); note != (listenerNote{channel: "dispatch_events"}) {
@@ -600,18 +632,16 @@ func TestAListenerWithNoOnNotifyDropsItsNotificationsAndDoesNotPanic(t *testing.
 	probe.waitConnected(t, 5*time.Second, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()
 
+	notified := databaseNow(t, database)
 	notifyChannel(t, database, "dispatch_events", "dropped")
-	// Long enough for the notification to arrive and for the wait after it to end on the idle
-	// period and be pinged.
-	time.Sleep(500 * time.Millisecond)
+	// A notification it has nowhere to report must leave it waiting and pinging on the same
+	// connection, so the row waits for pings on that backend begun after the notification was
+	// sent, as the backend runs them, rather than sleeping half a second and requiring the last
+	// statement to be one. Three, because the first may have been in flight as the notification
+	// was sent and the notification then reaches the listener with its answer; by the third, the
+	// listener has read it and dropped it and gone on waiting.
+	waitForPings(t, database, pid, notified, 3)
 	if dials := probe.dials.Load(); dials != 1 {
 		t.Fatalf("dials after a notification the listener has nowhere to report = %d, want 1: the notification cost it the connection", dials)
-	}
-	var query string
-	if err := database.Pool.QueryRow(context.Background(), `select query from pg_stat_activity where pid = $1`, int(pid)).Scan(&query); err != nil {
-		t.Fatalf("read the listener's backend: %v", err)
-	}
-	if query != "-- ping" {
-		t.Fatalf("the listener's last statement = %q, want its idle ping: a notification it has nowhere to report must leave it waiting on the same connection", query)
 	}
 }

@@ -5621,6 +5621,25 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	}
 }
 
+// budgetEndingAt is a shutdown budget that runs out the moment ended closes and reads from then on
+// as a deadline that passed (context.DeadlineExceeded), as the deploy's fixed budget does, so a
+// test can end the budget on the event it needs inside it rather than on a clock.
+type budgetEndingAt struct {
+	context.Context
+	ended <-chan struct{}
+}
+
+func (b budgetEndingAt) Done() <-chan struct{} { return b.ended }
+
+func (b budgetEndingAt) Err() error {
+	select {
+	case <-b.ended:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 // A deploy stops the server on a fixed budget, and a large document's settlement can take longer
 // than it: a 1 MiB `a_b*` document's took 4.5 s at load 90, and a shutdown running it took 8.4 s
 // against its 5 s budget. Shutdown abandoned the settlement its budget cut short, and the
@@ -5637,17 +5656,25 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 		t.Fatalf("load live document: %v", err)
 	}
 	// The settlement Shutdown runs stops once it holds the document's locks, and stays stopped
-	// past the shutdown budget, as a settlement that renders 1 MiB under load does.
+	// past the shutdown budget, as a settlement that renders 1 MiB under load does. The budget runs
+	// out at that moment, so it cuts that settlement short whatever the machine's speed: a fixed
+	// 300 ms budget ran out first on a loaded runner, before the room's worker had read what the
+	// document owes and reached the lock, and the row failed as a settlement Shutdown never ran.
+	// roomWait ends the budget too, as a hang guard, so a settlement that never gets there fails the
+	// row by name below.
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	var enteredOnce sync.Once
+	budgetEnded := make(chan struct{})
+	var enteredOnce, endBudgetOnce sync.Once
+	endBudget := func() { endBudgetOnce.Do(func() { close(budgetEnded) }) }
+	guard := time.AfterFunc(roomWait(t), endBudget)
+	defer guard.Stop()
 	service.afterSettleLock = func(string) {
 		enteredOnce.Do(func() { close(entered) })
+		endBudget()
 		<-release
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	err := service.Shutdown(ctx)
+	err := service.Shutdown(budgetEndingAt{Context: context.Background(), ended: budgetEnded})
 	close(release)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown past its budget = %v, want deadline exceeded", err)

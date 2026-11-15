@@ -70,7 +70,9 @@ func TestAWaitingCopyHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, first, "", "pending")
 	seedDelivery(t, rig.database, commentID, second, "", "pending")
 
+	beforeScan := databaseNow(t, rig.database)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	afterScan := databaseNow(t, rig.database)
 
 	// The defect's own signature: an event held by a blocker carrying itself reads an outcome
 	// settleEvent has not written, whose zero state holdBack takes for a released one.
@@ -101,8 +103,12 @@ func TestAWaitingCopyHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on the comment's unpinned mentions, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+	// The record blocks the event until now() + mentionPendingDelay on the database's clock, in a
+	// transaction that began between the two readings taken around the scan, so the due time lies
+	// between those readings moved on by the delay, however long the scan and the reads after it
+	// took (TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent reads it the same way).
+	if earliest, latest := beforeScan.Add(mentionPendingDelay), afterScan.Add(mentionPendingDelay); due == nil || due.Before(earliest) || due.After(latest) {
+		t.Fatalf("next_attempt_at = %v, want %v after the scan's record, %v to %v: the wait a blocked event takes", due, mentionPendingDelay, earliest, latest)
 	}
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v while the role forward waits on the comment's unpinned mentions", at)

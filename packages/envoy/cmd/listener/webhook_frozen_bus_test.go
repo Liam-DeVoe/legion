@@ -125,8 +125,11 @@ func wantDeliveryFailed(t *testing.T, route string, recorder *httptest.ResponseR
 // an answer. On a bus that went silent without closing the connection the delivery must still get
 // the answer a record that failed always got, 503, inside the CI store's 4 s record wait. The
 // negative control is a delivery recorded on the same store before the freeze.
+//
+// Serial: its assertion is a time - each frozen delivery must be answered inside
+// githubRecordWithin (5 s), against the CI store's 4 s record wait that answers it, and a parallel
+// test's load would stretch the answer past the bound.
 func TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait(t *testing.T) {
-	t.Parallel()
 	frozen := newFrozenWebhookBus(t)
 	store, err := cistore.Open(frozen.client.Conn, logging.New("test"), cistore.WithReplicas(1))
 	if err != nil {
@@ -166,8 +169,12 @@ func TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait(t *testing.T) {
 // the bus's own 5 s bound alone, so a bus that went silent was answered after Slack had given up,
 // and after the others' callers had gone. Each must still get the answer a failed publish always
 // got, 503. The negative control is each route served on the same bus before the freeze.
+//
+// Serial: its assertion is a time - the Slack event must be answered inside slackWithin (3 s),
+// against the route's 2.5 s slackAnswerBudget, and each publish whose caller gave up after
+// callerGivesUpAfter (1 s) inside callerGoneWithin (2 s), and a parallel test's load would stretch
+// the answers past those bounds.
 func TestTheWebhookPublishesAnswerAFrozenBusInsideTheirCallersWait(t *testing.T) {
-	t.Parallel()
 	frozen := newFrozenWebhookBus(t)
 	slack := webhook.SlackHandler(webhookSecret, frozen.client)
 	ghostWispr := webhook.GhostWisprHandler(webhookSecret, frozen.client)

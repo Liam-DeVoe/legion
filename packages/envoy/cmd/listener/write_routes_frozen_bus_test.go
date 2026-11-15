@@ -117,8 +117,13 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 // (store.Registry.UpsertWithin), and DELETE /v1/sessions/<session_id>'s the session bucket's
 // read-then-delete. The negative control is each route asked before the freeze, on the same rig,
 // for a session of its own: each is served.
+//
+// Serial: its assertion is a time - each frozen route must be refused inside writeRoutesWithin
+// (4 s), within the caller's 5 s attempt, and each may spend all of sendRequestBudget (3.5 s)
+// before it answers, which leaves a parallel test's load half a second to stretch the answer past
+// the bound. The frozen rows still run beside one another, as they did before the test itself was
+// parallel: each spends its budget blocked on the one silent relay, so they load the machine little.
 func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
-	t.Parallel()
 	const (
 		topic         = "notifications.team.write-routes"
 		otherTopic    = "notifications.team.write-routes-other"
@@ -216,8 +221,13 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 // silent bus, and the rollback that follows a write that did not answer must not take the request
 // past its budget either. The negative control is a hard claim of another role
 // (role-store-control) by the same claimant on the same rig before the freeze: it is served.
+//
+// Serial: its assertion is a time - each frozen claim must be answered inside writeRoutesWithin
+// (4 s), and it may spend all of sendRequestBudget (3.5 s) before it answers, which leaves a
+// parallel test's load half a second to stretch the answer past the bound. The rows still run
+// beside one another, as they did before the test itself was parallel: each spends its budget
+// blocked on a frozen relay of its own, so they load the machine little.
 func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.T) {
-	t.Parallel()
 	const claimant = "ses_role_store_claimant"
 	for _, freeze := range []struct {
 		name, trigger, body string

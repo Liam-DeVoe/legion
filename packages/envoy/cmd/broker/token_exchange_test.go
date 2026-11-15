@@ -126,8 +126,13 @@ func fakeSecret(path, owner, value string) string {
 // renewed from the same standing pod token, and the eight refusals that
 // keep the credential-less path from being a way in for anyone else. It skips when
 // BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
+//
+// Serial: its renewal step is a span. That step's broker gives every access token
+// shortAccessSeconds (2 s) of life, so that the first token lapses rather than the test waiting
+// minutes, and the renewed token is then introspected as live, which holds only while the
+// introspection reaches the broker inside those 2 s of the renewal's mint; a parallel test's load
+// can stretch the one request between the two past them.
 func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
-	t.Parallel()
 	databaseURL := storetest.URL(t)
 	// Two issuers the test controls: the cluster's, which mints every service-account token here,
 	// and GitHub's, which mints none but is what the broker reports its second exchange issuer on.

@@ -422,6 +422,16 @@ func nextAttempt(t *testing.T, database *store.Store, eventID int64) (attempts i
 	return attempts, due
 }
 
+// databaseNow is the database's own clock, the one the outbox's record stamps next_attempt_at on.
+func databaseNow(t *testing.T, database *store.Store) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return now
+}
+
 // TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent drives the scan itself: a new comment
 // mentioning the claimant is published to its issue topic at once, and its claimant copy waits
 // for the mention's send to settle - without counting a failed attempt - and then follows it: a
@@ -463,7 +473,9 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			publisher := &recordingPublisher{}
 			outbox := holding(t, Deps{Store: database, Publisher: publisher})
 
+			beforeScan := databaseNow(t, database)
 			outbox.scan(ctx, unfenced{})
+			afterScan := databaseNow(t, database)
 			if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, []string{issueTopic}) {
 				t.Fatalf("topics while the mention is pending = %#v, want the issue topic alone", got)
 			}
@@ -474,8 +486,13 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			if attempts != 0 {
 				t.Fatalf("attempt_count = %d after a deferral, want 0", attempts)
 			}
-			if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-				t.Fatalf("next_attempt_at = %v, want about %v from now", due, mentionPendingDelay)
+			// The record blocks the event until now() + mentionPendingDelay on the database's clock,
+			// in a transaction that began between the two readings taken around the scan, so the due
+			// time lies between those readings moved on by the delay, however long the scan and the
+			// reads after it took. Read against the test's clock after those reads instead, a step
+			// slowed past the delay found the due time already behind it.
+			if earliest, latest := beforeScan.Add(mentionPendingDelay), afterScan.Add(mentionPendingDelay); due == nil || due.Before(earliest) || due.After(latest) {
+				t.Fatalf("next_attempt_at = %v, want %v after the scan's record, %v to %v", due, mentionPendingDelay, earliest, latest)
 			}
 			if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, []string{issueTopic}) {
 				t.Fatalf("published_destinations = %#v, want the issue topic alone", destinations)

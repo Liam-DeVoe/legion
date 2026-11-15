@@ -559,35 +559,35 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // Real time, at natsLossGrace: the cut is of a TCP proxy in front of a live NATS server, which no
 // synctest bubble can hold.
 //
-// The grace is held from both sides. Below, the release may not come before natsLossGrace has run
-// since the cut: the holder reads its client disconnected and arms one timer of that grace
-// (lease.go:500-503), and only that timer firing with the client still down ends the turn as NATS
-// lost (lease.go:551-557), so a release inside the grace is a holder that gave the hold up early.
-// Load can only make that bound safer, since a loaded machine delays the release and never
-// hastens it. Above, the release must come within releaseAfterLoss of the grace, and the event
-// written
-// after it must be published within 15 s of the cut: the cut closes the connection, so the loss
-// is reported by the client's own connection event (bus.Client.Connected reads the connection's
-// status, nats.go:573-577) and nothing polls on an interval, which leaves between the grace and
-// the release only a run of goroutine wakes - the client's callback, the holder's wake, the
-// timer, serve's return and publish's clearing of the hold (lease.go:443-451). A release well
-// past the grace is a holder that kept the hold through an outage it should have given up, and a
-// wait on eventWait would pass it. What that upper bound must not be is a reading of the
-// machine: at 500 ms it failed twice under the lane's own load, once under CI's eight concurrent
-// go test calls (run 42949344199) and once with 111 test binaries running at once (run
-// 43716631673, job 132819560357), each time on goroutine wakes rather than on the product. The
-// bound is therefore sized for a loaded runner and still far below eventWait, which is what it
-// has to beat to mean anything. Running serial keeps this package's
-// parallel tests from running beside it, though the other packages' tests still share the
-// machine.
+// The row waits on the release itself - the line publish writes as the cut process's turn ends -
+// and reads from that line why the turn ended and when. The reason must be NATS lost, which here
+// only the grace's timer can give: the cut closes the connection, so the loss is reported by the
+// client's own connection event (bus.Client.Connected reads the connection's status,
+// nats.go:573-577), the holder reads its client disconnected and arms one timer of that grace
+// without scanning (lease.go:500-503), and only that timer firing with the client still down ends
+// the turn as NATS lost (lease.go:551-557). The line's stopped attribute, at or before the moment
+// the process stopped publishing, must be natsLossGrace or more past the cut, so a release inside
+// the grace is a holder that gave the hold up early; load can only make that bound safer, since a
+// loaded machine delays the release and never hastens it.
 //
-// Serial: its assertion is a time - the release must fall between natsLossGrace and
-// releaseAfterLoss past it, and the publish within 15 s of the cut (docs/testing.md). Besides, a
-// holder whose renewals
-// a parallel batch starves for the 4 s from a confirmed renewal to the loss deadline
-// (publisherHoldOptions, TTL less Margin) reports the hold lost and ends its turn before the
-// grace runs out, and the row would then be reading that load rather than the product.
+// How long past the grace the release comes is not bounded: between the grace's timer and the
+// release there is only a run of goroutine wakes - the holder's wake, the timer, serve's return
+// and publish's clearing of the hold (lease.go:443-451) - which is the machine's to say. A bound
+// on it was this row's until it failed on those wakes at 500 ms, under CI's eight concurrent go
+// test calls (run 42949344199) and with 111 test binaries at once (run 43716631673, job
+// 132819560357), and was then widened to 6 s, which made it a reading of the machine. A holder
+// that kept the hold through the outage is caught without one: it never writes the line, and the
+// row fails at eventWait, or it ends its turn for another reason, which the line names. The event
+// written after the cut is published by the process whose NATS works, waited on as an event too.
+//
+// Serial: it reads publish's line through the default logger, which it swaps
+// (logtest.SetDefault); and a holder whose renewals a parallel batch starves for the 4 s from a
+// confirmed renewal to the loss deadline (publisherHoldOptions, TTL less Margin) reports the hold
+// lost and ends its turn before the grace runs out, and the row would then be reading that load
+// rather than the product (docs/testing.md).
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(t, recorder)
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url)
 	proxied := proxy.URL()
@@ -598,25 +598,53 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	waitFor(t, eventWait, "the first process taking the publisher hold", cut.outbox.Publishing)
 	working := startProcess(t, "working", storetest.SecondProcess(t, database), url, counter)
 
-	// Read before the cut, so the grace is armed after this moment and the lower bound below holds
-	// whatever the scheduler does between the two statements. The upper bound runs from the
-	// wait's own start, just after the cut.
+	// Read before the cut, so the grace is armed after this moment and the bound below holds
+	// whatever the scheduler does between the two statements.
 	downAt := time.Now()
 	proxy.Cut()
-	waitFor(t, natsLossGrace+releaseAfterLoss, "the cut process releasing the publisher hold within "+releaseAfterLoss.String()+" of natsLossGrace", func() bool {
-		return cut.outbox.hold.Load() == nil
+	var released map[string]string
+	waitFor(t, eventWait, "the cut process's line releasing the publisher hold", func() bool {
+		var found bool
+		released, found = releaseLine(recorder, cut.outbox.instance)
+		return found
 	})
-	released := time.Since(downAt)
-	t.Logf("the cut process released the publisher hold %s after the cut", released.Round(time.Millisecond))
-	if released < natsLossGrace {
-		t.Fatalf("the cut process released the publisher hold %s after the cut, inside the %s it gives a connection that is down: a holder that gives the hold up early stops publishing for an outage its connection may still come back from (natsLossGrace)",
-			released.Round(time.Millisecond), natsLossGrace)
+	if released["reason"] != string(natsLost) {
+		t.Fatalf("the cut process released the publisher hold for %q, want %q: the cut leaves its client disconnected, and only the grace's timer ends that turn (lease.go:551-557)",
+			released["reason"], natsLost)
+	}
+	stopped, err := time.Parse(time.RFC3339Nano, released["stopped"])
+	if err != nil {
+		t.Fatalf("read the stopped attribute %q of the release line: %v", released["stopped"], err)
+	}
+	t.Logf("the cut process stopped publishing %s after the cut", stopped.Sub(downAt).Round(time.Millisecond))
+	if stopped.Sub(downAt) < natsLossGrace {
+		t.Fatalf("the cut process stopped publishing %s after the cut, inside the %s it gives a connection that is down: a holder that gives the hold up early stops publishing for an outage its connection may still come back from (natsLossGrace)",
+			stopped.Sub(downAt).Round(time.Millisecond), natsLossGrace)
 	}
 	event := writeMessage(t, working, "after the cut")
-	waitForPublished(t, 15*time.Second-time.Since(downAt), database, counter, event)
+	waitForPublished(t, eventWait, database, counter, event)
 	if !working.outbox.Publishing() || cut.outbox.Publishing() {
 		t.Fatalf("publishing %v after the cut, want only the process whose NATS works", publishing(cut, working))
 	}
+}
+
+// releaseLine is the attributes, as text, of the line publish writes as instance's turn ends with
+// the hold released rather than lost, once the recorder holds it.
+func releaseLine(recorder *logtest.Recorder, instance uuid.UUID) (map[string]string, bool) {
+	for _, record := range recorder.Records() {
+		if !strings.Contains(record.Message, "released the publisher hold") {
+			continue
+		}
+		attributes := map[string]string{}
+		record.Attrs(func(attribute slog.Attr) bool {
+			attributes[attribute.Key] = attribute.Value.String()
+			return true
+		})
+		if attributes["instance"] == instance.String() {
+			return attributes, true
+		}
+	}
+	return nil, false
 }
 
 // A holder whose NATS connection goes silent - still connected, nothing answering - finds out when
@@ -808,19 +836,45 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	outbox := New(Deps{Store: database, Publisher: publisher})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	hold, _ := outbox.tryHold(ctx)
-	if hold == nil {
-		t.Fatal("the outbox did not take the publisher hold")
+	// The hold is taken under options of the row's own, as the record path's row takes it
+	// (TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal): under publisherHoldOptions, a
+	// renewal a parallel batch starved for the 4 s from a confirmed renewal to the loss deadline
+	// would end the turn as lost while serve waits out the grace, and the row would read that load
+	// rather than the product. These leave the deadline minutes ahead for the whole row.
+	hold, err := duty.TryHold(ctx, database.Pool, publisherHold, outbox.instance,
+		duty.HoldOptions{TTL: 6 * time.Minute, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token})
+	if err != nil || hold == nil {
+		t.Fatalf("the outbox did not take the publisher hold: %v", err)
 	}
 	t.Cleanup(func() { _ = hold.Release(context.Background()) })
 
+	// The client comes back at serve's first wait (afterServeWait), on serve's own goroutine: serve
+	// has read it disconnected, armed the grace's timer and not scanned, and only that timer can
+	// end the wait. So the client reads connected when the timer fires however long anything here
+	// takes; with the client brought back by the test's own goroutine instead, after a sleep, a
+	// test slowed past natsLossGrace from serve's start found it still down at the grace's end and
+	// failed as a holder that gave the hold up. What serve had claimed by that first wait is read
+	// there too: it must be nothing, since the client read disconnected all along.
+	claimedBeforeTheGrace := make(chan int64, 1)
+	var firstWait sync.Once
+	outbox.afterServeWait = func() {
+		firstWait.Do(func() {
+			claimedBeforeTheGrace <- outbox.claims.Load()
+			publisher.connected.Store(true)
+		})
+	}
 	ended := make(chan holdEnd, 1)
 	go func() { ended <- outbox.serve(ctx, hold) }()
-	time.Sleep(200 * time.Millisecond)
-	if outbox.claims.Load() != 0 {
-		t.Fatal("the holder scanned while its client read disconnected")
+	select {
+	case claimed := <-claimedBeforeTheGrace:
+		if claimed != 0 {
+			t.Fatal("the holder scanned while its client read disconnected")
+		}
+	case end := <-ended:
+		t.Fatalf("serve ended %s before it first waited with its client disconnected", end)
+	case <-time.After(eventWait):
+		t.Fatal("serve never waited with its client disconnected")
 	}
-	publisher.connected.Store(true)
 	// The grace's timer is the only thing that can wake this holder - no connection event is
 	// reported here - so a scan is the reading that it ran the grace out, read the client's
 	// status and served on. The wait is a hang guard, eventWait: how long after the grace the

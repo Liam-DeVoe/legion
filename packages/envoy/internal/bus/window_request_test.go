@@ -122,7 +122,9 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 // `failed` - and both wrap ErrNotAcknowledged, so a caller that only backs the send off is
 // unaffected.
 func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
-	t.Parallel()
+	// Serial: its first leg's Request must run out its 5 s timeout with its flush's confirmation
+	// inside that timeout, which the flush shares (window.request), and a parallel test's load can
+	// hold the flush past it, which reads as an unconfirmed publish rather than a confirmed one.
 	server, _, client := requestClient(t)
 	window := client.WindowUntil(nil)
 

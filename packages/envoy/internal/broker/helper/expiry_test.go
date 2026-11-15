@@ -127,14 +127,24 @@ func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testi
 	t.Cleanup(b.Close)
 	timers := installExpiryTimers(b)
 
+	loggingIn := time.Now()
 	cred := expiryLogin(t, b)
 	status := b.LoginStatus()
 	if !status.CredentialHeld || !status.CredentialExpiresAt.Equal(cred.expiresAt) {
 		t.Fatalf("login-status after the login: %+v; want the credential held until %s", status, cred.expiresAt)
 	}
-	left := time.Until(cred.expiresAt)
-	if d := timers.fire(t, cred, 0); d > left-2*time.Hour+time.Second || d < left-2*time.Hour-time.Minute {
-		t.Fatalf("the warning waits %s; want %s less the 2 h warning", d, left)
+	// Each timer asks for the time from the moment its watch reads the clock to its deadline, and
+	// that moment lies between two readings taken here however long any step took, as
+	// TestTheHelperWarnsADayBeforeTheExpiry reads the warning: the warning's read comes after the
+	// login began and before its timer is fired, and the expiry's after the warning's timer is
+	// fired and before its own is. So each wait lies between its deadline less the later reading
+	// and its deadline less the earlier one. Against one reading taken before both, give or take a
+	// second, a test slowed past that second between the watch's read and that reading failed.
+	warnAt := cred.expiresAt.Add(-2 * time.Hour)
+	firingTheWarning := time.Now()
+	warning := timers.fire(t, cred, 0)
+	if shortest, longest := warnAt.Sub(time.Now()), warnAt.Sub(loggingIn); warning < shortest || warning > longest {
+		t.Fatalf("the warning waits %s; want the time to 2 h before the expiry, %s to %s", warning, shortest, longest)
 	}
 	warned := waitForRecord(t, &out, expiresSoonMsg)
 	expiresAt := cred.expiresAt.Format(time.RFC3339)
@@ -144,8 +154,9 @@ func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testi
 	if !b.HasCredential() {
 		t.Fatal("the warning dropped the credential")
 	}
-	if d := timers.fire(t, cred, 1); d > left+time.Second || d < left-time.Minute {
-		t.Fatalf("the expiry waits %s; want %s", d, left)
+	expiry := timers.fire(t, cred, 1)
+	if shortest, longest := cred.expiresAt.Sub(time.Now()), cred.expiresAt.Sub(firingTheWarning); expiry < shortest || expiry > longest {
+		t.Fatalf("the expiry waits %s; want the time to the expiry, %s to %s", expiry, shortest, longest)
 	}
 	expired := waitForRecord(t, &out, expiredMsg)
 	if expired["level"] != "ERROR" || expired["credential_id"] != cred.id || expired["expires_at"] != expiresAt {

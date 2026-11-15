@@ -33,17 +33,6 @@ import (
 // a stop that must beat the shutdown budget - keeps its own number.
 const eventWait = 30 * time.Second
 
-// releaseAfterLoss is how long past natsLossGrace the holder whose NATS was cut may take to
-// release the publisher hold. It is this test's upper bound rather than a give-up
-// (TestAnOutboxThatLosesNATSReleasesThePublisher says what it proves), and what stands between
-// the grace's timer and the release is a run of goroutine wakes, so the number is sized for the
-// loaded runner the lane makes rather than for an idle one: at 500 ms it failed twice on those
-// wakes, under CI's eight concurrent go test calls (run 42949344199) and under the 111 test
-// binaries of the package list (run 43716631673, job 132819560357). A release this late is still
-// well inside the eventWait a give-up would allow, so a holder that keeps the hold through an
-// outage still fails the row (dispatch://INFRA-1075).
-const releaseAfterLoss = 6 * time.Second
-
 // answered is a channel already holding err, the outcome of a test publisher that answers each
 // publish before it returns: the outbox reads such an answer the moment it sends, as it reads one
 // a bus.Client.WindowUntil window's PublishAsync decides before anything is sent.

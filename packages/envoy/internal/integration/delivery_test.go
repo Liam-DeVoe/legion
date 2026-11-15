@@ -2,8 +2,12 @@ package integration
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
+
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -25,15 +29,42 @@ type testEnv struct {
 
 type testEnvOption func(*testEnvOpts)
 
-type testEnvOpts struct{ sessionTTL time.Duration }
+type testEnvOpts struct {
+	sessionTTL   time.Duration
+	sessionClock func() time.Time
+}
 
 func withSessionTTL(d time.Duration) testEnvOption {
 	return func(o *testEnvOpts) { o.sessionTTL = d }
 }
 
+// withSessionClock gives the session registry the clock a test moves (session.WithSessionClock).
+func withSessionClock(now func() time.Time) testEnvOption {
+	return func(o *testEnvOpts) { o.sessionClock = now }
+}
+
+// sessionClock is the session registry's clock in a test that crosses a TTL by moving it rather
+// than waiting the TTL out: the wall clock, plus every advance the test has made.
+type sessionClock struct {
+	mu     sync.Mutex
+	offset time.Duration
+}
+
+func (c *sessionClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().Add(c.offset)
+}
+
+func (c *sessionClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offset += d
+}
+
 func setupTestEnv(t *testing.T, options ...testEnvOption) *testEnv {
 	t.Helper()
-	opts := testEnvOpts{sessionTTL: 10 * time.Second}
+	opts := testEnvOpts{sessionTTL: 10 * time.Second, sessionClock: time.Now}
 	for _, o := range options {
 		o(&opts)
 	}
@@ -54,7 +85,7 @@ func setupTestEnv(t *testing.T, options ...testEnvOption) *testEnv {
 		t.Fatalf("failed to create registry: %v", err)
 	}
 
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(opts.sessionTTL))
+	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(opts.sessionTTL), session.WithSessionClock(opts.sessionClock))
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
@@ -132,9 +163,16 @@ func TestRoleTransfer_ExactlyOneHolder(t *testing.T) {
 	})
 }
 
+// A session's KV entry expires at its TTL while its interest record stays. The TTL is crossed on
+// the session registry's own clock, which the test moves past it, as the registry's own tests do
+// (session.WithSessionClock): at a TTL of 2 s waited out on the wall clock, the registration, the
+// interest and the read that must still find the entry all had to land inside those 2 s, and a
+// test slowed past them failed on a read that found the entry already gone.
 func TestDelivery_KVEntryExpiresButInterestPersists(t *testing.T) {
 	t.Parallel()
-	env := setupTestEnv(t, withSessionTTL(2*time.Second))
+	const ttl = time.Hour
+	now := &sessionClock{}
+	env := setupTestEnv(t, withSessionTTL(ttl), withSessionClock(now.Now))
 
 	env.registerKVSession("ses_expiry_check")
 	env.registerInterest("ses_expiry_check", nil)
@@ -143,10 +181,10 @@ func TestDelivery_KVEntryExpiresButInterestPersists(t *testing.T) {
 		t.Fatalf("expected KV entry to exist: %v", err)
 	}
 
-	waitUntil(t, 5*time.Second, "the session entry to expire", func() bool {
-		_, err := env.sessions.Get("ses_expiry_check")
-		return err != nil
-	})
+	now.advance(ttl + time.Minute)
+	if _, err := env.sessions.Get("ses_expiry_check"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("the session entry a TTL past its registration: %v, want it expired (%v)", err, natsgo.ErrKeyNotFound)
+	}
 	interest, err := env.registry.Get(context.Background(), "ses_expiry_check")
 	if err != nil {
 		t.Fatalf("interest should persist after session expiry, got: %v", err)

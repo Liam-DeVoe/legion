@@ -238,6 +238,12 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 			return record["topic"] == contracts.RoleTopicPrefix+role
 		})
 	}
+	// A task logs a forward only once the stream has acknowledged storing it (finishRoleForward),
+	// which can come after the holder already has the frame, so the last lines are waited for
+	// rather than read the moment the frames are in.
+	waitFor(t, listenerWait, "the two tasks to log a role forward for each of the messages", func() bool {
+		return roleForwards(old)+roleForwards(replacement) >= messages
+	})
 	byOld, byReplacement := roleForwards(old), roleForwards(replacement)
 	if byOld+byReplacement != messages {
 		t.Fatalf("the two tasks logged %d + %d role forwards, want %d in all", byOld, byReplacement, messages)
@@ -264,14 +270,32 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 		return total
 	}
 	waitFor(t, listenerWait, "the two tasks to handle the repeated key twice", func() bool { return handled() == 2 })
+	// Each forward of the repeated key is a frame on the holder's subject, whatever the stream
+	// made of its msg id, so the holder waits for as many frames as the two tasks logged forwards
+	// of it, and then a second more for any past them.
+	forwardedRepeats := 0
+	for _, p := range []*listenerProcess{old, replacement} {
+		forwardedRepeats += countRecords(p, "listener role forwarded", ofRepeat)
+	}
 	repeats := 0
+	checkRepeat := func(frame contracts.Envelope) {
+		if frame.DedupeKey != roleForwardDedupePrefix+repeatKey {
+			t.Fatalf("the holder received dedupe key %q, want %s", frame.DedupeKey, roleForwardDedupePrefix+repeatKey)
+		}
+		repeats++
+	}
+	for repeats < forwardedRepeats {
+		select {
+		case frame := <-frames:
+			checkRepeat(frame)
+		case <-time.After(listenerWait):
+			t.Fatalf("the holder received %d of the %d frames the two tasks forwarded for the repeated key", repeats, forwardedRepeats)
+		}
+	}
 	for collecting := true; collecting; {
 		select {
 		case frame := <-frames:
-			if frame.DedupeKey != roleForwardDedupePrefix+repeatKey {
-				t.Fatalf("the holder received dedupe key %q, want %s", frame.DedupeKey, roleForwardDedupePrefix+repeatKey)
-			}
-			repeats++
+			checkRepeat(frame)
 		case <-time.After(time.Second):
 			collecting = false
 		}

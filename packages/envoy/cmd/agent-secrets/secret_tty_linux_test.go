@@ -170,16 +170,41 @@ func shown(t *testing.T, controller *os.File) []byte {
 	}
 }
 
+// shownThrough is what the terminal wrote back to the controller, read until it holds mark or
+// readerAnswerWait has passed, whichever is first: the read waits on the bytes it looks for rather
+// than on a window they must arrive in. It is for bytes the reader writes before it returns, which
+// can still be on their way to the controller once it has: the pseudo-terminal hands the
+// controller what the terminal side wrote after that write has returned.
+func shownThrough(t *testing.T, controller *os.File, mark []byte) []byte {
+	t.Helper()
+	if err := controller.SetReadDeadline(time.Now().Add(readerAnswerWait)); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	buf := make([]byte, 4096)
+	for !bytes.Contains(out.Bytes(), mark) {
+		n, err := controller.Read(buf)
+		out.Write(buf[:n])
+		if err != nil {
+			break
+		}
+	}
+	return out.Bytes()
+}
+
 // TestPromptReadsOneTypedLineWithEchoOff: Enter ends the value, which is never echoed; the reader
 // asks the terminal to bracket pastes while it reads and to stop once it is done, and leaves it as
-// it was, echo on.
+// it was, echo on. What the terminal showed is read through the reader's last mark, the request to
+// stop bracketing, which it writes after the line it read: an echo of the line would come ahead of
+// it. Read for a fixed 300 ms instead, a pseudo-terminal slower than that to hand the marks over
+// failed the row as a reader that never asked.
 func TestPromptReadsOneTypedLineWithEchoOff(t *testing.T) {
 	t.Parallel()
 	controller, terminal, got := typeAtPrompt(t, "typed value\r")
 	if got.err != nil || string(got.line) != "typed value" {
 		t.Fatalf("readHidden = %q, %v; want %q", got.line, got.err, "typed value")
 	}
-	echoed := shown(t, controller)
+	echoed := shownThrough(t, controller, []byte("\x1b[?2004l"))
 	if bytes.Contains(echoed, []byte("typed")) {
 		t.Fatalf("the terminal showed %q: the value was echoed", echoed)
 	}

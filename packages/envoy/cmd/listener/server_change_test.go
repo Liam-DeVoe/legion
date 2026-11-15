@@ -190,8 +190,13 @@ type serverChangeRun struct {
 // It runs twice, once through each listener: through the sender's listener S, so every message
 // crosses the hub, and through the holder's listener H, so the publish route runs on the machine
 // the stand-in registered through.
+//
+// Serial: its assertions are times - each publish call is envoy-client's, an attempt bounded at
+// serverChangeAttemptTimeout (contracts.ListenerCallTimeout, 5 s) and one retry, whose expiry is
+// the sender's error, and every call of each serverChangeQuiet (3 s) window of quiet sending must
+// be answered 200; a parallel test's load would time attempts out as the sender's error with
+// nothing moving.
 func TestServerChange(t *testing.T) {
-	t.Parallel()
 	runs := []serverChangeRun{
 		{name: "senders through S"},
 		{name: "senders through H", sendThroughHolder: true},

@@ -46,7 +46,12 @@ func TestASilentCutRewatchesTheCachesWithNoErrorLine(t *testing.T) {
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "cut-rewatch")
 	listener.waitHealthy(t)
 
-	thaw, output := freezeUntilTheClientReportsTheCut(t, server, listener)
+	// The cut's report is an event this test waits on, not its subject, so the wait is the
+	// package's give-up, listenerWait. How soon the client reports a cut is
+	// TestTheListenersNATSClientReportsASilentCutWithinSeconds's, which holds silentCutBound and
+	// runs serial for it: held to that bound here, a test slowed past it failed for the machine's
+	// load rather than for a rewatch.
+	thaw, output := freezeUntilTheClientReportsTheCut(t, server, listener, listenerWait)
 	thaw()
 
 	// Every cache is rewatched on the reconnect, and each replacement's warm-up line says so.

@@ -3515,6 +3515,14 @@ func TestOpeningTheRegistryLogsHowManyRoleClaimsItRestored(t *testing.T) {
 // the nil marker, and nats.go closes its updates (a closed connection, an ordered consumer it could
 // not recreate). Without, the scan delivers `after` entries and then nothing more, a stalled scan
 // only the scan's own idle bound ends.
+//
+// The `after` entries are read off the real watcher before Watch returns and wait on the handed
+// watcher's channel, and an ended watcher's channel is closed behind them before it is handed over,
+// so the scan finds them, and the end, the moment it starts: its idle bound then times only the
+// stall that follows them. Handed over as the real watcher delivered them, the entries raced that
+// bound, and a scan whose first entry, or whose close, came later than the bound on a loaded
+// machine ended as a stall after fewer entries instead. The read gives up after the ten seconds
+// waitClosed waits, with an error the scan returns.
 type earlyEndKV struct {
 	jetstream.KeyValue
 
@@ -3527,23 +3535,42 @@ func (k earlyEndKV) Watch(ctx context.Context, keys string, opts ...jetstream.Wa
 	if err != nil {
 		return nil, err
 	}
-	updates := make(chan jetstream.KeyValueEntry)
+	// drained reads what the real watcher still delivers until it closes, as a scan that ends
+	// has its watcher read: nats.go's delivery callback blocks holding the watcher's lock on a
+	// full buffer, so a watcher left unread would park its subscription's goroutine for good.
+	drained := func() {
+		for range watcher.Updates() {
+		}
+	}
+	updates := make(chan jetstream.KeyValueEntry, k.after)
+	given := time.After(10 * time.Second)
+	for range k.after {
+		select {
+		case entry, open := <-watcher.Updates():
+			if !open {
+				close(updates)
+				return &earlyEndWatcher{KeyWatcher: watcher, updates: updates}, nil
+			}
+			updates <- entry
+		case <-ctx.Done():
+			_ = watcher.Stop()
+			go drained()
+			return nil, ctx.Err()
+		case <-given:
+			_ = watcher.Stop()
+			go drained()
+			return nil, fmt.Errorf("the bucket's watch delivered %d of the %d entries the early end forwards within 10s", len(updates), k.after)
+		}
+	}
+	if k.ended {
+		_ = watcher.Stop()
+		drained()
+		close(updates)
+		return &earlyEndWatcher{KeyWatcher: watcher, updates: updates}, nil
+	}
 	go func() {
 		defer close(updates)
-		forwarded := 0
-		for entry := range watcher.Updates() {
-			if forwarded < k.after {
-				forwarded++
-				updates <- entry
-				continue
-			}
-			if k.ended {
-				_ = watcher.Stop()
-				for range watcher.Updates() {
-				}
-				return
-			}
-		}
+		drained()
 	}()
 	return &earlyEndWatcher{KeyWatcher: watcher, updates: updates}, nil
 }

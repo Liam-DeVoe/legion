@@ -133,14 +133,21 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
 // queued behind another writer's lock on the issue. The document service starts once that share
 // ends, so the settlement owed by the edit before the signal still runs and commits. Settlement waits
-// on the same lock: the edit's own timer starts one two seconds in, during the drain, and Shutdown
-// starts another. The lock is released once Shutdown's is queued behind it too, or two seconds after
-// the document service started, which is ample for it to read what is owed; a release before that
-// read could let the timer's settlement commit first.
+// on the same lock, so the lock is released once Shutdown's settlement is queued behind it too.
+//
+// The process settles a live change five minutes after it, a longer settle delay than its whole
+// shutdown budget, as TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit's does, so the
+// settlement owed at the signal is Shutdown's alone and the row waits on events only: the title
+// change queued, the document service started, and Shutdown's settlement queued behind the lock.
+// At the server's own two seconds, the edit's timer ran a settlement of its own that the steps from
+// the edit to the lock had to beat, and the release had to come within two seconds of the document
+// service starting, before that timer's settlement could commit what Shutdown had yet to read as
+// owed: a run slowed past either found nothing owed at the signal and failed as a shutdown that
+// settled nothing.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
-	process := startDispatchProcess(t, database.Pool.Config().ConnString())
+	process := startDispatchProcessWithSettleDelay(t, database.Pool.Config().ConnString(), 5*time.Minute)
 	process.waitHealthy(t)
 	key, artifactID := process.createIssue(t)
 	process.editOwingSettlement(t, database, artifactID)
@@ -150,10 +157,10 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		// Its answer is not this test's.
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
-	// The edit's settlement queues behind the same lock two seconds in, so a count of waiters
-	// could pass with the title change still on its way: watch the title change's own statement,
-	// the issue-row lock a PATCH takes first (api's lockIssueRows). It runs in the Dispatch
-	// process, so its backend is named by that statement rather than by a pool of its own.
+	// Watch the title change's own statement, the issue-row lock a PATCH takes first (api's
+	// lockIssueRows): a count of waiters would also count a settlement queued behind the same
+	// lock. It runs in the Dispatch process, so its backend is named by that statement rather than
+	// by a pool of its own.
 	if pid := storetest.WaitForStatementBehind(t, database, holder, renameLock, 10*time.Second); pid == 0 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
@@ -161,12 +168,16 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	t.Logf("the document service started with the request in flight %v after SIGTERM", time.Since(signalled))
-	waiting := storetest.WaitForLockWaiters(t, holder, 3, 2*time.Second)
+	// The title change, and Shutdown's settlement of the owed document behind it: nothing else
+	// settles the document while the test runs.
+	if waiting := storetest.WaitForLockWaiters(t, holder, 2, 10*time.Second); waiting < 2 {
+		t.Fatalf("%d waiting on the issue lock, want the title change and Shutdown's settlement:\n%s", waiting, process.Output.String())
+	}
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
 	process.WaitExit(t, "SIGTERM")
-	t.Logf("released the issue lock with %d waiting on it; exited %v after SIGTERM", waiting, time.Since(signalled))
+	t.Logf("exited %v after SIGTERM", time.Since(signalled))
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
