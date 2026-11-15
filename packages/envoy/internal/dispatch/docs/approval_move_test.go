@@ -105,7 +105,7 @@ func moveStoredApprovalAsk(t *testing.T, database *store.Store, artifactID strin
 	`, artifactID, number, markdown); err != nil {
 		t.Fatalf("write version %d: %v", number, err)
 	}
-	moved, err := MoveApprovalAsk(ctx, tx, events.NewBroker(), artifactID, model.Version{Number: number},
+	moved, err := MoveApprovalAsk(ctx, tx, events.NewBroker(), artifactID, model.Version{Number: number}, markdown,
 		model.Actor{Kind: "user", ID: "alice"}, "")
 	if err != nil {
 		t.Fatalf("move the request to version %d: %v", number, err)

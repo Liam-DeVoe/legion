@@ -245,21 +245,23 @@ func (s *Service) answerCarriedReview(ctx context.Context, tx pgx.Tx, artifactID
 	return s.carriedReview(ctx, tx, artifactID, number, rendered.markdown, blocks)
 }
 
-// restoresApprovedText reports whether markdown, the text a version of artifactID was just
-// written with, is byte for byte the stored text of version approved. Only a stored text of the
-// same size is read, so the write of any other text reads no document; octet_length reads a
-// stored text's size without decompressing it.
-func restoresApprovedText(ctx context.Context, tx pgx.Tx, artifactID string, approved int, markdown string) (bool, error) {
+// restoresApprovedText reports whether markdown, the text a new version of artifactID is written
+// with, is byte for byte the stored text of its version earlier: the version the document's newest
+// review approved (restoreApproval), or the version an open approval request names, the text the
+// person was asked about (MoveApprovalAsk). A version that stores no markdown, a file's, holds no
+// text and compares false. Only a stored text of the same size is read, so the write of any other
+// text reads no document; octet_length reads a stored text's size without decompressing it.
+func restoresApprovedText(ctx context.Context, tx pgx.Tx, artifactID string, earlier int, markdown string) (bool, error) {
 	var stored string
 	err := tx.QueryRow(ctx, `
 		select markdown from artifact_versions
 		where artifact_id = $1 and number = $2 and octet_length(markdown) = $3
-	`, artifactID, approved, len(markdown)).Scan(&stored)
+	`, artifactID, earlier, len(markdown)).Scan(&stored)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read approved document version %d: %w", approved, err)
+		return false, fmt.Errorf("read document version %d: %w", earlier, err)
 	}
 	return stored == markdown, nil
 }

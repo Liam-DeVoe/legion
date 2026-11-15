@@ -53,21 +53,20 @@ func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []s
 	return nil, fmt.Errorf("read open approval ask: %w", err)
 }
 
-// MoveApprovalAsk advances the open approval ask naming the document to a new settled version of
-// it; a request that names two documents moves whichever of them was written. mover is the actor
-// whose edit moved the request: the caller knows it even when the version credits more than one
-// author. The row and its thread stay open; requested_version records that the agent must hand it
-// back before a human sees it in Waiting on you again. Only the first move since the request was
-// opened or handed back wakes anyone, even when a thread reply already left it waiting on its
-// agent; a later one, while a document's requested_version is already below the version it named,
-// is quiet (model.AskEditEventPayload.Quiet, the rule RewriteApprovalAsk also applies). When the
-// document waits on the human (its requested_version is the version the request names) and the new
-// version stores byte for byte the text of that version (sameStoredText), its requested_version
-// moves with its version and the move is quiet: the text the person was asked about did not change,
-// so the request keeps its turn as if it had not moved and wakes nobody. The caller has written
-// the new version's row in tx before it calls this, as writeVersionTx and the upload route (api
-// storeArtifact) do.
-func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, mover model.Actor, serverURL string) ([]model.Event, error) {
+// MoveApprovalAsk advances the open approval ask naming the document to version, a new settled
+// version of it whose text is markdown; a request that names two documents moves whichever of
+// them was written. mover is the actor whose edit moved the request: the caller knows it even
+// when the version credits more than one author. The row and its thread stay open;
+// requested_version records that the agent must hand it back before a human sees it in Waiting on
+// you again. Only the first move since the request was opened or handed back wakes anyone, even
+// when a thread reply already left it waiting on its agent; a later one, while a document's
+// requested_version is already below the version it named, is quiet
+// (model.AskEditEventPayload.Quiet, the rule RewriteApprovalAsk also applies). When the document
+// waits on the human (its requested_version is the version the request names) and markdown is
+// byte for byte the stored text of that version (restoresApprovedText), its requested_version
+// moves with its version and the move is quiet: the text the person was asked about did not
+// change, so the request keeps its turn as if it had not moved and wakes nobody.
+func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, serverURL string) ([]model.Event, error) {
 	ask, err := OpenApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
 		return nil, err
@@ -85,7 +84,7 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 	}
 	keepsTurn := false
 	if moved.RequestedVersion == moved.Version {
-		if keepsTurn, err = sameStoredText(ctx, tx, artifactID, moved.Version, version.Number); err != nil {
+		if keepsTurn, err = restoresApprovedText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
 			return nil, err
 		}
 	}
@@ -104,28 +103,6 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 		return nil, err
 	}
 	return []model.Event{event}, nil
-}
-
-// sameStoredText reports whether versions named and written of artifactID store byte for byte
-// the same markdown, reading both rows in tx in one statement. A version that stores no markdown,
-// a file's, holds no text and compares false. octet_length reads a stored text's size without
-// decompressing it, so two texts of different sizes are compared without reading either, as
-// restoresApprovedText reads only a stored text of the size it compares.
-func sameStoredText(ctx context.Context, tx pgx.Tx, artifactID string, named, written int) (bool, error) {
-	var same bool
-	if err := tx.QueryRow(ctx, `
-		select exists (
-			select 1
-			from artifact_versions asked
-			join artifact_versions written on written.artifact_id = asked.artifact_id and written.number = $3
-			where asked.artifact_id = $1 and asked.number = $2
-				and octet_length(written.markdown) = octet_length(asked.markdown)
-				and written.markdown = asked.markdown
-		)
-	`, artifactID, named, written).Scan(&same); err != nil {
-		return false, fmt.Errorf("compare document versions %d and %d: %w", named, written, err)
-	}
-	return same, nil
 }
 
 // RewriteApprovalAsk rewords one open approval row to name documents with summary, indexes its
