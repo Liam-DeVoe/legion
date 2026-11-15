@@ -1603,6 +1603,10 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
 	built.DevSignIn = boot.DevSignIn
+	built.WritingRules = api.WritingRulesConfig{
+		Refusal: boot.Writing.WritingRulesRefusal,
+		Extra:   boot.Writing.WritingRulesExtra,
+	}
 	return built
 }
 

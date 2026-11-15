@@ -31,6 +31,9 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listProjectArtifacts: (client) => client.listProjectArtifacts("DSP"),
   listIssueArtifacts: (client) => client.listIssueArtifacts("DSP-1"),
   markdownRoundTrip: (client) => client.markdownRoundTrip("# Notes\n"),
+  writingRulesSettings: (client) => client.writingRulesSettings(),
+  writingRules: (client) =>
+    client.writingRules({ route: "POST /api/v1/issues/DSP-1/comments", body: { body: "Hi." } }),
   projectArtifact: (client) => client.projectArtifact("DSP", inline),
   getProjectArtifact: (client) => client.getProjectArtifact("DSP", "notes"),
   agentArtifact: (client) => client.agentArtifact("session-1", file),

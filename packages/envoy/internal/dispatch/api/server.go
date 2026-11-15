@@ -100,6 +100,11 @@ type Deps struct {
 	// writes (INFRA-3231, writing_check.go); nil is the check turned off. cmd/dispatch builds it
 	// on, with the bundle's structure rules and no detector, on every server.
 	WritingCheck *WritingCheck
+	// WritingRules is the refusal of the written rules as the deployment set it
+	// (writing_rules.go; cmd/dispatch: DISPATCH_WRITING_RULES_REFUSAL and
+	// DISPATCH_WRITING_RULES_EXTRA). Its zero value refuses nothing and shows no rule set beside
+	// the written rules.
+	WritingRules WritingRulesConfig
 	Envoy        *envoy.Client
 	Events       *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
@@ -215,6 +220,8 @@ type DepsInput struct {
 	Answerer Answerer
 	// WritingCheck is the writing check; nil turns it off. See Deps.WritingCheck.
 	WritingCheck *WritingCheck
+	// WritingRules is the refusal of the written rules; see Deps.WritingRules.
+	WritingRules WritingRulesConfig
 	Events       *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
@@ -323,6 +330,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
 		WritingCheck:           input.WritingCheck,
+		WritingRules:           input.WritingRules,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,

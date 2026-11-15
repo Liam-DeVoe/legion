@@ -20,7 +20,7 @@ import { defined } from "./dispatch-commands/context";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
-import { DispatchWriteLandedError } from "./dispatch-http";
+import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -42,6 +42,7 @@ import {
 } from "./session-settings";
 import { ToolInputError } from "./tool-input-errors";
 import { createEnvoyClient, EnvoyApiError } from "./transport";
+import { personTypedCall, writingRulesRefusal } from "./writing-rules";
 
 export interface DispatchCliIo {
   /** Where the text the model reads goes: results, refusals and notices alike. */
@@ -206,6 +207,10 @@ export async function runDispatchCli(
   for (const [name, value] of Object.entries(rawEnv)) {
     if (value !== undefined && value !== "") env[name] = value;
   }
+  // Whether a person typed this call's line (Decision 26 of INFRA-3231), read once, here: such a
+  // call is never refused to show the written rules. INFRA-3231's task t08 extends
+  // personTypedCall and hands this value to the Dispatch client.
+  const personTyped = personTypedCall(env);
   // A refusal before the call reaches Dispatch goes to the session's ledger too, whenever this
   // call knows its session, so a reader of the ledger (pi-envoy's run-end check, the
   // skill-scenario rig) sees a call whose output a pipe, `$(…)` or another program swallowed.
@@ -340,6 +345,56 @@ export async function runDispatchCli(
   }
   const config: ActiveDispatchConfig = resolution;
 
+  // The written rules (writing-rules.ts): an agent session's first write of an ask, an issue, a
+  // comment or a message, and its first such write after each compaction, is refused once, to
+  // show the rules for the person who reads it. The call runs first with its writes held, which
+  // sends nothing and gives the route and the body of its write; its pictures are left out, so
+  // that write is the call's own and no picture upload. It asks Dispatch, so it comes after
+  // AskGate's block, which refuses before any request, and before AskGate's warn-mode ledger
+  // line, so a refused call records no unreviewed write. It answers the exit code of a refusal,
+  // or undefined when the call goes on.
+  let rulesChecked = false;
+  const writingRulesExit = async (): Promise<number | undefined> => {
+    rulesChecked = true;
+    if (personTyped) return undefined;
+    let refusal: string | undefined;
+    try {
+      const { images: _pictures, ...withoutPictures } = parsed.args;
+      refusal = await writingRulesRefusal({
+        tool: parsed.tool,
+        dir,
+        client: new DispatchClient(config.url, config.credential, io.fetchImpl ?? fetch),
+        passesCheck: async () =>
+          (
+            await checkDispatchCall({
+              tool: parsed.tool,
+              args: parsed.args,
+              cwd: io.cwd,
+              env,
+              serverUrls: dispatchServerUrls(config),
+            })
+          ).problems.length === 0,
+        heldRun: () =>
+          executeDispatchTool({
+            tool: parsed.tool,
+            args: withoutPictures,
+            cwd: io.cwd,
+            host,
+            sessionId,
+            sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
+            config,
+            env,
+            ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
+            holdWrites: true,
+          }),
+        now: Date.now(),
+      });
+    } catch (error) {
+      return refuse(`dispatch: ${messageFor(error)}`, USAGE, parsed.tool);
+    }
+    return refusal === undefined ? undefined : refuse(refusal, REFUSED, parsed.tool);
+  };
+
   // AskGate: a session a live Oh My Pi process records with its gate bound (its AskGate record in
   // this directory) posts a gated write only with one marker the gate minted for this exact argv,
   // whatever ran the CLI. A session no live process records needs none.
@@ -405,6 +460,8 @@ export async function runDispatchCli(
             { mode: "block", why: spent.why, asksCarried }
           );
         }
+        const rulesExit = await writingRulesExit();
+        if (rulesExit !== undefined) return rulesExit;
         if (!spent.ok) {
           // The ledger line that tells pi-envoy this write went out unreviewed is written before
           // the write is sent, on its own: a ledger that cannot take it stops the write here, so
@@ -436,6 +493,10 @@ export async function runDispatchCli(
         { mode: "block", why: messageFor(error) }
       );
     }
+  }
+  if (!rulesChecked) {
+    const rulesExit = await writingRulesExit();
+    if (rulesExit !== undefined) return rulesExit;
   }
 
   // A result names an owner the session is not subscribed to, or the line that subscribes it,

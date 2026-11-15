@@ -353,7 +353,8 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 // routeBody is the largest body a route reads and the 413 it answers one past that with: an
 // upload's file and a megabyte of fields (uploadArtifactFor) for an upload route, a handoff
 // write's own limit (handoffRequestLimit) for that one, the markdown round trip's
-// (markdownRoundTripLimit) for that one, and a JSON body (decodeJSON) for every other. The
+// (markdownRoundTripLimit) for that one, the writing rules' (writingRulesLimit) for that one,
+// and a JSON body (decodeJSON) for every other. The
 // limit is the most the keyed layer spools before its handler runs - a body past it is
 // refused by the route's handler whatever its key, so it runs unkeyed rather than spooled - and
 // the most an early answer discards before it is written (drainBeforeAnswer). One answer serves
@@ -366,6 +367,8 @@ func routeBody(method, pattern string) (limit int64, tooLarge *apiError) {
 		return handoffRequestLimit, errHandoffTooLarge
 	case route == markdownRoundTripRoute:
 		return markdownRoundTripLimit, errMarkdownRoundTripTooLarge
+	case route == writingRulesRoute:
+		return writingRulesLimit, errWritingRulesTooLarge
 	default:
 		return maxJSONRequestBytes, errJSONTooLarge
 	}

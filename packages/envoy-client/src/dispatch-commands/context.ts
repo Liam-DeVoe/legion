@@ -63,6 +63,9 @@ export interface ExecuteDispatchToolInput {
   readonly fetchImpl?: typeof fetch;
   /** How each write asks Dispatch again under its key (`DISPATCH_WRITE_RETRY` unless set). */
   readonly writeRetry?: DispatchWriteRetry;
+  /** Send no write: the client throws `DispatchWriteHeld` at the call's first write, which the
+   *  dispatch CLI reads the write's route and body from (`writing-rules.ts`). */
+  readonly holdWrites?: boolean;
   readonly exec?: ExecFn;
   /** The topics the session's Envoy subscriptions hold, or null when they cannot be read (Envoy
    *  off, or no answer from its listener); called only by a write that would name its owner as
@@ -314,6 +317,13 @@ export function sessionContext(
     linkBase: input.config.publicUrl ?? configUrl,
     hostSession: input.sessionId?.trim(),
     newClient: () =>
-      new DispatchClient(configUrl, credential, fetchImpl, input.signal, input.writeRetry),
+      new DispatchClient(
+        configUrl,
+        credential,
+        fetchImpl,
+        input.signal,
+        input.writeRetry,
+        defined("holdWrites", input.holdWrites)
+      ),
   };
 }

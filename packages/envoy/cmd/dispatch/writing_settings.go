@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
 
@@ -57,8 +58,9 @@ var (
 	// defaultReviewerRules those it names unset.
 	reviewerRuleSets     = []string{"noslop", "phrases", "reader_words", "ask_parts", "structure", "detector"}
 	defaultReviewerRules = []string{"noslop", "phrases", "reader_words", "ask_parts"}
-	// writingRulesExtraSets are the rule sets DISPATCH_WRITING_RULES_EXTRA may name.
-	writingRulesExtraSets = []string{"reader_words", "ask_parts"}
+	// writingRulesExtraSets are the rule sets DISPATCH_WRITING_RULES_EXTRA may name, the ones the
+	// server's writing rules show (api.WritingRulesConfig).
+	writingRulesExtraSets = []string{api.WritingRulesReaderWords, api.WritingRulesAskParts}
 )
 
 const (

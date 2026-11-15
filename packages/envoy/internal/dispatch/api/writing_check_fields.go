@@ -50,6 +50,8 @@ var (
 	markHandoff    = proseMark{why: "a handoff body is one JSON object a daemon reads, never shown as Markdown"}
 	markAttributes = proseMark{why: "a typed block's attributes: ids, states and values the block schema names"}
 	markRawPayload = proseMark{why: "a value the server reads as a number, an id, a time or null"}
+	markPending    = proseMark{why: "a write the caller has not sent, which the server reads to find its reader and stores nothing of"}
+	markNotAKind   = proseMark{why: "a priority's text, which is not a kind of text the reviewer reads (INFRA-3231 R5: asks, issues, comments, messages, documents and decision blocks)"}
 )
 
 // rawAs is the mark of a json.RawMessage member that holds an object of type T, whose own members
@@ -80,13 +82,20 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 		"title": markProse, "spec": markProse, "components": rawAs[issueComponentsInput](),
 		"project": markIdentifier, "parent": markIdentifier, "blocked_by": markIdentifier,
 		"external": markIdentifier, "labels": markName, "priority": markRawPayload,
-		"assignee": markPerson, "repo": markConfig,
+		"assignee": markPerson, "repo": markConfig, "advances": markIdentifier,
 	},
 	reflect.TypeFor[updateIssueInput](): {
 		"title": markProse, "components": rawAs[issueComponentsInput](),
 		"status": markEnum, "labels": markName, "labels_add": markName, "priority": markRawPayload,
 		"route": markPerson, "assignee": markPerson, "parent": markIdentifier,
-		"blocked_by": markIdentifier, "repo": markConfig,
+		"blocked_by": markIdentifier, "repo": markConfig, "advances": markIdentifier,
+	},
+	// Priorities.
+	reflect.TypeFor[createPriorityInput](): {
+		"title": markNotAKind, "description": markNotAKind, "id": markIdentifier, "owner": markPerson,
+	},
+	reflect.TypeFor[patchPriorityInput](): {
+		"title": markNotAKind, "description": markNotAKind, "owner": markPerson,
 	},
 	reflect.TypeFor[issueComponentsInput]():  {"reason": markProse, "mode": markEnum, "ids": markIdentifier},
 	reflect.TypeFor[rankInput]():             {"before": markIdentifier, "after": markIdentifier},
@@ -205,6 +214,7 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 	reflect.TypeFor[updateAgentTokenScopesInput]():     {"scopes": markEnum},
 	reflect.TypeFor[credentialDecisionInput]():         {"code": markSecret},
 	reflect.TypeFor[wire.MachineLookupRequest]():       {"code": markSecret},
+	reflect.TypeFor[writingRulesInput]():               {"route": markConfig, "body": markPending},
 
 	// Test hooks.
 	reflect.TypeFor[holdPersistenceInput](): {"duration": markTime},

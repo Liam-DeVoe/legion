@@ -139,6 +139,9 @@ type testServerOptions struct {
 	// writingCheckOff runs the server with the writing check turned off, for a test about the
 	// server with the check off.
 	writingCheckOff bool
+	// writingRules is the refusal of the written rules as the deployment set it (Deps.WritingRules);
+	// zero is the refusal off with no rule set beside the written rules.
+	writingRules WritingRulesConfig
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
@@ -274,6 +277,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
 		WritingCheck:           writingCheck,
+		WritingRules:           options.writingRules,
 		BuildCommit:            options.buildCommit,
 	})
 	if err != nil {

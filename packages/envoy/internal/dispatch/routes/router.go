@@ -127,7 +127,10 @@ type AppContextOptions struct {
 	Answerer api.Answerer
 	// WritingCheck is the writing check every prose write runs; nil turns it off. cmd/dispatch
 	// builds it on, in main. See api.Deps.WritingCheck.
-	WritingCheck  *api.WritingCheck
+	WritingCheck *api.WritingCheck
+	// WritingRules is the refusal of the written rules (cmd/dispatch:
+	// DISPATCH_WRITING_RULES_REFUSAL, DISPATCH_WRITING_RULES_EXTRA). See api.Deps.WritingRules.
+	WritingRules  api.WritingRulesConfig
 	Events        *events.Broker
 	App           *auth.AppConfig
 	GitHubAPIBase string
@@ -210,6 +213,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
 		WritingCheck:           opts.WritingCheck,
+		WritingRules:           opts.WritingRules,
 		Events:                 opts.Events,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,

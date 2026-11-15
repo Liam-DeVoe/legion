@@ -194,6 +194,12 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"description": "refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): " +
 			"an artifact is made the issue's spec at issue creation and never by an upload",
 	}},
+	// postWritingRules (writing_rules.go) reads the JSON of a write the caller has not sent, the
+	// request of whichever route its route field names, so no one Go type names it.
+	{reflect.TypeOf(writingRulesInput{}), "body"}: rawField{Fragment: map[string]any{
+		"type": "object", "additionalProperties": map[string]any{},
+		"description": "the JSON body of the write that route takes, as the write would send it",
+	}},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.

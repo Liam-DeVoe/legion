@@ -11329,6 +11329,45 @@
         "x-write-scope": "deployment"
       }
     },
+    "/api/v1/settings/writing-rules": {
+      "get": {
+        "description": "The refusal of the written rules as this deployment set it (DISPATCH_WRITING_RULES_REFUSAL, DISPATCH_WRITING_RULES_EXTRA): {refusal, extra}. refusal is \"on\" when the dispatch command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction, to show the written rules (POST /api/v1/writing-rules); it is \"off\" when the command refuses no write. extra is the rule sets the refusal shows after the written rules, reader_words and ask_parts, [] for none.",
+        "operationId": "getApiV1SettingsWritingRules",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingRulesSettings"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/signins": {
       "get": {
         "description": "List the caller's own sign-ins on their machines (`agent-secrets login`), one per box key they have not revoked, each naming the machine's account, the key's thumbprint, when the person signed in there and when that machine last used it. Nobody lists another person's: Dispatch names the person from its own session.",
@@ -11645,6 +11684,56 @@
           }
         },
         "x-auth": "any"
+      }
+    },
+    "/api/v1/writing-rules": {
+      "post": {
+        "description": "The written rules for one write that the caller did not send yet {route, body}: route is \"\u003cmethod\u003e \u003cpath\u003e\" of a route whose text a person may read, and body is the JSON that the write would send. Answers {reader, text}. reader is the login of the person who reads the write, as the writing check decides it, and \"\" for none. text is skills/plain-words (ce-noslop's tests, its pattern catalog and its terminology, and the six phrases the owner asked to stop), then each rule set of DISPATCH_WRITING_RULES_EXTRA that applies: the words that the reader asked about before (reader_words), and the parts of an ask for the write of an ask (ask_parts). The route writes nothing. A route that is no such write is 400 INVALID_BODY, and a body that is not the JSON of a write to that route is 400 INVALID_BODY.",
+        "operationId": "postApiV1WritingRules",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WritingRulesInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingRulesResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "no-write"
       }
     }
   },
@@ -26248,6 +26337,59 @@
           "model",
           "reader_calls",
           "bundle_model_id"
+        ],
+        "type": "object"
+      },
+      "WritingRulesInput": {
+        "properties": {
+          "body": {
+            "additionalProperties": {},
+            "description": "the JSON body of the write that route takes, as the write would send it",
+            "type": "object"
+          },
+          "route": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "route",
+          "body"
+        ],
+        "type": "object"
+      },
+      "WritingRulesResponse": {
+        "properties": {
+          "reader": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reader",
+          "text"
+        ],
+        "type": "object"
+      },
+      "WritingRulesSettings": {
+        "properties": {
+          "extra": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "refusal": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "refusal",
+          "extra"
         ],
         "type": "object"
       }

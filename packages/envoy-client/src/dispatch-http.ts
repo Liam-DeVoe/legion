@@ -72,6 +72,9 @@ import type {
   UpdateIssueInput,
   Version,
   WhoamiResponse,
+  WritingRulesInput,
+  WritingRulesResponse,
+  WritingRulesSettings,
 } from "@legion/contracts";
 import {
   answerNotKept,
@@ -238,6 +241,32 @@ export class DispatchWriteLandedError extends Error {
         "made: read it back with `dispatch read`, or with the matching list for something it created."
     );
   }
+}
+
+/**
+ * A write a client made with `holdWrites` did not send: the request it would have sent, `body` the
+ * JSON text of the request's body (null for a body that is not text). The dispatch CLI runs a
+ * command with such a client to learn the route and the body of the command's write before it
+ * shows the writing rules for that write's reader (`writing-rules.ts`). Nothing was sent, so this
+ * is no refusal of Dispatch's.
+ */
+export class DispatchWriteHeld extends Error {
+  override readonly name = "DispatchWriteHeld";
+
+  constructor(
+    readonly method: string,
+    readonly url: string,
+    readonly body: string | null
+  ) {
+    super(`${method} ${url} was held and not sent`);
+  }
+}
+
+/** What a `DispatchClient` does besides its requests. */
+export interface DispatchClientOptions {
+  /** Send no write: every request but a GET or a HEAD throws `DispatchWriteHeld` and sends
+   *  nothing, before it presents the credential. */
+  readonly holdWrites?: boolean;
 }
 
 function asErrorShape(value: unknown): DispatchServiceErrorShape {
@@ -793,18 +822,22 @@ export class DispatchClient {
    * client's life the write began.
    */
   readonly #madeAt: number;
+  /** `DispatchClientOptions.holdWrites`. */
+  readonly #holdWrites: boolean;
 
   constructor(
     baseUrl: string,
     credential: RequestCredential,
     readonly fetchImpl: typeof fetch = fetch,
     signal?: AbortSignal,
-    readonly writeRetry: DispatchWriteRetry = DISPATCH_WRITE_RETRY
+    readonly writeRetry: DispatchWriteRetry = DISPATCH_WRITE_RETRY,
+    options: DispatchClientOptions = {}
   ) {
     this.#credential = credential;
     this.#baseUrl = withoutTrailingSlashes(baseUrl);
     this.#signal = requestSignal(signal);
     this.#madeAt = this.#now();
+    this.#holdWrites = options.holdWrites === true;
   }
 
   /** The secret this client presents, which an excerpt of someone else's answer redacts; "" while
@@ -885,6 +918,24 @@ export class DispatchClient {
       { markdown }
     );
     return answer.markdown;
+  }
+
+  /** `GET /api/v1/settings/writing-rules`: whether the dispatch command refuses an agent's first
+   *  write to show the written rules, and the rule sets it shows beside them; null from a server
+   *  older than the route, which has no refusal (`isNoRoute`). */
+  async writingRulesSettings(): Promise<WritingRulesSettings | null> {
+    try {
+      return await this.#json("GET", ["api", "v1", "settings", "writing-rules"]);
+    } catch (error) {
+      if (isNoRoute(error)) return null;
+      throw error;
+    }
+  }
+
+  /** `POST /api/v1/writing-rules`: the written rules for the reader of a write not sent yet, its
+   *  `route` ("<method> <path>") and the JSON `body` it would send. The route writes nothing. */
+  async writingRules(input: WritingRulesInput): Promise<WritingRulesResponse> {
+    return this.#json("POST", ["api", "v1", "writing-rules"], input);
   }
 
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {
@@ -1810,7 +1861,8 @@ export class DispatchClient {
    * remembers; a transport failure, a silence cut and an answer something in Dispatch's place wrote
    * say nothing, so they rely on what an answer or `/healthz` showed within
    * `KEYED_LAYER_MEMORY_MS`, and ask `/healthz` when nothing did (`#runsKeyedLayer`).
-   * `extraHeaders` go on every attempt beside the client's own.
+   * `extraHeaders` go on every attempt beside the client's own. A client made with `holdWrites`
+   * sends no request but a GET or a HEAD: any other throws `DispatchWriteHeld` here.
    */
   async #send(
     method: string,
@@ -1821,6 +1873,13 @@ export class DispatchClient {
     callerKey?: string,
     extraHeaders: Readonly<Record<string, string>> = {}
   ): Promise<Response> {
+    if (this.#holdWrites && method !== "GET" && method !== "HEAD") {
+      throw new DispatchWriteHeld(
+        method,
+        url,
+        typeof body?.content === "string" ? body.content : null
+      );
+    }
     // The credential is presented once here, and again for each attempt the write loop makes
     // below: a key-bound scheme signs one proof per request, so one presentation is one proof
     // sent, never a second minted and discarded. It is asked before the loop so a credential

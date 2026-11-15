@@ -2805,6 +2805,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/settings/writing-rules": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The refusal of the written rules as this deployment set it (DISPATCH_WRITING_RULES_REFUSAL, DISPATCH_WRITING_RULES_EXTRA): {refusal, extra}. refusal is "on" when the dispatch command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction, to show the written rules (POST /api/v1/writing-rules); it is "off" when the command refuses no write. extra is the rule sets the refusal shows after the written rules, reader_words and ask_parts, [] for none. */
+    get: operations["getApiV1SettingsWritingRules"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/signins": {
     parameters: {
       query?: never;
@@ -2918,6 +2935,23 @@ export interface paths {
     get: operations["getApiV1WritingCheckCounts"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/writing-rules": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description The written rules for one write that the caller did not send yet {route, body}: route is "<method> <path>" of a route whose text a person may read, and body is the JSON that the write would send. Answers {reader, text}. reader is the login of the person who reads the write, as the writing check decides it, and "" for none. text is skills/plain-words (ce-noslop's tests, its pattern catalog and its terminology, and the six phrases the owner asked to stop), then each rule set of DISPATCH_WRITING_RULES_EXTRA that applies: the words that the reader asked about before (reader_words), and the parts of an ask for the write of an ask (ask_parts). The route writes nothing. A route that is no such write is 400 INVALID_BODY, and a body that is not the JSON of a write to that route is 400 INVALID_BODY. */
+    post: operations["postApiV1WritingRules"];
     delete?: never;
     options?: never;
     head?: never;
@@ -6219,6 +6253,21 @@ export interface components {
       reader_calls: number;
       rules: string[] | null;
       rules_left_out: components["schemas"]["WritingCheckRuleLeftOut"][] | null;
+    };
+    WritingRulesInput: {
+      /** @description the JSON body of the write that route takes, as the write would send it */
+      body: {
+        [key: string]: unknown;
+      };
+      route: string;
+    };
+    WritingRulesResponse: {
+      reader: string;
+      text: string;
+    };
+    WritingRulesSettings: {
+      extra: string[] | null;
+      refusal: string;
     };
   };
   responses: never;
@@ -13406,6 +13455,38 @@ export interface operations {
       };
     };
   };
+  getApiV1SettingsWritingRules: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingRulesSettings"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Signins: {
     parameters: {
       query?: {
@@ -13626,6 +13707,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["WritingCheckCounts"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1WritingRules: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["WritingRulesInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingRulesResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14004,6 +14121,9 @@ export type WritingCheckDetector = components["schemas"]["WritingCheckDetector"]
 export type WritingCheckModel = components["schemas"]["WritingCheckModel"];
 export type WritingCheckRuleLeftOut = components["schemas"]["WritingCheckRuleLeftOut"];
 export type WritingCheckState = components["schemas"]["WritingCheckState"];
+export type WritingRulesInput = components["schemas"]["WritingRulesInput"];
+export type WritingRulesResponse = components["schemas"]["WritingRulesResponse"];
+export type WritingRulesSettings = components["schemas"]["WritingRulesSettings"];
 
 /** Every schema name whose exported type the hand-written split owns, which
  * `dispatch-api-owned.ts` holds to the shape this module declares for it. */

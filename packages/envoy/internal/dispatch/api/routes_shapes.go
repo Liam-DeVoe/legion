@@ -570,6 +570,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/settings/new-issue/_test": {
 		Status: http.StatusOK, Response: newIssueSettings{}, Request: newIssueSettingsInput{},
 	},
+	"GET /api/v1/settings/writing-rules": {Status: http.StatusOK, Response: writingRulesSettings{}},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},
 	},
@@ -738,6 +739,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/writing-check":    {Status: http.StatusOK, Response: writingCheckState{}},
 	"GET /api/v1/writing-check/counts": {
 		Status: http.StatusOK, Response: store.WritingCheckCounts{}, Params: writingCheckCountsQuery{},
+	},
+	"POST /api/v1/writing-rules": {
+		Status: http.StatusOK, Response: writingRulesResponse{}, Request: writingRulesInput{},
 	},
 	"GET /api/v1/agents": {Status: http.StatusOK, Response: []agentResponse{}},
 	"GET /api/v1/agents/{session_id}/answers": {

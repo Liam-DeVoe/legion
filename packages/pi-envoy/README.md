@@ -195,8 +195,9 @@ The tarball is self-contained: it ships `dist/envoy.js` — bundling every depen
 host packages (`@legion/pi-shared`, `@legion/contracts` and `@legion/envoy-client` are inlined) —
 `dist/THIRD_PARTY_NOTICES`, and the eleven skills it ships: the eight every session with Dispatch
 reads, `agent-secrets`, `asd-ste100`, `dispatch`, `dispatch-first`, `dispatch-writing-specs`,
-`envoy`, `outside-message` and `plain-words`; `approval-review`, which only a session judging an
-approval request reads; and the reviewer's pair, `thermonuclear-code-quality` and
+`envoy`, `outside-message` and `plain-words` (the rules agents write by: ce-noslop's tests, pattern
+catalog and terminology, and the six phrases the owner asked to stop); `approval-review`, which only
+a session judging an approval request reads; and the reviewer's pair, `thermonuclear-code-quality` and
 `thermonuclear-deep-review`, which ships here so one copy of each rubric reaches both harnesses.
 All eleven are staged from the repository's `skills/` at `dist/skills`. The manifest declares
 `omp.skills: ["dist/skills"]` alongside `omp.extensions`:

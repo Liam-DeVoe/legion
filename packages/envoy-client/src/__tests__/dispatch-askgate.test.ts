@@ -37,6 +37,14 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const { pathname } = new URL(request.url);
+    // A Dispatch older than the written rules' routes, which therefore refuses no write to show
+    // them (writing-rules.ts): AskGate's behaviour is this file's subject, and the read is not.
+    if (pathname === "/api/v1/settings/writing-rules") {
+      return Response.json(
+        { code: "NOT_FOUND", error: `no route for ${request.method} ${pathname}` },
+        { status: 404 }
+      );
+    }
     const ledgerFile = join(stateDir, "sessions", "ses-1", "results.jsonl");
     const ledgerText = existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf-8") : "";
     const record = (sent?: unknown) =>

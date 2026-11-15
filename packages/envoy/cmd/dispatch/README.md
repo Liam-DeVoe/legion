@@ -2670,6 +2670,18 @@ Every default keeps each change to a text off.
 
 - `DISPATCH_WRITING_RULES_REFUSAL`: `on` or `off` (default `off`); and `DISPATCH_WRITING_RULES_EXTRA`, a comma list of `reader_words` and `ask_parts` the refusal shows beside the written rules (default none).
 
+### The written rules' refusal
+
+With `DISPATCH_WRITING_RULES_REFUSAL=on`, the `dispatch` command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction of the session's context, and prints the written rules for the person who reads that write (`skills/plain-words`: ce-noslop's tests, its pattern catalog and its terminology, and the six phrases the owner asked to stop).
+The agent checks its text against them and runs the command again; that call sends the write.
+A command a person typed (`DISPATCH_PERSON_TYPED=1`) is never refused.
+The setting is read on the server, so one change applies to every session:
+
+- `GET /api/v1/settings/writing-rules` answers `{refusal, extra}`, the refusal `on` or `off` and the rule sets of `DISPATCH_WRITING_RULES_EXTRA`. The command keeps the answer in the session's state file for 10 minutes, and a server without the route refuses nothing.
+- `POST /api/v1/writing-rules` takes `{route, body}` of a write the command has not sent, `route` being `"<method> <path>"`, and answers `{reader, text}`: the person who reads that write, decided as the writing check decides it (`writing_check_reader.go`), and the rules text. `reader_words` adds the words that person asked about before (R8's records; none until they exist), and `ask_parts` adds the five parts of an ask to an ask's rules.
+
+The server embeds the skill from `internal/dispatch/writingcheck/plainwords/skill/`, a copy that `go generate ./internal/dispatch/writingcheck/plainwords` makes; `TestTheCopyIsTheSkill` fails while the copy and `skills/plain-words` differ.
+
 ### Model groups
 
 Three groups, one each for the reviewer (`DISPATCH_REVIEWER_MODEL_*`), Rewrite and Define (`DISPATCH_REWRITE_DEFINE_MODEL_*`) and the records job (`DISPATCH_WORD_RECORDS_MODEL_*`), take the same seven settings after their prefix:
@@ -3324,6 +3336,18 @@ Each item below names a path with its method and identity, then its purpose.
   `{label, session}`, the label that new issue carries and the session it is routed to and its first message goes to, as `DISPATCH_NEW_ISSUE_LABEL` and `DISPATCH_NEW_ISSUE_SESSION` set them.
   Each is `""` where the deployment set none: the issue then carries no label, and the bar makes it and starts no conversation on it.
   The bar writes the issue itself, through `POST /api/v1/issues` and the issue's own artifact, patch and message routes, so this read is all the configuration adds to the API.
+
+- `/api/v1/settings/writing-rules` (GET; cookie, trusted header, or bearer)
+
+  The refusal of the written rules as `DISPATCH_WRITING_RULES_REFUSAL` and `DISPATCH_WRITING_RULES_EXTRA` set it: `{refusal, extra}`, `refusal` being `"on"` or `"off"` and `extra` the rule sets the refusal shows after the written rules (`reader_words`, `ask_parts`), `[]` for none.
+  The `dispatch` command reads it before an agent's write of an ask, an issue, a comment or a message (The written rules' refusal, above).
+
+- `/api/v1/writing-rules` (POST; cookie, trusted header, or bearer)
+
+  The written rules for a write the caller has not sent, `{route, body}`: `route` is `"<method> <path>"` of a route whose text a person may read, and `body` the JSON that write would send.
+  Answers `{reader, text}`: `reader` the login of the person who reads the write, as the writing check decides it, `""` for none, and `text` the rules (The written rules' refusal, above).
+  It writes nothing. A route that is no such write, a missing body, or a body that is not the JSON of a write to that route is `400 INVALID_BODY`.
+  Its body may hold 1 KiB more than a JSON route's 1 MiB, so every write it can name fits inside it; past that it is `413 REQUEST_TOO_LARGE`.
 
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 

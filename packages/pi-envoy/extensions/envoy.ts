@@ -81,6 +81,7 @@ import {
   sessionStateRoot,
 } from "@legion/envoy-client/dispatch-session-directory";
 import {
+  noteCompaction,
   readResultsSince,
   resultsEnd,
   writeSessionTitle,
@@ -2881,9 +2882,24 @@ export default function envoyExtension(pi: PiApi): void {
   // The host asks whether any extension handles `session_before_compact`, which turns its
   // background compaction off, but never these two: handling them changes nothing it does. A
   // compaction is the one moment the figures fall rather than climb, so both refresh the ring.
+  // A compaction of the main agent's context is also counted in the `dispatch` command's state
+  // file, so the command shows the written rules again before the session's next write
+  // (`noteCompaction`); a subagent's own compaction leaves the session's context as it was. A
+  // count that cannot be written costs that one showing and nothing else.
   pi.on("session_compact", async (_event, context) => {
     cardWake.noteIfIdle(context);
     refreshAgentStreamContext(sessionID);
+    const id = process.env.DISPATCH_SESSION_ID;
+    if (id !== undefined && id !== "" && context.agent?.kind !== "sub") {
+      try {
+        noteCompaction(dispatchSessionDirectory(process.env, id));
+      } catch (error) {
+        logger.warn("envoy: the compaction was not counted for the written rules", {
+          sessionID: id,
+          error: messageFor(error),
+        });
+      }
+    }
   });
   pi.on("auto_compaction_end", async (event) => {
     cardWake.autoCompactionEnd(event);
