@@ -300,6 +300,83 @@ func TestTheChangeSetNamesAReorderBesideAnAddedSection(t *testing.T) {
 	}, []servedBlockRef{})
 }
 
+// appendixRun is a top-level `#` heading with its text. What it opens is text outside every `##`
+// section, one run of it, standing wherever the heading stands among the sections.
+const appendixRun = "# Appendix\n\nBackground.\n"
+
+// A section's place is among every top-level unit of the document: the `##` sections and each run
+// of text outside every section, which a `#` heading opens. So a `# Appendix` run lifted above a
+// section names the text outside every section moved, its joined text being the same, and
+// changed once its words changed too; lifted to the top, where it joins the title's run, it is a
+// run neither version held before and names that text moved too. A section moved across the
+// heading swaps places with the run, and of the two the one the later version holds second is
+// named: the run when Scope moves above the heading, Scope when it moves below. A swap or a lift
+// of `##` sections beside such a run names the section it names without one. Each case is one
+// pair of consecutive versions of one document, compared on its own.
+func TestATopLevelHeadingLiftedAboveASectionNamesTheTextOutsideEverySectionMoved(t *testing.T) {
+	outsideMoved := []servedSection{{Heading: "", Occurrence: 0, Change: "moved"}}
+	cases := []struct {
+		name          string
+		before, after string
+		want          []servedSection
+	}{
+		{
+			name:   "two sections swapped beside a `#` heading",
+			before: sectionedPlan(goalSection, scopeSection, appendixRun, risksSection),
+			after:  sectionedPlan(scopeSection, goalSection, appendixRun, risksSection),
+			want:   []servedSection{{Heading: "Goal", Occurrence: 0, Change: "moved"}},
+		},
+		{
+			name:   "a section moved below a `#` heading",
+			before: sectionedPlan(goalSection, scopeSection, appendixRun, risksSection),
+			after:  sectionedPlan(goalSection, appendixRun, scopeSection, risksSection),
+			want:   []servedSection{{Heading: "Scope", Occurrence: 0, Change: "moved"}},
+		},
+		{
+			name:   "a `#` heading lifted above two sections",
+			before: sectionedPlan(goalSection, scopeSection, risksSection, appendixRun),
+			after:  sectionedPlan(goalSection, appendixRun, scopeSection, risksSection),
+			want:   outsideMoved,
+		},
+		{
+			name:   "a `#` heading lifted to the top, joining the title's run",
+			before: sectionedPlan(goalSection, scopeSection, risksSection, appendixRun),
+			after:  sectionedPlan(appendixRun, goalSection, scopeSection, risksSection),
+			want:   outsideMoved,
+		},
+		{
+			name:   "a `#` heading lifted with its words changed",
+			before: sectionedPlan(goalSection, scopeSection, risksSection, appendixRun),
+			after:  sectionedPlan(goalSection, "# Appendix\n\nMore background.\n", scopeSection, risksSection),
+			want:   []servedSection{{Heading: "", Occurrence: 0, Change: "changed"}},
+		},
+		{
+			name:   "a section moved above a `#` heading",
+			before: sectionedPlan(goalSection, appendixRun, scopeSection, risksSection),
+			after:  sectionedPlan(goalSection, scopeSection, appendixRun, risksSection),
+			want:   outsideMoved,
+		},
+		{
+			name:   "a section lifted from last to first beside a `#` heading",
+			before: sectionedPlan(goalSection, scopeSection, risksSection, rolloutSection, appendixRun),
+			after:  sectionedPlan(rolloutSection, goalSection, scopeSection, risksSection, appendixRun),
+			want:   []servedSection{{Heading: "Rollout", Occurrence: 0, Change: "moved"}},
+		},
+	}
+	texts := make([]string, 0, 2*len(cases))
+	for _, tc := range cases {
+		texts = append(texts, tc.before, tc.after)
+	}
+	handler := newTestHandler(t)
+	artifactID := uploadVersions(t, handler, "plan.md", texts...)
+
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requireChanges(t, readChanges(t, handler, artifactID, 2*index+1, 2*index+2), tc.want, []servedBlockRef{})
+		})
+	}
+}
+
 // Every block the change set names carries an id its own stored version names. The parse gives a
 // block that repeats an earlier block's id a fresh id of its own, and a typed block that shares its
 // id with an ask before it is one such block, so a version that holds either is read with ids in

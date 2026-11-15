@@ -124,6 +124,10 @@ type acceptedDelivery struct {
 // The event's owners are locked before the message and attempt rows, the order
 // settleDeliveryAttempt takes them in.
 //
+// The attempt in the path is a positive number that fits message_deliveries.attempt, an integer
+// column (fitsIntegerColumn): any other is an attempt no message has, so it is the 404
+// MESSAGE_NOT_FOUND a missing attempt is, answered before any query is made with it.
+//
 // The actor is a bearer's own claim of its session, as on every session write, so a bearer
 // naming another session can spend that session's one acceptance of a fresh attempt: the real
 // session is then refused and shows a card, and nothing is injected.
@@ -142,7 +146,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	number, err := strconv.Atoi(r.PathValue("attempt"))
-	if err != nil || number < 1 {
+	if err != nil || number < 1 || !fitsIntegerColumn(number) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}

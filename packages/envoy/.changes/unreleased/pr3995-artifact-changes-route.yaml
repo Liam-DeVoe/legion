@@ -7,8 +7,11 @@ body: |-
   blocks; `sections`, each `##` section whose text differs or that moved, by heading and
   occurrence; and `blocks`, each typed block other than an ask block that differs, by its `#id`
   and type. Each section and block is marked `changed`, `added` or `removed`. A section that keeps
-  its text and changes its place among the sections both versions hold is marked `moved`, so a
-  version that only reorders sections names them. The route reads both versions from their
-  stored markdown, so it does not wait for the block index. It answers `400 INVALID_VERSION` when
-  `from` is not below `to` or a number is not a positive version number of at most 2147483647,
-  and `404 NOT_FOUND` for a version the document does not have.
+  its text and changes its place among the document's top-level units, the `##` sections and each
+  run of text outside every section, is marked `moved`, so a version that only reorders sections
+  names them. The text outside every `##` section is the section with the heading "", and it is
+  marked `moved` when a run of it, such as one a `#` heading opens, moved, so a version that moves
+  a section across a `#` heading names it too. The route reads both versions from their stored
+  markdown, so it does not wait for the block index. It answers `400 INVALID_VERSION` when `from`
+  is not below `to` or a number is not a positive version number of at most 2147483647, and
+  `404 NOT_FOUND` for a version the document does not have.
