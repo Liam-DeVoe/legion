@@ -143,6 +143,14 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 // the claim's role while the claim serves none — its task not yet taken, or a testing turn still
 // running behind a merged close — is not owed yet: a report sent from that turn is refused as no
 // report on production (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
+//
+// Neither the claim's prompts nor the daemon's own delivery of a relaunch's record change that
+// reading. A prompt of the task Oh My Pi acknowledged and has not answered (supervise's
+// Machine.outstanding) makes a late turn the task's, so the confirmation it gives is what
+// ServingCheck, and the completion route with it, read here. The relaunch's delivery
+// (supervise.HoldsTask) carries no run, no entry and no look, only the sentence of what the last
+// let-go ended, so a claim holding it, confirmed or not, is answered as one holding nothing is:
+// by the record, and by what it was left serving.
 func owedBy(c supervise.Claim, position completionPosition, roleFor func(phase.Phase) claim.Role) OwedResponse {
 	issue := position.issue
 	if issue == nil {

@@ -1366,8 +1366,10 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 // queued: the delivery's one read of the tree composes it again (readNoticeTree,
 // workflow.TreeCatchUp), and its record half (record.CatchUpTree) is replaced whole with what that
 // read states, as the notice's Reason is, so a gate registered or an issue added while the row
-// waited reaches the architect with the catch-up (dispatch://INFRA-2819). Decided is written again
-// in that read from the decisions the row claimed, each asked of the gates as they stand then
+// waited reaches the architect with the catch-up (dispatch://INFRA-2819). The Reason keeps in
+// front of it the sentence of what the architect's last process ended that the row was queued
+// with (record.CatchUp.Relaunch), which stays the row's. Decided is written again in that read
+// from the decisions the row claimed, each asked of the gates as they stand then
 // (workflow.DecisionStands), so a decision the person's approval followed while the row waited is
 // not named. The order is the fence's: whether a newer catch-up supersedes this one
 // (catchUpSuperseded) is read on the payload as the row holds it, before anything is replaced,

@@ -361,11 +361,15 @@ type Notice struct {
 	// (workflow.BackgroundStalledWorker, SilentIssue.BackgroundSince), as admission derives the
 	// list (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
 	// does: the tick is the turn that posts the day's report, and a tick with nothing silent
-	// carries none. The issue's architect was told each of these by a `worker-silent` or
-	// `worker-background-stalled` notice of its own, judged by the same rules, though a handler
-	// also refuses a fact of another generation of the issue, which the tick never reads; the
-	// controller is the second reader, because that architect may be failed or gone, so its
-	// notice reaches nobody, and the controller holds `fresh_session` and reads the whole project.
+	// carries none. The issue's architect is told of each of these by a `worker-silent` or
+	// `worker-background-stalled` notice of its own, judged by the same rules, with the two
+	// differences admit.Admission.silentWorkers sets out: a handler also refuses a fact whose run
+	// is not the issue's current generation, a term the tick does not weigh, since it reads the
+	// worker's claim by its token alone and that claim carries no serving run; and the sweep that
+	// writes those notices runs once a minute, so a tick can name a worker up to a minute before
+	// its architect is told. The controller is the second reader, because that architect may be
+	// failed or gone, so its notice reaches nobody, and the controller holds `fresh_session` and
+	// reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
@@ -547,9 +551,18 @@ type SilentIssue struct {
 // again. Decided is written again at the delivery from Kept, each decision asked again of the
 // gates as the delivery reads them (workflow.DecisionStands), so it names no decision the person's
 // approval followed while the row waited.
+//
+// Relaunch is the sentence of what the last let-go of the architect's process ended, which the
+// ready that queued the row carried (intake.ClaimReady.Relaunch), and empty for every other
+// catch-up. It stays the row's, as Generation and Launch do: the delivery composes the notice's
+// reason again from the tree it reads and puts this sentence in front of it unchanged
+// (workflow.CatchUpReason), since what ended before the launch is no part of the tree a later
+// read restates. It goes out with the publish, so a re-held copy, which carries only what the
+// publish carried (Published), keeps it for its own delivery.
 type CatchUp struct {
 	Generation uint64 `json:"generation"`
 	Launch     uint64 `json:"launch"`
+	Relaunch   string `json:"relaunch,omitempty"`
 	CatchUpTree
 	Decided string         `json:"decided,omitempty"`
 	Kept    *KeptDecisions `json:"kept,omitempty"`

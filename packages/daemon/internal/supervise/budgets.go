@@ -127,10 +127,15 @@ var FailureCauses = []FailureCause{
 // under too (launchNow, Claim.PendingCause). The retry of a relaunch the lifecycle check refused
 // carries the same outcome, which is why it is handed over in a closure rather than as the method
 // value.
-func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome) error {
+//
+// ending is why the process the claim still records is let go, in the daemon's words, which the
+// launch records with what that process ended (launch, letGo); noEnd where the caller let it go
+// already (registrationDeadline). It is the record's words and no outcome: what the policy reads
+// is o alone.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, ending string) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, o)
+			return m.relaunchAfterFailure(ctx, o, ending)
 		}, err)
 	}
 	cause := failureCause(o)
@@ -138,7 +143,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome) e
 	if m.chargeLaunch(o) {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false)
+	return m.launchAfter(ctx, true, false, ending)
 }
 
 // chargeLaunch counts one launch failure where the policy charges o (Charges), and reports whether
@@ -164,6 +169,11 @@ func (m *Machine) chargeLaunch(o runtime.Outcome) bool {
 // because each death found nothing pending. A death with no turn open and nothing pending is a
 // parked agent the environment killed, which is not counted however often it happens.
 //
+// The daemon's own delivery of a relaunch's record is no task (HoldsTask): it is the sentence of
+// what the last let-go ended, which a parked agent is given at every ready that finds it holding
+// nothing, so a parked agent killed again before it read it holds that and nothing else, and its
+// death is not counted either.
+//
 // The death ends the turn it interrupted (Claim.LastTurnEnd), which no other path does: a turn
 // records its end only when the agent ends it, so a turn whose agent died would otherwise stay
 // open for ever and every later death of the relaunched agent — idle, with nothing pending —
@@ -174,7 +184,8 @@ func (m *Machine) chargeDeath(o runtime.Outcome) bool {
 		return false
 	}
 	open := m.turnOpen()
-	if m.claim.Pending == nil && !open {
+	task := HoldsTask(m.claim.Pending)
+	if !task && !open {
 		return false
 	}
 	// Every caller today passes an outcome the policy charges, but this is the death budget's only
@@ -212,6 +223,10 @@ func (m *Machine) turnOpen() bool {
 // operator decided what becomes of the process. And the last retirement fails the claim (fail)
 // rather than relaunching it, which is the budget running out, not an event's charge. A suspension
 // that fails charges nothing: the next failure reaches the limit again and retries the retirement.
+//
+// The retirement's stop is where the process is let go, so that is where what it ended is
+// recorded, under the retirement's own cause (endRetired, letGo): the last retirement as well,
+// whose failure then finds no process left to record. The launch that follows lets nothing go.
 func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome) error {
 	if !Charges(o) {
 		m.log.Info("supervise: the prompt's outcome charges nothing", "outcome", string(o))
@@ -235,7 +250,7 @@ func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome) error {
 	} else if err := m.checkLaunch(ctx); err != nil {
 		return fmt.Errorf("retire %s after %d prompt failures: %w", m.claim.Token, failures, err)
 	}
-	if err := retirement(ctx); err != nil {
+	if err := retirement(ctx, endRetired); err != nil {
 		return fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
 	}
 	m.claim.Budgets.PromptRetires = retires
@@ -246,5 +261,5 @@ func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome) error {
 		return m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")
 	}
 	m.claim.Budgets.PromptFailures = 0
-	return m.launch(ctx)
+	return m.launch(ctx, noEnd)
 }

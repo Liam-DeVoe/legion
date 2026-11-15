@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -243,6 +244,33 @@ func TestClaimOwedIsNoLookItsTesterHasNotTaken(t *testing.T) {
 
 	tester.worksLook(t, 1, recordedCheck(t, h, "LEGION-209").OpenedAt)
 	tester.owes(t, "the production check of LEGION-209")
+}
+
+// The daemon's own delivery of a relaunch's record is no work of the claim's (supervise.HoldsTask,
+// dispatch://INFRA-3276): it carries the sentence of what the last let-go ended and no run, no
+// entry and no look, so a claim holding it is answered by the record and by what it was left
+// serving, as a claim holding nothing is, whether or not a turn has confirmed that delivery. A
+// tester left serving a look of a done issue's open check owes that look, and a tester in its
+// own open phase owes the phase.
+func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
+	opened := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	for _, confirmed := range []time.Time{{}, opened.Add(time.Hour)} {
+		relaunch := &supervise.Delivery{ID: "relaunch:owed", Task: "Your previous process ended because the process died.", ConfirmedAt: confirmed}
+		if !relaunch.Relaunch() || supervise.HoldsTask(relaunch) {
+			t.Fatalf("%s reads as a task of the claim's, want the daemon's own delivery of a relaunch's record", relaunch.ID)
+		}
+		serving := supervise.Claim{Role: claim.RoleTester, Pending: relaunch, ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: opened}}
+		done := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Done},
+			check: &record.ProductionCheck{Issue: "LEGION-208", OpenedAt: opened, Role: claim.RoleTester, Looks: 2, LookOpen: true}}
+		if got, want := owedBy(serving, done, workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
+			t.Errorf("a tester serving a look and holding %s (confirmed %v) owes %+v, want %+v", relaunch.ID, !confirmed.IsZero(), got, want)
+		}
+		working := supervise.Claim{Role: claim.RoleTester, Pending: relaunch}
+		inPhase := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 1}}
+		if got, want := owedBy(working, inPhase, workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
+			t.Errorf("a tester in its open phase holding %s (confirmed %v) owes %+v, want %+v", relaunch.ID, !confirmed.IsZero(), got, want)
+		}
+	}
 }
 
 // The route never answers another claim's work, and it refuses exactly as claims/activity does:

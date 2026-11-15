@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // catchUpDelivery is a root architect's catch-up between its queueing and its delivery: the
@@ -139,6 +140,44 @@ func TestACatchUpListsAnIssueItsTreeGainedBeforeItsDelivery(t *testing.T) {
 	}
 	if !strings.Contains(delivered.Reason, "waiting for your acceptance, which no worker gives: LEGION-4") {
 		t.Fatalf("the delivered catch-up's reason is %q, want it to name LEGION-4 waiting for the architect's acceptance", delivered.Reason)
+	}
+}
+
+// The sentence of what the architect's last process ended, which the ready of a relaunch carried
+// into its catch-up (workflow.QueueCatchUp's relaunch, dispatch://INFRA-3276 R3), stays in front
+// of the reason the delivery composes again from the tree, unchanged: it says what ended before
+// the launch, which no later read of the record restates, while the tree after it is the record
+// at the delivery (dispatch://INFRA-2819). The row keeps the sentence for that (record.CatchUp's
+// Relaunch), and the publish carries it, so a re-held copy, which carries only what the publish
+// carried, keeps it for its own delivery.
+func TestACatchUpKeepsTheRelaunchSentenceItWasQueuedWithWhenItIsDelivered(t *testing.T) {
+	const sentence = "Your previous process ended because the process died: gone. The subagent that you started stopped with that process."
+	d := newCatchUpDelivery(t)
+	d.write(t, "queue the relaunched architect's catch-up", func(ctx context.Context, tx pgx.Tx) error {
+		root, err := d.records.Issue(ctx, tx, "LEGION-1")
+		if err != nil || root == nil {
+			return fmt.Errorf("read LEGION-1: %w", err)
+		}
+		return workflow.QueueCatchUp(ctx, tx, d.records, config.DesignGateRootIssues.Steps(), *root, 1, sentence, d.now, time.Time{})
+	})
+	root := "LEGION-1"
+	putOutboxIssue(t, d.pool, d.records, record.Issue{Key: "LEGION-4", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: root, Parent: &root, Title: "Joined", Phase: phase.Accepting, Generation: 1, Status: "in_progress"})
+
+	queued, published := d.deliver(t)
+	if queued.CatchUp.Relaunch != sentence || !strings.HasPrefix(queued.Reason, sentence+"\n\n") {
+		t.Fatalf("the queued catch-up holds the sentence %q and reasons %q, want it to keep %q and open with it", queued.CatchUp.Relaunch, queued.Reason, sentence)
+	}
+	if len(published) != 1 {
+		t.Fatalf("the delivery published %d notices, want the one catch-up", len(published))
+	}
+	delivered := published[0]
+	tree, ok := strings.CutPrefix(delivered.Reason, sentence+"\n\n")
+	if !ok || !strings.HasPrefix(tree, "the tree of LEGION-1") || !strings.Contains(tree, "waiting for your acceptance, which no worker gives: LEGION-4") {
+		t.Fatalf("the delivered catch-up reasons %q, want the relaunch's sentence as queued and then the tree as the delivery reads it, naming LEGION-4", delivered.Reason)
+	}
+	if delivered.CatchUp.Relaunch != sentence {
+		t.Fatalf("the delivered catch-up carries the sentence %q, want %q for a re-held copy to keep", delivered.CatchUp.Relaunch, sentence)
 	}
 }
 
