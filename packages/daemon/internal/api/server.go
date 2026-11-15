@@ -930,8 +930,9 @@ var stateNarrowings = []stateNarrowing{
 	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry"},
 	{heldContract, carriesHeld, withoutHeld, "admission.held"},
 	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours"},
-	{gateBasisContract, carriesGateBasis, withoutGateBasis, "the issues' treeRuns, and the gatedSteps " +
-		"of every issue with a step open or pending on an ancestor's basis"},
+	{gateBasisContract, carriesGateBasis, withoutGateBasis, "the issues' treeRuns, the gatedSteps " +
+		"of every issue with a step open or pending on an ancestor's basis, and the awaiting_children " +
+		"phase and held word read as admitted and children_first"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1352,12 +1353,19 @@ func withoutQuietTime(state State) State {
 }
 
 // carriesGateBasis is whether any issue of state carries `treeRuns` or a gated step on an
-// ancestor's basis (issueStandsOnBasis), the two things gateBasisContract added. The projection
-// writes `treeRuns` on every root it records, so this is all but always true; it is asked
-// rather than answered true so that a state with no root is served as it is.
+// ancestor's basis (issueStandsOnBasis), the two things gateBasisContract added, or a value this
+// contract's value pass narrows for an older caller: an issue in phase awaiting_children, or a
+// held entry whose reason is awaiting_children (withoutGateBasis rewrites both). The projection
+// writes `treeRuns` on every root it records, so this is all but always true; it is asked rather
+// than answered true so that a state with no root is served as it is.
 func carriesGateBasis(state State) bool {
 	for _, issue := range state.Issues {
-		if issue.TreeRuns != nil || issueStandsOnBasis(issue) {
+		if issue.TreeRuns != nil || issueStandsOnBasis(issue) || issue.Phase == phase.AwaitingChildren {
+			return true
+		}
+	}
+	for _, held := range state.Admission.Held {
+		if held.Reason == record.HeldAwaitingChildren {
 			return true
 		}
 	}
@@ -1376,8 +1384,18 @@ func issueStandsOnBasis(issue Issue) bool {
 // withoutGateBasis is state with no issue carrying `treeRuns`, and no issue carrying
 // `gatedSteps` whose steps stand on an ancestor's basis (issueStandsOnBasis), which is everything
 // gateBasisContract added to the route: a step's `basis` rides only on a step of those two words.
-// Every other issue keeps its gated steps whole. The issue map is copied, so the state the source
-// answered is left as it was.
+// Every other issue keeps its gated steps whole.
+//
+// This contract's value pass rides on the same row, since both strip for the same caller: an issue
+// in phase awaiting_children reads `admitted` and a held entry whose reason is awaiting_children
+// reads `children_first` (dispatch://INFRA-3320 R13). A caller below this contract knows neither
+// word — its phase enum and its held words are the ones before this change — so it is served the
+// value the wait replaced: `admitted` names no worker's phase, which is what R13 gives such a
+// caller, and `children_first` is the held word a started parent's wait took over. No other
+// strictly read value can carry the phase: `heldFrom` is null in awaiting_children (the shape
+// check) and a hold never comes from it, and no task is queued for a phase no role works, so
+// `pendingTask.phase` cannot name it either. The issue map and the held list are copied, so the
+// state the source answered is left as it was.
 func withoutGateBasis(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
@@ -1385,9 +1403,22 @@ func withoutGateBasis(state State) State {
 		if issueStandsOnBasis(issue) {
 			issue.GatedSteps = nil
 		}
+		if issue.Phase == phase.AwaitingChildren {
+			issue.Phase = phase.Admitted
+		}
 		issues[key] = issue
 	}
 	state.Issues = issues
+	if slices.ContainsFunc(state.Admission.Held, func(h HeldIssue) bool { return h.Reason == record.HeldAwaitingChildren }) {
+		held := make([]HeldIssue, len(state.Admission.Held))
+		for i, h := range state.Admission.Held {
+			if h.Reason == record.HeldAwaitingChildren {
+				h.Reason = record.HeldChildrenFirst
+			}
+			held[i] = h
+		}
+		state.Admission.Held = held
+	}
 	return state
 }
 

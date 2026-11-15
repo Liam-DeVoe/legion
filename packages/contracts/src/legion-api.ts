@@ -45,13 +45,17 @@ export const LegionInstant = timestamp.regex(
 /** `api.Phase` — the state an admitted issue sits in, in the transition table's own order. Not
  * the role working it: `workers` is keyed by role (`LEGION_ROLES`). `awaiting_person` is a root
  * that keeps its admission slot while its architect waits on a person's answer (`waitingOn` on
- * the issue record). `accepting` is the architect's acceptance between the reviewer's approval and
+ * the issue record). `awaiting_children` is a parent that held a phase start because a Dispatch
+ * child of it is still open: it keeps no slot, shows `in_progress`, and comes back to the start it
+ * held when no open child is left. `accepting` is the architect's acceptance between the reviewer's
+ * approval and
  * retro: no worker runs it. The merger merges in `merging`, and the daemon closes the issue when
  * it reads that merge (`done`); the production check after the close is no phase (`check` on the
  * issue record). */
 export const LEGION_WORKFLOW_PHASES = [
   "admitted",
   "awaiting_person",
+  "awaiting_children",
   "planning",
   "implementing",
   "testing",
@@ -792,7 +796,7 @@ const legionBlockedIssue = z.object({
 });
 
 /**
- * `record.HeldReason` — the eleven words of `admission.held`, in `record.HeldReasons`' order.
+ * `record.HeldReason` — the twelve words of `admission.held`, in `record.HeldReasons`' order.
  * `at_work` names an issue past its review, which keeps no admission slot; `record.HeldAtWork`
  * says which issues read it.
  */
@@ -802,6 +806,7 @@ export const LEGION_HELD_REASONS = [
   "label_off",
   "ancestry",
   "root_awaiting_person",
+  "awaiting_children",
   "design_gate",
   "dispatch_blocker",
   "children_first",

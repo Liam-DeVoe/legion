@@ -5,6 +5,7 @@ import { z } from "zod";
 import * as legionApi from "./legion-api";
 import {
   LEGION_FAILURE_CAUSES,
+  LEGION_HELD_REASONS,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
@@ -519,6 +520,7 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
   expect(LEGION_WORKFLOW_PHASES).toEqual([
     "admitted",
     "awaiting_person",
+    "awaiting_children",
     "planning",
     "implementing",
     "testing",
@@ -550,6 +552,26 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
       reason: "retro reopened the review",
     }).success
   ).toBeTrue();
+});
+
+// The held words are the daemon's `record.HeldReasons`, in its order: dispatch://INFRA-3320 added
+// `awaiting_children`, a parent waiting on its open children, between `root_awaiting_person` and
+// `design_gate`.
+test("the held words are the daemon's, with awaiting_children before design_gate", () => {
+  expect(LEGION_HELD_REASONS).toEqual([
+    "tree_closed",
+    "tree_parked",
+    "label_off",
+    "ancestry",
+    "root_awaiting_person",
+    "awaiting_children",
+    "design_gate",
+    "dispatch_blocker",
+    "children_first",
+    "accepted_ancestor",
+    "at_work",
+    "unclassified",
+  ]);
 });
 
 // Contract 40: the state golden carries LEGION-212, a root waiting on a person whose question the

@@ -65,7 +65,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written, and a NULL view_of as "", an issue that is a view on no ancestor.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), memory_group, memory_draw_mode, memory_drawn_at, moved_at, tree_stalled_told_at, coalesce(view_of, '')`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), memory_group, memory_draw_mode, memory_drawn_at, moved_at, tree_stalled_told_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, forward_merge_owed, children_waited_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -237,6 +237,24 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		answeredBy, answeredDetail = issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail
 		sinceSeq, since = markValues(issue.Awaiting.Since)
 	}
+	var childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, childrenWaitedAt any
+	if issue.ChildrenWait != nil {
+		if issue.ChildrenWait.Start != "" {
+			childrenWaitStart = string(issue.ChildrenWait.Start)
+		}
+		if issue.ChildrenWait.Task != "" {
+			childrenWaitTask = issue.ChildrenWait.Task
+		}
+		if issue.ChildrenWait.Reason != "" {
+			childrenWaitReason = issue.ChildrenWait.Reason
+		}
+		if !issue.ChildrenWait.Since.IsZero() {
+			childrenWaitSince = issue.ChildrenWait.Since
+		}
+	}
+	if issue.ChildrenWaitedAt != nil {
+		childrenWaitedAt = *issue.ChildrenWaitedAt
+	}
 	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
@@ -261,9 +279,11 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// finds no ancestor to be a view on writes the view away.
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
-		ancestry, handed_over_from, told_parent, view_of)
+		ancestry, handed_over_from, told_parent, view_of,
+		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, forward_merge_owed, children_waited_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
-		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::text, ''))
+		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::text, ''),
+		$32, $33, $34, $35, $36, $37)
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -276,12 +296,16 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		awaiting_answered_detail = excluded.awaiting_answered_detail,
 		awaiting_since_seq = excluded.awaiting_since_seq, awaiting_since = excluded.awaiting_since,
 		ancestry = excluded.ancestry, handed_over_from = excluded.handed_over_from, told_parent = excluded.told_parent,
-		view_of = excluded.view_of
+		view_of = excluded.view_of,
+		children_wait_start = excluded.children_wait_start, children_wait_task = excluded.children_wait_task,
+		children_wait_reason = excluded.children_wait_reason, children_wait_since = excluded.children_wait_since,
+		forward_merge_owed = excluded.forward_merge_owed, children_waited_at = excluded.children_waited_at
 		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
 		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, issue.ViewOf,
+		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, issue.ForwardMergeOwed, childrenWaitedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -489,12 +513,14 @@ func scanIssue(row scanner) (*Issue, error) {
 	var answeredAt *time.Time
 	var answeredBy, answeredDetail string
 	var sinceSeq *int64
-	var since, declaredAt, memoryDrawnAt, treeStalledToldAt *time.Time
+	var since, declaredAt, memoryDrawnAt, treeStalledToldAt, childrenWaitSince, childrenWaitedAt *time.Time
+	var childrenWaitStart, childrenWaitTask, childrenWaitReason *string
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.ToldParent, &issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt, &treeStalledToldAt, &issue.ViewOf); err != nil {
+		&issue.ToldParent, &issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt, &treeStalledToldAt, &issue.ViewOf,
+		&childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &issue.ForwardMergeOwed, &childrenWaitedAt); err != nil {
 		return nil, err
 	}
 	if declaredAt != nil {
@@ -531,6 +557,23 @@ func scanIssue(row scanner) (*Issue, error) {
 		if awaitingGate != nil {
 			issue.Awaiting.GateVersion = *awaitingGate
 		}
+	}
+	if childrenWaitStart != nil {
+		wait := ChildrenWait{Start: phase.Phase(*childrenWaitStart)}
+		if childrenWaitTask != nil {
+			wait.Task = *childrenWaitTask
+		}
+		if childrenWaitReason != nil {
+			wait.Reason = *childrenWaitReason
+		}
+		if childrenWaitSince != nil {
+			wait.Since = childrenWaitSince.UTC()
+		}
+		issue.ChildrenWait = &wait
+	}
+	if childrenWaitedAt != nil {
+		utc := childrenWaitedAt.UTC()
+		issue.ChildrenWaitedAt = &utc
 	}
 	issue.Generation = uint64(generation)
 	return &issue, nil

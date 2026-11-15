@@ -219,6 +219,19 @@ type Issue struct {
 	// belongs to the issue whose documents were read, so a step a hand-over carries to a child
 	// carries none.
 	ViewOf string
+	// ChildrenWait is the phase start a parent held when it entered awaiting_children, nil in every
+	// other phase: the two change together, as Awaiting and awaiting_person do.
+	ChildrenWait *ChildrenWait
+	// ForwardMergeOwed is whether the parent still owes a forward merge of its children's work. It
+	// is set when a parent enters awaiting_children from a phase that writes a change, stays set
+	// after the return until an implementing round carries the merge request, and a merged pull
+	// request clears it too (dispatch://INFRA-3320 R12, k13). It outlives the phase, so PutIssue
+	// carries it on every write.
+	ForwardMergeOwed bool
+	// ChildrenWaitedAt is when the parent last moved into awaiting_children, nil for a parent that
+	// never did. It outlives the phase, which the late-completion guard needs: it refuses a
+	// completion of a phase whose entry was raised before this moment (item 48, leftItsPhase).
+	ChildrenWaitedAt *time.Time
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -312,6 +325,21 @@ const (
 	// person's own note, kept on the ask's mirror row (RootAsk.Decline).
 	AnsweredByDecline Answer = "declined"
 )
+
+// ChildrenWait is the phase start a parent held when it entered awaiting_children because a
+// Dispatch child of it was still open (Issue.ChildrenWait), nil in every other phase: the two
+// change together, as Hold and held do. Start is the phase whose start was held — planning,
+// implementing, testing, reviewing or accepting; Task the task its transition wrote and Reason
+// that transition's reason, which the return names (dispatch://INFRA-3320 R12); and Since when
+// the wait on the children began. The daemon resumes the parent from this when no open child is
+// left: a held planning or implementing starts that phase, and a held testing, reviewing or
+// accepting starts implementing in its place.
+type ChildrenWait struct {
+	Start  phase.Phase
+	Task   string
+	Reason string
+	Since  time.Time
+}
 
 // ParkedDecision is a person's decision on a tree nobody in it could hear, which the daemon
 // relayed to the controller (a parked-decision notice) or kept for a root that waits for its slot

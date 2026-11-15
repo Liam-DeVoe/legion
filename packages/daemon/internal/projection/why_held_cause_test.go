@@ -120,6 +120,19 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
 		gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
 	}
+	// A sub-parent that held a phase start because a child of it is still open, in a running tree
+	// under an open gate. It stands in awaiting_children, so it holds no slot and reads held; its
+	// held-by is its open children, which the admission pass names once it reads them for it, so
+	// in this half it stands with no issue beside it. It can reach the unlisted arm here; the
+	// blocked arm needs the admission pass to place a started parent in admission.blocked, which is
+	// why the walk below excepts awaiting_children under blocked.
+	awaitingChildren := projectionStore{
+		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
+			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "in_progress", phase.AwaitingChildren)},
+		slots:      []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
+		lifecycles: []string{"LEGION-100"},
+		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+	}
 
 	byRoot := []string{"LEGION-100"}
 	fixtures := map[heldEntry]heldFixture{
@@ -162,6 +175,9 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
 			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
 			"The daemon has accepted the reviewed head of LEGION-101, which stands above it, and nothing of its own work starts before that issue closes."},
+		{record.HeldAwaitingChildren, api.WhyUnlisted}: {awaitingChildren,
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAwaitingChildren},
+			"It waits on its open children: the daemon runs no phase of its own work, and holds the start it had, while a child of it is open."},
 		{record.HeldUnclassified, api.WhyUnlisted}: {unclassified,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldUnclassified},
 			"The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."},
@@ -169,7 +185,12 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 
 	for word, entry := range heldSentences {
 		for _, state := range entry.states {
-			if _, walked := fixtures[heldEntry{word, state}]; !walked && word != record.HeldAtWork {
+			// awaiting_children is served under blocked too, but a started parent reaches
+			// admission.blocked only once the admission pass places it there, so until then
+			// the word cannot reach the blocked arm and no fixture here walks it, as at_work's own
+			// fixture cannot be built.
+			if _, walked := fixtures[heldEntry{word, state}]; !walked && word != record.HeldAtWork &&
+				!(word == record.HeldAwaitingChildren && state == api.WhyBlocked) {
 				t.Errorf("heldSentences serves %s under %s, and no fixture here walks that entry", word, state)
 			}
 		}

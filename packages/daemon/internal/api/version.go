@@ -1641,6 +1641,19 @@ package api
 // admit the two outbox kinds that read it; they move the daemon's own record and are no part of
 // this number. Nor are the new notice kinds `basis-ended`, `basis-changes-requested` and
 // `resting-root`, which reach an architect's session as text, as every notice kind does.
+// The same contract carries a parent's wait on its open children, a new phase value
+// `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
+// it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
+// `admission.held` entry for such a parent with `reason: awaiting_children`, which
+// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 126 knows
+// neither word — its phase enum and its held words are the ones before this change — so the daemon
+// serves it that issue's `phase` as `admitted`, the status that names no worker's phase, and that
+// held entry's `reason` as `children_first`, the word a started parent's wait took over (api's
+// stateFor, withoutGateBasis, which carries this value pass on gateBasisContract's row). No other
+// strictly read list carries the value: `heldFrom` is null in the phase and a hold never comes
+// from it, and `pendingTask.phase` names no phase no role works. The change ships store migration
+// `20261114232555_awaiting_children`, which adds the phase value and the parent's held start to the
+// issues table; it moves the daemon's own record and is no part of this number.
 // (This change took 126 against the base 50bfbb0dec73, which carried 111, when the open pull
 // requests held 112 to 125 as read on 2026-11-14: 126 was the lowest number above the base's
 // that none of them declared. It keeps 126 at the forward merge of 2026-11-14 that brought main

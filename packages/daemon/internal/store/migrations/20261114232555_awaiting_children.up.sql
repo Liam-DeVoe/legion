@@ -1,0 +1,54 @@
+-- 20261114232555_awaiting_children.up.sql -- a parent that holds a phase start because a Dispatch
+-- child of it is still open waits in a phase of its own, awaiting_children (dispatch://INFRA-3320
+-- R11 to R13).
+--
+-- The phase check gains awaiting_children beside the values 20261029120700_merging_closes_the_issue
+-- last wrote, so a write that moves an issue into the phase is accepted.
+--
+-- The held start, all null in every phase but awaiting_children: children_wait_start is the phase
+-- the parent held when it entered the wait (planning, implementing, testing, reviewing or
+-- accepting), children_wait_task the task its transition wrote, children_wait_reason that
+-- transition's reason, and children_wait_since when the wait on its children began. The daemon
+-- resumes the parent with these when no open child is left (record.ChildrenWait, R12). The shape
+-- check ties the four to the phase, as 0057_awaiting_person ties the awaiting_* columns: in the
+-- phase all four are set and held_from is null, and in every other phase all four are null.
+--
+-- Two columns outlive the phase. forward_merge_owed is whether the parent still owes a forward
+-- merge of its children's work: it is set when the parent enters the wait from a phase that writes
+-- a change, stays set after the return until an implementing round carries the merge request, and
+-- a merged pull request clears it too (R12, k13). children_waited_at is when the parent last moved
+-- into awaiting_children, which the engine's late-completion guard compares a phase entry against
+-- after the return (leftItsPhase), so it must survive the start the wait held being consumed. Both
+-- are read and written outside the shape check, since they are facts about the parent's run and not
+-- about the phase it stands in now.
+--
+-- A daemon of an earlier release cannot run on this schema while a parent is in awaiting_children:
+-- it does not know the phase, and a write of such a row that leaves the phase without clearing the
+-- held-start columns fails the shape check below. It names forward_merge_owed and children_waited_at
+-- in no statement: its reads leave them out, its inserts take forward_merge_owed's default (false)
+-- and leave children_waited_at null, and its upserts leave both as they are. So a parent this
+-- release moved out of the wait before the rollback carries neither a forward merge it owes nor the
+-- moment it last waited, which is what docs/kubernetes.md's rollback section for this release
+-- says an operator clears before the rollback.
+--
+-- There is no down file: migrations here are forward-only.
+alter table issues drop constraint issues_phase_check;
+alter table issues add constraint issues_phase_check check (phase in (
+  'admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing',
+  'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
+
+alter table issues add column children_wait_start text check (children_wait_start <> '');
+alter table issues add column children_wait_task text check (children_wait_task <> '');
+alter table issues add column children_wait_reason text check (children_wait_reason <> '');
+alter table issues add column children_wait_since timestamptz;
+alter table issues add constraint issues_children_wait_shape check (
+  case when phase = 'awaiting_children'
+    then children_wait_start is not null and children_wait_task is not null
+      and children_wait_reason is not null and children_wait_since is not null
+      and held_from is null
+    else children_wait_start is null and children_wait_task is null
+      and children_wait_reason is null and children_wait_since is null
+  end);
+
+alter table issues add column forward_merge_owed boolean not null default false;
+alter table issues add column children_waited_at timestamptz;

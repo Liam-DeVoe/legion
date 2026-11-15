@@ -210,4 +210,10 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
 	{Field: "ViewOf", Column: ColumnWithheld,
 		Reason: "the ancestor whose requirements the issue's spec is a view on, which reaches the issue's roles as a sentence of each phase task naming that ancestor (workflow's continueLine and checkTask) rather than as a key of the state"},
+	{Field: "ChildrenWait", Column: ColumnWithheld,
+		Reason: "the phase start a parent held when a child of it was open, which the daemon resumes it with when no open child is left: its own record of what to do at the return, which no surface carries"},
+	{Field: "ForwardMergeOwed", Column: ColumnWithheld,
+		Reason: "whether the parent still owes a forward merge of its children's work, which the daemon reads when it builds the implementing task that carries the merge: its own bookkeeping, reaching no surface"},
+	{Field: "ChildrenWaitedAt", Column: ColumnWithheld,
+		Reason: "when the parent last waited on its children, which the late-completion guard compares a phase entry against after the return: the daemon's own mark, reaching no surface"},
 }

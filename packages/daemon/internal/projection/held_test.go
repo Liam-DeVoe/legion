@@ -50,7 +50,7 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // C1 of dispatch://INFRA-3107: every issue of the project the daemon's record holds in the
 // workflow stands in admission.active, in admission.waiting or in admission.held, and no issue
 // stands in held and in one of the other two. The fixture carries one issue for each of ten of
-// the eleven words of the ladder — a member of a closed tree, a member of a parked tree, a root
+// the twelve words of the ladder — a member of a closed tree, a member of a parked tree, a root
 // whose label is off, a root whose Dispatch chain reaches another live root, a member of a tree
 // whose root waits on a person, a member under a shut design gate, a child an unfinished Dispatch
 // link holds, a parent whose own children are still open, an issue beneath an accepted ancestor,
@@ -410,7 +410,7 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldTreeParked, HeldBy: []string{"LEGION-1"}},
 		},
 		{
-			// C2: none of the ten words is true of an issue at work in a running tree that holds
+			// C2: none of the eleven words is true of an issue at work in a running tree that holds
 			// no slot, and the pass names it nowhere. It takes a row all the same, so that a
 			// reader can see the gap is in the words and not in the list.
 			name: "an issue the pass names nowhere",

@@ -454,12 +454,14 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // one walk of the record package (record.Waiting) and a second derivation is the fault
 // dispatch://INFRA-2560 was filed for.
 //
-// Four words silence, and they are R5's waits by design as the ladder names them: a tree whose
-// root waits on a person, which only a person's act moves (root_awaiting_person); a tree whose
-// design gate is closed, whose architect is writing the design the work must follow
-// (design_gate); an issue a Dispatch blocked-by link holds (dispatch_blocker); and an issue the
-// children-first rule holds (children_first). R5's fourth wait, "an issue that needs a slot and
-// holds none, whatever holds its start", is no word of the ladder's, because the ladder speaks
+// Five words silence, and they are R5's waits by design as the ladder names them: a tree whose
+// root waits on a person, which only a person's act moves (root_awaiting_person); a parent that
+// held a phase start because a child of it is still open, which its children's finishing moves
+// (awaiting_children, dispatch://INFRA-3320); a tree whose design gate is closed, whose architect
+// is writing the design the work must follow (design_gate); an issue a Dispatch blocked-by link
+// holds (dispatch_blocker); and an issue the children-first rule holds (children_first). R5's
+// fourth wait, "an issue that needs a slot and holds none, whatever holds its start", is no word
+// of the ladder's, because the ladder speaks
 // only of the issues the line left behind: it is the line's own membership, an entry holding no
 // slot (record.LineEntry.Holds), and the first two words are the two ways the daemon keeps such
 // an issue out of the line instead. The test of that wait is the need and not the mechanism:
@@ -498,6 +500,7 @@ var silencedTree = map[record.HeldReason]bool{
 	record.HeldDesignGate:         true,
 	record.HeldDispatchBlocker:    true,
 	record.HeldChildrenFirst:      true,
+	record.HeldAwaitingChildren:   true,
 	record.HeldAcceptedAncestor:   false,
 	record.HeldAtWork:             false,
 	record.HeldUnclassified:       false,

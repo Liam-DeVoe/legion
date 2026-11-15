@@ -22,20 +22,26 @@ const (
 	// issues whose work came back, oldest first, and the pass that reads it delivers the
 	// architect its task, taking no further slot.
 	AwaitingPerson Phase = "awaiting_person"
-	Planning       Phase = "planning"
-	Implementing   Phase = "implementing"
-	Testing        Phase = "testing"
-	Reviewing      Phase = "reviewing"
-	Accepting      Phase = "accepting"
-	Retro          Phase = "retro"
-	Merging        Phase = "merging"
-	Done           Phase = "done"
-	Held           Phase = "held"
+	// AwaitingChildren is a parent that held a phase start because a Dispatch child of it is still
+	// open: it keeps none of the cap's slots while it waits (record.PhaseKeepsSlot leaves it out),
+	// shows in_progress in Dispatch (workflow's phaseStatus), and no worker of it is woken for its
+	// work. When no open child is left it goes back to the start it held. It stands outside Order,
+	// so no move into or out of it is a move back, and outside RoleFor, since no role works it.
+	AwaitingChildren Phase = "awaiting_children"
+	Planning         Phase = "planning"
+	Implementing     Phase = "implementing"
+	Testing          Phase = "testing"
+	Reviewing        Phase = "reviewing"
+	Accepting        Phase = "accepting"
+	Retro            Phase = "retro"
+	Merging          Phase = "merging"
+	Done             Phase = "done"
+	Held             Phase = "held"
 )
 
 // All is every phase, in the transition table's order.
 var All = []Phase{
-	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
+	Admitted, AwaitingPerson, AwaitingChildren, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
 	Done, Held,
 }
 
