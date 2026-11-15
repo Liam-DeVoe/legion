@@ -369,7 +369,7 @@ const legionPullRequestView = z.object({
 
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
  * the gate is open exactly when it equals `currentVersion`. A spec step that stands open on an
- * ancestor's approval (contract 126) holds the version its root registered there, which no person
+ * ancestor's approval (contract 134) holds the version its root registered there, which no person
  * approved: the step's entry in `gatedSteps` reads `open_on_basis` and names that approval, so a
  * reader that names a person's approval reads `gatedSteps`, not this. */
 const legionGateView = z.object({
@@ -384,7 +384,7 @@ const legionGateView = z.object({
 const legionDesignStep = z.enum(GATED_STEPS);
 
 /** `api.GatedStepBasis` — the ancestor's approval a step stands open on, or the ancestor's open
- * approval request it waits on (contract 126): the ancestor `issue`, its document's `artifactId`
+ * approval request it waits on (contract 134): the ancestor `issue`, its document's `artifactId`
  * and the `version` a person approved or is asked to approve; for an approval, `approver`, who
  * gave it as Dispatch names an actor (`user:<login>`), and `approvedAt`, Dispatch's time of it
  * where Dispatch gave one; for a request, its `askId`. */
@@ -405,7 +405,7 @@ const legionGatedStepBasis = z.object({
  * tree's work), `waiting` (registered, and no person has reviewed its current version),
  * `approved` (a person approved its current version, which lets the work past the step) or
  * `changes_requested` (its reviewer asked for changes at its current version, with
- * `changesReason` the reason they gave; absent under every other status). Contract 126 adds two
+ * `changesReason` the reason they gave; absent under every other status). Contract 134 adds two
  * words and `basis` beside them: `open_on_basis`, a step its architect registered on a person's
  * approval of an ancestor's document, which lets the work past the step as an approval does and is
  * no person's approval of the root, its `approvedVersion` being the root's version registered; and
@@ -459,13 +459,17 @@ const legionSlotView = z.object({
  * one declares a new contract for it, as the ninth answer did at contract 68, which is what keeps
  * this reader away from a body that carries it. Nothing older reaches them either: both words are
  * rendered afresh from `record.LinePart` and `record.LineKind` at each read and never stored, so no
- * retired word comes back off a row, and naming the four kinds is what lets a reader branch on
- * them. */
+ * retired word comes back off a row, and naming the five kinds is what lets a reader branch on
+ * them. `waiting_on_issue`, a started issue that gave its admission slot back to wait on another
+ * issue, is the fifth, added at contract 132; a caller below 132 is served such a member without
+ * its `kind`. */
 const legionWaitingLineView = z.object({
   place: z.number().int().positive(),
   length: z.number().int().positive(),
   part: z.enum(["returned", "starting"]).optional(),
-  kind: z.enum(["returning", "answered", "queued_root", "first_phase"]).optional(),
+  kind: z
+    .enum(["returning", "answered", "queued_root", "first_phase", "waiting_on_issue"])
+    .optional(),
   partPlace: z.number().int().positive().optional(),
   partLength: z.number().int().positive().optional(),
   holdsSlot: z.boolean().optional(),
@@ -658,12 +662,12 @@ const legionIssue = z.object({
    * the body the route serves a caller before 51 (`api.stateFor`, `withoutTrees`). */
   tree: issueKey.optional(),
   /** Whether the tree this root roots runs under the workflow, as the daemon's own rule answers it
-   * (`record.TreeRuns`, contract 126): its lifecycle stands open under the workflow, the root does
+   * (`record.TreeRuns`, contract 134): its lifecycle stands open under the workflow, the root does
    * not linger, and the root does not wait in the line for that tree to be opened. On every root
    * the daemon records and on no other issue, since no other field decides it in every case: a
    * root a re-admission left at `todo` waiting for a slot runs nothing whatever its architect's
    * claim reads, and a root a person answered runs while it waits in the line for its resume.
-   * Absent from every issue of the body the route serves a caller before 126
+   * Absent from every issue of the body the route serves a caller before 134
    * (`api.stateFor`, `withoutGateBasis`), which is why a reader takes it as optional. */
   treeRuns: z.boolean().optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
@@ -787,8 +791,9 @@ const legionContract = z.object({
 });
 
 /** `api.BlockedIssue` (`record.BlockedIssue`, and `api.HeldChild` on a wave release) — one issue
- * Legion is waiting to start and the issues it waits on that are not done, in the order Dispatch
- * lists them. A blocker the daemon has not yet observed as an issue of its own counts as
+ * Legion waits on another issue for, one it has still to start or one it started that gave its
+ * admission slot back for the wait, and the issues it waits on that are not done, in the order
+ * Dispatch lists them. A blocker the daemon has not yet observed as an issue of its own counts as
  * unfinished, so `blockedBy` can name a key the state's `issues` does not. */
 const legionBlockedIssue = z.object({
   issue: issueKey,
@@ -842,18 +847,24 @@ const legionHeldIssue = z.object({
  * person, while an issue past its review — a merger at work in `merging`, one in `merging`
  * whose start a closed design gate holds, a merged root standing in `merging` while the rest
  * of its tree runs — and one whose phase has left the workflow, `done` or a status Dispatch
- * took it out of the workflow with, are in neither list. An issue holding a slot is
- * in `waiting` as well while its work comes back to it, an answered root until the pass that
- * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a running
- * tree may hold no slot at all — the controller reads it where it read `active` as the running
+ * took it out of the workflow with, are in neither list. A started issue that waits on another
+ * issue before its review is missing from `active` too, other than the three roots that keep
+ * their slot through such a wait: it holds no slot while it waits and stands in `waiting` and in
+ * `blocked`, which is how a reader tells it from an issue a person parked, which stands in none
+ * of the three (the rule: "Admission" in the root AGENTS.md). An issue holding a slot is in
+ * `waiting` as well while its work comes back to it, an answered root until the pass that
+ * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a
+ * running tree may hold no slot at all — the controller reads it where it read `active` as the
+ * running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose
  * claims record a contract below 51 (`api.stateFor`, `withoutTrees`). A reader that finds it
  * absent has been served that stripped body and learns nothing about which trees run; it is
  * never a daemon older than this plugin, whom the boot gate and `legion probe-image` refuse.
- * `blocked` is every root and every child Legion is waiting to start behind a Dispatch
- * issue nobody has finished, by issue key; a blocked issue the line carries is in `waiting` too.
+ * `blocked` is every issue Legion waits on a Dispatch issue nobody has finished for, by issue
+ * key: a root or a child Legion is waiting to start, and a started issue that gave its slot back
+ * for the wait; a blocked issue the line carries is in `waiting` too.
  * The controller names them in the day's report and takes nothing for them.
  * `held` is every issue the daemon's record holds in the workflow that stands in neither
  * `active` nor `waiting`, sorted by key: the work the daemon runs nothing of and queues nowhere,
@@ -1554,7 +1565,7 @@ export const LegionIssueStatusRequest = z.strictObject({
  * step of the deployment's design gate. `step` is the step the document is for; a deployment
  * that gates one step alone takes a request that leaves it out, and one that gates several
  * refuses it (`GATE_STEP_REQUIRED`). `basisArtifactId`, `basisVersion` and `reason` name a basis
- * (contract 126): the same step's document of an ancestor on the issue's Dispatch `child_of`
+ * (contract 134): the same step's document of an ancestor on the issue's Dispatch `child_of`
  * chain, the version of it a person approved or an open approval request asks a person to
  * approve, and the architect's reason, 1 to 1,000 characters with no decision block, which the
  * daemon posts on the issue. The three come together or not at all (`BASIS_INCOMPLETE`), and the
@@ -1614,7 +1625,7 @@ export const LegionEscalateRequest = z.strictObject({
  * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). Since contract 126 it
+ * parent, whose own head proves their merged work (dispatch://INFRA-980). Since contract 134 it
  * is refused after that while a root whose design-gate step rests on the issue's approval is still
  * in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, naming each), and last while a Dispatch
  * child of the issue is open (`SIGNOFF_CHILD_OPEN`, naming each with its Dispatch status): the

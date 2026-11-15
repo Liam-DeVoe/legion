@@ -408,8 +408,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// plugin is not.
 		held bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
-		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 111 added). The two
-		// leave together (withoutQuietTime), so one column answers for both.
+		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 111 added), so a pod at
+		// 111 or above is served the measure and a pod still running an older plugin is not. The
+		// two leave together (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// basis is whether the caller is served what gateBasisContract added, which is this
 		// daemon's own contract, so the only pod served it is one at it: every root's
@@ -442,11 +443,15 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// left above it.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true},
 		// The band from heldContract to below quietTimeContract: the held list is served too,
-		// and the tree quiet time and the basis are the two bands left above it.
+		// and the tree quiet time and the basis are the two key-carrying bands left above it.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true},
 		// The band from quietTimeContract to below gateBasisContract: the tree quiet time is
-		// served too, and the basis is the one band left above it.
+		// served too, and the basis is the one key-carrying band left above it.
+		// waitingOnIssueContract stands between them, and its strip takes a word of the line's
+		// `kind` and no key, so this row and the next read alike here; waiting_on_issue_test.go
+		// reads that word.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
+		{name: "a pod at waitingOnIssueContract", remote: statePodAddr + ":41000", claims: podClaims(waitingOnIssueContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, basis: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, basis: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, basis: true},
@@ -540,7 +545,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go holds
 			// that half), with the two keys contract 111 added gone, each issue of a live
 			// tree's `treeMovedAt` and `quietHours` (withoutQuietTime), and with every root's
-			// `treeRuns` gone, the key contract 126 added beside the gated steps of a root on
+			// `treeRuns` gone, the key contract 134 added beside the gated steps of a root on
 			// an ancestor's basis, which go with `gatedSteps` itself for a caller this far back
 			// (withoutGateBasis). Every row that reaches here is below all of them, so those
 			// seventeen strips take their keys whatever the row is.

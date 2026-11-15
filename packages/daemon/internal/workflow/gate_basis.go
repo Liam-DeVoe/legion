@@ -815,7 +815,7 @@ func (e *Engine) endPendingOnAncestorIssue(ctx context.Context, tx pgx.Tx, recor
 		if recorded != nil && fact.Seq <= recorded.LastDispatchSeq {
 			return nil
 		}
-		mirrored, err := e.store.DispatchIssuesOf(ctx, tx, e.cfg.Project, []string{fact.Key})
+		mirrored, err := e.store.DispatchIssuesOf(ctx, tx, []string{fact.Key})
 		if err != nil {
 			return err
 		}
