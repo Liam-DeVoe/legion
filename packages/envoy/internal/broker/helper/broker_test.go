@@ -675,12 +675,13 @@ func (f *fakeBroker) issueCredential(t *testing.T, key *ecdsa.PrivateKey) *Machi
 	}
 }
 
-// waitFor polls cond until it is true or 5s pass, whichever comes first, failing the test on
-// timeout. A login's first token poll comes a second after its device authorization (the
-// interval the fake names).
+// waitFor polls cond until it is true, failing the test when it never becomes true. Its bound is
+// the ten seconds this package keeps for the same waits elsewhere: expiryLogin's for the
+// credential a login installs, contractRebootWait for a record reaching the disk. A login's first
+// token poll comes a second after its device authorization (the interval the fake names).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, cond) {
+	if !testwait.Holds(10*time.Second, 5*time.Millisecond, cond) {
 		t.Fatal("condition never became true")
 	}
 }

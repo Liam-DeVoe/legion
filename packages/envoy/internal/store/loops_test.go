@@ -27,11 +27,7 @@ func TestALoopEndsWithItsContextOnlyAfterItsPassInFlight(t *testing.T) {
 			<-release
 		}
 	})
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the loop never ran a pass")
-	}
+	waitClosed(t, entered, "the loop to run a pass")
 	cancel()
 	select {
 	case <-done:
@@ -39,11 +35,7 @@ func TestALoopEndsWithItsContextOnlyAfterItsPassInFlight(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	close(release)
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the loop never ended after its context")
-	}
+	waitClosed(t, done, "the loop to end after its context")
 	if got := passes.Load(); got != 1 {
 		t.Fatalf("the loop ran %d passes, want none after its context ended", got)
 	}

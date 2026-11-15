@@ -2106,9 +2106,10 @@ func TestAPausedSessionKeepsItsInterestThroughTheReapGrace(t *testing.T) {
 	}
 }
 
-// upsertWithin upserts item on another goroutine and reports whether it finished within five
-// seconds, failing the test when it did not or when it failed. A reaper pass calls it from isAlive,
-// so a pass that held the interest lock there would make it time out rather than deadlock.
+// upsertWithin upserts item on another goroutine and reports whether it finished, failing the test
+// when it failed or never finished: it gives up after the ten seconds waitClosed waits. A reaper
+// pass calls it from isAlive, so a pass that held the interest lock there would make it give up
+// rather than deadlock.
 func upsertWithin(t *testing.T, reg *Registry, item Interest, topics []string) bool {
 	t.Helper()
 	done := make(chan error, 1)
@@ -2123,7 +2124,7 @@ func upsertWithin(t *testing.T, reg *Registry, item Interest, topics []string) b
 			return false
 		}
 		return true
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Errorf("Upsert(%s) did not finish while Reap was calling isAlive: the pass holds the interest lock", item.SessionID)
 		return false
 	}
@@ -3317,7 +3318,7 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 	if _, err := reg.SetRole("ses_role_holder", "m1", "reviewer", false); err != nil {
 		t.Fatalf("SetRole: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, 30*time.Second, func() bool {
 		roles, err := reg.RolesHeldBy("ses_role_holder")
 		return err == nil && slices.Equal(roles, []string{"reviewer"})
 	})

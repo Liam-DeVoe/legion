@@ -294,7 +294,7 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 		if err := write.write(); err != nil {
 			t.Fatalf("%s: %v", write.name, err)
 		}
-		notification := nextNotification(t, ctx, conn, 5*time.Second)
+		notification := nextNotification(t, ctx, conn, eventWait)
 		if notification == nil {
 			t.Fatalf("%s notified nothing", write.name)
 		}
@@ -396,7 +396,7 @@ func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
 		if err := RecordReconcileError(ctx, pool, message); err != nil {
 			t.Fatalf("RecordReconcileError with 5,000 %s: %v", name, err)
 		}
-		notification := nextNotification(t, ctx, conn, 5*time.Second)
+		notification := nextNotification(t, ctx, conn, eventWait)
 		if notification == nil {
 			t.Fatalf("5,000 %s notified nothing", name)
 		}
@@ -429,7 +429,7 @@ func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	if nextNotification(t, ctx, conn, 5*time.Second) == nil {
+	if nextNotification(t, ctx, conn, eventWait) == nil {
 		t.Fatal("the commit notified nothing")
 	}
 	if extra := nextNotification(t, ctx, conn, 300*time.Millisecond); extra != nil {

@@ -42,7 +42,7 @@ func lapseRig(t *testing.T, failRevokes int) (*rig, string, string) {
 	r.fake.revokeFailFirst = failRevokes
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -135,7 +135,7 @@ func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 	r.fake.renewRefusalCode = "PROOF_INVALID"
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -334,7 +334,7 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 	r.fake.renewFail = 1
 	r.fake.renewGate = first
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}

@@ -247,7 +247,7 @@ func TestDrainWithSessionsSetsNothing(t *testing.T) {
 func TestRegisterPinsCallerEnrollsAndSigns(t *testing.T) {
 	t.Parallel()
 	r := startRig(t, "")
-	resp := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	resp := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !resp.OK || resp.State != "enrolled" || resp.EnrollmentID == "" || resp.Operator != "ada@example.com" {
 		t.Fatalf("register: %+v", resp)
 	}
@@ -283,7 +283,7 @@ func TestSignOnlyForDescendantsOfARoot(t *testing.T) {
 	r := startRig(t, "")
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register child: %+v", reg)
 	}
@@ -317,7 +317,7 @@ func TestSignOnlyForDescendantsOfARoot(t *testing.T) {
 func TestSignRequestBuildsAValidRequestObject(t *testing.T) {
 	t.Parallel()
 	r := startRig(t, "")
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -351,7 +351,7 @@ func TestSignRequestOnlyForDescendantsOfARoot(t *testing.T) {
 	r := startRig(t, "")
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register child: %+v", reg)
 	}
@@ -372,7 +372,7 @@ func TestSignRequestOnlyForDescendantsOfARoot(t *testing.T) {
 func TestRegisterFromDescendantReturnsTheAncestorSession(t *testing.T) {
 	t.Parallel()
 	r := startRig(t, "")
-	root := r.call(t, Request{Op: "register", WaitSeconds: 5}) // this test process
+	root := r.call(t, Request{Op: "register", WaitSeconds: 10}) // this test process
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
 	got := r.call(t, Request{Op: "register"})
@@ -390,7 +390,7 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	r := startRig(t, "")
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	_ = child.Process.Kill()
 	_ = child.Wait()
 	deadline := time.Now().Add(5 * time.Second)
@@ -412,7 +412,7 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	}
 	second := sleeper(t)
 	r.callerPID.Store(int64(second.Process.Pid))
-	reg2 := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg2 := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	un := r.call(t, Request{Op: "unregister"})
 	if !un.OK {
 		t.Fatalf("unregister: %+v", un)
@@ -504,7 +504,7 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 	r := startRig(t, state)
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
-	first := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	first := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	oldSess := r.srv.Registry.Get(child.Process.Pid)
 	oldTP := oldSess.identity().Thumbprint
 	// register()'s WaitSeconds only waits on sess.ready, which enrollLoop's setEnrolled closes
@@ -513,7 +513,7 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 	// srv2.Recover below reads only what's on disk, and quiescing the old session first (next)
 	// removes it from the in-memory registry, so if s.save() runs after that Remove, it snapshots
 	// an already-empty registry and overwrites the state file with nothing to recover.
-	saveDeadline := time.Now().Add(5 * time.Second)
+	saveDeadline := time.Now().Add(contractRebootWait)
 	for {
 		recs, err := LoadRecords(state)
 		if err != nil {
@@ -632,10 +632,10 @@ func TestRecoverRevokesThePriorEnrollmentBeforeReenrolling(t *testing.T) {
 	r := startRig(t, state)
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
-	first := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	first := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	// Wait for the enrolled record to actually reach disk before quiescing the old session —
 	// see TestRecoverRepinsLiveSessionsWithFreshKeys's identical wait for why this is needed.
-	saveDeadline := time.Now().Add(5 * time.Second)
+	saveDeadline := time.Now().Add(contractRebootWait)
 	for {
 		recs, err := LoadRecords(state)
 		if err != nil {
@@ -736,10 +736,10 @@ func TestRecoverFallsBackToIndependentRevokeIfTheRepinnedSessionEndsMidBackoff(t
 	r := startRig(t, state)
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
-	first := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	first := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	// Wait for the enrolled record to actually reach disk before quiescing the old session —
 	// see TestRecoverRepinsLiveSessionsWithFreshKeys's identical wait for why this is needed.
-	saveDeadline := time.Now().Add(5 * time.Second)
+	saveDeadline := time.Now().Add(contractRebootWait)
 	for {
 		recs, err := LoadRecords(state)
 		if err != nil {
@@ -894,7 +894,7 @@ func TestRenewRefusedRevokesTheLapsedEnrollmentBeforeReenrolling(t *testing.T) {
 	r.fake.nextLease = 60 * time.Millisecond
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -987,7 +987,7 @@ func TestRegisterRejectsAPeerWhosePIDChangedBeforeAdopting(t *testing.T) {
 func TestSignRejectsAPeerWhosePIDChangedDuringTheAncestryWalk(t *testing.T) {
 	t.Parallel()
 	r := startRig(t, "")
-	root := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	root := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !root.OK || root.State != "enrolled" {
 		t.Fatalf("register root: %+v", root)
 	}

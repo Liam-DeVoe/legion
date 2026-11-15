@@ -1831,7 +1831,7 @@ func TestEnqueueNotifiesOnlyWhenItWritesARow(t *testing.T) {
 		{"Changed text", true},
 	} {
 		mustExec(t, database.Pool, `select embeddings_enqueue('issue', 'NOTE-1', $1)`, step.text)
-		within := 5 * time.Second
+		within := eventWait
 		if !step.want {
 			within = 500 * time.Millisecond
 		}

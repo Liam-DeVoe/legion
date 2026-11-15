@@ -1193,7 +1193,7 @@ func TestRunStillPublishesWhenTheRootWalkHitsAReplyToCycle(t *testing.T) {
 	// A malformed cycle must not stop the event from reaching its own issue topic or the
 	// author of the comment it replies to, which the bounded walk up visited; only the
 	// thread root, which the walk cannot find, is missing.
-	waitFor(t, 5*time.Second, "cyclic reply_to publication", func() bool {
+	waitFor(t, eventWait, "cyclic reply_to publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()

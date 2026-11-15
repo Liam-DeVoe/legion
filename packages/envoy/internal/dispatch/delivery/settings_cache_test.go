@@ -113,7 +113,7 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchJobDurable)
 		return err == nil && info.PushBound
 	}, func() string { return "the job intake never bound its durable" })
-	waitFor(t, 5*time.Second, func() bool { return counter.reads.Load() >= 2 }, func() string {
+	waitFor(t, eventWait, func() bool { return counter.reads.Load() >= 2 }, func() string {
 		return fmt.Sprintf("delivery_settings was read %d times, want the start's read and the hub signal's", counter.reads.Load())
 	})
 

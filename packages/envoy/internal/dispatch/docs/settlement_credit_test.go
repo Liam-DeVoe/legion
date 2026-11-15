@@ -600,7 +600,7 @@ func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReo
 	// append queues behind it too; he stays connected until the issue's close ends his connection.
 	daveBrowser := connectBrowser(t, httpServer.URL, artifactID, "dave")
 	carol.Close()
-	waitFor(t, 5*time.Second, "the room to forget carol's connection", func() bool {
+	waitFor(t, roomWait(t), "the room to forget carol's connection", func() bool {
 		return connectedBrowsers(service, artifactID) == 1
 	})
 	editAsBrowser(t, service, artifactID, daveBrowser, "# Decision\n\nContext.\n\nCarol's paragraph.\n\nDave's paragraph.\n")

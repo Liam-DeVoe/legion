@@ -235,7 +235,7 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect peer: response=%#v err=%v", response, err)
 	}
-	peer.SetReadDeadline(time.Now().Add(5 * time.Second))
+	peer.SetReadDeadline(time.Now().Add(roomWait(t)))
 	if _, _, err := peer.ReadMessage(); err != nil {
 		t.Fatalf("peer's first frame: %v", err)
 	}
@@ -862,7 +862,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 					t.Fatalf("connect peer: response=%#v err=%v", response, err)
 				}
 				cleanupAndRelease(t, func() { _ = peer.Close() })
-				peer.SetReadDeadline(time.Now().Add(5 * time.Second))
+				peer.SetReadDeadline(time.Now().Add(roomWait(t)))
 				if _, _, err := peer.ReadMessage(); err != nil {
 					t.Fatalf("peer's first frame: %v", err)
 				}

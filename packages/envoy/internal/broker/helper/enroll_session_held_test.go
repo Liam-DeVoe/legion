@@ -65,7 +65,8 @@ func (h *holderSignIns) signIn(authority *brokerclient.Authority) {
 
 // waitUpTo polls cond every 10 ms for as long as d, and fails with why when it never holds. It
 // is waitFor with a deadline of the test's own, because the attempt that enrols here waits out
-// the held ladder first and that outlasts waitFor's five seconds.
+// the held ladder first, whose steps double from a second, and that can outlast waitFor's ten
+// seconds.
 func waitUpTo(t *testing.T, d time.Duration, cond func() bool, why string) {
 	t.Helper()
 	if !testwait.Holds(d, 10*time.Millisecond, cond) {

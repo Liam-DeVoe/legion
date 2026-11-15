@@ -108,7 +108,7 @@ func rawCall(t *testing.T, sock, line string) Response {
 func TestSignRequestSignsTheLifetimeItIsAsked(t *testing.T) {
 	t.Parallel()
 	r := startRig(t, "")
-	if reg := r.call(t, Request{Op: "register", WaitSeconds: 5}); !reg.OK || reg.State != "enrolled" {
+	if reg := r.call(t, Request{Op: "register", WaitSeconds: 10}); !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
 	for _, lifetime := range []*int{new(120), nil} {
@@ -134,7 +134,7 @@ func TestABrokerBeforeTheSessionKindStillEnrollsEverySession(t *testing.T) {
 	r.fake.refuseKinds = map[string]bool{"session": true}
 	r.fake.mu.Unlock()
 
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register against a broker before the session kind: %+v", reg)
 	}

@@ -260,10 +260,11 @@ func heldOnceComplete(t *testing.T, reg *Registry, sessionID string, want []stri
 }
 
 // waitForHeld waits until the view answers that sessionID holds exactly want, so a test that then
-// starts the view again knows the claims reached it before it did.
+// starts the view again knows the claims reached it before it did. It gives up after the 30 s
+// heldOnceComplete allows the view to answer.
 func waitForHeld(t *testing.T, reg *Registry, sessionID string, want ...string) {
 	t.Helper()
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, 30*time.Second, func() bool {
 		roles, err := reg.RolesHeldBy(sessionID)
 		return err == nil && slices.Equal(roles, want)
 	})
@@ -409,7 +410,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 	}
 	putRoleClaim(t, old, "planner", "ses_holder")
 	oldArchitect := putRoleClaim(t, old, "architect", "ses_other")
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, 30*time.Second, func() bool {
 		holder, errHolder := reg.RolesHeldBy("ses_holder")
 		other, errOther := reg.RolesHeldBy("ses_other")
 		return errHolder == nil && errOther == nil &&

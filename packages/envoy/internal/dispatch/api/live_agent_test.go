@@ -24,14 +24,11 @@ const plannerSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
 // reviewerSessionID is a second session, for a page watching two at once.
 const reviewerSessionID = "6f1c5b1e-8a3c-4b7e-9a51-0d2f3c4b5a69"
 
-// agentFeedWait bounds a wait for an agent view's next frame.
-const agentFeedWait = 5 * time.Second
-
 // agentFrame reads the next frame but a heartbeat, which must be sub's agent frame named event, and
-// answers its data.
+// answers its data. It waits eventFeedWait for it, the package's bound for a wait on a frame.
 func (c *socketClient) agentFrame(t *testing.T, sub, event string) string {
 	t.Helper()
-	frame := c.next(t, agentFeedWait, "the "+event+" of "+sub)
+	frame := c.next(t, eventFeedWait, "the "+event+" of "+sub)
 	agent, ok := frame.(LiveAgentFrame)
 	if !ok || agent.Sub != sub || agent.Event != event {
 		t.Fatalf("frame = %+v, want the %s of %s", frame, event, sub)
@@ -42,7 +39,7 @@ func (c *socketClient) agentFrame(t *testing.T, sub, event string) string {
 // endedAs reads the next frame but a heartbeat, which must end sub, and answers its reason.
 func (c *socketClient) endedAs(t *testing.T, sub string) string {
 	t.Helper()
-	frame := c.next(t, agentFeedWait, "the end of "+sub)
+	frame := c.next(t, eventFeedWait, "the end of "+sub)
 	ended, ok := frame.(LiveEnded)
 	if !ok || ended.Sub != sub {
 		t.Fatalf("frame = %+v, want the end of %s", frame, sub)
@@ -217,7 +214,7 @@ func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
 	} {
 		client := rig.dial(t, withBearer(token))
 		client.subscribeAgent(t, "agent", reviewerSessionID)
-		refusal := client.refusal(t, agentFeedWait, "agent", codeScopeRequired)
+		refusal := client.refusal(t, eventFeedWait, "agent", codeScopeRequired)
 		if !strings.Contains(refusal.Message, model.ScopePerson) {
 			t.Fatalf("%s was refused %q, which does not name the %s scope", name, refusal.Message, model.ScopePerson)
 		}
@@ -236,7 +233,7 @@ func TestAgentStreamReportsADeploymentWithNoRelay(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	client := rig.dial(t, asUser("alice"))
 	client.subscribeAgent(t, "agent", plannerSessionID)
-	client.refusal(t, agentFeedWait, "agent", "STREAM_UNAVAILABLE")
+	client.refusal(t, eventFeedWait, "agent", "STREAM_UNAVAILABLE")
 }
 
 // A session id goes straight into a NATS subject, where `*` and `>` are wildcards: one view
@@ -255,10 +252,10 @@ func TestAgentStreamRefusesASessionIdThatIsNotAUUID(t *testing.T) {
 	for index, id := range ids {
 		sub := fmt.Sprintf("agent-%d", index)
 		client.subscribeAgent(t, sub, id)
-		client.refusal(t, agentFeedWait, sub, "SESSION_ID_INPUT")
+		client.refusal(t, eventFeedWait, sub, "SESSION_ID_INPUT")
 	}
 	client.send(t, liveSubscribe("no-session", LiveView{DeliveryLiveView: DeliveryLiveView{Kind: liveAgentView}}, ""))
-	client.refusal(t, agentFeedWait, "no-session", "SESSION_ID_INPUT")
+	client.refusal(t, eventFeedWait, "no-session", "SESSION_ID_INPUT")
 	client.quiet(t, 300*time.Millisecond, "after every refused session id")
 	for _, id := range ids {
 		if got := source.Watches(id); got != 0 {
@@ -283,7 +280,7 @@ func TestAnAgentViewNamesItsKindAndItsSessionAlone(t *testing.T) {
 		liveSubscribe("c", LiveView{DeliveryLiveView: DeliveryLiveView{Kind: liveAgentView, At: &at}, SessionID: &session}, ""),
 	} {
 		client.send(t, frame)
-		client.refusal(t, agentFeedWait, frame.Sub, "INVALID_FRAME")
+		client.refusal(t, eventFeedWait, frame.Sub, "INVALID_FRAME")
 	}
 	if got := source.Watches(plannerSessionID); got != 0 {
 		t.Fatalf("a refused agent view armed the session %d times, want 0", got)
@@ -497,7 +494,7 @@ func TestTwoAgentViewsShareOneSocket(t *testing.T) {
 		"reviewer": {`responder {"v":1,"responding":true}`},
 	}
 	for len(want["planner"])+len(want["reviewer"]) > 0 {
-		frame, ok := client.next(t, agentFeedWait, "the views' opening frames").(LiveAgentFrame)
+		frame, ok := client.next(t, eventFeedWait, "the views' opening frames").(LiveAgentFrame)
 		if !ok || len(want[frame.Sub]) == 0 || want[frame.Sub][0] != frame.Event+" "+string(frame.Data) {
 			t.Fatalf("frame = %+v, want the next of %v", frame, want)
 		}
@@ -568,7 +565,7 @@ func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
 	client.subscribeAgent(t, "planner", plannerSessionID)
 	select {
 	case <-source.asked:
-	case <-time.After(agentFeedWait):
+	case <-time.After(eventFeedWait):
 		t.Fatal("the planner's view never asked for its replay")
 	}
 	opened := time.Now()

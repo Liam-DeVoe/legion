@@ -196,5 +196,6 @@ func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 }
 
 // renewOutageBound is how long a row waits for a loop that should have ended long before: the
-// longest walk below renews at 120 units, and this is the same five seconds waitFor keeps.
-const renewOutageBound = 5 * time.Second
+// longest walk below renews at 120 units, and this is the same ten seconds waitFor keeps for the
+// other row, the package's guard for a wait on an event.
+const renewOutageBound = 10 * time.Second

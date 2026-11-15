@@ -129,8 +129,9 @@ func (cr *contractRig) call(t *testing.T, req Request) Response {
 }
 
 // waitForIssued blocks until the background login poller (pollLogin, at the broker's 5 s
-// interval) installs the machine credential, or fails the test — longer than the package's own
-// waitFor, since a real broker round trip plus that interval can outrun a 5 s deadline.
+// interval) installs the machine credential, or fails the test. It waits longer than the
+// package's own waitFor, since the credential comes no sooner than that first poll and a real
+// broker's round trip, which take half of waitFor's ten seconds before a loaded runner adds any.
 func waitForIssued(t *testing.T, b *Broker) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
