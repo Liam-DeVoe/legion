@@ -335,6 +335,10 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly issueStatus: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
+    readonly stopClaim: (body: object) => Promise<unknown>;
+    readonly retryClaim: (body: object) => Promise<unknown>;
+    readonly suspendClaim: (body: object) => Promise<unknown>;
+    readonly resumeClaim: (body: object) => Promise<unknown>;
     readonly gateRegister: (body: object) => Promise<unknown>;
     readonly waveRelease: (body: object) => Promise<unknown>;
     readonly phaseBackward: (body: object) => Promise<unknown>;
@@ -384,6 +388,32 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "/legion/v1/claims/compact",
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
       "compact.json",
+    ],
+    // The controller's four claim operations take the recoveries' body and answer the claim as
+    // each left it, with who holds a suspension over it.
+    [
+      "stopClaim",
+      "/legion/v1/claims/stop",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "claim-stop.json",
+    ],
+    [
+      "retryClaim",
+      "/legion/v1/claims/retry",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "claim-retry.json",
+    ],
+    [
+      "suspendClaim",
+      "/legion/v1/claims/suspend",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "claim-suspend.json",
+    ],
+    [
+      "resumeClaim",
+      "/legion/v1/claims/resume",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "claim-resume.json",
     ],
     [
       "gateRegister",

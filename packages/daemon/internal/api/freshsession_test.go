@@ -169,15 +169,12 @@ func freshSessionCases() []freshSessionCase {
 			start: idleOnTheLadder,
 		},
 		{
+			// The controller's suspension, which both doors lift: the operator's lifts every
+			// suspension, and the controller's its own. The operator's own suspension is the
+			// controller door's SUSPENDED_BY_OPERATOR (TestTheControllerCannotGetPastTheOperatorsSuspension),
+			// and the operator's door is held to it in TestTheOperatorLiftsItsOwnSuspensionAndTheControllers.
 			name: "a suspended phase worker", issue: "LEGION-209", role: claim.RoleImplementer, facts: 1, launches: true,
-			start: func(t *testing.T, h *harness) claim.Token {
-				t.Helper()
-				token := readyImplementer(t, h)
-				if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusOK {
-					t.Fatalf("suspend = %d, want 200; body %s", recorder.Code, recorder.Body)
-				}
-				return token
-			},
+			start: controllerSuspendedImplementer,
 		},
 		{
 			name: "a phase worker an operator stopped", issue: "LEGION-209", role: claim.RoleImplementer, facts: 1,
@@ -468,21 +465,16 @@ func freshSessionNote(t *testing.T, recorder *httptest.ResponseRecorder) string 
 // answer names the refused restart, because nothing in the claim's state records that its phase
 // was not restarted. A refusal here instead would tell the caller nothing happened for a worker
 // this route had just relaunched, and, for the worker it suspended itself, leave it stopped
-// behind an operator's hold no rule of the daemon's can lift.
+// behind a hold no rule of the daemon's can lift. The hold here is the controller's, which both
+// doors lift; the controller's door refuses the operator's own
+// (TestTheControllerCannotGetPastTheOperatorsSuspension).
 func TestAFreshSessionStartsTheClaimWhenThePhaseRestartIsRefused(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		for _, tc := range []struct {
 			name  string
 			start func(t *testing.T, h *harness) claim.Token
 		}{
-			{"a claim the operator suspended", func(t *testing.T, h *harness) claim.Token {
-				t.Helper()
-				token := readyImplementer(t, h)
-				if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusOK {
-					t.Fatalf("suspend = %d, want 200; body %s", recorder.Code, recorder.Body)
-				}
-				return token
-			}},
+			{"a claim the controller suspended", controllerSuspendedImplementer},
 			{"a claim the daemon suspended", func(t *testing.T, h *harness) claim.Token {
 				t.Helper()
 				return suspendedImplementer(t, h, supervise.SuspendedByDaemon)

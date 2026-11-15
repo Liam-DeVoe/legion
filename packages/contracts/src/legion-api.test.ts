@@ -11,6 +11,7 @@ import {
   LegionActivityRequest,
   LegionCapabilityReport,
   LegionChildRequest,
+  LegionClaimOperationResponse,
   LegionClaimRequest,
   LegionCompactResponse,
   LegionControllerCredentialResponse,
@@ -83,6 +84,12 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
+  // The controller's four claim operations (contract 136): the claim as each left it, and who
+  // holds a suspension over it.
+  "claim-stop.json": LegionClaimOperationResponse,
+  "claim-retry.json": LegionClaimOperationResponse,
+  "claim-suspend.json": LegionClaimOperationResponse,
+  "claim-resume.json": LegionClaimOperationResponse,
   "gate-register.json": LegionEmptyResponse,
   "wave-release.json": LegionWaveReleaseResponse,
   "phase-backward.json": LegionEmptyResponse,
@@ -1850,10 +1857,26 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-/** The responses an operator's bearer opens, the only ones that may name a suspension. */
+/** The responses an operator's bearer opens, the only ones of the operator's that may name a
+ * suspension. */
 const operatorSchemas: Record<string, true> = {
   LegionOperatorClaimResponse: true,
   LegionOperatorClaimsResponse: true,
+};
+
+/** The one session-facing exception: the controller's four claim operations (`POST
+ * /legion/v1/claims/stop|retry|suspend|resume`) answer who holds a suspension, because those
+ * routes are where the controller reads whether its own resume lifts it. The reason the guard
+ * exists does not reach them: they arrived with contract 136, so only a plugin at that contract or
+ * later calls them, and no reader of these bodies predates the key. The schema and the four
+ * fixtures it pins are named here, and nothing else; a new session-facing body that names a
+ * suspender still fails the walk below. */
+const claimOperationSchemas: Record<string, true> = { LegionClaimOperationResponse: true };
+const claimOperationFixtures: Record<string, true> = {
+  "claim-stop.json": true,
+  "claim-retry.json": true,
+  "claim-suspend.json": true,
+  "claim-resume.json": true,
 };
 
 /** Every key `schema` can carry, at any depth, through objects, arrays, unions, records, optional
@@ -1889,23 +1912,30 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and nowhere else, and this holds that for every
-// schema the module exports, present and future.
+// `suspendedBy` is served to the operator's bearer and, from contract 136, to the controller's
+// four claim operations (claimOperationSchemas), and nowhere else; this holds that for every schema
+// the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
   let walked = 0;
   for (const [name, schema] of Object.entries(legionApi)) {
-    if (!isSchema(schema) || operatorSchemas[name] === true) continue;
+    if (!isSchema(schema) || operatorSchemas[name] === true || claimOperationSchemas[name] === true)
+      continue;
     walked += 1;
     expect([...schemaKeys(schema)], `${name} carries suspendedBy`).not.toContain("suspendedBy");
   }
   expect(walked).toBeGreaterThan(20);
   // The walk finds the key where it does live, so an empty walk cannot pass for a clean one.
   expect([...schemaKeys(LegionOperatorClaimResponse)]).toContain("suspendedBy");
+  expect([...schemaKeys(LegionClaimOperationResponse)]).toContain("suspendedBy");
 
-  // And no body the daemon writes carries it outside the operator's own.
+  // And no body the daemon writes carries it outside the operator's own and the four routes'.
   for (const name of readdirSync(fixtureDir).filter((entry) => entry.endsWith(".json"))) {
-    if (name.startsWith("operator-")) continue;
+    if (name.startsWith("operator-") || claimOperationFixtures[name] === true) continue;
     expect(readFileSync(path.join(fixtureDir, name), "utf8"), name).not.toContain("suspendedBy");
+  }
+  // The exception is the four routes' and no wider: each of their fixtures exists.
+  for (const name of Object.keys(claimOperationFixtures)) {
+    expect(readdirSync(fixtureDir), name).toContain(name);
   }
 });
 

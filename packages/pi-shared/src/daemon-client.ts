@@ -1,6 +1,7 @@
 import {
   type LegionActivityRequest,
   LegionChildRequest,
+  LegionClaimOperationResponse,
   LegionClaimRequest,
   LegionCompactResponse,
   LegionControllerGrantRequest,
@@ -150,6 +151,35 @@ export interface LegionDaemonClient {
   readonly compact: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionCompactResponse>>;
+  /** The controller's `stop`: the claim on `role` of `issue` is released and retired, the effect
+   * `legion claims stop` runs for an operator; a turn it is in is cut off with it. Refused for a
+   * claim the operator's own suspension holds (`SUSPENDED_BY_OPERATOR`). The answer is the claim
+   * as the stop left it. */
+  readonly stopClaim: (
+    input: z.input<typeof LegionClaimRequest>
+  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  /** The controller's `retry`: a claim that failed, or that a stop retired, starts again in the
+   * session it recorded, the effect a plain `legion claims retry` runs for an operator; a phase
+   * worker is started through its issue's phase. Refused for a claim stored working
+   * (`CLAIM_IN_A_TURN`). The answer is the claim as the retry left it. */
+  readonly retryClaim: (
+    input: z.input<typeof LegionClaimRequest>
+  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  /** The controller's `suspend`: the claim's process stops and its session is kept, the effect
+   * `legion claims suspend` runs for an operator, held for a turn's end; the suspension is the
+   * controller's, which holds against the daemon's rules and which its own resume lifts. Refused
+   * for a claim the operator's own suspension holds (`SUSPENDED_BY_OPERATOR`). The answer is the
+   * claim as the suspension left it, with who holds the suspension. */
+  readonly suspendClaim: (
+    input: z.input<typeof LegionClaimRequest>
+  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  /** The controller's `resume`: a suspended claim's session is relaunched, the effect
+   * `legion claims resume` runs for an operator, but never over the operator's own suspension
+   * (`SUSPENDED_BY_OPERATOR`); a claim stored working is refused (`CLAIM_IN_A_TURN`). The answer
+   * is the claim as the resume left it. */
+  readonly resumeClaim: (
+    input: z.input<typeof LegionClaimRequest>
+  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -523,6 +553,14 @@ export function createLegionDaemonClient(
       ),
     compact: (input) =>
       post("/legion/v1/claims/compact", LegionClaimRequest, LegionCompactResponse, input),
+    stopClaim: (input) =>
+      post("/legion/v1/claims/stop", LegionClaimRequest, LegionClaimOperationResponse, input),
+    retryClaim: (input) =>
+      post("/legion/v1/claims/retry", LegionClaimRequest, LegionClaimOperationResponse, input),
+    suspendClaim: (input) =>
+      post("/legion/v1/claims/suspend", LegionClaimRequest, LegionClaimOperationResponse, input),
+    resumeClaim: (input) =>
+      post("/legion/v1/claims/resume", LegionClaimRequest, LegionClaimOperationResponse, input),
     gateRegister: (input) =>
       post("/legion/v1/gates/register", LegionGateRegisterRequest, LegionEmptyResponse, input),
     waveRelease: (input) =>

@@ -15,10 +15,18 @@ import { LEGION_ROLES } from "./legion-roles";
 const nonEmptyString = z.string().min(1);
 
 /** `api.ClaimRequest`, what either of the controller's two claim recoveries names: the claim on
- * `role` of `issue`, under the caller's controller grant. The project's controller is no role
- * here, so no body can name its claim (`INVALID_ROLE`); `NOT_THE_CONTROLLER`, the daemon's
- * refusal of the controller's own claim, belongs to the operator's door, and this one never
- * gives it.
+ * `role` of `issue`, under the caller's controller grant. The controller's four claim operations
+ * (`POST /legion/v1/claims/stop|retry|suspend|resume`, contract 136) take the same body and the
+ * same door, and answer `LegionClaimOperationResponse` (`legion-api.ts`). The project's controller
+ * is no role here, so no body can name its claim (`INVALID_ROLE`); `NOT_THE_CONTROLLER`, the
+ * daemon's refusal of the controller's own claim, belongs to the operator's door, and this one
+ * never gives it. Nor can a body name another project's claim: the daemon builds the token from
+ * its own project, so such a claim is one it does not supervise (`NO_CLAIM`).
+ *
+ * The controller's door gives `SUSPENDED_BY_OPERATOR` (409) to every request that would get past
+ * a suspension the operator holds: a resume of it, a suspension of a claim it holds, a stop of
+ * one, and a `fresh_session` of a claim it holds suspended. Only the operator lifts the
+ * operator's suspension; nothing of the claim changes.
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim

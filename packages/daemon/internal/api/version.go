@@ -1724,4 +1724,33 @@ package api
 // head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
-const DaemonAPIVersion = 133
+//
+// 136: dispatch://INFRA-2709 R22 -- the project's controller gets the four claim operations the
+// operator already has, as controller routes beside `claims/fresh-session` and `claims/compact`,
+// each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and the same door
+// (controllerClaim: a controller grant or `403 CONTROLLER_REQUIRED`, a claim the daemon
+// supervises or `404 NO_CLAIM`, built from the daemon's own project, so another project's claim
+// cannot be named): `POST /legion/v1/claims/stop` runs `legion claims stop`'s effect,
+// `POST /legion/v1/claims/retry` the plain `legion claims retry` (no fresh session),
+// `POST /legion/v1/claims/suspend` `legion claims suspend`'s, and `POST /legion/v1/claims/resume`
+// `legion claims resume`'s. Each answers `api.ClaimOperationResponse`: the claim's `state` after
+// the request and, where a suspension is over it, `suspendedBy`, `suspensionHeld` and
+// `suspensionHeldBy`, which these routes alone of the session-facing ones carry, since no plugin
+// below this contract calls them (the state still names no suspender, StrandedClaim); a
+// suspension held for the agent's turn, and a retry whose start the issue's phase queued, answer
+// 202. The controller's suspension is recorded as its own, `controller`, a new
+// supervise.SuspendSource that `claims.suspended_by` admits from
+// migration 20261115060739: it holds against the daemon's rules as the operator's does, its own
+// resume lifts it, and the operator's suspension outranks it. So the operator claim routes'
+// `suspendedBy` and `suspensionHeldBy` gain the value `controller`, which only the operator's
+// bearer reads. The controller's resume, suspend and stop, and its fresh session, are refused a
+// claim the operator's own suspension holds with `409 SUSPENDED_BY_OPERATOR`, nothing of the
+// claim changed; its retry and resume of a claim stored working are refused `409
+// CLAIM_IN_A_TURN`. The number is a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
+// every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
+// 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declares 133, and the
+// open heads above it declare 134 (#4021), 135 (#3659), 137 (#4046), 138 (#4017), 139 (#2731,
+// #3711 and #3993), 140 (#3519), 141 (#3575 and #3730) and 142 (#3712), so 136 is the lowest
+// number above the base's that no open head declares. Read the base's own number and every open
+// head again at the next merge rather than from this entry.
+const DaemonAPIVersion = 136

@@ -49,9 +49,10 @@ type IdleClaim struct {
 	// and the mark would stand.
 	HasProcess bool
 	// SuspendedBy is the source recorded on the claim's suspension (supervise.Claim.SuspendedBy),
-	// "" for a claim that is not suspended: who stopped this role — the operator, the workflow's
-	// own close, an idle release. The rule reads it to tell the one suspension no daemon rule may
-	// undo, the operator's, from every other (IdleClaim.OperatorSuspended).
+	// "" for a claim that is not suspended: who stopped this role — the operator, the project's
+	// controller, the workflow's own close, an idle release. The rule reads it to tell the
+	// suspensions no daemon rule may undo, the operator's and the controller's, from every other
+	// (IdleClaim.OperatorSuspended).
 	SuspendedBy supervise.SuspendSource
 	// ServingGeneration is the run the claim is serving, which tells a phase worker of the
 	// issue's current run from one left over by an older one.
@@ -98,18 +99,21 @@ func (c IdleClaim) Live() bool {
 	return true
 }
 
-// OperatorSuspended is whether an operator's own suspension holds this claim: the one suspension
-// no daemon rule undoes, which only an operator's resume ends (supervise.SuspendedByOperator).
+// OperatorSuspended is whether a suspension that holds is over this claim: the operator's own, or
+// the project's controller's, the suspensions no daemon rule undoes, which only a resume ends
+// (supervise.SuspendSource.Holds). The name, and the hold it decides
+// (workflow.IdleHoldUnownedOperatorSuspended, whose key release records carry), predate the
+// controller's suspension, which holds the pod for the same reason.
 //
 // The expression is written here rather than called on supervise.Claim because there is no such
 // method on supervise.Claim to call: Claim.RuleHolds and Claim.RuleMayResume are where it lives
-// today, and neither takes the shape this view needs. RuleHolds's other arm — an operator's
-// suspension held for its agent's turn — is about a claim that is still live, and a live claim
+// today, and neither takes the shape this view needs. RuleHolds's other arm — such a suspension
+// held for its agent's turn — is about a claim that is still live, and a live claim
 // holds the pod through the rule's own live-claim conjunct, so repeating it here would say
 // nothing the rule does not already read. The view carries the two columns and not a
 // supervise.Claim (IdleClaim), so the predicate is the view's.
 func (c IdleClaim) OperatorSuspended() bool {
-	return c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator
+	return c.State == supervise.StateSuspended && c.SuspendedBy.Holds()
 }
 
 // Reported is whether the session read what it was doing after its last turn: a claim with no

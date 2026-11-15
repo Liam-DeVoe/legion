@@ -201,15 +201,16 @@ func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op cont
 
 // claimFreshSession is the controller's door onto the fresh session (freshSession). The effect
 // is the operator's own, and so are its refusals; only the authentication differs
-// (controllerClaim). Its log line says which of the two successes the effect reported: the
-// claim started again, or stopped by this request and not started, whose sentence rides the
-// answer (notStartedAgain).
+// (controllerClaim), and the suspension and the resume it runs are the controller's, so it is
+// refused a claim the operator's own suspension holds (SUSPENDED_BY_OPERATOR). Its log line says
+// which of the two successes the effect reported: the claim started again, or stopped by this
+// request and not started, whose sentence rides the answer (notStartedAgain).
 func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.controllerClaim(w, r, freshSessionOp)
 	if !ok {
 		return
 	}
-	_, notRestarted, started, ok := s.freshSession(w, r, target.machine, target.token)
+	_, notRestarted, started, ok := s.freshSession(w, r, target.machine, target.token, supervise.SuspendedByController)
 	if !ok {
 		return
 	}
@@ -299,11 +300,19 @@ func roleList() string {
 // and this answers success with the refusal named in it (FreshSessionResponse.PhaseNotRestarted,
 // OperatorClaim.PhaseNotRestarted). A refusal here would be false twice over: it would tell the
 // caller that nothing happened, for a worker this route had just relaunched, and for a
-// registered, ready or idle worker, which this route suspends itself as the operator
-// (agentRunning), it would leave the worker
-// stopped behind a suspension no rule of the daemon's lifts and the controller's own door
-// cannot — the controller asks for a fresh session and a compaction, never a resume, so such a
-// worker would stand until an operator resumed it.
+// registered, ready or idle worker, which this route suspends itself, as the caller whose door
+// it came through (agentRunning, by), it would leave the worker stopped behind a suspension no
+// rule of the daemon's lifts, which would stand until a resume lifted it.
+//
+// The suspension this route runs is its caller's: the operator's through `legion claims retry
+// --fresh-session`, and the controller's through its fresh_session (supervise.SuspendedByController),
+// whose own resume lifts it and whose resume below is the controller's
+// (supervise.RequestResume.ByController). The controller's door is refused a claim the
+// operator's own suspension holds, landed, before anything is asked (SUSPENDED_BY_OPERATOR): its
+// resume below would lift that suspension, which only the operator undoes, and the machine
+// refuses that resume, and that suspension, to a claim the operator suspended under the request
+// (supervise.ErrOperatorHolds). A held one is the held suspension's refusal, as at the operator's
+// door (refuseHeldSuspension).
 //
 // A forget or a start the machine refuses after this route has stopped the claim is answered the
 // same way and for the same reason: the suspension ran, and a failure would tell the caller that
@@ -351,7 +360,8 @@ func roleList() string {
 // what makes that claim reachable at all: the daemon's own report of the dead process is
 // memory a restart forgets, and the record a restart leaves reads exactly as a claim in a turn
 // does.
-func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (status int, notRestarted string, started, ok bool) {
+func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
+	by supervise.SuspendSource) (status int, notRestarted string, started, ok bool) {
 	c := m.Claim()
 	if c.Role == claim.RoleController {
 		// The keeper's resume is the rule's, which an operator's suspension holds against (the
@@ -373,6 +383,9 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	switch {
 	case view.SuspensionHeld:
 		return 0, "", false, refuseHeldSuspension(w, token, c.State, c.Role, freshSessionOp)
+	case by == supervise.SuspendedByController && c.OperatorHolds():
+		refuseOperatorHold(w, token, freshSessionOp)
+		return 0, "", false, false
 	case storedWorking(c.State):
 		// Every claim stored working comes here, and the read is what tells them apart: the
 		// one no process stands behind falls through to the suspension below, as an agent that
@@ -386,7 +399,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		}
 		fallthrough
 	case agentRunning(c.State):
-		if !s.suspendForFreshSession(w, r, m, token) {
+		if !s.suspendForFreshSession(w, r, m, token, by) {
 			return 0, "", false, false
 		}
 		stopped = true
@@ -417,7 +430,8 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		status, ok := s.retryStart(w, r, m, token, true)
 		return status, "", ok, ok
 	}
-	switch posted, err := s.postClaimEvent(w, r, m, token, "resume", supervise.RequestResume{Claim: token}); {
+	resume := supervise.RequestResume{Claim: token, ByController: by == supervise.SuspendedByController}
+	switch posted, err := s.postClaimEvent(w, r, m, token, "resume", resume); {
 	case !posted:
 		return 0, "", false, false
 	case err != nil && stopped:
@@ -426,6 +440,9 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		s.log.Warn("api: a fresh session stopped the claim and the start that would have brought it back was refused",
 			"claim", token, "state", m.Claim().State, "error", err)
 		return http.StatusOK, notStartedAgain(token, m.Claim().State, "the start of it in a new session", err), false, true
+	case errors.Is(err, supervise.ErrOperatorHolds):
+		refuseOperatorHold(w, token, freshSessionOp)
+		return 0, "", false, false
 	case err != nil:
 		s.operatorFailure(w, "resume", token, err)
 		return 0, "", false, false
@@ -755,11 +772,15 @@ func storedWorking(state supervise.ClaimState) bool {
 // view is taken again — its turn ended and left it idle, or another request suspended it — is
 // answered the same way rather than read, since every read's answer says the claim "is stored
 // working", which it no longer is; a suspension held over the claim keeps the answer every
-// held claim takes (refuseHeldSuspension). Every other refusal is the machine's own answer, in
-// the words operatorFailure gives it. It reports false when it answered the caller.
-func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) bool {
+// held claim takes (refuseHeldSuspension). A suspension the operator's own landed suspension
+// refused — the controller's, met by an operator's suspend that landed under the request — is
+// the operator's hold's refusal (refuseOperatorHold). Every other refusal is the machine's own
+// answer, in the words operatorFailure gives it. It reports false when it answered the caller.
+// by is the caller's own source (freshSession).
+func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
+	by supervise.SuspendSource) bool {
 	posted, err := s.postClaimEvent(w, r, m, token, "suspend", supervise.RequestSuspend{
-		Claim: token, Reason: freshSessionReason, By: supervise.SuspendedByOperator, NeverHold: true,
+		Claim: token, Reason: freshSessionReason, By: by, NeverHold: true,
 	})
 	var refused *supervise.RefusedError
 	switch {
@@ -767,6 +788,9 @@ func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, 
 		return false
 	case errors.As(err, &refused) && refused.State == supervise.StateWorking:
 		s.refuseSuspensionRefusedAsWorking(w, r, m, token, m.View())
+		return false
+	case errors.Is(err, supervise.ErrOperatorHolds):
+		refuseOperatorHold(w, token, freshSessionOp)
 		return false
 	case err != nil:
 		s.operatorFailure(w, "suspend", token, err)

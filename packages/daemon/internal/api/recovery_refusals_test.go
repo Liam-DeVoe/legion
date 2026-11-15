@@ -1207,7 +1207,8 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 		m, _ := h.supervisor.Machine(token)
 		recorder := httptest.NewRecorder()
 
-		suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token)
+		suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token,
+			supervise.SuspendedByOperator)
 
 		if suspended {
 			t.Fatal("the suspension landed, want it refused for the parked relaunch")
@@ -1271,7 +1272,8 @@ func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *test
 			before := h.stored(token)
 			recorder := httptest.NewRecorder()
 
-			suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token)
+			suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token,
+				supervise.SuspendedByOperator)
 
 			if suspended {
 				t.Fatal("the suspension landed, want it refused for the claim in a turn")

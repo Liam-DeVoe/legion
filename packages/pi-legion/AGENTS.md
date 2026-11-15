@@ -94,7 +94,14 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 133's merge wait
+number is the one `DaemonAPIVersion` declares, last bumped by contract 136's controller claim
+operations (dispatch://INFRA-2709: the controller's `legion` tool gains `stop`, `retry`, `suspend`
+and `resume` (issue, role), which post `POST /legion/v1/claims/stop`, `/retry`, `/suspend` and
+`/resume` with the claim recoveries' body and read `ClaimOperationResponse`, the claim's state and
+who holds a suspension over it; the controller's suspension is recorded as `controller`, its own
+resume lifts it, and the daemon refuses the controller's resume, suspend, stop and `fresh_session`
+of a claim the operator's own suspension holds with `SUSPENDED_BY_OPERATOR`; no shape the plugin
+already parses moves, and the state still names no suspender), after contract 133's merge wait
 (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's
 answer about merging the pull request's head carries `mergeWait`, the head the round waits on, the
 merge state the record holds for that head, when that state was last read, when GitHub last moved
@@ -461,12 +468,14 @@ daemon restarted) cuts the running controller off. And the daemon refuses a cont
 whose `pluginContract` is not its `DaemonAPIVersion` with 409, naming both — under Kubernetes a
 daemon-launched controller's own pod is a Sandbox pod like any role's, so a stale registration
 keeps that pod and installs the current pair under its generation directory the same way
-(docs/kubernetes.md "Contract discipline"), never a replaced pod. That session goes
-through the controller session (`src/controller-session.ts`), not the claim session, and gets the
-`legion` tool's controller operations once its claim registers: `read_state`, the whole
-`GET /legion/v1/state` (unauthenticated, as the route is), and `set_status`, which mints a
-controller grant and posts `POST /legion/v1/issues/status` with it. The claim: `GET
-/legion/v1/state` first, since a registration replaces the running controller: an unset
+(docs/kubernetes.md "Contract discipline"), never a replaced pod.
+That session goes through the controller session (`src/controller-session.ts`), not the claim session, and gets the `legion` tool's controller operations once its claim registers.
+`read_state` reads the whole `GET /legion/v1/state`, unauthenticated as the route is.
+Each other operation mints a controller grant and posts it with its request.
+`set_status` posts `POST /legion/v1/issues/status`.
+`compact` and `fresh_session` post `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`.
+`stop`, `retry`, `suspend` and `resume` post `POST /legion/v1/claims/stop`, `/retry`, `/suspend` and `/resume`, and each answers the claim's state with who holds a suspension over it.
+The claim: `GET /legion/v1/state` first, since a registration replaces the running controller: an unset
 `LEGION_PROJECT`, or one whose controller role is not that of the project the state names
 (`legionProjectToken` in `@legion/contracts`, the daemon's own rule), stops the claim there; then
 `claims/register` with the capability in place of a boot token, answered with
@@ -477,9 +486,9 @@ controller grant and posts `POST /legion/v1/issues/status` with it. The claim: `
 controller session with a boot token), one to each Slack channel `LEGION_SLACK_CHANNELS` names, on
 its mention topic (`slackMentionTopic`; the daemon always sets the variable for that controller,
 from the project's `slack_channels`, empty for none, and the claim refuses it unset or with an entry
-that is not a channel id; any other controller ignores it); each `set_status` then mints from the
-`/grants` controller-session form with the secret the registration was issued. What the daemon
-publishes on the controller topic is listed at `notify.ControllerTopic`
+that is not a channel id; any other controller ignores it); each of its operations but `read_state`
+then mints from the `/grants` controller-session form with the secret the registration was issued.
+What the daemon publishes on the controller topic is listed at `notify.ControllerTopic`
 (`packages/daemon/internal/notify`). Each is registered with the listener for as long as the
 session holds the role, and that registration is the subscription: the listener builds the
 session's one JetStream consumer out of the topics it registered, and a session has no per-topic

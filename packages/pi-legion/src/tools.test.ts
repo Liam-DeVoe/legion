@@ -8,7 +8,7 @@ import {
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
-import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
   findHandoffReport,
   type JjRunner,
@@ -101,6 +101,10 @@ function recordingDaemon(options: {
     "issueStatus",
     "freshSession",
     "compact",
+    "stopClaim",
+    "retryClaim",
+    "suspendClaim",
+    "resumeClaim",
     "handoffComplete",
     "releaseRecords",
   ];
@@ -215,7 +219,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
   "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
   "one queued, one whose launch is in flight, and one left working under a relaunch the " +
-  "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
+  "wake pacing parked (CLAIM_UNSETTLED) — for a claim the operator suspended, whose " +
+  "suspension only the operator lifts (SUSPENDED_BY_OPERATOR), and for role controller. " +
   "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
   "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
   "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
@@ -234,6 +239,27 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "reaches, and one left working under a relaunch the wake pacing parked " +
   "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
   "and for role controller. " +
+  "stop, retry, suspend and resume (issue, role) are the operator's own claim operations. Each answers " +
+  "the claim's state after it, with who holds a suspension over it: suspendedBy while the claim is " +
+  "suspended, and suspensionHeld with suspensionHeldBy while a suspension waits for a turn to end. " +
+  "stop ends the claim: the daemon stops its agent at once, also in a turn, which loses that turn, and " +
+  "retires the claim with its session kept on record. Only retry, or a start of its issue's phase, runs " +
+  "it again. The daemon refuses stop for a tree's root architect, which ends only with its tree: suspend " +
+  "it instead. " +
+  "retry starts a claim that failed, or that a stop retired, again in the session it recorded, with " +
+  "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
+  "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
+  "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume that one. " +
+  "suspend stops the claim's agent and keeps its session and the task it owes. A claim in a turn " +
+  "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
+  "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the claim " +
+  "again until your resume or the operator's. " +
+  "resume starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
+  "The daemon refuses resume for a claim stored working (CLAIM_IN_A_TURN). " +
+  "The daemon refuses resume, suspend and stop for a claim the operator suspended, or whose " +
+  "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), and nothing of the " +
+  "claim changes: only the operator lifts the operator's suspension, so ask the operator. The four " +
+  "refuse role controller as fresh_session and compact do. " +
   "Each refusal says what the claim does now and which operation reaches each state. It " +
   "names no moment to come back at: ask again later, and read the claim's state in " +
   "read_state. " +
@@ -294,6 +320,10 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "set_status",
         "fresh_session",
         "compact",
+        "stop",
+        "retry",
+        "suspend",
+        "resume",
       ],
     },
     issue: { type: "string" },
@@ -1816,6 +1846,86 @@ test("the controller reads the state without a grant and sets an issue's status 
   });
   expect(calls).toHaveLength(before);
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
+});
+
+test("the controller stops, retries, suspends and resumes a claim it names by issue and role", async () => {
+  const minted: string[] = [];
+  // What the daemon answers each operation (claim-*.json): the claim as it left it, and who
+  // holds a suspension over it.
+  const answers = {
+    stopClaim: { state: "retired" },
+    retryClaim: { state: "launching" },
+    suspendClaim: { state: "suspended", suspendedBy: "controller" },
+    resumeClaim: { state: "launching" },
+  };
+  const { calls, daemon } = recordingDaemon({ answers });
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+
+  // Each names the claim as fresh_session and compact do, mints the controller's grant, and
+  // returns the daemon's answer whole.
+  for (const [op, route] of [
+    ["stop", "stopClaim"],
+    ["retry", "retryClaim"],
+    ["suspend", "suspendClaim"],
+    ["resume", "resumeClaim"],
+  ] as const) {
+    const answer = answers[route];
+    await expect(run({ op, issue: "LEGION-209", role: "tester" })).resolves.toEqual({
+      content: [{ type: "text", text: JSON.stringify(answer) }],
+      details: answer,
+    });
+    expect(calls.at(-1)).toEqual([
+      route,
+      { grantId: "controller-grant-1", issue: "LEGION-209", role: "tester" },
+    ]);
+  }
+  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
+
+  // Refused before any mint: a missing role, the controller's own, a missing issue and a field
+  // none of the four takes.
+  const before = calls.length;
+  for (const [parameters, message] of [
+    [{ op: "stop", issue: "LEGION-209" }, "stop requires role architect"],
+    [{ op: "retry", issue: "LEGION-209", role: "controller" }, "retry requires role architect"],
+    [{ op: "suspend", role: "tester" }, "suspend requires issue"],
+    [
+      { op: "resume", issue: "LEGION-209", role: "tester", reason: "why" },
+      'resume does not accept field "reason"; it takes issue, role',
+    ],
+  ] as const) {
+    const result = await run(parameters);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
+  }
+  expect(calls).toHaveLength(before);
+  expect(minted).toHaveLength(4);
+
+  // A refusal of the daemon's is the tool's failure, its code and words as the daemon gave them:
+  // the operator's own suspension, which only the operator lifts.
+  const refusing = recordingDaemon({
+    answers: {
+      resumeClaim: new LegionDaemonApiError(
+        "POST",
+        "/legion/v1/claims/resume",
+        409,
+        "SUSPENDED_BY_OPERATOR",
+        "legion-omp-legion-209-tester is held by the operator's own suspension, which only the operator lifts"
+      ),
+    },
+  });
+  const refused = await controllerTool(refusing.daemon, []).execute(
+    "",
+    { op: "resume", issue: "LEGION-209", role: "tester" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  expect(refused.isError).toBe(true);
+  expect(refused.content).toEqual([
+    { type: "text", text: expect.stringContaining("SUSPENDED_BY_OPERATOR") },
+  ]);
 });
 
 test("read_state with no field summarizes 92 issues under the tool's limit, naming every one", async () => {

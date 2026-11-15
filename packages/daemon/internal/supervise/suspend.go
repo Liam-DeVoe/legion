@@ -38,17 +38,18 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 // from that transcript holds a report with no answer. So the suspension is held:
 //
 //   - It runs when the turn ends (turnEnded), or at its deadline if the turn has not ended by then
-//     (TimerSuspend, suspendAtTimeout). The operator's suspension has one at the stop timeout from
-//     its arrival: an operator stopping the process — to drain the daemon, say — needs the stop
-//     bounded. The daemon's own suspension (its issue left the workflow, or its tree lingers) has
-//     none unless it names one (RequestSuspend.Deadline), and waits for the turn however long it
-//     takes: what bounds it is what ends the process anyway, the tree's close when its linger expires
+//     (TimerSuspend, suspendAtTimeout). The operator's suspension, and the controller's, has one at
+//     the stop timeout from its arrival: an operator stopping the process — to drain the daemon,
+//     say — needs the stop bounded. The daemon's own suspension (its issue left the workflow, or
+//     its tree lingers) has none unless it names one (RequestSuspend.Deadline), and waits for the
+//     turn however long it takes: what bounds it is what ends the process anyway, the tree's close
+//     when its linger expires
 //     or the child's close as done. No close reaches a carried child's role still running in its old
 //     tree, since the child has left that tree, so the daemon names that suspension the deadline the
 //     old tree's close would have had, the old root's linger expiry. Asked again meanwhile, it is the
-//     same hold, under one rule: a request can only move the deadline earlier, and the operator's
-//     also takes the hold over, from then on the operator's. Until the deadline the agent keeps its
-//     process and its capability.
+//     same hold, under one rule: a request can only move the deadline earlier, and one that holds
+//     (an operator's or the controller's) also takes over a hold it outranks, from then on its own
+//     (suspensionRank). Until the deadline the agent keeps its process and its capability.
 //   - A stop the runtime refuses keeps it held and tries again every probe interval (suspendHeld),
 //     so the deadline bounds the wait only while the runtime can stop the process. A claim
 //     whose turn ended stays idle meanwhile and is handed nothing (sendPending); a turn it starts
@@ -95,23 +96,25 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 			"reason", request.Reason, "by", request.By, "incarnation", m.claim.Locator.Incarnation)
 		return m.suspendOverADeadProcess(ctx, request)
 	}
-	// The flag and the deadline are the asker's own: suspendRequest hands a daemon's request under
-	// the operator's hold the operator's source, which must not give it the operator's stop timeout
-	// too, nor hold a request whose asker reports a refusal as nothing having happened.
+	// The flag and the deadline are the asker's own: suspendRequest hands a request weaker than a
+	// held operator's or controller's suspension that hold's own source, which must not give the
+	// request the stop timeout too, nor hold a request whose asker reports a refusal as nothing
+	// having happened.
 	if ev.(RequestSuspend).NeverHold {
 		return &RefusedError{State: m.claim.State, Request: "suspend",
 			Reason: "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"}
 	}
 	deadline := ev.(RequestSuspend).Deadline
-	if ev.(RequestSuspend).By == SuspendedByOperator {
+	if ev.(RequestSuspend).By.Holds() {
 		deadline = m.deps.Clock.Now().Add(m.deps.Timeouts.Stop)
 	}
 	switch {
 	case m.held == nil:
 		m.held = &RequestSuspend{Claim: request.Claim, Reason: request.Reason, By: request.By}
 		m.log.Info("supervise: the suspension is held for the agent's turn to end", "reason", request.Reason, "by", request.By)
-	case request.By == SuspendedByOperator && m.held.By != SuspendedByOperator:
-		m.log.Info("supervise: the operator's suspension takes the held suspension over", "reason", request.Reason, "held", m.held.Reason)
+	case request.By.Holds() && suspensionRank(request.By) > suspensionRank(m.held.By):
+		m.log.Info("supervise: a suspension that holds takes the held suspension over", "reason", request.Reason,
+			"by", request.By, "held", m.held.Reason, "heldBy", m.held.By)
 		m.held.By, m.held.Reason = request.By, request.Reason
 	}
 	// The held deadline only moves earlier, and the timer is re-armed only when that deadline comes
@@ -191,11 +194,13 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 
 // suspendedAgain is a suspension of a claim already suspended, and the one place a suspension's
 // source changes under it (Claim.SuspendedBy). A source takes the claim over only when it
-// outranks the one that holds it (suspensionRank): an operator's suspend of a claim the daemon
-// suspended, so the rule resumes it no more until the operator does, and a daemon's or an
-// operator's suspend of a claim whose idle pod was released, so the linger, park, close or
-// hand-over that asked for it owns the claim and no later wake acts on it. Anything else changes
-// nothing, and an operator's suspension is never taken over.
+// outranks the one that holds it (suspensionRank): an operator's or the controller's suspend of
+// a claim the daemon suspended, so the rule resumes it no more until a resume lifts it, an
+// operator's suspend of a claim the controller suspended, so the controller's resume lifts it no
+// more, and a daemon's, the controller's or an operator's suspend of a claim whose idle pod was
+// released, so the linger, park, close, hand-over or hold that asked for it owns the claim and no
+// later wake acts on it. Anything else changes nothing, and an operator's suspension is never
+// taken over: the controller's suspend of it is refused before it gets here (suspendRequest).
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -212,7 +217,8 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 
 // suspensionRank orders the sources a suspended claim can be held by, weakest first: a released
 // claim's suspension is the weakest, because the release ended no phase and every wake may
-// resume it; the daemon's is stronger, since it is a linger, a park or a close; the operator's is
+// resume it; the daemon's is stronger, since it is a linger, a park or a close; the controller's
+// is stronger again, since it holds against every rule (SuspendSource.Holds); the operator's is
 // strongest and nothing takes it over. An exit's is the root's own and is left where it is.
 func suspensionRank(source SuspendSource) int {
 	switch source {
@@ -220,8 +226,10 @@ func suspensionRank(source SuspendSource) int {
 		return 1
 	case SuspendedByDaemon:
 		return 2
-	case SuspendedByOperator:
+	case SuspendedByController:
 		return 3
+	case SuspendedByOperator:
+		return 4
 	default:
 		return 2
 	}
@@ -253,23 +261,31 @@ func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 
 // suspendRequest is the event a suspension's row is handed. The table routes only RequestSuspend
 // there (kindOf's onSuspend); another event is a wiring error, and so is a suspension that names
-// none of the operator, the daemon and the idle pod's release (a root's exit suspends it through
-// RequestExit, never this), since the source is what decides whether the daemon may resume the
-// claim and what becomes of the phase's task. Either is refused before anything is stopped, rather
-// than a panic, a journal line with no reason, or a claim suspended by nobody.
+// none of the operator, the controller, the daemon and the idle pod's release (a root's exit
+// suspends it through RequestExit, never this), since the source is what decides whether the
+// daemon may resume the claim and what becomes of the phase's task. Either is refused before
+// anything is stopped, rather than a panic, a journal line with no reason, or a claim suspended by
+// nobody. So is the controller's suspension of a claim the operator's own suspension holds, held
+// or landed (Claim.OperatorHolds, ErrOperatorHolds): it would change nothing of the claim, and the
+// refusal says so where an answer of success would not.
 func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	request, ok := ev.(RequestSuspend)
 	if !ok {
 		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspend action was handed %T, not a RequestSuspend", m.claim.Token, ev)
 	}
-	if request.By != SuspendedByOperator && request.By != SuspendedByDaemon && request.By != SuspendedByReleased {
-		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names source %q, not operator, daemon or released", m.claim.Token, request.By)
+	switch request.By {
+	case SuspendedByOperator, SuspendedByController, SuspendedByDaemon, SuspendedByReleased:
+	default:
+		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names source %q, not operator, controller, daemon or released", m.claim.Token, request.By)
 	}
-	// An operator's held suspension wins everywhere — launching, registered, ready while its
-	// stop retries, and working — until it completes. A later daemon linger/leave request must
-	// use that same source rather than changing a deliberate operator hold into a rule-resumable
-	// daemon suspension.
-	if m.held != nil && m.held.By == SuspendedByOperator && request.By != SuspendedByOperator {
+	if request.By == SuspendedByController && m.current().OperatorHolds() {
+		return RequestSuspend{}, &RefusedError{State: m.claim.State, Request: "suspend", Err: ErrOperatorHolds}
+	}
+	// A held suspension that holds — an operator's or the controller's — wins everywhere —
+	// launching, registered, ready while its stop retries, and working — over every request it
+	// outranks, until it completes. A later daemon linger/leave request must use that same source
+	// rather than changing a deliberate hold into a rule-resumable daemon suspension.
+	if m.held != nil && m.held.By.Holds() && suspensionRank(request.By) < suspensionRank(m.held.By) {
 		return *m.held, nil
 	}
 	return request, nil

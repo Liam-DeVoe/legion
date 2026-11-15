@@ -1370,9 +1370,35 @@ const legionDeliveryView = z.object({
 
 /** Who a suspension is held for (`supervise.SuspendedBy`). `unknown` is a suspension recorded
  * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
- * the claim's phase and its pending task until the next wake for its role; only an `operator`
- * one holds against the daemon's rules. */
-const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "released"]);
+ * the claim's phase and its pending task until the next wake for its role; an `operator` one and a
+ * `controller` one hold against the daemon's rules, and the operator's outranks the controller's:
+ * the controller's resume lifts its own and never the operator's (contract 136). */
+const legionSuspendedBy = z.enum([
+  "unknown",
+  "operator",
+  "controller",
+  "daemon",
+  "exit",
+  "released",
+]);
+
+/** `api.ClaimOperationResponse`, what the controller's four claim operations answer (`POST
+ * /legion/v1/claims/stop|retry|suspend|resume`, each taking `LegionClaimRequest`, contract 136):
+ * the claim's `state` after the request — `retired` after a stop; `suspended` after a suspension
+ * that landed, and still `working` or `launching` with `suspensionHeld` after one held for the
+ * agent's turn or its ready; `launching` after a resume or a retry the claim's machine ran; and
+ * still `failed` or `retired` after a retry of a phase worker whose start its issue's phase
+ * queued. `suspendedBy` (while the claim is suspended) and `suspensionHeldBy` (while one is held)
+ * say who holds the suspension: `controller` for the controller's own, which its resume lifts, and
+ * `operator` for the operator's, which only the operator lifts. These routes are the one
+ * session-facing surface that names a suspender, since no plugin below contract 136 calls them;
+ * the state does not ("no session-facing response carries suspendedBy" in legion-api.test.ts). */
+export const LegionClaimOperationResponse = z.object({
+  state: z.enum(LEGION_CLAIM_STATES),
+  suspendedBy: legionSuspendedBy.optional(),
+  suspensionHeld: z.literal(true).optional(),
+  suspensionHeldBy: legionSuspendedBy.optional(),
+});
 
 /** `api.OperatorClaim`, the body of the operator routes that act on one claim (`POST
  * /legion/v1/operator/claims`, `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`):

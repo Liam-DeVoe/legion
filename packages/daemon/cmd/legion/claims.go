@@ -199,7 +199,9 @@ func issuesOrNone(name string, issues []string) string {
 // where the controller's cause is read, since its claim is on no claim view of the state. A
 // claim whose idle pod the daemon released prints `suspended:released` for its state
 // (claimStateWord): it is not a suspension anyone is waiting to lift — its next delivery resumes
-// it in a pod of its own — so an operator reading the list must not read it as one.
+// it in a pod of its own — so an operator reading the list must not read it as one. A claim the
+// project's controller suspended prints `suspended:controller`, so the operator tells it from a
+// suspension of its own.
 func writeClaimLine(w io.Writer, c api.OperatorClaim) {
 	fmt.Fprintf(w, "%s %s %s %s %s %d %d %s %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), orNone(claimCauseWord(c)),
 		c.Generation, c.PluginContract,
@@ -232,10 +234,16 @@ func openCallWord(step *api.StepView) string {
 }
 
 // claimStateWord is the claim's state as the line prints it: `suspended:released` for a claim the
-// idle release suspended, and the state itself for every other claim, whose suspendedBy the
-// operator reads with --json.
+// idle release suspended, `suspended:controller` for one the project's controller suspended
+// through its own tool, which its resume lifts as well as the operator's, and the state itself
+// for every other claim, whose suspendedBy the operator reads with --json. A plain `suspended` is
+// therefore the operator's own suspension, or the daemon's.
 func claimStateWord(c api.OperatorClaim) string {
-	if c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByReleased) {
+	if c.State != string(supervise.StateSuspended) {
+		return c.State
+	}
+	switch supervise.SuspendSource(c.SuspendedBy) {
+	case supervise.SuspendedByReleased, supervise.SuspendedByController:
 		return c.State + ":" + c.SuspendedBy
 	}
 	return c.State

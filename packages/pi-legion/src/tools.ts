@@ -68,7 +68,16 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "handoff_complete",
     "ready_for_update",
   ],
-  controller: ["read_state", "set_status", "fresh_session", "compact"],
+  controller: [
+    "read_state",
+    "set_status",
+    "fresh_session",
+    "compact",
+    "stop",
+    "retry",
+    "suspend",
+    "resume",
+  ],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
@@ -84,7 +93,28 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   set_status: ["issue", "status"],
   fresh_session: ["issue", "role"],
   compact: ["issue", "role"],
+  stop: ["issue", "role"],
+  retry: ["issue", "role"],
+  suspend: ["issue", "role"],
+  resume: ["issue", "role"],
 };
+
+/** The controller's operations on one claim, each naming it by `issue` and `role`: the two
+ * recoveries and the operator's four `legion claims` operations, which the daemon serves the
+ * controller on routes of its own. */
+const CLAIM_OPERATIONS = [
+  "fresh_session",
+  "compact",
+  "stop",
+  "retry",
+  "suspend",
+  "resume",
+] as const;
+
+type ClaimOperation = (typeof CLAIM_OPERATIONS)[number];
+
+const isClaimOperation = (operation: string): operation is ClaimOperation =>
+  CLAIM_OPERATIONS.some((candidate) => candidate === operation);
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
 
@@ -392,7 +422,8 @@ export function createLegionTool(deps: {
         "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
         "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
         "one queued, one whose launch is in flight, and one left working under a relaunch the " +
-        "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
+        "wake pacing parked (CLAIM_UNSETTLED) — for a claim the operator suspended, whose " +
+        "suspension only the operator lifts (SUSPENDED_BY_OPERATOR), and for role controller. " +
         "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
         "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
         "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
@@ -411,6 +442,27 @@ export function createLegionTool(deps: {
         "reaches, and one left working under a relaunch the wake pacing parked " +
         "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
         "and for role controller. " +
+        "stop, retry, suspend and resume (issue, role) are the operator's own claim operations. Each answers " +
+        "the claim's state after it, with who holds a suspension over it: suspendedBy while the claim is " +
+        "suspended, and suspensionHeld with suspensionHeldBy while a suspension waits for a turn to end. " +
+        "stop ends the claim: the daemon stops its agent at once, also in a turn, which loses that turn, and " +
+        "retires the claim with its session kept on record. Only retry, or a start of its issue's phase, runs " +
+        "it again. The daemon refuses stop for a tree's root architect, which ends only with its tree: suspend " +
+        "it instead. " +
+        "retry starts a claim that failed, or that a stop retired, again in the session it recorded, with " +
+        "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
+        "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
+        "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume that one. " +
+        "suspend stops the claim's agent and keeps its session and the task it owes. A claim in a turn " +
+        "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
+        "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the claim " +
+        "again until your resume or the operator's. " +
+        "resume starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
+        "The daemon refuses resume for a claim stored working (CLAIM_IN_A_TURN). " +
+        "The daemon refuses resume, suspend and stop for a claim the operator suspended, or whose " +
+        "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), and nothing of the " +
+        "claim changes: only the operator lifts the operator's suspension, so ask the operator. The four " +
+        "refuse role controller as fresh_session and compact do. " +
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
         "read_state. ",
@@ -459,23 +511,36 @@ export function createLegionTool(deps: {
         const client = daemon();
         if (active.kind === "controller") {
           if (operation === "read_state") return readState(await client.state(), parameters);
-          // The controller's three writes: each validated whole before its grant is minted.
+          // The controller's writes: each validated whole before its grant is minted.
           const issue = requiredString(parameters, operation, "issue");
-          if (operation === "fresh_session" || operation === "compact") {
+          if (isClaimOperation(operation)) {
             const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
             if (role === undefined) {
               throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
             }
             const { grantId } = await controllerGrant(active.sessionID);
-            if (operation === "compact") {
-              // The answer is the daemon's own: a compaction Oh My Pi refused or skipped says so
-              // and names why, and the claim is back whatever it says.
-              return jsonSuccess(await client.compact({ grantId, issue, role }));
+            const request = { grantId, issue, role };
+            switch (operation) {
+              case "compact":
+                // The answer is the daemon's own: a compaction Oh My Pi refused or skipped says
+                // so and names why, and the claim is back whatever it says.
+                return jsonSuccess(await client.compact(request));
+              case "fresh_session":
+                // The daemon's answer again: empty for a claim whose phase was restarted or
+                // needed no restart, and naming the refusal where the claim came back owing no
+                // task and the workflow refused the restart that would have handed it one.
+                return jsonSuccess(await client.freshSession(request));
+              // The operator's four operations answer the claim as each left it, with who holds
+              // a suspension over it, so the controller reads whether its own resume lifts it.
+              case "stop":
+                return jsonSuccess(await client.stopClaim(request));
+              case "retry":
+                return jsonSuccess(await client.retryClaim(request));
+              case "suspend":
+                return jsonSuccess(await client.suspendClaim(request));
+              case "resume":
+                return jsonSuccess(await client.resumeClaim(request));
             }
-            // The daemon's answer again: empty for a claim whose phase was restarted or needed
-            // no restart, and naming the refusal where the claim came back owing no task and
-            // the workflow refused the restart that would have handed it one.
-            return jsonSuccess(await client.freshSession({ grantId, issue, role }));
           }
           const status = ISSUE_STATUSES.find((candidate) => candidate === parameters.status);
           if (status === undefined) {

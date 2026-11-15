@@ -69,10 +69,10 @@ const (
 
 // SuspendSource is who suspended a claim. The daemon resumes a suspended claim by rule on the
 // triggers main had — its phase's start, a workflow delivery, the controller keeper
-// (RequestRuleResume) — unless an operator suspended it: that suspension holds until the operator
-// resumes the claim. The boot's resume by rule, which main did not have, acts only on a source
-// ByRule names, so it never overrides a drain recorded before the source existed, and it leaves a
-// released claim to the wake that brings its pod back.
+// (RequestRuleResume) — unless an operator or the project's controller suspended it: that
+// suspension holds until a resume lifts it (SuspendSource.Holds). The boot's resume by rule, which
+// main did not have, acts only on a source ByRule names, so it never overrides a drain recorded
+// before the source existed, and it leaves a released claim to the wake that brings its pod back.
 type SuspendSource string
 
 const (
@@ -82,6 +82,11 @@ const (
 	SuspendedByUnknown SuspendSource = "unknown"
 	// SuspendedByOperator: the operator's suspend route.
 	SuspendedByOperator SuspendSource = "operator"
+	// SuspendedByController: the project's controller's suspend, through its `legion` tool (api's
+	// claimSuspend). It holds as the operator's does, and its resume lifts it as the operator's
+	// does; it ranks below the operator's, so the controller can neither take over nor lift a
+	// suspension the operator holds (suspensionRank, ErrOperatorHolds).
+	SuspendedByController SuspendSource = "controller"
 	// SuspendedByDaemon: the workflow's own suspend — the issue left the workflow, or its tree
 	// lingers.
 	SuspendedByDaemon SuspendSource = "daemon"
@@ -111,13 +116,21 @@ func (s SuspendSource) ByRule() bool {
 	return s == SuspendedByDaemon || s == SuspendedByExit
 }
 
+// Holds is whether a suspension by this source holds against the daemon's rules: an operator's or
+// the project's controller's, each a decision a person or the controller made about the claim, which
+// no start, delivery or resume the daemon queues gets past (Claim.RuleHolds, Claim.RuleMayResume).
+// Only a resume lifts it: the operator's lifts either, and the controller's lifts its own alone.
+func (s SuspendSource) Holds() bool {
+	return s == SuspendedByOperator || s == SuspendedByController
+}
+
 // RetiresPhaseTask is whether a suspension by this source ends the claim's phase, so a task queued
-// for that phase goes with it (settle). Every source does but two: an operator's, and a release.
-// Each of those resumes this same claim in the same phase — the operator's by hand, a released
-// claim's at its role's next wake — so the pending task waits through the suspension and is sent
-// on that resume.
+// for that phase goes with it (settle). Every source does but three: an operator's, the
+// controller's, and a release. Each of those resumes this same claim in the same phase — the
+// operator's and the controller's by hand, a released claim's at its role's next wake — so the
+// pending task waits through the suspension and is sent on that resume.
 func (s SuspendSource) RetiresPhaseTask() bool {
-	return s != SuspendedByOperator && s != SuspendedByReleased
+	return !s.Holds() && s != SuspendedByReleased
 }
 
 // Claim is one role claim as the supervisor holds and persists it.
@@ -546,10 +559,11 @@ func (c Claim) LeftPodRound(round string) bool {
 	return IsPodRound(round) && c.UpdateRound == round && c.UpdateLeftRound == round
 }
 
-// RuleMayResume says whether the rule may resume this suspended claim: every suspension but the
-// operator's, which holds until an operator resumes the claim.
+// RuleMayResume says whether the rule may resume this suspended claim: every suspension but one
+// that holds (SuspendSource.Holds), which holds until the operator, or the controller that placed
+// it, resumes the claim.
 func (c Claim) RuleMayResume() bool {
-	return c.State == StateSuspended && c.SuspendedBy != SuspendedByOperator
+	return c.State == StateSuspended && !c.SuspendedBy.Holds()
 }
 
 // Released is whether the claim is the one suspension a wake brings back: the daemon released its
@@ -561,18 +575,39 @@ func (c Claim) Released() bool {
 	return c.State == StateSuspended && c.SuspendedBy == SuspendedByReleased
 }
 
-// RuleHolds is whether an operator's suspension blocks a daemon rule: the claim is suspended by the
-// operator, or the operator's suspension is held for its agent's turn.
+// RuleHolds is whether a suspension that holds blocks a daemon rule: the claim is suspended by the
+// operator or the controller, or such a suspension is held for its agent's turn.
 func (c Claim) RuleHolds() bool {
-	if c.SuspensionHeld {
-		return c.SuspensionHeldBy == SuspendedByOperator
-	}
-	return c.State == StateSuspended && c.SuspendedBy == SuspendedByOperator
+	return c.holder().Holds()
 }
 
-// RuleHoldError says why a start or outbox delivery waits: the operator's suspension, which only
-// the operator's resume ends.
+// OperatorHolds is whether the operator's own suspension is over the claim: the claim is suspended
+// by the operator, or the operator's suspension is held for its agent's turn. Only the operator's
+// resume lifts it, so the controller's requests that would lift it, take it over or end the claim
+// under it are refused (ErrOperatorHolds).
+func (c Claim) OperatorHolds() bool {
+	return c.holder() == SuspendedByOperator
+}
+
+// holder is who the suspension over the claim is for: the held one's asker while one is held, the
+// recorded source while the claim is suspended, and "" otherwise.
+func (c Claim) holder() SuspendSource {
+	if c.SuspensionHeld {
+		return c.SuspensionHeldBy
+	}
+	if c.State == StateSuspended {
+		return c.SuspendedBy
+	}
+	return ""
+}
+
+// RuleHoldError says why a start or outbox delivery waits: the suspension that holds, which only
+// a resume ends — the operator's for the operator's suspension, and the controller's or the
+// operator's for the controller's.
 func (c Claim) RuleHoldError() error {
+	if c.holder() == SuspendedByController {
+		return fmt.Errorf("the claim is suspended by %s; it waits for the controller's or the operator's resume: %w", SuspendedByController, ErrHeldByController)
+	}
 	return fmt.Errorf("the claim is suspended by %s; it waits for the operator's resume: %w", SuspendedByOperator, ErrHeldByOperator)
 }
 
@@ -967,6 +1002,19 @@ var ErrRetryNotTheController = errors.New("the operator's retry does not relaunc
 // for the outbox log.
 var ErrHeldByOperator = wait.New("the suspension holds until the operator resumes the claim")
 
+// ErrHeldByController is ErrHeldByOperator for the project's controller's suspension, which holds
+// as the operator's does (SuspendSource.Holds): a wait, ended by the controller's resume or the
+// operator's. RuleHoldError wraps it for the outbox log.
+var ErrHeldByController = wait.New("the suspension holds until the controller or the operator resumes the claim")
+
+// ErrOperatorHolds is a request of the project's controller's refused because the operator's own
+// suspension is over the claim (Claim.OperatorHolds): the controller's resume would lift it, its
+// suspension would take it over, and its stop would end the claim under it, which a retry then
+// relaunches. Each overrides a decision the operator made and only the operator undoes, so each is
+// refused, and nothing of the claim changes. The refusal is no wait: nothing the daemon does ends
+// it, and the controller asks the operator instead.
+var ErrOperatorHolds = errors.New("the operator's suspension holds the claim, and only the operator's resume lifts it")
+
 // ErrNoSuchDelivery is the store's refusal of a retirement of a delivery the claim's row no
 // longer holds. It is named here, rather than matched as a string where the refusal is read,
 // because internal/store imports this package and so cannot be imported back: the store's
@@ -1281,8 +1329,17 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // `legion claims suspend` to be answered at all (dispatch://INFRA-714 R10). The cancelled start
 // has charged nothing, and the row this suspension then runs finds a claim launching with no
 // process to stop (holdSuspendUntilReady).
+//
+// The controller's suspension of a claim the operator's own suspension holds cancels nothing: its
+// row refuses it (suspendRequest, ErrOperatorHolds), and a refusal changes nothing of the claim,
+// the start in flight included. The hold is read off the published view (View), since the lock
+// is the very thing a start in flight holds. A view a decision then moves past is harmless either
+// way: an operator's resume published after it leaves a claim this suspension is held over until
+// ready rather than one whose start it cut short, and an operator's suspension published after it
+// stops that start itself, at its own arrival.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
-	if _, suspending := ev.(RequestSuspend); suspending {
+	if request, suspending := ev.(RequestSuspend); suspending &&
+		(request.By != SuspendedByController || !m.View().OperatorHolds()) {
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
 	m.mu.Lock()
