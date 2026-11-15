@@ -90,8 +90,9 @@ export type AddressUpdate = (rewrite: (params: URLSearchParams) => URLSearchPara
 
 /**
  * The one write of the page address, always `{ replace: true }` (see this module's head: a
- * filter the reader is trying out must not fill the browser's history). The pathname and the
- * hash are left exactly as they are; only the query changes.
+ * filter the reader is trying out must not fill the browser's history). The pathname is left as
+ * it is and only the query changes; the hash goes, since React Router's `setSearchParams`
+ * navigates to the new query alone.
  */
 export function useAddressUpdate(): AddressUpdate {
   const [, setSearchParams] = useSearchParams();
@@ -134,7 +135,7 @@ export interface AddressRedirectProps {
  * whole id a short one stood for. Like every write here that does not ask to push, it replaces
  * the history entry, so Back leaves for the page the reader came from instead of returning to an
  * address that only sends them on again. It is React Router's `<Navigate>`, which no page of the
- * six features draws for itself.
+ * seven features draws for itself.
  */
 export function AddressRedirect({ keepQuery = false, to }: AddressRedirectProps): ReactElement {
   const { search } = usePageAddress();
@@ -489,7 +490,7 @@ function inboxRouteOf(params: URLSearchParams): InboxRoute {
 }
 
 /** The Inbox's route as a query string names it (`inboxRouteOf`), for a caller holding the
- *  address as text: `features/search`'s scoping reads one, and so do this module's own tests. */
+ *  address as text: this module's own tests read one. */
 export function parseInboxSearch(search: string): InboxRoute {
   return inboxRouteOf(copyAddress(search));
 }
