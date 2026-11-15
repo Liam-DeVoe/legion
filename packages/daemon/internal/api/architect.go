@@ -442,20 +442,27 @@ func stepNames(steps []record.DesignStep) string {
 	return strings.Join(record.StepNames(steps), ", ")
 }
 
-// stepDocument says whether document is the one the step records of its issue: the issue's
+// stepDocument says whether document is the one the step records of its issue (stepRecords).
+func stepDocument(step record.DesignStep, document dispatch.Approval) bool {
+	return stepRecords(step, document.Primary, document.Role, document.Slug)
+}
+
+// stepRecords says whether a document that is its issue's primary document or not (primary),
+// plays role beside it and is filed under slug is the one step records of its issue: the issue's
 // primary document for spec, its Verification document for criteria, and its decisions document
-// for decisions.
+// for decisions. It is the one statement of that binding, which a registration's document
+// (stepDocument) and the parts a view is read by (documentPart) both read.
 //
 // A decisions document stored before Dispatch knew the role carries none, so its slug answers for
 // it: that is what lets Dispatch and the daemon of this release deploy in either order.
-func stepDocument(step record.DesignStep, document dispatch.Approval) bool {
+func stepRecords(step record.DesignStep, primary bool, role, slug string) bool {
 	switch step {
 	case record.DesignStepSpec:
-		return document.Primary
+		return primary
 	case record.DesignStepCriteria:
-		return document.Role == dispatch.ArtifactRoleVerification
+		return role == dispatch.ArtifactRoleVerification
 	case record.DesignStepDecisions:
-		return document.Role == dispatch.ArtifactRoleDecisions || document.Slug == dispatch.DecisionsSlug
+		return role == dispatch.ArtifactRoleDecisions || slug == dispatch.DecisionsSlug
 	}
 	return false
 }
@@ -470,7 +477,7 @@ func (s *server) gateIssue(w http.ResponseWriter, r *http.Request, issue string)
 	}
 	current, err := s.dispatch.GetIssue(r.Context(), issue)
 	if err != nil {
-		writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry register_gate", issue))
+		refuseFailedRead(w, &readFailure{what: issue, err: err})
 		return dispatch.Issue{}, false
 	}
 	return current, true
@@ -490,7 +497,7 @@ func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifac
 		writeFailure(w, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
 		return dispatch.Approval{}, false
 	case err != nil:
-		writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry register_gate", artifactID))
+		refuseFailedRead(w, &readFailure{what: artifactID, err: err})
 		return dispatch.Approval{}, false
 	}
 	return approval, true

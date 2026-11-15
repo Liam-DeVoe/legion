@@ -1546,16 +1546,9 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		handlers = nil
 	}
 	ctx, committedHooks := WithCommitHooks(ctx)
-	var result Result
-	for _, handler := range handlers {
-		candidate, err := handler.Apply(ctx, tx, fact)
-		if err != nil {
-			return Result{}, err
-		}
-		if result.Refusal == nil && candidate.Refusal != nil {
-			result.Refusal = candidate.Refusal
-		}
-		result.Unspent = result.Unspent || candidate.Unspent
+	result, err := ApplyHandlers(ctx, tx, fact, handlers)
+	if err != nil {
+		return Result{}, err
 	}
 	// A refused report of a production check leaves its event unmarked, so a report sent again —
 	// the same look and verdict, which is the same fact id its route mints (api's checkReport) —
@@ -1574,6 +1567,26 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 	}
 	committed = true
 	committedHooks()
+	return result, nil
+}
+
+// ApplyHandlers runs handlers on fact in order, inside the caller's transaction, and combines what
+// they answer: the first refusal any of them gives, every handler run whatever an earlier one
+// refused, and whether any left the fact unspent. The first error stops the run and is the whole
+// answer. It is ApplyFact's one combination of its handlers, which a handler made of handlers
+// (the daemon's test seam that drops a consumed event) answers with as well.
+func ApplyHandlers(ctx context.Context, tx pgx.Tx, fact Fact, handlers []Handler) (Result, error) {
+	var result Result
+	for _, handler := range handlers {
+		applied, err := handler.Apply(ctx, tx, fact)
+		if err != nil {
+			return Result{}, err
+		}
+		if result.Refusal == nil {
+			result.Refusal = applied.Refusal
+		}
+		result.Unspent = result.Unspent || applied.Unspent
+	}
 	return result, nil
 }
 

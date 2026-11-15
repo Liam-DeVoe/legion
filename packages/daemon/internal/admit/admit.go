@@ -569,7 +569,7 @@ func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue
 	}
 	held := record.HeldList(issues, own, line, dropped, facts)
 	a.logUnclassified(held, issues)
-	return held, blockers.Blocked(rows, issues, line, blockers.ChildRows(issues, facts)), silent, nil
+	return held, blockers.Blocked(rows, issues, line, facts), silent, nil
 }
 
 // logUnclassified writes one line for each row the ladder could put no word to (C2), naming the

@@ -52,10 +52,10 @@ func ChildrenFirstCandidates(issues []Issue, gates map[string]TreeGate) []string
 
 // StartedParents is every issue of issues whose phases have started and whose next phase start an
 // open Dispatch child of it holds (dispatch://INFRA-3320 R9): it is in the workflow (InWorkflow)
-// and stands in planning through accepting or is held from one of them (StandsAt), owes its
-// worker a start (owed, LineFacts.Owed), or already waits in awaiting_children. Those are the only
-// started parents whose Dispatch children are read (StartedParentWaits). The keys come out
-// sorted, as ChildrenFirstCandidates' do.
+// and stands in a phase whose start an open child holds (OpenChildHolds) or is held from one
+// (StandsAt), owes its worker a start (owed, LineFacts.Owed), or already waits in
+// awaiting_children. Those are the only started parents whose Dispatch children are read
+// (StartedParentWaits). The keys come out sorted, as ChildrenFirstCandidates' do.
 //
 // It is a judgement of its own beside ChildrenFirstCandidates rather than a widening of it, and it
 // reads no design gate: the children-first rule waits for an open gate because before it a root's
@@ -71,12 +71,8 @@ func StartedParents(issues []Issue, owed map[string]OwedStart) []string {
 			continue
 		}
 		_, owes := owed[issue.Key]
-		switch StandsAt(issue) {
-		case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.AwaitingChildren:
-		default:
-			if !owes {
-				continue
-			}
+		if at := StandsAt(issue); !OpenChildHolds(at) && at != phase.AwaitingChildren && !owes {
+			continue
 		}
 		keys = append(keys, issue.Key)
 	}
@@ -84,37 +80,68 @@ func StartedParents(issues []Issue, owed map[string]OwedStart) []string {
 	return keys
 }
 
+// OpenChildHolds says whether p is a phase whose start an open Dispatch child of the issue holds
+// once its phases have started (dispatch://INFRA-3320 R9): planning through accepting. The
+// issue's first phase is not among the starts it reaches — that start is the admission line's
+// (ChildrenFirstCandidates, workflow's StartFirstPhase) — nor retro and merging, which start once
+// the daemon has accepted the issue (AcceptedPhase), after its children. The workflow's guard on
+// every phase start (workflow's childrenHolding) and this judgement of the started parents
+// (StartedParents) both read it, so the admission pass and the engine never disagree about which
+// starts an open child holds.
+func OpenChildHolds(p phase.Phase) bool {
+	switch p {
+	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting:
+		return true
+	}
+	return false
+}
+
 // StartedParentWaits is the open Dispatch children of every started parent (StartedParents), by
 // parent key, read as ChildWaitsOf reads the children of a parent whose first phase has not
 // started: one read of the mirror's children of every candidate and one read of the daemon's own
 // record of every child, whatever the number of parents, each child judged by ChildOpen
-// (ChildWaits). A parent with none has no entry, so the map is exactly the set of started parents
-// an open child holds. facts are the pass's own, which carry the starts the project owes
-// (LineFacts.Owed) and the records above the pass's own that the cycle walk crosses
-// (LineFacts.Parents).
-//
-// One child is left out, as the engine's own read of a parent's open children leaves it out
-// (workflow's childrenOpen): a child of the parent's own tree that the daemon holds at admitted
-// under an accepted ancestor (HeldUnderAccepted). That child starts nothing before the ancestor
-// closes, and the ancestor's merge waits for the parent, so a parent held on it would wait for
-// ever; the sign-off of a parent in accepting leaves it out for the same reason (OpenBeneath).
+// (ChildWaits), with the one child OpenChildWaits leaves out. A parent with none has no entry, so
+// the map is exactly the set of started parents an open child holds. facts are the pass's own,
+// which carry the starts the project owes (LineFacts.Owed) and the records above the pass's own
+// that the cycle walk crosses (LineFacts.Parents).
 //
 // Nothing here is stored, and nothing here moves an issue: the admission pass moves a started
 // parent with an open child into awaiting_children and takes one whose last open child has gone
 // back to the start it held (admit's childrenWaits), and the held list names the children of a
 // parent in awaiting_children (HeldReasonOf), each from this one judgement of the pass.
 func StartedParentWaits(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, facts LineFacts) (map[string]ChildWait, error) {
-	waits, records, err := readChildWaits(ctx, tx, store, project, issues, StartedParents(issues, facts.Owed), facts.Parents)
+	children, err := dispatchChildren(ctx, tx, store, project, StartedParents(issues, facts.Owed))
+	if err != nil {
+		return nil, err
+	}
+	return OpenChildWaits(ctx, tx, store, project, issues, children, facts.Parents)
+}
+
+// OpenChildWaits is the open Dispatch children that hold the phase starts of each parent of
+// children, the mirror's rows under each (Store.DispatchChildren), by parent key: each child
+// judged by the daemon's own record of it (judgeChildren), and one child left out. It is the one
+// judgement of a started parent's open children, which the admission pass reads of every started
+// parent (StartedParentWaits) and the engine of one parent (workflow's childrenOpen: the guard on
+// every phase start, the sign-off's hold and the refusal of a parent in awaiting_children). A
+// parent with none has no entry. issues are the records the parents are read in — the pass's own,
+// or one parent's tree — and above the records above them that the cycle walk crosses
+// (LineFacts.Parents), nil for none.
+//
+// The child left out is a child of the parent's own tree that the daemon holds at admitted under
+// an accepted ancestor (HeldUnderAccepted). That child starts nothing before the ancestor closes,
+// and the ancestor's merge waits for the parent, so a parent held on it would wait for ever; the
+// sign-off of a parent in accepting leaves it out for the same reason (OpenBeneath).
+func OpenChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, children map[string][]DispatchIssueRow,
+	above map[string]Issue,
+) (map[string]ChildWait, error) {
+	waits, records, err := judgeChildren(ctx, tx, store, project, issues, children, above)
 	if err != nil || len(waits) == 0 {
 		return waits, err
 	}
-	byKey := make(map[string]Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
-	chain := chainOf(byKey, facts.Parents)
+	parents := byKey(issues)
+	chain := chainOf(parents, above)
 	for key, wait := range waits {
-		tree := byKey[key].Tree
+		tree := parents[key].Tree
 		open := make([]OpenChild, 0, len(wait.Open))
 		for _, child := range wait.Open {
 			if found, recorded := records[child.Key]; recorded && found.Tree == tree && HeldUnderAccepted(found, chain) {
@@ -278,26 +305,33 @@ func cycleAncestor(child DispatchIssueRow, parent Issue, byKey map[string]Issue)
 // of every consumer. facts are the pass's own, which carry the gates each candidate is read
 // against and the records above the pass that its cycle walk crosses.
 func ChildWaitsOf(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, facts LineFacts) (map[string]ChildWait, error) {
-	waits, _, err := readChildWaits(ctx, tx, store, project, issues, ChildrenFirstCandidates(issues, facts.Gates), facts.Parents)
+	children, err := dispatchChildren(ctx, tx, store, project, ChildrenFirstCandidates(issues, facts.Gates))
+	if err != nil {
+		return nil, err
+	}
+	waits, _, err := judgeChildren(ctx, tx, store, project, issues, children, facts.Parents)
 	return waits, err
 }
 
-// readChildWaits is the two reads both judgements of a parent's children make — the mirror's
-// children of parents (Store.DispatchChildren) and the daemon's own record of each of those
-// children (Store.IssuesOf), one query each whatever the number of parents and children — and
-// the judgement over them (ChildWaits), with the records each child was judged by, by key, which
-// StartedParentWaits reads again for the one child it leaves out. No parents is no read at all.
-// above is the records above the pass's own that the cycle walk crosses (LineFacts.Parents).
-func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, parents []string,
+// dispatchChildren is the mirror's children of parents (Store.DispatchChildren), the first read
+// both judgements of a parent's children make (ChildWaitsOf, StartedParentWaits): one query
+// whatever the number of parents. No parents is no read at all.
+func dispatchChildren(ctx context.Context, tx pgx.Tx, store Store, project string, parents []string) (map[string][]DispatchIssueRow, error) {
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	return store.DispatchChildren(ctx, tx, project, parents)
+}
+
+// judgeChildren is the second read every judgement of a parent's children makes — the daemon's
+// own record of each child the mirror shows under a parent of children (Store.IssuesOf), one
+// query whatever the number of children — and the judgement over them (ChildWaits), with the
+// records each child was judged by, by key, which OpenChildWaits reads again for the one child it
+// leaves out. No child is no read at all. above is the records above the pass's own that the
+// cycle walk crosses (LineFacts.Parents).
+func judgeChildren(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, children map[string][]DispatchIssueRow,
 	above map[string]Issue,
 ) (map[string]ChildWait, map[string]Issue, error) {
-	if len(parents) == 0 {
-		return map[string]ChildWait{}, nil, nil
-	}
-	children, err := store.DispatchChildren(ctx, tx, project, parents)
-	if err != nil {
-		return nil, nil, err
-	}
 	keys := make([]string, 0, len(children))
 	for _, rows := range children {
 		for _, row := range rows {
@@ -317,10 +351,7 @@ func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string,
 	if err != nil {
 		return nil, nil, err
 	}
-	records := make(map[string]Issue, len(rows))
-	for _, row := range rows {
-		records[row.Key] = row
-	}
+	records := byKey(rows)
 	return ChildWaits(issues, children, records, above), records, nil
 }
 

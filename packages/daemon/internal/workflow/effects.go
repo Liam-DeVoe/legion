@@ -451,16 +451,15 @@ const testerVerdictLabel = "Tester's verdict"
 // with the entry it raises for that role (enter), whose task is word for word the task the
 // worker is sent. Its start carries no mark (startMarks), a fresh session among them: the
 // operator's `legion claims retry --fresh-session` reaches a retry of a held phase (restart) and
-// never a transition's start. from is the phase the move into that phase left, and movedBack
-// whether that move was a move back to an earlier one; both are written on the row beside the
-// entry and are the transition's to read, not this function's: the issue record already names
-// the phase it moved into by the time a start is made. A phase with no worker, and accepting,
-// whose architect admission started with the tree, start nobody.
-func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, from phase.Phase, movedBack bool) error {
+// never a transition's start. from is the phase the move into that phase left, which enter writes
+// on the row beside the entry with whether that move was a move back: the issue record already
+// names the phase it moved into by the time a start is made. A phase with no worker, and
+// accepting, whose architect admission started with the tree, start nobody.
+func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, from phase.Phase) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
-	entry, err := e.enter(ctx, tx, issue, role, task, from, movedBack)
+	entry, err := e.enter(ctx, tx, issue, role, task, from)
 	if err != nil {
 		return err
 	}
@@ -539,12 +538,19 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // rather than by each door, so no door can send an owed entry as news.
 func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
 	marks startMarks) error {
-	task := row.EntryTask
-	if task == "" {
-		task = ResumePhaseTask(issue)
-	}
 	marks.reasserts = true
-	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
+	return e.started(ctx, tx, issue, role, entryWork(issue, row), row.Entry, marks)
+}
+
+// entryWork is the work row's entry was raised with (record.PhaseRow.EntryTask), and the phase's
+// resume task where the row carries none (ResumePhaseTask): what a claim behind its entry is sent
+// (SendOwedEntry says which rows carry none), and what the admission pass holds for a phase it
+// stops in the middle (StopForChildren, queuedTask).
+func entryWork(issue record.Issue, row record.PhaseRow) string {
+	if row.EntryTask != "" {
+		return row.EntryTask
+	}
+	return ResumePhaseTask(issue)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -560,7 +566,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // hands the role the phase it already stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	task := ResumePhaseTask(issue)
-	entry, err := e.enter(ctx, tx, issue, role, task, "", false)
+	entry, err := e.enter(ctx, tx, issue, role, task, "")
 	if err != nil {
 		return err
 	}
@@ -846,22 +852,26 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // what the worker is told and a claim left behind the entry can be sent that work again from the
 // record alone (SendOwedEntry).
 //
-// movedBack is written with them: whether the start raising this entry was a move back to an
-// earlier phase. Its one reader is the completion route's entry fence, which takes a completion
-// of an earlier entry at the head the record holds and refuses it whatever head it names when
-// the entry standing now was raised by a move back, since such an entry asks for the phase's
-// work to be done again (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here
-// rather than counted anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
+// The move back is written with them: whether the move that raised this entry, out of from into
+// the phase issue stands in now, went back to an earlier phase (phase.MovesBack), or is the
+// return out of awaiting_children (ReturnFromChildren), which asks for the held phase's work to
+// be done again on a head that is to carry the children's merges. Its one reader is the
+// completion route's entry fence, which takes a completion of an earlier entry at the head the
+// record holds and refuses it whatever head it names when the entry standing now was raised by a
+// move back, since such an entry asks for the phase's work to be done again
+// (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here rather than counted
+// anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
 //
 // from is written with them too: the phase the move that raises this entry left, "" where no
-// move raises it (StartPromotedWorker). The admission pass reads it to leave a parent whose entry
-// a conflicting head raised out of retro or merging where it stands (record.PhaseRow.EntryFrom,
-// StopForChildren).
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, from phase.Phase, movedBack bool) (int64, error) {
+// move raises it (StartPromotedWorker), which is no move back. The admission pass reads it to
+// leave a parent whose entry a conflicting head raised out of retro or merging where it stands
+// (record.PhaseRow.EntryFrom, StopForChildren).
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, from phase.Phase) (int64, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, err
 	}
+	movedBack := from == phase.AwaitingChildren || phase.MovesBack(from, issue.Phase)
 	row.Entry++
 	row.EntryTask, row.EntryRaisedAt, row.EntryMovedBack, row.EntryFrom = task, e.now(), movedBack, from
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {

@@ -65,7 +65,7 @@ type Pods interface {
 	// (cutoverMergerRepair).
 	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
 	// CancelPodBackstops drops every open backstop of issue: a parent that moves into
-	// awaiting_children has no phase for one to wake a role of it into (AwaitChildren).
+	// awaiting_children has no phase for one to wake a role of it into (awaitChildren).
 	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error
 }
 

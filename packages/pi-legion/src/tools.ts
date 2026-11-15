@@ -8,6 +8,8 @@ import {
   type LegionState,
 } from "@legion/contracts/legion-api";
 import {
+  OPEN_BLOCK_ASK_THE_HUMAN,
+  OPEN_BLOCK_WAIVED,
   parseDispatchRef,
   refuseOpenDecisionBlocks,
   resolveIssueDocument,
@@ -365,13 +367,15 @@ function registrationBasis(
       `register_gate takes basis, basisVersion and reason together or not at all; this call names ${given.join(" and ")} without ${missing.join(" and ")}`
     );
   }
-  const version = parameters.basisVersion;
-  if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+  const version = LegionGateRegisterRequest.shape.basisVersion
+    .unwrap()
+    .safeParse(parameters.basisVersion);
+  if (!version.success) {
     throw new Error("register_gate's basisVersion is a positive integer");
   }
   return {
-    document: basisDocument(requiredString(parameters, "register_gate", "basis"), version),
-    version,
+    document: basisDocument(requiredString(parameters, "register_gate", "basis"), version.data),
+    version: version.data,
     reason: requiredString(parameters, "register_gate", "reason"),
   };
 }
@@ -399,7 +403,11 @@ const OPEN_BLOCKS_UNDER_A_BASIS = {
   effect:
     "A basis opens the step with no person's review of this document, so its open question would go unanswered, and answering one writes a new version, which this registration does not name.",
   remedy:
-    "Do not register on a basis over an open block. Tell the human which block is open and ask them to answer it or to waive it. Once it is answered, it settles into a version on its own in about two seconds. If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason) and write their decision into the text with dispatch doc-edit. Then register the new version as skill://legion-architect/references/design-gate.md says.",
+    "Do not register on a basis over an open block. " +
+    OPEN_BLOCK_ASK_THE_HUMAN +
+    " " +
+    OPEN_BLOCK_WAIVED +
+    " and write their decision into the text with dispatch doc-edit. Then register the new version as skill://legion-architect/references/design-gate.md says.",
 } as const;
 
 /** The daemon's role-local workflow surface: no operation can schedule a worker. Every operation
@@ -621,10 +629,13 @@ export function createLegionTool(deps: {
         }
         switch (operation) {
           case "register_gate": {
-            const version = parameters.version;
-            if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+            const parsedVersion = LegionGateRegisterRequest.shape.version.safeParse(
+              parameters.version
+            );
+            if (!parsedVersion.success) {
               throw new Error("register_gate requires a positive integer version");
             }
+            const version = parsedVersion.data;
             // The gate is the tree root's, registered by the root's own architect, as the daemon
             // requires: anyone else is refused before a lookup could answer for the wrong issue.
             const issue = requiredString(parameters, operation, "issue");

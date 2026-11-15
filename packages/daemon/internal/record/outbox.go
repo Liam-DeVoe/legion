@@ -913,6 +913,14 @@ type PendingBasisSeed struct {
 
 func (PendingBasisSeed) OutboxKind() OutboxKind { return OutboxKindPendingBasisSeed }
 
+// PendingBasisSeedOf is the seed of gate, a step that waits on an ancestor's approval request
+// (DesignGate.PendingOnBasis), for the root generation that registered it: what a registration
+// queues (workflow's tellRegisteredBasis) and what the boot queues for every such step.
+func PendingBasisSeedOf(gate DesignGate, generation uint64) PendingBasisSeed {
+	return PendingBasisSeed{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID, BasisArtifactID: gate.Basis.ArtifactID,
+		BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: generation}
+}
+
 // ReparentSeed reads the new Dispatch parent of a root that ran as a tree of its own and that a
 // person has made a child of a live tree (workflow's tellReparented), and applies what it finds
 // as a fact that posts the message on the row's issue, the re-parented root, and queues the
@@ -1122,7 +1130,7 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 //
 // A move into awaiting_children sends it too, with that phase as To: a parent whose Dispatch
 // child is open starts no phase, so the daemon ends the phase its worker is in and no task of
-// that worker's follows (workflow's AwaitChildren, dispatch://INFRA-3320 R10). The shape is the
+// that worker's follows (workflow's awaitChildren, dispatch://INFRA-3320 R10). The shape is the
 // same, and Message chooses the words from To, so a release that knows no such phase still
 // decodes and delivers the row.
 type PhaseEnded struct {
@@ -1834,7 +1842,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // rests on it.
 //
 // `awaiting-children` tells a parent's architect that the parent entered awaiting_children in place
-// of a phase start, because a Dispatch child of it is open (workflow's AwaitChildren,
+// of a phase start, because a Dispatch child of it is open (workflow's awaitChildren,
 // dispatch://INFRA-3320 R10): the start it holds, each open child and what ends the wait. It
 // replaces the phase-finished or checks-red notice that start would have sent, and carries that
 // notice's summary and verdict.

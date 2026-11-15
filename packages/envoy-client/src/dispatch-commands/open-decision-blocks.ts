@@ -37,6 +37,17 @@ export interface OpenDecisionBlockRefusal {
   readonly remedy: string;
 }
 
+/** The two sentences every `remedy` over open decision blocks gives first, word for word: ask the
+ * human to answer or waive the block, and how an answered one settles into a version, about two
+ * seconds later, as `refuseOpenDecisionBlocks` names an answered block still open. */
+export const OPEN_BLOCK_ASK_THE_HUMAN =
+  "Tell the human which block is open and ask them to answer it or to waive it. Once it is answered, it settles into a version on its own in about two seconds.";
+
+/** How every `remedy` over open decision blocks closes a block the human waives, which each one
+ * continues with its own next step. */
+export const OPEN_BLOCK_WAIVED =
+  "If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason)";
+
 /**
  * Refuses an approval request while the document holds an open decision block. A request names
  * the latest version, and a new version moves it to that version and leaves it waiting on its

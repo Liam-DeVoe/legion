@@ -237,23 +237,14 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		answeredBy, answeredDetail = issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail
 		sinceSeq, since = markValues(issue.Awaiting.Since)
 	}
-	var childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, childrenWaitedAt any
+	var childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince any
 	if issue.ChildrenWait != nil {
-		if issue.ChildrenWait.Start != "" {
-			childrenWaitStart = string(issue.ChildrenWait.Start)
-		}
-		if issue.ChildrenWait.Task != "" {
-			childrenWaitTask = issue.ChildrenWait.Task
-		}
-		if issue.ChildrenWait.Reason != "" {
-			childrenWaitReason = issue.ChildrenWait.Reason
-		}
+		childrenWaitStart = nullableText(string(issue.ChildrenWait.Start))
+		childrenWaitTask = nullableText(issue.ChildrenWait.Task)
+		childrenWaitReason = nullableText(issue.ChildrenWait.Reason)
 		if !issue.ChildrenWait.Since.IsZero() {
 			childrenWaitSince = issue.ChildrenWait.Since
 		}
-	}
-	if issue.ChildrenWaitedAt != nil {
-		childrenWaitedAt = *issue.ChildrenWaitedAt
 	}
 	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
@@ -306,7 +297,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
 		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, issue.ViewOf,
-		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, issue.ForwardMergeOwed, childrenWaitedAt,
+		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, issue.ForwardMergeOwed, issue.ChildrenWaitedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)

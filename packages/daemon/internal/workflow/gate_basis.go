@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -107,14 +108,13 @@ func (e *Engine) tellRegisteredBasis(ctx context.Context, tx pgx.Tx, root record
 	switch {
 	case gate.PendingOnBasis():
 		basis := *gate.Basis
-		if err := e.enqueue(ctx, tx, root.Key, record.PendingBasisSeed{Step: step, ArtifactID: gate.ArtifactID,
-			BasisArtifactID: basis.ArtifactID, BasisVersion: basis.Version, Ask: basis.Pending.Ask, Generation: root.Generation}); err != nil {
+		if err := e.enqueue(ctx, tx, root.Key, record.PendingBasisSeedOf(gate, root.Generation)); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a design gate step waits on an ancestor's approval request", "issue", root.Key, "step", step,
 			"version", gate.LatestVersion, "ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "ask", basis.Pending.Ask)
-		what := fmt.Sprintf("%s registered its %s step on version %d of the %s of %s (%s). The step stays closed until a person answers approval request %s of that version. %s rests on %s while the step waits.",
-			root.Key, step, basis.Version, step.Document(), basis.Issue, stepRef(basis.Issue, step), basis.Pending.Ask, root.Key, basis.Issue)
+		what := fmt.Sprintf("%s registered its %s step on version %d of %s. The step stays closed until a person answers approval request %s of that version. %s rests on %s while the step waits.",
+			root.Key, step, basis.Version, documentOf(basis.Issue, step), basis.Pending.Ask, root.Key, basis.Issue)
 		return e.queueRestingRoot(ctx, tx, root, step, basis, restingPending(basis.Pending.Ask), what)
 	case gate.OnBasis():
 		basis := *gate.Basis
@@ -125,8 +125,8 @@ func (e *Engine) tellRegisteredBasis(ctx context.Context, tx pgx.Tx, root record
 		}
 		e.logOnCommit(ctx, "workflow: a design gate step opened on an ancestor's approval", "issue", root.Key, "step", step,
 			"version", gate.LatestVersion, "ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "recorded_before", stood)
-		what := fmt.Sprintf("An ancestor's approval opened the %s step of %s. A person approved version %d of the %s of %s (%s). %s rests on this approval.",
-			step, root.Key, basis.Version, step.Document(), basis.Issue, stepRef(basis.Issue, step), root.Key)
+		what := fmt.Sprintf("An ancestor's approval opened the %s step of %s. A person approved version %d of %s. %s rests on this approval.",
+			step, root.Key, basis.Version, documentOf(basis.Issue, step), root.Key)
 		return e.queueRestingRoot(ctx, tx, root, step, basis, restingOpened, what)
 	}
 	return nil
@@ -162,7 +162,7 @@ func basisOpenedMessage(root string, gate record.DesignGate) string {
 		line("Dispatch recorded this approval at %s.", basis.Approval.At.UTC().Format(time.RFC3339))
 	}
 	if len(basis.Serves) == 0 {
-		line("The daemon records no requirement of %s that the checks of %s serve.", basis.Issue, root)
+		line("%s", servesSentence(root, basis.Issue, nil))
 	} else {
 		line("The checks of %s serve these requirements of %s:", root, basis.Issue)
 		for _, served := range basis.Serves {
@@ -404,8 +404,8 @@ func RestingRootsTask(ctx context.Context, tx pgx.Tx, store record.Store, ancest
 		return "", err
 	}
 	return fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s. "+
-		"The daemon refuses the sign-off and the close of %s while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). "+
-		"Each root's own architect, or a person, moves it.", ancestor, restingNames(roots), ancestor), nil
+		"The daemon refuses the sign-off and the close of %s while any of them is in the workflow (%s). "+
+		"Each root's own architect, or a person, moves it.", ancestor, restingNames(roots), ancestor, signOffRestingRoot), nil
 }
 
 // restingClause is the clause of a catch-up's reason that names roots, the roots that rest on
@@ -428,10 +428,7 @@ func restingNames(roots []RestingRoot) string {
 
 // stepsPhrase names steps as a sentence does: "spec step", "criteria and spec steps".
 func stepsPhrase(steps []record.DesignStep) string {
-	names := make([]string, len(steps))
-	for i, step := range steps {
-		names[i] = string(step)
-	}
+	names := record.StepNames(steps)
 	if len(names) == 1 {
 		return names[0] + " step"
 	}
@@ -478,15 +475,6 @@ func reviewPlace(mark record.EventMark) string {
 	return "none"
 }
 
-// actorOr names actor as Dispatch names it (`<kind>:<id>`), or fallback where Dispatch names
-// nobody.
-func actorOr(actor dispatch.Actor, fallback string) string {
-	if name := actor.Name(); name != "" {
-		return name
-	}
-	return fallback
-}
-
 // documentOf names issue's document for step as a sentence names it: the document, its issue and
 // its reference.
 func documentOf(issue string, step record.DesignStep) string {
@@ -510,9 +498,15 @@ func stepClosed(root string, step record.DesignStep) string {
 // as the act that ends a pending step's wait.
 func changesAct(actor dispatch.Actor, version int, document, reason string) string {
 	if reason == "" {
-		return fmt.Sprintf("%s requested changes on version %d of %s.", actorOr(actor, "A person"), version, document)
+		return fmt.Sprintf("%s requested changes on version %d of %s.", cmp.Or(actor.Name(), "A person"), version, document)
 	}
-	return fmt.Sprintf("%s requested changes on version %d of %s: %q.", actorOr(actor, "A person"), version, document, reason)
+	return fmt.Sprintf("%s requested changes on version %d of %s: %q.", cmp.Or(actor.Name(), "A person"), version, document, reason)
+}
+
+// newerVersionAct is a version of document newer than asked, the version a pending step's request
+// asks a person to approve, as the act that ends the step's wait.
+func newerVersionAct(newer int, document string, asked int) string {
+	return fmt.Sprintf("Version %d of %s is newer than version %d, which the request asks a person to approve.", newer, document, asked)
 }
 
 // ownDocumentEnded is what ended gate's wait on its ancestor's request when fact, an event of the
@@ -526,7 +520,7 @@ func ownDocumentEnded(root string, gate record.DesignGate, fact intake.DispatchA
 	switch fact.Kind {
 	case intake.DispatchArtifactApproved:
 		return fmt.Sprintf("%s approved version %d of %s, the root's own document. That approval opened the %s step of %s and ended its wait on the ancestor's request. %s",
-			actorOr(fact.Actor, "A person"), fact.Version, own, step, root, ended)
+			cmp.Or(fact.Actor.Name(), "A person"), fact.Version, own, step, root, ended)
 	case intake.DispatchArtifactChangesRequested:
 		return changesAct(fact.Actor, fact.Version, own+", the root's own document", fact.Reason) + " " + ended + " " + stepClosed(root, step)
 	}
@@ -561,7 +555,7 @@ func (e *Engine) basisArtifact(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		switch {
 		case gate.PendingOnBasis():
 			err = e.pendingBasisArtifact(ctx, tx, *root, gate, fact)
-		case basisChangesRequest(gate, fact.Kind == intake.DispatchArtifactChangesRequested, fact.Version, fact.Actor, fact.Mark):
+		case BasisChangesRequest(gate, fact.Kind == intake.DispatchArtifactChangesRequested, fact.Version, fact.Actor, fact.Mark):
 			err = e.tellBasisChanges(ctx, tx, *root, gate, intake.BasisReview{Mark: fact.Mark, Actor: fact.Actor, Reason: fact.Reason})
 		}
 		if err != nil {
@@ -571,11 +565,13 @@ func (e *Engine) basisArtifact(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	return nil
 }
 
-// basisChangesRequest says whether a review of an ancestor's document is the one act on it that
+// BasisChangesRequest says whether a review of an ancestor's document is the one act on it that
 // gate, a step standing open on that document, passes on (R3): a changes request (changes) by a
 // person on the version the basis names, which Dispatch recorded after the approval the step
-// opened on. Both marks are places in the ancestor's own event log, so they compare.
-func basisChangesRequest(gate record.DesignGate, changes bool, version int, actor dispatch.Actor, mark record.EventMark) bool {
+// opened on. Both marks are places in the ancestor's own event log, so they compare. The live
+// event (basisArtifact), the seeds' reads (pendingBasisRead, basisChangesRead) and the gate
+// seed's choice of the reviews it reads (the outbox's seedGateBasis) all ask it.
+func BasisChangesRequest(gate record.DesignGate, changes bool, version int, actor dispatch.Actor, mark record.EventMark) bool {
 	return gate.OnBasis() && changes && version == gate.Basis.Version && actor.Person() && mark.After(gate.Basis.Approval)
 }
 
@@ -594,8 +590,7 @@ func (e *Engine) pendingBasisArtifact(ctx context.Context, tx pgx.Tx, root recor
 	case fact.Version < basis.Version, fact.Version == basis.Version && fact.Kind == intake.DispatchArtifactVersion:
 		return nil
 	case fact.Version > basis.Version:
-		return e.endPendingBasis(ctx, tx, root, gate, fmt.Sprintf("Version %d of %s is newer than version %d, which the request asks a person to approve.",
-			fact.Version, document, basis.Version), fact.Actor.Name())
+		return e.endPendingBasis(ctx, tx, root, gate, newerVersionAct(fact.Version, document, basis.Version), fact.Actor.Name())
 	case fact.Kind == intake.DispatchArtifactChangesRequested:
 		return e.endPendingBasis(ctx, tx, root, gate, changesAct(fact.Actor, basis.Version, document, fact.Reason), fact.Actor.Name())
 	case fact.Actor.Person():
@@ -626,14 +621,7 @@ func (e *Engine) openPendingBasis(ctx context.Context, tx pgx.Tx, root record.Is
 		return opened, nil
 	}
 	step := opened.Step.OrSpec()
-	before, err := e.store.GatesOf(ctx, tx, root.Key)
-	if err != nil {
-		return opened, err
-	}
-	if err := e.putGateTold(ctx, tx, opened, opened.LatestVersion); err != nil {
-		return opened, err
-	}
-	if err := record.PublishChangedGates(ctx, e.store, tx, root.Key, before, e.now()); err != nil {
+	if err := e.putGatePublished(ctx, tx, root.Key, opened, opened.LatestVersion); err != nil {
 		return opened, err
 	}
 	e.logOnCommit(ctx, "workflow: a person's approval of the ancestor's version opened a step that waited on it", "issue", root.Key, "step", step,
@@ -665,14 +653,7 @@ func (e *Engine) endPendingBasis(ctx context.Context, tx pgx.Tx, root record.Iss
 	step := gate.Step.OrSpec()
 	basis := *gate.Basis
 	ended := record.EndPendingBasis(gate)
-	before, err := e.store.GatesOf(ctx, tx, root.Key)
-	if err != nil {
-		return err
-	}
-	if err := e.putGateTold(ctx, tx, ended, ended.LatestVersion); err != nil {
-		return err
-	}
-	if err := record.PublishChangedGates(ctx, e.store, tx, root.Key, before, e.now()); err != nil {
+	if err := e.putGatePublished(ctx, tx, root.Key, ended, ended.LatestVersion); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a step's wait on an ancestor's approval request ended", "issue", root.Key, "step", step,
@@ -736,7 +717,7 @@ func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Is
 		return err
 	}
 	asked := fmt.Sprintf("%s requested changes on version %d of %s, after the approval of that version that the %s step of %s stands open on.",
-		actorOr(review.Actor, "A person"), basis.Version, documentOf(basis.Issue, step), step, root.Key)
+		cmp.Or(review.Actor.Name(), "A person"), basis.Version, documentOf(basis.Issue, step), step, root.Key)
 	reason := "The daemon's read of Dispatch gave no reason; read the review on the document."
 	if review.Reason != "" {
 		reason = fmt.Sprintf("The person's reason: %q", review.Reason)
@@ -797,7 +778,7 @@ func (e *Engine) endPendingOnRequest(ctx context.Context, tx pgx.Tx, fact intake
 		}
 		document := documentOf(gate.Basis.Issue, gate.Step.OrSpec())
 		act := fmt.Sprintf("%s closed approval request %s of version %d of %s, as %s, with no approval of that version.",
-			actorOr(fact.Actor, "Someone Dispatch does not name"), fact.Ask, gate.Basis.Version, document, fact.State)
+			cmp.Or(fact.Actor.Name(), "Someone Dispatch does not name"), fact.Ask, gate.Basis.Version, document, fact.State)
 		if fact.Withdrawn {
 			act = fmt.Sprintf("Dispatch shows %s done, so %s is accepted. Its close withdrew approval request %s of version %d of %s, with no approval of that version.",
 				fact.Key, fact.Key, fact.Ask, gate.Basis.Version, document)
@@ -819,7 +800,7 @@ func (e *Engine) endPendingOnRequest(ctx context.Context, tx pgx.Tx, fact intake
 func (e *Engine) endPendingOnAncestorIssue(ctx context.Context, tx pgx.Tx, recorded *record.Issue, fact intake.DispatchIssue) error {
 	var act string
 	switch {
-	case fact.Status == "done", fact.Status == "retro":
+	case record.AcceptedStatus(fact.Status):
 		act = fmt.Sprintf("Dispatch shows %s %s, so %s is accepted.", fact.Key, fact.Status, fact.Key)
 	case !fact.HandedOver:
 		act = fmt.Sprintf("%s no longer carries the %s label.", fact.Key, dispatch.LegionLabel)
@@ -838,10 +819,8 @@ func (e *Engine) endPendingOnAncestorIssue(ctx context.Context, tx pgx.Tx, recor
 		if err != nil {
 			return err
 		}
-		for _, row := range mirrored {
-			if row.Key == fact.Key && row.Seq > fact.Seq {
-				return nil
-			}
+		if slices.ContainsFunc(mirrored, func(row record.DispatchIssueRow) bool { return row.Key == fact.Key && row.Seq > fact.Seq }) {
+			return nil
 		}
 	}
 	return e.endEachPending(ctx, tx, pending, act)
@@ -925,7 +904,7 @@ func (e *Engine) pendingBasisRead(ctx context.Context, tx pgx.Tx, fact intake.Pe
 	switch {
 	case fact.Approval != nil:
 		opened, err := e.openPendingBasis(ctx, tx, *root, gate, fact.Approval.Mark, fact.Approval.Actor.Name())
-		if err != nil || fact.Changes == nil || !basisChangesRequest(opened, true, fact.BasisVersion, fact.Changes.Actor, fact.Changes.Mark) {
+		if err != nil || fact.Changes == nil || !BasisChangesRequest(opened, true, fact.BasisVersion, fact.Changes.Actor, fact.Changes.Mark) {
 			return intake.Result{}, err
 		}
 		return intake.Result{}, e.tellBasisChanges(ctx, tx, *root, opened, *fact.Changes)
@@ -933,8 +912,7 @@ func (e *Engine) pendingBasisRead(ctx context.Context, tx pgx.Tx, fact intake.Pe
 		return intake.Result{}, e.endPendingBasis(ctx, tx, *root, gate, changesAct(fact.Changes.Actor, fact.BasisVersion, document, fact.Changes.Reason),
 			fact.Changes.Actor.Name())
 	case fact.LatestVersion > fact.BasisVersion:
-		return intake.Result{}, e.endPendingBasis(ctx, tx, *root, gate, fmt.Sprintf("Version %d of %s is newer than version %d, which the request asks a person to approve.",
-			fact.LatestVersion, document, fact.BasisVersion), "")
+		return intake.Result{}, e.endPendingBasis(ctx, tx, *root, gate, newerVersionAct(fact.LatestVersion, document, fact.BasisVersion), "")
 	case !fact.RequestOpen:
 		return intake.Result{}, e.endPendingBasis(ctx, tx, *root, gate, fmt.Sprintf("Dispatch shows approval request %s of version %d of %s closed with no approval of that version.",
 			fact.Ask, fact.BasisVersion, document), "")
@@ -961,7 +939,7 @@ func (e *Engine) basisChangesRead(ctx context.Context, tx pgx.Tx, fact intake.Ba
 	step := fact.Step.OrSpec()
 	gate, ok := gates[step]
 	if !ok || !e.gatesStep(step) || gate.Basis == nil || gate.Basis.ArtifactID != fact.BasisArtifactID ||
-		!basisChangesRequest(gate, true, fact.BasisVersion, fact.Changes.Actor, fact.Changes.Mark) {
+		!BasisChangesRequest(gate, true, fact.BasisVersion, fact.Changes.Actor, fact.Changes.Mark) {
 		e.logOnCommit(ctx, "workflow: the gate seed read a changes request on an ancestor's version no open step of this root rests on", "issue", root.Key,
 			"step", step, "basis", fact.BasisArtifactID, "basis_version", fact.BasisVersion)
 		return intake.Result{}, nil

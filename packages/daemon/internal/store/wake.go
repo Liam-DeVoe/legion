@@ -573,7 +573,7 @@ func (p *PodRecords) FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (
 
 // CancelPodBackstops drops every open backstop of issue inside the caller's transaction: a
 // parent that moves into awaiting_children has no phase for a backstop to wake any role of it
-// into, so the move cancels every backstop a release armed before it (workflow's AwaitChildren,
+// into, so the move cancels every backstop a release armed before it (workflow's awaitChildren,
 // dispatch://INFRA-3320 R11).
 func (p *PodRecords) CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error {
 	return CancelPodBackstops(ctx, tx, p.project, issue, "")

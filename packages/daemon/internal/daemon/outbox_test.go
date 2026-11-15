@@ -207,7 +207,6 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 // document embeds it.
 type noArtifacts struct{}
 
-func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
 func (noArtifacts) Artifacts(context.Context, string) ([]dispatch.Artifact, error) {
 	return nil, nil
 }
@@ -726,9 +725,10 @@ func TestOutboxMessagePostsItsMarkerAndReturnsReadFailure(t *testing.T) {
 	}
 }
 
-// artifactDispatch is outboxDispatch with the issue's documents: the slugs the artifact read
-// answers (slugsErr in their place when set), each upload it took, and what an upload answers:
-// uploadErr, or the slug filedAs names, or else the name, which it then lists as Dispatch would.
+// artifactDispatch is outboxDispatch with the issue's documents: the slugs of those the artifact
+// read answers (slugsErr in their place when set), each upload it took, and what an upload
+// answers: uploadErr, or the slug filedAs names, or else the name, which it then lists as Dispatch
+// would.
 type artifactDispatch struct {
 	*outboxDispatch
 	slugs     []string
@@ -738,8 +738,15 @@ type artifactDispatch struct {
 	filedAs   string
 }
 
-func (d *artifactDispatch) ArtifactSlugs(context.Context, string) ([]string, error) {
-	return d.slugs, d.slugsErr
+func (d *artifactDispatch) Artifacts(context.Context, string) ([]dispatch.Artifact, error) {
+	if d.slugsErr != nil {
+		return nil, d.slugsErr
+	}
+	artifacts := make([]dispatch.Artifact, len(d.slugs))
+	for i, slug := range d.slugs {
+		artifacts[i] = dispatch.Artifact{Slug: slug}
+	}
+	return artifacts, nil
 }
 func (d *artifactDispatch) UploadArtifact(_ context.Context, _, name, content string) (string, error) {
 	d.uploads = append(d.uploads, record.MessageArtifact{Name: name, Content: content})

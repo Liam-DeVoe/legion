@@ -27,9 +27,10 @@ import (
 // project's own records; running are the roots whose trees run (record.RunningRoots), which is
 // what says the work of an issue past its review is going on; stranded are the claims the
 // daemon judges nothing will wake, handed to Project because this package may not read
-// internal/workflow; rows is the Dispatch mirror this pass judged the links from, childWaits the
-// children-first judgement it made (record.ChildWaitsOf), and gates each tree's design gate by
-// its root (record.LineFacts.Gates), which the design gate's sentence reads (heldReason).
+// internal/workflow; rows is the Dispatch mirror this pass judged the links from, and facts the
+// pass's own (record.LineFacts): its children-first judgement (ChildWaits, record.ChildWaitsOf)
+// and each tree's design gate by its root (Gates), which the design gate's sentence reads
+// (heldReason).
 //
 // The four states are read in one order, so no issue carries two answers: claim_stopped, then
 // waiting, then blocked, then unlisted. claim_stopped is first because its fact is about the
@@ -63,7 +64,7 @@ import (
 // membership, and what a member of the line a link holds waits on where the links half names
 // nothing for it, the one fallback in this file (the waiting arm below).
 func whyStates(state *api.State, own []record.Issue, running map[string]struct{}, stranded []supervise.Claim,
-	rows map[string]blockers.Row, childWaits map[string]record.ChildWait, gates map[string]record.TreeGate,
+	rows map[string]blockers.Row, facts record.LineFacts,
 ) {
 	// The stranded claim each issue's answer names. The set reports two kinds of claim and no
 	// others (workflow.Stranded) — the worker of the issue's phase, and the tree's architect —
@@ -103,8 +104,8 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 	// Each cycle the children-first judgement named, by the child whose own blocked_by link
 	// holds it under an ancestor (record.OpenChild.Cycle): the one fact of the three blocked
 	// fills a reader can get nowhere else.
-	cycles := make(map[string]string, len(childWaits))
-	for _, wait := range childWaits {
+	cycles := make(map[string]string, len(facts.ChildWaits))
+	for _, wait := range facts.ChildWaits {
 		for _, child := range wait.Open {
 			if child.Cycle != "" {
 				cycles[child.Key] = child.Cycle
@@ -163,7 +164,7 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 			// under `blocked`, then the links and children: heldSentences states the rule.
 			cycle := cycles[issue.Key]
 			if cycle == "" {
-				if reason, serves := heldReason(api.WhyBlocked, causes[issue.Key], gates); serves {
+				if reason, serves := heldReason(api.WhyBlocked, causes[issue.Key], facts.Gates); serves {
 					why = &api.WhyView{State: api.WhyBlocked, Reason: reason}
 					break
 				}
@@ -172,7 +173,7 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 			// children fill names them after the children it waits for, and the link fill is
 			// the whole of them.
 			links := blockers.Holds(rows, issue)
-			why = &api.WhyView{State: api.WhyBlocked, Reason: blockedReason(cycle, childWaits[issue.Key], links)}
+			why = &api.WhyView{State: api.WhyBlocked, Reason: blockedReason(cycle, facts.ChildWaits[issue.Key], links)}
 		default:
 			// Neither the line nor `blocked` names it, so this arm reads out the two kinds
 			// that are working now before it names the rest unlisted: an issue holding one of
@@ -187,7 +188,7 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 			if atWorkPastReview(issue, running) {
 				continue
 			}
-			reason, _ := heldReason(api.WhyUnlisted, causes[issue.Key], gates)
+			reason, _ := heldReason(api.WhyUnlisted, causes[issue.Key], facts.Gates)
 			why = &api.WhyView{State: api.WhyUnlisted, Reason: reason}
 		}
 		// An issue whose sentence renders nothing is served no `why` at all, rather than a state

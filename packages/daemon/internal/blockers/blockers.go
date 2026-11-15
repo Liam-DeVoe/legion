@@ -153,14 +153,14 @@ func LineWaitsOn(rows map[string]Row, entry record.LineEntry) []string {
 // never judged, as the decider that would admit it does not judge it either (Exempt): what
 // promotion starts whatever its links say is never reported as waiting on them.
 //
-// more is what a decider outside this package has already judged and rendered, which is the two
-// waits on a parent's open Dispatch children (ChildRows): the children-first wait and the wait of
-// a parent in awaiting_children. Each rule reads the mirror's parent column against the daemon's
-// records rather than an issue's blocked-by links, so it cannot be made here, and it must still
-// reach the one list a reader reads. A key both deciders name keeps one row, with each one's
-// issues in it — the deciders are independent, and an issue can wait on a link and on a child at
-// once.
-func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry, more []record.BlockedIssue) []record.BlockedIssue {
+// The waits on a parent's open Dispatch children are judged outside this package and read from
+// facts, the pass's own judgement (ChildRows): the children-first wait and the wait of a parent in
+// awaiting_children. Each rule reads the mirror's parent column against the daemon's records
+// rather than an issue's blocked-by links, so it cannot be made here, and it must still reach the
+// one list a reader reads. A key both deciders name keeps one row, with each one's issues in it —
+// the deciders are independent, and an issue can wait on a link and on a child at once.
+func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry, facts record.LineFacts) []record.BlockedIssue {
+	more := ChildRows(issues, facts)
 	blocked := make([]record.BlockedIssue, 0, len(line)+len(more))
 	at := make(map[string]int, len(line)+len(more))
 	add := func(key string, waits []string) {
@@ -192,13 +192,13 @@ func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry
 	return blocked
 }
 
-// ChildRows is the two waits on a parent's open Dispatch children as the rows Blocked takes
-// beside its own (its more), from the one judgement of the pass that the facts carry: the
-// children-first wait of a parent whose own first phase has not started
-// (record.LineFacts.ChildWaits), and the wait of a parent in awaiting_children on its open
-// children (record.LineFacts.StartedParentWaits, dispatch://INFRA-3320 R11). Each is rendered by
-// the one renderer of a children wait (record.ChildWaitRows), so a waiting parent names its open
-// children and a cycle among them names the child and the ancestor its link holds it under.
+// ChildRows is the two waits on a parent's open Dispatch children as the rows Blocked adds to its
+// own, from the one judgement of the pass that the facts carry: the children-first wait of a
+// parent whose own first phase has not started (record.LineFacts.ChildWaits), and the wait of a
+// parent in awaiting_children on its open children (record.LineFacts.StartedParentWaits,
+// dispatch://INFRA-3320 R11). Each is rendered by the one renderer of a children wait
+// (record.ChildWaitRows), so a waiting parent names its open children and a cycle among them
+// names the child and the ancestor its link holds it under.
 //
 // Of the started parents only those in awaiting_children are rows here. That is where an open
 // child holds a started parent: the admission pass moves every other started parent an open

@@ -35,7 +35,8 @@ export {
 } from "./dispatch-commands/document-targets";
 export { goBlankPattern } from "./dispatch-commands/documents";
 export {
-  type OpenDecisionBlockRefusal,
+  OPEN_BLOCK_ASK_THE_HUMAN,
+  OPEN_BLOCK_WAIVED,
   refuseOpenDecisionBlocks,
 } from "./dispatch-commands/open-decision-blocks";
 export { dispatchRefFromUrl } from "./dispatch-commands/refs";

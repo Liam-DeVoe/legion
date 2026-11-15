@@ -114,7 +114,7 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, err
 		seen[key] = struct{}{}
 		keys = append(keys, key)
 	}
-	for _, blocked := range blockers.Blocked(rows, issues, line, blockers.ChildRows(issues, facts)) {
+	for _, blocked := range blockers.Blocked(rows, issues, line, facts) {
 		for _, blocker := range blocked.BlockedBy {
 			add(blocker)
 		}

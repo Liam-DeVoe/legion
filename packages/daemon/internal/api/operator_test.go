@@ -668,7 +668,7 @@ func TestTheOperatorsRetryOfAHeldPhaseThatStaysHeldIsRefused(t *testing.T) {
 
 // childrenWaiter stands in for the workflow's retry_or_escalate of a parent with an open Dispatch
 // child: a retry decision on a held issue moves it to awaiting_children, holding the phase it
-// was held from (workflow's AwaitChildren). Every fact is recorded first.
+// was held from (workflow's awaitChildren). Every fact is recorded first.
 type childrenWaiter struct {
 	factRecorder
 }

@@ -393,7 +393,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		view.WaitingLine.Reason = waitingLineReason(entry, parts[entry.Part], other)
 		projected.Issues[key] = view
 	}
-	projected.Admission.Blocked = blockers.Blocked(rows, own, line, blockers.ChildRows(own, facts))
+	projected.Admission.Blocked = blockers.Blocked(rows, own, line, facts)
 	// What the daemon runs nothing of and queues nowhere, beside the two lists above: every
 	// record of this project the daemon holds in the workflow (record.InWorkflow) that stands in
 	// neither the active set nor the line, with the one word for why (record.HeldList). The rows
@@ -420,7 +420,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// are the same roots record.LiveRoots is read from above — live is wider than running,
 	// and a parked root's tree is neither.
 	running := record.RunningRoots(own, facts)
-	whyStates(&projected, own, running, stranded, rows, facts.ChildWaits, facts.Gates)
+	whyStates(&projected, own, running, stranded, rows, facts)
 	// Every root of this project's own records carries whether its tree runs (`treeRuns`), read
 	// from the same running roots, so the state serves the daemon's own rule (record.TreeRuns)
 	// rather than leaving a reader to rebuild it from the fields beside it, which decide it in no

@@ -146,7 +146,7 @@ func TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting(t *testing.
 	held := map[phase.Phase]bool{}
 	n := 0
 	for _, row := range Table {
-		if !holdsForChildren(row.From) || !holdsForChildren(row.To) {
+		if !record.OpenChildHolds(row.From) || !record.OpenChildHolds(row.To) {
 			continue
 		}
 		n++
@@ -294,7 +294,7 @@ func TestTheChildrenNoticesEndEachCycleSentenceWithAFullStop(t *testing.T) {
 	want := " " + ChildCycleReason(cwChild, cwParent) + ". " + ChildCycleReason("LEGION-211", cwParent) + "."
 	for name, reason := range map[string]string{
 		"children-first":    ChildrenFirstNotice(record.ChildWait{Parent: cwParent, Open: open}).Reason,
-		"awaiting_children": awaitingChildrenNotice(cwParent, phase.Testing, ChildrenHold{Start: phase.Reviewing, Cause: "the tester completed testing", Open: open}).Reason,
+		"awaiting_children": awaitingChildrenNotice(cwParent, phase.Testing, childrenHold{Start: phase.Reviewing, Cause: "the tester completed testing", Open: open}).Reason,
 	} {
 		if !strings.Contains(reason, want) {
 			t.Errorf("the %s notice's reason %q does not say %q", name, reason, want)
@@ -404,7 +404,7 @@ func TestASecondMoveOfAWaitingParentSendsNothingAgain(t *testing.T) {
 
 	ctx, committed := intake.WithCommitHooks(t.Context())
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return engine.AwaitChildren(ctx, tx, first, ChildrenHold{Start: phase.Implementing, Task: "another task", Cause: "a later pass",
+		return engine.awaitChildren(ctx, tx, first, childrenHold{Start: phase.Implementing, Task: "another task", Cause: "a later pass",
 			Open: []record.OpenChild{{Key: cwChild, Status: "todo"}}, Ended: claim.RoleTester})
 	}); err != nil {
 		t.Fatalf("the second move: %v", err)

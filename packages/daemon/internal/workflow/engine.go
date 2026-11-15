@@ -1135,11 +1135,11 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 //
 // A release is a phase start like any other (dispatch://INFRA-3320 R9): a release into planning
 // through accepting of a parent whose Dispatch child is open moves it to awaiting_children instead,
-// holding the retried phase with the task the retry would have given its worker and the retry's
-// reason (AwaitChildren), and starts nobody. The round of a reviewing release is not read then:
-// the held reviewing goes back as implementing, whatever that round came to. A retry of
+// holding the retried phase with the task the retry would have given its worker (heldTask) and the
+// retry's reason (awaitChildren), and starts nobody. The round of a reviewing release is not read
+// then: the held reviewing goes back as implementing, whatever that round came to. A retry of
 // implementing whose task asks for the forward merge the parent owes clears that debt in the
-// write that puts the issue back in its phase, as a transition's does (forwardMergeRequest).
+// write that puts the issue back in its phase, as a transition's does (settleForwardMerge).
 // The release restarts the held phase on the entry it was raised on (restart raises none), so a
 // phase whose role stands on an entry a conflicting head raised out of retro or merging is
 // restarted whatever its children are, as the admission pass leaves it (acceptedEntry,
@@ -1172,18 +1172,14 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return "", err
 		}
 		if !acceptedEntry(entry) {
-			held := issue
-			held.ForwardMergeOwed = false
-			return phase.AwaitingChildren, e.AwaitChildren(ctx, tx, issue, ChildrenHold{Start: from,
-				Task: task(held, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
+			return phase.AwaitingChildren, e.awaitChildren(ctx, tx, issue, childrenHold{Start: from,
+				Task: heldTask(issue, from, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
 		}
 	}
 	// The issue as the restarted worker's task reads it: the write below clears a forward merge
 	// that task asks for.
 	asked := issue
-	if forwardMergeRequest(issue, pr) != "" {
-		issue.ForwardMergeOwed = false
-	}
+	settleForwardMerge(&issue, pr)
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 		return "", err
 	}
@@ -1341,17 +1337,16 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // childrenOpen is each Dispatch child of issue that is still open (record.ChildOpen), with the
 // status Dispatch shows it in, whether the daemon released it, and the issue above it its own
-// blocked_by link names (record.ChildWaits, the children-first judgement of one parent), in key
-// order: what the daemon's mirror of Dispatch's issues shows under issue
-// (Store.DispatchChildren), judged with the daemon's own record of each child (Store.IssuesOf), so
-// a child that runs as a tree of its own is open while it is in the workflow there, and a child
-// filed and never released is open until it is closed or in icebox. A child of issue's own tree
-// that the daemon itself holds at admitted under an accepted ancestor (record.HeldUnderAccepted)
-// is left out, as OpenBeneath leaves it out: otherwise the sign-off's hold and that ancestor's
-// merge, which waits for issue, would wait on each other for ever. members is issue's tree where
-// the caller has read it already (acceptanceHeld), and nil for one to read it only when Dispatch
-// shows a child under issue at all, which is what the guard on every phase start reads
-// (childrenHolding).
+// blocked_by link names, in key order: what the daemon's mirror of Dispatch's issues shows under
+// issue (Store.DispatchChildren), judged with the daemon's own record of each child, so a child
+// that runs as a tree of its own is open while it is in the workflow there, and a child filed and
+// never released is open until it is closed or in icebox. The judgement is the admission pass's
+// own of every started parent (record.OpenChildWaits), which leaves out a child of issue's own
+// tree that the daemon itself holds at admitted under an accepted ancestor, as OpenBeneath leaves
+// it out: otherwise the sign-off's hold and that ancestor's merge, which waits for issue, would
+// wait on each other for ever. members is issue's tree where the caller has read it already
+// (acceptanceHeld), and nil for one to read it only when Dispatch shows a child under issue at
+// all, which is what the guard on every phase start reads (childrenHolding).
 func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue, members []record.Issue) ([]record.OpenChild, error) {
 	mirrored, err := e.store.DispatchChildren(ctx, tx, e.cfg.Project, []string{issue.Key})
 	if err != nil {
@@ -1366,31 +1361,8 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 			return nil, err
 		}
 	}
-	keys := make([]string, len(rows))
-	for i, row := range rows {
-		keys[i] = row.Key
-	}
-	recorded, err := e.store.IssuesOf(ctx, tx, e.cfg.Project, keys)
-	if err != nil {
-		return nil, err
-	}
-	records := make(map[string]record.Issue, len(recorded))
-	for _, child := range recorded {
-		records[child.Key] = child
-	}
-	tree := make(map[string]record.Issue, len(members))
-	for _, member := range members {
-		tree[member.Key] = member
-	}
-	wait := record.ChildWaits(members, map[string][]record.DispatchIssueRow{issue.Key: rows}, records, nil)[issue.Key]
-	var open []record.OpenChild
-	for _, child := range wait.Open {
-		if found, ok := records[child.Key]; ok && found.Tree == issue.Tree && record.HeldUnderAccepted(found, tree) {
-			continue
-		}
-		open = append(open, child)
-	}
-	return open, nil
+	waits, err := record.OpenChildWaits(ctx, tx, e.store, e.cfg.Project, members, map[string][]record.DispatchIssueRow{issue.Key: rows}, nil)
+	return waits[issue.Key].Open, err
 }
 
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
@@ -1480,8 +1452,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// it is the one thing the entry fence cannot read from anywhere else: a phase re-entered by a
 	// move back asks for its work to be done again, and the completion of the entry before it
 	// does not answer for that however its commit reads (record.PhaseRow.EntryMovedBack,
-	// api/handoff.go). It is read here and not below because issue.Phase is moved onto row.To a
-	// few lines down, which would leave the start comparing a phase with itself.
+	// api/handoff.go). The start reads it again of the phase the move left, which it is handed,
+	// and the phase the issue then stands in (enter).
 	//
 	// A parent with an open Dispatch child starts no phase of planning through accepting
 	// (dispatch://INFRA-3320 R9): the guard reads its open children after the row is chosen
@@ -1518,11 +1490,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	issue.Phase, issue.Hold = row.To, nil
 	// The task the start below hands the worker. An implementing task carries the forward merge a
 	// parent owes after a wait on its children, and this write, which puts the issue in the phase
-	// that task is for, is the one that clears the debt (forwardMergeRequest).
+	// that task is for, is the one that clears the debt (settleForwardMerge).
 	work := task(issue, handoff, pr, reason)
-	if forwardMergeRequest(issue, pr) != "" {
-		issue.ForwardMergeOwed = false
-	}
+	settleForwardMerge(&issue, pr)
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
 	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
 	// not about the issue's history. It lasts as long as the run's record does — through the phase's
@@ -1550,7 +1520,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// An issue the daemon moves into retro or merging is accepted (record.Accepted), so it leaves
 	// R1's first condition, and every step of another root that waits on it as an ancestor ends
 	// its wait (dispatch://INFRA-3320). A step that stands open on it stays open (R3).
-	if row.To == phase.Retro || row.To == phase.Merging {
+	if record.Accepted(issue) {
 		if err := e.endPendingOn(ctx, tx, issue.Key, fmt.Sprintf("The daemon moved %s into %s, so %s is accepted.", issue.Key, row.To, issue.Key)); err != nil {
 			return err
 		}
@@ -1580,7 +1550,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// architect got at the merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, work, from, movedBack); err != nil {
+		if err := e.start(ctx, tx, issue, starting, work, from); err != nil {
 			return err
 		}
 	}

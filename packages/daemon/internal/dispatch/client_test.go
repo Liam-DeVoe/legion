@@ -412,7 +412,7 @@ func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 }
 
 // The issue's artifact list is read for each one's slug, which is what a message's link names.
-func TestArtifactSlugsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
+func TestArtifactsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues/LEGION-5/artifacts" {
 			t.Fatalf("request = %s %s, want GET /api/v1/issues/LEGION-5/artifacts", r.Method, r.URL.Path)
@@ -425,9 +425,13 @@ func TestArtifactSlugsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
 	}))
 	defer server.Close()
 
-	slugs, err := New(server.URL, dispatchToken).ArtifactSlugs(context.Background(), "LEGION-5")
+	artifacts, err := New(server.URL, dispatchToken).Artifacts(context.Background(), "LEGION-5")
 	if err != nil {
 		t.Fatalf("artifact slugs: %v", err)
+	}
+	slugs := make([]string, len(artifacts))
+	for i, artifact := range artifacts {
+		slugs[i] = artifact.Slug
 	}
 	if want := []string{"plan-md", "rescue-pod-9d3f0c7a"}; !reflect.DeepEqual(slugs, want) {
 		t.Fatalf("artifact slugs = %v, want %v", slugs, want)

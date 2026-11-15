@@ -27,7 +27,12 @@ import {
 } from "./context";
 import { approvalLine, liveBlocks } from "./document-targets";
 import { dispatchAnswered } from "./failures";
-import { refuseOpenDecisionBlocks, refuseRemovingOpenDecisionBlocks } from "./open-decision-blocks";
+import {
+  OPEN_BLOCK_ASK_THE_HUMAN,
+  OPEN_BLOCK_WAIVED,
+  refuseOpenDecisionBlocks,
+  refuseRemovingOpenDecisionBlocks,
+} from "./open-decision-blocks";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -394,7 +399,11 @@ const APPROVAL_REQUEST_OPEN_BLOCKS = {
   effect:
     "Answering one writes a new version, which would move this request to that version and leave it waiting on you.",
   remedy:
-    "Do not request approval over an open block, even when a human asked for it. Tell the human which block is open and ask them to answer it or to waive it. Once it is answered, it settles into a version on its own in about two seconds. When the human approved an earlier version and their answer is the whole change since it, Dispatch carries the approval to the new version in their name: request nothing. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval again once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since the earlier approval. On a document nobody has approved, wait for that version, then request. If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason), write their decision into the text with dispatch doc-edit, then request approval again once the human has agreed to every point in the new version. The call opens the request, or hands an open one back to the human.",
+    "Do not request approval over an open block, even when a human asked for it. " +
+    OPEN_BLOCK_ASK_THE_HUMAN +
+    " When the human approved an earlier version and their answer is the whole change since it, Dispatch carries the approval to the new version in their name: request nothing. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval again once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since the earlier approval. On a document nobody has approved, wait for that version, then request. " +
+    OPEN_BLOCK_WAIVED +
+    ", write their decision into the text with dispatch doc-edit, then request approval again once the human has agreed to every point in the new version. The call opens the request, or hands an open one back to the human.",
 } as const;
 
 /** `dispatch request-approval`: ask the human to approve this version of a document. */

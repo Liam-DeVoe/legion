@@ -269,12 +269,10 @@ func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.Desi
 	return nil
 }
 
-// noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
-// artifacts answers none, and an upload answers the slug Dispatch files the name under. No route
-// of this package reads or writes a document of an issue's.
+// noArtifacts is the issue's documents as a fake Dispatch that keeps none: an upload answers the
+// slug Dispatch files the name under. No route of this package writes a document of an issue's.
 type noArtifacts struct{}
 
-func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
 	return name, nil
 }

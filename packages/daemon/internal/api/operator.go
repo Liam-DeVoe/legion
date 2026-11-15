@@ -722,7 +722,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
 // rather than reported as a restart. So is one that moved the issue to awaiting_children: a
 // Dispatch child of it is open, so the workflow started no phase of it and holds the start
-// instead (workflow's AwaitChildren, dispatch://INFRA-3320 R9), and the answer says that the issue
+// instead (workflow's awaitChildren, dispatch://INFRA-3320 R9), and the answer says that the issue
 // waits on its children, naming them through the reason the held start keeps.
 func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string, restarted bool) {
 	if !isPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {

@@ -1247,8 +1247,8 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 // run, and the row runs again. So does an upload Dispatch filed under a slug other than the
 // name, since the link names the document by that name.
 func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, artifact record.MessageArtifact) (*dispatch.Error, error) {
-	slugs, err := r.dispatch.ArtifactSlugs(ctx, row.Issue)
-	if err == nil && slices.Contains(slugs, artifact.Name) {
+	held, err := r.dispatch.Artifacts(ctx, row.Issue)
+	if err == nil && slices.ContainsFunc(held, func(document dispatch.Artifact) bool { return document.Slug == artifact.Name }) {
 		return nil, nil
 	}
 	slug := ""
@@ -1533,18 +1533,14 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 // its last let-go ended, sent alone in place of the retired task that would have carried it
 // (supervise's relaunchAfterDrop).
 //
-// A row of an earlier run finishes without acting, as every supervise row of one does. The phase
-// is not fenced: the row names the phase the issue has left, and the machine retires only a task
-// of that phase, that run and an entry no later than the row's, so the task of the return's own
-// start is never one it takes. A claim this daemon does not supervise holds no task to retire.
-// A task on its way to the agent keeps the row (supervise.ErrTaskSending, a wait), which runs
-// again once the send has settled.
+// A row of an earlier run finishes without acting, as every supervise row of one does, at the
+// generation check supervise makes before it hands the row here. The phase is not fenced: the
+// row names the phase the issue has left, and the machine retires only a task of that phase, that
+// run and an entry no later than the row's, so the task of the return's own start is never one it
+// takes. A claim this daemon does not supervise holds no task to retire. A task on its way to the
+// agent keeps the row (supervise.ErrTaskSending, a wait), which runs again once the send has
+// settled.
 func (r *outbox) retireStoppedTask(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
-	if payload.Generation != issue.Generation {
-		r.log.Info("outbox supervise row serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
-			"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
-		return nil
-	}
 	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
 	if err != nil {
 		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
@@ -1721,13 +1717,6 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if err != nil {
 		return err
 	}
-	// A task's retirement names the phase that was stopped, which the issue has left by design —
-	// it waits in awaiting_children, or has come back to that phase on an entry of its own — so
-	// it is decided before the phase and entry fences below, which would finish it unrun. Its own
-	// bounds are the run and the entry it names (retireStoppedTask).
-	if payload.Op == "retire_task" {
-		return r.retireStoppedTask(ctx, row, payload, issue)
-	}
 	// A close row naming a tree other than its issue's never reserves it; the checks below decide it.
 	if payload.Op == "tree_close" && payload.Tree == issue.Tree {
 		if handled, err := r.reservedTreeClose(ctx, row, payload); handled || err != nil {
@@ -1748,6 +1737,15 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			r.log.Info("outbox supervise row serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
 				"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
 			return nil
+		}
+		// A task's retirement names the phase that was stopped, which the issue has left by
+		// design — it waits in awaiting_children, or has come back to that phase on an entry of
+		// its own — so it is decided here, after the generation check and before the phase and
+		// entry fences below, which would finish it unrun. Its own bounds are the run and the
+		// entry it names (retireStoppedTask). It carries no check look (record's validation
+		// refuses one on any operation but a start), so it always reaches this branch.
+		if payload.Op == "retire_task" {
+			return r.retireStoppedTask(ctx, row, payload, issue)
 		}
 		if payload.Phase != "" && payload.Phase != issue.Phase {
 			r.log.Info("outbox start serves a phase the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
@@ -2738,13 +2736,14 @@ func (r *outbox) seedGateDocument(ctx context.Context, row record.OutboxRow, pay
 // seedGateBasis reads, for the step of the row's issue the seed names when it stands open on an
 // ancestor's approval (record.DesignGate.OnBasis) on the document the seed names, the ancestor's
 // reviews of the version the basis names, and applies each person's changes request on it that
-// Dispatch recorded after the approval the step opened on, oldest first, with the reason the person
-// gave, as a fact of its own (intake.BasisChangesRead): a changes request whose event came between
-// register_gate's read and the registration's commit, or never came, still reaches the root's
-// architect and the ancestor's, naming that reason. The workflow tells each review once, whatever
-// else carried it, and leaves the step open. A step on no basis, or on a basis no such review
-// stands on, reads nothing more. The document's approval is read as well, for the sequence of the
-// newest review, which the review list does not carry.
+// Dispatch recorded after the approval the step opened on (workflow.BasisChangesRequest, the test
+// the live event passes too), oldest first, with the reason the person gave, as a fact of its own
+// (intake.BasisChangesRead): a changes request whose event came between register_gate's read and
+// the registration's commit, or never came, still reaches the root's architect and the
+// ancestor's, naming that reason. The workflow tells each review once, whatever else carried it,
+// and leaves the step open. A step on no basis, or on a basis no such review stands on, reads
+// nothing more. The document's approval is read as well, for the sequence of the newest review,
+// which the review list does not carry.
 func (r *outbox) seedGateBasis(ctx context.Context, row record.OutboxRow, payload record.GateSeed) error {
 	step := payload.Step.OrSpec()
 	var gate *record.DesignGate
@@ -2766,10 +2765,8 @@ func (r *outbox) seedGateBasis(ctx context.Context, row record.OutboxRow, payloa
 		return fmt.Errorf("read Dispatch reviews of %s, the basis of %s: %w", basis.ArtifactID, row.Issue, err)
 	}
 	var asked []dispatch.Review
-	for i := len(reviews) - 1; i >= 0; i-- {
-		review := reviews[i]
-		if review.Version == basis.Version && review.State == "changes_requested" && review.Actor.Person() &&
-			(record.EventMark{At: review.At}).After(basis.Approval) {
+	for _, review := range slices.Backward(reviews) {
+		if workflow.BasisChangesRequest(*gate, review.State == "changes_requested", review.Version, review.Actor, record.EventMark{At: review.At}) {
 			asked = append(asked, review)
 		}
 	}
@@ -2831,8 +2828,7 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 		BasisArtifactID: payload.BasisArtifactID, BasisVersion: payload.BasisVersion, Ask: payload.Ask, LatestVersion: approval.LatestVersion,
 		RequestOpen: approval.State == "awaiting" && approval.AskID == payload.Ask}
 	// Dispatch lists the reviews newest first.
-	for i := len(reviews) - 1; i >= 0; i-- {
-		review := reviews[i]
+	for _, review := range slices.Backward(reviews) {
 		if review.Version != payload.BasisVersion {
 			continue
 		}
@@ -2893,15 +2889,15 @@ func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload
 
 // reparentBasisVersion is the version of parent's primary document that R1's path can rest a
 // child root on, 0 where the path is closed: parent carries the legion label, Dispatch shows it
-// neither retro nor done, a person approved the latest version of its primary document, and that
-// version marks a requirement block that names an id, as register_gate reads one
-// (api's requirementsOf).
+// not accepted (record.AcceptedStatus), a person approved the latest version of its primary
+// document, and that version marks a requirement block that names an id, as register_gate reads
+// one (dispatchblocks.RequirementIDs).
 func (r *outbox) reparentBasisVersion(ctx context.Context, parent string) (int, error) {
 	issue, err := r.dispatch.GetIssue(ctx, parent)
 	if err != nil {
 		return 0, fmt.Errorf("read Dispatch issue %s, a new parent: %w", parent, err)
 	}
-	if !dispatch.CarriesLegionLabel(issue.Labels) || issue.Status == "retro" || issue.Status == "done" || issue.PrimaryArtifactID == "" {
+	if !dispatch.CarriesLegionLabel(issue.Labels) || record.AcceptedStatus(issue.Status) || issue.PrimaryArtifactID == "" {
 		return 0, nil
 	}
 	approval, err := r.dispatch.Approval(ctx, issue.PrimaryArtifactID)
@@ -2916,12 +2912,10 @@ func (r *outbox) reparentBasisVersion(ctx context.Context, parent string) (int, 
 	if err != nil {
 		return 0, fmt.Errorf("read version %d of %s, the primary document of %s: %w", version, issue.PrimaryArtifactID, parent, err)
 	}
-	for _, block := range dispatchblocks.Read(markdown) {
-		if block.Type == "requirement" && block.ID != "" {
-			return version, nil
-		}
+	if len(dispatchblocks.RequirementIDs(markdown)) == 0 {
+		return 0, nil
 	}
-	return 0, nil
+	return version, nil
 }
 
 func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload record.LingerClose) error {

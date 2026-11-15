@@ -957,14 +957,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	// The pairs as the event found them: it moves a version, a review mark or the opened mark and
 	// leaves every step on the document it named, so the comparison queues nothing, which is what
 	// keeps every review and version of every gated tree from costing a Dispatch write.
-	before, err := e.store.GatesOf(ctx, tx, key)
-	if err != nil {
-		return err
-	}
-	if err := e.putGateTold(ctx, tx, updated, fact.Version); err != nil {
-		return err
-	}
-	if err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now()); err != nil {
+	if err := e.putGatePublished(ctx, tx, key, updated, fact.Version); err != nil {
 		return err
 	}
 	// What the tree does next is the whole issue's question, not this row's, and nothing here
@@ -1183,6 +1176,22 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 		onBasis = e.basisSteps(gates)
 	}
 	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands, onBasis)
+}
+
+// putGatePublished writes gate's row as putGateTold does, and then publishes the documents key's
+// steps record where that write changed them (record.PublishChangedGates), against the rows key
+// held before the write. It is the whole write of a row that no read before it has given the
+// caller the issue's rows for: an artifact event's own apply (applyArtifact) and the opening or
+// the end of a step's wait on an ancestor's request (openPendingBasis, endPendingBasis).
+func (e *Engine) putGatePublished(ctx context.Context, tx pgx.Tx, key string, gate record.DesignGate, version int) error {
+	before, err := e.store.GatesOf(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	if err := e.putGateTold(ctx, tx, gate, version); err != nil {
+		return err
+	}
+	return record.PublishChangedGates(ctx, e.store, tx, key, before, e.now())
 }
 
 // standingGateOpen is whether the tree's work stands released under gates, the rows an issue

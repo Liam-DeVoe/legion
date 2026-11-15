@@ -596,8 +596,7 @@ func (w *workflowRuntime) queuePendingBasisSeeds(ctx context.Context) error {
 						break
 					}
 				}
-				row, err := record.NewOutboxRow(key, record.PendingBasisSeed{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID,
-					BasisArtifactID: gate.Basis.ArtifactID, BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: root.Generation}, now)
+				row, err := record.NewOutboxRow(key, record.PendingBasisSeedOf(gate, root.Generation), now)
 				if err != nil {
 					return err
 				}
@@ -1414,29 +1413,17 @@ func (w *workflowRuntime) consumerHandlers() []intake.Handler {
 }
 
 // droppingHandlers runs handlers on each fact drop does not drop, in order, and combines their
-// results as intake.ApplyFact combines those of the handlers it is given: the first refusal, and
-// whether any left the fact unspent.
+// results as intake.ApplyFact combines those of the handlers it is given (intake.ApplyHandlers).
 type droppingHandlers struct {
 	handlers []intake.Handler
 	drop     func(intake.Fact) bool
 }
 
 func (h droppingHandlers) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
-	var result intake.Result
 	if h.drop(fact) {
-		return result, nil
+		return intake.Result{}, nil
 	}
-	for _, handler := range h.handlers {
-		applied, err := handler.Apply(ctx, tx, fact)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		if result.Refusal == nil {
-			result.Refusal = applied.Refusal
-		}
-		result.Unspent = result.Unspent || applied.Unspent
-	}
-	return result, nil
+	return intake.ApplyHandlers(ctx, tx, fact, h.handlers)
 }
 
 // run drains intake and the outbox until ctx ends. Intake ending, or a terminal fact that could not

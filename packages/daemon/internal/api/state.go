@@ -1096,10 +1096,8 @@ type GatedStepBasis struct {
 
 // gatedStepBasisOf is basis as a step's entry names it.
 func gatedStepBasisOf(basis record.GateBasis) *GatedStepBasis {
-	view := &GatedStepBasis{Issue: basis.Issue, ArtifactID: basis.ArtifactID, Version: basis.Version, Approver: basis.Approver}
-	if at := basis.Approval.At; !at.IsZero() {
-		view.ApprovedAt = &at
-	}
+	view := &GatedStepBasis{Issue: basis.Issue, ArtifactID: basis.ArtifactID, Version: basis.Version, Approver: basis.Approver,
+		ApprovedAt: instant(basis.Approval.At)}
 	if basis.Pending != nil {
 		view.AskID = basis.Pending.Ask
 	}

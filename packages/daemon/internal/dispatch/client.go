@@ -222,22 +222,6 @@ func (c *HTTPClient) PostMessage(ctx context.Context, key, body string) error {
 	}, nil)
 }
 
-// ArtifactSlugs reads GET /api/v1/issues/{key}/artifacts (Artifacts) and returns the slug of every
-// document and file the issue holds. A caller that names its own document reads it before an
-// upload, so a retry finds the document its first attempt made rather than writing it a second
-// version.
-func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, error) {
-	artifacts, err := c.Artifacts(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	slugs := make([]string, len(artifacts))
-	for i, artifact := range artifacts {
-		slugs[i] = artifact.Slug
-	}
-	return slugs, nil
-}
-
 // Artifacts reads GET /api/v1/issues/{key}/artifacts: every document and file the issue holds, in
 // the order Dispatch lists them, each with its id, its slug, its kind, its primary flag, its role
 // and its latest version, the newest of the versions Dispatch lists for it.

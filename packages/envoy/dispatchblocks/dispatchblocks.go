@@ -12,7 +12,12 @@
 // is the one public door onto them, which is why it exists at all.
 package dispatchblocks
 
-import "github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+import (
+	"strconv"
+
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
+)
 
 // Block is one typed block of a document version: its id as the markdown writes it ("" for a
 // block whose markdown names none), its type as the block schema names it (`requirement`,
@@ -44,6 +49,18 @@ type Ref struct {
 	Pin       int
 }
 
+// PinnedTo is the reference pinned to version of the document it names: Dispatch's canonical form
+// of it (text.FormatBlockRef, the form Read takes every reference in) with `@v<version>` in place
+// of the pin it was written with, if any.
+func (r Ref) PinnedTo(version int) string {
+	document := r.Slug
+	if r.Primary {
+		document = "spec"
+	}
+	unpinned, _ := text.FormatBlockRef(text.Ref{Kind: "block", IssueKey: r.Issue, Project: r.Project, ID: document, Block: r.Block})
+	return unpinned + "@v" + strconv.Itoa(version)
+}
+
 // Read answers the typed blocks of markdown, one version's text of a Dispatch document, in
 // document order. It never refuses: a block the server's reader does not draw as a typed block
 // reads as the literal text it is, and is no typed block here either. That is a directive of a
@@ -73,6 +90,19 @@ func Read(markdown string) []Block {
 		return true
 	})
 	return blocks
+}
+
+// RequirementIDs is the ids of the requirement blocks markdown, one version's text of a Dispatch
+// document, marks, in document order (Read). A requirement block whose markdown names no id is no
+// block a reference can name, so it is left out.
+func RequirementIDs(markdown string) []string {
+	var ids []string
+	for _, block := range Read(markdown) {
+		if block.Type == "requirement" && block.ID != "" {
+			ids = append(ids, block.ID)
+		}
+	}
+	return ids
 }
 
 // refsOf is every reference node's own `block[]` attributes hold, read by pmdoc.BlockPointers

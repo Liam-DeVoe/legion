@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -278,7 +277,7 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 		return refuse("BASIS_NOT_IN_LEGION", "%s carries no %q label in Dispatch (its labels: %s); a basis is an issue Legion works on",
 			ancestor.Key, dispatch.LegionLabel, labelNames(ancestor.Labels))
 	}
-	if ancestor.Status == "retro" || ancestor.Status == "done" {
+	if record.AcceptedStatus(ancestor.Status) {
 		return refuse("BASIS_ACCEPTED", "Dispatch shows %s %s, so it has been accepted; a basis is an ancestor not yet accepted, so request a person's approval of the issue's own document",
 			ancestor.Key, ancestor.Status)
 	}
@@ -421,19 +420,14 @@ func (s *server) viewFact(w http.ResponseWriter, r *http.Request, root dispatch.
 }
 
 // requirementsOf is the ids of the requirement blocks one version of a document marks, in document
-// order. A block whose markdown names no id is no block a reference can name, so it is left out.
+// order (dispatchblocks.RequirementIDs). A block whose markdown names no id is no block a
+// reference can name, so it is left out.
 func (s *server) requirementsOf(ctx context.Context, document string, version int) ([]string, error) {
 	markdown, err := s.dispatch.DocumentVersion(ctx, document, version)
 	if err != nil {
 		return nil, &readFailure{what: fmt.Sprintf("version %d of %s", version, document), err: err}
 	}
-	var requirements []string
-	for _, block := range dispatchblocks.Read(markdown) {
-		if block.Type == requirementBlock && block.ID != "" {
-			requirements = append(requirements, block.ID)
-		}
-	}
-	return requirements, nil
+	return dispatchblocks.RequirementIDs(markdown), nil
 }
 
 // viewBasis is the ancestor's primary document a view is read against: its issue, the version read
@@ -492,7 +486,7 @@ func (s *server) viewOf(ctx context.Context, root string, basis viewBasis) ([]st
 	verification := -1
 	for index, document := range documents {
 		part := documentPart(document.artifact)
-		if part == dispatch.ArtifactRoleVerification && verification < 0 {
+		if part == record.DesignStepCriteria && verification < 0 {
 			verification = index
 		}
 		if part == "" {
@@ -542,7 +536,7 @@ func (s *server) viewOf(ctx context.Context, root string, basis viewBasis) ([]st
 				return refuse("VIEW_SERVES_OUTSIDE_BASIS", "check %s of %s serves %s, which is no requirement block of %s's primary document at version %d (it marks %s); each block a view's check serves is one of those",
 					blockNamed(check), documentNamed(root, documents[verification].artifact), ref.Text, basis.issue, basis.version, strings.Join(basis.requirements, ", "))
 			}
-			if pinned := pinnedTo(ref, basis.version); !slices.Contains(serves, pinned) {
+			if pinned := ref.PinnedTo(basis.version); !slices.Contains(serves, pinned) {
 				serves = append(serves, pinned)
 			}
 		}
@@ -554,18 +548,15 @@ func (s *server) viewOf(ctx context.Context, root string, basis viewBasis) ([]st
 	return serves, nil, nil
 }
 
-// documentPart is the part a document of the root plays that viewOf reads apart: its primary
-// document ("primary"), its Verification document or its decisions document (the roles Dispatch
-// names them by, the decisions document also by its slug, as stepDocument reads it), and "" for any
-// other document.
-func documentPart(artifact dispatch.Artifact) string {
-	switch {
-	case artifact.Primary:
-		return "primary"
-	case artifact.Role == dispatch.ArtifactRoleVerification:
-		return dispatch.ArtifactRoleVerification
-	case artifact.Role == dispatch.ArtifactRoleDecisions || artifact.Slug == dispatch.DecisionsSlug:
-		return dispatch.ArtifactRoleDecisions
+// documentPart is the part a document of the root plays that viewOf reads apart, as the design-gate
+// step that records it: its primary document (the spec step's), its Verification document (the
+// criteria step's) or its decisions document (the decisions step's), each as stepDocument binds a
+// step to its document (stepRecords), and "" for any other document.
+func documentPart(artifact dispatch.Artifact) record.DesignStep {
+	for _, step := range []record.DesignStep{record.DesignStepSpec, record.DesignStepCriteria, record.DesignStepDecisions} {
+		if stepRecords(step, artifact.Primary, artifact.Role, artifact.Slug) {
+			return step
+		}
 	}
 	return ""
 }
@@ -574,13 +565,8 @@ func documentPart(artifact dispatch.Artifact) string {
 // version read.
 func documentNamed(issue string, artifact dispatch.Artifact) string {
 	part := "document"
-	switch documentPart(artifact) {
-	case "primary":
-		part = "primary document"
-	case dispatch.ArtifactRoleVerification:
-		part = "Verification document"
-	case dispatch.ArtifactRoleDecisions:
-		part = "decisions document"
+	if step := documentPart(artifact); step != "" {
+		part = step.Document()
 	}
 	return fmt.Sprintf("%s's %s %s at version %d", issue, part, artifact.Slug, artifact.LatestVersion)
 }
@@ -592,16 +578,6 @@ func blockNamed(block dispatchblocks.Block) string {
 		return "(a " + block.Type + " block with no id)"
 	}
 	return block.ID
-}
-
-// pinnedTo is ref, a reference to a requirement block of the ancestor's primary document, pinned to
-// version: the reference as written, in Dispatch's canonical form, with its own pin replaced.
-func pinnedTo(ref dispatchblocks.Ref, version int) string {
-	text := ref.Text
-	if ref.Pin > 0 {
-		text = strings.TrimSuffix(text, "@v"+strconv.Itoa(ref.Pin))
-	}
-	return text + "@v" + strconv.Itoa(version)
 }
 
 // chainNames is root's child_of chain as a refusal names it, from root upward.
@@ -626,8 +602,5 @@ func labelNames(labels []string) string {
 
 // actorNamed is actor as a refusal names it, `<kind>:<id>`, or what Dispatch's silence means.
 func actorNamed(actor dispatch.Actor) string {
-	if name := actor.Name(); name != "" {
-		return name
-	}
-	return "nobody Dispatch names"
+	return cmp.Or(actor.Name(), "nobody Dispatch names")
 }

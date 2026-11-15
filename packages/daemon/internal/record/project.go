@@ -29,6 +29,14 @@ func RankLess(a, b Issue) bool {
 // the same question are here too (cycleAncestor).
 const DoneStatus = "done"
 
+// AcceptedStatus says whether Dispatch shows an issue accepted: retro, its reviewed head accepted,
+// or done (DoneStatus). It is the Dispatch half of R1's first condition for a basis
+// (dispatch://INFRA-3320): register_gate refuses an ancestor Dispatch shows so, and the daemon
+// ends a step's wait on such an ancestor's request, wherever it reads the status.
+func AcceptedStatus(status string) bool {
+	return status == DoneStatus || status == "retro"
+}
+
 // OutOfWorkflowStatuses are the four Dispatch statuses that take an issue out of the workflow,
 // and the one list of them: OutOfWorkflow is this list read as a predicate, so a status added
 // here moves every reader of the rule with it.
@@ -84,8 +92,9 @@ func Stopped(issue Issue) bool { return !InWorkflow(issue) || issue.Lingers() }
 //
 // It is the one reading of where an issue stands, and the rules that must never read a held
 // issue differently all take it: the phase half of the slot rule (PhaseKeepsSlot, through
-// KeepsSlot) and the acceptance rules (StandsIn, and Accepted over it). A hold the record names
-// no phase for answers phase.Held itself, which is all the daemon knows of it.
+// KeepsSlot) and the acceptance rules (StandsIn, and Accepted, which reads AcceptedPhase of it).
+// A hold the record names no phase for answers phase.Held itself, which is all the daemon knows
+// of it.
 func StandsAt(issue Issue) phase.Phase {
 	if issue.Phase == phase.Held && issue.Hold != nil {
 		return issue.Hold.From
@@ -94,31 +103,39 @@ func StandsAt(issue Issue) phase.Phase {
 }
 
 // StandsIn says whether issue stands in one of phases (StandsAt), counting a hold from one of
-// them as standing there. It is the one shape every question about where an issue stands is
-// written over — Accepted here, and the workflow's own awaitsMerge, its close of a merged issue
-// and its open review round — so no two of those questions read a held issue differently.
+// them as standing there. It is the one shape every question about where an issue stands in a
+// list of phases is written over — PastReview here, and the workflow's own awaitsMerge, its close
+// of a merged issue and its open review round — so no two of those questions read a held issue
+// differently; Accepted reads StandsAt as they do, through AcceptedPhase.
 func StandsIn(issue Issue, phases ...phase.Phase) bool {
 	return slices.Contains(phases, StandsAt(issue))
 }
 
+// AcceptedPhase says whether p is one of the phases past the daemon's acceptance of an issue's
+// reviewed head: its retro and its merge. The two phases are named here and nowhere else, so that
+// no rule of the acceptance order can read a list of its own: one that did is what let a child
+// held from retro through. Accepted reads it of where an issue stands, and the workflow reads it
+// of the phase a move left (workflow's acceptedEntry) and of the phase a move enters.
+func AcceptedPhase(p phase.Phase) bool {
+	return p == phase.Retro || p == phase.Merging
+}
+
 // Accepted says whether the daemon has already accepted issue's own reviewed head and the issue
 // has not closed: it stands in its retro or in its merge, or is held from one of them
-// (StandsIn). Work entering the workflow beneath an issue in one of those phases
+// (StandsAt, AcceptedPhase). Work entering the workflow beneath an issue in one of those phases
 // would let that issue merge first, which is the one thing a parent must not do
 // (dispatch://INFRA-980, "Children first"). The reviewed head of a root whose worker died in
 // retro or merging is accepted still, so the hold must not let work in beneath
 // it: the line held no issue under such a root, the two doors let one in, and the close of a
 // root held from retro handed over nobody.
 //
-// The two phases are named here and nowhere else, so that no rule of the acceptance order can
-// read a list of its own: one that did is what let a child held from retro through. Every one
-// of those rules asks this predicate instead, through the nearest accepted ancestor
+// Every rule of the acceptance order asks this predicate, through the nearest accepted ancestor
 // (AcceptedAncestor): the waiting line's hold (HeldUnderAccepted), the doors' refusal (api's
 // CHILD_UNDER_ACCEPTED_PARENT, AcceptedAncestorIn) and the wait a merged issue's close keeps
 // (OpenBeneath, which leaves out what that hold stopped) — so none of them can count a root as
 // accepted that another counts as still at work.
 func Accepted(issue Issue) bool {
-	return StandsIn(issue, phase.Retro, phase.Merging)
+	return AcceptedPhase(StandsAt(issue))
 }
 
 // Ancestors is every issue above issue inside its own tree, nearest first and the tree's own

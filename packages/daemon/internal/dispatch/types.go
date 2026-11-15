@@ -29,8 +29,6 @@ type Client interface {
 	HandOver(ctx context.Context, issue Issue, status string) error
 	PostMessage(ctx context.Context, key, body string) error
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
-	// ArtifactSlugs is the slug of every document and file the issue holds.
-	ArtifactSlugs(ctx context.Context, key string) ([]string, error)
 	// Artifacts is every document and file the issue holds, in the order Dispatch lists them:
 	// what each is on the issue and its latest version.
 	Artifacts(ctx context.Context, key string) ([]Artifact, error)

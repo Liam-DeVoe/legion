@@ -1429,12 +1429,7 @@ func carriesGateBasis(state State) bool {
 			return true
 		}
 	}
-	for _, held := range state.Admission.Held {
-		if held.Reason == record.HeldAwaitingChildren {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(state.Admission.Held, heldOnChildren)
 }
 
 // issueStandsOnBasis is whether any gated step of issue reads `open_on_basis` or
@@ -1444,6 +1439,12 @@ func issueStandsOnBasis(issue Issue) bool {
 	return slices.ContainsFunc(issue.GatedSteps, func(step GatedStepView) bool {
 		return step.Status == GatedStepOpenOnBasis || step.Status == GatedStepPendingOnBasis
 	})
+}
+
+// heldOnChildren is whether held is a held entry whose reason is awaiting_children, which both the
+// question asked of the whole state and the strip below read.
+func heldOnChildren(held HeldIssue) bool {
+	return held.Reason == record.HeldAwaitingChildren
 }
 
 // withoutGateBasis is state with no issue carrying `treeRuns`, and no issue carrying
@@ -1474,10 +1475,10 @@ func withoutGateBasis(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
-	if slices.ContainsFunc(state.Admission.Held, func(h HeldIssue) bool { return h.Reason == record.HeldAwaitingChildren }) {
+	if slices.ContainsFunc(state.Admission.Held, heldOnChildren) {
 		held := make([]HeldIssue, len(state.Admission.Held))
 		for i, h := range state.Admission.Held {
-			if h.Reason == record.HeldAwaitingChildren {
+			if heldOnChildren(h) {
 				h.Reason = record.HeldChildrenFirst
 			}
 			held[i] = h
