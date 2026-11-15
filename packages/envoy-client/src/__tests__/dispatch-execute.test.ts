@@ -14325,6 +14325,7 @@ describe("executeDispatchTool", () => {
 
   // A message has no other address in the log: its event line carries the reference that reads it.
   test("names each message, comment and ask on the log by its dispatch reference", async () => {
+    const editedMessageId = "44444444-4444-4444-8444-444444444444";
     const messageId = "652aec73-6214-46c0-a230-3b21a0466990";
     const commentId = "0f050a24-7f30-47f7-953c-8dd0597615c8";
     const askId = "f44e6e26-794f-44db-a64f-2d1847da392f";
@@ -14360,6 +14361,21 @@ describe("executeDispatchTool", () => {
             payload: { id: commentId, body: "Fix this." },
           },
           {
+            // The post's own event carries the words it carried when it was written, which an
+            // edit since has replaced, and the read of the event stamps the time of that edit on
+            // every event of the post. The line says so, rather than giving stale words bare.
+            seq: 5,
+            type: "message.created",
+            issue_key: "DSP-42",
+            actor: { kind: "user", id: "alice" },
+            created_at: "2026-09-09T00:05:00Z",
+            payload: {
+              id: editedMessageId,
+              body: "Ship it on Monday.",
+              edited_at: "2026-09-10T00:00:00Z",
+            },
+          },
+          {
             seq: 4,
             type: "ask.opened",
             issue_key: "DSP-42",
@@ -14389,6 +14405,7 @@ describe("executeDispatchTool", () => {
         "Events:",
         `- #2 message.created dispatch://DSP-42/message/${messageId} · user alice · 2026-09-09T00:02:00Z · Ship it.`,
         `- #3 comment.created dispatch://DSP-42/comment/${commentId} · user alice · 2026-09-09T00:03:00Z · Fix this.`,
+        `- #5 message.created dispatch://DSP-42/message/${editedMessageId} · user alice · 2026-09-09T00:05:00Z · Ship it on Monday. · edited 2026-09-10T00:00:00Z`,
         `- #4 ask.opened dispatch://DSP-42/ask/${askId} · session s1 · 2026-09-09T00:04:00Z · Which store?`,
       ].join("\n")
     );

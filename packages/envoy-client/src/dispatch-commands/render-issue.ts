@@ -381,6 +381,10 @@ export function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]
  * carries, or, on a post its author deleted, the mark the read of the event carries in place of
  * every body. A `comment.deleted` or `message.deleted` event carries no body at all, and so does
  * every earlier event of a post once it is deleted, which is why the body is read for absence.
+ * The words of a post its author edited are the words that event carried, which an edit since
+ * has replaced, so the line says the post was edited and when: the read of the event stamps
+ * every event of such a post with the time of its last edit (`attachPostMarks`, `api/events.go`),
+ * and a reader meeting stale words with no mark is what this issue is about.
  *
  * The payload is named in the reading a `DispatchEvent` carries, the one Dispatch writes, so
  * its `deleted_by` is a `WrittenActor` and not the served row's `Actor`: a build with
@@ -389,7 +393,9 @@ export function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]
  */
 function postEventHead(payload: CommentEventPayload | MessageEventPayload): string | undefined {
   if (payload.deleted_at != null) return deletedMark(payload.deleted_at, payload.deleted_by);
-  return payload.body === undefined ? undefined : textHead(payload.body);
+  if (payload.body === undefined) return undefined;
+  const head = textHead(payload.body);
+  return payload.edited_at == null ? head : `${head} · edited ${payload.edited_at}`;
 }
 
 /** The head of the text an event carries, so a log reads without opening each item. */
