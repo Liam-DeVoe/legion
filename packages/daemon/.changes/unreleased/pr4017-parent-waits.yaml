@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  A parent starts no phase of planning through accepting while a Dispatch child of it is open.
+  The daemon moves it to the new phase `awaiting_children` in place of that start: from a
+  transition, from a release of a hold, or at the admission pass for a parent in `accepting`, a
+  start not yet delivered or a worker in the middle of its phase. A start that a conflicting
+  head writes out of `retro` or `merging` is not held. A waiting parent holds no admission slot,
+  shows `in_progress` in Dispatch and stands in `admission.blocked` with its open children. No
+  backstop, CI settlement or resume path starts a role of it. Its architect gets one
+  `awaiting-children` notice, and a worker whose phase the move ended is told to push what it has
+  and stop. That worker's pending task for the phase is retired (the supervise op
+  `retire_task`). `request_backward_move` and `sign_off` on the parent are refused
+  `WAITING_ON_CHILDREN`. Once no child is open, the admission pass returns the parent to the start
+  it held on a new phase entry. A held test, review or acceptance returns as `implementing`, and
+  the first implementing task asks for a forward merge and a full test round. Migration
+  `20261114232555_awaiting_children` adds the phase, the held start, `forward_merge_owed`,
+  `children_waited_at` and `phases.entry_from`. `docs/kubernetes.md` says how to roll the release
+  back.
+custom:
+    Issue: pr4017

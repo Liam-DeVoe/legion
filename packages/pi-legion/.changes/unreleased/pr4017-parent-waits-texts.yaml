@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The architect, worker and controller skills say that the daemon holds a parent's phase starts
+  while a child of it is open. The parent waits in `awaiting_children` with no slot, and comes back
+  to the start it held with a forward merge and a full test round, which the implementer marks
+  with the line `children merged: full test round`. The `sign_off` description names
+  `WAITING_ON_CHILDREN`, and no text speaks of a parent's last round.
+custom:
+    Issue: pr4017
