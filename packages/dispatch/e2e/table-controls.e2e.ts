@@ -3080,3 +3080,106 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
     "the search bar is still open after Shift+Tab and three Escapes"
   ).toHaveCount(0);
 });
+
+// SLOW(>=2s): the Delivery page opened four times, in each view, at two widths.
+// INFRA-3135's review round 1 (threads PRRT_kwDORFy7ds63p6zB and PRRT_kwDORFy7ds63p6zE): on the
+// Timeline, the view the page opens on, the row's panel held four of the nine facets and the row
+// drew no chip or count for the other five, which `/delivery?author=x` still narrowed by; a
+// value picked on a column's header in the List drew no chip in the row; and the List's arrows
+// were answered while the list held any row, so ArrowDown with the focus on the page's body
+// moved the focus into the list instead of scrolling the page.
+test("the Delivery page reaches every facet from its row, in both views, and its list answers keys only on a focused row", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  // The delivery fixture with its reconcile verdict pinned, as `seedRealStackSurfaces` pins it,
+  // and one more pull request merged in its window: another author's, written by a session, so
+  // taking the Author chip off gives a pull request back and the Session facet has a value.
+  await seedDeliveryFixture();
+  await sql(
+    `UPDATE delivery_settings
+       SET last_error = 'the GitHub App is not installed on acme/widgets'
+     WHERE singleton`,
+    `INSERT INTO delivery_pull_requests (
+       repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
+     ) VALUES
+       ('acme/widgets', 3, 'feat: a hubot widget', 'https://github.com/acme/widgets/pull/3', 'hubot',
+        '2024-06-01T04:00:00Z', '2024-06-01T05:00:00Z', 2, 1, false, null, ARRAY['e2e-delivery-row'], false)`
+  );
+  const main = page.getByTestId("main-content");
+  const row = controlRow(main);
+  const trigger = control(row, CONTROL.panelTrigger);
+  const shown = main.getByText(/^\d+ PRs in current filter\/window$/);
+
+  // A link naming one of the five column facets, on the Timeline: its chip and its count are in
+  // the row, and the chip takes it off.
+  await page.goto(`/delivery?${DELIVERY_WINDOW}&author=octocat`);
+  await expect(main.getByRole("img", { name: /^Delivery timeline/ })).toBeVisible();
+  await expect(shown).toHaveText("2 PRs in current filter/window");
+  const octocat = row.getByRole("button", { exact: true, name: "Remove Author: octocat filter" });
+  await expect(octocat, "the Timeline draws no chip for ?author=").toBeVisible();
+  await expect(trigger).toHaveText("Filter · 1");
+  await octocat.click();
+  await expect(shown).toHaveText("3 PRs in current filter/window");
+  await expect(page).not.toHaveURL(/[?&]author=/);
+  await expect(trigger).toHaveText("Filter · 0");
+
+  // No column header is drawn on the Timeline, so its panel holds all nine.
+  const panel = await openFilterPanel(page, main);
+  for (const facet of [
+    "Repository",
+    "Session",
+    "Priority",
+    "Component",
+    "Issue",
+    "Parent agent",
+    "Author",
+    "Rework",
+    "Deployed",
+  ]) {
+    await expect(
+      panel.getByRole("button", { name: new RegExp(`^${facet}: `) }),
+      `the Timeline's panel offers no ${facet}`
+    ).toHaveCount(1);
+  }
+  await closeControlPanel(main);
+
+  // In the List, Author is filtered on its column's header, and what it picks is a chip of the
+  // row, whose press takes it off the header too.
+  await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+  const prs = page.locator("tbody tr[data-pr-row]");
+  await expect(prs).toHaveCount(3);
+  await main.getByRole("button", { exact: true, name: "Filter Author" }).click();
+  await page
+    .getByRole("listbox", { name: "Author options" })
+    .getByRole("option", { name: /^hubot/ })
+    .click();
+  await page.keyboard.press("Escape");
+  await expect(prs).toHaveCount(1);
+  const hubot = row.getByRole("button", { exact: true, name: "Remove Author: hubot filter" });
+  await expect(hubot, "the List draws no chip for its Author column's filter").toBeVisible();
+  await expect(trigger).toHaveText("Filter · 1");
+  await hubot.click();
+  await expect(prs).toHaveCount(3);
+  await expect(main.getByRole("button", { exact: true, name: "Filter Author" })).toBeVisible();
+
+  // Below `xl` the list's box is three quarters of the window under the page's measures, so the
+  // page scrolls. With the focus on the body, ArrowDown is the page's: it scrolls, and no row
+  // takes the focus.
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+  await expect(prs).toHaveCount(3);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  await page.keyboard.press("ArrowDown");
+  expect(
+    await focusedRowOf(page, "data-pr-row"),
+    "ArrowDown with the focus on the body put it in a row"
+  ).toBeNull();
+  await expect
+    .poll(() => page.evaluate(() => window.scrollY), {
+      message: "ArrowDown with the focus on the body did not scroll the page",
+    })
+    .toBeGreaterThan(0);
+});
