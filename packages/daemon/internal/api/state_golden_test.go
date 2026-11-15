@@ -944,7 +944,61 @@ func populatedState(t *testing.T) State {
 		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
 		state.Issues[key] = issue
 	}
+	release := goldenProjectRelease()
+	state.ProjectRelease = &release
 	return state
+}
+
+// goldenProjectRelease is a finished project release with one line of every kind a release
+// writes: an issue pod deleted with nothing unpushed, one deleted with work lost after its asked
+// role answered, one whose shim refused the read and whose asked role let the bound pass, one
+// with no read, one left because an operator suspended a claim of it, the controller's pod, a
+// repository cache whose delete the volume guard refused, and a claim line of each way a claim
+// ends. It is the body of `GET /legion/v1/operator/project/release` and the state's
+// `projectRelease`.
+func goldenProjectRelease() ProjectReleaseResponse {
+	started := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	answered, finished := started.Add(4*time.Minute), started.Add(31*time.Minute)
+	one, changed, unchanged := 1, true, false
+	none := 0
+	return ProjectReleaseResponse{
+		ID: 7, StartedAt: started, BoundAt: started.Add(30 * time.Minute), Bound: (30 * time.Minute).String(), FinishedAt: &finished,
+		Result: ProjectReleaseResult{
+			Sandboxes: []ReleasedSandbox{
+				{Name: "legion-legion-cache-legion-legion", Kind: "cache", Outcome: ReleaseLeft,
+					Reason: "sandbox runtime: refused to delete a Sandbox whose volume holds session files"},
+				{Name: "legion-legion-controller", Kind: "controller", Outcome: ReleaseDeleted},
+				{Name: "legion-legion-legion-208", Kind: "issue", Issue: "LEGION-208", Outcome: ReleaseDeletedClean,
+					Commits: &none, WorkingCopyChanged: &unchanged},
+				{Name: "legion-legion-legion-209", Kind: "issue", Issue: "LEGION-209", Outcome: ReleaseDeletedLost,
+					Commits: &one, WorkingCopyChanged: &changed,
+					Asked: []ReleasedAsk{{Role: claim.RoleImplementer, AnsweredAt: &answered}}},
+				{Name: "legion-legion-legion-210", Kind: "issue", Issue: "LEGION-210", Outcome: ReleaseDeletedReadRefused,
+					Refusal: "Unknown command: read-unpushed", OtherImage: true,
+					Asked: []ReleasedAsk{{Role: claim.RoleTester, Bound: true}}},
+				{Name: "legion-legion-legion-211", Kind: "issue", Issue: "LEGION-211", Outcome: ReleaseDeletedUnread},
+				{Name: "legion-legion-legion-212", Kind: "issue", Issue: "LEGION-212", Outcome: ReleaseLeft,
+					Reason: "an operator suspended its reviewer"},
+			},
+			Claims: []ReleasedClaim{
+				{Token: "legion-legion-controller", Role: claim.RoleController, Session: "ses_controller", Ended: "project_release", BootStarts: true},
+				{Token: "legion-legion-legion-208-architect", Issue: "LEGION-208", Role: claim.RoleArchitect, Session: "ses_architect",
+					Ended: "project_release", BootStarts: true},
+				{Token: "legion-legion-legion-209-implementer", Issue: "LEGION-209", Role: claim.RoleImplementer, Session: "ses_implementer",
+					Ended: "project_release", BootStarts: true},
+				{Token: "legion-legion-legion-210-tester", Issue: "LEGION-210", Role: claim.RoleTester, Session: "ses_tester",
+					Ended: "daemon"},
+				{Token: "legion-legion-legion-212-planner", Issue: "LEGION-212", Role: claim.RolePlanner, Session: "ses_planner",
+					Ended: "working", Detail: "not stored suspended by operator within 20s: it stands working"},
+			},
+		},
+	}
+}
+
+// The project release's own route answers the release as the state carries it
+// (dispatch://INFRA-3583, contract 134).
+func TestProjectReleaseResponseGolden(t *testing.T) {
+	golden(t, "project-release.json", goldenProjectRelease())
 }
 
 // newest is the latest of times, which is how the quiet time takes a tree's movement from the

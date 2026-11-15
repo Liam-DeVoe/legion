@@ -216,6 +216,57 @@ type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
 }
 
+// ProjectPods is what a project release needs of a runtime that runs the project's pods
+// (dispatch://INFRA-3583 R6): every Sandbox of the project as the runtime watches it, a read of
+// an issue workspace's unpushed work through one role's shim, and the deletes of the Sandboxes
+// that are no issue's. The issue pods themselves go through IssueSuspender, and the controller's
+// through Release. A runtime that runs no pod implements none of it, so the daemon on it refuses
+// a release, and the assertion is made where the release is built, as IssueSuspender's is.
+type ProjectPods interface {
+	IssueSuspender
+	// ProjectSandboxes is every Sandbox of the project the runtime's store holds, in name order,
+	// not counting one already being deleted.
+	ProjectSandboxes(ctx context.Context) ([]ProjectSandbox, error)
+	// ReadUnpushed has role's shim read the unpushed work of the issue's workspace
+	// (Conn.ReadUnpushed), under WorkspaceBundleTimeout.
+	ReadUnpushed(ctx context.Context, issue string, role claim.Role) (UnpushedWork, error)
+	// DeleteProjectSandbox deletes the repository cache's or the image probe's Sandbox name, as
+	// the runtime's own deletes of those do: under the pod's launch turn, fenced to the Sandbox
+	// its store holds, behind the session-volume guard, whose refusal is the error. A Sandbox
+	// already gone is deleted. A Sandbox of any other kind is refused.
+	DeleteProjectSandbox(ctx context.Context, name string) error
+}
+
+// ProjectSandboxKind is what one Sandbox of a project is for (ProjectSandbox.Kind).
+type ProjectSandboxKind string
+
+const (
+	// ProjectSandboxIssue is an issue's pod, which runs the roles of that issue.
+	ProjectSandboxIssue ProjectSandboxKind = "issue"
+	// ProjectSandboxController is the project's controller pod.
+	ProjectSandboxController ProjectSandboxKind = "controller"
+	// ProjectSandboxCache is a repository cache's pod.
+	ProjectSandboxCache ProjectSandboxKind = "cache"
+	// ProjectSandboxProbe is an image probe's pod.
+	ProjectSandboxProbe ProjectSandboxKind = "probe"
+	// ProjectSandboxUnknown is a Sandbox of the project whose labels name none of the four, which
+	// no act of the daemon made and none of them deletes.
+	ProjectSandboxUnknown ProjectSandboxKind = "unknown"
+)
+
+// ProjectSandbox is one Sandbox of a project as the runtime's store holds it: its name and kind,
+// the issue and tree its labels name (an issue pod's alone), the uid of the pod it owns now (""
+// when it owns none that runs), and whether that pod runs the image the daemon's configuration
+// names, every container of it included (false for a Sandbox with no such pod).
+type ProjectSandbox struct {
+	Name            string
+	Kind            ProjectSandboxKind
+	Issue           string
+	Tree            string
+	PodUID          string
+	ConfiguredImage bool
+}
+
 // SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
 // created at podCreated, to restore, and what that ask did to the bundle. It is the other half
 // of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore), handed

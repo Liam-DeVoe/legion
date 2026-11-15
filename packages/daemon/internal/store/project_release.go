@@ -270,8 +270,22 @@ func (s *Store) EndProjectReleasesAtBoot(ctx context.Context, project string, at
 
 // ReadProjectRelease is the newest release of project, and whether one was ever recorded.
 func (s *Store) ReadProjectRelease(ctx context.Context, project string) (ProjectRelease, bool, error) {
-	release, err := scanProjectRelease(s.pool.QueryRow(ctx, `select `+projectReleaseColumns+` from project_releases
-		where project = $1 order by id desc limit 1`, project))
+	return readProjectRelease(s.pool.QueryRow(ctx, newestProjectRelease, project), project)
+}
+
+// ReadProjectReleaseTx is ReadProjectRelease through tx, for a reader whose answer must come from
+// the same snapshot as everything else it reads: the state route's (api.State.ProjectRelease).
+func (s *Store) ReadProjectReleaseTx(ctx context.Context, tx pgx.Tx, project string) (ProjectRelease, bool, error) {
+	return readProjectRelease(tx.QueryRow(ctx, newestProjectRelease, project), project)
+}
+
+// newestProjectRelease reads the newest release of the project $1.
+const newestProjectRelease = `select ` + projectReleaseColumns + ` from project_releases
+		where project = $1 order by id desc limit 1`
+
+// readProjectRelease scans row, newestProjectRelease's one row, answering no row as no release.
+func readProjectRelease(row pgx.Row, project string) (ProjectRelease, bool, error) {
+	release, err := scanProjectRelease(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRelease{}, false, nil
 	}

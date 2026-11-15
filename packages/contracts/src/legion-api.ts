@@ -1009,6 +1009,88 @@ const legionConsumerLag = z.object({
   unavailable: nonEmptyString.optional(),
 });
 
+/** `api.ReleasedAsk` — one role a project release asked to push and end its turn: when it
+ * answered, or `bound` once the bound passed with no answer; neither while it may still answer,
+ * and neither on a dry run, which names the roles a release would ask. */
+const legionReleasedAsk = z.object({
+  role: z.enum(LEGION_ROLES),
+  answeredAt: timestamp.optional(),
+  bound: z.boolean().optional(),
+});
+
+/** `api.ReleasedSandbox` — one Sandbox of the project as a project release ended it, or on a dry
+ * run as a release would end it now: an issue pod `deleted_clean`, `deleted_unread` (no role
+ * process to read it), `deleted_lost` (with the unpushed `commits` and whether the working copy
+ * held a change at the last read), `deleted_read_refused` (with the shim's `refusal`) or `left`
+ * (with its `reason`); every other Sandbox `deleted` or `left`; `waiting` until the release ends
+ * it. `otherImage` marks an issue pod whose pod runs an image other than the daemon's own. */
+const legionReleasedSandbox = z.object({
+  name: nonEmptyString,
+  kind: z.enum(["issue", "controller", "cache", "probe", "unknown"]),
+  issue: issueKey.optional(),
+  outcome: z.enum([
+    "waiting",
+    "deleted_clean",
+    "deleted_unread",
+    "deleted_lost",
+    "deleted_read_refused",
+    "deleted",
+    "left",
+  ]),
+  reason: nonEmptyString.optional(),
+  commits: z.number().int().nonnegative().optional(),
+  workingCopyChanged: z.boolean().optional(),
+  refusal: nonEmptyString.optional(),
+  otherImage: z.boolean().optional(),
+  asked: z.array(legionReleasedAsk).optional(),
+});
+
+/** `api.ReleasedClaim` — one claim a project release stopped: how it `ended` as its own record
+ * holds it at the end (`project_release` for a claim the daemon's next boot starts, which
+ * `bootStarts` says, or the source or state of one it does not), absent while the release has not
+ * ended it, and `detail`, why a claim the release held for an operator was not stored in time. */
+const legionReleasedClaim = z.object({
+  token: nonEmptyString,
+  issue: issueKey.optional(),
+  role: z.enum([...LEGION_ROLES, "controller"]),
+  session: nonEmptyString.optional(),
+  ended: nonEmptyString.optional(),
+  bootStarts: z.boolean(),
+  detail: nonEmptyString.optional(),
+});
+
+/** `api.ProjectReleaseRequest`, the body of `POST /legion/v1/operator/project/release`: the bound
+ * as a Go duration (`30m`; absent for the daemon's `pod_update_grace_minutes`), and whether this
+ * is a dry run, which reads each pod's workspace and asks, stops and saves nothing. */
+export const LegionProjectReleaseRequest = z.strictObject({
+  bound: nonEmptyString.optional(),
+  dryRun: z.boolean().optional(),
+});
+
+/** `api.ProjectReleaseResponse`, the body of `POST` and `GET /legion/v1/operator/project/release`
+ * and the state's `projectRelease` (contract 134): the release's record id (none on a dry run),
+ * when it started and when it deletes every pod still waiting (`boundAt`), that `bound` as a Go
+ * duration, when it finished and when a boot ended it (`endedBy` `boot`), each absent until it
+ * happens, and its result: one line per Sandbox of the project and one per claim it stopped,
+ * never null, and `failure`, what stopped it short, absent while nothing did. */
+export const LegionProjectReleaseResponse = z.object({
+  id: z.number().int().positive().optional(),
+  dryRun: z.boolean().optional(),
+  startedAt: timestamp,
+  boundAt: timestamp,
+  bound: nonEmptyString,
+  finishedAt: timestamp.optional(),
+  endedAt: timestamp.optional(),
+  endedBy: z.literal("boot").optional(),
+  result: z.object({
+    sandboxes: z.array(legionReleasedSandbox),
+    claims: z.array(legionReleasedClaim),
+    failure: nonEmptyString.optional(),
+  }),
+});
+
+export type LegionProjectRelease = z.output<typeof LegionProjectReleaseResponse>;
+
 /** `api.State`, the body of `GET /legion/v1/state`. `controllerLocator` is absent until a session
  * registers as the project's controller: with the capability `legion controller start` fetched, or,
  * under `controller: daemon`, with the boot token of the daemon's own controller launch;
@@ -1043,7 +1125,10 @@ const legionConsumerLag = z.object({
  * the route strips it for a caller in a pod below 75, and for that caller alone, since a reader
  * before 75 refuses the key (`api.stateFor`, `withoutRecordFields`). A caller in a pod whose
  * claims record no contract and a caller the daemon can place in no pod are served the mark, and
- * the shapes `internal/projection` answers before the route marks them carry none either. */
+ * the shapes `internal/projection` answers before the route marks them carry none either.
+ * `projectRelease` is the project's newest project release, the body its own `GET` answers
+ * (contract 134), absent while none was ever recorded and for a caller in a pod below 134
+ * (`api.stateFor`, `withoutProjectRelease`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   contract: legionContract.optional(),
@@ -1060,6 +1145,7 @@ export const LegionStateResponse = z.object({
   repositories: legionRepositories,
   settings: legionSettings,
   consumers: z.array(legionConsumerLag),
+  projectRelease: LegionProjectReleaseResponse.optional(),
 });
 
 export type LegionState = z.output<typeof LegionStateResponse>;

@@ -109,6 +109,13 @@ type State struct {
 	// NATS at the request after the state's transaction commits, so no NATS read holds the
 	// snapshot open. Never null: a daemon with no workflow has none (contract 43).
 	Consumers []ConsumerLagView `json:"consumers"`
+	// ProjectRelease is the newest project release of the project (dispatch://INFRA-3583 R7: a
+	// released daemon still serves its API, and `legion state --json` shows the release and its
+	// result): its record's id, times and bound, who ended it, and its result as the release last
+	// recorded it, the same body its own `GET /legion/v1/operator/project/release` answers.
+	// Absent while no release of the project was ever recorded, and from a body narrowed to a
+	// caller below projectReleaseContract (withoutProjectRelease).
+	ProjectRelease *ProjectReleaseResponse `json:"projectRelease,omitempty"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below server.go's
 	// wakesWaitingContract): that reader knows no `wakesWaiting` and refuses the key as surely

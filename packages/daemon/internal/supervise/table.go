@@ -2584,11 +2584,12 @@ func (m *Machine) endCurrentPluginRound(ctx context.Context) error {
 
 // clearUpdate drops every field an update round writes, which is what a round leaving this claim
 // means: the round the sweep ends (endPodUpdate), the round a new one replaces, whose fields are
-// each the earlier round's (openPodUpdate), and the round a claim retires in (retire).
+// each the earlier round's (openPodUpdate), the round a claim retires in (retire), and the round
+// of a claim the project release stops (leaveRoundForRelease), whose pod the release deletes.
 //
 // It is the one place the round a claim left goes too (UpdateLeftRound): the end of the round is
-// the only thing that may forget any part of it, and a relaunch, a suspension, a letGo and a
-// restart each leave it exactly as it is.
+// the only thing that may forget any part of it, and a relaunch, every other suspension, a letGo
+// and a restart each leave it exactly as it is.
 func (m *Machine) clearUpdate() {
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateHead = "", "", ""
 	m.claim.UpdateOpenedAt, m.claim.UpdateTaskedAt = nil, nil

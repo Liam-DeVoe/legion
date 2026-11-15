@@ -1724,4 +1724,40 @@ package api
 // head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
-const DaemonAPIVersion = 133
+//
+// 134: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
+// `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `timeoutMs`), with
+// `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`,
+// `workingCopyChanged`, `error`): how many commits of the issue's workspace no remote branch or tag
+// holds, every empty working copy left out, and whether the reading role's working copy holds a
+// change, read in the workspace with no bundle built and no commit sent; a shim older than this
+// number forwards the frame to Oh My Pi, which refuses it, and the daemon reads that refusal as a
+// workspace unread. The operator's routes gain `POST /legion/v1/operator/project/release` (body
+// `bound`, a Go duration, and `dryRun`; 202 with the release's record, 200 with a dry run's report,
+// and 200 with this process's release once one ran, which starts nothing; 409
+// `PROJECT_RELEASE_NO_POD` on the tmux runtime) and `GET` on the same path (200 with the newest
+// release, 404 when none ran), whose body is api.ProjectReleaseResponse: `id`, `dryRun`,
+// `startedAt`, `boundAt`, `bound`, `finishedAt`, `endedAt`, `endedBy` and `result`, the result one
+// line per Sandbox of the project (`name`, `kind`, `issue`, `outcome`, `reason`, `commits`,
+// `workingCopyChanged`, `refusal`, `otherImage`, `asked` with each asked role's `role`,
+// `answeredAt` and `bound`) and one per claim the release stopped (`token`, `issue`, `role`,
+// `session`, `ended`, `bootStarts`, `detail`), and `failure`. `GET /legion/v1/state` gains
+// `projectRelease`, that same body for the project's newest release, absent while none was
+// recorded; a caller from a pod whose claims record a contract below 134 is served the state
+// without it (api's stateNarrowings, withoutProjectRelease), as a caller below 133 is served it
+// without `mergeWait`, and the bands compose. A claim's `suspendedBy` on the operator routes takes
+// `project_release`, a claim the release stopped, which the daemon's next boot starts again. The
+// release's ask to a role rides the role's own topic as an update round's ask does, under the
+// round `release:<id>`, and `POST /legion/v1/claims/ready-for-update` hands an answer naming the
+// running release's round to the release, which records it on its own record and none of the
+// claim's round columns. While a release holds every start, the operator's spawn, retry, resume
+// and deliver, and either door's fresh session and compaction, answer 409 with the code
+// `PROJECT_RELEASED` and the sentence api.ProjectReleaseHolds. The number is the census an
+// implementer of dispatch://INFRA-3583 read on 2026-11-15 of `const DaemonAPIVersion` at the head
+// of every one of the 154 open pull requests of this repository: main declares 133 (INFRA-3027's
+// entry above) and no open head declares above it, so 134 is the lowest number above the base's
+// that no other open head declares. Read the base's own number and every open head again at the
+// next merge rather than from this entry, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+const DaemonAPIVersion = 134

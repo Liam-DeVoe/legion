@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,10 +77,31 @@ type idleRigAdoption struct {
 // acknowledge it and take none, which is the shape of a resume that never reaches its first turn.
 // Topics are the topics the process registers with the Envoy listener beside its agent subject,
 // as `envoy_subscribe` adds one.
+//
+// The rest is what the process answers a project release (dispatch://INFRA-3583). Unpushed is
+// what its shim reads of the workspace's unpushed work (`read-unpushed`), nothing unpushed when
+// it names none; RefuseRead, when set, is the refusal it answers that read with instead, as a shim
+// older than the read forwards the frame to Oh My Pi, which refuses it. AnswerRelease is whether
+// the process answers the release's ask with ready_for_update, naming the round the ask names.
 type idleRigPlan struct {
-	TakeTurn bool     `json:"takeTurn"`
-	Topics   []string `json:"topics"`
+	TakeTurn      bool             `json:"takeTurn"`
+	Topics        []string         `json:"topics"`
+	Unpushed      *idleRigUnpushed `json:"unpushed,omitempty"`
+	RefuseRead    string           `json:"refuseRead,omitempty"`
+	AnswerRelease bool             `json:"answerRelease,omitempty"`
 }
+
+// idleRigUnpushed is a workspace's unpushed work as a shim's read answers it.
+type idleRigUnpushed struct {
+	Commits            int  `json:"commits"`
+	WorkingCopyChanged bool `json:"workingCopyChanged"`
+}
+
+// idleRigReleaseAsk finds the round a project release's ask names in its text
+// (supervise.ReleaseTask): the round the role passes back with ready_for_update. The listener
+// relays a publish's payload as the JSON the daemon encoded it as, so the quotes around the round
+// arrive escaped.
+var idleRigReleaseAsk = regexp.MustCompile(`round: \\?"(release:[0-9]+)\\?"`)
 
 // idleRigAgents is the rig's own service: it hands each role process the boot token its pod's
 // launcher wrote for the generation, records what each process registered and every message it
@@ -595,8 +617,28 @@ func (p *idleRigRoleProcess) relayed(msg *nats.Msg) {
 			fmt.Fprintf(os.Stderr, "idle rig role process: record a message for %s: %v\n", p.session, err)
 			return
 		}
+		p.answerRelease(item.text())
 	}
 	p.reply(msg, idleRigRelayDone)
+}
+
+// answerRelease answers a project release's ask with ready_for_update, naming its round, when the
+// rig's plan says this role answers one; any other message, and a plan that does not, answer
+// nothing. A refused answer is said on stderr and changes nothing else, as a plugin's would.
+func (p *idleRigRoleProcess) answerRelease(text string) {
+	asked := idleRigReleaseAsk.FindStringSubmatch(text)
+	if asked == nil {
+		return
+	}
+	plan, err := p.plan()
+	if err != nil || !plan.AnswerRelease {
+		return
+	}
+	if err := p.post(p.daemon+"/legion/v1/claims/ready-for-update", claim.ReadyForUpdateRequest{
+		ClaimToken: p.claimToken, SessionID: p.session, Secret: p.secret, Generation: p.generation, Round: asked[1],
+	}, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "idle rig role process: answer the release's ask %s: %v\n", asked[1], err)
+	}
 }
 
 // firstSighting reports whether this process has not recorded the stream sequence yet, taking it
@@ -741,6 +783,10 @@ func (p *idleRigRoleProcess) serve() error {
 			}); err != nil {
 				return err
 			}
+		case shimwire.ReadUnpushed:
+			if err := p.readUnpushed(f); err != nil {
+				return err
+			}
 		case shimwire.AdoptWorkingCopy:
 			if err := p.adopted(f); err != nil {
 				return err
@@ -749,6 +795,24 @@ func (p *idleRigRoleProcess) serve() error {
 			return nil
 		}
 	}
+}
+
+// readUnpushed answers a project release's read of the workspace's unpushed work with what the
+// rig's plan names: a refusal as an older shim's, or the count and the working-copy flag, nothing
+// unpushed when the plan names none.
+func (p *idleRigRoleProcess) readUnpushed(read shimwire.ReadUnpushed) error {
+	plan, err := p.plan()
+	if err != nil {
+		return err
+	}
+	if plan.RefuseRead != "" {
+		return p.writer.WriteFrame(shimwire.Response{ID: read.ID, Command: shimwire.TypeReadUnpushed, Success: false, Error: plan.RefuseRead})
+	}
+	answer := shimwire.ReadUnpushedResult{ID: read.ID, OK: true}
+	if plan.Unpushed != nil {
+		answer.Commits, answer.WorkingCopyChanged = plan.Unpushed.Commits, plan.Unpushed.WorkingCopyChanged
+	}
+	return p.writer.WriteFrame(answer)
 }
 
 // adopted records the adopt-working-copy frame and only then answers it, as a shim answers once

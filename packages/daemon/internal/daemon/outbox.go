@@ -1583,6 +1583,14 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // records the row's round: the round ended, another round replaced it, or this daemon no longer
 // supervises the claim. A role is never asked about a round that is not its own.
 //
+// The project release's ask rides this row too, under the release's own round ("release:<id>",
+// projectReleaseRound), which no claim records: the release keeps its asks on its own record and
+// writes no round column of a claim (decision 6 of dispatch://INFRA-3583's plan). So an ask whose
+// round is the release's of this process (projectRelease.askRound) is published without that read.
+// One this process did not ask, a row an earlier process left, meets the claim-round read like
+// any other once the boot that ended its release lets it run, and since no claim records that
+// round it finishes without a publish.
+//
 // A topic with no live holder (notify.ErrNoHolder) ends the row with one log line. Every other
 // failure of the publish keeps the ordinary retry, as phaseEnded's does: a holder that did not
 // confirm in time, one that does not advertise the delivery mode, and a forward the listener's
@@ -1598,7 +1606,10 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	if err != nil {
 		return err
 	}
-	if current := r.supervisedClaim(token).UpdateRound; current != payload.Round {
+	if releaseRound := r.release.askRound(); releaseRound != "" && payload.Round == releaseRound {
+		r.log.Info("outbox update ask of the running project release; it is published without the claim's round",
+			"row", row.ID, "issue", row.Issue, "round", payload.Round, "role", payload.Role)
+	} else if current := r.supervisedClaim(token).UpdateRound; current != payload.Round {
 		r.log.Info("outbox update ask finished without a publish: the claim no longer records its round",
 			"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "current", current, "claim", string(token), "role", payload.Role)
 		return nil

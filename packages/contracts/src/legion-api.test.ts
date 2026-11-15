@@ -32,6 +32,7 @@ import {
   LegionOperatorClaimsResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionProjectReleaseResponse,
   LegionReadyForUpdateRequest,
   LegionReadyRequest,
   LegionRegisterResponse,
@@ -78,6 +79,9 @@ const schemas: Record<string, z.ZodType> = {
   "operator-claim.json": LegionOperatorClaimResponse,
   "operator-forget-session.json": LegionOperatorClaimResponse,
   "operator-claims.json": LegionOperatorClaimsResponse,
+  // `api.ProjectReleaseResponse`: the operator's project release as `POST` and `GET
+  // /legion/v1/operator/project/release` answer it, and as the state's `projectRelease` carries it.
+  "project-release.json": LegionProjectReleaseResponse,
   "grant.json": LegionGrantResponse,
   "handoff-complete.json": LegionHandoffCompleteResponse,
   "issue-status.json": LegionEmptyResponse,

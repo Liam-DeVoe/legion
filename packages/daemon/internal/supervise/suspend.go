@@ -208,7 +208,39 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: a suspension takes the suspended claim over", "reason", request.Reason,
 		"by", request.By, "suspendedBy", m.claim.SuspendedBy)
 	m.claim.SuspendedBy = request.By
+	return m.persistSuspension(ctx)
+}
+
+// persistSuspension writes the suspended claim. A claim the project release stops leaves its
+// update round in that same write (leaveRoundForRelease), and every other suspension leaves the
+// round exactly as it is.
+func (m *Machine) persistSuspension(ctx context.Context) error {
+	if m.claim.SuspendedBy == SuspendedByProjectRelease && m.claim.UpdateRound != "" {
+		return m.leaveRoundForRelease(ctx)
+	}
 	return m.persist(ctx)
+}
+
+// leaveRoundForRelease takes a claim the project release stopped out of its update round, in the
+// write that stores it suspended, as a retirement does (retire): the release deletes the pod the
+// round was opened over and replaces none, and the claim's next start, at the daemon's next boot,
+// is in a new pod no round names (dispatch://INFRA-3583 R6: the release leaves no round open on
+// any claim). The ask an older daemon queued as a task and no turn confirmed goes with the round
+// (dropsUpdateTask), in that same write; a task a turn confirmed stays, for the boot's start to
+// send again.
+func (m *Machine) leaveRoundForRelease(ctx context.Context) error {
+	drops := m.dropsUpdateTask()
+	m.log.Info("supervise: the project release stops the claim and takes it out of its update round",
+		"round", m.claim.UpdateRound, "dropsAsk", drops)
+	m.clearUpdate()
+	if drops {
+		if err := m.retirePending(ctx); err != nil {
+			return err
+		}
+	} else if err := m.persist(ctx); err != nil {
+		return err
+	}
+	return m.answerAskFirstAfterDrop(ctx)
 }
 
 // suspensionRank orders the sources a suspended claim can be held by, weakest first: a released
@@ -315,7 +347,7 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend) erro
 func (m *Machine) suspended(ctx context.Context, by SuspendSource) error {
 	m.letGo()
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
-	return m.persist(ctx)
+	return m.persistSuspension(ctx)
 }
 
 // suspendHeld runs the held suspension's stop. One the runtime refuses stays held and is tried

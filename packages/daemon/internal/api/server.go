@@ -153,6 +153,11 @@ type Options struct {
 	// (releaseRefused), and nothing of the claim is asked. A role's own calls still record their
 	// facts: the starts those queue wait in the outbox for the boot. Nil holds nothing.
 	ProjectReleaseHolds func() bool
+	// ProjectRelease is the daemon's project release (internal/daemon's projectReleaser), which
+	// the operator's `POST` and `GET /legion/v1/operator/project/release` start and read, and to
+	// which a role's ready_for_update naming the running release's ask is handed (readyForUpdate).
+	// Nil answers both routes 500, and hands no answer anywhere but the claim's machine.
+	ProjectRelease ProjectRelease
 	// Drained is done once the daemon's stop has drained the API, or the drain ran out, and ends
 	// every decision a route asked of a machine (decision). A decision in flight at the stop's
 	// start gets the drain to finish, so an operator's suspension whose process is already exiting
@@ -367,7 +372,9 @@ type server struct {
 	decisions *RouteDecisions
 	// releaseHolds is Options.ProjectReleaseHolds; nil holds nothing.
 	releaseHolds func() bool
-	log          *slog.Logger
+	// projectRelease is Options.ProjectRelease; nil serves no release.
+	projectRelease ProjectRelease
+	log            *slog.Logger
 	// beforeForgetSessionHandle pauses the route's preflight in its concurrency regression test.
 	beforeForgetSessionHandle func()
 }
@@ -433,6 +440,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		drained:            opts.Drained,
 		decisions:          opts.Decisions,
 		releaseHolds:       opts.ProjectReleaseHolds,
+		projectRelease:     opts.ProjectRelease,
 	}
 	if opts.OperatorToken != "" {
 		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))
@@ -505,6 +513,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree))
+	mux.HandleFunc("POST "+ProjectReleaseRoute, s.operator(s.startProjectRelease))
+	mux.HandleFunc("GET "+ProjectReleaseRoute, s.operator(s.readProjectRelease))
 
 	// The catch-all answers every unrouted request, including a known path asked for with the
 	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
@@ -829,9 +839,11 @@ func statementBound(bound time.Duration) int64 {
 // contract that added each issue's measure of its tree's quiet time, is served it without
 // `treeMovedAt` and `quietHours` (withoutQuietTime); a caller below waitingOnIssueContract, the
 // contract that added `waiting_on_issue` to the line's `kind`, is served every member of that
-// kind without its `kind` (withoutWaitingOnIssue), a word and not a key; and a caller below
+// kind without its `kind` (withoutWaitingOnIssue), a word and not a key; a caller below
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
-// GitHub, is served it without `mergeWait` (withoutMergeWait).
+// GitHub, is served it without `mergeWait` (withoutMergeWait); and a caller below
+// projectReleaseContract, the contract that added the project's newest project release, is
+// served it without `projectRelease` (withoutProjectRelease).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -958,6 +970,7 @@ var stateNarrowings = []stateNarrowing{
 	{waitingOnIssueContract, carriesWaitingOnIssue, withoutWaitingOnIssue, "the waiting line's kind " +
 		"of every member waiting on another issue"},
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
+	{projectReleaseContract, carriesProjectRelease, withoutProjectRelease, "projectRelease"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1116,6 +1129,15 @@ const waitingOnIssueContract = 132
 // below it is served the state without `mergeWait`, whatever else the contracts it does reach
 // give it.
 const mergeWaitContract = 133
+
+// projectReleaseContract is the daemon contract that added `projectRelease`, the project's newest
+// project release and its result (version.go's 134, dispatch://INFRA-3583). A plugin before it is
+// served the state without it: one built before sjawhar/legion#2788 reads the state with a strict
+// schema and would refuse the whole body for a key it does not name, and one built after strips
+// the key instead, so the strip is what keeps the release from a caller that did not ask for it.
+// The roles a running release asks are such callers, and they are asked to push and end their
+// turn on that same body.
+const projectReleaseContract = 134
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1301,6 +1323,18 @@ func withoutMergeWait(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// carriesProjectRelease is whether state carries a project release, which it does from the first
+// release of the project on and never before, so this is asked of the state rather than answered
+// true.
+func carriesProjectRelease(state State) bool { return state.ProjectRelease != nil }
+
+// withoutProjectRelease is state with no `projectRelease`, the one key projectReleaseContract
+// added to the state; the routes and the shim frame that contract added are not on this route.
+func withoutProjectRelease(state State) State {
+	state.ProjectRelease = nil
 	return state
 }
 

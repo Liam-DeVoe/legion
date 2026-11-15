@@ -206,7 +206,10 @@ type operatorDaemon struct {
 	seen []seenRequest
 }
 
-func newOperatorDaemon(t *testing.T) *operatorDaemon {
+// newOperatorDaemon is the daemon's operator surface over memory claims; each of options changes
+// the routes' options before the server is built, which is how a test gives the routes a
+// collaborator of its own (api.Options.ProjectRelease).
+func newOperatorDaemon(t *testing.T, options ...func(*api.Options)) *operatorDaemon {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -223,10 +226,14 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 		PluginContract: api.DaemonAPIVersion,
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
-	handler := api.NewServer("127.0.0.1", 0, api.Options{
+	opts := api.Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: claims, Trees: claims, Releaser: rt, BootTokens: tokens, Project: claimsProject, OperatorToken: claimsOperatorToken, Log: quiet,
-	}).Handler
+	}
+	for _, option := range options {
+		option(&opts)
+	}
+	handler := api.NewServer("127.0.0.1", 0, opts).Handler
 
 	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

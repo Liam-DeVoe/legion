@@ -2413,6 +2413,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		ClaimActivity:      st,
 		// The operator's starts are refused 409 while the project release holds every start.
 		ProjectReleaseHolds: p.release.held,
+		// The release itself: its routes, and the answers of the roles it asks.
+		ProjectRelease: newProjectReleaser(s, st, workflow),
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -2762,6 +2764,20 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 			caches = s.caches()
 		}
 		state.Repositories = s.repositories.view(caches)
+	}
+	// The project's newest release, read in the same snapshot as every other durable fact here,
+	// so the body shows the release as its own GET answers it at that moment (R7: a released
+	// daemon still serves its API, and the state shows the release and its result).
+	release, found, err := s.store.ReadProjectReleaseTx(ctx, tx, s.projectToken)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	if found {
+		view, err := api.ProjectReleaseResponseOf(release)
+		if err != nil {
+			return api.State{}, nil, err
+		}
+		state.ProjectRelease = &view
 	}
 	return state, claims, nil
 }
