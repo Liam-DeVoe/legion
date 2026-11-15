@@ -25,11 +25,13 @@ import {
 } from "./editor";
 import {
   closeDetails,
+  historyEntries,
   openIssueAddress,
   presetChooser,
   presetToggle,
   presetToggles,
   presetToolbar,
+  tree,
 } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
@@ -327,28 +329,28 @@ test("the node menu's upload stages a file with a Summary for its version, and C
   expect(notes?.versions?.map((version) => version.summary)).toEqual(["First review notes"]);
 });
 
-// SLOW(>=2s): a real upload the Activity list links, and the keyboard tour of the five presets
-// with each tab's box measured, at 1440 px and at 390 px.
+// SLOW(>=2s): a real upload the history links, and the keyboard tour of the five presets with
+// each tab's box measured, at 1440 px and at 390 px.
 //
 // The nine tabs are gone (dispatch://INFRA-1196 R3): the row is five presets, and how many
 // artifacts an issue carries is the node menu's, not a tab's badge, so the `Artifacts (N)`
 // assertions this test carried are retired with it - what they proved, that the live feed
-// refreshes the page's own counts without a reload, is proved here on the Activity list.
+// refreshes the page's own counts without a reload, is proved here on the history, in Details.
 //
 // It is not tagged `@phone`: the row sets 390 px itself, so the iphone project would run the
 // same assertions a second time (#2866, no browser row runs twice).
-test("an uploaded document is linked from the Activity list and the presets fit every width", async ({
+test("an uploaded document is linked from the history and the presets fit every width", async ({
   page,
 }, testInfo) => {
   await createProject({ key: "OPS", name: "Ops" });
   const issue = await createIssue({ project: "OPS", title: "Customer update" });
   await page.goto(`/issues/${issue.key}/activity`);
 
-  // The list is drawn before the upload, so the line below is one the live feed brought and
+  // The history is drawn before the upload, so the line below is one the live feed brought and
   // not one the first read already held: without this the upload can land before that read
   // answers, and the row would pass with the feed disconnected. This is what the retired
   // `Artifacts 1` badge reading proved - that the page's own counts move without a reload.
-  const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
+  const rows = historyEntries(page);
   await expect(rows.filter({ hasText: "created the issue" })).toHaveCount(1);
 
   const name = "cu-update-2026-09-15.md";
@@ -359,18 +361,25 @@ test("an uploaded document is linked from the Activity list and the presets fit 
     name,
   });
 
-  // The live event feed puts the upload on the open Activity list without a reload.
+  // The live event feed puts the upload on the open history without a reload.
   await expect(added).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("activity-added-artifact.png") });
 
-  // A second upload under the same name is a new version; its line links that version.
+  // A second upload under the same name is a new version of the document. A document's versions
+  // are its own toolbar's, and the history draws no line for one (dispatch://INFRA-1196 R15,
+  // c-conversation-state), where the Activity list drew `saved <name> v2`: read afresh once
+  // Dispatch holds the version, the history still names the document on its one line.
   await createIssueArtifact(issue.key, { content: "# Draft\n\nRevised.\n", name });
-  const saved = rows.filter({ hasText: `saved ${name} v2` });
-  await expect(saved).toHaveCount(1);
-  await expect(saved.getByRole("link", { name })).toHaveAttribute(
-    "href",
-    `/issues/${issue.key}/artifacts/${upload.artifact.slug}?v=2`
-  );
+  await expect
+    .poll(
+      async () =>
+        (await listIssueArtifacts(issue.key)).find((one) => one.name === name)?.versions?.length
+    )
+    .toBe(2);
+  await page.reload();
+  await expect(rows.filter({ hasText: "created the issue" })).toHaveCount(1);
+  await expect(rows.filter({ hasText: name })).toHaveCount(1);
+  await expect(added).toHaveCount(1);
 
   const viewport = page.viewportSize();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 1440 });
@@ -423,8 +432,8 @@ test("an uploaded document is linked from the Activity list and the presets fit 
   // read: the one control a reader presses there carries it, and the row fails if it ever
   // loses it.
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
-  // The Activity list is in Details, which its address opens (dispatch://INFRA-1196 R14) and
-  // which on a phone is a sheet over the whole page, so a reader closes it to reach the filters.
+  // The history is in Details, which its address opens (dispatch://INFRA-1196 R15) and which on
+  // a phone is a sheet over the whole page, so a reader closes it to reach the filters.
   await closeDetails(page);
   await expect(toggles).toHaveCount(0);
   const chooser = presetChooser(page);
@@ -439,11 +448,11 @@ test("an uploaded document is linked from the Activity list and the presets fit 
   await page.keyboard.press("Escape");
   await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
 
-  // The upload is an Activity line and nothing else: the Conversation draws no row for it.
+  // The upload is a line of the history and nothing else: a document is never a row of the
+  // outline (R3), which draws no row naming it.
   await page.goto(`/issues/${issue.key}/conversation`);
-  await expect(
-    page.getByRole("list", { name: "Conversation turns" }).getByText(`added ${name}`)
-  ).toHaveCount(0);
+  await expect(tree(page)).toBeVisible();
+  await expect(tree(page).getByText(name)).toHaveCount(0);
   await page.goto(`/issues/${issue.key}/activity`);
 
   await added.getByRole("link", { name }).click();

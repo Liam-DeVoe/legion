@@ -24,15 +24,9 @@ export function useIssueDetail(route: IssueRoute) {
       ? undefined
       : issue.data?.artifacts?.find(({ slug }) => slug === artifactRouteSlug);
   const activeTab = issueTabForRoute(route);
-  const conversationFocusItemId =
-    route.kind === "ask" || route.kind === "comment" || route.kind === "message"
-      ? route.id
-      : undefined;
-
   return {
     activeTab,
     artifactRoute,
-    conversationFocusItemId,
     highlightTerm,
     issue,
     planArtifact,

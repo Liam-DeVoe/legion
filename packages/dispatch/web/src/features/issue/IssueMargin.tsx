@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectsQuery, referenceTargetsQuery } from "../../api/queries";
-import type { Artifact, IssueDetails } from "../../api/types";
+import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { NoTooltips } from "../../components/tooltips";
 import {
@@ -27,7 +27,6 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { BlockedByControl, IssueLine } from "./BlockedByControl";
-import { ConversationStates } from "./conversation-states";
 import { DETAILS_ROW_ATTRIBUTE, type DetailsRow } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import type { FocusedNode } from "./focused-node";
@@ -38,7 +37,9 @@ import { IssueClaimControl } from "./IssueClaimControl";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
+import { IssueHistory } from "./IssueHistory";
 import { IssueLabels } from "./IssueLabels";
+import { IssuePins } from "./IssuePins";
 import { statusGlyph, statusTone } from "./IssuePropertiesRow";
 import { RouteControl } from "./IssueRouteControl";
 import {
@@ -48,13 +49,8 @@ import {
   PROPERTY_LABELS,
   pageChrome,
 } from "./page-structure";
-import {
-  CONTROL_LABELS,
-  type ConversationState,
-  FILE_WORDS,
-  issueStatusWord,
-  PROGRESS_NOUNS,
-} from "./page-words";
+import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
+import { stateForIssue } from "./pins";
 import { RepoControl } from "./RepoControl";
 import { SubscribedAgents } from "./SubscribedAgents";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -130,33 +126,31 @@ export function IssueMarginCards({
  * opens the rest. The rows sit in three named sections the reader can collapse, kept for the
  * next issue.
  *
- * Under the properties, the facts of whatever the reader's focus is on, and the conversation
- * - its four state controls and the one list they drive - which pass E of the round moves into
- * the outline.
+ * Under the properties, the facts of whatever the reader's focus is on with what the reader can
+ * do to it, the reader's pins as links to their rows, and the issue's history (R14, R15). It
+ * holds no list of the conversation: the outline is the conversation.
  *
  * The page draws it once and moves it into whichever host is on the screen - the shell's
  * drawer, or the page's own column where no shell draws one - so nothing in it is thrown away as
  * the reader moves between them. What it reads that the header does not - the titles of the
- * issues around this one - it reads only while it is open, so a load that leaves Details shut
- * costs no request for it.
+ * issues around this one, the issue's event log - it reads only while it is open, so a load that
+ * leaves Details shut costs no request for it.
  */
 export function IssueMarginPanel({
-  conversationList,
-  conversationState,
   documentArtifact,
   editingField,
   focused,
+  history,
   isClosed,
   issue,
-  onConversationState,
   onEditingField,
   openCollaborators = false,
+  state,
   writes,
 }: {
-  /** The conversation's one list, which the state controls above it drive. */
-  conversationList?: ReactNode;
-  /** Which state the conversation is in, which the address names and these controls move. */
-  conversationState: ConversationState;
+  /** Whether the address opens the panel at the history, and the entry of it the address names
+   *  (R15, R20). */
+  history: { readonly item: string | undefined; readonly open: boolean };
   /** The issue's primary document, whose approval the Approval row draws. */
   documentArtifact: Artifact | undefined;
   /** The editor open in its row - the parent's or the route's - or `null`. */
@@ -165,14 +159,13 @@ export function IssueMarginPanel({
   focused: FocusedNode;
   isClosed: boolean;
   issue: IssueDetails;
-  /** Takes the state a reader picked, which the page holds for the address they are on, or
-   *  opens the address of where that state is one (`IssuePage`'s `pickState`). */
-  onConversationState: (state: ConversationState) => void;
   onEditingField: (field: IssueField | null) => void;
   /** Whether the People section opens with the issue's collaborators drawn, which is what
    *  `/issues/<key>/collaborators` - the address the Collaborators tab answered - names
    *  (R19). Every other address leaves the list closed and reads nothing. */
   openCollaborators?: boolean;
+  /** The reader's own state of every issue, whose pins the panel lists (R14). */
+  state: UserState | undefined;
   /** The page's one set of the issue's writes, which the header draws too. */
   writes: IssueHeaderWrites;
 }): ReactNode {
@@ -188,10 +181,13 @@ export function IssueMarginPanel({
   useEffect(() => {
     if (openCollaborators) setCollaboratorsOpen(true);
   }, [openCollaborators]);
-  // What Details reads beyond the issue - the titles of the issues around this one - only while
-  // the drawer is open, so a load that leaves it shut, and a page outside the shell, costs no
-  // request for it; the Blocks row is drawn once its read has answered.
-  const reading = useMarginDrawer()?.open === true;
+  // What Details reads beyond the issue - the titles of the issues around this one, and the
+  // issue's event log - only while the drawer is open, so a load that leaves it shut costs no
+  // request for it; the Blocks row is drawn once its read has answered. Outside the shell, where
+  // no drawer holds the panel, it is always open.
+  const drawer = useMarginDrawer();
+  const reading = drawer?.open === true;
+  const historyShown = drawer === undefined || reading || history.open;
   const blockers = issue.blocked_by ?? [];
   const blockerTitles = useQuery({
     ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
@@ -472,6 +468,7 @@ export function IssueMarginPanel({
             primaryArtifactId={issue.primary_artifact_id}
             reasons
             testId="issue-details-approval-steps"
+            versions={{ asks: issue.open_asks ?? [], issueKey: issue.key }}
           />
         </Row>
         <Row wide>
@@ -543,17 +540,9 @@ export function IssueMarginPanel({
           ) : null}
         </Row>
       </PropertySection>
-      <FocusedNodeFacts node={focused} />
-      {/* Under the margin's own content, never above it, for the same reason the sections
-          above are (the panel's head): a section drawn over the margin's cards moves the
-          anchor their placement measures against. */}
-      <ConversationStates onPick={onConversationState} state={conversationState} />
-      {/* The issue's one conversation panel, under the state controls that drive it. It is
-            the box every spec and every link reaches the conversation by
-            (`#issue-conversation-panel`), which is this panel wherever the shell mounts it. */}
-      <div className="flex min-w-0 flex-col" id="issue-conversation-panel" {...authorText}>
-        {conversationList}
-      </div>
+      <FocusedNodeFacts issueKey={issue.key} node={focused} state={state} />
+      <IssuePins dismissed={stateForIssue(state, issue.key).dismissed ?? []} issueKey={issue.key} />
+      {historyShown ? <IssueHistory issue={issue} item={history.item} state={state} /> : null}
     </div>
   );
 }

@@ -16,6 +16,10 @@ export interface FocusedNode {
   readonly author?: Actor;
   /** The node's own address inside the issue (`[data-node-id]`). */
   readonly id: string;
+  /** The ask, comment or message the node is, by its own id, which its pin and its thread's
+   *  resolve are written to (`outline-writer.ts`'s `conversationItem`); absent for every other
+   *  node. */
+  readonly item?: { readonly id: string; readonly kind: "ask" | "comment" | "message" };
   /** How it stands, as the page's own word for that state, where its type has one. */
   readonly state?: string;
   /** The node's own first line, or an issue's title: the author's words. */

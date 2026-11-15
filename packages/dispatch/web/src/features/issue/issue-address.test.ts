@@ -1,13 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { Message } from "../../api/types";
-import {
-  agentsOnlyItem,
-  conversationStatePath,
-  issueAddress,
-  pathToTarget,
-  presetPath,
-} from "./issue-address";
+import { agentsOnlyItem, issueAddress, pathToTarget, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
 
@@ -60,62 +54,6 @@ test("each control of the filter row carries its own address (R2, R20)", () => {
   expect(presetPath("CORE-1", "verification")).toBe("/issues/CORE-1/verification");
   expect(presetPath("CORE-1", "plan")).toBe("/issues/CORE-1/plan");
   expect(presetPath("CORE-1", "decisions")).toBe("/issues/CORE-1/decisions");
-});
-
-// Two of the conversation's four states are addresses of their own, so picking one is
-// navigation - but only from an address those two can stand in for, which is one another. From
-// every other address, the issue's own among them, the move would drop the preset, the `?q=`
-// that narrows it and the document it has open, so there the state is the panel's alone (R19).
-test("a picked state opens an address only where the state is the address", () => {
-  expect(conversationStatePath({ key: "CORE-1", kind: "activity" }, "words")).toBe(
-    "/issues/CORE-1/conversation"
-  );
-  expect(conversationStatePath({ key: "CORE-1", kind: "conversation" }, "everything")).toBe(
-    "/issues/CORE-1/activity"
-  );
-  // The two states that name no address never open one, wherever they are picked.
-  expect(conversationStatePath({ key: "CORE-1", kind: "activity" }, "pinned")).toBeUndefined();
-  expect(
-    conversationStatePath({ key: "CORE-1", kind: "conversation" }, "questions")
-  ).toBeUndefined();
-  // Every address that opens something besides the conversation keeps it, in every state: the
-  // issue's own draws the spec beside the tree, and an entry's own is that one entry.
-  const elsewhere = [
-    { key: "CORE-1", kind: "issue" },
-    { key: "CORE-1", kind: "spec" },
-    { key: "CORE-1", kind: "plan" },
-    { key: "CORE-1", kind: "verification" },
-    { key: "CORE-1", kind: "decisions" },
-    { key: "CORE-1", kind: "children" },
-    { key: "CORE-1", kind: "collaborators" },
-    { key: "CORE-1", kind: "artifacts" },
-    { key: "CORE-1", kind: "artifact", slug: "plan-md" },
-    { id: "comment-7", key: "CORE-1", kind: "comment" },
-    { id: "message-7", key: "CORE-1", kind: "message" },
-    { id: "ask-9", key: "CORE-1", kind: "ask" },
-  ] as const;
-  for (const route of elsewhere) {
-    for (const state of ["everything", "pinned", "questions", "words"] as const) {
-      expect(conversationStatePath(route, state), `${route.kind} at ${state}`).toBeUndefined();
-    }
-  }
-});
-
-// An address names a state where it names something the state holds: its own state for the two
-// that are one, and what people said for one entry of the conversation, which every entry is a
-// part of. Every other address names none, and the panel opens in the state the reader kept
-// (R13) - a kept Questions or Pinned outranking an entry's own address hid the entry it named.
-test("the address names the conversation's state only where it names what that state holds", () => {
-  const named = (route: Parameters<typeof issueAddress>[0]) =>
-    issueAddress(route, "", "", "spec").conversation;
-  expect(named({ key: "CORE-1", kind: "activity" })).toBe("everything");
-  expect(named({ key: "CORE-1", kind: "conversation" })).toBe("words");
-  expect(named({ id: "comment-7", key: "CORE-1", kind: "comment" })).toBe("words");
-  expect(named({ id: "message-7", key: "CORE-1", kind: "message" })).toBe("words");
-  expect(named({ id: "ask-9", key: "CORE-1", kind: "ask" })).toBe("words");
-  expect(named({ key: "CORE-1", kind: "issue" })).toBeUndefined();
-  expect(named({ key: "CORE-1", kind: "spec" })).toBeUndefined();
-  expect(named({ key: "CORE-1", kind: "artifact", slug: "plan-md" })).toBeUndefined();
 });
 
 test("the address says which filter it opens, which document, and which node it names", () => {
@@ -294,6 +232,21 @@ test("an unreadable block fragment names no block and keeps the route's own targ
     id: "a b",
     kind: "block",
   });
+});
+
+// An ask's, a comment's or a message's own address with a `#b-` fragment names a part of that
+// item - an ask's question, an option or its answer, a block of a comment - which the reference
+// graph names `dispatch://KEY/ask/<id>#b-<part>` (R20). No document holds that part, and the
+// outline draws it inside the item's own row, so the address lands on the item's node.
+test("an item's own address with a part fragment names the item's node", () => {
+  for (const kind of ["ask", "comment", "message"] as const) {
+    expect(issueAddress({ id: "item-7", key: "CORE-1", kind }, "", "#b-o2", "spec").target).toEqual(
+      {
+        id: "item-7",
+        kind: "item",
+      }
+    );
+  }
 });
 
 // A block id is the author's and unique inside its own document alone, so an address naming a

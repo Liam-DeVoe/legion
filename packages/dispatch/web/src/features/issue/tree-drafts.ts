@@ -5,6 +5,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { referenceSpans } from "../refs/reference-spans";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
+import { agentsOnlyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import type {
   IssueTreeReads,
@@ -71,6 +72,8 @@ export interface Draft {
   facts: NodeFact[];
   gaps: GapKind[];
   readonly id: string;
+  /** Whether this ask takes more than one of its options (`TreeNode.multiple`). */
+  multiple?: true;
   /** The choices an ask offers (`TreeNode.options`). */
   options?: NodeOption[];
   order: number;
@@ -195,7 +198,7 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addDocumentBlocks(drafts, reads, context);
   addChildren(drafts, reads);
   const asks = addAsks(drafts, reads, context);
-  addTurns(drafts, reads, context);
+  addTurns(drafts, reads, context, asks);
   addDecisions(drafts, reads, context, asks);
   addRequirements(drafts, reads, context);
   addChecks(drafts, reads, context);
@@ -389,6 +392,7 @@ function addAsks(
         label: option.label,
       }));
     }
+    if (ask.multiple) draft.multiple = true;
     draft.reference = buildDispatchReference({ id: ask.id, key: context.key, kind: "ask" });
     draft.source = textSourceOf("ask", ask.id);
     draft.state = askState(ask);
@@ -407,6 +411,7 @@ function addAsks(
  *  through where they did, and their choices and words as stored. */
 function answerOf(answer: NonNullable<Ask["answer"]>): NodeAnswer {
   return {
+    at: answer.at,
     by: { id: answer.user, kind: "user", ...(answer.act === undefined ? {} : { act: answer.act }) },
     selected: answer.selected ?? [],
     text: answer.text ?? "",
@@ -439,15 +444,17 @@ interface Turn {
   readonly bodyTree?: DisplayTree;
   readonly id: string;
   readonly kind: "comment" | "message";
-  /** The turn it answers, `null` for a root turn. */
+  /** The node it answers, `null` for a root turn under the issue. */
   readonly replyTo: string | null;
 }
 
 /**
- * The conversation's own turns: each comment and each message a node of this tree, a root turn
- * under the issue and a reply under the turn it answers (R1, R19). A thread head a page never
- * read is no node, so a reply whose parent is missing falls back to the issue, as every node
- * whose parent is absent does (`assemble`).
+ * The conversation's own turns: each comment and each message a person wrote, or that sits in a
+ * thread a person wrote in, a node of this tree, a root turn under the issue and a reply under
+ * the entry it answers (R1, R16). A thread head a page never read is no node, so a reply whose
+ * parent is missing falls back to the issue, as every node whose parent is absent does
+ * (`assemble`). A thread no person wrote in is no node at all: it is the history's, in the panel
+ * (`agents-only.ts`, R15), until a person replies in it.
  *
  * One conversation is one order, so the turns are drawn by the time they were made and not by
  * their place in the read that carried them: the comments and the messages are two lists, each
@@ -455,20 +462,26 @@ interface Turn {
  * reading the conversation out of order. Two turns made in the same instant are drawn by id, so
  * the same reads always draw the same tree.
  *
- * A comment is drawn under the entry it answers (R14): `answers`, the comment its write named,
- * and never `reply_to`, which that same write climbed to the head of the thread before it
- * stored (`packages/envoy/internal/dispatch/api/comment_create.go`'s `threadHeadOf`), so a
- * reply to a reply parented by `reply_to` would be drawn under the thread's head. A comment
- * stored before `comments.answers` existed (migration 20261105014808) carries none, and its
- * thread's head is then the one entry it names. A message carries no such column, so its
- * thread stays as `in_reply_to` holds it.
+ * A comment is drawn under the entry it answers: `answers`, the comment its write named, and
+ * never `reply_to`, which that same write climbed to the head of the thread before it stored
+ * (`packages/envoy/internal/dispatch/api/comment_create.go`'s `threadHeadOf`), so a reply to a
+ * reply parented by `reply_to` would be drawn under the thread's head. A comment stored before
+ * `comments.answers` existed (migration 20261105014808) carries none, and its thread's head is
+ * then the one entry it names. A reply to an ask names the ask alone (`ask_id`) and is drawn
+ * under the ask's node, whatever state the ask is in, a resolved one included
+ * (dispatch://INFRA-3677). A message carries no such column, so its thread stays as
+ * `in_reply_to` holds it.
  *
- * The page draws these rows *and* the panel draws the same conversation (R12): the tree is the
- * issue's one ordered body, and the panel is where a reader answers. An address naming a
- * comment or a message (`/comments/<id>`, `/messages/<id>`, `?comment=`) is therefore an
- * address of a row of this tree.
+ * An address naming a comment or a message of the outline (`/comments/<id>`, `/messages/<id>`,
+ * `?comment=`) is therefore an address of a row of this tree.
  */
-function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
+function addTurns(
+  drafts: Map<string, Draft>,
+  reads: IssueTreeReads,
+  context: TreeContext,
+  asks: ReadonlyMap<string, string>
+): void {
+  const history = agentsOnlyIds(reads.comments, reads.messages);
   const turns: Turn[] = [
     ...(reads.comments ?? []).map((comment) => ({
       at: comment.created_at,
@@ -477,7 +490,10 @@ function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tr
       bodyTree: comment.body_tree,
       id: comment.id,
       kind: "comment" as const,
-      replyTo: comment.answers ?? comment.reply_to,
+      replyTo:
+        comment.answers ??
+        comment.reply_to ??
+        (comment.ask_id === null ? null : (asks.get(comment.ask_id) ?? comment.ask_id)),
     })),
     ...(reads.messages ?? [])
       .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
@@ -490,7 +506,7 @@ function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tr
         kind: "message" as const,
         replyTo: message.in_reply_to,
       })),
-  ];
+  ].filter((turn) => !history.has(turn.id));
   turns.sort((one, other) => compareTimestamps(one.at, other.at) || one.id.localeCompare(other.id));
   turns.forEach((turn, index) => {
     const draft = add(drafts, blank(turn.id, turn.kind, ROOT_ORDER.turn + index));

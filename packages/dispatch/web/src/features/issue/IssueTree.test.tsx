@@ -444,6 +444,53 @@ test(". zooms into the focused node while the tree is read one node at a time", 
   expect(rowsFor(view.container, KEY).length).toBe(0);
 });
 
+// R16: below 1024 px the outline draws one level under the node it is read from, and a deeper
+// branch is one line saying how many nodes it holds, which opens them in place. Unfolding a
+// branch on a phone draws that line under it, beside the rows above, and pressing the line
+// draws the nodes it holds there - it does not carry the reader off to another root.
+test("on a phone a branch's counted line opens its nodes in place", async () => {
+  setViewport(390);
+  const user = userEvent.setup();
+  const turn = (id: string, children: TreeNode[] = []) =>
+    node({
+      children,
+      held: children.reduce((total, child) => total + child.held + 1, 0),
+      id,
+      reference: buildDispatchReference({ id, key: KEY, kind: "comment" }),
+      text: `Turn ${id}.`,
+      type: "comment",
+    });
+  const root = node({
+    children: [turn("head", [turn("first", [turn("second", [turn("third")])])])],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  const head = rowsFor(view.container, "head")[0]?.querySelector<HTMLButtonElement>(
+    'button[aria-label="Unfold"]'
+  );
+  if (head === null || head === undefined) throw new Error("the head has no Unfold");
+
+  await user.click(head);
+  // The head is open, and what it holds is one line counting its three nodes, under it.
+  const line = await waitFor(() => {
+    const found = view.container.querySelector<HTMLElement>("[data-branch-more]");
+    if (found === null) throw new Error("no branch is one line counting its nodes");
+    return found;
+  });
+  expect(line.textContent).toContain("3");
+  expect(rowsFor(view.container, "head")).toHaveLength(1);
+  expect(rowsFor(view.container, "first")).toHaveLength(0);
+
+  const open = line.querySelector("button");
+  if (open === null) throw new Error("the counted line opens nothing");
+  await user.click(open);
+  // Pressing the line draws what it holds in its place, under the head the reader was on.
+  await waitFor(() => expect(rowsFor(view.container, "first")).toHaveLength(1));
+  expect(rowsFor(view.container, "head")).toHaveLength(1);
+  expect(rowsFor(view.container, KEY)).toHaveLength(1);
+});
+
 // R9: a row's key is the path from the issue down to it, and it holds the pin, the open body
 // and the tree's one tab stop. The whole tree drawn from a zoomed node keyed its rows from
 // that node, so a zoom re-keyed every row below it: a pin made before the zoom closed as the

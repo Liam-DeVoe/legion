@@ -38,24 +38,36 @@ function usableControl(selector: string): HTMLElement | null {
 }
 
 /**
- * Whether focus is outside every `<input>` and outside every ask card. `0`-`3` and `Shift+P` are
- * the two keys that write the issue without focusing a control, so they are the two that have to
- * say where the reader is not: a digit typed straight after pressing the Conversation's `Open`
- * filter or picking an ask's option belongs to that control's own surface, not to the issue's
- * priority. The registry passes single keys through every control that takes no typed text, so
- * this is the page's own question to answer.
+ * The line at the outline's foot while it answers a question (`IssueComposer.tsx`'s
+ * `AnswerLine`): the question's options are its chips there, which the keyboard reaches, so its
+ * controls own the keys as an ask card's do.
+ */
+const ANSWER_LINE = "form[data-answering]";
+
+/**
+ * Whether focus is outside every `<input>`, every ask card and the line that answers a question.
+ * `0`-`3` and `Shift+P` are the two keys that write the issue without focusing a control, so they
+ * are the two that have to say where the reader is not: a digit typed straight after picking a
+ * question's option belongs to that control's own surface, not to the issue's priority. The
+ * registry passes single keys through every control that takes no typed text, so this is the
+ * page's own question to answer.
  *
  * A focused `<button>` is deliberately not excluded. Every single-key binding in the registry
- * fires from one: a digit has no native meaning on a button, and after any click - a tab, a
+ * fires from one: a digit has no native meaning on a button, and after any click - a filter, a
  * disclosure, Copy - focus sits on the button that was clicked, which is where a reader reaching
  * for the next shortcut stands. Withholding these keys there would make them work only from the
- * page's own background. An ask card's buttons are the exception, and that is what
- * `outsideAskCard` covers (`inbox/ask-card.ts`, the one definition both pages read): inside the
- * card, the card's controls own the keys. `l` and `e` open a control rather
- * than write, so a stray press is visible and undoable and they are offered throughout.
+ * page's own background. An ask card's buttons and the answer line's are the exception, and
+ * that is what `outsideAskCard` (`inbox/ask-card.ts`, the one definition both pages read) and
+ * `ANSWER_LINE` cover: there, the question's controls own the keys. `l` and `e` open a control
+ * rather than write, so a stray press is visible and undoable and they are offered throughout.
  */
 function outsideInputsAndAskCards(): boolean {
-  return !(document.activeElement instanceof HTMLInputElement) && outsideAskCard();
+  const active = document.activeElement;
+  return (
+    !(active instanceof HTMLInputElement) &&
+    outsideAskCard() &&
+    active?.closest(ANSWER_LINE) == null
+  );
 }
 
 /**
@@ -68,7 +80,8 @@ const PARTS = {
   // The collaborators' row of Details (`IssueMargin.tsx`), whose own control opens the list.
   collaborators: '[data-details-row="collaborators"]',
   filter: `input[aria-label="${CONTROL_LABELS.filter}"]`,
-  margin: '[data-testid="issue-margin"]',
+  // The issue's history, in Details (`IssueHistory.tsx`), which takes the focus itself.
+  history: '[data-testid="issue-history"]',
   menu: '[role="menu"]',
   // The outline, by its name: the Contents pane's list is a tree too (`IssueContents.tsx`), and
   // it stands before the outline in the page.
@@ -76,14 +89,13 @@ const PARTS = {
 } as const;
 
 /** What takes the focus inside each part, where the part itself does not: the tree's one tab
- *  stop, the panel's selected conversation state, the children's own disclosure, the
- *  collaborators' own control, and a menu's first item once it holds any
- *  (`dispatch://INFRA-1196/artifact/plan-md#b-t18`). */
+ *  stop, the children's own disclosure, the collaborators' own control, and a menu's first item
+ *  once it holds any (`dispatch://INFRA-1196/artifact/plan-md#b-t18`). */
 const TAKES_FOCUS: Readonly<Record<keyof typeof PARTS, string | undefined>> = {
   children: "button",
   collaborators: "button",
   filter: undefined,
-  margin: '[data-conversation-state][aria-selected="true"]',
+  history: undefined,
   menu: '[role="menuitem"]',
   tree: '[data-node-row][tabindex="0"]',
 };
@@ -96,12 +108,11 @@ const DRAWING_FRAMES = 20;
 /**
  * How many frames a chord keeps what it showed on screen after it showed it. What a chord
  * opens mounts over several commits and some of it places its own reader as it does: the
- * conversation jumps to its newest card the commit its list first renders in
- * (`conversation/use-follow-latest.ts`), and in the page's one panel that jump scrolls the
- * same box the chord had just scrolled, leaving the control the chord left the focus on above
- * the screen. The chord is the reader's own request and the later intent, so it is what
- * stands - and only until the reader moves the focus off that control, which is them moving
- * on.
+ * history in Details brings the entry an address names into view once its log has been read
+ * (`IssueHistory.tsx`), which scrolls the box the chord had just scrolled, leaving the control
+ * the chord left the focus on above the screen. The chord is the reader's own request and the
+ * later intent, so it is what stands - and only until the reader moves the focus off that
+ * control, which is them moving on.
  */
 const SETTLING_FRAMES = 20;
 
@@ -224,14 +235,12 @@ const CHORDS: readonly {
     path: (key) => presetPath(key, "conversation"),
     tab: "conversation",
   },
-  // `t a` opens the node menu and `l` is the issue's label editor, so the activity takes `t v`.
-  // `/activity` draws the issue's whole history in the page's column under the tree, and puts
-  // the panel's conversation in its Everything state, whose choice takes the focus: the
-  // history is what the reader is sent to, and it is not in the panel.
+  // `t a` opens the node menu and `l` is the issue's label editor, so the history takes `t v`.
+  // `/activity` opens Details at the issue's history (R15, R20), which takes the focus.
   {
     keys: "t v",
-    label: "Open the issue's history under the tree",
-    part: "margin",
+    label: `Open the issue's ${CONTROL_LABELS.history.toLowerCase()} in ${CONTROL_LABELS.details}`,
+    part: "history",
     path: (key) => buildIssuePath({ key, kind: "activity" }),
     tab: "activity",
   },

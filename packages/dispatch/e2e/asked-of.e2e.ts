@@ -18,7 +18,7 @@ import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards, specAddress } from "./editor";
 import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
-import { gotoIssue } from "./issue-page";
+import { askFacts, nodeRow } from "./issue-page";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -83,15 +83,6 @@ async function handsOff(page: Page): Promise<void> {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
   await page.mouse.move(2, 2);
-}
-
-/** The issue page's own ask card for an unanchored question, which the page draws in the
- *  conversation beside its body; the page is opened on the issue here, so every reader of it
- *  starts the same way. The address is the one the Conversation tab answered and still
- *  resolves (dispatch://INFRA-1196 R19), since the redesigned page draws no such tab. */
-async function conversationCard(page: Page, issueKey: string, askId: string): Promise<Locator> {
-  await gotoIssue(page, `/issues/${issueKey}/conversation`);
-  return page.locator("#issue-conversation-panel").getByTestId(`ask-${askId}`);
 }
 
 // SLOW(>=2s): one hand-on read on nine surfaces at once - two Inboxes, two Agents pages, two
@@ -160,7 +151,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     // these two lists are read under.
     await alicePage.goto("/?group=waiting-on");
     await bobPage.goto("/?group=waiting-on");
-    const aliceCard = await conversationCard(aliceIssue, hers.key, moved.id);
+    const aliceCard = await askFacts(aliceIssue, hers.key, moved.id);
     await aliceAgents.goto("/agents");
     await bobAgents.goto("/agents");
 
@@ -232,7 +223,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(aliceCard.locator(`time[datetime="${handedOn.asked_of_at}"]`)).toHaveCount(1);
 
     const bobIssue = await bob.newPage();
-    const bobIssueCard = await conversationCard(bobIssue, hers.key, moved.id);
+    const bobIssueCard = await askFacts(bobIssue, hers.key, moved.id);
     await expect(bobIssueCard).toBeVisible();
     await expect(bobIssueCard).toContainText("Asked of bob");
     await expect(handOnControl(bobIssueCard, moved.id)).toHaveCount(1);
@@ -310,7 +301,8 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
 
     // 9. Bob answers it, which a person who is not the issue's assignee may do, and the control
-    // is gone from the card the moment the question is no longer open.
+    // is gone from the focused ask's facts the moment the question is no longer open; the
+    // answer, and who gave it, is drawn on the ask's own row of the outline.
     await handTo(issueControl, "bob");
     await expect(inboxRow(bobPage, moved.id)).toBeVisible();
     await selectRow(bobPage, moved.id);
@@ -321,7 +313,10 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect
       .poll(async () => (await getAsk(moved.id, { login: "bob" })).ask.state)
       .toBe("answered");
-    await expect(aliceCard).toContainText("Answered by bob");
+    await expect(nodeRow(aliceIssue, moved.id).first()).toContainText(
+      "Read DISPATCH_ROLLOUT_FLAG."
+    );
+    await expect(nodeRow(aliceIssue, moved.id).first()).toContainText("bob");
     await expect(handOnControl(aliceCard, moved.id)).toHaveCount(0);
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
@@ -381,8 +376,13 @@ test("an agent sets and clears the issue assignee from the command", async ({
     );
     expect(cleared.code, `${cleared.stdout}${cleared.stderr}`).toBe(0);
     await expect(assignee).toHaveValue("");
+    // The header's assignee draws its value inside the property's own label, two spans that
+    // both read "Unassigned"; one of them is enough to say the header shows nobody.
     await expect(
-      page.getByTestId("issue-header").locator("span", { hasText: /^Unassigned$/ })
+      page
+        .getByTestId("issue-header")
+        .locator("span", { hasText: /^Unassigned$/ })
+        .first()
     ).toBeVisible();
     await expect(inboxRow(bobPage, ask.id)).toHaveCount(0);
 

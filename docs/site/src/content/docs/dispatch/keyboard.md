@@ -133,7 +133,7 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `t p` | Turn the Plan filter on or off |
 | `t d` | Turn the Decisions filter on or off |
 | `t c` | Conversation: turn every filter off |
-| `t v` | Open the issue's history under the tree |
+| `t v` | Open the issue's history in **Details** |
 | `t h` | Open the issue's children |
 | `t a` | Open the Files and documents menu |
 | `t o` | Open the issue's collaborators in **Details** |
@@ -172,6 +172,8 @@ These keys move through the issue page's tree, where each node is a row.
 | `f` | Move to the next link on the focused row |
 | `Shift+K` | Keep the focused decision |
 | `Shift+C` | Change the focused decision |
+| `r` | Reply to the focused row: the line at the foot of the outline replies to it |
+| `a` | Answer the focused open question: the line answers it |
 | `.` | Zoom into the focused row |
 | `,` | Zoom back out one level |
 | `q` | Move to the next open question |

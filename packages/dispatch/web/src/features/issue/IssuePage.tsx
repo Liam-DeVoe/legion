@@ -14,7 +14,7 @@ import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
-import type { Artifact, IssueDetails, UserIssueState } from "../../api/types";
+import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { NoTooltips } from "../../components/tooltips";
 import {
@@ -26,16 +26,12 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useSelectedItem } from "../artifacts/ArtifactDocument";
-import { ConversationTab } from "../conversation/ConversationTab";
-import { conversationScrollport } from "../conversation/use-follow-latest";
 import { useFillMarginSlot, useMarginDrawer, useMarginDrawsSlot } from "../margin/margin-slot";
 import { statusText } from "../project/board-model";
-import { buildIssuePath, type IssueRoute, type IssueTab, parseIssuePath } from "../refs/routes";
+import { buildIssuePath, type IssueRoute, parseIssuePath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { ISSUE_FRAME, usePageFrame } from "../shell/page-frame";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useUserPreference } from "../shell/userPreference";
-import { narrowConversation } from "./conversation-states";
 import { useOpenDetailsAt } from "./details-rows";
 import { DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
@@ -45,20 +41,10 @@ import { IssueHeader } from "./IssueHeader";
 import { IssueMarginCards, IssueMarginPanel } from "./IssueMargin";
 import { IssuePresetPanels } from "./IssuePresetPanels";
 import { ItemMatchList } from "./ItemMatchList";
-import {
-  agentsOnlyItem,
-  conversationStatePath,
-  type IssueAddress,
-  issueAddress,
-} from "./issue-address";
+import { agentsOnlyItem, type IssueAddress, issueAddress } from "./issue-address";
 import { OpenedDocument } from "./OpenedDocument";
-import {
-  CONVERSATION_STATE_ORDER,
-  type ConversationState,
-  NODE_TYPE_NAMES,
-  NODE_TYPES,
-  sentenceCase,
-} from "./page-words";
+import { OutlineWriterProvider } from "./outline-writer";
+import { NODE_TYPE_NAMES, NODE_TYPES, type Preset, sentenceCase } from "./page-words";
 import { stateForIssue } from "./pins";
 import { useDocumentToolbars } from "./useDocumentToolbars";
 import { useIssueDetail } from "./useIssueDetail";
@@ -129,18 +115,6 @@ function ItemLandingFailure({
  *  the page leaves the window where that reader asked for it rather than zeroing it. */
 const POP_RESTORES_MS = 100;
 
-/** The conversation's state as the browser keeps it, and back: the state's own word, and what
- *  people said for anything else - a browser holding nothing yet, and one holding a state this
- *  build no longer has. Both are read here rather than inline, so the hook's setter keeps one
- *  identity across renders and the panel's `onPick` with it. */
-function readConversationState(stored: string | null): ConversationState {
-  return CONVERSATION_STATE_ORDER.find((state) => state === stored) ?? "words";
-}
-
-function writeConversationState(state: ConversationState): string {
-  return state;
-}
-
 /** The outline address a navigation carried in its state (`NodeMenu.tsx`), if it carried one. */
 function outlineOf(state: unknown): string | undefined {
   if (typeof state !== "object" || state === null || !("outline" in state)) return undefined;
@@ -173,9 +147,7 @@ function useOpensDocument(address: IssueAddress, artifact: Artifact | undefined)
 
 function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const {
-    activeTab,
     artifactRoute,
-    conversationFocusItemId,
     highlightTerm,
     issue,
     primaryArtifact,
@@ -187,15 +159,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const landing = useItemLanding(route);
   const { hash, pathname, search, state: locationState } = useLocation();
   const navigate = useNavigate();
-  const panelScroll = useRef<Partial<Record<IssueTab, number>>>({});
+  // Where the reader was in each view of the page, by the filter that view is: the conversation
+  // with no filter on is the issue's own address and the Spec filter is `/spec`, two views of
+  // one tree (R2) that the old tab mapping named alike (`issueTabForRoute`, where the issue's
+  // own address was the Spec tab), so one of them read the other's place or none at all.
+  const panelScroll = useRef<Partial<Record<Preset, number>>>({});
   const { diffs, showDiff, toolbarSink, toolbars } = useDocumentToolbars();
   // The document a row of the tree is being edited in, so the page draws its one editor for
   // that row to take onto its own stage (`document-stage.tsx`).
   const [editing, setEditing] = useState<string | undefined>(undefined);
 
-  // What this address opens: its preset, the document it opens, the node it names, the
-  // conversation's state, the filter and the version it pins (`issue-address.ts`). A block a
-  // `/spec` address names is the spec's own, looked up in the spec by its slug.
+  // What this address opens: its preset, the document it opens, the node it names, the filter
+  // and the version it pins (`issue-address.ts`). A block a `/spec` address names is the spec's
+  // own, looked up in the spec by its slug.
   const addressed = issueAddress(route, search, hash, primaryArtifact?.slug);
   // An address naming an ask, a comment or a message and opening no document lands on its node.
   const namesItem = addressed.document === undefined && addressed.target?.kind === "item";
@@ -208,11 +184,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const queryLanding = useSelectedItem({ key: route.key, kind: "issue" }, queryItem);
   const listed = addressed.documentItem;
   const marked = listed?.kind === "mark" ? listed.id : undefined;
-  // The issue's comments and messages, under the keys the outline, the conversation and the
-  // margin read them by (`useIssueTree.ts`, `useMarginItems.ts`), so they cost no request of
-  // their own: they say whether the item the address names sits in a thread no person wrote in,
-  // and whether the item `?mark=` names is a comment or an ask. Only such an address reads them
-  // here; on every other the outline reads them as it draws.
+  // The issue's comments and messages, under the keys the outline and the margin read them by
+  // (`useIssueTree.ts`, `useMarginItems.ts`), so they cost no request of their own: they say
+  // whether the item the address names sits in a thread no person wrote in, and whether the
+  // item `?mark=` names is a comment or an ask. Only such an address reads them here; on every
+  // other the outline reads them as it draws.
   const comments = useQuery({
     enabled: namesItem || marked !== undefined,
     queryFn: () => api.listComments(route.key),
@@ -243,18 +219,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
               : ("ask" as const),
             marked: true,
           };
-  // A comment or message an agent wrote outside every thread a person wrote in lands in the
-  // history and not in the outline (R20). The history is not in the panel yet, so it lands in
-  // today's: what `/activity` opens - the conversation in its Everything state with the page's
-  // history drawn under the outline - with the conversation marking the entry, and the outline
-  // takes no focus for it. An address that opens a document lands in that document.
+  // A comment or message an agent wrote outside every thread a person wrote in is no row of the
+  // outline: it lands in the panel's history, which Details opens at, with the entry marked
+  // there, and the outline takes no focus for it (R20). An address that opens a document lands
+  // in that document.
   const historyItem = namesItem
     ? agentsOnlyItem(addressed.target, comments.data, messages.data)
     : undefined;
   const address: IssueAddress =
-    historyItem === undefined
-      ? addressed
-      : { ...addressed, conversation: "everything", target: undefined };
+    historyItem === undefined ? addressed : { ...addressed, target: undefined };
   // The document the address opens in place of the outline (R3, R20): a document's own address,
   // and a `/spec` address that names a block of the spec, or an item at a pinned version or
   // `?mark=`, which opens the spec as `/artifacts/<spec>` with the same query and fragment does
@@ -270,29 +243,6 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const documentArtifact =
     artifactRoute === undefined && documentRoute !== undefined ? primaryArtifact : selectedArtifact;
   const opensDocument = useOpensDocument(address, documentArtifact);
-  // Which state the conversation is in. The reader's pick is kept for their login in this
-  // browser, the way this page already keeps the children section and the panel's collapsed
-  // property sections (`features/shell/userPreference.ts`, `useChildrenSection.ts`,
-  // `useMarginSections.ts`): it outlives the page it was made on, so a navigation away and
-  // back, and the next issue they open, open in the state they picked (R13,
-  // c-conversation-state). Nothing picked yet is what people said.
-  const [kept, keep] = useUserPreference<ConversationState>(
-    "issue.conversation-state",
-    readConversationState,
-    writeConversationState
-  );
-  // An address that names a state outranks what the reader kept, because arriving there is the
-  // reader asking for it: `/conversation` and `/activity` name a state of their own, and an
-  // address naming one comment, message or ask names what people said, which holds that entry
-  // whatever was kept - a kept Questions or Pinned drew the list without it, and the link
-  // landed nowhere (R19, `issue-address.ts`). Only until the reader picks again on that
-  // address: picking Questions on `/activity` opens no address of its own
-  // (`conversationStatePath`) and leaves them where they are, and that pick is the later word
-  // for as long as they stay there. Leaving the address lets the pick go, so the next arrival
-  // at `/activity` is asking for Everything again and draws its history.
-  const [pickedAt, setPickedAt] = useState<string | undefined>(undefined);
-  if (pickedAt !== undefined && pickedAt !== pathname) setPickedAt(undefined);
-  const conversationState = pickedAt === pathname ? kept : (address.conversation ?? kept);
 
   // The issue page's own root is the frame the shell draws around this column and the margin
   // beside it: the identity block, the body and the panel's properties are one page, however the
@@ -344,126 +294,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     title: details?.title ?? route.key,
     type: "issue",
   };
-  // Where the reader was when they left this address, taken before the move: the tablist used
-  // to say so before it changed tab (`onBeforeTabChange`), and the presets are navigation, so
-  // every control that leaves an address says so first. Taken afterwards it would be the
-  // position the page had already clamped to as the panel it is leaving went.
-  // The Conversation is drawn in the page's one right-hand panel, which is a scrollport of its
-  // own wherever the margin keeps a column, so where the reader was in it is that box's scroll
-  // and not the window's (`conversation/use-follow-latest.ts`).
+  // Where the reader was when they left this address, taken before the move: the presets are
+  // navigation, so every control that leaves an address says so first. Taken afterwards it
+  // would be the position the page had already clamped to as the view it is leaving went.
   const recordScroll = useCallback(() => {
-    const port = activeTab === "conversation" ? conversationScrollport() : undefined;
-    panelScroll.current[activeTab] = port === undefined ? window.scrollY : port.scrollTop;
-  }, [activeTab]);
+    panelScroll.current[addressed.preset] = window.scrollY;
+  }, [addressed.preset]);
 
-  // Which address a picked state opens, where it opens one at all: the two states that are
-  // addresses of their own, picked from the other's address (`issue-address.ts`'s
-  // `conversationStatePath`), which is the state that address names. Everywhere else the state
-  // is the panel's own and is held for the address the reader is on, which keeps their preset,
-  // their `?q=`, their `#b-` and the document they have open; a move that does open an address
-  // carries that `?q=` with it.
-  const pickState = useCallback(
-    (next: ConversationState) => {
-      const to = conversationStatePath(route, next);
-      keep(next);
-      if (to === undefined || to === pathname) {
-        setPickedAt(pathname);
-        // Nothing navigates, so the list this state narrows is mounted here: a reader who has
-        // never opened the conversation would otherwise pick a state with nothing under it.
-        setActivatedTabs((open) => (open.conversation ? open : { ...open, conversation: true }));
-        return;
-      }
-      recordScroll();
-      const query = new URLSearchParams();
-      if (address.filter !== "") query.set("q", address.filter);
-      const rest = query.toString();
-      navigate(`${to}${rest === "" ? "" : `?${rest}`}`);
-    },
-    [address.filter, keep, navigate, pathname, recordScroll, route]
-  );
-  // The Conversation's first placement runs as a child layout effect, before the restore below
-  // in the same commit, so a position recorded while the tab showed only its loading text is
-  // forgotten here and the reader lands on the newest message. A return to a list the reader was
-  // already placed in never fires it, so that restore stands (INFRA-303).
-  //
-  // That placement is spent on the list's first cards, which is when the reader opened the
-  // conversation and not when `/conversation` is opened (`useFollowLatest`'s `reading` holds
-  // the two apart: what arrives later moves the list only while they are reading it). A pick
-  // that keeps the page draws the list where the reader is (R12, R19, `pickState`), so the two
-  // are rarely the same moment: tying the placement to the address instead placed a reader at
-  // the newest card after they had been reading this list for as long as they liked, which is
-  // their place thrown away rather than a stale record forgotten.
-  const forgetConversationScroll = useCallback(() => {
-    delete panelScroll.current.conversation;
-  }, []);
-  const issueArtifacts = useMemo(
-    () => new Map((issue.data?.artifacts ?? []).map((artifact) => [artifact.id, artifact])),
-    [issue.data?.artifacts]
-  );
-  // Once a panel's tab has ever been active, keep rendering its content even while hidden -
-  // that is what keeps the Conversation's read observer and the history alive across a move to
-  // another address (see the `hidden` panels below). A panel the user has never opened stays
-  // unmounted, so a fresh page load doesn't pay for panels it never shows.
-  const [activatedTabs, setActivatedTabs] = useState<Record<IssueTab, boolean>>(() => ({
-    activity: activeTab === "activity",
-    artifacts: activeTab === "artifacts",
-    children: activeTab === "children",
-    collaborators: activeTab === "collaborators",
-    conversation: activeTab === "conversation",
-    decisions: activeTab === "decisions",
-    plan: activeTab === "plan",
-    spec: activeTab === "spec",
-    verification: activeTab === "verification",
-  }));
-  if (!activatedTabs[activeTab]) {
-    setActivatedTabs({ ...activatedTabs, [activeTab]: true });
-  }
-  // An agents-only item lands in the history and the conversation, which mount for it as their
-  // own addresses mount them.
-  if (historyItem !== undefined && !(activatedTabs.activity && activatedTabs.conversation)) {
-    setActivatedTabs({ ...activatedTabs, activity: true, conversation: true });
-  }
-  // The conversation's one list, which the panel draws under the four state controls that
-  // drive it (R12): it belongs to the panel and to no column of the page, and it is drawn
-  // wherever the panel is. It is mounted once its own address has been opened and kept
-  // mounted after that, as every other panel of the page is (`activatedTabs`): the margin's
-  // own cards are already on the page, so a second list of the same comments at every address
-  // would double the page's controls and its first load's reads. Whether the reader is *in*
-  // it - what places them at the newest card, what marks a card read, what a deep link
-  // scrolls to - is the address's own answer (`visible`).
-  const conversationList = useMemo(
-    () =>
-      details === undefined || !activatedTabs.conversation ? undefined : (
-        <ConversationTab
-          issueArtifacts={issueArtifacts}
-          focusItemId={conversationFocusItemId ?? historyItem}
-          // The outline is the landing of every item address but one in the history, and keeps
-          // its node on screen; on a phone the conversation shares the page's scroll, so only a
-          // history landing scrolls the page to its entry (R20).
-          focusMovesPage={historyItem !== undefined}
-          isClosed={details.closed_at !== null}
-          issueKey={details.key}
-          narrow={narrowConversation(
-            conversationState,
-            stateForIssue(state.data, details.key).dismissed ?? []
-          )}
-          onFirstPlacement={forgetConversationScroll}
-          state={state.data}
-          visible={activeTab === "conversation" || historyItem !== undefined}
-        />
-      ),
-    [
-      activatedTabs.conversation,
-      activeTab,
-      conversationFocusItemId,
-      conversationState,
-      details,
-      forgetConversationScroll,
-      historyItem,
-      issueArtifacts,
-      state.data,
-    ]
-  );
   // `/issues/<key>/collaborators`, the address the Collaborators tab answered, opens the
   // panel's list of everyone who worked the issue (R19); every other address leaves it shut.
   const opensCollaborators = route.kind === "collaborators";
@@ -471,30 +308,31 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // panel - the host that panel is moved into under them (`IssueMargin.tsx`'s
   // `IssueMarginCards`). The panel itself is drawn once, below, and never a second time here:
   // it is one element moved between the two hosts, so the margin opening and closing throws
-  // away neither an unsent comment nor anything else a reader has started in it. The fill is
-  // the same from the page's first render, before the issue has loaded, so the margin draws its
-  // content once per load and never plain first and wrapped after (R14, INFRA-2004).
+  // away nothing a reader has started in it.
+  //
+  // The margin's own cards are a document's: the threads anchored in it, beside their marks,
+  // and the composer a selection in it opens. They are drawn only while a document's editor is
+  // on the page - opened in place of the outline, or taken onto a row the reader is editing -
+  // because the panel holds no list of the conversation, which is the outline (R14).
+  const documentUp = (opensDocument && documentRoute !== undefined) || editing !== undefined;
   const panel = useCallback(
     (conversation: ReactNode) => (
-      <IssueMarginCards conversation={conversation} panelHost={holdPanel} />
+      <IssueMarginCards
+        conversation={documentUp ? conversation : undefined}
+        panelHost={holdPanel}
+      />
     ),
-    [holdPanel]
+    [documentUp, holdPanel]
   );
   useFillMarginSlot(panel);
   // The addresses whose content is the panel's open Details, once per arrival at one of them:
-  // the collaborators, the history, a comment or message of the history (R14, R20), and the
-  // conversation's own address, whose list is the panel's until the outline carries the
-  // composer and a reply on every node. The reader's own Close is the later word for as long as
-  // they stay on that address.
+  // the collaborators, and the history - `/activity` and a comment or message of the history
+  // (R14, R15, R20). The reader's own Close is the later word for as long as they stay there.
   const drawer = useMarginDrawer();
   const openDetails = drawer?.setOpen;
+  const opensHistory = route.kind === "activity" || historyItem !== undefined;
   const panelAddress =
-    route.kind === "collaborators" ||
-    route.kind === "activity" ||
-    route.kind === "conversation" ||
-    historyItem !== undefined
-      ? `${pathname}${search}`
-      : undefined;
+    route.kind === "collaborators" || opensHistory ? `${pathname}${search}` : undefined;
   const openedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (panelAddress === undefined || openDetails === undefined) {
@@ -512,22 +350,21 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const priorityWrite = useIssuePriority(route.key);
   useIssueKeymap(priorityWrite, route.key);
 
-  // Where the reader left this tab, which this commit is about to put them back at. It is read
+  // Where the reader left this view, which this commit is about to put them back at. It is read
   // here, in the render, and not only in the effect below, because the identity block's two
   // forms are 26 px apart in flow height: the block is told the place first (`restoringTo`), so
   // its height is final before the scroll is written and the browser anchors nothing away.
-  const restoringTo = panelScroll.current[activeTab];
+  const restoringTo = panelScroll.current[addressed.preset];
 
+  const openedPreset = addressed.preset;
   useLayoutEffect(() => {
-    const top = panelScroll.current[activeTab];
+    const top = panelScroll.current[openedPreset];
     if (top === undefined) return;
-    // Taken, so the next render of this tab reads the page's own position again rather than a
-    // place the reader has since left; leaving the tab records it afresh.
-    delete panelScroll.current[activeTab];
-    (activeTab === "conversation" ? (conversationScrollport() ?? window) : window).scrollTo({
-      top,
-    });
-  }, [activeTab]);
+    // Taken, so the next render of this view reads the page's own position again rather than a
+    // place the reader has since left; leaving the view records it afresh.
+    delete panelScroll.current[openedPreset];
+    window.scrollTo({ top });
+  }, [openedPreset]);
 
   // The page scrolls the window itself - the tree brings a focused row clear of the sticky
   // identity block (`identity-block.ts`'s `bringOnScreen`), and below the width the margin
@@ -757,65 +594,64 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     // reader on a phone or on the keyboard never sees a tooltip (R2, R21). What a tooltip
     // said is drawn instead - the claim's instant beside its age, a link's whole address -
     // and the panel says the same for the margin's own cards (`IssueMargin.tsx`).
+    // The writer is above the panel as well as the body: the history in the panel replies
+    // through the one line at the outline's foot (`outline-writer.tsx`), and the panel is a
+    // portal of this tree, which keeps its context.
     <NoTooltips>
-      <section className="flex min-w-0 flex-col">
-        <IssueProperties
-          documentArtifact={primaryArtifact}
-          isClosed={isClosed}
-          issue={issue.data}
-          panel={{
-            conversationList,
-            conversationState,
-            focused,
-            onConversationState: pickState,
-            openCollaborators: opensCollaborators,
-          }}
-          panelStage={panelStage}
-          priorityWrite={priorityWrite}
-          restoringTo={restoringTo}
-          state={issueState}
-        />
-        {/* The preset row, then the Contents pane and the reading column: the three sentences,
+      <OutlineWriterProvider issueKey={issueKey}>
+        <section className="flex min-w-0 flex-col">
+          <IssueProperties
+            documentArtifact={primaryArtifact}
+            isClosed={isClosed}
+            issue={issue.data}
+            panel={{
+              focused,
+              history: { item: historyItem, open: opensHistory },
+              openCollaborators: opensCollaborators,
+              state: state.data,
+            }}
+            panelStage={panelStage}
+            priorityWrite={priorityWrite}
+            restoringTo={restoringTo}
+            state={issueState}
+          />
+          {/* The preset row, then the Contents pane and the reading column: the three sentences,
           the children section and the one folded tree the presets are queries over (R1, R3, R5,
           R8, R10, R14) - or the document the address opens, in their place. A row being edited
           takes its own document's editor onto its stage (`document-stage.tsx`), and what the
           page draws under the outline is in that column too. */}
-        <IssueBody
-          address={address}
-          below={
-            <IssuePresetPanels
-              activatedTabs={activatedTabs}
-              activeTab={activeTab}
-              conversationState={conversationState}
-              editedDocument={edited}
-              history={historyItem !== undefined}
-              isClosed={isClosed}
-              issueKey={issueKey}
-              onToolbarSink={toolbarSink}
-              onVersionChange={(artifact, version) =>
-                openDocumentAt(artifact, version ?? undefined)
-              }
-              state={state.data}
-            />
-          }
-          isClosed={isClosed}
-          issue={issue.data}
-          onEditing={setEditing}
-          onLeave={recordScroll}
-          openedDocument={openedDocument}
-          plan={planArtifact}
-          toolbar={outlineToolbar}
-        />
-        {/* Wherever the shell's margin draws no panel of its own - outside the shell, where no
-          drawer holds it - the panel's stage is held here, under the body. */}
-        {marginDrawsPanel ? null : (
-          <div
-            className={`mb-3 flex min-w-0 flex-col gap-3 ${PAGE_INSET}`}
-            data-testid="issue-margin"
-            ref={holdPanel}
+          <IssueBody
+            address={address}
+            below={
+              <IssuePresetPanels
+                editedDocument={edited}
+                isClosed={isClosed}
+                issueKey={issueKey}
+                onToolbarSink={toolbarSink}
+                onVersionChange={(artifact, version) =>
+                  openDocumentAt(artifact, version ?? undefined)
+                }
+              />
+            }
+            isClosed={isClosed}
+            issue={issue.data}
+            onEditing={setEditing}
+            onLeave={recordScroll}
+            openedDocument={openedDocument}
+            plan={planArtifact}
+            toolbar={outlineToolbar}
           />
-        )}
-      </section>
+          {/* Wherever the shell's margin draws no panel of its own - outside the shell, where no
+          drawer holds it - the panel's stage is held here, under the body. */}
+          {marginDrawsPanel ? null : (
+            <div
+              className={`mb-3 flex min-w-0 flex-col gap-3 ${PAGE_INSET}`}
+              data-testid="issue-margin"
+              ref={holdPanel}
+            />
+          )}
+        </section>
+      </OutlineWriterProvider>
     </NoTooltips>
   );
 }
@@ -842,11 +678,13 @@ function IssueProperties({
   isClosed: boolean;
   issue: IssueDetails;
   panel: {
-    readonly conversationList: ReactNode;
-    readonly conversationState: ConversationState;
     readonly focused: FocusedNode;
-    readonly onConversationState: (state: ConversationState) => void;
+    /** Whether the address opens the panel at the history, and the entry of it the address
+     *  names (R15, R20). */
+    readonly history: { readonly item: string | undefined; readonly open: boolean };
     readonly openCollaborators: boolean;
+    /** The reader's own state of every issue, whose pins the panel lists (R14). */
+    readonly state: UserState | undefined;
   };
   panelStage: HTMLElement;
   priorityWrite: IssuePriorityWrite;
@@ -876,16 +714,15 @@ function IssueProperties({
       />
       {createPortal(
         <IssueMarginPanel
-          conversationList={panel.conversationList}
-          conversationState={panel.conversationState}
           documentArtifact={documentArtifact}
           editingField={editingField}
           focused={panel.focused}
+          history={panel.history}
           isClosed={isClosed}
           issue={issue}
-          onConversationState={panel.onConversationState}
           onEditingField={setEditingField}
           openCollaborators={panel.openCollaborators}
+          state={panel.state}
           writes={writes}
         />,
         panelStage

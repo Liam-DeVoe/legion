@@ -9,11 +9,13 @@ import { expect } from "@playwright/test";
 
 import { createComment, createIssue, createProject } from "./api";
 import {
-  conversationStateControl,
   detailsControl,
+  focusedNodeId,
   iconRail,
   marginShell,
+  nodeRow,
   openDetails,
+  tree,
 } from "./issue-page";
 import { stubbed } from "./stub/stub-test";
 
@@ -28,7 +30,7 @@ const test = stubbed(async () => {
   return { comment: comment.id, issue: issue.key };
 });
 
-test("tablet keeps the Conversation readable and exposes the review sheet @pr", async ({
+test("tablet keeps the outline readable and exposes the review sheet @pr", async ({
   page,
   scene,
 }, testInfo) => {
@@ -37,11 +39,13 @@ test("tablet keeps the Conversation readable and exposes the review sheet @pr", 
 
   await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
   await expect(detailsControl(page)).toBeVisible();
-  // The conversation's own address opens Details, and the Conversation fills its width.
+  // The conversation is the outline, which fills the column (dispatch://INFRA-1196 R1); Details
+  // opens over the right of it and holds no list of the conversation (R14).
+  const treeBounds = await tree(page).boundingBox();
+  expect(treeBounds?.width ?? 0).toBeGreaterThanOrEqual(600);
   await openDetails(page);
-  const conversationBounds = await page.locator("#issue-conversation-panel").boundingBox();
-  const drawerBounds = await marginShell(page).boundingBox();
-  expect(conversationBounds?.width ?? 0).toBeGreaterThanOrEqual((drawerBounds?.width ?? 0) - 40);
+  await expect(marginShell(page)).toBeVisible();
+  await expect(page.locator("#issue-conversation-panel")).toHaveCount(0);
   const tabletScreenshot = testInfo.outputPath("tablet-800.png");
   await page.screenshot({ path: tabletScreenshot, fullPage: true });
   await testInfo.attach("tablet layout (800px)", {
@@ -51,12 +55,9 @@ test("tablet keeps the Conversation readable and exposes the review sheet @pr", 
 
   await page.setViewportSize({ height: 768, width: 1024 });
   await page.goto(`/issues/${scene.issue}/comments/${scene.comment}`);
+  await expect.poll(() => focusedNodeId(page)).toBe(scene.comment);
+  await expect(nodeRow(page, scene.comment).first()).toBeVisible();
   await openDetails(page);
-  await expect(
-    page
-      .getByRole("list", { name: "Conversation turns" })
-      .locator(`li[data-turn="comment:${scene.comment}"][aria-current="true"]`)
-  ).toBeVisible();
 
   await page.setViewportSize({ height: 1024, width: 1280 });
   await expect(iconRail(page)).toBeVisible();
@@ -69,9 +70,8 @@ test("tablet keeps the Conversation readable and exposes the review sheet @pr", 
   });
 });
 
-// An unanchored comment deep link focuses its node in the outline and its Conversation turn,
-// rather than opening a margin comment. The Details control must remain visibly openable and
-// pointer-reachable on that route.
+// An unanchored comment deep link focuses its node in the outline, rather than opening a margin
+// comment. The Details control must remain visibly openable and pointer-reachable on that route.
 test("a comment deep link keeps the compact review-panel toggle hit-testable @pr", async ({
   page,
   scene,
@@ -82,7 +82,7 @@ test("a comment deep link keeps the compact review-panel toggle hit-testable @pr
 
   await page.setViewportSize({ height: 768, width: 1024 });
   await page.goto(`/issues/${scene.issue}/comments/${scene.comment}`);
-  await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => focusedNodeId(page)).toBe(scene.comment);
   const toggle = detailsControl(page);
   await expect(toggle).toBeVisible();
   const hitTest = () =>

@@ -36,8 +36,8 @@ function sameActor(left: Actor, right: Actor): boolean {
   return left.kind === right.kind && left.id === right.id;
 }
 
-/** One line of the Activity tab, as `AgentPart`s: an agent it names keeps its identity until
- *  `ActivityLine` draws it through `AgentName`. */
+/** One event's line in the issue's history (`features/issue/IssueHistory.tsx`), as `AgentPart`s:
+ *  an agent it names keeps its identity until `ActivityLine` draws it through `AgentName`. */
 export function activityDescription(event: DispatchEvent, previousStatus?: string): AgentPart[] {
   const description = describe(event, previousStatus);
   return typeof description === "string" ? [description] : description;
@@ -224,80 +224,4 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "issue.pull_request_attribution_changed":
       return `moved pull request ${event.payload.repo}#${event.payload.number} from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
   }
-}
-
-/** One event of the issue's history as the Activity tab lists it, with the dividers that break
- *  the list into days and mark where the reader's watermark falls. */
-export type ActivityItem =
-  | {
-      kind: "event";
-      id: string;
-      at: string;
-      author: Actor;
-      description: AgentPart[];
-      event: DispatchEvent;
-      seq: number;
-    }
-  | { kind: "day-divider"; id: string; date: string; label: string }
-  | { kind: "unread-divider"; id: "unread-divider" };
-
-export interface ActivityInput {
-  events: DispatchEvent[];
-  /** `user_issue_state.last_read_seq`; the Conversation is its only writer. */
-  lastReadSeq: number;
-  /** Local YYYY-MM-DD. */
-  today: string;
-}
-
-/**
- * Every event of the issue, newest first, one line each: no grouping into turns and no hiding,
- * which is what separates this list from the Conversation's. A line's description is read in
- * sequence order, so `issue.updated` can say what status it reopened from.
- */
-export function buildActivityItems({ events, lastReadSeq, today }: ActivityInput): ActivityItem[] {
-  const lines: Extract<ActivityItem, { kind: "event" }>[] = [];
-  let previousIssueStatus: string | undefined;
-
-  for (const event of [...events].sort((left, right) => left.seq - right.seq)) {
-    lines.push({
-      kind: "event",
-      id: `activity:${event.id}`,
-      at: event.created_at,
-      author: event.actor,
-      description: activityDescription(event, previousIssueStatus),
-      event,
-      seq: event.seq,
-    });
-    if (
-      event.type === "issue.created" ||
-      event.type === "issue.updated" ||
-      event.type === "issue.closed"
-    ) {
-      previousIssueStatus = event.payload.status;
-    }
-  }
-
-  // The divider sits between the newest read line and the oldest unread one, so it is drawn only
-  // when the loaded pages hold both.
-  let unreadPlaced = !(
-    lines.some((line) => line.seq <= lastReadSeq) && lines.some((line) => line.seq > lastReadSeq)
-  );
-  const items: ActivityItem[] = [];
-  let currentDay: string | undefined;
-
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index] as Extract<ActivityItem, { kind: "event" }>;
-    const day = dateKey(line.at);
-    if (day !== currentDay) {
-      currentDay = day;
-      items.push({ kind: "day-divider", id: `day:${day}`, date: day, label: dayLabel(day, today) });
-    }
-    if (!unreadPlaced && line.seq <= lastReadSeq) {
-      items.push({ kind: "unread-divider", id: "unread-divider" });
-      unreadPlaced = true;
-    }
-    items.push(line);
-  }
-
-  return items;
 }

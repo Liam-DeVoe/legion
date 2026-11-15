@@ -285,24 +285,6 @@ function portalAnchors(
   };
 }
 
-/** Told of an element the parse worker has just formatted. */
-type LatePaintListener = (element: HTMLElement) => void;
-
-const latePaintListeners = new Set<LatePaintListener>();
-
-/**
- * Calls `listener` with each element a body the reader was shown as pending has just been painted
- * formatted into, in the task that painted it, before the browser paints. `use-follow-latest.ts`
- * listens: the newest turn, formatting after Jump to latest placed the reader at it, is placed
- * again. Answers the unsubscribe.
- */
-export function onMarkdownLatePaint(listener: LatePaintListener): () => void {
-  latePaintListeners.add(listener);
-  return () => {
-    latePaintListeners.delete(listener);
-  };
-}
-
 /**
  * Where the content under `element` starts, as the reader sees it now: the element's own bottom
  * edge in the viewport. A shift the browser's own scroll anchoring already made is in that
@@ -324,7 +306,7 @@ interface ReadersPlace {
 /**
  * Keeps the reader where they are across a paint that grows `element`, which lands after the
  * commit that drew it: nothing else measures a second time (`ViewportAnchor` measures once per
- * commit, `use-follow-latest.ts` places once).
+ * commit).
  *
  * A body wholly above the top of the page pushes everything the reader is looking at down by
  * what its formatting added, so the page scrolls back by exactly that. A body the reader can see
@@ -421,11 +403,9 @@ function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
  * and one a newer frame has already painted over.
  *
  * A body that formats after its commit must not move the reader, and nothing else measures a
- * second time: `ViewportAnchor` measures once per commit and `use-follow-latest.ts` places the
- * reader once. So the late paint keeps the reader's place itself (`keepTheReadersPlace`), once
- * per batch it lands and holding to wherever the reader has scrolled to meanwhile, and tells
- * `use-follow-latest.ts` about itself (`onMarkdownLatePaint`), which places the reader again
- * where Jump to latest had placed them at the turn that just formatted.
+ * second time: `ViewportAnchor` measures once per commit. So the late paint keeps the reader's
+ * place itself (`keepTheReadersPlace`), once per batch it lands and holding to wherever the
+ * reader has scrolled to meanwhile.
  *
  * A body of more nodes than one task puts into the page (`paintsAcrossTasks`), where the surface
  * gave a `paintInSlices`, is built a piece at a time and put into the page a batch at a time:
@@ -596,11 +576,6 @@ export function useRenderedMarkdown(
               (source) => engine.parse(source, softBreaks),
               openMermaidFence
             );
-          }
-          if (replacesPending) {
-            for (const listener of [...latePaintListeners]) {
-              listener(element);
-            }
           }
           onRenderedRef.current?.();
         };

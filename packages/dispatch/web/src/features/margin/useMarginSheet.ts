@@ -675,6 +675,7 @@ export function useMarginSheet(): MarginSheetModel {
       hoveredItemId,
       hoveredMarkId,
       landedCard,
+      routeMarkedItemId: routeItemBesideDocument ? undefined : routeItemId,
       selectedItemId: displayedSelectedItemId,
       showResolved,
     },

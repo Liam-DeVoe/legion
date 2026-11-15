@@ -17,7 +17,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { conversationStateControl } from "./issue-page";
+import { tree } from "./issue-page";
 import { expect, type Locator, type Page, test, type WebSocket } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { asUser } from "./users";
@@ -26,6 +26,9 @@ import { asUser } from "./users";
 // the counterparty ("bob") is an autonomous session acting through the bearer API —
 // only alice's browser needs to be real, since that is what proves the live update.
 const bob = { actor: { kind: "session" as const, id: "bob" }, as: "agent" as const };
+/** A person writing on the issue, whose message is a node of the outline (dispatch://INFRA-1196
+ *  R1): an agent's message no person took part in is the history's, in Details (R15). */
+const carol = { login: "carol" };
 let renames = 0;
 
 // The reader's dwell on a conversation card before its read mark is written: `DWELL_MS`,
@@ -341,7 +344,7 @@ test("live: another request's source update refreshes Settings without reload", 
   }
 });
 
-test("live: new events on the open issue appear in Conversation and mark it read as they are viewed", async ({
+test("live: new messages on the open issue appear in the outline, and its end marks the issue read as it is viewed", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -351,16 +354,14 @@ test("live: new events on the open issue appear in Conversation and mark it read
   const page = await alice.newPage();
   await page.clock.install();
   await page.goto(`/issues/${issue.key}/conversation`);
-  await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
+  await expect(tree(page)).toBeVisible();
 
-  await createMessage(issue.key, { body: "Live message from bob" }, bob);
+  await createMessage(issue.key, { body: "Live message from carol" }, carol);
 
-  await expect(
-    page.getByRole("list", { name: "Conversation turns" }).getByText("Live message from bob")
-  ).toBeVisible();
-  // The mark is written once the reader has dwelt on the newest card (`DWELL_MS`), a page timer
-  // the page's own clock spends; the jump repeats because the timer is armed only once the
-  // observer has reported the card.
+  await expect(tree(page).getByText("Live message from carol")).toBeVisible();
+  // The mark is written once the outline's end has been on screen for a second (`DWELL_MS`,
+  // `IssueReadMark.tsx`), a page timer the page's own clock spends; the jump repeats because the
+  // timer is armed only once the observer has reported the end.
   await expect
     .poll(
       async () => {
@@ -434,7 +435,7 @@ test("live: the stream recovers after the connection drops @pr", async ({ browse
 test("live: a forced server disconnect resumes from the last event id @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Disconnect target" });
-  await createMessage(issue.key, { body: "Before disconnect" }, bob);
+  await createMessage(issue.key, { body: "Before disconnect" }, carol);
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -483,15 +484,11 @@ test("live: a forced server disconnect resumes from the last event id @pr", asyn
   await page.clock.install();
   await page.goto(`/issues/${issue.key}/conversation`);
   const head: string = (await (await whoami).json()).event_head;
-  await expect(
-    page.getByRole("list", { name: "Conversation turns" }).getByText("Before disconnect")
-  ).toBeVisible();
+  await expect(tree(page).getByText("Before disconnect")).toBeVisible();
   // The first subscription resumes from the sign-in check's head.
   await expect.poll(() => sockets[0]?.resumes).toEqual([head]);
-  await createMessage(issue.key, { body: "Seen live before disconnect" }, bob);
-  await expect(
-    page.getByRole("list", { name: "Conversation turns" }).getByText("Seen live before disconnect")
-  ).toBeVisible();
+  await createMessage(issue.key, { body: "Seen live before disconnect" }, carol);
+  await expect(tree(page).getByText("Seen live before disconnect")).toBeVisible();
   const first = sockets[0];
   if (first === undefined) throw new Error("the page opened no live socket");
   expect(first.events.length).toBeGreaterThan(0);
@@ -511,10 +508,8 @@ test("live: a forced server disconnect resumes from the last event id @pr", asyn
   expect(BigInt(last ?? "0")).toBeGreaterThan(BigInt(head));
   await expect.poll(() => sockets[1]?.starts).toEqual([true]);
 
-  await createMessage(issue.key, { body: "Missed during disconnect" }, bob);
-  await expect(
-    page.getByRole("list", { name: "Conversation turns" }).getByText("Missed during disconnect")
-  ).toBeVisible();
+  await createMessage(issue.key, { body: "Missed during disconnect" }, carol);
+  await expect(tree(page).getByText("Missed during disconnect")).toBeVisible();
 
   await alice.close();
 });
@@ -611,7 +606,7 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Budget target" });
   for (let index = 0; index < 5; index += 1) {
-    await createMessage(issue.key, { body: `Backlog message ${index}` }, bob);
+    await createMessage(issue.key, { body: `Backlog message ${index}` }, carol);
   }
 
   const alice = await asUser(browser, "alice");
@@ -636,9 +631,7 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     (socket) => new URL(socket.url()).pathname === "/ws/live"
   );
   await page.goto(`/issues/${issue.key}/conversation`);
-  await expect(
-    page.getByRole("list", { name: "Conversation turns" }).getByText("Backlog message 4")
-  ).toBeVisible();
+  await expect(tree(page).getByText("Backlog message 4")).toBeVisible();
   await socketOpened;
 
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
@@ -652,8 +645,8 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // eagerly fetching before its own address is ever opened still trips this immediately
   // instead of only breaking some looser upper bound, and a failure names the address that is
   // missing or extra instead of leaving a reader to work out which of a count of N dropped.
-  // The Conversation pages no event log at all now that the history is the Activity list's,
-  // and that list is unmounted until its own address is opened.
+  // The page pages no event log at all on this address: the history is Details', and it is
+  // drawn only once Details opens at it (dispatch://INFRA-1196 R15).
   //
   // It is the set of addresses, not the list of requests: the page reads an address it has
   // already read when a query of the shell's invalidates, which is that query's business and
@@ -668,8 +661,8 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // per read that lands: the tree grows as each of its reads answers, so the batch waits until
   // all of them have (`features/issue/useIssueTree.ts`), where before it asked for the
   // addresses known so far and asked again for the rest. The tree's asks, comments and messages
-  // are read under the keys the Conversation and the margin already own, so they are shared
-  // rather than asked twice and are the entries already here.
+  // are read under the keys the margin already owns, so they are shared rather than asked twice
+  // and are the entries already here.
   const firstLoad = [
     "/auth/whoami",
     // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
@@ -685,21 +678,21 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     `/api/v1/issues/${issue.key}`,
     // The active-sessions read.
     "/api/v1/agents",
-    // The primary artifact's comments, which the Conversation's own list and the tree share
-    // rather than fetching again.
+    // The primary artifact's comments, which the margin and the tree share rather than fetching
+    // again.
     `/api/v1/issues/${issue.key}/comments`,
-    // The margin's own list of the issue's asks, which the tree shares, and the Conversation's,
-    // which asks the same route for each ask's thread (`?thread=1`) and so is a request of its
-    // own, not the margin's shared.
+    // The margin's own list of the issue's asks, which the tree shares. The panel's conversation
+    // list asked the same route for each ask's thread (`?thread=1`) as a request of its own; the
+    // outline draws an ask's replies from the comments above, and that list is gone (R14).
     `/api/v1/issues/${issue.key}/asks?state=all`,
-    `/api/v1/issues/${issue.key}/asks?state=all&thread=1`,
     // The issue's message threads, which the tree shares.
     `/api/v1/issues/${issue.key}/messages`,
-    // The two one-row event reads the unread mark needs: the first event past the watermark,
-    // and the issue's head.
-    `/api/v1/issues/${issue.key}/events?after=&limit=1`,
+    // The issue's head, which the read mark at the outline's end writes when the reader has
+    // seen it (`IssueReadMark.tsx`). The list's second read, the first event past the
+    // watermark, placed its "new since" line, which the history draws from its own log once
+    // Details opens at it.
     `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
-    // The Conversation's live-agent query.
+    // The live-agent query.
     `/api/v1/issues/${issue.key}/subscribers`,
     // The one block-schema fetch every document surface shares for the session.
     "/api/v1/schema/blocks",
@@ -720,9 +713,8 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
     // number (the sidebar's on desktop, the compact header's on phone).
     "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
-    // The Conversation's list of the issue's phase handoffs, which it shows beside the
-    // messages.
-    `/api/v1/issues/${issue.key}/handoffs`,
+    // No list of the issue's phase handoffs: the list drew them beside the messages, and they
+    // are lines of the history now, read with its log.
     // The reader's own state on this issue, which the unread mark and the pin read.
     `/api/v1/me/issues/${issue.key}/state`,
     // The tree's own reads, and the blocks of the one document the issue carries, which are

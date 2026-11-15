@@ -1,6 +1,7 @@
 import { eventItemId, pinnedItemMarker } from "../web/src/features/issue/pins";
 import {
   answerAsk,
+  claimIssue,
   createAsk,
   createComment,
   createIssue,
@@ -13,6 +14,7 @@ import {
   patchIssue,
   putIssueState,
   replyToMessageBlock,
+  resolveAsk,
   uploadIssueFile,
 } from "./api";
 import { blockId } from "./editor";
@@ -23,6 +25,7 @@ import {
   BASELINE_REPO,
   PLANNER,
   PROJECT,
+  REVIEWER,
   seedIssueWithDocuments,
   seedSessions,
   WHOLE_REPO,
@@ -378,22 +381,39 @@ export async function seedNoSummary(): Promise<PlainIssueSeed> {
   return await seedPlainIssue(false, "This spec carries no summary node");
 }
 
-/** A thread of three comments, the last of which answers the second (R14). */
+/** A thread of three comments, the last of which answers the second, and three questions in
+ *  three states (c-reply-nesting). */
 export interface ReplyNestingSeed {
+  /** A question a person answered, which still takes a reply. */
+  readonly answeredAsk: string;
   /** The reply to the head of the thread. */
   readonly first: string;
   /** The head of the thread, which sits under the issue. */
   readonly head: string;
   readonly key: string;
+  /** A question that waits on the reader, with two options, which its row answers. */
+  readonly openAsk: string;
+  /** A question its asker resolved, which still takes a reply (dispatch://INFRA-3677). */
+  readonly resolvedAsk: string;
   /** The reply that answers `first`, and is drawn under it rather than under `head`. */
   readonly second: string;
+  /** The reply that answers `second`, a level below the third under the issue, which a laptop
+   *  folds to one line counting it. */
+  readonly third: string;
 }
 
-/** An issue carrying a thread whose second reply answers the first. Every comment is written
- *  through the route a person writes through - `POST /api/v1/issues/{key}/comments` with
- *  `reply_to`, which the conversation's composer sends - so the stored `answers` is the
- *  server's own and not a value this seed invented: the write climbs `reply_to` to the head of
- *  the thread and keeps the comment the request named beside it. */
+/** An agent asking the questions of `seedReplyNesting`. */
+const NESTING_ASKER = {
+  actor: { id: "e2e-nesting-asker", kind: "session" as const },
+  as: "agent" as const,
+};
+
+/** An issue carrying a thread whose second reply answers the first, and three questions: one a
+ *  person answered, one its asker resolved, and one open and waiting on the reader. Every comment
+ *  is written through the route a person writes through - `POST /api/v1/issues/{key}/comments`
+ *  with `reply_to`, which the line at the foot of the outline sends - so the stored `answers` is
+ *  the server's own and not a value this seed invented: the write climbs `reply_to` to the head
+ *  of the thread and keeps the comment the request named beside it. */
 export async function seedReplyNesting(): Promise<ReplyNestingSeed> {
   await createProject({ key: PROJECT, name: "Issue layout" });
   const issue = await createIssue({
@@ -410,7 +430,40 @@ export async function seedReplyNesting(): Promise<ReplyNestingSeed> {
     body: "An answer to that answer, and not to the entry above it.",
     reply_to: first.id,
   });
-  return { first: first.id, head: head.id, key: issue.key, second: second.id };
+  const third = await createComment(issue.key, {
+    body: "A third answer, one level deeper again.",
+    reply_to: second.id,
+  });
+  const answered = await createAsk(
+    issue.key,
+    { options: [{ label: "Yes" }, { label: "No" }], question: "Is the answered question kept?" },
+    NESTING_ASKER
+  );
+  await answerAsk(answered.id, { expected_edited_at: null, selected: ["Yes"] }, { login: "alice" });
+  const resolved = await createAsk(
+    issue.key,
+    { question: "Was the resolved question still worth a reply?" },
+    NESTING_ASKER
+  );
+  await resolveAsk(resolved.id, { kind: "resolved", reason: "Settled elsewhere." }, NESTING_ASKER);
+  const open = await createAsk(
+    issue.key,
+    {
+      options: [{ label: "Left" }, { label: "Right" }],
+      question: "Which way does the open question go?",
+    },
+    NESTING_ASKER
+  );
+  return {
+    answeredAsk: answered.id,
+    first: first.id,
+    head: head.id,
+    key: issue.key,
+    openAsk: open.id,
+    resolvedAsk: resolved.id,
+    second: second.id,
+    third: third.id,
+  };
 }
 
 /** The unbroken run a requirement's own words can hold: one file path, 118 characters with no
@@ -557,4 +610,78 @@ export async function seedRequestBaseline(): Promise<BaselineSeed> {
 /** The same content with twice its nodes, which proves the page makes no request per node. */
 export async function seedTwiceTheNodes(): Promise<BaselineSeed> {
   return await seedBaseline(2);
+}
+
+/** What `seedConversationState` adds to the whole issue: the things the history draws whole
+ *  (dispatch://INFRA-1196 R15) that no row of the outline does. */
+export interface ConversationStateSeed extends WholeIssueSeed {
+  /** Two comments agents wrote to each other, a thread no person wrote in. */
+  readonly agentComments: { readonly reply: string; readonly root: string };
+  /** The Legion daemon's message on the issue. */
+  readonly daemonMessage: string;
+  /** An agent's status note: a comment of its own, in no thread a person wrote in. */
+  readonly statusNote: string;
+  /** The names of three files one author uploaded within a minute. */
+  readonly uploads: readonly string[];
+}
+
+/** The Legion daemon, which writes on an issue as a session of its own. */
+const DAEMON = {
+  actor: { id: "legion-daemon", kind: "session" as const, origin: { session_title: "Legion" } },
+  as: "agent" as const,
+};
+
+/** The reviewer agent, which answers the planner on the issue. */
+const asReviewer = {
+  actor: { id: REVIEWER, kind: "session" as const },
+  as: "agent" as const,
+};
+
+/** The whole issue (which carries its status, its two handoffs, its recorded results and its
+ *  children's moves), claimed, with the daemon's message, an agent's status note, two comments
+ *  agents wrote to each other and three uploads one author made within a minute
+ *  (c-conversation-state). */
+export async function seedConversationState(): Promise<ConversationStateSeed> {
+  const seeded = await seedWholeIssue();
+  await patchIssue(seeded.key, { status: "in_progress" });
+  await claimIssue(seeded.key, asPlanner);
+  const daemon = await createMessage(
+    seeded.key,
+    { body: "The planner's session was replaced; its claim moves to the new one." },
+    DAEMON
+  );
+  const note = await createComment(
+    seeded.key,
+    { body: "Status: the plan is drafted and waits on its review." },
+    asPlanner
+  );
+  const root = await createComment(
+    seeded.key,
+    { body: "Reviewer, the plan's third task needs a second look." },
+    asPlanner
+  );
+  const reply = await createComment(
+    seeded.key,
+    { body: "Looked again: the third task stands as written.", reply_to: root.id },
+    asReviewer
+  );
+  const uploads = ["shot-1.png", "shot-2.png", "shot-3.png"];
+  for (const name of uploads) {
+    await uploadIssueFile(
+      seeded.key,
+      {
+        bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
+        contentType: "image/png",
+        name,
+      },
+      "bob"
+    );
+  }
+  return {
+    ...seeded,
+    agentComments: { reply: reply.id, root: root.id },
+    daemonMessage: daemon.id,
+    statusNote: note.id,
+    uploads,
+  };
 }

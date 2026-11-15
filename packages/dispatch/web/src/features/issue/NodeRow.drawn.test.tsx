@@ -228,7 +228,12 @@ test("a folded branch draws its first line and its count, and its focus its word
 test("an answered ask draws the answer in its own row, word for word", () => {
   const text = "The preset row keeps its labels above that width.\n\nBelow it, one control.";
   const asked = node({
-    answer: { by: { id: "alice", kind: "user" }, selected: ["1280 px"], text },
+    answer: {
+      at: "2026-11-06T00:00:00Z",
+      by: { id: "alice", kind: "user" },
+      selected: ["1280 px"],
+      text,
+    },
     id: "ask-1",
     options: [{ description: "Where the rail fits.", label: "1280 px" }, { label: "1024 px" }],
     state: "answered",

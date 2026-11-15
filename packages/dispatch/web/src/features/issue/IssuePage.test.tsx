@@ -42,12 +42,8 @@ import { MarginProvider } from "../margin/margin-context";
 import { FilledMarginSlot, MarginSlotProvider, useMarginSlotFill } from "../margin/margin-slot";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
-import { userPreferenceStorageKey } from "../shell/userPreference";
 import { IssuePage } from "./IssuePage";
 import { EMPTY_STATE_LINES } from "./page-words";
-
-/** Where this browser keeps the conversation state the file's signed-in reader last picked. */
-const KEPT_STATE = userPreferenceStorageKey("alice", "issue.conversation-state");
 
 const issue = {
   route_status: null,
@@ -1435,10 +1431,10 @@ test("IssuePage opens the activity address with the t v chord", async () => {
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity")
     );
     await expectPreset("Conversation");
-    const history = document.getElementById("issue-activity-panel");
-    expect(history).not.toBeNull();
-    expect(history).not.toHaveAttribute("hidden");
-    expect(history?.closest('[data-testid="issue-margin"]')).toBeNull();
+    // The history is the panel's (R15): the chord opens Details at it, and the focus is in it.
+    const history = await screen.findByRole("region", { name: "History" });
+    expect(history.closest('[data-testid="issue-margin"]')).not.toBeNull();
+    await waitFor(() => expect(history.contains(document.activeElement)).toBe(true));
   } finally {
     view.unmount();
     restore();
@@ -1466,7 +1462,7 @@ test("IssuePage names each chord by what it opens on this page", async () => {
     expect(labels.get("tab-plan")).toBe("Turn the Plan filter on or off");
     expect(labels.get("tab-decisions")).toBe("Turn the Decisions filter on or off");
     expect(labels.get("tab-conversation")).toBe("Conversation: turn every filter off");
-    expect(labels.get("tab-activity")).toBe("Open the issue's history under the tree");
+    expect(labels.get("tab-activity")).toBe("Open the issue's history in Details");
     expect(labels.get("tab-children")).toBe("Open the issue's children");
     expect(labels.get("tab-artifacts")).toBe("Open the Files and documents menu");
     expect([...labels.values()].filter((label) => label.includes("tab"))).toEqual([]);
@@ -2714,8 +2710,8 @@ test("IssuePage reads an item whose address writes its id whole without resolvin
 
   try {
     await waitFor(() => expect(getComment).toHaveBeenCalledWith(WHOLE_ID));
-    // The tabs are gone (R3): the conversation's own turns are what the landing opens.
-    await screen.findByRole("list", { name: "Conversation turns" });
+    // The tabs are gone (R3), and so is the panel's list: the outline is what the landing opens.
+    await screen.findByRole("tree", { name: "Issue tree" });
     // The whole id is read once, under itself, and nothing is resolved for it.
     expect(getComment.mock.calls).toEqual([[WHOLE_ID]]);
     expect(getReferences).not.toHaveBeenCalled();
@@ -2872,8 +2868,8 @@ test("IssuePage shows its not-found view for an id prefix that names nothing", a
 
 // The panel is drawn wherever the shell's margin is not drawing it: at the width the margin is
 // a sheet, and - this row - from 1280 px up with the reader's margin collapsed to its rail.
-// Without it that reader loses every property in the panel, the conversation with them, and
-// `/conversation`, `/collaborators`, `t c` and `t o` reach nothing.
+// Without it that reader loses every property in the panel, the history with them, and
+// `/activity`, `/collaborators`, `t v` and `t o` reach nothing.
 test("IssuePage draws its panel in its own column wherever the margin draws none", async () => {
   const restore = stubIssuePage({ ...issue, blocked_by: ["CORE-9"] });
   setViewport(1280);
@@ -2883,7 +2879,10 @@ test("IssuePage draws its panel in its own column wherever the margin draws none
     const panel = await screen.findByTestId("issue-margin");
     expect(within(panel).getByText("Opened by")).toBeInTheDocument();
     expect(within(panel).getByRole("link", { name: "CORE-9" })).toBeInTheDocument();
-    expect(within(panel).getByRole("listbox", { name: "Conversation" })).toBeInTheDocument();
+    expect(within(panel).getByRole("region", { name: "History" })).toBeInTheDocument();
+    // The panel holds no list of the conversation (R14): no state to pick, no turns.
+    expect(within(panel).queryByRole("listbox", { name: "Conversation" })).toBeNull();
+    expect(within(panel).queryByRole("list", { name: "Conversation turns" })).toBeNull();
   } finally {
     view.unmount();
     restore();
@@ -2986,200 +2985,6 @@ test("IssuePage leaves the panel to the margin where the margin keeps a column f
   }
 });
 
-// Picking a state in the panel is a change of state and not a change of address: the preset the
-// reader is reading, the `?q=` that narrows it and the document it has open all stay.
-test("IssuePage keeps the preset and the filter when a conversation state is picked", async () => {
-  const user = userEvent.setup();
-  const restore = stubIssuePage(issue);
-  const view = renderIssuePage("/issues/CORE-1/spec?q=socket");
-
-  try {
-    const states = await screen.findByRole("listbox", { name: "Conversation" });
-    await expectPreset("Spec");
-    await user.click(within(states).getByRole("option", { name: "Questions" }));
-
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec?q=socket");
-    await expectPreset("Spec");
-    expect(
-      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
-        name: "Questions",
-      })
-    ).toHaveAttribute("aria-selected", "true");
-  } finally {
-    view.unmount();
-    restore();
-  }
-});
-
-// `/conversation` and `/activity` are the two addresses that are a state of their own, so from
-// one of them picking the other's state opens it - and the filter goes with it.
-test("IssuePage carries the filter into the address a conversation state names", async () => {
-  const user = userEvent.setup();
-  const restore = stubIssuePage(issue);
-  const view = renderIssuePage("/issues/CORE-1/conversation?q=socket");
-
-  try {
-    const states = await screen.findByRole("listbox", { name: "Conversation" });
-    await user.click(within(states).getByRole("option", { name: "Everything" }));
-
-    await waitFor(() =>
-      expect(screen.getByTestId("current-route").textContent).toBe(
-        "/issues/CORE-1/activity?q=socket"
-      )
-    );
-  } finally {
-    view.unmount();
-    restore();
-  }
-});
-
-// The issue's own address draws the spec beside the tree, and a `#b-` there names a block of
-// it, so it is a preset's address like the others and a picked state keeps it whole: the spec,
-// the fragment and the filter. This row used to pin the opposite - Everything and Words, the
-// latter already the selected state, sent the reader to `/activity` and `/conversation`, which
-// closed the spec and dropped the `#b-` - and nothing the reader asked for needed that (R19).
-test("IssuePage keeps the issue's own address and its fragment when a state is picked", async () => {
-  const user = userEvent.setup();
-  window.localStorage.removeItem(KEPT_STATE);
-  const restore = stubIssuePage(issue);
-  const view = renderIssuePage("/issues/CORE-1?q=socket#b-r1");
-
-  try {
-    await expectPreset("Conversation");
-    for (const name of ["Everything", "What people said"]) {
-      const states = await screen.findByRole("listbox", { name: "Conversation" });
-      await user.click(within(states).getByRole("option", { name }));
-
-      expect(screen.getByTestId("current-route").textContent, `${name} left the address`).toBe(
-        "/issues/CORE-1?q=socket#b-r1"
-      );
-      await expectPreset("Conversation");
-      expect(
-        within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
-          name,
-        })
-      ).toHaveAttribute("aria-selected", "true");
-    }
-  } finally {
-    view.unmount();
-    restore();
-    window.localStorage.removeItem(KEPT_STATE);
-  }
-});
-
-// Words and Everything are addresses of their own, and picking one from a preset used to send
-// the reader to the bare `/conversation` or `/activity`: the preset gone, the `?q=` cleared
-// and the document they were reading closed. From a preset the state is the panel's alone
-// (R19, `issue-address.ts`'s `conversationStatePath`).
-test("IssuePage keeps the preset and the filter when Words or Everything is picked", async () => {
-  const user = userEvent.setup();
-  const restore = stubIssuePage(issue);
-  const view = renderIssuePage("/issues/CORE-1/spec?q=socket");
-
-  try {
-    await expectPreset("Spec");
-    for (const name of ["Everything", "What people said"]) {
-      const states = await screen.findByRole("listbox", { name: "Conversation" });
-      await user.click(within(states).getByRole("option", { name }));
-
-      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec?q=socket");
-      await expectPreset("Spec");
-      expect(
-        within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
-          name,
-        })
-      ).toHaveAttribute("aria-selected", "true");
-    }
-  } finally {
-    view.unmount();
-    restore();
-  }
-});
-
-// `/activity` is the Everything state's own address, and the issue's whole history in the
-// page's column is what that state draws there. Picking Questions keeps the address now, so
-// the history goes with the state rather than standing under a panel showing the questions
-// alone (`IssuePresetPanels.tsx`).
-test("IssuePage hides the activity list when a state other than Everything is picked", async () => {
-  const user = userEvent.setup();
-  const restore = stubIssuePage(issue);
-  const view = renderIssuePage("/issues/CORE-1/activity");
-
-  try {
-    await screen.findByTestId("issue-header");
-    const activity = document.getElementById("issue-activity-panel") as HTMLElement;
-    expect(activity).not.toHaveAttribute("hidden");
-
-    const states = await screen.findByRole("listbox", { name: "Conversation" });
-    await user.click(within(states).getByRole("option", { name: "Questions" }));
-
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity");
-    expect(activity).toHaveAttribute("hidden");
-
-    // Everything brings it back, and it was kept mounted all along.
-    await user.click(
-      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
-        name: "Everything",
-      })
-    );
-    expect(document.getElementById("issue-activity-panel")).toBe(activity);
-    expect(activity).not.toHaveAttribute("hidden");
-  } finally {
-    view.unmount();
-    restore();
-  }
-});
-
-// A pick on `/activity` holds while the reader stays on that address and no longer. They pick
-// Questions there, leave for the Spec preset and come back: the address is theirs to read
-// again, and it names Everything and the history Everything draws there. The pick used to stay
-// tied to the address for the life of the page, so every later return showed no history.
-test("IssuePage draws the activity again when the reader comes back to /activity after a pick there", async () => {
-  const user = userEvent.setup();
-  window.localStorage.removeItem(KEPT_STATE);
-  const restore = stubIssuePage(issue);
-  const view = renderIssuePage("/issues/CORE-1/activity", "/issues/CORE-1/spec");
-
-  try {
-    await screen.findByTestId("issue-header");
-    const activity = document.getElementById("issue-activity-panel") as HTMLElement;
-    const states = await screen.findByRole("listbox", { name: "Conversation" });
-    await user.click(within(states).getByRole("option", { name: "Questions" }));
-    expect(activity).toHaveAttribute("hidden");
-
-    await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
-    await waitFor(() =>
-      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec")
-    );
-    await expectPreset("Spec");
-    // Elsewhere the kept pick is the state the panel opens in (R13).
-    expect(
-      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
-        name: "Questions",
-      })
-    ).toHaveAttribute("aria-selected", "true");
-
-    await user.keyboard("t");
-    await user.keyboard("v");
-    await waitFor(() =>
-      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity")
-    );
-    expect(
-      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
-        name: "Everything",
-      })
-    ).toHaveAttribute("aria-selected", "true");
-    expect(
-      activity,
-      "/activity shows no history after a pick made there earlier"
-    ).not.toHaveAttribute("hidden");
-  } finally {
-    view.unmount();
-    restore();
-    window.localStorage.removeItem(KEPT_STATE);
-  }
-});
-
 /** The ask a landing row's `/asks/<id>` names, as the conversation lists it. */
 const landingAsk: IssueAskThreadRow = {
   ...openIssueAsk,
@@ -3213,56 +3018,6 @@ const landingMessage: Message = {
 
 /** The comment a landing row's `/comments/<id>` names. */
 const landingComment = { ...itemComment, anchor: null, id: "comment-landing" };
-
-// R19: every address resolves to what it names, and a comment, message or ask link names one
-// entry of the conversation. Questions keeps the asks alone and Pinned what the reader pinned,
-// so while the kept pick outranked these addresses the entry was not in the list at all: the
-// page scrolled to nothing, opened no thread, and every later link from the Inbox, Replies or
-// search landed nowhere for that login. The address names what people said, which holds the
-// entry whatever the reader kept.
-test("IssuePage lands a comment, message or ask link whatever conversation state the reader kept", async () => {
-  const links = [
-    { path: `/issues/CORE-1/comments/${landingComment.id}`, turn: `comment:${landingComment.id}` },
-    { path: `/issues/CORE-1/messages/${landingMessage.id}`, turn: `message:${landingMessage.id}` },
-    { path: `/issues/CORE-1/asks/${landingAsk.id}`, turn: `ask:${landingAsk.id}` },
-  ];
-  for (const kept of ["questions", "pinned"] as const) {
-    for (const { path, turn } of links) {
-      window.localStorage.setItem(KEPT_STATE, kept);
-      const restore = stubIssuePage(issue);
-      api.listComments = async () => [landingComment];
-      api.listIssueMessages = async () => [{ message: landingMessage, replies: [] }];
-      api.listIssueAskThreads = async () => [landingAsk];
-      const reads = [
-        spyOn(api, "getComment").mockResolvedValue({ comment: landingComment, replies: [] }),
-        spyOn(api, "getMessage").mockResolvedValue({ message: landingMessage, replies: [] }),
-        spyOn(api, "getAsk").mockResolvedValue({ ...landingAsk.thread, ask: landingAsk }),
-      ];
-      const view = renderIssuePage(path);
-
-      try {
-        await waitFor(
-          () =>
-            expect(
-              document.querySelector(`li[data-turn="${turn}"]`)?.getAttribute("aria-current"),
-              `${path} with ${kept} kept does not land on its entry`
-            ).toBe("true"),
-          { timeout: 5_000 }
-        );
-        expect(
-          within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
-            name: "What people said",
-          })
-        ).toHaveAttribute("aria-selected", "true");
-      } finally {
-        view.unmount();
-        for (const read of reads) read.mockRestore();
-        restore();
-        window.localStorage.removeItem(KEPT_STATE);
-      }
-    }
-  }
-});
 
 // R20: an item's own address, and an address naming it beside a document (`?comment=`,
 // `?ask=`), opens that node, focused, in the outline, wherever the item is anchored. An
@@ -3332,10 +3087,9 @@ test("IssuePage opens an item anchored in a document on its node in the outline,
   }
 });
 
-// R20: a comment agents wrote outside every thread a person wrote in lands in the history, not
-// the outline. The history is not in the panel yet, so it lands in today's: the conversation in
-// its Everything state, marking the entry, with the history `/activity` draws under the outline;
-// the outline takes no focus for it.
+// R20: a comment agents wrote outside every thread a person wrote in lands in the history in the
+// panel, not in the outline (R1, R15): the history marks its entry, and the outline takes no
+// focus for it.
 test("IssuePage lands a comment agents wrote outside every person's thread in the history", async () => {
   const agentsComment = {
     ...itemComment,
@@ -3347,7 +3101,6 @@ test("IssuePage lands a comment agents wrote outside every person's thread in th
     `/issues/CORE-1/comments/${agentsComment.id}`,
     `/issues/CORE-1/spec?comment=${agentsComment.id}`,
   ]) {
-    window.localStorage.removeItem(KEPT_STATE);
     const restore = stubIssuePage(issue);
     api.listComments = async () => [agentsComment];
     const getComment = spyOn(api, "getComment").mockResolvedValue({
@@ -3357,22 +3110,21 @@ test("IssuePage lands a comment agents wrote outside every person's thread in th
     const view = renderIssuePage(path);
 
     try {
+      const history = await screen.findByRole("region", { name: "History" });
       await waitFor(
         () =>
           expect(
-            document
-              .querySelector(`li[data-turn="comment:${agentsComment.id}"]`)
+            history
+              .querySelector(`[data-history-item="${agentsComment.id}"]`)
               ?.getAttribute("aria-current"),
             `${path} does not mark its entry in the history`
           ).toBe("true"),
         { timeout: 5_000 }
       );
       expect(
-        within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
-          name: "Everything",
-        })
-      ).toHaveAttribute("aria-selected", "true");
-      expect(document.getElementById("issue-activity-panel")).not.toHaveAttribute("hidden");
+        document.querySelector(`[data-node-row][data-node-id="${agentsComment.id}"]`),
+        `${path} draws the agents' comment in the outline`
+      ).toBeNull();
       expect(
         document.activeElement?.closest("[data-node-row]") ?? null,
         `${path} puts the focus in the outline`
@@ -3382,7 +3134,6 @@ test("IssuePage lands a comment agents wrote outside every person's thread in th
       view.unmount();
       getComment.mockRestore();
       restore();
-      window.localStorage.removeItem(KEPT_STATE);
     }
   }
 });
@@ -3576,24 +3327,16 @@ test("IssuePage focuses an approval request's entry in the identity block", asyn
 // margin and collapses it again. It is one panel, drawn once and moved (`IssuePage`'s
 // `panelStage`): drawn afresh in each host, every move remounted it, and a message the reader
 // had typed - which `MentionComposer` holds in its own state - went with it.
-test("IssuePage keeps a message typed under the collapsed margin when the margin is shown", async () => {
-  const user = userEvent.setup();
+test("IssuePage moves its panel, not a copy of it, when the margin is shown", async () => {
   const restore = stubIssuePage(issue);
   setViewport(1280);
-  const view = renderIssuePage(
-    "/issues/CORE-1/conversation",
-    undefined,
-    undefined,
-    undefined,
-    false,
-    true
-  );
+  const view = renderIssuePage("/issues/CORE-1", undefined, undefined, undefined, false, true);
 
   try {
+    // The panel's own state - here its history, a list the reader may have opened days of - is
+    // the same element once the margin takes the panel, so nothing in it is thrown away.
     const column = await screen.findByTestId("issue-margin");
-    const composer = await within(column).findByLabelText<HTMLTextAreaElement>("Comment");
-    await user.type(composer, "half a thought");
-    expect(composer).toHaveValue("half a thought");
+    const history = within(column).getByRole("region", { name: "History" });
 
     act(() => view.showMargin(true));
 
@@ -3601,9 +3344,7 @@ test("IssuePage keeps a message typed under the collapsed margin when the margin
     expect(within(await screen.findByTestId("stand-in-margin")).getByTestId("issue-margin")).toBe(
       inTheMargin
     );
-    const moved = within(inTheMargin).getByLabelText<HTMLTextAreaElement>("Comment");
-    expect(moved).toBe(composer);
-    expect(moved).toHaveValue("half a thought");
+    expect(within(inTheMargin).getByRole("region", { name: "History" })).toBe(history);
   } finally {
     view.unmount();
     restore();
@@ -3661,6 +3402,138 @@ test("IssuePage's head says nothing about the summary until the reads that carry
     }
   } finally {
     names.mockRestore();
+    restore();
+  }
+});
+
+/** Focuses the row of `id` in the outline and waits for it to hold the focus. */
+async function focusRow(id: string): Promise<HTMLElement> {
+  const row = await waitFor(() => {
+    const found = document.querySelector<HTMLElement>(`[data-node-row][data-node-id="${id}"]`);
+    if (found === null) throw new Error(`no row ${id}`);
+    return found;
+  });
+  act(() => row.focus());
+  await waitFor(() => expect(document.activeElement).toBe(row));
+  return row;
+}
+
+// R16: the reader writes where they read. A focused comment's, message's and ask's Reply - `r` -
+// sets the line at the outline's foot to reply to it, naming it above the line, and Enter sends a
+// comment that answers it: `reply_to` for a comment, `in_reply_to` for a message, and `ask_id`
+// for an ask whatever its state, a resolved one included (dispatch://INFRA-3677). The issue's own
+// Reply, and the line with nothing set, write a comment on the issue.
+test("IssuePage replies from the outline to a comment, a message and a resolved ask", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const resolved: Ask = {
+    ...openIssueAsk,
+    id: "ask-resolved",
+    question: "Is it settled?",
+    resolution: {
+      actor: { id: "session-1", kind: "session" },
+      at: "2026-09-11T00:00:00Z",
+      kind: "resolved",
+      reason: "Settled.",
+    },
+    state: "resolved",
+  };
+  api.listComments = async () => [landingComment];
+  api.listIssueMessages = async () => [{ message: landingMessage, replies: [] }];
+  api.listIssueAsks = async () => [{ ...resolved, last_reply: null }];
+  const created = { ...landingComment, id: "comment-new" };
+  const createComment = spyOn(api, "createComment").mockResolvedValue(created);
+  const createMessage = spyOn(api, "createMessage").mockResolvedValue({
+    ...landingMessage,
+    id: "message-new",
+  });
+  const view = renderIssuePage();
+
+  try {
+    for (const [id, words] of [
+      [landingComment.id, "A reply to the comment."],
+      [resolved.id, "A word under the resolved ask."],
+      [landingMessage.id, "A reply to the message."],
+    ] as const) {
+      await focusRow(id);
+      await user.keyboard("r");
+      const composer = await screen.findByRole("region", { name: "Write to the conversation" });
+      await waitFor(() => expect(composer.querySelector("[data-composer-target]")).not.toBeNull());
+      expect(composer.querySelector("[data-composer-target]")?.textContent).toContain(
+        "Replying to:"
+      );
+      const field = within(composer).getByRole("textbox", { name: "Comment" });
+      await waitFor(() => expect(document.activeElement).toBe(field));
+      await user.keyboard(`${words}{Enter}`);
+      await waitFor(() =>
+        expect(
+          [...createComment.mock.calls, ...createMessage.mock.calls].some(
+            ([, input]) => (input as { body?: string }).body === words
+          )
+        ).toBe(true)
+      );
+    }
+    expect(createComment.mock.calls.map(([key, input]) => [key, input])).toEqual([
+      ["CORE-1", { body: "A reply to the comment.", reply_to: landingComment.id }],
+      ["CORE-1", { ask_id: resolved.id, body: "A word under the resolved ask." }],
+    ]);
+    expect(createMessage.mock.calls.map(([key, input]) => [key, input])).toEqual([
+      ["CORE-1", { body: "A reply to the message.", in_reply_to: landingMessage.id }],
+    ]);
+
+    // The issue's own Reply is a comment on the issue, from the same line with nothing set.
+    await focusRow("CORE-1");
+    await user.keyboard("r");
+    const composer = screen.getByRole("region", { name: "Write to the conversation" });
+    expect(composer.querySelector("[data-composer-target]")).toBeNull();
+    await user.keyboard("On the issue.{Enter}");
+    await waitFor(() =>
+      expect(createComment.mock.calls.at(-1)?.[1]).toEqual({ body: "On the issue." })
+    );
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+    createMessage.mockRestore();
+    restore();
+  }
+});
+
+// R16: an open question carries the control that answers it. `a` - or its Answer, or one of its
+// options - sets the line to answer it, the options its chips, and Send answer records the pick
+// and the reader's words.
+test("IssuePage answers an open question from the line at the outline's foot", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const open: Ask = {
+    ...openIssueAsk,
+    options: [{ label: "Ship it" }, { label: "Hold it" }],
+  };
+  api.listIssueAsks = async () => [{ ...open, last_reply: null }];
+  const answerAsk = spyOn(api, "answerAsk").mockResolvedValue({
+    ...open,
+    answer: { at: "2026-09-12T00:00:00Z", selected: ["Hold it"], text: "Not yet.", user: "alice" },
+    state: "answered",
+  });
+  const view = renderIssuePage();
+
+  try {
+    const row = await focusRow(open.id);
+    expect(row.querySelector('[data-row-act="answer"]')?.textContent).toBe("Answer");
+    await user.keyboard("a");
+    const line = await screen.findByRole("form", { name: "Answering:" });
+    await user.click(within(line).getByRole("button", { name: "Hold it" }));
+    expect(within(line).getByRole("button", { name: "Hold it" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    await user.click(within(line).getByRole("textbox", { name: "Answer" }));
+    await user.keyboard("Not yet.{Enter}");
+    await waitFor(() => expect(answerAsk).toHaveBeenCalled());
+    expect(answerAsk.mock.calls[0]?.[0]).toBe(open.id);
+    expect(answerAsk.mock.calls[0]?.[1]).toMatchObject({ selected: ["Hold it"], text: "Not yet." });
+  } finally {
+    view.unmount();
+    answerAsk.mockRestore();
     restore();
   }
 });

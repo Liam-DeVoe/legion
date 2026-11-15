@@ -1,4 +1,5 @@
 import { type RefObject, useEffect, useLayoutEffect, useState } from "react";
+import { DETAILS_ATTRIBUTE } from "../margin/margin-slot";
 
 /**
  * How tall the identity block is right now, on the document element, so anything that must not
@@ -22,8 +23,16 @@ const CLEARANCE = 8;
  * whatever a chord opens (`useIssueKeymap.ts`). The block's height is the one number it
  * publishes rather than a measurement taken here, so nothing guesses at it. An element already
  * whole and clear is left where it is, so a key never scrolls the page for nothing.
+ *
+ * Details' drawer (`margin/Margin.tsx`) is a layer over the page, the block included, with a
+ * scroll box of its own: a target inside it is brought into that box, and the page under it,
+ * which scrolling could not move the target by, stays where the reader had it.
  */
 export function bringOnScreen(element: HTMLElement): void {
+  if (element.closest(`aside[${DETAILS_ATTRIBUTE}]`) !== null) {
+    element.scrollIntoView({ block: "nearest" });
+    return;
+  }
   const published = Number.parseFloat(
     getComputedStyle(document.documentElement).getPropertyValue(IDENTITY_HEIGHT_PROPERTY)
   );

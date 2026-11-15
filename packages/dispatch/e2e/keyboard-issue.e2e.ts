@@ -9,14 +9,15 @@ import {
   activePreset,
   caretInNode,
   childrenSection,
-  conversationStateControl,
   drawnRows,
   expectActivePreset,
   filterBox,
   focusedNodeId,
   focusInside,
+  focusRow,
   focusThePage,
   gotoIssue,
+  historyPanel,
   identityBlockBottom,
   issuePage,
   marginShell,
@@ -25,12 +26,12 @@ import {
   nodeMenuButton,
   nodeRow,
   onScreen,
-  openDetails,
   openedArtifact,
   openMenu,
   pickPreset,
   pinnedBodies,
-  rowBody,
+  rowAct,
+  rowWords,
   tree,
   treeActiveDescendant,
 } from "./issue-page";
@@ -219,14 +220,14 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
         .filter({ hasText: `Turn the ${PRESET_NAMES.plan} filter on or off` })
         .locator("kbd")
     ).toHaveText(["t", "p"]);
-    // The activity takes `t v`, since `t a` opens the node menu and `l` the labels. Its words
-    // are the page's own (`useIssueKeymap.ts`): `/activity` draws the issue's whole history
-    // under the tree, as the user docs' address table has it.
-    await expect(issueSection).toContainText("Open the issue's history under the tree");
+    // The history takes `t v`, since `t a` opens the node menu and `l` the labels. Its words
+    // are the page's own (`useIssueKeymap.ts`): `/activity` opens Details at the issue's history
+    // (R15), as the user docs' address table has it.
+    await expect(issueSection).toContainText("Open the issue's history in Details");
     await expect(
       issueSection
         .getByRole("listitem")
-        .filter({ hasText: "Open the issue's history under the tree" })
+        .filter({ hasText: "Open the issue's history in Details" })
         .locator("kbd")
     ).toHaveText(["t", "v"]);
     await expect(
@@ -351,17 +352,18 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
     await context.close();
   }
 });
-// The issue page's `0`-`3` write the issue's priority, and an ask card on that page carries option
-// radios. A radio takes no typed text, so this slice's editable policy lets a digit through to the
-// page - which must not turn "pick option 2" into "this issue is P2". The second half of this row
-// is what makes the first mean anything: the same key, off the card, still writes.
+// The issue page's `0`-`3` write the issue's priority, and the line that answers a question on
+// that page carries the question's options as chips. A chip takes no typed text, so this slice's
+// editable policy lets a digit through to the page - which must not turn "pick option 2" into
+// "this issue is P2". The second half of this row is what makes the first mean anything: the same
+// key, off the line, still writes.
 test.describe("issue page", () => {
   test("a digit on an ask's option writes no priority, while the same digit on the page does", async ({
     browser,
   }) => {
     await createProject({ key: "CORE", name: "Core" });
     const issue = await createIssue({ project: "CORE", title: "Priority and options" });
-    await createAsk(
+    const ask = await createAsk(
       issue.key,
       { options: [{ label: "Ship" }, { label: "Hold" }], question: "Which way?" },
       session
@@ -383,10 +385,13 @@ test.describe("issue page", () => {
         return route.fallback();
       });
 
-      // Focus an option radio, as a reader answering the ask would, and press a digit. The ask's
-      // card is in Details, which a reader opens from the header (dispatch://INFRA-1196 R14).
-      await openDetails(page);
-      const hold = page.getByRole("radio", { name: "Hold" });
+      // Pick an option of the question, as a reader answering it would, and press a digit. A
+      // question is answered on the line at the outline's foot, whose chips are its options and
+      // which its row's Answer sets (dispatch://INFRA-1196 R16).
+      await rowAct(await focusRow(page, ask.id), "answer").click();
+      const hold = page
+        .getByRole("form", { name: CONTROL_LABELS.answering })
+        .getByRole("button", { exact: true, name: "Hold" });
       await hold.click();
       await expect(hold).toBeFocused();
       await page.keyboard.press("2");
@@ -396,7 +401,7 @@ test.describe("issue page", () => {
       expect(patched).toBe(0);
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
 
-      // Off the card, the same key is the header's own: this is what proves the guard is a guard
+      // Off the line, the same key is the header's own: this is what proves the guard is a guard
       // and not a key that stopped working.
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       const patch = page.waitForRequest(
@@ -409,7 +414,7 @@ test.describe("issue page", () => {
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 2 });
 
       // `Shift+P` writes without focusing anything either, so it needs the same guard, and the
-      // same two halves prove it: nothing from the card, the pin itself from the page.
+      // same two halves prove it: nothing from the line, the pin itself from the page.
       let pinned = 0;
       await page.route(`**/api/v1/me/issues/${issue.key}/state`, (route) => {
         if (isPinWrite(route.request())) pinned += 1;
@@ -813,17 +818,20 @@ test("every chord the page bound before the redesign brings a target on screen w
       ).toBe(true);
     }
 
-    // The history, in its everything state: `t v`. The panel it is drawn in is a full-height
-    // column (`margin/MarginSheet.tsx`'s `h-dvh`), taller than the screen by construction, so
-    // what the chord has to bring on screen is the state control it leaves the focus in.
+    // The history, in Details: `t v` opens Details at it and puts the focus in it. The panel it
+    // is drawn in is a full-height column, taller than the screen by construction, so what the
+    // chord has to bring on screen is the history's own head, where it leaves the focus.
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("v");
+    await expect(historyPanel(page)).toBeVisible();
     await expect
-      .poll(() => conversationStateControl(page, "everything").getAttribute("aria-selected"))
-      .toBe("true");
+      .poll(() => focusInside(historyPanel(page)), {
+        message: "t v does not put the focus in the history",
+      })
+      .toBe(true);
     expect(
-      await onScreen(conversationStateControl(page, "everything")),
+      await onScreen(historyPanel(page).getByRole("heading").first()),
       "t v leaves the history off screen"
     ).toBe(true);
     expect(await focusInside(marginSlot(page)), "t v does not put the focus in the panel").toBe(
@@ -832,8 +840,13 @@ test("every chord the page bound before the redesign brings a target on screen w
     await page.keyboard.press("Escape");
     await expect(marginShell(page), "Escape does not close Details").toBeHidden();
 
-    // The collaborators, in the panel: `t o`.
+    // The collaborators, in Details: `t o`. Details is a layer over the page, the identity block
+    // included, with a scroll box of its own, so the chord scrolls that box to the row and leaves
+    // the page under it where the reader had it.
     await focusThePage(page);
+    await page.evaluate(() => window.scrollTo(0, 300));
+    const pageTop = await page.evaluate(() => window.scrollY);
+    expect(pageTop, "the seeded page is too short to be scrolled under Details").toBeGreaterThan(0);
     await page.keyboard.press("t");
     await page.keyboard.press("o");
     const collaborators = marginSlot(page).locator('[data-details-row="collaborators"]');
@@ -841,6 +854,10 @@ test("every chord the page bound before the redesign brings a target on screen w
       .poll(() => focusInside(collaborators), { message: "t o does not put the focus on them" })
       .toBe(true);
     expect(await onScreen(collaborators), "t o leaves the collaborators off screen").toBe(true);
+    expect(
+      await page.evaluate(() => window.scrollY),
+      "t o scrolls the page under Details, which cannot move the row"
+    ).toBe(pageTop);
     // Details is the layer over the page, which Escape closes before the page's own Escape
     // does anything else; the chords below are read on the page under it.
     await page.keyboard.press("Escape");
@@ -990,7 +1007,8 @@ test("t f filters inside the preset, $mod+Alt+m comments on a selection, and / s
     await expect(page.getByRole("dialog", { name: /search/i })).toBeVisible();
     await page.keyboard.press("Escape");
 
-    // $mod+Alt+m still comments on a selection inside a node's own text.
+    // $mod+Alt+m still comments on a selection inside a node's own text, which the editor takes
+    // the place of in the row's words (`NodeRow.tsx`'s stage).
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const requirement = nodeRow(page, blockNodeId(specSlug, requirementBlockId(2))).first();
     await requirement.focus();
@@ -998,9 +1016,11 @@ test("t f filters inside the preset, $mod+Alt+m comments on a selection, and / s
     await expect
       .poll(() => caretInNode(page), { message: "Enter did not put the caret in the node" })
       .toBe(true);
-    await selectTextIn(page, rowBody(requirement), "requirement");
+    await selectTextIn(page, rowWords(requirement), "requirement");
     await page.keyboard.press("ControlOrMeta+Alt+m");
-    await expect(page.getByRole("form", { name: "Comment composer" })).toBeVisible();
+    // The comment on a selection is the margin's, in Details, beside the line at the outline's
+    // foot that comments on the issue.
+    await expect(marginSlot(page).getByRole("form", { name: "Comment composer" })).toBeVisible();
   } finally {
     await context.close();
   }

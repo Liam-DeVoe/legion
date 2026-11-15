@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
-import type { Actor } from "../web/src/api/types";
+import type { Actor, DispatchEvent } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue/issue-address";
 import { firstLineOf } from "../web/src/features/issue/issue-tree";
 import {
@@ -47,19 +47,23 @@ import {
   getIssueArtifactText,
   getIssueCoverage,
   getIssueDecisions,
+  getIssueEvents,
   getIssueResults,
   getMyState,
   listComments,
   listIssueAsks,
   listIssueMessages,
+  listMyReplies,
   patchIssue,
   requestApproval,
+  resolveAsk,
   reviewArtifact,
   setGatedSteps,
 } from "./api";
 import { placeCaret } from "./editor";
 import {
   type BaselineSeed,
+  seedConversationState,
   seedNoChildren,
   seedNoSummary,
   seedReplyNesting,
@@ -99,6 +103,7 @@ import {
   ancestorsOfRow,
   badgeValue,
   boxesPastTheirCard,
+  branchMoreRows,
   caretInNode,
   checksRow,
   childRow,
@@ -110,9 +115,9 @@ import {
   childrenSubtreeCount,
   chromeTexts,
   closeDetails,
+  composer,
   contentsEntries,
   contentsPane,
-  conversationStateControl,
   copyCommandControls,
   type DrawnRow,
   detailsControl,
@@ -123,11 +128,15 @@ import {
   focusBranchControl,
   focusedNodeFacts,
   focusedNodeId,
+  focusRow,
   focusThePage,
   gapKinds,
   gotoIssue,
   headerLabels,
   headerReading,
+  historyEntries,
+  historyItem,
+  historyPanel,
   iconRail,
   identityBlock,
   identityBlockBottom,
@@ -171,6 +180,8 @@ import {
   presetToggles,
   presetToolbar,
   type RowLayout,
+  replyFromRow,
+  rowAct,
   rowAuthor,
   rowBody,
   rowGaps,
@@ -179,6 +190,7 @@ import {
   rowsWithoutAuthorScrollers,
   rowWords,
   scrollersOutsideAuthorText,
+  sendFromComposer,
   TYPEFACE,
   threeThings,
   threeThingsSentences,
@@ -199,7 +211,7 @@ import {
   type InventoryEntry,
   type ParentRowMapping,
 } from "./page-inventory";
-import { resetDatabase } from "./seed";
+import { resetDatabase, setEventCreatedAt } from "./seed";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertFitsItsBox, assertPageFits, assertWhole, assertWholeAcross } from "./unclipped";
 import { asUser } from "./users";
@@ -2274,7 +2286,14 @@ test("every property with a value is visible at every width @phone", async ({ br
         ["the priority row", detailsRow(page, "Advances").getByRole("link").first()],
         ["who opened it", detailsRow(page, "Opened by")],
         ["the approval", detailsRow(page, "Approval")],
-        ["the files", marginSlot(page).getByRole("link", { name: /^notes\.md/ })],
+        // The files row, in Details' sections: the history beneath them links a document it
+        // added by name too.
+        [
+          "the files",
+          marginSlot(page)
+            .locator("[data-margin-section]")
+            .getByRole("link", { name: /^notes\.md/ }),
+        ],
         ["what blocks it", detailsRow(page, "Blocked by"), "None"],
       ];
       for (const [name, at, words] of inDetails) {
@@ -2722,6 +2741,23 @@ test("one panel of properties holds no conversation list @phone", async ({ brows
         .count(),
       "the Contents pane holds a property"
     ).toBe(0);
+    // It holds the reader's pins and the history, and no list of the conversation: no comment,
+    // message or ask of the seed that the outline draws is drawn in Details (R14).
+    await expect(marginShell(page).getByTestId("issue-pins")).toHaveCount(1);
+    await expect(marginShell(page).getByTestId("issue-history")).toHaveCount(1);
+    await expect(page.locator("#issue-conversation-panel, [data-conversation-state]")).toHaveCount(
+      0
+    );
+    for (const words of [
+      "Thread 1 opens here.",
+      "Reply 1 answers the second paragraph of its thread.",
+      "Which is why the deepest question is still on the first screen.",
+    ]) {
+      await expect(
+        marginShell(page).getByText(words, { exact: false }),
+        `Details draws "${words}", which the outline draws`
+      ).toHaveCount(0);
+    }
 
     // The facts follow the focus.
     await nodeRows(page).first().focus();
@@ -2815,71 +2851,181 @@ test("one panel of properties holds no conversation list @phone", async ({ brows
   });
 });
 
-// c-conversation-state. The state the reader picks is theirs: it is the state the page opens in
-// after a navigation away and back, and on the next issue they open under the same login in the
-// same browser (R13). Each reading is of the state the page draws and never of what the browser
-// stored, so a pick kept somewhere the page does not read back fails this row - which is the
-// negative control, a pick held in the page's own component state and lost with the page.
-test("the conversation state is kept for the same login", async ({ browser }) => {
-  // Five cold loads of the issue page, each one a navigation and the reads under it, on the
-  // seed the rows around this one use: the same work c-three-things measured at 2.5 s to 3 s a
-  // load, with room for a loaded box.
-  test.setTimeout(120_000);
-  await phase(browser, seedWholeIssue, async (page, seeded) => {
-    const second = seeded.children.keys[0] ?? "";
-    expect(second, "the seed holds no second issue to open under the same login").not.toBe("");
+/** Every event of `key`'s log, newest first, read 200 at a time as the history pages it. */
+async function allEvents(key: string): Promise<DispatchEvent[]> {
+  const all: DispatchEvent[] = [];
+  let before: number | undefined;
+  for (;;) {
+    const page = await getIssueEvents(
+      key,
+      before === undefined ? { limit: 200, order: "desc" } : { before, limit: 200 }
+    );
+    all.push(...page);
+    if (page.length < 200) return all;
+    before = page.at(-1)?.seq;
+  }
+}
+
+// c-conversation-state. The conversation is the outline and nothing else (dispatch://INFRA-1196
+// R1, R14): each seeded comment and message a person took part in is one node, nothing offers a
+// choice between words, questions, pinned and everything, and Details draws none of them. The
+// history in the panel (R15) draws what no node does - the status change, the claim, both
+// handoffs, the daemon's message, an agent's status note and the two comments agents wrote to
+// each other, each once - and no event of a node, no version of a document, no result against a
+// check and no child's move. The negative control is the four-state list: Details draws a
+// seeded comment a person took part in a second time, and the row fails on it.
+test("the conversation is the outline and the history is in the panel", async ({ browser }) => {
+  // The whole issue's seed and two loads of its page, the history opened day by day between.
+  test.setTimeout(240_000);
+  await phase(browser, seedConversationState, async (page, seeded) => {
+    // A day before today, which the history folds to one line with its count.
+    const created = (await allEvents(seeded.key)).find((event) => event.type === "issue.created");
+    if (created === undefined) throw new Error(`${seeded.key} recorded no issue.created`);
+    await setEventCreatedAt(created.id, new Date(Date.now() - 86_400_000).toISOString());
 
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    expect(
-      await conversationStateControl(page, "words").getAttribute("aria-selected"),
-      "the conversation does not open in the words state"
-    ).toBe("true");
-
-    // The reader picks the questions, which is a state of the panel and no address of its own.
-    // The panel is Details, closed on a load (dispatch://INFRA-1196 R14).
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    const turns = [
+      ...seeded.comments.threads,
+      ...seeded.comments.replies,
+      seeded.messages.root,
+      seeded.messages.reply,
+      seeded.messages.replyToReply,
+    ];
+    for (const id of turns) {
+      await expect(
+        page.locator(`[data-node-row][data-node-id="${id}"]`),
+        `${id} is not one node of the outline`
+      ).toHaveCount(1);
+      await expect(historyItem(page, id), `${id} is drawn in the history too`).toHaveCount(0);
+    }
+    await expect(page.locator("[data-conversation-state], [data-turn]")).toHaveCount(0);
+    for (const name of ["Words", "Questions", "Pinned", "Everything"]) {
+      await expect(page.getByRole("tab", { exact: true, name })).toHaveCount(0);
+      await expect(page.getByRole("radio", { exact: true, name })).toHaveCount(0);
+    }
     await openDetails(page);
-    await conversationStateControl(page, "questions").click();
-    expect(
-      await conversationStateControl(page, "questions").getAttribute("aria-selected"),
-      "picking the questions did not put the conversation in that state"
-    ).toBe("true");
+    await expect(
+      marginShell(page).getByText("Thread 1 opens here.", { exact: false }),
+      "Details draws a comment a person took part in, which is the outline's"
+    ).toHaveCount(0);
 
-    // Away to the second issue and back to the first: both open in the state they picked.
-    for (const address of [`/issues/${second}`, `/issues/${seeded.key}`]) {
-      await gotoIssue(page, address);
-      await expectIssuePageDrawn(page);
+    // A version of the spec saved and a question asked and resolved: neither is a line of the
+    // history, which leaves every event of a node and every document version out.
+    await editArtifact(seeded.specArtifactId, {
+      ops: [{ find: requirementText(1), op: "replace", with: `${requirementText(1)} Saved.` }],
+    });
+    const asked = await createAsk(
+      seeded.key,
+      { question: "Is a resolved question left out of the history?" },
+      asPlanner
+    );
+    await resolveAsk(asked.id, { kind: "resolved", reason: "It is." }, asPlanner);
+
+    await gotoIssue(page, `/issues/${seeded.key}/activity`);
+    await expect(
+      historyPanel(page),
+      "/activity does not open the panel at its history"
+    ).toBeVisible();
+    // The history pages the log 200 events at a time: every page is read in before it is.
+    const older = historyPanel(page).getByRole("button", { exact: true, name: "Load older" });
+    while (await older.isVisible()) {
+      await older.click();
+      await expect(older).not.toHaveText("Loading…");
+    }
+    const folded = historyPanel(page).locator('[data-history-day] > button[aria-expanded="false"]');
+    expect(await folded.count(), "no day before today is folded to one line").toBeGreaterThan(0);
+    await expect(folded.first()).toHaveText(/ · \d+$/);
+    while ((await folded.count()) > 0) await folded.first().click();
+
+    const events = await allEvents(seeded.key);
+    const seqs = (
+      await historyEntries(page).evaluateAll((items) =>
+        items.map((item) => Number(item.getAttribute("data-event-seq")))
+      )
+    ).filter((seq) => seq > 0);
+    expect(seqs, "the history is not newest first").toEqual([...seqs].sort((a, b) => b - a));
+    const drawn = new Set(seqs);
+    const people = new Set(turns);
+    const ofNodes = events.filter(
+      (event) =>
+        ((event.type === "ask.opened" ||
+          event.type === "ask.answered" ||
+          event.type === "ask.resolved") &&
+          event.payload.kind === "question") ||
+        event.type === "result.recorded" ||
+        event.type === "child.status" ||
+        (event.type === "artifact.version" &&
+          event.payload.artifact_id === seeded.specArtifactId) ||
+        (event.type === "comment.created" && people.has(event.payload.id))
+    );
+    for (const type of ["ask.resolved", "result.recorded", "artifact.version"]) {
       expect(
-        await conversationStateControl(page, "questions").getAttribute("aria-selected"),
-        `${address} does not open in the state the reader picked`
-      ).toBe("true");
-      expect(
-        await conversationStateControl(page, "words").getAttribute("aria-selected"),
-        `${address} opens in the words state, which the reader left`
-      ).toBe("false");
+        ofNodes.some((event) => event.type === type),
+        `the seed recorded no ${type}`
+      ).toBe(true);
+    }
+    expect(
+      ofNodes.filter((event) => drawn.has(event.seq)).map((event) => event.type),
+      "the history draws an event of a node, a document's version, a result or a child's move"
+    ).toEqual([]);
+
+    // What it draws, each once.
+    const once = async (seq: number | undefined, what: string) => {
+      expect(seq, `the seed recorded no ${what}`).toBeDefined();
+      await expect(historyPanel(page).locator(`[data-event-seq="${seq}"]`), what).toHaveCount(1);
+    };
+    const status = events.filter(
+      (event) => event.type === "issue.updated" && event.payload.status === "in_progress"
+    );
+    await once(status.at(-1)?.seq, "the status change");
+    await once(events.find((event) => event.type === "issue.claimed")?.seq, "the claim");
+    const handoffs = events.filter((event) => event.type === "handoff.recorded");
+    expect(handoffs, "the seed recorded both handoffs").toHaveLength(2);
+    for (const handoff of handoffs) await once(handoff.seq, `handoff ${handoff.seq}`);
+    for (const [id, words] of [
+      [seeded.daemonMessage, "The planner's session was replaced"],
+      [seeded.statusNote, "Status: the plan is drafted"],
+      [seeded.agentComments.root, "the plan's third task needs a second look"],
+      [seeded.agentComments.reply, "the third task stands as written"],
+    ] as const) {
+      await expect(historyItem(page, id), `${words} is not drawn once`).toHaveCount(1);
+      await expect(historyItem(page, id)).toContainText(words);
+    }
+    for (const id of [seeded.agentComments.root, seeded.agentComments.reply]) {
+      await expect(historyPanel(page).locator(`[data-history-reply="${id}"]`)).toHaveCount(1);
+    }
+    const uploads = historyPanel(page).locator('[data-history-uploads="3"]');
+    await expect(uploads, "the three uploads are not one entry").toHaveCount(1);
+    for (const name of seeded.uploads) {
+      await expect(uploads.getByRole("link", { exact: true, name })).toHaveCount(1);
     }
 
-    // `/activity` names a state of its own, and arriving there is the reader asking for it, so
-    // the address stands over what they kept - and the issue's own address goes on opening in
-    // what they picked.
-    await gotoIssue(page, `/issues/${seeded.key}/activity`);
-    await expectIssuePageDrawn(page);
-    expect(
-      await conversationStateControl(page, "everything").getAttribute("aria-selected"),
-      "/activity does not open the conversation in its everything state"
-    ).toBe("true");
+    // A person's reply to one of the agents' comments moves that thread into the outline.
+    await historyPanel(page).locator(`[data-history-reply="${seeded.agentComments.root}"]`).click();
+    await sendFromComposer(page, "A person joins the agents' thread.");
+    await expect(historyItem(page, seeded.agentComments.root)).toHaveCount(0);
+    await expect(
+      page.locator(`[data-node-row][data-node-id="${seeded.agentComments.root}"]`)
+    ).toHaveCount(1);
   });
 });
 
 // c-reply-nesting. The seed writes both replies through the route a person writes through, so
 // the `answers` this row reads is the server's own: the write climbs `reply_to` to the head of
 // the thread before it stores, which is read here first, and a page parenting by `reply_to`
-// draws the second reply under that head - this row's negative control.
-test("a reply is drawn under the entry it answers", async ({ browser }) => {
+// draws the second reply under that head - this row's negative control. Every node that takes a
+// reply draws its control, an answered and a resolved question included, and what each sends is
+// drawn where it belongs (R16).
+test("a reply is drawn under the entry it answers, and every node takes a reply @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
   await phase(browser, seedReplyNesting, async (page, seeded) => {
     // What the server stored, before the page is read: `reply_to` flattened onto the head and
-    // the entry each reply answered kept beside it. Without this the row could pass on a page
-    // that parents by `reply_to` over a thread the server never flattened.
+    // the entry each reply answered kept beside it.
     const stored = await listComments(seeded.key);
     const second = stored.find((comment) => comment.id === seeded.second);
     expect(second?.reply_to, "the server did not flatten the thread onto its head").toBe(
@@ -2892,17 +3038,21 @@ test("a reply is drawn under the entry it answers", async ({ browser }) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
-    // A reply that answers a reply sits four levels below the issue, and a branch below the
-    // drawn levels folds to one line counting what it holds (`tree-fold.ts`'s `DRAWN_LEVELS`),
-    // so whatever the page folded that way is opened in place before the parents are read.
+    // Below the third level under the issue a laptop draws a branch as one line saying how many
+    // nodes it holds, which opens them in place: the reply that answers `second` is the fifth
+    // level of the tree.
+    const deeper = branchMoreRows(page);
+    await expect(deeper, "the fifth level is not folded to one line").not.toHaveCount(0);
+    await expect(deeper.first()).toContainText("1");
+    await expect(nodeRow(page, seeded.third)).toHaveCount(0);
     await openEveryDeeperBranch(page);
+    await expect(nodeRow(page, seeded.third)).not.toHaveCount(0);
+    expect(await parentOfRow(page, seeded.third)).toBe(seeded.second);
 
     expect(
       await parentOfRow(page, seeded.second),
       `the reply that answers another reply is not drawn under it; the thread's head is ${seeded.head}`
     ).toBe(seeded.first);
-    // Every other property of a turn's placement is unchanged: the thread's head sits under the
-    // issue, and the first reply under the head, so a reply still belongs to its thread.
     expect(
       await parentOfRow(page, seeded.first),
       "the reply to the thread's head is not drawn under it"
@@ -2911,6 +3061,153 @@ test("a reply is drawn under the entry it answers", async ({ browser }) => {
       await parentOfRow(page, seeded.head),
       "the thread's head is not drawn under the issue"
     ).toBe(seeded.key);
+
+    // Every node that takes a reply draws the control, an answered and a resolved ask included;
+    // the open ask draws the control that answers it.
+    for (const id of [
+      seeded.head,
+      seeded.first,
+      seeded.second,
+      seeded.answeredAsk,
+      seeded.resolvedAsk,
+    ]) {
+      const row = await focusRow(page, id);
+      await expect(rowAct(row, "reply"), `${id} draws no reply control`).toBeVisible();
+    }
+    await expect(rowAct(await focusRow(page, seeded.openAsk), "answer")).toBeVisible();
+
+    /** The id of the comment whose body is `body`, once Dispatch holds it. */
+    const stored_ = async (body: string) => {
+      await expect
+        .poll(async () => (await listComments(seeded.key)).some((one) => one.body === body))
+        .toBe(true);
+      return (await listComments(seeded.key)).find((one) => one.body === body)?.id ?? "";
+    };
+    const drawnUnder = async (id: string, parent: string, what: string) => {
+      await unfoldEveryBranch(page);
+      await openEveryDeeperBranch(page);
+      await expect.poll(() => parentOfRow(page, id), { message: what }).toBe(parent);
+    };
+
+    // A reply sent from a resolved ask's control is drawn under that ask (INFRA-3677).
+    await replyFromRow(page, seeded.resolvedAsk, "A reply on the resolved question.");
+    await drawnUnder(
+      await stored_("A reply on the resolved question."),
+      seeded.resolvedAsk,
+      "the reply on the resolved ask is not drawn under it"
+    );
+    // A reply sent from a reply's control is drawn under that reply.
+    await replyFromRow(page, seeded.first, "A reply to the first answer.");
+    await drawnUnder(
+      await stored_("A reply to the first answer."),
+      seeded.first,
+      "the reply to a reply is not drawn under it"
+    );
+
+    // An answer sent from the open ask's control is drawn in the ask's row.
+    await focusRow(page, seeded.openAsk);
+    await nodeRow(page, seeded.openAsk).first().locator('[data-pick-option="Left"]').click();
+    await composer(page).getByRole("button", { name: CONTROL_LABELS.send_answer }).click();
+    await expect(nodeRow(page, seeded.openAsk).first()).toHaveAttribute(
+      "data-node-state",
+      "answered"
+    );
+    await expect(
+      nodeRow(page, seeded.openAsk).first().locator('[data-node-option="chosen"]')
+    ).toContainText("Left");
+
+    // The composer at the end of the outline posts a comment drawn under the issue.
+    const instead = composer(page).getByRole("button", { name: CONTROL_LABELS.write_on_issue });
+    if (await instead.isVisible()) await instead.click();
+    await sendFromComposer(page, "A comment on the issue from the composer.");
+    await drawnUnder(
+      await stored_("A comment on the issue from the composer."),
+      seeded.key,
+      "the composer's comment is not drawn under the issue"
+    );
+
+    // On a phone the outline draws one level below the node it is read from (R16): opening the
+    // thread's head draws what it holds as one line saying how many nodes that is, and pressing
+    // the line draws them in its place, under the head.
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await nodeRow(page, seeded.head)
+      .first()
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.unfold })
+      .click();
+    const counted = branchMoreRows(page);
+    await expect(
+      counted,
+      "the branch below the first level is not one line counting its nodes on a phone"
+    ).toHaveCount(1);
+    await expect(counted).toContainText(/\d+/);
+    await expect(nodeRow(page, seeded.first)).toHaveCount(0);
+    await counted.getByRole("button").click();
+    await expect(
+      nodeRow(page, seeded.first),
+      "pressing the counted line draws none of the nodes it holds"
+    ).not.toHaveCount(0);
+    expect(await parentOfRow(page, seeded.first)).toBe(seeded.head);
+  });
+});
+
+// dispatch://INFRA-3677: a question its asker resolved still takes a reply, and the reply is
+// drawn under the question rather than under the issue or nowhere.
+test("a reply on a resolved ask is drawn under the ask", async ({ browser }) => {
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect(nodeRow(page, seeded.resolvedAsk).first()).toHaveAttribute(
+      "data-node-state",
+      "resolved"
+    );
+    await replyFromRow(page, seeded.resolvedAsk, "Still worth a word after it was resolved.");
+    await expect
+      .poll(async () =>
+        (await listComments(seeded.key)).find(
+          (one) => one.body === "Still worth a word after it was resolved."
+        )
+      )
+      .toMatchObject({ ask_id: seeded.resolvedAsk });
+    const reply = (await listComments(seeded.key)).find(
+      (one) => one.body === "Still worth a word after it was resolved."
+    );
+    // A resolved question is no path to anything open, so its branch arrives folded (R1).
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    await expect.poll(() => parentOfRow(page, reply?.id ?? "")).toBe(seeded.resolvedAsk);
+    await expect(nodeRow(page, reply?.id ?? "").first()).toContainText(
+      "Still worth a word after it was resolved."
+    );
+  });
+});
+
+// Reading a thread on the issue page marks its Inbox row read, as the panel's list of the
+// conversation did on its own address: the row of the thread's newest reply, on screen for a
+// second, marks the thread read through that reply (`outline-thread-read.tsx`). At the commit
+// before the outline replaced the list, the issue's own address marked nothing read.
+test("a thread read on the outline is read in the Inbox", async ({ browser }) => {
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    // An agent replies in alice's thread, which makes the thread unread in her Inbox.
+    await createComment(
+      seeded.key,
+      { body: "An agent's answer alice has not read.", reply_to: seeded.head },
+      asPlanner
+    );
+    // The route's own default is the caller's unread threads alone.
+    const unread = async () =>
+      ((await listMyReplies({ issue: seeded.key }, { login: "alice" })).rows ?? []).some(
+        (row) => row.thread_id === seeded.head
+      );
+    await expect.poll(unread, { message: "the agent's reply left the thread read" }).toBe(true);
+
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    await expect(page.getByText("An agent's answer alice has not read.")).toBeVisible();
+    await expect.poll(unread, { message: "reading the thread did not mark it read" }).toBe(false);
   });
 });
 
@@ -4809,22 +5106,32 @@ test("every address of the old page still resolves", async ({ browser }) => {
       ).toBe(0);
     }
 
-    // The conversation and the activity: one list, in two of its four states. `/conversation`
-    // is the page with no filter on (R20).
-    for (const [address, state] of [
-      ["conversation", "words"],
-      ["activity", "everything"],
-    ] as const) {
-      await gotoIssue(page, `/issues/${seeded.key}/${address}`);
-      await expectIssuePageDrawn(page);
-      expect(
-        await conversationStateControl(page, state).getAttribute("aria-selected"),
-        `/${address} does not open the conversation in its ${state} state`
-      ).toBe("true");
-      expect(await activePreset(page), `/${address} opens a filter`).toBe(
-        PRESET_NAMES.conversation
-      );
-    }
+    // `/conversation` is the page with no filter on, the outline whole (R20); `/activity` opens
+    // the panel at its history, beside that same outline (R15).
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+    await expectIssuePageDrawn(page);
+    expect(await activePreset(page), "/conversation opens a filter").toBe(
+      PRESET_NAMES.conversation
+    );
+    await expect(historyPanel(page), "/conversation opens the history").toHaveCount(0);
+    await gotoIssue(page, `/issues/${seeded.key}/activity`);
+    await expectIssuePageDrawn(page);
+    await expect(
+      historyPanel(page),
+      "/activity does not open the panel at its history"
+    ).toBeVisible();
+    expect(await activePreset(page), "/activity opens a filter").toBe(PRESET_NAMES.conversation);
+    // A comment agents wrote to each other is no row of the outline: its address opens the
+    // history at its turn, marked, and draws its text there.
+    const agentsOnly = await createComment(
+      seeded.key,
+      { body: "Planner to reviewer, outside every thread a person wrote in." },
+      asPlanner
+    );
+    await gotoIssue(page, `/issues/${seeded.key}/comments/${agentsOnly.id}`);
+    await expect(historyItem(page, agentsOnly.id)).toHaveAttribute("aria-current", "true");
+    await expect(historyItem(page, agentsOnly.id)).toContainText("Planner to reviewer");
+    expect(await nodeRow(page, agentsOnly.id).count(), "the agents' comment is a row").toBe(0);
 
     // The children, a document, and each entry of the conversation.
     await gotoIssue(page, `/issues/${seeded.key}/children`);

@@ -79,18 +79,22 @@ export function Margin({
   // what the reader asked to see. So is the card an address lands on beside its document
   // (`?mark=`, or an item at a pinned version), on the load that follows the link as on a move:
   // the drawer opens once per navigation, the first time the margin holds that card, and a
-  // reader who closes it again keeps it closed.
+  // reader who closes it again keeps it closed. An address that names a node of the issue's
+  // outline marks that item and is no pick: it lands on the node, and Details stays as it was,
+  // so a phone's sheet never covers the row the link focuses (dispatch://INFRA-1196 R20).
   const pickedCard = model.selection.selectedItemId;
+  const routeMarked = model.selection.routeMarkedItemId;
   const handledCard = useRef(pickedCard);
   const landedCard = model.selection.landedCard;
   const handledLanding = useRef<string | undefined>(undefined);
   useEffect(() => {
-    const picked = pickedCard !== handledCard.current && pickedCard !== undefined;
+    const picked =
+      pickedCard !== handledCard.current && pickedCard !== undefined && pickedCard !== routeMarked;
     const landed = landedCard !== handledLanding.current && landedCard !== undefined;
     handledCard.current = pickedCard;
     handledLanding.current = landedCard;
     if ((picked || landed) && drawer !== undefined && !drawer.open) drawer.setOpen(true);
-  }, [drawer, landedCard, pickedCard]);
+  }, [drawer, landedCard, pickedCard, routeMarked]);
 
   if (drawer !== undefined) {
     return (

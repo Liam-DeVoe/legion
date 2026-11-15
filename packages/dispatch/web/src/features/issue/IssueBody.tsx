@@ -9,6 +9,7 @@ import { pageLineBorder, textMutedOnCanvas } from "../../theme/classes";
 import { useKeymap } from "../shell/keymap";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { IssueChildren } from "./IssueChildren";
+import { IssueComposer } from "./IssueComposer";
 import {
   type ContentsEntry,
   ContentsList,
@@ -17,6 +18,7 @@ import {
   OutlineSheet,
 } from "./IssueContents";
 import { IssuePresets } from "./IssuePresets";
+import { IssueReadMark } from "./IssueReadMark";
 import { IssueThreeThings, nodesOfType, specSummary } from "./IssueThreeThings";
 import { IssueTree, type OutlineRequest } from "./IssueTree";
 import type { AddressTarget, IssueAddress } from "./issue-address";
@@ -347,9 +349,23 @@ export function IssueBody({
                 rootRow={view.rootRow}
               />
               {phoneToolbar}
+              {/* The end of the conversation, which reads the issue once the reader has seen
+                  it (`IssueReadMark.tsx`). */}
+              {address.preset === "conversation" ? <IssueReadMark issueKey={issue.key} /> : null}
             </div>
           )}
           {below}
+          {/* The one place to write, at the outline's foot (R16), in the outline's measure. It
+              stays mounted while a filter or an opened document hides it, so a draft outlives
+              the reader's way through the page. */}
+          <div className="sticky bottom-0 z-[15] mx-auto w-full max-w-[1000px] min-w-0 max-[760px]:-mr-1 max-[760px]:-ml-2.5 max-[760px]:w-auto">
+            <IssueComposer
+              documentOpen={drawsDocument}
+              filterOn={filterOn}
+              isClosed={isClosed}
+              issueKey={issue.key}
+            />
+          </div>
         </div>
       </div>
     </>

@@ -32,9 +32,10 @@ export interface NodeEditing {
  *
  * The tree holds no editor of its own. The page draws the one editor of whichever document a
  * row is editing (`IssuePage`, through `onEditing`), `document-stage.tsx` moves it onto the
- * row, and this places the caret in the node's own block of it (`node-caret.ts`) one frame
- * later, because the page mounts that editor in the commit after the row asked for it. A node
- * whose text no document of this issue holds has nothing to put a caret in, and the key says so.
+ * row, and this places the caret in the node's own block of it (`node-caret.ts`) the moment the
+ * row holds it: the page mounts that editor in the commit after the row asked for it, and the
+ * editor draws the document's text once it has read it. A node whose text no document of this
+ * issue holds has nothing to put a caret in, and the key says so.
  *
  * Escape leaves the caret for the row it came from. The editor calls `preventDefault` on the
  * key before it reaches the page's keyboard registry, which drops every binding of the press
@@ -99,13 +100,16 @@ export function useNodeEditing({
   }, [editingArtifact, onEditing]);
 
   useEffect(() => {
-    if (editingRow === undefined) return;
-    const frame = requestAnimationFrame(() => {
-      const host = container.current?.querySelector<HTMLElement>(
-        `[data-node-row][data-row-key="${CSS.escape(editingRow)}"] [data-node-body]`
+    const box = container.current;
+    if (editingRow === undefined || box === null) return;
+    // The row's stage is in its words (`NodeRow.tsx`), so the row as a whole is where the
+    // editor is looked for; it arrives over several commits, so the caret is placed the first
+    // time the row holds an editable one, and once.
+    const place = (): boolean => {
+      const row = box.querySelector<HTMLElement>(
+        `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`
       );
-      if (host === null || host === undefined) return;
-      caretInBlock(host, editingBlock);
+      if (row === null || !caretInBlock(row, editingBlock)) return false;
       // The block is scrolled into view and pulsed by the document's own editor, where that
       // editor is the one the margin holds; the caret above is the row's doing either way.
       const bridge = documentBridge;
@@ -116,8 +120,24 @@ export function useNodeEditing({
       ) {
         bridge.focusBlock(editingBlock);
       }
+      return true;
+    };
+    const arrivals = new MutationObserver(() => {
+      if (place()) arrivals.disconnect();
     });
-    return () => cancelAnimationFrame(frame);
+    const frame = requestAnimationFrame(() => {
+      if (place()) return;
+      arrivals.observe(box, {
+        attributeFilter: ["contenteditable"],
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      arrivals.disconnect();
+    };
   }, [container, documentBridge, editingArtifact, editingBlock, editingRow]);
 
   useEffect(() => {

@@ -13,7 +13,16 @@ import {
   resolveAsk,
   resolveComment,
 } from "./api";
-import { conversationStateControl, openIssueAddress } from "./issue-page";
+import {
+  focusedNodeFacts,
+  focusedNodeId,
+  historyEntries,
+  historyItem,
+  historyPanel,
+  nodeRow,
+  openDetails,
+  tree,
+} from "./issue-page";
 import { setEventCreatedAt } from "./seed";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -23,10 +32,12 @@ const agent = {
   as: "agent" as const,
 };
 
-// The other half of `e2e/conversation.e2e.ts`'s "one card per conversation and no event row":
-// the rows the Conversation leaves out are all here, on an issue seeded exactly the same way.
+// The issue's history is the list in Details that `/activity` opens (dispatch://INFRA-1196 R15):
+// every event no row of the outline draws, and the threads agents wrote among themselves, whole.
+// What the outline draws - an ask, answered or retracted - is not in it, and nothing the
+// history draws is a row of the outline.
 // @pr: The issue's event history, which no other row reads whole.
-test("the Activity tab lists the event rows the Conversation does not draw @pr", async ({
+test("the history lists the events and the agents' threads the outline does not draw @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -45,8 +56,8 @@ test("the Activity tab lists the event rows the Conversation does not draw @pr",
   await resolveAsk(retracted.id, { kind: "retracted", reason: "Superseded." }, agent);
   const resolved = await createComment(issue.key, { body: "A resolved thread." }, agent);
   await resolveComment(resolved.id);
-  await createComment(issue.key, { body: "An open thread." }, agent);
-  await createMessage(issue.key, { body: "A message thread." }, agent);
+  const open = await createComment(issue.key, { body: "An open thread." }, agent);
+  const message = await createMessage(issue.key, { body: "A message thread." }, agent);
   await patchIssue(issue.key, { status: "in_progress" });
   await claimIssue(issue.key, agent);
   await createIssueArtifact(issue.key, { content: "# Note\n", name: "note.md" });
@@ -55,19 +66,28 @@ test("the Activity tab lists the event rows the Conversation does not draw @pr",
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/activity`);
-    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-    const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
-    // The three kinds the Conversation never draws, each a line of its own.
+    const history = historyPanel(page);
+    await expect(history).toBeVisible();
+    const rows = historyEntries(page);
+    // The issue's own events, each a line of its own.
     for (const description of ["updated the issue", "claimed the issue", "added note.md"]) {
       await expect(rows.filter({ hasText: description })).toHaveCount(1);
     }
-    expect(await rows.count()).toBeGreaterThanOrEqual(3);
-    // The Conversation's list is not here, and this list carries no conversation card.
+    // The threads agents wrote among themselves, each once, whole, with its Reply - and no row
+    // of the outline.
+    for (const id of [resolved.id, open.id, message.id]) {
+      await expect(historyItem(page, id)).toHaveCount(1);
+      await expect(history.locator(`[data-history-reply="${id}"]`)).toHaveCount(1);
+      await expect(nodeRow(page, id)).toHaveCount(0);
+    }
+    await expect(historyItem(page, open.id)).toContainText("An open thread.");
+    // The asks are rows of the outline, answered and retracted, and no line of the history.
+    for (const ask of [answered, retracted]) await expect(nodeRow(page, ask.id)).not.toHaveCount(0);
+    await expect(history).not.toContainText("Ship it?");
+    await expect(history).not.toContainText("Withdrawn question?");
+    await expect(tree(page)).not.toContainText("An open thread.");
+    // The panel's old list of the conversation is gone.
     await expect(page.getByRole("list", { name: "Conversation turns" })).toHaveCount(0);
-    await expect(page.locator("[data-turn]")).toHaveCount(0);
     await page.screenshot({
       fullPage: true,
       path: testInfo.outputPath(`activity-rows-${testInfo.project.name}.png`),
@@ -77,28 +97,32 @@ test("the Activity tab lists the event rows the Conversation does not draw @pr",
   }
 });
 
-// SLOW(>=2s): four messages written in the order the dividers read, three events back-dated and
-// the read watermark set, before one cold load of the Activity tab.
-test("Activity breaks its rows by day and marks where the reader stopped", async ({ browser }) => {
+// SLOW(>=2s): four status moves, three of them back-dated a day and the read watermark set,
+// before one cold load of the history. A day before today is one line with its count, which
+// opens it; the reader's watermark is drawn where it falls, inside that day.
+test("the history folds each day before today and marks where the reader stopped", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Dividers" });
-  await createMessage(issue.key, { body: "First yesterday" }, agent);
-  await createMessage(issue.key, { body: "Second yesterday" }, agent);
-  await createMessage(issue.key, { body: "Third today" }, agent);
-  await createMessage(issue.key, { body: "Fourth today" }, agent);
+  await patchIssue(issue.key, { status: "in_progress" });
+  await patchIssue(issue.key, { status: "testing" });
+  await patchIssue(issue.key, { status: "needs_review" });
+  await patchIssue(issue.key, { status: "in_progress" });
 
   const events = await getIssueEvents(issue.key, { limit: 100 });
-  const first = events.find(
-    (event) => event.type === "message.created" && event.payload.body === "First yesterday"
-  );
-  const second = events.find(
-    (event) => event.type === "message.created" && event.payload.body === "Second yesterday"
-  );
-  const third = events.find(
-    (event) => event.type === "message.created" && event.payload.body === "Third today"
-  );
   const created = events.find((event) => event.type === "issue.created");
-  if (first === undefined || second === undefined || third === undefined || created === undefined) {
+  const updates = events
+    .filter((event) => event.type === "issue.updated")
+    .sort((one, other) => one.seq - other.seq);
+  const [first, second, third, fourth] = updates;
+  if (
+    created === undefined ||
+    first === undefined ||
+    second === undefined ||
+    third === undefined ||
+    fourth === undefined
+  ) {
     throw new Error("seeded divider events were not recorded");
   }
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
@@ -111,55 +135,53 @@ test("Activity breaks its rows by day and marks where the reader stopped", async
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // The Activity tab reads the watermark; it never writes it. Only the Conversation does.
-    let stateWrites = 0;
-    page.on("request", (request) => {
-      if (
-        request.method() === "PUT" &&
-        new URL(request.url()).pathname === `/api/v1/me/issues/${issue.key}/state`
-      ) {
-        stateWrites += 1;
-      }
-    });
+    // The outline's end is the one writer of the watermark (`IssueReadMark.tsx`), and it is on
+    // this short page's first screen beside Details: held here, so the watermark this row reads
+    // stays where the seed put it.
+    await page.route(`**/api/v1/me/issues/${issue.key}/state`, (route) =>
+      route.request().method() === "PUT" ? route.abort() : route.fallback()
+    );
     await page.goto(`/issues/${issue.key}/activity`);
 
-    const list = page.getByRole("list", { name: "Issue activity" });
-    // The dividers are the list's labelled items: a day's, and the unread watermark's.
-    const dividers = list.locator("li[aria-label]");
-    await expect(dividers).toHaveCount(3);
-    expect(
-      await dividers.evaluateAll((items) => items.map((item) => item.getAttribute("aria-label")))
-    ).toEqual(["Today", "Yesterday", "New since you last read"]);
+    const days = historyPanel(page).locator("[data-history-day]");
+    await expect(days).toHaveCount(2);
+    await expect(days.first()).toContainText("Today");
+    const earlier = days.nth(1).getByRole("button", { name: "Yesterday · 3" });
+    await expect(earlier).toHaveAttribute("aria-expanded", "false");
+    // Today's lines are drawn; yesterday's are behind its one line.
+    const order = () =>
+      historyPanel(page)
+        .locator("[data-event-seq], li[aria-label]")
+        .evaluateAll((items) =>
+          items.map(
+            (item) => item.getAttribute("data-event-seq") ?? item.getAttribute("aria-label")
+          )
+        );
+    expect(await order()).toEqual([String(fourth.seq), String(third.seq)]);
 
-    // A row is an event line: it reads the event's description ("sent a message"), never the
-    // message's own body, so the rows the dividers fall between are found by the
-    // `data-event-seq` each row carries.
-    const rows = await list
-      .locator("li")
-      .evaluateAll((items) =>
-        items.map((item) => item.getAttribute("data-event-seq") ?? item.getAttribute("aria-label"))
-      );
-    const unreadIndex = rows.indexOf("New since you last read");
-    const secondIndex = rows.indexOf(String(second.seq));
-    const thirdIndex = rows.indexOf(String(third.seq));
-    expect(secondIndex).toBeGreaterThanOrEqual(0);
-    expect(thirdIndex).toBeGreaterThanOrEqual(0);
-    // Newest first: the divider sits below the oldest unread row and above the newest row the
-    // reader had already seen.
-    expect(unreadIndex).toBeGreaterThan(thirdIndex);
-    expect(unreadIndex).toBeLessThan(secondIndex);
-
-    // Nothing the tab did wrote the reader's watermark, and the Conversation is the control:
-    // its own write is what says the page had the chance to make one.
-    expect(stateWrites).toBe(0);
-    await openIssueAddress(page, "conversation");
-    await expect.poll(() => stateWrites, { intervals: [50, 50, 100, 200, 500] }).toBe(1);
+    await earlier.click();
+    await expect(earlier).toHaveAttribute("aria-expanded", "true");
+    // Newest first: the watermark sits below the oldest unread line and above the newest line
+    // the reader had already seen, which here is the first line of the day before.
+    expect(await order()).toEqual([
+      String(fourth.seq),
+      String(third.seq),
+      "New since you last read",
+      String(second.seq),
+      String(first.seq),
+      String(created.seq),
+    ]);
   } finally {
     await alice.close();
   }
 });
 
-test("an Activity row pins into the review margin and unpins from it", async ({ browser }) => {
+// A line of the history pins its event: the line's own Pin, which a reload keeps, and its Unpin.
+// The margin's Pinned tab, where an event pin used to be read back, is drawn beside an opened
+// document alone now (`e2e/stub/moved-row-notes.ts`), so the line itself is where it is read.
+test("a history line pins its event, the pin outlives a reload, and the line unpins it", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Pin an event" });
   await patchIssue(issue.key, { status: "in_progress" });
@@ -168,36 +190,43 @@ test("an Activity row pins into the review margin and unpins from it", async ({ 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/activity`);
-    const row = page
-      .getByRole("list", { name: "Issue activity" })
-      .getByRole("listitem")
-      .filter({ hasText: "updated the issue" });
+    const row = historyEntries(page).filter({ hasText: "updated the issue" });
     await expect(row).toHaveCount(1);
     await row.getByRole("button", { name: "Pin" }).click();
     await expect(row.getByRole("button", { name: "Unpin" })).toHaveAttribute(
       "aria-pressed",
       "true"
     );
+    // The pin is one write of the page's store: nothing is pending once Dispatch has it.
+    await expect(page.getByRole("region", { name: "Pending changes" })).toHaveCount(0);
 
-    const margin = page.getByTestId("margin-sheet");
-    await margin.getByRole("tab", { name: "Pinned" }).click();
-    await expect(margin.getByText("Issue updated")).toBeVisible();
-    await margin.getByRole("button", { name: "Unpin" }).click();
-    await expect(margin.getByText("No pinned items.")).toBeVisible();
-    await expect(row.getByRole("button", { name: "Pin" })).toHaveAttribute("aria-pressed", "false");
+    await page.reload();
+    const again = historyEntries(page).filter({ hasText: "updated the issue" });
+    await expect(again.getByRole("button", { name: "Unpin" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    await again.getByRole("button", { name: "Unpin" }).click();
+    await expect(again.getByRole("button", { name: "Pin" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
   } finally {
     await alice.close();
   }
 });
 
 // The fake listener holds no record of `ghost`, so the mention is refused as `no live session
-// ghost` and its receipt settles `failed`: the row must not read as a delivery.
-test("an Activity row says a mention that could not be delivered was not delivered", async ({
+// ghost` and its receipt settles `failed`. A person's comment is a row of the outline, and its
+// deliveries are the focused row's facts in Details: the one there must not read as delivered.
+// The history draws no event of a row the outline draws (R15), so the line the old Activity tab
+// drew for this delivery is no line now.
+test("a mention that could not be delivered reads as not delivered in the focused row's facts", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Mention of a missing session" });
-  await createComment(
+  const comment = await createComment(
     issue.key,
     { body: "Look at this, @session:ghost.", mentions: [{ target: "session:ghost" }] },
     { login: "alice" }
@@ -213,24 +242,26 @@ test("an Activity row says a mention that could not be delivered was not deliver
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/activity`);
-    const list = page.getByRole("list", { name: "Issue activity" });
-    await expect(
-      list
-        .getByRole("listitem")
-        .filter({ hasText: "could not deliver a comment mention to session:ghost" })
-    ).toHaveCount(1);
-    await expect(list).not.toContainText("delivered a comment mention");
+    await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
+    await expect.poll(() => focusedNodeId(page)).toBe(comment.id);
+    await openDetails(page);
+    const deliveries = focusedNodeFacts(page).locator("[data-deliveries] li");
+    await expect(deliveries).toHaveCount(1);
+    await expect(deliveries).toContainText("Not delivered");
+    await expect(deliveries).not.toContainText("Delivered");
+    // Details' history, open beside the facts, draws no line of the comment or its delivery.
+    await expect(historyPanel(page)).toBeVisible();
+    await expect(historyEntries(page).filter({ hasText: "mention" })).toHaveCount(0);
   } finally {
     await alice.close();
   }
 });
 
-// A comment body is bounded block by block, so one far longer than an event carries rides as
-// its first part and the event says so. The row a reader opens then shows the part it has and,
-// under it, a link to the comment's own page, which reads the stored body whole. The margin's
-// Pinned tab is where the Activity tab draws an event's body, so the row is pinned first.
-test("an Activity row whose comment event carried the body in part links to the whole comment", async ({
+// A comment body is bounded block by block, so one far longer than an event carries rides its
+// event as its first part. The history draws a thread agents wrote among themselves from the
+// comment itself, not from its event, so the whole body is there, and the comment's time links
+// to its own address.
+test("the history draws an agent's comment longer than one event whole, linked to its address", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -238,32 +269,24 @@ test("an Activity row whose comment event carried the body in part links to the 
   // Two 20,000-unit paragraphs: each is inside the 32,000-unit block bound, and together they
   // are past the 32,000 units one event carries, so the event keeps the first paragraph alone.
   const first = "A".repeat(20_000);
-  const comment = await createComment(
-    issue.key,
-    { body: `${first}\n\n${"B".repeat(20_000)}` },
-    agent
-  );
+  const second = "B".repeat(20_000);
+  const comment = await createComment(issue.key, { body: `${first}\n\n${second}` }, agent);
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/activity`);
-    const row = page
-      .getByRole("list", { name: "Issue activity" })
-      .getByRole("listitem")
-      .filter({ hasText: "commented on" });
-    await expect(row).toHaveCount(1);
-    await row.getByRole("button", { name: "Pin" }).click();
+    const item = historyItem(page, comment.id);
+    await expect(item).toHaveCount(1);
+    await expect(item).toContainText(first);
+    await expect(item).toContainText(second);
 
-    const margin = page.getByTestId("margin-sheet");
-    await margin.getByRole("tab", { name: "Pinned" }).click();
-    const link = margin.getByRole("link", { name: "Read the whole comment" });
-    await expect(link).toBeVisible();
-
-    await link.click();
+    // The turn's time is the link to its own address; its author's name links to the agent.
+    await item.locator(`a[href$="/comments/${comment.id}"]`).click();
     await expect(page).toHaveURL(
       new RegExp(`/issues/${issue.key}/comments/${comment.id}(\\?|#|$)`)
     );
+    await expect(historyItem(page, comment.id)).toHaveAttribute("aria-current", "true");
   } finally {
     await alice.close();
   }

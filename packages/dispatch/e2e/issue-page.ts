@@ -2,12 +2,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue/issue-address";
 import type { MarginSection } from "../web/src/features/issue/page-structure";
-import {
-  CONTROL_LABELS,
-  type ConversationState,
-  PRESET_NAMES,
-  type Preset,
-} from "../web/src/features/issue/page-words";
+import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "../web/src/features/issue/page-words";
 import type { Box } from "./layout";
 import { navigateInApp } from "./sends";
 
@@ -130,9 +125,23 @@ import { navigateInApp } from "./sends";
  *   block. c-presets, c-urls (`?v=`), c-nothing-lost (naming a version).
  * - **`[data-testid="opened-artifact"]`**, the document or file an address opens in place of
  *   the outline, named by its own name. c-nodes, c-urls.
- * - **`[data-conversation-state]`** on each of the conversation's four state controls, with
- *   `aria-selected` saying which state the panel is in. c-urls (`/conversation`, `/activity`),
- *   c-one-panel.
+ * - **`[data-testid="issue-composer"]`**, the one place to write at the foot of the outline, a
+ *   region named `CONTROL_LABELS.write` holding the `Comment composer` form - its line, its kind
+ *   chips (`[data-composer-kind]`), the target line naming what it replies to
+ *   (`[data-composer-target]`) and Send - or, while it answers a question, the form named
+ *   `CONTROL_LABELS.answering` (`[data-answering="<ask id>"]`), its options
+ *   (`[data-answer-option]`), Decline to answer and Send answer. c-reply-nesting, c-keyboard
+ *   (`r`, `a`), c-nothing-lost (a reply, a comment from the composer, answering an ask).
+ * - **`[data-row-act]`** on each of the focused row's actions under its words - `reply`,
+ *   `answer`, `change-answer` - and **`[data-pick-option]`** on an open question's options, which
+ *   pick its answer. c-reply-nesting.
+ * - **`[data-testid="issue-history"]`**, the issue's history in Details, a region named
+ *   `CONTROL_LABELS.history`; each thread agents wrote among themselves is drawn by its turns,
+ *   **`[data-history-item="<id>"]`**, each with its Reply (`[data-history-reply="<id>"]`), and one
+ *   author's uploads within a minute are one `[data-history-uploads]` entry. c-conversation-state,
+ *   c-urls (`/activity`, an agents-only comment's address), c-keyboard (`t v`).
+ * - **`[data-testid="issue-pins"]`**, the reader's pins in Details, each a `[data-pin]` link to
+ *   its row. c-one-panel.
  * - **`[data-node-command]`** on a check's `run` command, which renders as code beside its copy
  *   control. c-checks-readable.
  * - **The add control** (`CONTROL_LABELS.add`) opens a `role="menu"` listing every property with
@@ -561,9 +570,78 @@ export function focusBranchControl(scope: Locator): Locator {
   return scope.getByRole("button", { exact: true, name: CONTROL_LABELS.focus_branch });
 }
 
-/** One of the conversation's four state controls, inside the panel. */
-export function conversationStateControl(page: Page, state: ConversationState): Locator {
-  return marginSlot(page).locator(`[data-conversation-state="${state}"]`);
+/** The one place to write, at the foot of the outline. */
+export function composer(page: Page): Locator {
+  return page.getByTestId("issue-composer");
+}
+
+/** The line of the place to write, whatever it is set to write. */
+export function composerField(page: Page): Locator {
+  return composer(page).locator("textarea");
+}
+
+/** One of the focused row's actions under its words: Reply, Answer or Change answer. */
+export function rowAct(row: Locator, act: "answer" | "change-answer" | "reply"): Locator {
+  return row.locator(`[data-row-act="${act}"]`);
+}
+
+/** The issue's history, in Details. */
+export function historyPanel(page: Page): Locator {
+  return page.getByTestId("issue-history");
+}
+
+/** One turn of a thread agents wrote among themselves, in the history, by its own id. */
+export function historyItem(page: Page, id: string): Locator {
+  return historyPanel(page).locator(`[data-history-item="${id}"]`);
+}
+
+/** The reader's pins, in Details. */
+export function pinsList(page: Page): Locator {
+  return page.getByTestId("issue-pins");
+}
+
+/** The lines of the issue's history, in Details: an event, an upload or a thread agents wrote
+ *  among themselves, each carrying its `data-event-seq`. */
+export function historyEntries(page: Page): Locator {
+  return historyPanel(page).locator("[data-event-seq]");
+}
+
+/** Puts the focus on node `id`'s row, as a press or the arrows put it there. */
+export async function focusRow(page: Page, id: string): Promise<Locator> {
+  const row = nodeRow(page, id).first();
+  await row.focus();
+  await expect(row.locator("[data-node-card]").first()).toBeVisible();
+  return row;
+}
+
+/** The focused node's facts in Details, opened on ask `askId` of `issueKey` at the ask's own
+ *  address, which focuses its node: where an open question's hand-on is, the old conversation
+ *  card's control (`FocusedNodeFacts.tsx`, dispatch://INFRA-1196 R14, R19). */
+export async function askFacts(page: Page, issueKey: string, askId: string): Promise<Locator> {
+  await gotoIssue(page, `/issues/${issueKey}/asks/${askId}`);
+  await expect.poll(() => focusedNodeId(page)).toBe(askId);
+  await openDetails(page);
+  const facts = page.getByTestId("focused-node-facts");
+  await expect(facts).toHaveAttribute("data-focused-node", askId);
+  return facts;
+}
+
+/** Writes `text` in the line at the foot of the outline and sends it with Enter, the line's own
+ *  key: a comment on the issue, or the reply or edit the line is set to. */
+export async function sendFromComposer(page: Page, text: string): Promise<void> {
+  const field = composerField(page).first();
+  await field.fill(text);
+  await field.press("Enter");
+  await expect(field).toHaveValue("");
+}
+
+/** Replies to node `id` the way a reader does: its row's Reply sets the line at the foot of the
+ *  outline to it, and the line sends `text`. */
+export async function replyFromRow(page: Page, id: string, text: string): Promise<void> {
+  const row = await focusRow(page, id);
+  await rowAct(row, "reply").click();
+  await expect(composer(page).locator("[data-composer-target]")).toBeVisible();
+  await sendFromComposer(page, text);
 }
 
 /** A control of the page by the role and accessible name the old page's inventory recorded for it
@@ -997,7 +1075,8 @@ export async function focusInside(scope: Locator): Promise<boolean> {
  * Whether every pixel of `scope` is inside the viewport and clear of the sticky identity block,
  * which is what "brings a target on screen" is read as (c-keyboard, c-open-questions) and what
  * the page's own `bringOnScreen` (`web/src/features/issue/identity-block.ts`) places a target
- * by: at or below the block's lower edge, and above the foot of the screen.
+ * by: at or below the block's lower edge, and above the foot of the screen. Details' drawer is a
+ * layer over the page, the block included, so a target inside it needs only the viewport.
  *
  * A scope taller than the screen can satisfy neither, by construction, so a caller reads the
  * control the page leaves the reader on rather than the whole part around it, as the page
@@ -1005,9 +1084,12 @@ export async function focusInside(scope: Locator): Promise<boolean> {
  */
 export async function onScreen(scope: Locator): Promise<boolean> {
   if ((await scope.count()) === 0) return false;
-  return await scope.first().evaluate((element, header) => {
+  return await scope.first().evaluate((element, selectors) => {
     const rect = element.getBoundingClientRect();
-    const sticky = document.querySelector(header)?.getBoundingClientRect().bottom ?? 0;
+    const sticky =
+      element.closest(selectors.details) === null
+        ? (document.querySelector(selectors.identityBlock)?.getBoundingClientRect().bottom ?? 0)
+        : 0;
     return (
       rect.height > 0 &&
       rect.top >= sticky - 1 &&
@@ -1015,7 +1097,7 @@ export async function onScreen(scope: Locator): Promise<boolean> {
       rect.left >= -1 &&
       rect.right <= window.innerWidth + 1
     );
-  }, SELECTORS.identityBlock);
+  }, SELECTORS);
 }
 
 /** Whether the caret is in a node's own text: the focus is inside an editable inside a row, which

@@ -19,6 +19,9 @@ import {
   pageMutedText,
   pageOwnWordsRule,
   pageQuietText,
+  pageRowAct,
+  pageRowActs,
+  pageRowOption,
   pageStateText,
   pageWordsText,
 } from "../../theme/classes";
@@ -30,6 +33,8 @@ import { firstLineOf, type NodeChip, nodeWords, type TreeNode } from "./issue-tr
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { shortDay } from "./node-time";
+import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
+import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import {
   type AuthorKind,
@@ -97,6 +102,7 @@ export function NodeRow({
   pinned,
   rowKey,
   tabStop,
+  threadRead,
 }: {
   /** The name of the person whose answer this ask carries (`AgentText.author`), where it
    *  carries one. */
@@ -141,10 +147,15 @@ export function NodeRow({
   /** Whether this row is the tree's one tab stop: the focused row, or the tree's first row
    *  before the reader has touched it. */
   tabStop: boolean;
+  /** The thread whose newest write this row draws, which a dwell on the row marks read in the
+   *  reader's Inbox (`outline-thread-read.tsx`). */
+  threadRead?: ThreadMark;
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   const stage = useDocumentStage(editing, STAGE_IN_ROW);
+  // Where the reader writes: a row's Reply and an open question's Answer set it (R16).
+  const writer = useOutlineWriter();
   // The reader's own words: a turn a person wrote who is the reader (R34). An ask, a block or a
   // decision is not a turn, so its words are never the reader's here, whoever asked it.
   const own = author.reader && (node.type === "comment" || node.type === "message");
@@ -311,7 +322,9 @@ export function NodeRow({
               )}
             </button>
           )}
-          {node.options === undefined || oneLine ? null : <NodeOptions body={body} node={node} />}
+          {node.options === undefined || oneLine ? null : (
+            <NodeOptions body={body} node={node} writer={writer} />
+          )}
           {node.answer === undefined || oneLine ? null : (
             <AskAnswer answerer={answerer ?? ""} node={node} own={ownAnswer} />
           )}
@@ -349,7 +362,11 @@ export function NodeRow({
               pinned={pinned}
             />
           ) : null}
+          {focused && writer !== undefined ? (
+            <RowActs node={node} ownAnswer={ownAnswer} writer={writer} />
+          ) : null}
         </div>
+        {threadRead === undefined || oneLine ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
   );
@@ -542,29 +559,33 @@ function RowMargin({
  * The choices an ask offers, under its question (the prototype's `.opts`): each by its own
  * words, the one the person chose filled and in the ink, the others hollow and grey, and while
  * the question waits on the reader every one in the waiting colour. The words an option carries
- * beside its name are drawn in the focused node's body (R6). Answering is the reader's own act
- * and its controls are the composer's, not this list's.
+ * beside its name are drawn in the focused node's body (R6).
+ *
+ * An open question's options are the choices of its answer (R16, the prototype's `button.opt`):
+ * a press picks one, or lets it go, and sets the line at the foot of the outline to answer the
+ * question, where the keyboard picks them too; the one picked is drawn on the waiting tint.
  */
-function NodeOptions({ body, node }: { body: boolean; node: TreeNode }): ReactNode {
+function NodeOptions({
+  body,
+  node,
+  writer,
+}: {
+  body: boolean;
+  node: TreeNode;
+  writer: OutlineWriter | undefined;
+}): ReactNode {
   const chosen = new Set(node.answer?.selected ?? []);
+  const answering = writer !== undefined && takesAnswer(node);
+  const picks =
+    writer?.answer !== undefined && writer.answer.nodeId === node.id ? writer.answer.selected : [];
   return (
     <ul className="my-0.5 text-sm leading-[21px]" data-node-options="">
       {(node.options ?? []).map((option) => {
         const picked = chosen.has(option.label);
-        return (
-          <li
-            className={`flex items-baseline gap-2 ${
-              picked
-                ? `font-semibold ${pageInkText}`
-                : node.waiting
-                  ? pageStateText.waiting
-                  : pageQuietText
-            }`}
-            data-node-option={picked ? "chosen" : ""}
-            key={option.label}
-          >
+        const words = (
+          <>
             <span aria-hidden="true" className="w-3 shrink-0 text-center text-xs" {...pageChrome}>
-              {picked ? "●" : "○"}
+              {picked || picks.includes(option.label) ? "●" : "○"}
             </span>
             <span className="min-w-0 break-words">
               <span {...authorText}>{option.label}</span>
@@ -575,10 +596,106 @@ function NodeOptions({ body, node }: { body: boolean; node: TreeNode }): ReactNo
                 </span>
               ) : null}
             </span>
+          </>
+        );
+        return (
+          <li
+            className={
+              answering
+                ? ""
+                : `flex items-baseline gap-2 ${
+                    picked
+                      ? `font-semibold ${pageInkText}`
+                      : node.waiting
+                        ? pageStateText.waiting
+                        : pageQuietText
+                  }`
+            }
+            data-node-option={picked ? "chosen" : ""}
+            key={option.label}
+          >
+            {answering ? (
+              // Out of the tab order, as every control inside a row is: the line the press sets
+              // draws the same options as its own chips, which the keyboard reaches (R9).
+              <button
+                aria-pressed={picks.includes(option.label)}
+                className={`dispatch-inline-link ${pageRowOption}`}
+                data-pick-option={option.label}
+                onClick={() => writer.pick(node, option.label)}
+                tabIndex={-1}
+                type="button"
+              >
+                {words}
+              </button>
+            ) : (
+              words
+            )}
           </li>
         );
       })}
     </ul>
+  );
+}
+
+/**
+ * What the reader can do with the focused row, on one quiet line under it (the prototype's
+ * `.acts`, drawn on the focused row alone): Reply on every row that takes a reply - a comment, a
+ * message, an ask whatever its state, and the issue itself, whose reply is a new comment on it
+ * (R16, dispatch://INFRA-3677) - Answer on an open question, and Change answer on a question the
+ * reader answered. Each sets the line at the foot of the outline and puts the caret in it; `r`
+ * and `a` press the first two from the keyboard (`useTreeKeymap.ts`). A typed node - a
+ * statement, a check, a decision - takes no reply in today's model, which holds no reply to a
+ * block (dispatch://INFRA-1253), so it draws none.
+ *
+ * A press leaves the focus where it is until the action moves it to the line, as the row's other
+ * controls do, so the press never lands on a row that moved under it.
+ */
+function RowActs({
+  node,
+  ownAnswer,
+  writer,
+}: {
+  node: TreeNode;
+  ownAnswer: boolean;
+  writer: OutlineWriter;
+}): ReactNode {
+  const acts: { readonly act: string; readonly label: string; readonly run: () => void }[] = [];
+  if (takesAnswer(node)) {
+    acts.push({ act: "answer", label: CONTROL_LABELS.answer, run: () => writer.answerNode(node) });
+  }
+  if (ownAnswer && node.type === "ask" && node.state === "answered") {
+    acts.push({
+      act: "change-answer",
+      label: CONTROL_LABELS.change_answer,
+      run: () => writer.changeAnswer(node),
+    });
+  }
+  const item = replyItemOf(node);
+  if (item !== undefined || node.type === "issue") {
+    acts.push({
+      act: "reply",
+      label: CONTROL_LABELS.reply,
+      run: () => (item === undefined ? writer.writeOnIssue() : writer.replyTo(item)),
+    });
+  }
+  if (acts.length === 0) return null;
+  return (
+    <p className={pageRowActs} data-row-acts="">
+      {acts.map(({ act, label, run }) => (
+        <button
+          className={`dispatch-inline-link ${pageRowAct}`}
+          data-row-act={act}
+          key={act}
+          onClick={run}
+          onMouseDown={(event) => event.preventDefault()}
+          tabIndex={-1}
+          type="button"
+          {...pageChrome}
+        >
+          {label}
+        </button>
+      ))}
+    </p>
   );
 }
 

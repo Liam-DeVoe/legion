@@ -228,7 +228,7 @@ function useFormRef(): [
  * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
  * card drawn where no list can drop it registers with nobody.
  */
-function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
+export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);

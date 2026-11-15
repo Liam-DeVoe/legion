@@ -326,12 +326,14 @@ agents using it stop working at once.
 
 The tree is the issue's conversation and what it revealed, one row per node: every note, ask,
 statement (a `requirement` block), plan task and check block of its documents; its decisions; the
-results recorded against each check; its comments and messages; and its child issues, under the
-issue. It draws no document or file: those are in **Files and documents**. A check and a plan
-task sit under each statement they serve, a result under its check, and a decision under the ask it
-answers. A node whose source Dispatch does not hold sits under the issue. An answered ask carries
-its answer in its own row: **Answer**, who answered, what they chose and what they wrote, as they
-wrote it.
+results recorded against each check; each comment and message a person wrote or that sits in a
+thread a person wrote in; and its child issues, under the issue. It draws no document or file:
+those are in **Files and documents**. A check and a plan task sit under each statement they
+serve, a result under its check, a decision under the ask it answers, and a reply under the entry
+it answers - a reply to an ask under the ask, whatever state the ask is in. A thread only agents
+wrote in is no row: it is in the panel's **History** until a person replies in it. A node whose
+source Dispatch does not hold sits under the issue. An answered ask carries its answer in its own
+row: **Answer**, who answered, what they chose and what they wrote, as they wrote it.
 
 The tree opens folded to its frontier. The path down to each thing that is open and unanswered
 is unfolded, however deep it is: a question nobody has answered, a check that has not passed, a
@@ -376,7 +378,9 @@ Press `Enter` on a row to edit its text where it stands; `Escape` takes you back
 zooms into the focused row: the tree is drawn from that row down, and the path above it is a line
 of names, each of which zooms back to it. `,` zooms back out. Below 1024 px the tree is always
 read one node at a time: it shows the node you are on, the rows under it, and every path down to
-what is open and unanswered, with the path above it as that line of names.
+what is open and unanswered, with the path above it as that line of names. Opening a row's
+branch there draws one line under it saying how many rows it holds, and pressing that line draws
+them in its place.
 [Keyboard shortcuts](/legion/dispatch/keyboard/#issue-tree) lists every key of the tree.
 
 ### The filters
@@ -494,36 +498,24 @@ keeps your choice for the next issue you open.
   document and file of the issue, the first ten and then **Show all N**.
 
 **The row you are on** gives the focused row's kind and text, its **Status**, and **Written by**
-with its author. With no row focused, it gives the issue's.
+with its author. With no row focused, it gives the issue's. On an ask, a comment or a message it
+also offers **Pin** (or **Unpin**), and on a comment that opens a thread **Resolve** (or
+**Reopen**), with **Accept** and **Reject** on a suggestion nobody has decided.
 
-Under them is the **Conversation**, with four choices:
+**Pinned** lists what you pinned, each a link to its row in the outline, with **Unpin**.
 
-- **Everything**: every conversation. At `/issues/<KEY>/activity` it also draws the issue's
-  whole history under the tree.
-- **Pinned**: only the conversations you pinned.
-- **Questions**: only the asks.
-- **What people said**: every conversation.
+**History** is the issue's history, newest first: its status moves, claims and releases,
+handoffs, the Legion daemon's messages, the documents added and removed, and every other event
+that is no row of the outline. Today's events are listed; each earlier day is one line with how
+many it holds, which opens it. One author's uploads within a minute are one line that opens each
+file. A document's new version is no upload and is not listed: a document's versions are in its
+own toolbar. Nor is anything the outline draws: an ask asked, answered or resolved, a comment or
+message the outline draws and what happened to it, a result recorded against a check, or a child
+issue's status move. A thread only agents wrote in is listed whole, each turn's words with its
+**Reply**; once you reply, the thread is in the outline. The history has **Load older** at the
+bottom, **New since you last read** where your last read ends, and a pin on each event line.
 
-This browser keeps your choice for the next issue you open, and until you choose it is **What
-people said**. Some addresses choose for you: `/issues/<KEY>/conversation` and the address of one
-ask, comment or message choose **What people said**, and `/issues/<KEY>/activity` chooses
-**Everything**. The conversation's list appears under the four once you choose one of them, or
-open `/issues/<KEY>/conversation` or the address of one ask, comment or message.
-
-The list has one card per conversation: every ask with its replies and its answer, every comment
-thread with its replies, every message thread with its replies. The conversation with the newest
-reply is at the top, so a thread rises when someone answers it, and the whole list is there
-however old a conversation is. **All**, **Open** and **Closed** filter it: an ask is Closed once
-it is answered, resolved or retracted, a comment thread once it is resolved or its suggestion is
-accepted or rejected, and a message thread is never closed. The filter opens on **All** every
-visit. A conversation holding something you have not read is marked **New**, and **Jump to
-latest** counts those and takes you to the top.
-
-The issue's whole history is at `/issues/<KEY>/activity`, under the tree while **Everything** is
-chosen. It has one line each, newest first: every comment, ask and message as it was posted, and
-everything else that happened to the issue — status moves, claims, document versions, uploads,
-subscriptions, changes to child issues. It has **Load older** at the bottom, a divider for each
-day, and **New since you last read** where your last read ends.
+The panel holds no list of the conversation: the outline is the conversation.
 
 ### Child issues
 
@@ -546,13 +538,13 @@ open:
 | `/issues/<KEY>/verification` | The **Verification** filter |
 | `/issues/<KEY>/plan` | The **Plan** filter |
 | `/issues/<KEY>/decisions` | The **Decisions** filter |
-| `/issues/<KEY>/conversation` | The page with no filter on, with **What people said** chosen and the conversation's list in the panel |
-| `/issues/<KEY>/activity` | The page with no filter on, with **Everything** chosen and the issue's whole history under the outline |
+| `/issues/<KEY>/conversation` | The page with no filter on |
+| `/issues/<KEY>/activity` | The page with no filter on, with the panel open at its **History** |
 | `/issues/<KEY>/children` | The page with no filter on. The **Children** section is above the outline with every filter |
 | `/issues/<KEY>/artifacts` | The page with no filter on, with the **Files and documents** menu open |
 | `/issues/<KEY>/collaborators` | The page with no filter on, with **Collaborators** open in the panel's **People** section |
 | `/issues/<KEY>/artifacts/<name>` | That document or file in place of the outline, with its editor, its versions, its details and what references the issue. A `#b-` naming a block the outline holds as a node opens the outline at that node instead |
-| `/issues/<KEY>/asks/<id>`, `/comments/<id>` or `/messages/<id>` | The page with no filter on, with **What people said** chosen, the panel's conversation on that entry, and the outline unfolded to its row |
+| `/issues/<KEY>/asks/<id>`, `/comments/<id>` or `/messages/<id>` | The page with no filter on, with the outline unfolded to that entry's row and the focus on it; for a comment or message of a thread only agents wrote in, the panel open at its **History** with the entry marked |
 
 On any of them, `?q=` fills the **Filter** box, and `#b-` with a block's id, `?ask=` or
 `?comment=` unfolds the outline down to that node. `?v=` with a version number pins the version
@@ -562,23 +554,30 @@ block of the spec's own text, opens the spec in place of the outline at that com
 the spec's own address does; a `#b-` naming a statement or another node the outline draws opens
 the **Spec** filter at that node.
 
-### Writing in the Conversation
+### Writing in the conversation
 
-The box at the top of the Conversation's list, in the panel, posts a comment on the issue. Below
-640 px it sits at the foot of the screen. It works on a closed issue too: there the composers,
-**Reply** on a message and a delivery's **Retry** all work, and you can still comment on a quote
-of its documents: select the text and choose **Comment**, the one action the selection bar offers
-on a closed issue's document, and the comment opens in the margin. Type `@` to mention an agent
-role or a live agent session; the comment is then delivered to it. The picker
+The line at the foot of the outline is where you write, and it stays at the foot of the screen
+as you read. With nothing chosen it posts a comment on the issue, or a question with
+**Question** pressed beside it; `Enter` sends and `Shift+Enter` starts a new line.
+
+Focus a row and its actions show under it. **Reply** - or `r` - is on every ask, comment and
+message, an answered or resolved ask included, and on the issue itself: the line then names the
+entry it replies to, and your reply is drawn under it. **Answer** - or `a` - is on an open ask:
+the line answers it, its options are chips you pick, and **Send answer** records the answer;
+**Decline to answer** is beside it. Picking an option on the row does the same. **Change answer**
+is on an ask you answered. `Escape`, or the line's ×, sets the line back to a comment on the
+issue. Under a filter the line shows only once you reply or answer there.
+
+It works on a closed issue too: there comments and replies, and **Reply** on a message, all work,
+and you can still comment on a quote of its documents: open the document from **Files and
+documents**, select the text and choose **Comment**, the one action the selection bar offers on a
+closed issue's document, and the comment opens in the panel beside the document. Type `@` to
+mention an agent role or a live agent session; the comment is then delivered to it. The picker
 also offers, under **Not running**, this issue's Legion roles that no running agent holds; a
 mention picked there is addressed to the role, and the comment is posted on the issue, but its
-delivery fails while nobody holds that role, since there is no session to take it. The thread
-shows that failed attempt with **Retry** beside it, which sends to whoever holds the role at the
-time; that Retry is offered for three days, after which a fresh comment is the way to reach the
-role. Start the comment with `/btw ` or `/aside ` to choose how a mentioned agent receives it.
+delivery fails while nobody holds that role, since there is no session to take it. Start the
+comment with `/btw ` or `/aside ` to choose how a mentioned agent receives it.
 [Agents](/legion/dispatch/agents/#sending-to-one-agent) explains the delivery modes.
-
-Press `Ctrl+Enter` (`⌘Enter` on a Mac) to send. `Enter` alone starts a new line.
 
 ## Pins
 
@@ -586,7 +585,7 @@ Pins keep things you return to within reach.
 
 - **An issue.** Choose **Pin issue** in the header's **Issue actions**, or press `Shift+P`. Pinned
   issues appear under **Pinned** in the sidebar, with their open-ask counts.
-- **A Conversation entry.** Every entry has a pin at its top right. Pinned entries appear in the
-  margin's **Pinned** tab beside the document, each with **Unpin**, and **Pinned** in the panel's
-  Conversation lists only them.
+- **An ask, a comment or a message.** Focus its row and choose **Pin** under **The row you are
+  on** in the panel. Pinned entries are listed under **Pinned** in the panel, each a link to its
+  row with **Unpin**.
 - **An agent.** On the Agents page, a pinned agent stays at the top of the list.

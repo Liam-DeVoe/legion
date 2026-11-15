@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { createIssue, createProject, createProjectDocument, getAsk } from "./api";
 import { runDispatch } from "./dispatch-cli";
-import { gotoIssue } from "./issue-page";
+import { askFacts } from "./issue-page";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -125,12 +125,10 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     expect(printedCounts(project.stdout)).toEqual({ agent: 0, human: 2, total: 2 });
 
     // 3. Bob, who holds neither the issue nor the document, takes the first question himself
-    // with the control on its card on the issue page. The address is the one the Conversation
-    // tab answered and still resolves (dispatch://INFRA-1196 R19), since the redesigned page
-    // draws no such tab.
+    // with the control the issue page offers on it: in Details, beside the focused question's
+    // facts, where the old conversation card's control went (dispatch://INFRA-1196 R14, R19).
     const page = await bob.newPage();
-    await gotoIssue(page, `/issues/${issue.key}/conversation`);
-    const card = page.locator("#issue-conversation-panel").getByTestId(`ask-${issueAsk}`);
+    const card = await askFacts(page, issue.key, issueAsk);
     await expect(card).toContainText("Asked of alice");
     const control = card.locator(`select[data-ask-hand-on="${issueAsk}"]`);
     await control.focus();

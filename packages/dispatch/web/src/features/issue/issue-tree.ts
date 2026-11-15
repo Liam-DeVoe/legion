@@ -106,6 +106,8 @@ export interface NodeCounts {
  *  (dispatch://INFRA-1150 R3): the ask's own row and body draw it, word for word as the store
  *  holds it and never restated (R9). */
 export interface NodeAnswer {
+  /** When it was given, which the outline's thread read mark compares with the replies'. */
+  readonly at: string;
   /** The person it is the answer of, with the agent they answered through where they did. */
   readonly by: Actor;
   /** The options they chose, each as the ask's own words name it. */
@@ -173,6 +175,8 @@ export interface TreeNode {
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */
   readonly options?: readonly NodeOption[];
+  /** Whether this ask takes more than one of its options, which its answer's picks follow. */
+  readonly multiple?: true;
   /** Whether this node is an open question that waits on the reader, which the fold unfolds the
    *  path to whatever its depth (R6). */
   readonly question: boolean;
@@ -356,6 +360,7 @@ function assemble(
       gaps: draft.gaps,
       held: children.reduce((total, child) => total + child.held + 1, 0),
       id: draft.id,
+      ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,
       ...(draft.reference === undefined ? {} : { reference: draft.reference }),

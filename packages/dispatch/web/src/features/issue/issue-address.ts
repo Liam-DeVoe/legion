@@ -2,8 +2,9 @@ import { decodeBlockId, itemFromSearch } from "@legion/contracts";
 
 import type { Comment, MessageRead } from "../../api/types";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
+import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
-import type { ConversationState, Preset } from "./page-words";
+import type { Preset } from "./page-words";
 import { blockNodeId } from "./tree-drafts";
 
 /**
@@ -12,9 +13,9 @@ import { blockNodeId } from "./tree-drafts";
  *
  * Every address the old page's nine tabs answered still resolves, and this module is the one
  * place that says what each one opens: which preset, which document is opened in place of the
- * outline, which node the page unfolds the path to and puts the focus on, which state the
- * conversation is in, whether the node menu is open, and which version is pinned.
- * `refs/routes.ts` still parses the address; this reads the route it answers.
+ * outline, which node the page unfolds the path to and puts the focus on, whether the node menu
+ * is open, and which version is pinned. `refs/routes.ts` still parses the address; this reads the
+ * route it answers.
  *
  * It is pure and holds no React, so the page, the margin's panel and the unit tests all read an
  * address the same way.
@@ -31,16 +32,13 @@ export type AddressTarget =
   /** One ask, comment or message, by its own id: the one a preset's own address names beside
    *  it (`?ask=`, `?comment=`), and the one its own route names (`/asks/<id>`, `/comments/<id>`,
    *  `/messages/<id>`). It is a node of the tree, which the page unfolds the path to and puts
-   *  the focus on, wherever the item is anchored (R20). Its own route also opens the
-   *  conversation in the panel, which marks the same entry there (`useIssueDetail`'s
-   *  `conversationFocusItemId`). */
+   *  the focus on, wherever the item is anchored (R20), or, for a comment or message agents
+   *  wrote outside every thread a person wrote in, an entry of the panel's history
+   *  (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string };
 
 /** What one address of the issue page opens. */
 export interface IssueAddress {
-  /** The conversation's state the address names, or undefined for one that names none, where
-   *  the panel opens in the state the reader kept (`IssuePage`, R13). */
-  readonly conversation: ConversationState | undefined;
   /** The slug of the document or file the address opens in place of the outline: its own
    *  address, `/artifacts/<slug>`, and a `/spec` address naming a block of the spec (R3, R20).
    *  The issue's spec is opened at its slug like every other document; `/spec` is the Spec
@@ -85,44 +83,6 @@ const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
  *  each filter its old tab's, and Conversation, the page with no filter on, the issue's own. */
 export function presetPath(key: string, preset: Preset): string {
   return buildIssuePath(preset === "conversation" ? { key, kind: "issue" } : { key, kind: preset });
-}
-
-/** The conversation's state each address names. `/activity` and `/conversation` are a state of
- *  their own, and an address naming one entry of the conversation names what people said,
- *  because the entry is in that list whatever the reader kept: a kept Questions or Pinned drew
- *  the conversation without the comment or message a link was sent to (R19). Every other
- *  address names none. */
-const ROUTE_CONVERSATION_STATES: Readonly<Partial<Record<IssueRoute["kind"], ConversationState>>> =
-  {
-    activity: "everything",
-    ask: "words",
-    comment: "words",
-    conversation: "words",
-    message: "words",
-  };
-
-/**
- * The address picking `state` opens from `route`, or undefined where picking it opens no
- * address and the page holds the state for the address the reader is on.
- *
- * Two of the four states are addresses of their own, and the page draws more at them than the
- * panel does: `/activity` puts the issue's whole history in the page's column. Picking one of
- * those is navigation only from the other of the two, which is all either can stand in for:
- * every other address opens something besides the conversation - a preset's document, the
- * spec the issue's own address draws beside the tree, the children, the collaborators, one
- * entry. Picking a state there would drop the preset, the `?q=`, the `#b-` and the document the
- * reader has open, so there the state is the panel's alone (R19; picking Questions used to send
- * a reader of the Spec preset to the bare `/conversation`, and picking Words or Everything on
- * the issue's own address still closed its spec).
- */
-export function conversationStatePath(
-  route: IssueRoute,
-  state: ConversationState
-): string | undefined {
-  const kind = state === "everything" ? "activity" : state === "words" ? "conversation" : undefined;
-  if (kind === undefined) return undefined;
-  if (route.kind !== "activity" && route.kind !== "conversation") return undefined;
-  return buildIssuePath({ key: route.key, kind });
 }
 
 /** A positive integer `?v=` holds, or undefined for anything else. */
@@ -173,8 +133,12 @@ export function issueAddress(
   // in its error boundary over one unreadable address. A fragment that reads as no block id
   // names no block, and the address falls back to what its route names, which for a document's
   // address is that document. The block it does name belongs to the document the route names,
-  // where it names one: a block id is unique inside its own document alone.
-  const block = hash.startsWith("#b-") ? decodeBlockId(hash.slice(3)) : undefined;
+  // where it names one: a block id is unique inside its own document alone. On an ask's, a
+  // comment's or a message's own address the fragment names a part of that item - an option,
+  // the answer, a block of a comment - which the outline draws inside the item's own row, so
+  // the item's node is what the address names.
+  const itemRoute = route.kind === "ask" || route.kind === "comment" || route.kind === "message";
+  const block = hash.startsWith("#b-") && !itemRoute ? decodeBlockId(hash.slice(3)) : undefined;
   const named: AddressTarget | undefined =
     block === undefined
       ? routeTarget(route, specSlug)
@@ -203,7 +167,6 @@ export function issueAddress(
   const outlineItem = documentItem === undefined && item !== null && item !== undefined;
   const namesSpecBlock = route.kind === "spec" && named?.kind === "block";
   return {
-    conversation: ROUTE_CONVERSATION_STATES[route.kind],
     document: outlineItem
       ? undefined
       : documentItem !== undefined || route.kind === "artifact" || namesSpecBlock
@@ -226,10 +189,7 @@ export function issueAddress(
 /**
  * The id `target` names where it is a comment or a message an agent wrote outside every thread
  * a person wrote in, which R20 lands in the panel's history rather than in the outline; undefined
- * for every other target, and while the reads that tell are not in. A thread is a comment and
- * every reply under its head (`reply_to`, which the server climbs to the head as it stores), or
- * a message and its replies; a person is a user. A comment under an ask is in the ask's thread,
- * and every ask is a node of the outline, so it is not one of these.
+ * for every other target, and while the reads that tell are not in (`agents-only.ts`).
  */
 export function agentsOnlyItem(
   target: AddressTarget | undefined,
@@ -237,21 +197,7 @@ export function agentsOnlyItem(
   messages: readonly MessageRead[] | undefined
 ): string | undefined {
   if (target?.kind !== "item") return undefined;
-  const comment = comments?.find((one) => one.id === target.id);
-  if (comment !== undefined) {
-    if (comment.ask_id !== null) return undefined;
-    const head = comment.reply_to ?? comment.id;
-    const thread = (comments ?? []).filter((one) => (one.reply_to ?? one.id) === head);
-    return thread.every((one) => one.author.kind !== "user") ? target.id : undefined;
-  }
-  const thread = messages?.find(
-    (one) =>
-      one.message.id === target.id || (one.replies ?? []).some((reply) => reply.id === target.id)
-  );
-  if (thread === undefined) return undefined;
-  return [thread.message, ...(thread.replies ?? [])].every((one) => one.author.kind !== "user")
-    ? target.id
-    : undefined;
+  return agentsOnlyIds(comments, messages).has(target.id) ? target.id : undefined;
 }
 
 /** The chain from `root` down to the first node `wanted` answers for, the root first, or

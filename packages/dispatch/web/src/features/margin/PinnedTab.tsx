@@ -10,9 +10,9 @@ import { Timestamp } from "../refs/Timestamp";
 import type { PinnedConversationCard } from "./useMarginItems";
 
 interface PinnedTabProps {
-  /** Conversations pinned from the Conversation tab, each under its own `<kind>:<id>`. */
+  /** Conversations pinned from a row of the outline, each under its own `<kind>:<id>`. */
   conversations: PinnedConversationCard[];
-  /** Events pinned from the Activity tab, and conversations pinned before a card carried its
+  /** Events pinned from the issue's history, and conversations pinned before a card carried its
    *  own id, which stay their event's line here until the reader pins the card again. */
   events: DispatchEvent[];
   onUnpin(eventId: number): void;

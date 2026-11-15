@@ -4,13 +4,15 @@ import {
   createComment,
   createIssue,
   createProject,
+  getIssueEvents,
   patchIssue,
   publishAgentStreamFrame,
+  putIssueState,
   rotateLiveSockets,
   setAgentStreamResponder,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
-import { conversationStateControl } from "./issue-page";
+import { historyPanel } from "./issue-page";
 import { navigateInApp } from "./sends";
 import {
   type WebSocket as BrowserWebSocket,
@@ -392,10 +394,7 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
     const first = page.waitForEvent("websocket", isLiveSocket);
     await page.goto(`/issues/${issue.key}/activity`);
     await expect(page.getByRole("heading", { exact: true, name: "Rotation target" })).toBeVisible();
-    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
+    await expect(historyPanel(page)).toBeVisible();
     await first;
     await expect.poll(() => sockets.received.includes("events_start")).toBe(true);
     await untilIssueReadsSettle(reads, pending);
@@ -472,6 +471,14 @@ test("a change committed while the page loads is shown without a reload @pr", as
 test("a first live socket opening without a change makes no API request", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Quiet page load" });
+  // The reader has read this issue through its head already. The outline's end is on screen the
+  // moment an empty issue loads, and a second there writes an unread issue's read mark
+  // (`IssueReadMark.tsx`): a change of the reader's state, whose own event the opening socket
+  // then delivers and the page reads the state back for. That is the reader reading, not the
+  // socket's open, so the seed leaves the mark nothing to write, and the open is the one thing
+  // left that could cause a request.
+  const [head] = await getIssueEvents(issue.key, { limit: 1, order: "desc" });
+  await putIssueState(issue.key, { last_read_seq: head?.seq ?? 0 }, { login: "alice" });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -489,7 +496,17 @@ test("a first live socket opening without a change makes no API request", async 
     let countRequests = false;
     page.on("request", (request) => {
       if (countRequests && new URL(request.url()).pathname.startsWith("/api/")) {
-        requestsAfterOpen.push(request.url());
+        requestsAfterOpen.push(`${request.method()} ${request.url()}`);
+      }
+    });
+    // Nothing writes the reader's state on this load: a mark written here would be a change.
+    const stateWrites: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "PUT" &&
+        new URL(request.url()).pathname === `/api/v1/me/issues/${issue.key}/state`
+      ) {
+        stateWrites.push(request.postData() ?? "");
       }
     });
 
@@ -509,6 +526,7 @@ test("a first live socket opening without a change makes no API request", async 
     // credential poll (15 s, `features/credentials/pending.ts`), a read on a cadence of its own
     // that this row does not count.
     await page.waitForTimeout(1_000);
+    expect(stateWrites, "the load wrote the reader's state of an issue they had read").toEqual([]);
     expect(requestsAfterOpen).toEqual([]);
   } finally {
     await alice.close();

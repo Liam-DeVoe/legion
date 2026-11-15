@@ -8,7 +8,7 @@ import {
   resolveAsk,
 } from "./api";
 import { documentEditor } from "./editor";
-import { conversationStateControl } from "./issue-page";
+import { historyItem } from "./issue-page";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -254,10 +254,10 @@ test("a project-document hit is grouped under the document and opens it; a messa
 
     await dialog.getByRole("option", { name: /^message / }).click();
     await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/messages/${message.id}$`));
-    await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
-    await expect(
-      page.getByRole("list", { name: "Conversation turns" }).locator('li[aria-current="true"]')
-    ).toContainText("Sextant calibration done.");
+    // An agent's message no person replied to is a turn of the history in Details, which its
+    // address opens with the turn marked (dispatch://INFRA-1196 R15, R20).
+    await expect(historyItem(page, message.id)).toHaveAttribute("aria-current", "true");
+    await expect(historyItem(page, message.id)).toContainText("Sextant calibration done.");
 
     // The palette opens on the page the reader is already on: Ctrl+K, not another load.
     await page.keyboard.press("Control+k");

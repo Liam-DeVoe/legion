@@ -282,11 +282,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-activity",
     path: (seed) => `/issues/${seed.issue}/activity`,
     pattern: "/issues/:key/*",
-    // The issue's whole event history, which this address still draws in the page's own
-    // column (`features/activity/ActivityTab.tsx`, mounted by `IssuePresetPanels.tsx`) while
-    // the panel beside it holds the conversation in its `everything` state - the state this
-    // address names (`conversation-states.tsx`). And the tree's words, as on every address
-    // that opens the page with no filter on.
+    // The issue's history, which this address opens in Details (`features/issue/IssueHistory.tsx`,
+    // dispatch://INFRA-1196 R15, R20), over the outline with no filter on, whose words the tree
+    // still settles as on every address that opens the page with no filter on.
     ready: (page) => [page.getByRole("list", { name: "Issue activity" }), treeNamesSettled(page)],
   },
   {

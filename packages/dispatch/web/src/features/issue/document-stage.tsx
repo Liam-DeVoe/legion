@@ -84,6 +84,10 @@ function createStageBoard(): StageBoard {
       // the stage is placed (dispatch://INFRA-1196 R21, `page-structure.ts`).
       made.setAttribute(AUTHOR_TEXT_ATTRIBUTE, "");
       elements.set(artifactId, made);
+      // A host can claim a stage before its document is drawn: a row the reader puts the caret
+      // in claims it in the commit before the page mounts that document's one editor
+      // (`IssuePage`'s `edited`), so a stage made after its claim goes to that host at once.
+      place(artifactId);
       return made;
     },
   };

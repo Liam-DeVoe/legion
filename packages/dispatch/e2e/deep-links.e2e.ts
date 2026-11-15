@@ -24,8 +24,10 @@ import {
 } from "./editor";
 import {
   closeDetails,
-  conversationStateControl,
+  focusedNodeFacts,
   focusedNodeId,
+  historyItem,
+  historyPanel,
   marginShell,
   nodeRow,
   onScreen,
@@ -1120,7 +1122,9 @@ test("an unanchored project-document comment is selected in its only discussion 
   }
 });
 
-test("an unanchored comment deep link still focuses its Conversation turn", async ({ browser }) => {
+test("an unanchored comment deep link still focuses its node in the outline", async ({
+  browser,
+}) => {
   const { issue } = await seedIssue();
   const comment = await createComment(issue.key, { body: "No quote, just a note." });
   const context = await asUser(browser, "alice");
@@ -1130,17 +1134,18 @@ test("an unanchored comment deep link still focuses its Conversation turn", asyn
     await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
     await expect(page).toHaveURL(`/issues/${issue.key}/comments/${comment.id}`);
     // A person's comment is a node of the outline, and its own address opens that node,
-    // focused, there (dispatch://INFRA-1196 R20); the conversation in Details marks the same
-    // turn, which a reader reads by opening Details, closed on the load (R14).
+    // focused, there (dispatch://INFRA-1196 R20). The panel's old list of the conversation,
+    // which marked the same turn, is gone (R14): Details names the comment only as the row the
+    // reader is on, in its facts, and its history draws no turn of it.
     await expect.poll(() => focusedNodeId(page)).toBe(comment.id);
     await expect.poll(() => onScreen(nodeRow(page, comment.id).first())).toBe(true);
     await expect(nodeRow(page, comment.id).first()).toContainText("No quote, just a note.");
     await openDetails(page);
-    const turn = marginShell(page).locator(
-      `li[data-turn="comment:${comment.id}"][aria-current="true"]`
+    await expect(focusedNodeFacts(page)).toHaveAttribute("data-focused-node", comment.id);
+    await expect(historyPanel(page)).not.toContainText("No quote, just a note.");
+    await expect(marginShell(page).locator("[data-turn], #issue-conversation-panel")).toHaveCount(
+      0
     );
-    await expect(turn).toContainText("No quote, just a note.");
-    await expect(turn).toBeVisible();
   } finally {
     await context.close();
   }
@@ -1209,16 +1214,13 @@ test("an item link the SPA cannot resolve names what is missing, inside the shel
 });
 
 // A landing focuses exactly one node of the outline - the one the link names - brings it on
-// screen and draws its text there, whatever bucket its conversation is in and wherever it is
+// screen and draws its text there, whatever state its conversation is in and wherever it is
 // anchored (dispatch://INFRA-1196 R20). A comment agents wrote to each other outside every
-// thread a person wrote in lands in the history instead, which is not in the panel yet and so is
-// today's: what `/activity` opens, the conversation in its Everything state with that card
-// marked and, at a desktop width, its thread open with the reply's own row marked. On a phone no
-// link opens a thread: the reader opens it from the card when they ask for it.
-test("every item link focuses exactly one node, and an agents-only link marks its card in the history @phone", async ({
+// thread a person wrote in lands in the history in Details instead (R15), its turn marked and
+// drawn whole, the outline taking no focus for it; on a phone Details is the sheet over the page.
+test("every item link focuses exactly one node, and an agents-only link marks its turn in the history @phone", async ({
   browser,
-}, testInfo) => {
-  const isPhone = testInfo.project.name === "iphone";
+}) => {
   const { issue } = await seedIssue();
   const otherIssue = await createIssue({ project: "CORE", title: "Another issue" });
 
@@ -1245,9 +1247,7 @@ test("every item link focuses exactly one node, and an agents-only link marks it
   const elsewhere = await createComment(otherIssue.key, { body: "Belongs to another issue." });
 
   const marked = (page: Page) =>
-    page
-      .getByRole("list", { name: "Conversation turns" })
-      .locator('li[data-turn][aria-current="true"]');
+    historyPanel(page).locator('[data-history-item][aria-current="true"]');
   /** The one node the landing focused: the tree's one tab stop holds the focus, it is the node
    *  the link names, it draws the node's words, and it is on screen. */
   const landsOnNode = async (page: Page, id: string, words: string) => {
@@ -1260,6 +1260,9 @@ test("every item link focuses exactly one node, and an agents-only link marks it
     await expect(stop).toContainText(words);
     await expect.poll(() => onScreen(stop), { message: `${id}'s row is off screen` }).toBe(true);
     await expect(page.getByRole("dialog", { name: "Thread" })).toHaveCount(0);
+    // A node of the outline is no card of the margin: its link leaves Details shut, so a
+    // phone's sheet never covers the row it focuses.
+    await expect(marginShell(page)).toBeHidden();
   };
 
   const context = await asUser(browser, "alice");
@@ -1280,26 +1283,22 @@ test("every item link focuses exactly one node, and an agents-only link marks it
     await navigateInApp(page, `/issues/${issue.key}/asks/${retracted.id}`);
     await landsOnNode(page, retracted.id, "Withdrawn sextant?");
 
-    // A reply in a thread only agents wrote in lands in today's history: the conversation in
-    // its Everything state marks the thread's card, the outline takes no focus for it, and at a
-    // desktop width the thread is open with the reply's own row marked.
+    // A reply in a thread only agents wrote in lands in the history: Details opens at it, the
+    // reply's own turn is marked and drawn with its words, the thread's head beside it, and the
+    // outline takes no focus for it.
     await navigateInApp(page, `/issues/${issue.key}/comments/${resolvedReply.id}`);
     await expect(marked(page)).toHaveCount(1);
-    await expect(marked(page)).toHaveAttribute("data-turn", `comment:${resolvedRoot.id}`);
-    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
+    await expect(marked(page)).toHaveAttribute("data-history-item", resolvedReply.id);
+    await expect(marked(page)).toContainText("A reply in the resolved thread.");
+    await expect(historyItem(page, resolvedRoot.id)).toContainText("A resolved thread.");
+    await expect.poll(() => onScreen(marked(page))).toBe(true);
     // The focus stays where the last landing left it: the outline puts none on this thread.
     expect(
       [resolvedRoot.id, resolvedReply.id],
       "an agents-only link focuses its node in the outline"
     ).not.toContain(await focusedNodeId(page));
-    if (isPhone) {
-      await expect(page.getByRole("dialog", { name: "Thread" })).toHaveCount(0);
-    } else {
-      await expect(marked(page).locator('[data-reply][aria-current="true"]')).toHaveCount(1);
-    }
+    await expect(nodeRow(page, resolvedReply.id)).toHaveCount(0);
+    await closeDetails(page);
 
     // A search hit opens the very path the palette's row carries, and lands on the node.
     const hits = await search("quadrant");

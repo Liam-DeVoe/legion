@@ -10,7 +10,8 @@ import {
 import { needsYouCards } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
-import { expect, type Locator, type Page, test } from "./test";
+import { askFacts } from "./issue-page";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -58,14 +59,6 @@ async function nameDefaultFromSettings(settings: Page, from: string, login: stri
   await control.focus();
   await expect(control.locator(`option[value="${login}"]`)).toHaveCount(1);
   await control.selectOption(login);
-}
-
-/** The issue page's own card for an unanchored question, which the page draws on its
- *  Conversation turn from the issue's ask list (`["asks", key, "thread"]`). */
-async function conversationCard(page: Page, issueKey: string, askId: string): Promise<Locator> {
-  await page.goto(`/issues/${issueKey}`);
-  await page.getByRole("tab", { name: "Conversation" }).click();
-  return page.locator("#issue-conversation-panel").getByTestId(`ask-${askId}`);
 }
 
 // SLOW(>=2s): two browser contexts and three pages, then two live moves, each of which both open
@@ -170,7 +163,9 @@ test("issue and document pages follow a default move: a question's Asked-of badg
     // 1. Alice reads the issue's page and the document's page, two tabs of one context, and
     // each names her as the person its question is asked of.
     const issuePage = await alice.newPage();
-    const issueCard = await conversationCard(issuePage, issue.key, issueAsk.id);
+    // The issue page names who its open question is asked of in Details, beside the focused
+    // question's facts, where the old conversation card drew it (dispatch://INFRA-1196 R14, R19).
+    const issueCard = await askFacts(issuePage, issue.key, issueAsk.id);
     const docPage = await alice.newPage();
     await docPage.goto(`/projects/CORE/documents/${runbook.artifact.slug}`);
     const docCard = needsYouCards(docPage).getByTestId(`ask-${docAsk.id}`);

@@ -811,6 +811,7 @@ test("an ask's answer is part of the ask's node and no node of its own", () => {
 
   const node = nodeOf(root, "ask-1");
   expect(node?.answer).toEqual({
+    at: "2026-11-06T00:00:00Z",
     by: { id: "alice", kind: "user" },
     selected: ["1280 px"],
     text: "The preset row keeps its labels.\n\nAbove that width.",
@@ -869,6 +870,90 @@ test("a reply carrying no answered entry is drawn under its thread's head", () =
 
   expect(placementsOf(root, "c1").map((one) => one.parent)).toEqual(["c0"]);
   expect(placementsOf(root, "c0").map((one) => one.parent)).toEqual([KEY]);
+});
+
+// R16, dispatch://INFRA-3677: a reply to an ask names the ask alone (`ask_id`), and is drawn
+// under the ask's node whatever state the ask is in - an open, an answered and a resolved ask
+// alike, and an ask indexed from a block by that block's node.
+test("a reply to an ask is drawn under the ask, whatever state it is in", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const asks = [
+    question("ask-open"),
+    question("ask-answered", { state: "answered" }),
+    question("ask-resolved", {
+      resolution: {
+        actor: { id: "planner", kind: "session" },
+        at: "2026-11-06T00:00:00Z",
+        kind: "resolved",
+        reason: "Settled.",
+      },
+      state: "resolved",
+    }),
+    question("ask-block", {
+      block_artifact: { id: spec.id, primary: true, slug: SPEC },
+      block_id: "q1",
+    }),
+  ];
+  const replies = asks.map((ask, index) => ({
+    ...comment(`under-${ask.id}`, `2026-11-07T0${index}:00:00Z`),
+    ask_id: ask.id,
+  }));
+  const root = buildIssueTree({
+    asks,
+    comments: replies,
+    documents: [{ artifactId: spec.id, blocks: [block("q1", "ask")] }],
+    issue: issueDetails([spec]),
+  });
+
+  for (const id of ["ask-open", "ask-answered", "ask-resolved"]) {
+    expect(
+      placementsOf(root, `under-${id}`).map((one) => one.parent),
+      id
+    ).toEqual([id]);
+  }
+  expect(placementsOf(root, "under-ask-block").map((one) => one.parent)).toEqual([
+    blockNodeId(SPEC, "q1"),
+  ]);
+});
+
+// R1, R15: a comment or message an agent wrote outside every thread a person wrote in is no node
+// of the outline: the history in the panel draws it. A thread a person wrote in is the
+// conversation's, the agents' turns in it included, and a reply to an ask is in the ask's thread.
+test("a thread no person wrote in is no node, and one a person replied in is drawn whole", () => {
+  const agent = { id: "planner", kind: "session" as const };
+  const status = { ...comment("status", "2026-11-04T09:00:00Z"), author: agent };
+  const among = { ...comment("among", "2026-11-04T10:00:00Z"), author: agent };
+  const answer = {
+    ...comment("answer", "2026-11-04T11:00:00Z"),
+    answers: "among",
+    author: { id: "reviewer", kind: "session" as const },
+    reply_to: "among",
+  };
+  const joined = { ...comment("joined", "2026-11-04T12:00:00Z"), author: agent };
+  const person = {
+    ...comment("person", "2026-11-04T13:00:00Z"),
+    answers: "joined",
+    reply_to: "joined",
+  };
+  const underAsk = {
+    ...comment("under-ask", "2026-11-04T14:00:00Z"),
+    ask_id: "ask-1",
+    author: agent,
+  };
+  const daemon = thread("daemon", "2026-11-04T15:00:00Z");
+  const root = buildIssueTree({
+    asks: [question("ask-1")],
+    comments: [status, among, answer, joined, person, underAsk],
+    issue: issueDetails([]),
+    messages: [{ ...daemon, message: { ...daemon.message, author: agent } }],
+  });
+
+  for (const id of ["status", "among", "answer", "daemon"]) {
+    expect(nodeOf(root, id), `${id} is drawn in the outline`).toBeUndefined();
+  }
+  expect(placementsOf(root, "joined").map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, "person").map((one) => one.parent)).toEqual(["joined"]);
+  expect(placementsOf(root, "under-ask").map((one) => one.parent)).toEqual(["ask-1"]);
 });
 
 // R4: the ring is opened at a member of the ring and never at a node hanging off one. A plan

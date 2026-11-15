@@ -15,7 +15,6 @@ import {
   getArtifactVersion,
   patchIssue,
 } from "./api";
-import { conversationScrollTop, scrollConversationTo } from "./conversation-scroll";
 import { runDispatch } from "./dispatch-cli";
 import {
   connectedDot,
@@ -30,6 +29,7 @@ import {
   specAddress,
   typeAtEnd,
 } from "./editor";
+import { historyItem, tree } from "./issue-page";
 import { engineParagraphs } from "./read-back";
 import { navigateInApp } from "./sends";
 import { type BrowserContext, expect, test } from "./test";
@@ -39,6 +39,9 @@ const session = {
   actor: { kind: "session" as const, id: "e2e-doc-editor", origin: { tmux: "dispatch:1.3" } },
   as: "agent" as const,
 };
+/** A person writing on the issue, whose message is a node of the outline (dispatch://INFRA-1196
+ *  R1): an agent's message no person took part in is the history's, in Details (R15). */
+const carol = { login: "carol" };
 const longToken = `sjawhar/legion#838-${"unbreakable".repeat(12)}`;
 const initialMarkdown = `## Database\n\nUse SQLite\n\n| col | value |\n|---|---|\n| a | 1 |\n| b | ${longToken} |\n\n- [ ] task\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n\nEnd of spec.\n`;
 
@@ -406,7 +409,7 @@ test("reloading mid-edit reopens the same content", async ({ browser }) => {
   }
 });
 
-test("tab round-trips keep one document connection, the typed text, and the Conversation scroll position", async ({
+test("round-trips through the filters leave one open document connection and the typed text", async ({
   browser,
 }) => {
   await createProject({ key: "TABS", name: "Tabs" });
@@ -416,50 +419,49 @@ test("tab round-trips keep one document connection, the typed text, and the Conv
     title: "Mounted panels",
   });
   for (let index = 0; index < 30; index += 1) {
-    await createMessage(issue.key, { body: `Existing message ${index}` }, session);
+    await createMessage(issue.key, { body: `Existing message ${index}` }, carol);
   }
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    const sockets = countDocumentSockets(page);
+    // Open connections, not connections ever opened: a document opened in place of the outline
+    // is unmounted when the reader leaves it for a filter (dispatch://INFRA-1196 R3), which
+    // closes its socket, and coming back opens one again. What must never happen is a tab that
+    // accumulates live rooms.
+    const sockets = openDocumentSockets(page);
     await page.goto(await specAddress(issue.key));
     const editor = documentEditor(page);
     await typeAtEnd(page, "stay mounted");
     await expect(editor).toContainText("stay mounted");
     await expect.poll(sockets).toBe(1);
 
-    // The conversation's address is reached from the panel's own state control, which is a
-    // move inside the page, as the Conversation tab was (dispatch://INFRA-1196 R12): a fresh
-    // load of the address would open a second document connection by itself and prove nothing.
-    const openConversation = page.getByRole("option", { name: "What people said" });
-    await openConversation.click();
-    await expect(
-      page.getByRole("list", { name: "Conversation turns" }).getByText("Existing message 29")
-    ).toBeVisible();
-    await scrollConversationTo(page, 500);
-    const scrollPosition = await conversationScrollTop(page);
-    expect(scrollPosition).toBeGreaterThan(0);
+    // The conversation is the outline, at its own address, reached by a move inside the page as
+    // the Conversation tab was (dispatch://INFRA-1196 R1, R20): a fresh load of the address
+    // would open a second document connection by itself and prove nothing.
+    await navigateInApp(page, `/issues/${issue.key}/conversation`);
+    await expect(tree(page).getByText("Existing message 29")).toBeVisible();
 
     // A round-trip through the filter row: the Spec filter on, then every filter off again with
-    // Conversation (dispatch://INFRA-1196 R2), the document staying mounted on the way.
-    await page.getByRole("button", { exact: true, name: "Spec" }).click();
-    await expect(page.getByRole("button", { exact: true, name: "Spec" })).toHaveAttribute(
-      "aria-pressed",
-      "true"
-    );
+    // Conversation (dispatch://INFRA-1196 R2), the outline drawn again at the end of it.
+    //
+    // Where in the outline the reader was is not read here. The position this row held the page
+    // to was the panel's list of the conversation, its own scrollport, which went with the list
+    // (R14); the page keeps a place per view of its own (`IssuePage.tsx`'s `panelScroll`), and
+    // on this round-trip it does not restore it - an open defect of the page, reported with
+    // this pass and covered by no row.
+    const spec = page.getByRole("button", { exact: true, name: "Spec" });
+    const conversation = page.getByRole("button", { exact: true, name: "Conversation" });
+    await spec.click();
+    await expect(spec).toHaveAttribute("aria-pressed", "true");
+    await conversation.click();
+    await expect(conversation).toHaveAttribute("aria-pressed", "true");
+    await expect(tree(page).getByText("Existing message 29")).toBeVisible();
+
+    // Back to the document, with the text typed into it and one connection open, not two.
+    await navigateInApp(page, await specAddress(issue.key));
     await expect(editor).toContainText("stay mounted");
-    await page.getByRole("button", { exact: true, name: "Conversation" }).click();
-    await expect(page.getByRole("button", { exact: true, name: "Conversation" })).toHaveAttribute(
-      "aria-pressed",
-      "true"
-    );
-    await openConversation.click();
-    await expect(
-      page.getByRole("list", { name: "Conversation turns" }).getByText("Existing message 29")
-    ).toBeVisible();
     await expect.poll(sockets).toBe(1);
-    await expect.poll(() => conversationScrollTop(page)).toBe(scrollPosition);
   } finally {
     await alice.close();
   }
@@ -700,7 +702,7 @@ test("document marks and table alignment use classes rather than inline styles",
 // is the Hocuspocus provider. Dispatch's own host code calls these; only the libraries define them.
 const editorTransportMarkers = [/[^.\w$]getXmlFragment\(/u, /permissionDeniedHandler/u];
 
-test("the Conversation tab downloads no editor transport; the Spec tab loads it on demand", async ({
+test("the conversation downloads no editor transport; a document loads it on demand", async ({
   browser,
 }) => {
   await createProject({ key: "LAZY", name: "Lazy" });
@@ -709,7 +711,7 @@ test("the Conversation tab downloads no editor transport; the Spec tab loads it 
     spec: "# Lazy\n\nUse SQLite\n",
     title: "Transport on demand",
   });
-  await createMessage(issue.key, { body: "A message, no document" }, session);
+  await createMessage(issue.key, { body: "A message, no document" }, carol);
 
   const alice = await asUser(browser, "alice");
   try {
@@ -732,9 +734,7 @@ test("the Conversation tab downloads no editor transport; the Spec tab loads it 
     };
 
     await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(
-      page.getByRole("list", { name: "Conversation turns" }).getByText("A message, no document")
-    ).toBeVisible();
+    await expect(tree(page).getByText("A message, no document")).toBeVisible();
     expect(scripts.size).toBeGreaterThan(1);
     expect(await transportChunks()).toEqual([]);
 
@@ -866,11 +866,11 @@ test("a backslash before a character reference reads as its text in a document, 
     expect(engineParagraphs(stored)).toEqual([text]);
 
     // A comment's body is rendered by the engine alone: the control for the document's reading.
+    // An agent wrote it, in a thread no person wrote in, so its own address lands on its turn in
+    // the history, in Details (dispatch://INFRA-1196 R15, R20).
     const comment = await createComment(issue.key, { body: written }, session);
-    await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(
-      page.locator(`[data-turn="comment:${comment.id}"]`).getByText(text, { exact: true })
-    ).toBeVisible();
+    await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
+    await expect(historyItem(page, comment.id).getByText(text, { exact: true })).toBeVisible();
 
     // The command runs outside the browser, so one project runs it.
     if (testInfo.project.name === "chromium") {

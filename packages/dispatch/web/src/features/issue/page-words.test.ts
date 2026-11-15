@@ -22,9 +22,8 @@ import {
   CHECK_WHEN_WORDS,
   CONTENTS_MARK_WORDS,
   CONTROL_LABELS,
-  CONVERSATION_STATE_NAMES,
-  CONVERSATION_STATE_ORDER,
   DECLARED_WORDS,
+  DELIVERY_STATE_WORDS,
   EMPTY_STATE_LINES,
   FILE_WORDS,
   FILTER_SIGNAL_WORDS,
@@ -104,7 +103,6 @@ const UNASKED: readonly unknown[] = [
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,
   CONTENTS_MARK_WORDS,
-  CONVERSATION_STATE_NAMES,
   ISSUE_STATUS_WORDS,
   EMPTY_STATE_LINES,
   STATE_LINES,
@@ -114,6 +112,7 @@ const UNASKED: readonly unknown[] = [
   CHECK_WHEN_WORDS,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
+  DELIVERY_STATE_WORDS,
   APPROVAL_STATE_WORDS,
   CONTROL_LABELS,
   PROPERTY_LABELS,
@@ -127,15 +126,6 @@ const UNASKED: readonly unknown[] = [
 const ANSWERS: readonly unknown[] = [ANSWER_LINES, BLOCKED_BY_REFUSALS, HELP_LINES, KEY_REPORTS];
 
 const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];
-
-test("the conversation's four states are named in the order the panel offers them", () => {
-  expect(CONVERSATION_STATE_ORDER.map((state) => CONVERSATION_STATE_NAMES[state])).toEqual([
-    "Everything",
-    "Pinned",
-    "Questions",
-    "What people said",
-  ]);
-});
 
 test("every issue status the board knows has a word, and it is the board's own", () => {
   for (const status of issueStatuses) {

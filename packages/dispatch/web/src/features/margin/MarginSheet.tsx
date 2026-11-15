@@ -100,6 +100,10 @@ export interface MarginSheetModel {
     /** The address's landing on a card beside its document, keyed per navigation, once the
      *  margin holds that card (`useMarginSheet.ts`); undefined while the address names none. */
     landedCard: string | undefined;
+    /** The item the address names where it is a node of the issue's outline rather than a card
+     *  beside an open document: marked, as the address's own landing, and never the reader's
+     *  pick, so it opens no Details (`Margin.tsx`). */
+    routeMarkedItemId: string | undefined;
     selectedItemId: string | undefined;
     showResolved: boolean;
   };

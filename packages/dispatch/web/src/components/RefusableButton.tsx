@@ -1,11 +1,13 @@
 import { type ReactNode, useId } from "react";
 
-import { primaryButton, secondaryButtonCompact } from "../theme/classes";
+import { pageSend, pageSendAnswer, primaryButton, secondaryButtonCompact } from "../theme/classes";
 import { useTooltips } from "./tooltips";
 
 /** Each look whole, refused or not: the `refused:` variant (`styles.css`) paints `disabled` and
  *  `aria-disabled` alike, so a look states its cannot-press state once. */
 const LOOKS = {
+  "page-send": pageSend,
+  "page-send-answer": pageSendAnswer,
   primary: primaryButton,
   "secondary-compact": secondaryButtonCompact,
 } as const;

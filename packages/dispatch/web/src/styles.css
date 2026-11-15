@@ -326,14 +326,19 @@ a {
      `:not([data-node-bullet])`: a node's bullet in the issue outline is its fold control, the
      prototype's 18 by 24 px `.bul` (R34). Its row is at least 28 px tall and nothing else in
      the row is a target beside it, so a 24 px circle on it meets no other target (2.5.8's
-     spacing), and a 44 px box would push every row's words off the one left edge. */
+     spacing), and a 44 px box would push every row's words off the one left edge.
+
+     `:not([data-issue-composer] *)`: the issue page's one place to write, at the foot of its
+     outline, is the prototype's one line (`#composer`, R16): its line is 26 px tall, Send
+     24 px, and each chip 22 px with 5 px between them, so a 24 px circle on one meets no other
+     target (2.5.8's spacing). A 44 px floor makes it three lines a phone's foot cannot spare. */
   button:not(.dispatch-inline-link):not(.sr-only:not(:focus)):not([data-issue-header] *):not(
       [data-node-bullet]
-    ),
+    ):not([data-issue-composer] *),
   a:not(.prose a):not(.dispatch-inline-link):not(.sr-only:not(:focus)):not([data-issue-header] *),
   input:not([type="checkbox"]):not([type="radio"]):not(.sr-only:not(:focus)),
   select:not(.sr-only:not(:focus)):not([data-issue-header] *),
-  textarea:not(.sr-only:not(:focus)):not([data-issue-header] *) {
+  textarea:not(.sr-only:not(:focus)):not([data-issue-header] *):not([data-issue-composer] *) {
     min-width: 44px;
     min-height: 44px;
   }

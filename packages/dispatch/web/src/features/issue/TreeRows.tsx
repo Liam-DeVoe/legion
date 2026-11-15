@@ -8,6 +8,7 @@ import { useAgentText } from "../refs/AgentName";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { NodeRow } from "./NodeRow";
+import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
@@ -36,6 +37,7 @@ export function TreeRows({
   pinned,
   rows,
   tabStop,
+  threads,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
@@ -59,6 +61,8 @@ export function TreeRows({
   rows: readonly DrawnRow[];
   /** The key of the row that is the tree's one tab stop. */
   tabStop: string | undefined;
+  /** Each thread's newest write by the node that draws it (`threadMarks`). */
+  threads: ReadonlyMap<string, ThreadMark>;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
   // every row rather than once a row: a name and a shape for every node, the page's own words
@@ -81,6 +85,7 @@ export function TreeRows({
           );
         }
         const place = documentOfNode(row.node.id, artifacts);
+        const mark = threads.get(row.node.id);
         return (
           <NodeRow
             {...(row.node.answer === undefined
@@ -115,6 +120,7 @@ export function TreeRows({
             pinned={pinned.has(key)}
             rowKey={key}
             tabStop={tabStop === key}
+            {...(mark === undefined ? {} : { threadRead: mark })}
           />
         );
       })}

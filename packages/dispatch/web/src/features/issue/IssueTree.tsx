@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
@@ -7,6 +7,8 @@ import { useMediaQuery } from "../shell/useDialog";
 import { useSetFocusedNode } from "./focused-node";
 import { bringOnScreen } from "./identity-block";
 import { firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
+import { threadMarks } from "./outline-thread-read";
+import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
@@ -129,6 +131,7 @@ export function IssueTree({
   // deep, and the one-node-at-a-time reading is the conversation's.
   const zoomed = useMediaQuery(ZOOMED_TREE_QUERY) && rootRow;
   const setFocusedNode = useSetFocusedNode();
+  const writer = useOutlineWriter();
   const body = useRef<HTMLDivElement | null>(null);
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
@@ -195,14 +198,18 @@ export function IssueTree({
       : drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }));
   const breadcrumb: readonly TreeNode[] =
     rootedAt === undefined ? [] : zoomBreadcrumb(root, rootedAt);
+  // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
+  const threads = useMemo(() => threadMarks(root), [root]);
 
   const takeFocus = useCallback(
     (row: string, node: TreeNode) => {
       setFocused(row);
       setStop(row);
+      const item = conversationItem(node);
       setFocusedNode({
         ...(node.author === undefined ? {} : { author: node.author }),
         id: node.id,
+        ...(item === undefined ? {} : { item }),
         ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
         title: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
         type: node.type,
@@ -334,6 +341,7 @@ export function IssueTree({
     oneNodeAtATime: zoomed,
     rows,
     root,
+    writer,
     zoom: zoomed ? on : zoom,
   });
 
@@ -431,13 +439,15 @@ export function IssueTree({
           onFocus={takeFocus}
           onOpenDeeper={openDeeper}
           onPin={pin}
-          onToggle={(node, expanded) =>
-            zoomed ? setZoom(node.id) : unfold(node.id, expanded !== true)
-          }
+          // A branch opens where it is at every width (R16): below 1024 px the outline draws
+          // one level under the node it is read from, so an opened branch deeper than that is
+          // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.
+          onToggle={(node, expanded) => unfold(node.id, expanded !== true)}
           {...(openBody === undefined ? {} : { openBody })}
           pinned={pinned}
           rows={rows}
           tabStop={tabStop}
+          threads={threads}
         />
       </div>
       {root.children.length === 0 ? (

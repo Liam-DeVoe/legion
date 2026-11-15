@@ -911,6 +911,58 @@ export const pageStateText = {
   waiting: "text-page-waiting-text",
 } as const;
 
+/**
+ * The issue page's one place to write, at the foot of its outline (the prototype's `#composer`
+ * and `.cbox`): a box on the paper inside the hairline, its ink rule while the caret is in it,
+ * and while it answers a question the waiting colour around it and on the line naming the
+ * question (`.cbox.answering`, `.tgt.ans`). Its foot fades the outline into the paper above it.
+ * The line is one row of text that grows to 150 px; the kinds it writes are chips in their
+ * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
+ * caret is in the box. Send is the ink, the waiting colour's text shade while it sends an
+ * answer, and the hairline grey while it refuses (`#csend`). Every word in it says what it is,
+ * so the colours repeat what is written (R6).
+ */
+export const pageComposer = {
+  answering:
+    "border-page-waiting shadow-[0_0_0_1px_var(--color-page-waiting),0_2px_12px_rgba(28,25,23,0.07)] focus-within:border-page-waiting",
+  box: "group flex min-w-0 flex-col gap-[3px] rounded-[10px] border border-page-hair bg-page-paper py-[5px] pr-1.5 pl-3 shadow-[0_2px_12px_rgba(28,25,23,0.07)] focus-within:border-page-ink",
+  chip: "inline-flex items-center gap-1 rounded-full border px-2 text-xs leading-5 font-semibold max-[760px]:hidden max-[760px]:group-focus-within:inline-flex",
+  chipOff: {
+    ask: "border-page-question bg-page-paper text-page-question",
+    comment: "border-page-ink bg-page-paper text-page-ink",
+  },
+  chipOn: {
+    ask: "border-page-question bg-page-question text-page-paper",
+    comment: "border-page-ink bg-page-ink text-page-paper",
+  },
+  controls: "flex flex-none flex-wrap items-center gap-[5px] pb-px",
+  field:
+    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:text-page-bullet",
+  foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[760px]:pt-2.5",
+  line: "flex min-w-0 items-end gap-2 max-[760px]:group-focus-within:flex-wrap",
+  option:
+    "inline-flex items-center gap-1 rounded-full border border-page-waiting px-2 text-xs leading-5 font-semibold text-page-waiting-text aria-pressed:bg-page-waiting-tint aria-pressed:text-page-ink",
+  target:
+    "flex min-w-0 max-w-full items-center gap-1.5 self-start rounded-md bg-page-pane pl-2 text-xs leading-[22px] text-page-muted",
+  targetAnswering: "bg-page-waiting-tint text-page-waiting-text",
+  targetClear: "flex-none px-1.5 text-sm leading-5 text-page-quiet",
+} as const;
+/** Send as the composer draws it (`#csend`): the ink, the waiting colour's text shade while it
+ *  sends an answer, and the hairline grey while it refuses (`RefusableButton`'s `page-send`). */
+const pageSendBox = `ml-1 rounded-[7px] px-3 py-px text-xs leading-[22px] font-semibold text-page-paper refused:cursor-default refused:bg-page-hair refused:text-page-muted ${focusVisibleRing}`;
+export const pageSend = `${pageSendBox} bg-page-ink`;
+export const pageSendAnswer = `${pageSendBox} bg-page-waiting-text`;
+
+/** The quiet line of what the focused row's reader can do with it, under its words (the
+ *  prototype's `.acts`): plain words in the muted grey, each a control that underlines on hover,
+ *  and an open question's options as the choices of its answer, in the waiting colour, the
+ *  picked one on its tint (`button.opt`). */
+export const pageRowActs =
+  "flex min-w-0 flex-wrap items-center gap-x-4 text-xs leading-6 font-medium text-page-muted";
+export const pageRowAct = "hover:text-page-ink hover:underline";
+export const pageRowOption =
+  "-ml-1.5 flex w-[calc(100%+6px)] items-baseline gap-2 rounded-[5px] px-1.5 text-left text-page-waiting-text hover:bg-page-waiting-tint aria-pressed:bg-page-waiting-tint aria-pressed:font-semibold aria-pressed:text-page-ink";
+
 for (const ground of ["page-paper", "page-pane"]) {
   for (const ink of ["page-ink", "page-words", "page-muted", "page-quiet"]) {
     registerText(`${ink} text on ${ground}`, pageColor(ink), pageColor(ground));
@@ -950,6 +1002,21 @@ for (const [kind, tint] of [
 ] as const) {
   registerText(`${kind} text on ${tint}`, pageColor(kind), pageColor(tint));
 }
+registerText(
+  "page-paper text on page-waiting-text",
+  pageColor("page-paper"),
+  pageColor("page-waiting-text")
+);
+registerText(
+  "page-paper text on page-question",
+  pageColor("page-paper"),
+  pageColor("page-question")
+);
+registerText(
+  "page-ink text on page-waiting-tint",
+  pageColor("page-ink"),
+  pageColor("page-waiting-tint")
+);
 // The words a row draws in its kind's colour - its tag, its state, a waiting question's
 // options - on the focused row's ground, and the marks of a Contents entry on the pane and on
 // its marked row: text, so 4.5:1 wherever it is drawn, the focused row included (WCAG 1.4.3).

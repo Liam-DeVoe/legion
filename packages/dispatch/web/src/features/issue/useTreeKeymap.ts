@@ -3,6 +3,7 @@ import { type RefObject, useRef } from "react";
 import { useKeymap } from "../shell/keymap";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
 import type { TreeNode } from "./issue-tree";
+import { type OutlineWriter, replyItemOf, takesAnswer } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { type DrawnRow, pathTo } from "./tree-fold";
@@ -68,6 +69,9 @@ export interface TreeKeyboard {
   /** The node the tree is rooted at: the issue itself while the reader has zoomed into
    *  nothing, and never undefined where the tree is read one node at a time. */
   readonly zoom: string | undefined;
+  /** Where the reader writes, which `r` and `a` set to reply to the focused row and to answer
+   *  the focused open question (R16); undefined where the page draws no line to write in. */
+  readonly writer: OutlineWriter | undefined;
 }
 
 /** One row of the tree that stands for a node. The one row a deeper branch folds to stands for
@@ -397,6 +401,47 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         goTo(decision.id);
       },
       when: reading,
+    },
+    {
+      // Reply to the focused row (R16): a comment, a message or an ask whatever its state sets
+      // the line at the outline's foot to reply to it, and the issue itself to a new comment on
+      // it, as the row's own Reply does; the caret goes to the line.
+      id: "tree-reply",
+      keys: "r",
+      label: `${CONTROL_LABELS.reply} to the focused row`,
+      run: () => {
+        const node = focusedRow()?.node;
+        const writer = tree.writer;
+        if (node === undefined || writer === undefined) return;
+        tree.onReport("");
+        const item = replyItemOf(node);
+        if (item === undefined) writer.writeOnIssue();
+        else writer.replyTo(item);
+      },
+      when: () => {
+        const node = focusedRow()?.node;
+        return (
+          tree.writer !== undefined &&
+          node !== undefined &&
+          (node.type === "issue" || replyItemOf(node) !== undefined)
+        );
+      },
+    },
+    {
+      // Answer the focused open question (R16): the line answers it, its options its chips.
+      id: "tree-answer",
+      keys: "a",
+      label: `${CONTROL_LABELS.answer} the focused question`,
+      run: () => {
+        const node = focusedRow()?.node;
+        if (node === undefined || tree.writer === undefined) return;
+        tree.onReport("");
+        tree.writer.answerNode(node);
+      },
+      when: () => {
+        const node = focusedRow()?.node;
+        return tree.writer !== undefined && node !== undefined && takesAnswer(node);
+      },
     },
     {
       id: "tree-cycle",

@@ -60,8 +60,8 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     queryKey: ["asks", key],
     queryFn: () => api.listIssueAsks(key, "all"),
   });
-  // Under the keys the Conversation and the margin already own, so a reader opening the panel
-  // after the tree finds them answered rather than read a second time.
+  // Under the keys the margin, the history and the focused row's facts read too, so a reader
+  // opening the panel after the tree finds them answered rather than read a second time.
   const comments = useQuery({
     queryKey: ["comments", key],
     queryFn: () => api.listComments(key),

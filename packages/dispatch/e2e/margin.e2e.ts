@@ -27,13 +27,7 @@ import {
   setSheet,
   specAddress,
 } from "./editor";
-import {
-  conversationStateControl,
-  focusedNodeId,
-  marginShell,
-  openDetails,
-  pickPreset,
-} from "./issue-page";
+import { focusedNodeId, historyItem, marginShell, openDetails, pickPreset } from "./issue-page";
 import { commentWithBody } from "./margin-helpers";
 import { setCommentAuthorService } from "./seed";
 import { navigateInApp } from "./sends";
@@ -573,19 +567,13 @@ test("a document mark opens its thread in the margin and stays on the document",
     await expect(connectedDot(page)).toHaveText("connected");
 
     // The comment is an agent's, in a thread no person wrote in, so its deep link lands in the
-    // history and not the outline (dispatch://INFRA-1196 R20): today's history, the
-    // conversation in its Everything state with the comment's card marked. No redirect takes
-    // the reader to the document; the reader reaches the card beside the document from the
-    // conversation's "View in document", whose address marks the comment there.
+    // history in Details and not the outline (dispatch://INFRA-1196 R15, R20), its turn marked
+    // and drawn whole. No redirect takes the reader to the document; the document's own address
+    // marks the comment beside it there.
     await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
     await expect(page).toHaveURL(`/issues/${issue.key}/comments/${comment.id}`);
-    await expect(
-      page.locator(`li[data-turn="comment:${comment.id}"][aria-current="true"]`)
-    ).toContainText("focus this");
-    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
+    await expect(historyItem(page, comment.id)).toHaveAttribute("aria-current", "true");
+    await expect(historyItem(page, comment.id)).toContainText("focus this");
     await page.goto(`${await specAddress(issue.key)}?mark=${comment.id}`);
     const deepLinked = page
       .getByRole("region", { name: "Anchored comments" })

@@ -268,27 +268,6 @@ export const CONTENTS_MARK_WORDS = freeze({
 /** One mark of a Contents entry, by its own token, which is its `data-contents-mark`. */
 export type ContentsMark = keyof typeof CONTENTS_MARK_WORDS;
 
-/** The four states the conversation panel can be read in (R12), in the order the panel offers
- *  them: everything the issue recorded, what the reader pinned, the questions alone, and what
- *  people and agents actually said. */
-export const CONVERSATION_STATE_ORDER = freeze([
-  "everything",
-  "pinned",
-  "questions",
-  "words",
-] as const);
-
-/** One state of the conversation panel, by its own token, which is its `data-conversation-state`. */
-export type ConversationState = (typeof CONVERSATION_STATE_ORDER)[number];
-
-/** The name of each conversation state. */
-export const CONVERSATION_STATE_NAMES = freeze({
-  everything: "Everything",
-  pinned: "Pinned",
-  questions: "Questions",
-  words: "What people said",
-} as const satisfies Record<ConversationState, string>);
-
 /**
  * How an issue stands, as the page says it: the word a child's row draws beside it (R10). The
  * keys are the server's own status tokens, in the lifecycle order `features/project/board-model.ts`
@@ -442,6 +421,10 @@ export const ANSWER_LINES = freeze({
    *  write of what the issue advances failed and the server gave no reason of its own. */
   priorities_unreadable: "Could not load the priorities.",
   priorities_not_saved: "Could not save what this issue advances.",
+  /** What a handoff's line in the history says while its fields, which the reader opened, are
+   *  read, and when they could not be (`HistoryHandoff.tsx`). */
+  loading_handoff: "Loading handoff…",
+  handoff_unreadable: "Could not load the handoff.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -486,6 +469,14 @@ export const RESULT_STANDS_WORDS = freeze({
 export const RESULT_VERDICT_WORDS = freeze({
   fail: "Fail",
   pass: "Pass",
+} as const);
+
+/** How one delivery of a comment's mention or a message to an agent stands, in the focused
+ *  row's facts, in words rather than the delivery's `failed`, `pending` and `sent` (R22). */
+export const DELIVERY_STATE_WORDS = freeze({
+  failed: "Not delivered",
+  pending: "Sending",
+  sent: "Delivered",
 } as const);
 
 /**
@@ -554,6 +545,9 @@ export function approvalStateWord(token: string): string {
  * carry `AUTHOR_TEXT_ATTRIBUTE` instead.
  */
 export const CONTROL_LABELS = freeze({
+  /** Takes a suggestion's replacement into its document, in the panel's facts of the focused
+   *  comment that carries it (the old conversation's thread card's control). */
+  accept: "Accept",
   /** The one control that reaches a property with no value yet (R11, which bans "more"). */
   add: "Add",
   /** The control that places an issue under a priority, where the issue advances none: the
@@ -565,10 +559,22 @@ export const CONTROL_LABELS = freeze({
   /** The other parents a transcluded node is also drawn under (R1, R4). */
   also_under: "Also under",
   /** Names a person's answer, drawn in the ask's own row and body, never as a node of its own
-   *  (R1); the answer itself is the person's own words (`NodeRow.tsx`'s `AskAnswer`). */
+   *  (R1); the answer itself is the person's own words (`NodeRow.tsx`'s `AskAnswer`). It is also
+   *  the focused open question's control that answers it, which sets the line at the foot of the
+   *  outline to answer it (R16, the prototype's `.acts`), as `a` does. */
   answer: "Answer",
+  /** What the line at the foot of the outline says of the open question it answers, before the
+   *  question's own first line (the prototype's `.tgt.ans`). */
+  answering: "Answering:",
+  /** What it says of the options the reader picked, before them: "you chose 1024 px". */
+  answer_chose: "you chose",
+  /** What the line says while it is empty and answers a question. */
+  answer_placeholder: "Answer in your own words…  (Enter sends · Shift+Enter new line)",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
+  /** Changes the reader's own answer to a question, on its focused row: the line at the foot of
+   *  the outline answers it again over that answer (the old conversation's ask card's control). */
+  change_answer: "Change answer",
   /** Answers an agent's decision with a change, on the decision's own node (R7). It opens the
    *  composer below, whose comment is anchored to the decision's own words. */
   change_decision: "Change",
@@ -607,6 +613,10 @@ export const CONTROL_LABELS = freeze({
   contents: "Contents",
   /** The heading of the conversation inside the one right-hand panel (R12). */
   conversation: "Conversation",
+  /** The kinds the line at the foot of the outline writes, as its chips (R16, the prototype's
+   *  `.ck`): a comment, and a question, which is an ask of the issue. */
+  composer_comment: "Comment",
+  composer_question: "Question",
   /** The word that control carries, beside the command it copies. */
   copy: "Copy",
   /** Copies a check's `run` command, which renders as code beside it (R15). */
@@ -624,12 +634,23 @@ export const CONTROL_LABELS = freeze({
    *  reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
   deeper_row: "more row below",
   deeper_rows: "more rows below",
+  /** Closes an open question with no answer, from the line that answers it: the old
+   *  conversation's ask card's own control (R16, c-nothing-lost). */
+  decline: "Decline to answer",
+  /** The panel's list of the issue's history (R15): its status moves, claims, handoffs, the
+   *  Legion daemon's messages, what agents wrote outside every thread a person wrote in, and
+   *  every other event that is no row of the outline, newest first. `/activity` opens it. */
+  history: "History",
   /** A file's latest version as a download, in the node menu, before that version's number:
    *  the link the Artifacts list drew on each row (R3, c-nothing-lost). */
   download_version: "Download version",
   /** Opens the editor of a property beside the value it already holds, where that value is
    *  drawn: the issues this one waits on (`BlockedByControl.tsx`). */
   edit: "Edit",
+  /** What the line at the foot of the outline says of the reader's own comment it is editing,
+   *  before that comment's first line: `edit` in the comment's facts opens it, and `save` sends
+   *  it back (the old thread card's Edit and Save). */
+  editing: "Editing:",
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
   /** What an external link says of an address the browser will not open. */
@@ -670,6 +691,10 @@ export const CONTROL_LABELS = freeze({
   keys: "Keys",
   /** Lets a node kept open close again (R2). */
   let_close: "Let it close",
+  /** Says what the reader may do with their pins, which the panel lists (R14). */
+  pin: "Pin",
+  /** The panel's list of what the reader pinned, each a link to the pinned row (R14). */
+  pinned: "Pinned",
   /** The count that ends the header's properties line when the issue's labels do not all fit
    *  on it, after the number of labels left over: "+1 label", "+17 labels". It opens Details
    *  at its Labels row, which lists every label (R13, the ruling of
@@ -718,6 +743,8 @@ export const CONTROL_LABELS = freeze({
   priority_to_advance: "Priority to advance",
   /** Hands a claimed issue back, so another agent can take it (R11, row four). */
   release_claim: "Release",
+  /** Turns a suggestion down, beside Accept. */
+  reject: "Reject",
   /** Opens, in place, the rest of the words a row cut at six lines, and closes them again: an
    *  agent's words and an answered question are cut where more than 20 words would be hidden,
    *  and the control says how many, "more · 80 words" (the architect's ruling 1 on R1, the
@@ -728,9 +755,26 @@ export const CONTROL_LABELS = freeze({
   read_more_words: "words",
   /** What reopening does, as the control's own words rather than a tooltip (R11). */
   reopen_into_backlog: "Reopen into Backlog",
+  /** Reopens a resolved comment's thread, in the panel's facts of the focused row. */
+  reopen_thread: "Reopen",
+  /** Every row of the conversation that takes a reply carries it on its focus: a comment, a
+   *  message and an ask whatever its state, an answered or a resolved one included (R16,
+   *  dispatch://INFRA-3677); it sets the line at the foot of the outline to answer it, as `r`
+   *  does. */
+  reply: "Reply",
+  /** What the line at the foot of the outline says of the row it replies to, before that row's
+   *  author and first line (the prototype's `.tgt`). */
+  replying_to: "Replying to:",
+  /** Marks a comment's thread done, in the panel's facts of the focused row. */
+  resolve: "Resolve",
+  /** Sends a mention's delivery to its agent again, in the facts of the focused comment, while
+   *  that is safe (the old conversation's delivery line). */
+  retry: "Retry",
   /** Why the repository shown may not be the issue's own, said beside the control rather than
    *  in a tooltip (R11, R21). */
   repository_inherited: "inherited or the project's default",
+  /** Writes the reader's own comment back from the line that edits it. */
+  save: "Save",
   /** Each editor's save, naming the field it writes. */
   save_blocked_by: "Save blocked by",
   save_parent: "Save parent",
@@ -738,6 +782,10 @@ export const CONTROL_LABELS = freeze({
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",
+  /** Sends what the line at the foot of the outline holds (R16), and the answer it holds to the
+   *  question it answers (`send_answer`). */
+  send: "Send",
+  send_answer: "Send answer",
   /** How many checks serve a requirement, which the coverage read counts without naming them
    *  (R4, until the chain read lands). */
   serving_checks: "Checks serving it",
@@ -750,6 +798,10 @@ export const CONTROL_LABELS = freeze({
   /** Opens the rest of a list of unbounded length in Details, which shows its first ten
    *  entries and then this, with the whole count (R13): "Show all 14". */
   show_all: "Show all",
+  /** Opens a handoff's fields and every proof entry under its line in the history, and closes
+   *  them again (the old conversation's handoff card, R19). */
+  show_fields: "Show fields",
+  hide_fields: "Hide fields",
   /** The whole subtree done of total, labelled beside the direct count (R10). */
   subtree_done: "Whole tree done",
   /** What the claim says of the moment another agent may take an unresponsive holder's issue,
@@ -779,8 +831,18 @@ export const CONTROL_LABELS = freeze({
   unfold: "Unfold",
   /** The pin's words while the issue is pinned. */
   unpin_issue: "Unpin issue",
+  /** Takes a pin back, in the panel's facts of the focused row and in its list of pins. */
+  unpin: "Unpin",
   /** The whole subtree's count in the header's properties line: "Whole tree 5 of 30 done". */
   whole_tree: "Whole tree",
+  /** The line at the foot of the outline, as a reader hears it named (R16, the prototype's
+   *  `#composer`), and what it says while it is empty and writes a new comment or question on
+   *  the issue. */
+  write: "Write to the conversation",
+  write_placeholder: "Write at the top of the conversation…  (Enter sends)",
+  /** Sets the line back from the row it replies to, or the question it answers, to a new comment
+   *  on the issue (the prototype's `.tgt .x`). */
+  write_on_issue: "Write on the issue instead",
   /** What a decision the model marks unsure says of itself, in one word on its own row (R9):
    *  the decisions read's `unsure`, which the server sets for a decision holding a paragraph
    *  that opens `Unsure:`. */
@@ -1060,7 +1122,6 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,
   CONTENTS_MARK_WORDS,
-  CONVERSATION_STATE_NAMES,
   ISSUE_STATUS_WORDS,
   EMPTY_STATE_LINES,
   STATE_LINES,
@@ -1070,6 +1131,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   CHECK_WHEN_WORDS,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
+  DELIVERY_STATE_WORDS,
   APPROVAL_STATE_WORDS,
   CONTROL_LABELS,
   PROPERTY_LABELS,
