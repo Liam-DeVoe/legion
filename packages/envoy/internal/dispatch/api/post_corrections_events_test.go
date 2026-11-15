@@ -1,7 +1,8 @@
 package api
 
-// What the four events of a correction carry, and what a read of an event of a deleted post
-// gives: the mark, no part of the body, and the frozen preview of another post untouched.
+// What the four events of a correction carry, and what a read of an event of an edited or a
+// deleted post gives: the post's own marks, no part of a deleted post's body, and the frozen
+// preview of another post untouched.
 
 import (
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // decodedIssueEvents is the issue's events, oldest first, each payload decoded into a map so a
@@ -223,5 +225,59 @@ func TestEveryEventOfADeletedMessageGivesNoBodyAndKeepsTheReplysFrozenPreview(t 
 	}
 	if frozen != 1 {
 		t.Fatalf("the reply's frozen preview of the deleted message is in %d of the reply's events, want the one that froze it", frozen)
+	}
+}
+
+// Every event of an edited post reads with the time its author last replaced the body, as the
+// post itself does, its own edit events among them: the event of its creation keeps the body as
+// first written, and the mark is what tells a reader of the log that the body was replaced
+// since. An event of a post nobody edited reads with no edit time.
+func TestEveryEventOfAnEditedPostCarriesTheTimeOfItsLastEdit(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "An edited post's events", "A spec")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the comment as first written"}, "alice")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "the message as first written"}, "alice")
+	standing := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "the message nobody edits"}, "alice")
+
+	commentEdited := editThreadComment(t, handler, comment.ID, "the comment as corrected", "alice")
+	editIssueMessage(t, handler, message.ID, "the message as corrected once", "alice")
+	messageEdited := editIssueMessage(t, handler, message.ID, "the message as corrected twice", "alice").EditedAt
+	if messageEdited == nil {
+		t.Fatal("the second edit of the message answered no edited_at")
+	}
+
+	want := map[string]struct {
+		at      *time.Time
+		created string
+	}{
+		comment.ID:  {at: &commentEdited, created: "the comment as first written"},
+		message.ID:  {at: messageEdited, created: "the message as first written"},
+		standing.ID: {at: nil, created: "the message nobody edits"},
+	}
+	read := map[string]int{}
+	for _, event := range decodedIssueEvents(t, handler, issue.Key) {
+		id, _ := event.Payload["id"].(string)
+		post, found := want[id]
+		if !found {
+			continue
+		}
+		read[id]++
+		at, _ := event.Payload["edited_at"].(string)
+		if post.at == nil {
+			if at != "" {
+				t.Fatalf("the %s payload of a post nobody edited carries edited_at %q", event.Type, at)
+			}
+		} else if parsed, err := time.Parse(time.RFC3339Nano, at); err != nil || !parsed.Equal(*post.at) {
+			t.Fatalf("the %s payload of %s edited_at = %v, want the post's last edit at %s", event.Type, id, event.Payload["edited_at"], post.at)
+		}
+		// The read marks the event and leaves the body it recorded.
+		if strings.HasSuffix(event.Type, ".created") && event.Payload["body"] != post.created {
+			t.Fatalf("the %s payload of %s body = %v, want the body as first written", event.Type, id, event.Payload["body"])
+		}
+	}
+	// The comment's creation and its edit, the message's creation and its two edits, and the
+	// standing message's creation.
+	if read[comment.ID] != 2 || read[message.ID] != 3 || read[standing.ID] != 1 {
+		t.Fatalf("the issue's events of the three posts = %v, want 2, 3 and 1", read)
 	}
 }

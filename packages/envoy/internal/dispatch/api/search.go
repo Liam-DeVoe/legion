@@ -881,10 +881,12 @@ totals as (
 // where main's arm drops it inside the ordered select. So 1,001 windows of comments that no longer
 // exist, nearer than a project's three comments, would answer that project with none of them,
 // where main answers all three (measured on such a corpus, INFRA-988). It loses no row today
-// because no path deletes a comment row: no route deletes a comment, and nothing outside the
-// tests runs `delete from comments`. A change that adds comment deletion (dispatch://INFRA-1523)
-// must delete the comment's windows in the same transaction, or move this join back inside the
-// limit.
+// because no path deletes a comment row: a comment's delete (deleteComment, dispatch://INFRA-1523)
+// keeps the row and clears its body, and nothing outside the tests runs `delete from comments`.
+// So a deleted comment's windows still join here until the block-index tick drops them, and a
+// hit can be such a comment, which its delete mark says (stampSearchPostMarks). A change that
+// deletes comment rows must delete the comment's windows in the same transaction, or move this
+// join back inside the limit.
 //
 // The three window arms beside it filter and join inside the ordered, limited select, and for
 // comments that order costs the index. The item join is on an expression of the window's id
@@ -1152,8 +1154,9 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // any kind, which is what the answer's own total says - is run a second time over its rarest
 // words (searchRarestWords, searchBroadenWords), and that second answer alone is stamped
 // broadened. The query's embedding is taken once and both runs share it, so a broadened search
-// still costs one model-service call. The page answered is then stamped with the edit times of
-// its comments and messages (stampSearchEdits), one read by id of the page's own posts.
+// still costs one model-service call. The page answered is then stamped with the edit times and
+// the delete marks of its comments and messages (stampSearchPostMarks), one read by id of the
+// page's own posts.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
 	if err != nil {
@@ -1205,21 +1208,26 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 			response.TookMS = time.Since(started).Milliseconds()
 		}
 	}
-	if err := s.stampSearchEdits(ctx, response.Results); err != nil {
+	if err := s.stampSearchPostMarks(ctx, response.Results); err != nil {
 		return model.SearchResponse{}, err
 	}
 	return response, nil
 }
 
-// stampSearchEdits sets EditedAt on each comment and message hit of results whose author edited
-// it since it was written, so the page that prints a hit's snippet can say the post was edited.
-// It is one read by id of the page's own posts, made after the search statement rather than
-// inside it: the search and meaning statements end in one column shape that the oracles of their
-// arms compare row for row with earlier releases' (document_search_oracle_test.go), and the page
-// is at most searchMaxLimit rows. A page with no comment or message reads nothing. A deleted post
-// no longer matches a search, its body and its windows being gone, so a hit carries no delete
-// mark.
-func (s *server) stampSearchEdits(ctx context.Context, results []model.SearchResult) error {
+// stampSearchPostMarks sets the marks of each comment and message hit of results whose author
+// edited or deleted it since it was written: EditedAt, and DeletedAt with DeletedBy as
+// model.DeletedPostMark reads them, so every reader of a hit can say the post was edited or is
+// deleted. It is one read by id of the page's own posts, made after the search statement rather
+// than inside it: the search and meaning statements end in one column shape that the oracles of
+// their arms compare row for row with earlier releases' (document_search_oracle_test.go), and the
+// page is at most searchMaxLimit rows. A page with no comment or message reads nothing.
+//
+// A delete clears the post's body, so the keyword arm drops the post with it: its search vector
+// follows the body. The meaning arm does not, since the windows it matches are the block-index
+// tick's to drop, in a transaction of its own one tick after the delete (refs.TombstoneItem), and
+// until then it can return the post with an empty snippet. The mark is what tells that hit's
+// reader the post is deleted.
+func (s *server) stampSearchPostMarks(ctx context.Context, results []model.SearchResult) error {
 	var comments, messages []string
 	for _, result := range results {
 		switch result.Kind {
@@ -1233,30 +1241,40 @@ func (s *server) stampSearchEdits(ctx context.Context, results []model.SearchRes
 		return nil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select 'comment', c.id::text, c.edited_at from comments c
-		where c.id = any($1::uuid[]) and c.edited_at is not null
+		select 'comment', c.id::text, c.edited_at, c.deleted_at, c.deleted_by from comments c
+		where c.id = any($1::uuid[]) and (c.edited_at is not null or c.deleted_at is not null)
 		union all
-		select 'message', m.id::text, m.edited_at from messages m
-		where m.id = any($2::uuid[]) and m.edited_at is not null`, comments, messages)
+		select 'message', m.id::text, m.edited_at, m.deleted_at, m.deleted_by from messages m
+		where m.id = any($2::uuid[]) and (m.edited_at is not null or m.deleted_at is not null)`, comments, messages)
 	if err != nil {
-		return fmt.Errorf("read the edit times of the search's posts: %w", err)
+		return fmt.Errorf("read the marks of the search's posts: %w", err)
 	}
 	defer rows.Close()
-	edited := make(map[[2]string]time.Time)
+	type postMarks struct {
+		editedAt, deletedAt *time.Time
+		deletedBy           *model.Actor
+	}
+	marked := make(map[[2]string]postMarks)
 	for rows.Next() {
 		var kind, id string
-		var at time.Time
-		if err := rows.Scan(&kind, &id, &at); err != nil {
-			return fmt.Errorf("scan the edit time of a search's post: %w", err)
+		var editedAt, deletedAt *time.Time
+		var deletedBy []byte
+		if err := rows.Scan(&kind, &id, &editedAt, &deletedAt, &deletedBy); err != nil {
+			return fmt.Errorf("scan the marks of a search's post: %w", err)
 		}
-		edited[[2]string{kind, id}] = at
+		marks := postMarks{editedAt: editedAt}
+		if marks.deletedAt, marks.deletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			return fmt.Errorf("the %s %s: %w", kind, id, err)
+		}
+		marked[[2]string{kind, id}] = marks
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the edit times of the search's posts: %w", err)
+		return fmt.Errorf("read the marks of the search's posts: %w", err)
 	}
 	for index := range results {
-		if at, found := edited[[2]string{results[index].Kind, results[index].ID}]; found {
-			results[index].EditedAt = &at
+		if marks, found := marked[[2]string{results[index].Kind, results[index].ID}]; found {
+			results[index].EditedAt = marks.editedAt
+			results[index].DeletedAt, results[index].DeletedBy = marks.deletedAt, marks.deletedBy
 		}
 	}
 	return nil

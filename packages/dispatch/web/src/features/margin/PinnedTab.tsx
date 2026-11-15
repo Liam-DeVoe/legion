@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { DispatchEvent } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { borderDefault, textMutedOnSurface } from "../../theme/classes";
-import { EventBody, isAskEvent } from "../activity/EventBody";
+import { EventBody, EventEditedMark, isAskEvent } from "../activity/EventBody";
 import { AgentName } from "../refs/AgentName";
 import { EditedMark, PostBody } from "../refs/PostBody";
 import { Timestamp } from "../refs/Timestamp";
@@ -61,6 +61,7 @@ export function PinnedTab({
               {isAskEvent(event) ? null : (
                 <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
                   <AgentName actor={event.actor} inline />
+                  <EventEditedMark event={event} />
                 </p>
               )}
             </div>

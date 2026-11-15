@@ -232,12 +232,12 @@ func DecodeAnchor(data []byte, anchor *Anchor) error {
 // a deleted comment or message carries - the comment and message rows themselves, the event
 // log's payloads, the Inbox's reply rows, a session's answers, the body history, the reference
 // graph's comment and message nodes and their blocks' nodes (refs/graph.go,
-// refs/item_block_nodes.go), the block a reply quotes (refs.ReplyBlocks) and an id prefix's
-// candidates (refs/prefix.go) - so that one decode stands behind all of them and no read of a
-// deleted post can answer a mark of another shape. Both are nil for a post that stands, the time
-// is answered in UTC as every other time a read answers is, and an author that deleted the post
-// is read as the actor it was stored as. A mark with no actor stored (a row an older build wrote)
-// is the time alone.
+// refs/item_block_nodes.go), the block a reply quotes (refs.ReplyBlocks), an id prefix's
+// candidates (refs/prefix.go) and a search hit (api.stampSearchPostMarks) - so that one decode
+// stands behind all of them and no read of a deleted post can answer a mark of another shape.
+// Both are nil for a post that stands, the time is answered in UTC as every other time a read
+// answers is, and an author that deleted the post is read as the actor it was stored as. A mark
+// with no actor stored (a row an older build wrote) is the time alone.
 func DeletedPostMark(at *time.Time, by []byte) (*time.Time, *Actor, error) {
 	if at == nil {
 		return nil, nil, nil
@@ -779,9 +779,16 @@ type SearchResult struct {
 	Rank        float64     `json:"rank"`
 	Href        string      `json:"href"`
 	// EditedAt is the time a comment's or a message's author last edited it, absent on a hit of
-	// another kind and on a post never edited. A deleted post no longer matches a search, so a hit
-	// carries no delete mark.
+	// another kind and on a post never edited.
 	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// DeletedAt and DeletedBy are the mark of a comment or a message its author deleted, as the
+	// reads of the post itself carry them (Comment, Message), absent on a hit of another kind and
+	// on a post that stands. The delete clears the body, so the keyword arm no longer finds the
+	// post, but the meaning arm can until the block-index tick drops its windows
+	// (refs.TombstoneItem): such a hit's Snippet is empty, and the mark is what tells its reader
+	// the post is deleted rather than blank.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy *Actor     `json:"deleted_by,omitempty"`
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`

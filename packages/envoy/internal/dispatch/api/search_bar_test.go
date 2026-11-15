@@ -574,7 +574,7 @@ func TestSearchKeepsAPostEditedAfterTheDateItNarrowsBy(t *testing.T) {
 // A hit of a comment or a message its author edited carries the time of the edit, so the page
 // printing its snippet can say the post was corrected, and a hit of one never edited carries
 // none: on a request for keywords only and on one that asks for no such thing, each of which
-// runSearch answers through the one stamp of the page (stampSearchEdits).
+// runSearch answers through the one stamp of the page (stampSearchPostMarks).
 func TestSearchCarriesTheEditTimeOfAnEditedPost(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
@@ -615,6 +615,81 @@ func TestSearchCarriesTheEditTimeOfAnEditedPost(t *testing.T) {
 			case at != nil && (hit.EditedAt == nil || !hit.EditedAt.Equal(*at)):
 				t.Fatalf("%s: the %s %s edited_at = %v, want the edit's time %v", query, key[0], key[1], hit.EditedAt, *at)
 			}
+		}
+	}
+}
+
+// A delete clears a post's body, so the keyword arm drops the post at once, but the windows the
+// meaning arm matches are the block-index tick's to drop, one tick after the delete
+// (refs.TombstoneItem). Until that tick the meaning arm returns the deleted comment or message
+// with an empty snippet, and the hit carries the post's delete mark so its reader can say the
+// post is deleted; a hit of a post that stands carries none (stampSearchPostMarks). The windows
+// are written and embedded as the package's meaning rows seed them, and the tick is not run
+// between the delete and the search: that gap is what this row stands in.
+func TestSearchMeaningHitOfADeletedPostCarriesItsDeleteMark(t *testing.T) {
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "Body text.")
+	deletedComment := searchComment(t, handler, issue.Key, "alice", "A remark about the quadrant, to withdraw.")
+	keptComment := searchComment(t, handler, issue.Key, "alice", "A remark about the astrolabe that stands.")
+	deletedMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A message about the sextant, to withdraw.")
+	keptMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A message about the compass that stands.")
+	// A distinct axis each, as angledVector requires of vectors answering one query.
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+deletedComment, angledVector(0.9, 2))
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+keptComment, angledVector(0.9, 3))
+	embedWindowsAs(t, database, embedder, "message_block", "message/"+deletedMessage, angledVector(0.9, 4))
+	embedWindowsAs(t, database, embedder, "message_block", "message/"+keptMessage, angledVector(0.9, 5))
+	processAllPending(t, database, embedder)
+
+	comment := deleteThreadComment(t, handler, deletedComment, "alice")
+	message := deleteIssueMessage(t, handler, deletedMessage, "alice")
+	if comment.DeletedAt == nil || message.DeletedAt == nil {
+		t.Fatalf("the deletes answered no mark: comment %#v, message %#v", comment.DeletedAt, message.DeletedAt)
+	}
+	for _, ownerKey := range []string{"comment/" + deletedComment, "message/" + deletedMessage} {
+		if windows := postEmbeddingWindows(t, database, ownerKey); windows == 0 {
+			t.Fatalf("%s holds no window after its delete, so no meaning hit can be what this row reads", ownerKey)
+		}
+	}
+
+	requireNoKeywordHit(t, "q=wibbleflorp")
+	page := searchResponse(t, handler, "q=wibbleflorp")
+	if page.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", page.Degraded)
+	}
+	for _, want := range []struct {
+		kind, id string
+		at       *time.Time
+	}{
+		{"comment", deletedComment, comment.DeletedAt},
+		{"comment", keptComment, nil},
+		{"message", deletedMessage, message.DeletedAt},
+		{"message", keptMessage, nil},
+	} {
+		hit := searchHit(t, page, want.kind, want.id)
+		if want.at == nil {
+			if hit.DeletedAt != nil || hit.DeletedBy != nil {
+				t.Fatalf("the %s %s, which stands, carries the delete mark %v by %#v", want.kind, want.id, hit.DeletedAt, hit.DeletedBy)
+			}
+			continue
+		}
+		if hit.Snippet != "" {
+			t.Fatalf("the deleted %s %s's snippet = %q, want the empty one its cleared body gives", want.kind, want.id, hit.Snippet)
+		}
+		if hit.DeletedAt == nil || !hit.DeletedAt.Equal(*want.at) {
+			t.Fatalf("the deleted %s %s's deleted_at = %v, want the delete's time %v", want.kind, want.id, hit.DeletedAt, *want.at)
+		}
+		if hit.DeletedBy == nil || hit.DeletedBy.Kind != "user" || hit.DeletedBy.ID != "alice" {
+			t.Fatalf("the deleted %s %s's deleted_by = %#v, want the user alice, who deleted it", want.kind, want.id, hit.DeletedBy)
+		}
+	}
+
+	// The tick then drops the deleted posts' windows, and the meaning arm no longer finds them.
+	windowOwedItems(t, database)
+	after := searchResponse(t, handler, "q=wibbleflorp")
+	for _, gone := range []struct{ kind, id string }{{"comment", deletedComment}, {"message", deletedMessage}} {
+		if searchResultOf(after, gone.kind, gone.id) != nil {
+			t.Fatalf("after the tick, results = %#v still hold the deleted %s %s", after.Results, gone.kind, gone.id)
 		}
 	}
 }

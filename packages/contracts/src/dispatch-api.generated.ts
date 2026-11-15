@@ -6036,6 +6036,9 @@ export interface components {
       ask?: components["schemas"]["SearchAsk"];
       block_id?: string;
       /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
       edited_at?: string;
       href: string;
       id: string;

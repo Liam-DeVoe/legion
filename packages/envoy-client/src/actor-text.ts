@@ -36,8 +36,9 @@ export function actorText(actor: Actor | WrittenActor): string {
  * deleted parent (`dispatch-commands/render-item.ts`), an event of one
  * (`dispatch-commands/render-issue.ts`), a graph row naming one
  * (`dispatch-commands/render-graph.ts`), an Inbox thread whose root is one
- * (`dispatch-commands/session.ts`), a card's re-read of a body its event cut (`delivery.ts`) and
- * the answers list a session is handed (`session-answers.ts`) all say this sentence.
+ * (`dispatch-commands/session.ts`), a card's re-read of a body its event cut (`delivery.ts`),
+ * the answers list a session is handed (`session-answers.ts`) and a search hit of one
+ * (`search-answer.ts`) all say this sentence.
  */
 export function deletedMark(at: string, by: Actor | WrittenActor | null | undefined): string {
   return `Deleted by ${by == null ? "its author" : actorText(by)} at ${at}`;

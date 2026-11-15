@@ -2537,3 +2537,35 @@ test("a reply's quote of an edited parent marks the parent as edited, and of a s
     stub.restore();
   }
 });
+
+// Reply takes the message as it stands when it is pressed, and a draft can be open when its
+// author deletes it. The composer's quote reads the message from the Conversation's own read, so
+// once the delete lands it says the message is deleted and gives no part of the body the draft
+// took; until then it quotes the standing message as ever.
+test("the composer's quote of a message deleted while the draft is open reads as deleted, with no part of its body", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({ messages: [thread(message("message-1", { body: "Alpha." }))] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const composer = () => screen.getByRole("form", { name: "Comment composer" });
+
+  try {
+    const turn = (await screen.findByText("Alpha.")).closest("[data-turn]") as HTMLElement;
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(composer().textContent).toContain("Replying to alice — Alpha."));
+
+    stub.lists.messages = [
+      thread(
+        message("message-1", { body: "", deleted_at: "2026-09-09T03:00:00Z", deleted_by: alice })
+      ),
+    ];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+
+    await waitFor(() => expect(composer().textContent).toContain("Deleted by alice"));
+    expect(composer().textContent).toContain("Replying to alice");
+    expect(composer().textContent).not.toContain("Alpha.");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});

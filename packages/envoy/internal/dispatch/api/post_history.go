@@ -91,7 +91,9 @@ const deletedPostDeliveryError = "not sent: the post was deleted"
 // A comment clears its suggestion with its body, since the suggestion's replacement text is the
 // comment's text too, and a message carries no suggestion: the kind decides which, and the clear
 // rides the one update, so the kind's search trigger rewrites the row's vector once from the
-// cleared body and the deleted post stops matching a search.
+// cleared body and the deleted post stops matching a keyword search. Its meaning hits stand
+// until the block-index tick drops its windows, and each such hit carries the post's delete
+// mark (stampSearchPostMarks, search.go).
 func (s *server) clearDeletedPostBody(
 	ctx context.Context,
 	tx pgx.Tx,

@@ -348,6 +348,7 @@ function CommentThreadBody({
               void queryClient.invalidateQueries({ queryKey: myRepliesKey });
             }}
             owner={owner}
+            replyParent={root}
             replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
             standing
           />
@@ -435,6 +436,7 @@ function MessageThreadBody({
               void queryClient.invalidateQueries({ queryKey: myRepliesKey });
             }}
             owner={{ issueKey, kind: "issue" }}
+            replyParent={root}
             replyTo={{
               actor: root.author,
               excerpt: "",
@@ -577,6 +579,7 @@ function AgentThreadBody({
                 hold={hold}
                 onCancelReply={noReturn}
                 onClose={noReturn}
+                replyParent={newest}
                 replyTo={agentReplyTo(agent, read, newest)}
                 sendKey={sendKey}
                 standing

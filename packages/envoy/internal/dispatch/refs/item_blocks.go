@@ -276,8 +276,13 @@ func IndexItem(
 //
 //   - the block index, re-indexed from the empty body, which splits into no block: each block's
 //     position is nulled, removed_at is stamped, a null text is written at the new revision for
-//     a kind that records one, each block mention goes, and every embedding window of the item
-//     is dropped (ReplaceCountedItemEdit, indexItemBlocks).
+//     a kind that records one, and each block mention goes (ReplaceCountedItemEdit,
+//     indexItemBlocks). The item's embedding windows are not dropped here: the block-index
+//     tick's window arm drops the windows of an item left with no block, in a transaction of its
+//     own one tick after this one (WriteItemWindows). Until then the meaning arm of search can
+//     return the deleted item, with the empty snippet its cleared body gives, while the keyword
+//     arm drops it with its body; the hit carries the item's delete mark, so every reader of it
+//     says the post is deleted (api's stampSearchPostMarks).
 //   - each block's stored excerpt, which a removal keeps and which is what a reply read serves
 //     as the text of the block it answers (ReplyBlocks), so without this clear a reply still
 //     prints the deleted text.

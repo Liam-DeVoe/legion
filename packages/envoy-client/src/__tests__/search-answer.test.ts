@@ -304,3 +304,43 @@ describe("searchAnswer: where an ask hit stands", () => {
     ]);
   });
 });
+
+describe("searchAnswer: a deleted post's hit", () => {
+  // A comment or a message its author deleted can still be a meaning hit until Dispatch's next
+  // index pass drops its windows, and its snippet is then empty: the line says who deleted it
+  // and when where the snippet would be, and a post nobody deleted keeps its snippet.
+  test("prints the deleted line in place of the snippet, on an issue's hit and a document's", () => {
+    const deleted = {
+      deleted_at: "2026-10-02T00:00:00Z",
+      deleted_by: { kind: "user", id: "alice" },
+      edited_at: "2026-10-01T00:00:00Z",
+      snippet: "",
+    } as const;
+    const onDocument: SearchResult = {
+      ...hit,
+      ...deleted,
+      id: "comment-4",
+      owner: {
+        kind: "document",
+        project: "CORE",
+        slug: "notes",
+        name: "Notes",
+        artifact_id: "a-1",
+      },
+      href: "/projects/CORE/documents/notes?comment=comment-4",
+    };
+
+    expect(searchText({ ...hit, ...deleted })).toEqual([
+      askHeader,
+      "LEGION-2 [triage] Astrolabe - comment: Deleted by user alice at 2026-10-02T00:00:00Z -> http://dispatch.test/issues/LEGION-2/spec#comment-2",
+    ]);
+    expect(searchText(onDocument)).toEqual([
+      askHeader,
+      "dispatch://CORE/artifact/notes [document] Notes - comment: Deleted by user alice at 2026-10-02T00:00:00Z -> http://dispatch.test/projects/CORE/documents/notes?comment=comment-4",
+    ]);
+    expect(searchText(hit)).toEqual([
+      askHeader,
+      "LEGION-2 [triage] Astrolabe - comment: Comment about **astrolabe** -> http://dispatch.test/issues/LEGION-2/spec#comment-2",
+    ]);
+  });
+});

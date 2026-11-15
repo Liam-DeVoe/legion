@@ -112,8 +112,10 @@ export const CommentSchema = z.strictObject(commentFields).readonly();
  * `mentions` and `deliveries` were added on 2026-09-18 (#1188), and every comment event recorded
  * before that day carries neither; `deleted_at` and `deleted_by` were added by the post
  * corrections, and every comment event recorded before them carries neither. A read row
- * (`Comment`) always has all four. `thread_logins` (the comment's ask, else its root) is carried
- * by `comment.created` and `comment.answered`.
+ * (`Comment`) always has all four. The read of an edited comment's event gives `edited_at` as the
+ * comment reads now, the time its author last replaced the body, beside the body the event
+ * recorded (`attachPostMarks` in `api/events.go`). `thread_logins` (the comment's ask, else its
+ * root) is carried by `comment.created` and `comment.answered`.
  */
 export const commentEventPayloadFields = {
   ...commentFields,
@@ -121,7 +123,7 @@ export const commentEventPayloadFields = {
   deliveries: z.array(WrittenCommentDeliverySchema).optional(),
   /** The comment's body, and a suggestion's replacement text with it. Every comment row has
    *  both, but a deleted comment's events carry neither: the read of the event takes `body`,
-   *  `body_truncated` and `suggestion` out of the payload (`attachDeletedPostFields` in
+   *  `body_truncated` and `suggestion` out of the payload (`attachPostMarks` in
    *  `api/events.go`), so both are optional here. */
   body: commentFields.body.optional(),
   suggestion: commentFields.suggestion.optional(),

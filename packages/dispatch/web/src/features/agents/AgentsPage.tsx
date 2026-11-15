@@ -58,6 +58,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { replyParentOf } from "../conversation/composer-model";
 import { broadcastDelivery, capabilityLabel, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
@@ -818,6 +819,10 @@ function AgentRowDetails({
 }): ReactNode {
   const sendKey = useMemo(() => agentSendKey(agent.session_id), [agent.session_id]);
   const hold = useSending(sendKey);
+  // The session's exchanges, which the list below reads under the same key: the message a reply
+  // quotes is looked up there, so a draft open when its author deletes or edits that message
+  // quotes what became of it.
+  const messages = useQuery(agentMessagesQuery(agent.session_id));
   const capabilities = agent.capabilities ?? [];
   return (
     <div className={`border-t px-4 pb-4 ${borderDefault}`} hidden={!expanded} id={id}>
@@ -855,6 +860,7 @@ function AgentRowDetails({
           hold={hold}
           onCancelReply={() => setReplyTo(null)}
           onClose={leaveAgentComposer}
+          replyParent={replyParentOf(replyTo?.target ?? null, [], messages.data ?? [])}
           replyTo={replyTo}
           sendKey={sendKey}
         />

@@ -11,7 +11,7 @@ import {
   type SearchResultsPageAbsentAs,
   snippetText,
 } from "@legion/contracts";
-import { actorText } from "./actor-text";
+import { actorText, deletedMark } from "./actor-text";
 import { dispatchWordsText } from "./ask-answer";
 import { dispatchDocumentRef } from "./dispatch-owner";
 
@@ -20,16 +20,23 @@ export function pageSummaryText(offset: number, count: number, total: number): s
   return `showing ${offset + 1}-${offset + count} of ${total}`;
 }
 
+/** One hit's line. A comment or a message its author deleted can still be a meaning hit until
+ *  Dispatch's next index pass drops its windows, and its snippet is then empty: the deleted line
+ *  every read prints for one (`deletedMark`) stands where the snippet would. */
 function searchHitLine(result: SearchResult, baseUrl: string): string {
   const href = new URL(result.href, baseUrl).toString();
+  const text =
+    result.deleted_at == null
+      ? snippetText(result.snippet)
+      : deletedMark(result.deleted_at, result.deleted_by);
   const { owner } = result;
   if (owner.kind === "document") {
     const reference = dispatchDocumentRef(owner.project ?? "", owner.slug ?? "");
-    return `${reference} [document] ${owner.name} - ${result.kind}: ${snippetText(result.snippet)} -> ${href}`;
+    return `${reference} [document] ${owner.name} - ${result.kind}: ${text} -> ${href}`;
   }
   const artifactName = result.artifact ? ` ${result.artifact.name}` : "";
   const label = `${owner.key} [${owner.status}] ${owner.title} - ${result.kind}${artifactName}`;
-  return `${label}: ${snippetText(result.snippet)} -> ${href}`;
+  return `${label}: ${text} -> ${href}`;
 }
 
 /** Free text on a line under a hit, every later line of it indented four spaces so it stays

@@ -25548,6 +25548,13 @@
           "block_id": {
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "edited_at": {
             "format": "date-time",
             "type": "string"

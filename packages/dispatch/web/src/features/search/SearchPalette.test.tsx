@@ -265,6 +265,43 @@ test("an edited post's hit carries the edited mark, and a post nobody edited doe
   }
 });
 
+// A comment or a message its author deleted can still be a meaning hit until Dispatch's next
+// index pass drops its windows, and its snippet is then empty. The hit draws the deleted line
+// where the snippet would be, naming who deleted it and when, and no edited mark beside its
+// kind; a post nobody deleted draws its snippet and no deleted line.
+test("a deleted post's hit draws the deleted line where its snippet would be", async () => {
+  const user = userOnFakeClock();
+  const deleted: SearchResult = {
+    deleted_at: "2026-10-02T00:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+    edited_at: "2026-10-01T00:00:00Z",
+    href: "/issues/LEGION-2/comments/comment-4",
+    id: "comment-4",
+    kind: "comment",
+    owner: { key: "LEGION-2", kind: "issue", status: "todo", title: "Navigation instruments" },
+    rank: 2,
+    snippet: "",
+  };
+  const standing = results[2] as SearchResult;
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer([deleted, standing]));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    const option = (result: SearchResult) => document.getElementById(optionId(result));
+    const line = () => option(deleted)?.querySelector("[data-post-deleted]");
+    await waitFor(() => expect(line()?.textContent).toContain("Deleted by alice"));
+    expect(line()?.querySelector("time")).toHaveAttribute("datetime", "2026-10-02T00:00:00Z");
+    expect(option(deleted)?.textContent).not.toContain("edited");
+    expect(option(standing)?.querySelector("[data-post-deleted]")).toBeNull();
+    expect(option(standing)?.textContent).toContain("Discuss the astrolabe diagram.");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("renders document-owned results under the document and opens their discussion", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(

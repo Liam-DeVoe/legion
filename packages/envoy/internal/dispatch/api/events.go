@@ -392,7 +392,7 @@ func (s *server) readEventRows(ctx context.Context, query string, arguments ...a
 	if err := s.attachAskEventFields(ctx, events); err != nil {
 		return nil, err
 	}
-	if err := s.attachDeletedPostFields(ctx, events); err != nil {
+	if err := s.attachPostMarks(ctx, events); err != nil {
 		return nil, err
 	}
 	return events, nil
@@ -400,7 +400,7 @@ func (s *server) readEventRows(ctx context.Context, query string, arguments ...a
 
 // postBodyEventKinds is the kind of post each event kind's payload is about: the kind whose
 // table the payload's `id` names, and whose own body the payload carries under `body`. They are
-// what attachDeletedPostFields marks: every other kind of either post either carries no body
+// what attachPostMarks marks: every other kind of either post either carries no body
 // (comment.delivery, message.delivery, message.accepted, whose payload names the message under
 // message_id and holds no text of it) or carries the body of another post, which the event log
 // keeps (a reply's reply_body and reply_block.text).
@@ -420,28 +420,35 @@ var postBodyEventKinds = map[string]refs.ItemKind{
 	"message.answered":    refs.ItemMessage,
 }
 
-// deletedPost is the mark a post's author left on it: when it was deleted and by whom
-// (comments.deleted_at, messages.deleted_at), as model.DeletedPostMark reads every other read's
-// copy of it. by is nil where the row records no actor, which is the mark an event payload then
-// carries as a null deleted_by.
-type deletedPost struct {
-	at *time.Time
-	by *model.Actor
+// postMarks are the marks a post's author left on it since it was written, as the post itself
+// reads with them: when they last replaced its body (comments.edited_at, messages.edited_at), nil
+// on a post nobody edited, and when they deleted it and who they are (deleted_at, deleted_by), as
+// model.DeletedPostMark reads every other read's copy of that mark. deletedBy is nil where the
+// row records no actor, which is the mark an event payload then carries as a null deleted_by.
+type postMarks struct {
+	editedAt  *time.Time
+	deletedAt *time.Time
+	deletedBy *model.Actor
 }
 
-// deletedPostKey names one post an event page holds: the kind of post it is, which names the
-// table its id is in (refs.ItemKind.ItemTable), and the id. Each kind's ids are its own, so a
-// comment and a message of the same id are two posts here.
-type deletedPostKey struct {
+// postKey names one post an event page holds: the kind of post it is, which names the table its
+// id is in (refs.ItemKind.ItemTable), and the id. Each kind's ids are its own, so a comment and a
+// message of the same id are two posts here.
+type postKey struct {
 	kind refs.ItemKind
 	id   string
 }
 
-// attachDeletedPostFields gives every event of a deleted comment or message the mark the post
-// itself reads with, and takes the body out of its payload: a read of the event log says that
-// the post is deleted and gives no part of what it said. The stored row is never rewritten -
-// the log is the record of what happened - so the mark is read here, at every read, which is
-// why readEventRows calls it for readEvents and readEventsAfterID alike.
+// attachPostMarks gives every event of an edited or a deleted comment or message the marks the
+// post itself reads with. Of an edited post it sets edited_at to the time its author last
+// replaced the body: an event keeps the edited_at of the moment it was written, null on the
+// post's creation, beside the body as it stood then, so without the post's own mark a read of
+// the log would print that body as if nobody had replaced it since. Of a deleted post it also
+// takes the body out of the payload: a read of the event log says that the post is deleted and
+// gives no part of what it said. The stored row is never rewritten - the log is the record of
+// what happened - so the marks are read here, at every read, which is why readEventRows calls it
+// for readEvents and readEventsAfterID alike. The time of each edit stays the created_at of the
+// edit's own event.
 //
 // It is this file's own way of filling what a payload cannot carry from the write that appended
 // it (attachAskEventFields): the events table holds no comment id and no message id, so there is
@@ -452,18 +459,18 @@ type deletedPostKey struct {
 // reply's own message.created payload, and the reply_block.text of a reply's comment.created.
 // Each is part of the event of the post that quoted it, and only the quoted post's own events
 // are marked here.
-func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Event) error {
+func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
-	// readDeletedPosts reads it in.
+	// readPostMarks reads it in.
 	ids := map[refs.ItemKind][]string{}
 	// What the first pass found for each event, which the second reads rather than finding
 	// again: the post the payload names, and the payload it was read from. A raw payload is
 	// nil for every event this read leaves alone.
-	keys := make([]deletedPostKey, len(events))
+	keys := make([]postKey, len(events))
 	raws := make([]json.RawMessage, len(events))
 	// A page holds several events of one post - its creation, its edit, its delete - and the
 	// read asks after each post once.
-	asked := map[deletedPostKey]bool{}
+	asked := map[postKey]bool{}
 	for index := range events {
 		kind, carriesBody := postBodyEventKinds[events[index].Type]
 		if !carriesBody {
@@ -481,7 +488,7 @@ func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Eve
 		if err := json.Unmarshal(raw, &header); err != nil || header.ID == "" {
 			continue
 		}
-		key := deletedPostKey{kind: kind, id: header.ID}
+		key := postKey{kind: kind, id: header.ID}
 		keys[index], raws[index] = key, raw
 		if asked[key] {
 			continue
@@ -489,7 +496,7 @@ func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Eve
 		asked[key] = true
 		ids[kind] = append(ids[kind], header.ID)
 	}
-	marks, err := s.readDeletedPosts(ctx, ids)
+	marks, err := s.readPostMarks(ctx, ids)
 	if err != nil {
 		return err
 	}
@@ -502,7 +509,7 @@ func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Eve
 		}
 		// Each kind's id names its own table, so a comment event reads the comments' marks and
 		// a message event the messages', which is what the key the first pass built says.
-		deleted, found := marks[keys[index]]
+		post, found := marks[keys[index]]
 		if !found {
 			continue
 		}
@@ -510,13 +517,18 @@ func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Eve
 		if err := json.Unmarshal(raws[index], &payload); err != nil {
 			return fmt.Errorf("decode %s payload: %w", events[index].Type, err)
 		}
-		// The body, the mark that it was cut short, and a suggestion's replacement text, which
-		// is the comment's text too and which the delete clears with the body.
-		delete(payload, "body")
-		delete(payload, "body_truncated")
-		delete(payload, "suggestion")
-		payload["deleted_at"] = deleted.at
-		payload["deleted_by"] = deleted.by
+		if post.editedAt != nil {
+			payload["edited_at"] = post.editedAt
+		}
+		if post.deletedAt != nil {
+			// The body, the mark that it was cut short, and a suggestion's replacement text,
+			// which is the comment's text too and which the delete clears with the body.
+			delete(payload, "body")
+			delete(payload, "body_truncated")
+			delete(payload, "suggestion")
+			payload["deleted_at"] = post.deletedAt
+			payload["deleted_by"] = post.deletedBy
+		}
 		encoded, err := json.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("encode %s payload: %w", events[index].Type, err)
@@ -526,14 +538,14 @@ func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Eve
 	return nil
 }
 
-// readDeletedPosts reads the mark of each post of ids that is deleted, in one statement over
-// the table of each kind that has an id to read: the table refs names for the kind, which owns
-// the map of an item kind to its storage (refs.ItemKind.ItemTable), as postHistoryOwner reads
-// it. Each id is matched as text, through the comments_id_text and messages_id_text indexes, so
-// a payload id that is not a uuid cannot fail the read, as it would under a cast of the
-// parameter. Each row names the kind it came from, which the id alone does not say.
-func (s *server) readDeletedPosts(ctx context.Context, ids map[refs.ItemKind][]string) (map[deletedPostKey]deletedPost, error) {
-	marks := map[deletedPostKey]deletedPost{}
+// readPostMarks reads the marks of each post of ids that is edited or deleted, in one statement
+// over the table of each kind that has an id to read: the table refs names for the kind, which
+// owns the map of an item kind to its storage (refs.ItemKind.ItemTable), as postHistoryOwner
+// reads it. Each id is matched as text, through the comments_id_text and messages_id_text
+// indexes, so a payload id that is not a uuid cannot fail the read, as it would under a cast of
+// the parameter. Each row names the kind it came from, which the id alone does not say.
+func (s *server) readPostMarks(ctx context.Context, ids map[refs.ItemKind][]string) (map[postKey]postMarks, error) {
+	marks := map[postKey]postMarks{}
 	// One select per kind that has an id to read, in a fixed order rather than a map's, each
 	// with the parameter its ids are passed as.
 	selects, arguments := []string{}, []any{}
@@ -547,35 +559,35 @@ func (s *server) readDeletedPosts(ctx context.Context, ids map[refs.ItemKind][]s
 		}
 		arguments = append(arguments, ids[kind])
 		selects = append(selects, fmt.Sprintf(`
-		select '%s'::text, id::text, deleted_at, deleted_by from %s
-		where id::text = any($%d::text[]) and deleted_at is not null`, kind, items, len(arguments)))
+		select '%s'::text, id::text, edited_at, deleted_at, deleted_by from %s
+		where id::text = any($%d::text[]) and (edited_at is not null or deleted_at is not null)`, kind, items, len(arguments)))
 	}
 	if len(selects) == 0 {
 		return marks, nil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, strings.Join(selects, "\n\t\tunion all"), arguments...)
 	if err != nil {
-		return nil, fmt.Errorf("read the deleted posts of an event page: %w", err)
+		return nil, fmt.Errorf("read the corrected posts of an event page: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var key deletedPostKey
+		var key postKey
 		var kind string
-		var at *time.Time
-		var by []byte
-		if err := rows.Scan(&kind, &key.id, &at, &by); err != nil {
-			return nil, fmt.Errorf("read the deleted posts of an event page: %w", err)
+		var editedAt, deletedAt *time.Time
+		var deletedBy []byte
+		if err := rows.Scan(&kind, &key.id, &editedAt, &deletedAt, &deletedBy); err != nil {
+			return nil, fmt.Errorf("read the corrected posts of an event page: %w", err)
 		}
 		key.kind = refs.ItemKind(kind)
-		var mark deletedPost
+		mark := postMarks{editedAt: editedAt}
 		var err error
-		if mark.at, mark.by, err = model.DeletedPostMark(at, by); err != nil {
+		if mark.deletedAt, mark.deletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
 			return nil, fmt.Errorf("post %s: %w", key.id, err)
 		}
 		marks[key] = mark
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the deleted posts of an event page: %w", err)
+		return nil, fmt.Errorf("read the corrected posts of an event page: %w", err)
 	}
 	return marks, nil
 }

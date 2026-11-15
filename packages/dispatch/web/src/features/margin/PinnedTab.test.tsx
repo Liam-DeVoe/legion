@@ -192,3 +192,57 @@ test("a pinned conversation whose post was deleted says so in place of its body"
     view.unmount();
   }
 });
+
+// A pinned event prints its post's body as the event recorded it, and the read of the event gives
+// it the post's own edit time (`attachPostMarks` in `api/events.go`): the card of a message its
+// author edited since says so in its byline, as a pinned conversation's card does, and the card
+// of a message nobody edited does not.
+test("a pinned message event its author edited marks its byline edited, and one nobody edited does not", () => {
+  const edited: DispatchEvent = {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-09-10T00:00:00Z",
+    id: 2,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      author: { id: "alice", kind: "user" },
+      body: "The message as first written",
+      broadcast_id: null,
+      reply_block: null,
+      created_at: "2026-09-10T00:00:00Z",
+      deliveries: [],
+      edited_at: "2026-09-10T00:05:00Z",
+      id: "message-2",
+      in_reply_to: null,
+      issue_key: "CORE-1",
+      target: null,
+    },
+    seq: 2,
+    type: "message.created",
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <PinnedTab
+          conversations={[]}
+          events={[messageEvent, edited]}
+          onUnpin={() => {}}
+          onUnpinConversation={() => {}}
+          pinnedIds={["1", "2"]}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const [standing, corrected] = view.container.querySelectorAll("article");
+    expect(corrected?.textContent).toContain("alice · edited");
+    expect(standing?.textContent).toContain("alice");
+    expect(standing?.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
+  }
+});

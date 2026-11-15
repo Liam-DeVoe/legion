@@ -99,13 +99,14 @@ export const messageEventPayloadFields = {
   ...messageFields,
   /** The message's body. Every message row has one, but a deleted message's events carry none:
    *  the read of the event takes `body` and `body_truncated` out of the payload
-   *  (`attachDeletedPostFields` in `api/events.go`), so it is optional here. */
+   *  (`attachPostMarks` in `api/events.go`), so it is optional here. */
   body: messageFields.body.optional(),
   /** When the message's author last replaced its body, and when they deleted it with who they
    *  are. Events are retained verbatim and the three fields were added by the post corrections,
    *  so every message event written before them carries none; a read row (`Message`) always has
-   *  all three. The read of a deleted message's event stamps the two delete marks where the body
-   *  was. */
+   *  all three. The read of an edited message's event gives `edited_at` as the message reads
+   *  now, the time of its last edit, beside the body the event recorded, and the read of a
+   *  deleted message's event stamps the two delete marks where the body was. */
   edited_at: messageFields.edited_at.optional(),
   deleted_at: messageFields.deleted_at.optional(),
   deleted_by: messageFields.deleted_by.optional(),

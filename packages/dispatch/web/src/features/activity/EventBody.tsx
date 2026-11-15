@@ -9,7 +9,7 @@ import { eventDescription } from "../issue/event-description";
 import { AgentParts, AskResolutionLine } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { PostBody } from "../refs/PostBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
 import { postDeletion } from "../refs/post-marks";
 import { buildIssuePath, buildReferencePath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
@@ -123,6 +123,28 @@ type BodyEvent = Extract<
   { type: "comment.answered" | "comment.created" | "message.answered" | "message.created" }
 >;
 
+function isBodyEvent(event: DispatchEvent): event is BodyEvent {
+  return (
+    event.type === "message.created" ||
+    event.type === "message.answered" ||
+    event.type === "comment.created" ||
+    event.type === "comment.answered"
+  );
+}
+
+/**
+ * The ` · edited` for the byline under an event whose body `EventBody` prints, where the post's
+ * author has replaced that body since. The event keeps the body as it stood when the event was
+ * written, and the read of the event gives it the post's own `edited_at` (`attachPostMarks` in
+ * `api/events.go`), as it gives a deleted post's event the mark `EventBody` draws in place of the
+ * body. Nothing for any other event, for a post nobody edited, and for a deleted one.
+ */
+export function EventEditedMark({ event }: { event: DispatchEvent }): ReactNode {
+  return isBodyEvent(event) ? (
+    <EditedMark at={event.payload.edited_at} deleted={postDeletion(event.payload)} />
+  ) : null;
+}
+
 /** The page that reads the whole body of the item an event carried the first part of: the item's
  *  own page under its issue, and for a comment on a project document, which belongs to no issue,
  *  that document with the comment in view (`itemRoute`), the address every other link to one
@@ -154,12 +176,7 @@ export function EventBody({
   if (isAskEvent(event)) {
     return <AskEventBody event={event} onRendered={onRendered} />;
   }
-  if (
-    event.type === "message.created" ||
-    event.type === "message.answered" ||
-    event.type === "comment.created" ||
-    event.type === "comment.answered"
-  ) {
+  if (isBodyEvent(event)) {
     const message = event.type.startsWith("message.");
     const deleted = postDeletion(event.payload);
     // A body is bounded block by block, so one event carries its first part alone and says so

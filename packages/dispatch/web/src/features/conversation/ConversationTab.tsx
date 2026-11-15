@@ -65,7 +65,7 @@ import { useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { Avatar } from "./Avatar";
-import type { ReplyTarget } from "./composer-model";
+import { type ReplyTarget, replyParentOf } from "./composer-model";
 import {
   buildConversations,
   type CommentDeliveryAttempt,
@@ -1249,6 +1249,7 @@ export function ConversationTab({
             setOwnSendCount((count) => count + 1);
           }}
           owner={{ issueKey, kind: "issue" }}
+          replyParent={replyParentOf(replyTo, comments.data ?? [], messages.data ?? [])}
           replyTo={replyTo}
         />
       </div>
@@ -1504,6 +1505,7 @@ export function ConversationTab({
                   setOwnSendCount((count) => count + 1);
                 }}
                 owner={{ issueKey, kind: "issue" }}
+                replyParent={replyParentOf(phone.replyTo, comments.data ?? [], messages.data ?? [])}
                 replyTo={phone.replyTo}
               />
             </div>
