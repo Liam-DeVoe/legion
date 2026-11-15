@@ -24,10 +24,11 @@ import (
 // results are compared with, and for each result where its commit stands among them.
 //
 // A `before_merge` check is compared with every pull request head Dispatch holds for the
-// check's own issue (delivery.HeadsAttributedTo), open or merged. The issue a result was
-// recorded on counts for nothing here, so a child's pull request never answers for a check of
-// its parent. A child carrying part of a parent's requirement proves it with a check of its
-// own whose `serves` names that requirement.
+// check's own issue (delivery.HeadsAttributedTo), open or merged: the pull requests attributed
+// to it, and those its external links name in a repository it does not resolve to, which the
+// attribution can never give it. The issue a result was recorded on counts for nothing here, so
+// a child's pull request never answers for a check of its parent. A child carrying part of a
+// parent's requirement proves it with a check of its own whose `serves` names that requirement.
 //
 // An `after_merge` check is compared with the branch the check's issue's pull request merged
 // into — the base branch of the newest merged pull request attributed to that issue

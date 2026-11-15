@@ -1623,9 +1623,12 @@ export const dispatchToolSpecs = [
       "CHECK_PROVED_BY_CI from every role, which names the check and the run. " +
       "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
       "400 RESULT_CONTRADICTS. " +
-      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. A " +
-      "commit that repository does not hold is 400 RESULT_COMMIT_UNKNOWN, which names the " +
-      "commit and that owner/repo. Record the result after the commit is pushed. A repository " +
+      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. If it " +
+      "does not, Dispatch reads the external links of the check's issue: a link to a GitHub pull " +
+      "request (https://github.com/<owner>/<repo>/pull/<n>) that is open or merged adds the " +
+      "repository of that pull request. A commit that none of these repositories holds is 400 " +
+      "RESULT_COMMIT_UNKNOWN, which names the commit and each owner/repo that Dispatch asked. " +
+      "Record the result after the commit is pushed. A repository or a pull request that " +
       "Dispatch cannot read records the result as before. " +
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +

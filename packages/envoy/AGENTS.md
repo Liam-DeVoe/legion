@@ -351,6 +351,7 @@ Each item below names a task and where its code is, then notes on it.
   each result answers where its commit stands against those (`commit_stands`) and whether the check's words moved after it was recorded (`check_words_moved`):
 
   - a `before_merge` check is compared with every head Dispatch holds for the check's own issue — the head of an `open` pull request, or the final head of a `merged` one (`pull_request_heads`, which the GitHub intake and the reconcile keep);
+    a pull request the issue's external links name in a repository the issue does not resolve to counts as one attributed to it, matched to its row by repository and number, so its head moves the basis as it moves (`linkedPullRequestTerms` in `delivery/pull_request_heads.go`); a link to a pull request of the issue's own repository adds nothing;
     the issue a result was recorded on counts for nothing here, so a child's pull request is never a basis for a check above it;
 
   - an `after_merge` check with the branch the check's issue's pull request merged into and with the repository's default branch — that default branch alone where Dispatch holds no merge of it;

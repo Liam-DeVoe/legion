@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  `POST /api/v1/issues/{key}/results` takes a result at a commit of a repository in which the
+  external links of the check's issue name an open or merged GitHub pull request
+  (`https://github.com/<owner>/<repo>/pull/<n>`), as well as a commit of the repository the
+  check's issue resolves to. So an issue whose work is in two repositories takes a result at the
+  head of the pull request it links in the second repository. Dispatch reads the links only when
+  GitHub says the issue's own repository does not hold the commit. A pull request that closed
+  without a merge does not count. `400 RESULT_COMMIT_UNKNOWN` names the commit and each
+  repository that Dispatch asked. The read of the pull requests GitHub names for the commit,
+  after the write, reads the repository that holds the commit.
+
+  `GET /api/v1/issues/{key}/results` compares a `before_merge` check with the heads of those
+  linked pull requests too, open or merged, as it does with the pull requests attributed to the
+  check's issue. A result at such a head stands `at_basis`, and a push that moves the head leaves
+  it at `other_commit`. A link to a pull request of the issue's own repository adds nothing: the
+  attribution alone decides which pull requests of that repository are the issue's.
