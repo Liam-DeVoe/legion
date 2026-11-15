@@ -1370,3 +1370,135 @@ test("a ?status= in the URL is neither counted nor chipped by the strip", async 
     window.localStorage.clear();
   }
 });
+
+// INFRA-3135, review round 1 (the architect's rule of 2026-11-15): the stored choice opens or
+// shuts the panel as the Board loads and takes no focus, and only the reader's own open or close
+// writes it.
+const PANEL_CHOICE = userPreferenceStorageKey("alice", "project.issue-filters");
+
+test("a panel the stored choice opens as the Board loads takes no focus, and a press opens it into the focus", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  const { getMyState, listIssues, view } = renderStrip(
+    [issue({ labels: ["bug"], title: "Core work" })],
+    {},
+    "/projects/CORE?label=bug"
+  );
+
+  try {
+    await screen.findByText("Core work");
+    const trigger = screen.getByRole("button", { name: "Filters · 1" });
+    // Nothing is stored and a filter is on: the panel stands open, as the stored choice says.
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const panel = screen.getByRole("dialog", { name: "Filters" });
+    // The focus starts where the page starts, not on the panel's first control.
+    expect(within(panel).getByRole("button", { name: "Labels · 1" })).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBeNull();
+
+    // The reader's own press closes it, and their next one opens it with the focus in it.
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    expect(
+      within(screen.getByRole("dialog", { name: "Filters" })).getByRole("button", {
+        name: "Labels · 1",
+      })
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("the trigger's press either way, Escape and a press outside that closes the panel each write the stored choice", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  const { getMyState, listIssues, view } = renderStrip([issue({ title: "Core work" })]);
+
+  try {
+    await screen.findByText("Core work");
+    const trigger = screen.getByRole("button", { name: "Filters · 0" });
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+
+    await user.click(trigger);
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+test("nothing but the reader's open and close writes the stored choice: not a press while the panel is shut, a chip's removal or a press in the Labels list", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  window.localStorage.setItem(PANEL_CHOICE, "collapsed");
+  const { getMyState, listIssues, view } = renderStrip(
+    [issue({ labels: ["bug"], title: "Core work" })],
+    {},
+    "/projects/CORE?label=bug&needs-you=1"
+  );
+  // Every write of the stored choice, in order. happy-dom's `Storage` is a proxy that hands out
+  // its own bound methods and ignores one assigned over them, so a `spyOn` of `setItem` sees no
+  // call; a method defined on it is the one the page calls.
+  const writes: string[] = [];
+  const setItem = window.localStorage.setItem.bind(window.localStorage);
+  Object.defineProperty(window.localStorage, "setItem", {
+    configurable: true,
+    value: (key: string, value: string) => {
+      if (key === PANEL_CHOICE) writes.push(value);
+      setItem(key, value);
+    },
+    writable: true,
+  });
+
+  try {
+    await screen.findByRole("button", { name: "Filters · 2" });
+    const trigger = screen.getByRole("button", { name: "Filters · 2" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    // A press while the panel is shut.
+    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    // A chip's removal.
+    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
+    expect(screen.getByRole("button", { name: "Filters · 1" })).toBe(trigger);
+    expect(writes).toEqual([]);
+
+    // One open, one close, and between them a pick in the Labels list and the Escape that
+    // closes that list alone.
+    await user.click(trigger);
+    await pickOption("Labels", "bug");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(writes).toEqual(["expanded", "collapsed"]);
+  } finally {
+    view.unmount();
+    Object.defineProperty(window.localStorage, "setItem", {
+      configurable: true,
+      value: setItem,
+      writable: true,
+    });
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});

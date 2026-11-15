@@ -16,12 +16,20 @@ export interface PanelTriggerProps {
   readonly control?: ControlName;
   /** Said after the label as `Columns · 2`, the way `MultiSelect`'s trigger counts a selection. */
   readonly count?: number;
+  /** Whether opening moves the focus into the panel, as every press that opens one does. A page
+   *  that opens its panel by itself, from a choice it stored, passes false for that open, so the
+   *  focus starts where the page starts (the Board). Read as the panel opens. */
+  readonly focusOnOpen?: boolean;
   readonly label: ReactNode;
   readonly onOpenChange: (open: boolean) => void;
   /** The host owns it, so a page keeps one panel open at a time rather than a row of them. */
   readonly open: boolean;
-  readonly panelClassName?: string;
   readonly size?: ControlSize;
+  /** A panel of controls - a page's filter panel: its multi-selects, flags and boxes - rather
+   *  than a list of rows. The controls stand one under another with a gap between, each at its
+   *  own width, so a chip or a flag is a chip and not a bar the panel's width; a control meant
+   *  to fill the panel, a search box, says so itself (`w-full`). */
+  readonly stacked?: boolean;
   /** The accessible name of both the trigger and the panel: a trigger whose label is a glyph is
    *  nameless without it. */
   readonly title?: string;
@@ -33,8 +41,9 @@ export interface PanelTriggerProps {
  * The one button that opens a panel: every menu, column filter and display picker in Dispatch is
  * this component over `AnchoredPanel`, so each is dismissed, placed and named by the same rules
  * and a reader who learns one has learned them all. The panel is a `dialog` the trigger says it
- * opens, and whatever closes it — a choice inside, Escape, a press outside — leaves the reader
- * on the trigger rather than on the document.
+ * opens, and whatever closes it — a choice inside, Escape, Tab or Shift+Tab past its last or
+ * first control, a press outside — leaves the reader on the trigger rather than on the document,
+ * so Tab never carries the reader out of a panel to the page behind it.
  *
  * A press that takes away the control holding the focus while the panel stays open - the search
  * bar's Project menu, whose trigger goes once a project is picked, or its Author box once an
@@ -48,11 +57,12 @@ export function PanelTrigger({
   children,
   control = CONTROL.panelTrigger,
   count,
+  focusOnOpen,
   label,
   onOpenChange,
   open,
-  panelClassName,
   size = "comfortable",
+  stacked = false,
   title,
   triggerClassName,
 }: PanelTriggerProps): ReactNode {
@@ -92,10 +102,8 @@ export function PanelTrigger({
         <AnchoredPanel
           align={align}
           anchorRef={trigger}
-          className={
-            panelClassName ??
-            `z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`
-          }
+          className={`z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border text-sm font-normal shadow-lg ${stacked ? "items-start gap-2 p-2" : "p-1"} ${card}`}
+          focusOnOpen={focusOnOpen}
           label={title ?? (typeof label === "string" ? label : undefined)}
           onDismiss={() => onOpenChange(false)}
           role="dialog"

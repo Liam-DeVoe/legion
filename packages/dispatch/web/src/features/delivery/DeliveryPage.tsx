@@ -6,13 +6,14 @@ import { isDeliveryNotConfigured } from "../../api/client";
 import { queryString } from "../../api/paths";
 import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries";
 import type { DeliverySessionGroup, DeliveryTimelineWithMeasures } from "../../api/types";
-import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
+import { filterChips } from "../../components/filter-chips";
 import { useFocusPlace } from "../../components/focus-place";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import {
   textParam,
   useAddressParams,
@@ -21,7 +22,6 @@ import {
 } from "../../lib/page-address";
 import {
   borderStrong,
-  card,
   dragHandleBg,
   linkText,
   surfaceBg,
@@ -349,10 +349,6 @@ const PANEL_FACETS: { key: PanelFacet; label: string }[] = [
 const facetLabelClass = `mb-1 block text-xs tracking-wide uppercase ${textMutedOnCanvas}`;
 const facetTriggerClass = `flex h-7 w-full items-center justify-between rounded border px-2 text-left text-xs ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`;
 
-/** The panel the row's one trigger opens: a column of the four facets, portalled over the page
- *  so opening it moves no row of the list beneath (INFRA-3135, R1). */
-const FACET_PANEL_CLASS = `z-50 flex max-h-[min(24rem,calc(100dvh-16px))] w-72 max-w-[calc(100vw-16px)] flex-col gap-4 overflow-y-auto rounded-lg border p-3 text-sm font-normal shadow-lg ${card}`;
-
 /** One facet's searchable checkbox list: "Any <facet>" until something is picked, each value
  *  with its count, sorted by count. A facet with no values in the window and nothing picked is
  *  not shown. */
@@ -381,7 +377,7 @@ function Facet({
     selected.length === 0 ? `Any ${label.toLowerCase()}` : `${selected.length} selected`;
   const countOf = (value: string) => counts[value] ?? 0;
   return (
-    <div>
+    <div className="w-full">
       <span className={facetLabelClass}>{label}</span>
       <MultiSelect
         emptyMessage="No matches."
@@ -407,9 +403,7 @@ function Facet({
   );
 }
 
-/** Which of the row's popovers stands open: one of the four facets inside the panel. The panel
- *  has its own open below, for the Inbox's reason: a control opening inside it must not take
- *  the panel's open away and unmount the control the reader pressed. */
+/** Which of the panel's four facets has its popover open. */
 type OpenFacet = PanelFacet;
 
 /**
@@ -435,7 +429,7 @@ function DeliveryControls({
   onFilters: (next: Filters) => void;
 }): ReactNode {
   const [panelOpen, setPanelOpen] = useState(false);
-  const [openFacet, setOpenFacet] = useState<OpenFacet | undefined>(undefined);
+  const facetPanel = useNestedPanels<OpenFacet>(panelOpen);
   const [editingGroups, setEditingGroups] = useState(false);
   const countsOf = (key: PanelFacet) => data.facet_counts?.[FACET_PARAMS[key]] ?? {};
   const byCount = (key: PanelFacet) => {
@@ -478,23 +472,7 @@ function DeliveryControls({
   );
   return (
     <ControlRow
-      chips={
-        chosen.length === 0
-          ? undefined
-          : chosen.map(({ key, label, remove }) => (
-              <Chip
-                aria-label={`Remove filter ${label}`}
-                key={key}
-                onClick={remove}
-                removable
-                selected
-                size="compact"
-                title={label}
-              >
-                {label}
-              </Chip>
-            ))
-      }
+      chips={filterChips(chosen, "compact")}
       search={
         <SearchBox
           className="w-full"
@@ -510,28 +488,20 @@ function DeliveryControls({
         <PanelTrigger
           count={chosen.length}
           label="Filter"
-          onOpenChange={(open) => {
-            // An outside press while one of the facets is open is that facet's, not the
-            // panel's: `AnchoredPanel` tells both that the press was outside them.
-            if (!open && openFacet !== undefined) return;
-            setPanelOpen(open);
-          }}
+          onOpenChange={setPanelOpen}
           open={panelOpen}
-          panelClassName={FACET_PANEL_CLASS}
           size="compact"
+          stacked
         >
           {() => (
             <>
               {PANEL_FACETS.map(({ key, label }) => (
                 <Facet
+                  {...facetPanel(key)}
                   counts={countsOf(key)}
                   key={key}
                   label={label}
                   onChange={(next) => onFilters({ ...filters, [key]: next })}
-                  onOpenChange={(open) =>
-                    setOpenFacet((current) => (open ? key : current === key ? undefined : current))
-                  }
-                  open={openFacet === key}
                   selected={filters[key]}
                   valueLabel={(value) => valueLabel(key, value)}
                   values={byCount(key)}

@@ -1316,7 +1316,7 @@ test("a chip narrows the search, reads back in the person's words, and comes off
       )
     );
 
-    const chip = screen.getByRole("button", { name: "Remove Status In progress" });
+    const chip = screen.getByRole("button", { name: "Remove Status In progress filter" });
     expect(chip.textContent).toContain("Status In progress");
     expect(chip.textContent).not.toContain("status:in_progress");
     // The chip is the shared one, in the shared row: what the bar narrows by is said where
@@ -1363,10 +1363,52 @@ test("a project picked in the panel narrows the search and reads back as its chi
         aborts
       )
     );
-    expect(screen.getByRole("button", { name: "Remove Project INFRA" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Remove Project INFRA filter" })).not.toBeNull();
   } finally {
     listProjects.mockRestore();
     search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// INFRA-3135, review round 1 (thread PRRT_kwDORFy7ds63p6zJ): Shift+Tab out of the Project list
+// left both panels open with the focus on Updated since, and every Escape after it was refused
+// while the list stood open, so the bar could not be closed from the keyboard.
+test("after Shift+Tab out of the Project list, Escape closes the panel, and the next Escape the bar", async () => {
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "INFRA",
+      name: "Infra",
+      open_asks: 0,
+    },
+  ]);
+  let closed = 0;
+  const view = renderPalette({
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    const infra = await screen.findByRole("button", { name: "INFRA" });
+    act(() => infra.focus());
+    await user.tab({ shift: true });
+    expect(screen.queryByRole("dialog", { name: "Project" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Project" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+    expect(closed).toBe(0);
+    await user.keyboard("{Escape}");
+    expect(closed).toBe(1);
+  } finally {
+    listProjects.mockRestore();
     view.unmount();
     view.queryClient.clear();
   }
@@ -1397,7 +1439,7 @@ test("an author typed in the panel is taken on Enter, narrows the search, and co
       )
     );
 
-    const chip = screen.getByRole("button", { name: "Remove Author alice" });
+    const chip = screen.getByRole("button", { name: "Remove Author alice filter" });
     expect(chip.textContent).toContain("Author alice");
 
     await user.click(chip);
@@ -1432,7 +1474,7 @@ test("an author left in the box is taken when the panel shuts", async () => {
         aborts
       )
     );
-    expect(screen.getByRole("button", { name: "Remove Author alice" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Remove Author alice filter" })).not.toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();

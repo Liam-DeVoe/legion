@@ -1008,7 +1008,7 @@ test("a facet's trigger names the facet and what is picked", async () => {
     "Repository: Any repository"
   );
   // A picked value is a chip of the row, which takes it off again.
-  await user.click(screen.getByRole("button", { name: "Remove filter Component: Public API" }));
+  await user.click(screen.getByRole("button", { name: "Remove Component: Public API filter" }));
   await waitFor(() => expect(currentSearch().has("component")).toBe(false));
 });
 

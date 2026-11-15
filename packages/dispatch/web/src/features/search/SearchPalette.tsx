@@ -14,11 +14,12 @@ import { useNavigate } from "react-router-dom";
 
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
-import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
+import { filterChips } from "../../components/filter-chips";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import {
   backdrop50,
   badgeLow,
@@ -365,10 +366,6 @@ function CommandGroup({
   );
 }
 
-/** The panel the four narrowings are added from: one column of controls, as wide as the
- *  longest of them needs and no wider than a phone. */
-const FILTER_PANEL_CLASS = `z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col items-start gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`;
-
 /** What a chip removed puts back, under the name `searchFilterChips` gives it. */
 const FILTER_REMOVALS: Record<SearchFilterName, SearchBarFilters> = {
   author: { author: undefined },
@@ -377,8 +374,8 @@ const FILTER_REMOVALS: Record<SearchFilterName, SearchBarFilters> = {
   updatedSince: { updatedSince: undefined },
 };
 
-/** Which narrowing has a list of its own open inside the panel, or undefined for none: the
- *  panel holds one open at a time, as the Delivery page's facets do. */
+/** Which narrowing has a list of its own open inside the panel: one at a time, as on the Delivery
+ *  page's facets. */
 type FilterMenuName = "project" | "status";
 
 /**
@@ -450,7 +447,7 @@ function SearchNarrowing({
   projects: readonly Project[];
 }): ReactNode {
   const [open, setOpen] = useState(false);
-  const [openMenu, setOpenMenu] = useState<FilterMenuName>();
+  const filterMenu = useNestedPanels<FilterMenuName>(open);
   const [author, setAuthor] = useState("");
   const set = (patch: SearchBarFilters) => onFilters({ ...filters, ...patch });
   const takeAuthor = () => {
@@ -465,36 +462,31 @@ function SearchNarrowing({
     <PanelTrigger
       label="Filter"
       onOpenChange={(next) => {
-        // An outside press while one of the two lists is open is that list's, not the panel's:
-        // `AnchoredPanel` tells both that the press was outside them.
-        if (!next && openMenu !== undefined) return;
         // Shutting the panel is leaving the author box as much as moving off it is: a press
         // outside takes the box away with the panel, before it could lose focus on its own.
         if (!next) takeAuthor();
         setOpen(next);
       }}
       open={open}
-      panelClassName={FILTER_PANEL_CLASS}
+      stacked
     >
       {() => (
         <>
           {filters.project === undefined ? (
             <FilterMenu
+              {...filterMenu("project")}
               emptyText="No projects yet"
               label="Project"
-              onOpenChange={(next) => setOpenMenu(next ? "project" : undefined)}
               onPick={(project) => set({ project })}
-              open={openMenu === "project"}
               options={projects.map((project) => ({ text: project.key, value: project.key }))}
             />
           ) : null}
           {filters.status === undefined ? (
             <FilterMenu
+              {...filterMenu("status")}
               emptyText="No statuses"
               label="Status"
-              onOpenChange={(next) => setOpenMenu(next ? "status" : undefined)}
               onPick={(status) => set({ status })}
-              open={openMenu === "status"}
               options={issueStatuses.map((status) => ({
                 text: statusLabel(status),
                 value: status,
@@ -638,7 +630,7 @@ function PaletteDialog({
   const narrowed = searchRequest(filters, scope.targets.project);
   // What is on, in the words the person chose it in: one chip of the row for each narrowing,
   // and the control of that narrowing stays out of the panel while its chip is up.
-  const filterChips = searchFilterChips(filters);
+  const narrowings = searchFilterChips(filters);
   // The one search the list reads, in two tiers the hook answers as one. Everything below -
   // the hits, the operators the query was read as, the degraded line and the message under the
   // list - reads this one answer, so the list, what it says about itself and the highlight all
@@ -912,22 +904,13 @@ function PaletteDialog({
               added to it: the box the words are typed in, the panel the four narrowings are
               added from, and a chip for each narrowing that is on. */}
           <ControlRow
-            chips={
-              filterChips.length === 0
-                ? undefined
-                : filterChips.map(({ label, name }) => (
-                    <Chip
-                      aria-label={`Remove ${label}`}
-                      key={name}
-                      onClick={() => setFilters({ ...filters, ...FILTER_REMOVALS[name] })}
-                      removable
-                      selected
-                      title={label}
-                    >
-                      {label}
-                    </Chip>
-                  ))
-            }
+            chips={filterChips(
+              narrowings.map(({ label, name }) => ({
+                key: name,
+                label,
+                remove: () => setFilters({ ...filters, ...FILTER_REMOVALS[name] }),
+              }))
+            )}
             className={`shrink-0 border-b p-3 ${borderDefault}`}
             search={
               <SearchBox

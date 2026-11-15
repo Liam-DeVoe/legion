@@ -22,11 +22,13 @@ import { AttentionBadge } from "../../components/Badge";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
 import { EmptyState } from "../../components/EmptyState";
+import { filterChips } from "../../components/filter-chips";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { SearchBox } from "../../components/SearchBox";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import { copyText } from "../../lib/clipboard";
 import {
   borderDefault,
@@ -80,10 +82,6 @@ import { CollapsedColumn } from "./CollapsedColumn";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
-
-/** The panel the Board's one filter trigger opens: the labels multi-select and the three flags,
- *  portalled over the page so opening it moves no card (INFRA-3135, R1). */
-const FILTER_PANEL_CLASS = `z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col items-start gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`;
 
 const boardCollisionDetection: CollisionDetection = (args) => {
   const pointerCollisions = pointerWithin(args);
@@ -361,19 +359,19 @@ export function IssueBoard({
     (open) => (open ? "expanded" : "collapsed"),
     { failed: noIdentityFiltersExpanded, pending: noIdentityFiltersExpanded }
   );
-  const [openPicker, setOpenPicker] = useState<"labels" | undefined>(undefined);
-  useEffect(() => {
-    if (!filtersExpanded) setOpenPicker(undefined);
-  }, [filtersExpanded]);
-  /** The filter panel's own open. A pointer press outside it closes it - except while the
-   *  Labels picker inside it is open, because that press is the picker's: `AnchoredPanel`
-   *  listens on the document, so the panel and the popover portalled out of it are each told
-   *  the press was outside them, and a reader picking a label is still in the panel they picked
-   *  it from. The press that then closes the panel is the reader's next one, by which time the
-   *  picker has gone and this guard is off. */
+  const filterPanel = useNestedPanels<"labels">(filtersExpanded);
+  // Whether the panel stands open because the reader pressed it open. A panel the stored choice
+  // opens - as the Board mounts, or as the signed-in identity resolves - moves no focus into
+  // itself, so the focus starts where the page starts and the reader is not put in a panel they
+  // did not open.
+  const [pressedOpen, setPressedOpen] = useState(false);
+  /** The reader's own open or close of the panel - the trigger's press either way, Escape, Tab
+   *  past either end, a press outside it that closes it - which is the one thing that writes the
+   *  stored choice, and only when it changes what the panel shows. A chip's removal, a press
+   *  while the panel is shut and the choice read again on a new identity write nothing. */
   const openFilterPanel = (open: boolean) => {
-    if (!open && openPicker !== undefined) return;
-    setFiltersExpanded(open);
+    setPressedOpen(open);
+    if (open !== filtersExpanded) setFiltersExpanded(open);
   };
   /** The strip's client-side filters against this viewer's read state: what the board renders,
    *  what drop indices count, and what the PATCH names as neighbours. */
@@ -726,25 +724,7 @@ export function IssueBoard({
   const controls = (
     <>
       <ControlRow
-        chips={
-          activeFilters.length === 0
-            ? undefined
-            : activeFilters.map(({ label, remove }) => (
-                <Chip
-                  aria-label={`Remove ${label} filter`}
-                  key={label}
-                  onClick={remove}
-                  removable
-                  // A chip in a control row stands for a narrowing that is ON, so it takes the
-                  // selected fill every other page's chips take; a resting chip here would read
-                  // as a narrowing the reader could still switch on.
-                  selected
-                  title={label}
-                >
-                  {label}
-                </Chip>
-              ))
-        }
+        chips={filterChips(activeFilters)}
         className="mb-4"
         search={
           <SearchBox
@@ -758,19 +738,19 @@ export function IssueBoard({
         trigger={
           <PanelTrigger
             count={activeFilterCount}
+            focusOnOpen={pressedOpen}
             label="Filters"
             onOpenChange={openFilterPanel}
             open={filtersExpanded}
-            panelClassName={FILTER_PANEL_CLASS}
+            stacked
           >
             {() => (
               <>
                 <MultiSelect
+                  {...filterPanel("labels")}
                   emptyMessage="No labels yet."
                   label="Labels"
                   onChange={setLabels}
-                  onOpenChange={(open) => setOpenPicker(open ? "labels" : undefined)}
-                  open={openPicker === "labels"}
                   options={availableLabels}
                   searchLabel="Search labels"
                   selected={labels}

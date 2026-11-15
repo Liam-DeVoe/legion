@@ -4040,7 +4040,7 @@ test("a link naming a machine opens the page filtered to it, and the filter can 
     // on: the three controls themselves are in the panel that trigger opens.
     expect(within(region).getByRole("button", { name: "Filter · 1" })).toBeTruthy();
     expect(
-      within(region).getByRole("button", { name: "Remove filter Machine: deploy-host" })
+      within(region).getByRole("button", { name: "Remove Machine: deploy-host filter" })
     ).toBeTruthy();
     expect(screen.getByTestId("location-search").textContent).toBe("?machine=deploy-host");
     expect(
@@ -4251,13 +4251,13 @@ test("a link naming a group and a role opens the page narrowed to them, and its 
     expect(titles()).toEqual(["Deployer"]);
     expect(within(region).getByRole("button", { name: "Filter · 2" })).toBeTruthy();
 
-    await user.click(within(region).getByRole("button", { name: "Remove filter Group: Active" }));
+    await user.click(within(region).getByRole("button", { name: "Remove Group: Active filter" }));
     await waitFor(() =>
       expect(screen.getByTestId("location-search").textContent).toBe("?role=deployer")
     );
     expect(titles()).toEqual(["Deployer"]);
 
-    await user.click(within(region).getByRole("button", { name: "Remove filter Role: deployer" }));
+    await user.click(within(region).getByRole("button", { name: "Remove Role: deployer filter" }));
     await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
     expect(titles()).toEqual(["Planner", "Deployer", "Reviewer"]);
   } finally {

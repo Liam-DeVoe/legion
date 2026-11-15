@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { PanelTrigger } from "./PanelTrigger";
 
@@ -279,6 +279,168 @@ test("a menu inside the panel that goes with the focus in its own list hands the
     expect(screen.queryByRole("dialog", { name: "Project" })).not.toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: "Author" })).toHaveFocus();
   } finally {
+    view.unmount();
+  }
+});
+
+/** A panel opened from inside a modal dialog, as the search bar's Filter panel and the Inbox
+ *  drawer's View menu are: the panel is portalled to the body, outside the dialog, and a control
+ *  of the page stands before the dialog. */
+function PanelInDialog({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button">Behind the dialog</button>
+      <div aria-label="Search" aria-modal="true" role="dialog">
+        <PanelTrigger label="Filter" onOpenChange={setOpen} open={open}>
+          {() => children}
+        </PanelTrigger>
+        <button type="button">After the trigger</button>
+      </div>
+    </>
+  );
+}
+
+test("Tab past the panel's last control closes it and puts the reader on its trigger, whose next Tab goes on in the dialog", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <PanelInDialog>
+      <button type="button">Project</button>
+      <button type="button">Updated since</button>
+    </PanelInDialog>
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Filter" });
+    await user.click(trigger);
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    expect(within(panel).getByRole("button", { name: "Project" })).toHaveFocus();
+    // Between the panel's own controls Tab moves as ever.
+    await user.tab();
+    expect(within(panel).getByRole("button", { name: "Updated since" })).toHaveFocus();
+    // Past the last, never to whatever the body holds after the panel or the page behind.
+    await user.tab();
+    expect(screen.queryByRole("dialog", { name: "Filter" })).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "After the trigger" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Shift+Tab past the panel's first control closes it and puts the reader on its trigger", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <PanelInDialog>
+      <button type="button">Project</button>
+      <button type="button">Updated since</button>
+    </PanelInDialog>
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Filter" });
+    await user.click(trigger);
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    expect(within(panel).getByRole("button", { name: "Project" })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.queryByRole("dialog", { name: "Filter" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a group of radios is one Tab stop: Tab from the chosen radio of the panel's last group closes it", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <PanelInDialog>
+      <fieldset>
+        <legend>Thread order</legend>
+        <label>
+          <input defaultChecked name="order" type="radio" value="oldest" />
+          Oldest first
+        </label>
+        <label>
+          <input name="order" type="radio" value="newest" />
+          Newest first
+        </label>
+      </fieldset>
+    </PanelInDialog>
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Filter" });
+    await user.click(trigger);
+    const oldest = screen.getByRole("radio", { name: "Oldest first" });
+    act(() => oldest.focus());
+    await user.tab();
+    expect(screen.queryByRole("dialog", { name: "Filter" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** Lays out what happy-dom does not: `trigger` drawn 28 px tall from `top`, and every panel
+ *  `panelHeight` tall. Answers what puts happy-dom's own layout back. */
+function layOut(trigger: HTMLElement, top: number, panelHeight: number): () => void {
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.getAttribute("role") === "dialog" ? panelHeight : 0;
+    },
+  });
+  trigger.getBoundingClientRect = () =>
+    ({
+      bottom: top + 28,
+      height: 28,
+      left: 10,
+      right: 100,
+      top,
+      width: 90,
+      x: 10,
+      y: top,
+    }) as DOMRect;
+  return () => {
+    if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
+    else Object.defineProperty(HTMLElement.prototype, "offsetHeight", own);
+  };
+}
+
+// INFRA-3135, review round 1: a list low in the Delivery page's Filter panel was pushed up over
+// its own trigger to fit the window, so a press on the trigger landed on the list's search box
+// and the list could not be closed by the control that opened it.
+test("a panel with no room under its trigger opens over it, never on it", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host />);
+  const trigger = screen.getByRole("button", { name: "Columns" });
+  const triggerTop = window.innerHeight - 68;
+  const restore = layOut(trigger, triggerTop, 200);
+  try {
+    await user.click(trigger);
+    const panel = screen.getByRole("dialog", { name: "Columns" });
+    expect(panel.style.top).toBe(`${triggerTop - 4 - 200}px`);
+    expect(panel.style.maxHeight).toBe("");
+  } finally {
+    restore();
+    view.unmount();
+  }
+});
+
+test("a panel with room on neither side of its trigger is cut to the roomier side, never laid on it", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host />);
+  const trigger = screen.getByRole("button", { name: "Columns" });
+  const triggerTop = window.innerHeight - 200;
+  const restore = layOut(trigger, triggerTop, window.innerHeight * 2);
+  try {
+    await user.click(trigger);
+    const panel = screen.getByRole("dialog", { name: "Columns" });
+    // Over the trigger, from the window's 8 px margin to 4 px above the trigger.
+    expect(panel.style.top).toBe("8px");
+    expect(panel.style.maxHeight).toBe(`${triggerTop - 4 - 8}px`);
+  } finally {
+    restore();
     view.unmount();
   }
 });

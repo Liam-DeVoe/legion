@@ -27,11 +27,11 @@ import type {
   MessageWithTrees,
   UserAgentStates,
 } from "../../api/types";
-import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
+import { filterChips } from "../../components/filter-chips";
 import { useFocusPlace } from "../../components/focus-place";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -41,6 +41,7 @@ import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { SearchBox } from "../../components/SearchBox";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import { useSending } from "../../hooks/useSending";
 import { buildInboxPath } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -910,10 +911,6 @@ function withPicked(options: readonly string[], picked: readonly string[]): stri
   return [...options, ...picked.filter((value) => !options.includes(value))];
 }
 
-/** The panel the row's one filter trigger opens: a column holding the three multi-selects,
- *  portalled over the page so opening it moves no row of the list beneath (INFRA-3135, R1). */
-const FILTER_PANEL_CLASS = `z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`;
-
 /**
  * The one row the page's controls sit in: the search box, the one trigger over the three
  * narrowings that are no column of a table here - group, machine and role - and the chips of
@@ -936,23 +933,10 @@ function AgentFilterBar({
   // The options carry every machine the filter names even when no live session reports it, so
   // the control shows the filter in force and its row can be unticked (`filterOptions`).
   const { machines, roles } = filterOptions(agents, filters.machines);
-  /** Whether the one **Filter** panel stands open. It is its own state, not one of
-   *  `openPanel`'s words, because the three controls inside it are its children: a control
-   *  opening inside the panel must not take the panel's own open away and unmount the control
-   *  the reader pressed (the Inbox's rule, `features/inbox/Inbox.tsx`). */
+  /** Whether the one **Filter** panel stands open. */
   const [filterOpen, setFilterOpen] = useState(false);
-  const [openPanel, setOpenPanel] = useState<OpenFilter | undefined>(undefined);
-  /** A pointer press outside the panel closes it - except while one of its controls is open,
-   *  because that press is the control's: `AnchoredPanel` listens on the document, so the panel
-   *  and the popover portalled out of it are each told the press was outside them. */
-  const openFilterPanel = (open: boolean) => {
-    if (!open && openPanel !== undefined) return;
-    setFilterOpen(open);
-  };
-  /** Opening one popover shuts whichever was open; closing one that has already been replaced
-   *  leaves the replacement alone, since an outside press reaches both. */
-  const openPopover = (name: OpenFilter, open: boolean) =>
-    setOpenPanel((current) => (open ? name : current === name ? undefined : current));
+  /** Which of its three controls has its popover open: one at a time, and none once it shuts. */
+  const filterPanel = useNestedPanels<OpenFilter>(filterOpen);
   // One chip per value the reader has ticked, in the order the panel lists the three controls;
   // a press takes that one value off and leaves the rest of the narrowing alone.
   const chosen = [
@@ -977,22 +961,7 @@ function AgentFilterBar({
   return (
     <ControlRow
       className="mb-3"
-      chips={
-        chosen.length === 0
-          ? undefined
-          : chosen.map(({ key, label, remove }) => (
-              <Chip
-                aria-label={`Remove filter ${label}`}
-                key={key}
-                onClick={remove}
-                removable
-                selected
-                title={label}
-              >
-                {label}
-              </Chip>
-            ))
-      }
+      chips={filterChips(chosen)}
       search={
         <SearchBox
           className="w-full"
@@ -1008,13 +977,14 @@ function AgentFilterBar({
         <PanelTrigger
           count={chosen.length}
           label="Filter"
-          onOpenChange={openFilterPanel}
+          onOpenChange={setFilterOpen}
           open={filterOpen}
-          panelClassName={FILTER_PANEL_CLASS}
+          stacked
         >
           {() => (
             <>
               <MultiSelect
+                {...filterPanel("group")}
                 emptyMessage="No group matches that."
                 label="Group"
                 // The control picks strings; these are the four group keys, read back in the one
@@ -1025,8 +995,6 @@ function AgentFilterBar({
                     groups: AGENT_GROUPS.filter((group) => next.includes(group)),
                   })
                 }
-                onOpenChange={(next) => openPopover("group", next)}
-                open={openPanel === "group"}
                 optionLabel={(value) => AGENT_GROUP_LABELS[value as AgentGroup]}
                 options={AGENT_GROUPS}
                 searchLabel="Search groups"
@@ -1034,22 +1002,20 @@ function AgentFilterBar({
                 triggerAriaLabel="Filter by group"
               />
               <MultiSelect
+                {...filterPanel("machine")}
                 emptyMessage="No machine matches that."
                 label="Machine"
                 onChange={(next) => onFilters({ ...filters, machines: next })}
-                onOpenChange={(next) => openPopover("machine", next)}
-                open={openPanel === "machine"}
                 options={machines}
                 searchLabel="Search machines"
                 selected={filters.machines}
                 triggerAriaLabel="Filter by machine"
               />
               <MultiSelect
+                {...filterPanel("role")}
                 emptyMessage="No role matches that."
                 label="Role"
                 onChange={(next) => onFilters({ ...filters, roles: next })}
-                onOpenChange={(next) => openPopover("role", next)}
-                open={openPanel === "role"}
                 options={withPicked(roles, filters.roles)}
                 searchLabel="Search roles"
                 selected={filters.roles}

@@ -59,3 +59,64 @@ test("a user preference stays at its caller default until login, then follows th
     window.localStorage.removeItem(undefinedKey);
   }
 });
+
+/** A preference whose `read` folds two stored values into one, as the Board's panel folds an
+ *  "expanded" stored while no filter is on into shut. */
+function FoldingProbe() {
+  const [open, setOpen] = useUserPreference(
+    "project.issue-filters",
+    () => false,
+    (next) => (next ? "expanded" : "collapsed")
+  );
+  return (
+    <button onClick={() => setOpen(!open)} type="button">
+      {open ? "open" : "shut"}
+    </button>
+  );
+}
+
+test("a preference write whose value is already stored is not made", async () => {
+  const user = userEvent.setup();
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const key = userPreferenceStorageKey("alice", "project.issue-filters");
+  // A stand-in for the page's storage that counts its writes: a spy on happy-dom's own Storage
+  // does not see the hook's calls, and a property set on a Storage instance becomes an item.
+  const items = new Map<string, string>([[key, "expanded"]]);
+  const writes: [string, string][] = [];
+  const storage = {
+    getItem: (name: string) => items.get(name) ?? null,
+    removeItem: (name: string) => items.delete(name),
+    setItem: (name: string, value: string) => {
+      writes.push([name, value]);
+      items.set(name, value);
+    },
+  };
+  const realStorage = Object.getOwnPropertyDescriptor(window, "localStorage");
+  Object.defineProperty(window, "localStorage", { configurable: true, value: storage });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <FoldingProbe />
+    </QueryClientProvider>
+  );
+
+  try {
+    // The signed-in identity, which is what lets the hook write at all.
+    await waitFor(() => expect(queryClient.getQueryData(["whoami"])).toBeDefined());
+    // Shut by its read while "expanded" is stored: opening it would write "expanded" over itself.
+    await user.click(screen.getByRole("button", { name: "shut" }));
+    expect(writes).toEqual([]);
+    // Closing it changes what is stored, so that write is made.
+    await user.click(screen.getByRole("button", { name: "open" }));
+    expect(writes).toEqual([[key, "collapsed"]]);
+  } finally {
+    view.unmount();
+    whoAmI.mockRestore();
+    if (realStorage !== undefined) Object.defineProperty(window, "localStorage", realStorage);
+    else Reflect.deleteProperty(window, "localStorage");
+  }
+});

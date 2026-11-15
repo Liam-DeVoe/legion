@@ -2184,7 +2184,7 @@ test("the needs-you control narrows the list to what waits on the reader and off
     expect(rowIds()).toEqual(["ask-mine"]);
 
     // The narrowing is a chip like any other, so **Clear filters** is the way back out of it.
-    expect(screen.getByRole("button", { name: "Remove filter Waiting on you" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove Waiting on you filter" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Clear filters" }));
     await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/"));
   } finally {

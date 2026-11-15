@@ -5,6 +5,7 @@ import { Chip } from "../../components/Chip";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import { ControlRow } from "../../components/ControlRow";
 import { DisplayMenu } from "../../components/DisplayMenu";
+import { filterChips } from "../../components/filter-chips";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
@@ -12,7 +13,6 @@ import { StepButton } from "../../components/StepButton";
 import { useAddressUpdate } from "../../lib/page-address";
 import {
   borderDefault,
-  card,
   issueStatusScale,
   surfaceBg,
   surfaceMutedBg,
@@ -30,10 +30,6 @@ import {
   UNCLAIMED_FACET,
   writeUrl,
 } from "./issues-table-model";
-
-/** The panel the row's one filter trigger opens: a column of chips, portalled over the page so
- *  opening it moves no row of the table beneath (INFRA-3135, R1). */
-const FLAGS_PANEL_CLASS = `z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col items-start gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`;
 
 export function IssueTableStatus({
   table,
@@ -154,9 +150,9 @@ export function IssueTableToolbar({
   // The three narrowings that are no column of this table, and so the ones the row's own
   // trigger holds.
   const flagged = [
-    { label: "Needs you", off: () => flags.setNeedsYou(false), on: flags.needsYou },
-    { label: "Unread", off: () => flags.setUnread(false), on: flags.unread },
-    { label: "Unclaimed", off: () => setUnclaimed(false), on: unclaimed },
+    { label: "Needs you", on: flags.needsYou, remove: () => flags.setNeedsYou(false) },
+    { label: "Unread", on: flags.unread, remove: () => flags.setUnread(false) },
+    { label: "Unclaimed", on: unclaimed, remove: () => setUnclaimed(false) },
   ].filter(({ on }) => on);
   // Exactly the scope it has always had: the table's own filters and search, and the two flags
   // the write below takes out of the address.
@@ -165,19 +161,7 @@ export function IssueTableToolbar({
     flagged.length === 0 && selectionChip === undefined ? undefined : (
       <>
         {selectionChip}
-        {flagged.map(({ label, off }) => (
-          <Chip
-            aria-label={`Remove ${label} filter`}
-            key={label}
-            onClick={off}
-            removable
-            selected
-            size="compact"
-            title={label}
-          >
-            {label}
-          </Chip>
-        ))}
+        {filterChips(flagged, "compact")}
       </>
     );
   const clearFilters = () =>
@@ -249,8 +233,8 @@ export function IssueTableToolbar({
             label="Filters"
             onOpenChange={(open) => setOpenPanel(open ? "flags" : undefined)}
             open={openPanel === "flags"}
-            panelClassName={FLAGS_PANEL_CLASS}
             size="compact"
+            stacked
           >
             {() => (
               <>

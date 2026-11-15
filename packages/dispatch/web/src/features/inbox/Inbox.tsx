@@ -14,11 +14,11 @@ import { Link } from "react-router-dom";
 
 import { inboxQuery, usersQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
-import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
 import { controlPadding } from "../../components/control-names";
 import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
 import { EmptyState } from "../../components/EmptyState";
+import { type FilterChip, filterChips } from "../../components/filter-chips";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -26,6 +26,7 @@ import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import {
   buildInboxPath,
   capSearchQuery,
@@ -35,7 +36,6 @@ import {
 import {
   badgeLow,
   borderDefault,
-  card,
   checkboxAccent,
   dangerText,
   focusVisibleRing,
@@ -137,10 +137,9 @@ import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
 import { useInboxSelection } from "./useInboxSelection";
 import { useInboxThreadRows } from "./useInboxThreadRows";
 
-/** Which single popover of the page is open, or undefined for none: one of the four filter
- *  fields, the assignee control beside them, or the display menu. The page owns it so only one
- *  stands open at a time, and so Escape is that popover's rather than the selection's. */
-type InboxPanel = InboxFilterField | "assignee" | "view";
+/** One of the **Filter** panel's five controls that opens a popover of its own: one of the four
+ *  filter fields, or the assignee control beside them. */
+type InboxFilterPanel = InboxFilterField | "assignee";
 
 /** The chrome of the page's own controls - **Mark all read** and the needs-you control - so
  *  each keeps the row's 44 px line and nothing in the row can grow it. */
@@ -148,13 +147,6 @@ const PAGE_CONTROL_CLASS = `rounded-lg border text-sm font-semibold whitespace-n
 
 /** One action of the selection bar, as the bar's own line draws it. */
 const BAR_ACTION_CLASS = `min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
-
-/** One removable thing the reader narrowed the list by. */
-interface FilterToken {
-  key: string;
-  label: string;
-  remove: () => void;
-}
 
 /** The values a field offers, in the order its control lists them. Project is the one field
  *  whose vocabulary is the workspace's, so it is read off the rows themselves. */
@@ -813,29 +805,15 @@ export function Inbox({
   const showMore = useCallback((key: string) => {
     setPages((current) => new Map(current).set(key, (current.get(key) ?? 1) + 1));
   }, []);
-  /** Whether the one **Filter** panel stands open. It is its own state, not one of `openPanel`'s
-   *  words, because the five controls inside it are its children: a field opening inside the
-   *  panel must not take the panel's own open away and unmount the control the reader pressed. */
+  /** Whether the one **Filter** panel stands open. */
   const [filterOpen, setFilterOpen] = useState(false);
-  /** Which single popover is open - one of the five fields, or the display menu - so the page
-   *  keeps one at a time rather than a row of them. */
-  const [openPanel, setOpenPanel] = useState<InboxPanel | undefined>(undefined);
-  // Escape is a panel's while one stands open, never the selection's.
-  const barOpen = filterOpen || openPanel !== undefined;
-  /** The **Filter** panel's own open. A pointer press outside it closes it - except while one
-   *  of its five controls is open, because that press is the field's: `AnchoredPanel` listens
-   *  on the document, so the panel and the popover portalled out of it are each told the press
-   *  was outside them, and a reader picking a value is still in the panel they picked it from.
-   *  The press that then closes the panel is the reader's next one, by which time the field has
-   *  gone and this guard is off. */
-  const openFilterPanel = (open: boolean) => {
-    if (!open && openPanel !== undefined) return;
-    setFilterOpen(open);
-  };
-  /** Opening one popover shuts whichever was open; closing one that has already been replaced
-   *  leaves the replacement alone, since an outside press reaches both. */
-  const openPopover = (name: InboxPanel, open: boolean) =>
-    setOpenPanel((current) => (open ? name : current === name ? undefined : current));
+  /** Which of its five controls has its popover open: one at a time, and none once it shuts. */
+  const filterPanel = useNestedPanels<InboxFilterPanel>(filterOpen);
+  /** Whether the display menu stands open. */
+  const [viewOpen, setViewOpen] = useState(false);
+  // Escape is a panel's while one stands open, never the selection's. A field's popover stands
+  // open only inside the open Filter panel.
+  const barOpen = filterOpen || viewOpen;
   // Every Inbox reader draws the assignee control and few open it, so the people are fetched on
   // its first open and kept from then on: a reader who never filters costs no `/api/v1/users`.
   const [peopleWanted, setPeopleWanted] = useState(false);
@@ -1689,12 +1667,11 @@ export function Inbox({
           );
           return (
             <MultiSelect
+              {...filterPanel(field)}
               emptyMessage={`No matching ${DIMENSION_LABELS[field].toLowerCase()}.`}
               key={field}
               label={DIMENSION_LABELS[field]}
               onChange={(next) => chooseField(field, next)}
-              onOpenChange={(open) => openPopover(field, open)}
-              open={openPanel === field}
               optionDetail={(value) => `${counts.get(value) ?? 0}`}
               optionDetailLabel={(value) => `${counts.get(value) ?? 0} rows`}
               optionLabel={(value) => dimensionValueLabel(field, value)}
@@ -1717,9 +1694,9 @@ export function Inbox({
           onChange={chooseAssignees}
           onOpenChange={(open) => {
             if (open) setPeopleWanted(true);
-            openPopover("assignee", open);
+            filterPanel("assignee").onOpenChange(open);
           }}
-          open={openPanel === "assignee"}
+          open={filterPanel("assignee").open}
           optionDetail={(value) =>
             `${value === viewer ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`
           }
@@ -1738,7 +1715,7 @@ export function Inbox({
     );
   };
 
-  const tokens: FilterToken[] = [];
+  const tokens: FilterChip[] = [];
   for (const field of INBOX_FILTER_FIELDS) {
     for (const value of filters[field] ?? []) {
       tokens.push({
@@ -1785,18 +1762,7 @@ export function Inbox({
     agentChip === undefined && tokens.length === 0 ? undefined : (
       <>
         {agentChip}
-        {tokens.map((token) => (
-          <Chip
-            aria-label={`Remove filter ${token.label}`}
-            key={token.key}
-            onClick={token.remove}
-            removable
-            selected
-            title={token.label}
-          >
-            {token.label}
-          </Chip>
-        ))}
+        {filterChips(tokens)}
       </>
     );
   // **Clear filters**, which the row draws at the end of the chips' line while there are chips:
@@ -1872,8 +1838,8 @@ export function Inbox({
   const displayMenu = (
     <DisplayMenu
       label="View"
-      onOpenChange={(open) => openPopover("view", open)}
-      open={openPanel === "view"}
+      onOpenChange={setViewOpen}
+      open={viewOpen}
       sections={[
         {
           id: "sort",
@@ -2048,12 +2014,7 @@ export function Inbox({
           />
         }
         trigger={
-          <PanelTrigger
-            label="Filter"
-            onOpenChange={openFilterPanel}
-            open={filterOpen}
-            panelClassName={`z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`}
-          >
+          <PanelTrigger label="Filter" onOpenChange={setFilterOpen} open={filterOpen} stacked>
             {renderFilterControls}
           </PanelTrigger>
         }
