@@ -466,7 +466,7 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 // says it answers.
 //
 // The issue arrives by pointer because this reads two of its fields and the detail behind them
-// is the whole issue: its artifacts, its labels, its relations and its events. Taken by value it
+// is the whole issue: its artifacts, its labels and its relations. Taken by value it
 // was all copied to read an id and a list. Its artifacts are already shaped as the artifact
 // route shapes one (readIssue), so the document part carries the same trees that route would.
 func (s *server) landingIssueDocument(ctx context.Context, caller model.Actor, issue *issueDetail, trees bool) *landingIssueDocument {

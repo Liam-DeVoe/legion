@@ -28,7 +28,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   So each boundary is written in the feature module it splits, and the chunk it creates is reached by the walk of `e2e/two-builds.multiprocess.e2e.ts`, which refuses a script or stylesheet of the build that no visit was answered 200 for: either a walked route loads it of its own accord, as the event-to-queries map is loaded wherever the feed starts, or it takes an entry in `lazyPieces` of `e2e/two-builds-routes.ts` and a visit that says it loads it.
   The same arithmetic decides how this bundle reads `@legion/contracts`: a value comes from the subpath of the module that defines it (`@legion/contracts/dispatch-api-constants`, `@legion/contracts/actor-label`, and the others `web/vite.config.ts` aliases), never from the package index, because one import of the index reaches every module of the package, a bundler may drop none whose top level builds anything, and the index was carrying that package's whole reference table and zod's schema builders into a page that validates nothing (`packages/contracts/AGENTS.md`).
   An `import type` from the index is left alone, since the compiler erases it before the bundler sees it.
-  The editor package holds to the same rule (`packages/proof-editor/src/block-pointers.ts`, `typed-block-commands.ts`): its one value import of the index put 186,610 bytes of that package and zod into the editor's chunk (`ask-content-*.js`), which every page that draws a document loads before its first block.
+  The editor package holds to the same rule (`packages/proof-editor/src/block-pointers.ts`, `typed-block-commands.ts`): its two value imports of the index put 186,610 bytes of that package and zod into the editor's chunk (`ask-content-*.js`), which every page that draws a document loads before its first block.
 - `web/src/api/types.ts` re-exports the Dispatch JSON entities from `@legion/contracts`, which generates them from the Go route table (`packages/contracts/schemas/dispatch-openapi.json` → `src/dispatch-api.generated.ts`). It declares a shape of its own only for something no route of that table answers, and `web/src/api/hand-written-shapes.md` names each one with the reason it is not generated.
 - `web/src/lib/timestamps.ts`'s `compareTimestamps` is how the SPA orders two server timestamps.
   The server writes RFC 3339 with trailing fractional zeros dropped (`…00.12Z`, `…00.123456Z`), so
@@ -1006,7 +1006,8 @@ chronological event list: collapsed comment turns provide a reply summary, a com
 marks its card and opens its thread there, and on phones opening one uses a full-height dialog
 with a bottom-pinned reply composer and Back or Escape close.
 
-`AuthGate` resolves the `["whoami"]` query, whose read is `GET /api/v1/landing`: one request
+`AuthGate` resolves the `["whoami"]` query, whose cold read is `GET /api/v1/landing` (a warm
+read of the same key is `/auth/whoami`): one request
 that answers the viewer, the shell and the page the address names, and seeds each part under
 the key that part's own route uses (`whoAmIQuery` and `readLanding` in `web/src/api/queries.ts`).
 A server that does not answer that route answers 404, and the read falls back to
@@ -1733,10 +1734,11 @@ through — has a `Fetch` of its own rather than `globalThis.fetch`.
 A request no handler answers is errored and recorded with its method and path, and the preload's
 `afterEach` and `afterAll` fail the test with what was recorded, so a read the page swallowed in
 a `catch`, and a write still retrying after a file's last test, are reported all the same.
-The module answers seven routes with the API's empty shape: the five the application shell reads
+The module answers eight routes with the API's empty shape: the five the application shell reads
 on every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
-`/api/v1/credential-requests`, `/api/v1/me/agents/state`), `/api/v1/projects`, and
-`/api/v1/landing` as the 404 a Dispatch older than that route answers, which is what leaves
+`/api/v1/credential-requests`, `/api/v1/me/agents/state`), `/api/v1/projects`,
+`/api/v1/priorities` as an empty list, and `/api/v1/landing` as the 404 a Dispatch older than that
+route answers, which is what leaves
 every page under test reading each resource from the route its own test answers or spies.
 The project list is read by the sidebar wherever it is drawn (`features/sidebar/Sidebar.tsx:91`,
 with no `enabled` guard) and by the issue header for every root issue, to learn which design steps
@@ -2023,8 +2025,8 @@ A stack's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
 and a run of more than one stack that names neither is refused naming both.
 `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names.
 It is a developer's path on a machine with Docker and no Postgres binaries.
-It is also the path of every CI job that runs on the runner itself, whose own
-PostgreSQL carries no `vector`: the multiprocess job (both of its browser steps),
+It is also the path of every job of the browser workflows that runs on the runner itself, whose
+own PostgreSQL carries no `vector`: the multiprocess job (both of its browser steps),
 the embedder job and the visual job of `.github/workflows/dispatch-browser.yaml`,
 the visual job with only its Playwright command in a container, and the
 `re-record` job of `.github/workflows/dispatch-browser-nightly.yaml`.
@@ -2089,7 +2091,7 @@ Every browser row of the suite runs in `.github/workflows/dispatch-browser.yaml`
 `.github/workflows/ci.yaml`'s `dispatch-browser` job calls with one of two lanes.
 A pull request without the label `full-ci` runs the `pull-request` lane: the projects `chromium`,
 `iphone`, `stub` and `stub-phone`, held to the rows tagged `@pr`, split over two
-shard machines, each leg running `--shard=N/2` with four workers.
+shard machines, each leg running `--shard=N/2` with four workers, and the fake-embedder job.
 A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
 (`.github/workflows/dispatch-browser-nightly.yaml`)
 run the `full` lane: all eight parallel projects and the two stubbed ones over those same two
@@ -2133,11 +2135,10 @@ here and then spends that worst case lands on the ceiling exactly.
 That ceiling is a coarse guard above the fleet's own spread and no reading of what
 dispatch://INFRA-1109 delivers: no job can read another run, so what the suite costs against the
 day's own default branch is read after the run, by R4 and R5 of that issue, each a ratio.
-It was 2,040 s until 2026-11-12, when the machines got slower and this suite
-did not: between run 43150379433 (2,003 s) and run 43192333526 (2,285 s), every job of
-`ci.yaml` that reads no file of this suite rose with it, the `binaries` job that runs no row
-rose 31 per cent with the same `package.json` and `bun.lock`, and the head's lane stayed 0.72 to
-0.75 of a default-branch lane read the same day.
+It was 2,040 s until 2026-11-12 and 2,400 s from then, when the machines got slower and this
+suite did not: between run 43150379433 (2,003 s) and run 43192333526 (2,285 s) the `binaries`
+job that runs no row rose 31 per cent with the same `package.json` and `bun.lock`, and the head's
+lane stayed 0.72 to 0.75 of a default-branch lane read the same day.
 It became 2,700 s on 2026-11-15, when two runs of one tree cost 2,252 and 2,450 s
 (43664675139, 43667557013) with real-stack row medians of 2,746 and 3,126 ms, against the
 thirteen green merge-queue runs of the default branch that day up to 15:03Z, at 2,975 to 3,347 s

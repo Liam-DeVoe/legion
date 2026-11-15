@@ -254,14 +254,15 @@ test("the wall-clock projects are the one list, in its order, and run their rows
 // `--project` (`projectsOnCommandLine`, e2e/configurations.ts), so both spellings of the option
 // are read as Playwright reads them.
 //
-// It reads what the script runs and not its one line: every e2e script of this package is split
-// in two since dispatch://INFRA-1109 - `e2e:clock` builds the contracts and the dashboard and
-// then calls `e2e:clock:run`, which is the Playwright command, so that a CI job which took both
-// builds from the run's artefacts can run the second half alone. The projects are named in that
-// half, so a `bun run <script>` naming a script of this same manifest is followed to it and
-// read in its place. A `bun run` naming anything else is left as the words it is:
-// `build:contracts` is `bun run --filter @legion/contracts build`, another package's script,
-// and no line of this manifest holds it.
+// It reads what the script runs and not its one line: the e2e scripts a CI job runs over the
+// run's artefacts - `e2e:clock`, `e2e:embedder` and `e2e:multiprocess` - are split in two since
+// dispatch://INFRA-1109. `e2e:clock` builds the contracts and the dashboard and then calls
+// `e2e:clock:run`, which is the Playwright command, so that a CI job which took both builds from
+// the run's artefacts can run the second half alone. The projects are named in that half, so a
+// `bun run <script>` naming a script of this same manifest is followed to it and read in its
+// place, `build:contracts` and `build:web` included, and a `bun run` naming anything else is
+// left as the words it is: `build:contracts` runs `bun run --filter @legion/contracts build`,
+// whose `--filter` is no script of this manifest, so the follow stops there.
 function scriptCommandLine(
   scripts: Record<string, string>,
   name: string,
