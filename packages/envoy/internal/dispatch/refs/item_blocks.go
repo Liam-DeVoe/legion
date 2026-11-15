@@ -943,24 +943,25 @@ func lockItem(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, 
 
 // WriteItemWindows writes the windows of comment, message or ask itemID's blocks, and nothing
 // else, in the caller's transaction: it is to an item what WriteDocumentWindows is to a
-// document. Two callers run it. The block-index tick's window arm runs it for an item whose
-// text was written, and the delete of a comment or an issue message runs it in its own
-// transaction, after the tombstone, where the cleared body splits into no block and the call is
-// a delete of the item's window rows alone, with no embedding to make (clearDeletedPostBody,
-// api/post_history.go). It takes the item row `for no key update`, the
-// lock an edit of the item takes, and reads under that lock the text the item's blocks were
-// split from - its stored body and its issue's title in that one statement, or an ask's parts
-// (AskParts) after a lock of its own (itemWindowText) - pairs it with the item's current block
-// rows, and writes one set of windows under those ids, stamping the state the blocks are in
-// beside them and clearing the marker that listed it in the same statement
-// (clearItemWindowsOwed, writeWindows). It writes no block row and no reference: the index of
-// this item's blocks stands, and only its windows are missing.
+// document. Three callers run it. The block-index tick's window arm runs it for an item whose
+// text was written, the seed writes each item's windows with the item (cmd/dispatch-seed), and
+// the delete of a comment or an issue message runs it in its own transaction, after the
+// tombstone, where the cleared body splits into no block, so the call deletes the item's window
+// rows with no embedding to make, clears the marker listing it and stamps the empty state the
+// blocks are now in (clearDeletedPostBody, api/post_history.go). It takes the item row
+// `for no key update`, the lock an edit of the item takes, and reads under that lock the text
+// the item's blocks were split from - its stored body and its issue's title in that one
+// statement, or an ask's parts (AskParts) after a lock of its own (itemWindowText) - pairs it
+// with the item's current block rows, and writes one set of windows under those ids, stamping
+// the state the blocks are in beside them and clearing the marker that listed it in the same
+// statement (clearItemWindowsOwed, writeWindows). It writes no block row and no reference: the
+// index of this item's blocks stands, and only its windows are missing.
 //
 // It is the one writer of an item's windows, and after a delete the one remover of them. An
 // index of the item's blocks records the blocks and leaves the windows that stand for them to
-// this call (indexItemBlocks), so every set of windows an item holds was written here: one
-// reconciliation tick behind the write of its text, and at the delete itself for a post whose
-// author deleted it.
+// this call (indexItemBlocks), so every set of windows an item holds was written here: with the
+// item for a seeded one, one reconciliation tick behind the write of its text otherwise, and at
+// the delete itself for a post whose author deleted it.
 //
 // It reports whether it wrote them. An item gone since it was listed is no longer anyone's to
 // window. An item whose stored text no longer splits into the blocks the index holds - a parser

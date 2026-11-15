@@ -306,9 +306,10 @@ describe("searchAnswer: where an ask hit stands", () => {
 });
 
 describe("searchAnswer: a deleted post's hit", () => {
-  // A comment or a message its author deleted can still be a meaning hit until Dispatch's next
-  // index pass drops its windows, and its snippet is then empty: the line says who deleted it
-  // and when where the snippet would be, and a post nobody deleted keeps its snippet.
+  // A post an earlier build deleted keeps the windows that delete left behind, so it is a
+  // meaning hit until the next index pass drops them, and its snippet is then empty; a post a
+  // Dispatch of this release deleted is no hit at all. The line says who deleted it and when
+  // where the snippet would be, and a post nobody deleted keeps its snippet.
   test("prints the deleted line in place of the snippet, on an issue's hit and a document's", () => {
     const deleted = {
       deleted_at: "2026-10-02T00:00:00Z",

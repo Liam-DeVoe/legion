@@ -248,13 +248,16 @@ test("a pinned message event its author edited marks its byline edited, and one 
 });
 
 // The read of an event of a post its author edited and then deleted gives it both marks and no
-// body (`attachPostMarks` in `api/events.go`). The deleted line stands where the body was, and
-// the byline carries no ` · edited`: the deleted line already says what became of the text.
+// body (`attachPostMarks` in `api/events.go`). The card must not depend on that: this event still
+// holds the body it was written with, and the deleted line takes its place (`PostBody`), so no
+// part of that body prints. The byline carries no ` · edited`: the deleted line already says
+// what became of the text.
 test("a pinned message event of a post edited and then deleted reads as deleted, and its byline is not marked edited", () => {
   const editedThenDeleted: DispatchEvent = {
     ...messageEvent,
     payload: {
       author: { id: "alice", kind: "user" },
+      body: "Pinned message\n\n- item",
       broadcast_id: null,
       reply_block: null,
       created_at: "2026-09-10T00:00:00Z",
@@ -287,8 +290,8 @@ test("a pinned message event of a post edited and then deleted reads as deleted,
 
   try {
     const card = view.container.querySelector("article");
-    expect(card?.textContent).toContain("Deleted by alice");
     expect(card?.textContent).not.toContain("Pinned message");
+    expect(card?.textContent).toContain("Deleted by alice");
     expect(card?.textContent).not.toContain("edited");
   } finally {
     view.unmount();

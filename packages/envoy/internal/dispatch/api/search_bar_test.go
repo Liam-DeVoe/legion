@@ -662,7 +662,7 @@ func TestSearchMeaningHitOfADeletedPostCarriesItsDeleteMark(t *testing.T) {
 		}
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	page := searchResponse(t, handler, "q=wibbleflorp")
 	if page.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", page.Degraded)
@@ -762,7 +762,7 @@ func TestDeleteDropsThePostsWindowsBeforeAnyTick(t *testing.T) {
 		{"message", deletedMessage, "message/" + deletedMessage},
 	}
 	kept := []struct{ kind, id string }{{"comment", keptComment}, {"message", keptMessage}}
-	requireNoKeywordHit(t, "q=wibbleflorp")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	before := searchResponse(t, handler, "q=wibbleflorp")
 	for _, post := range deleted {
 		searchHit(t, before, post.kind, post.id)

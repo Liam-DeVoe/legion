@@ -72,7 +72,8 @@ const OLDER_COMMENT_EDIT_ACTOR = 'invalid JSON body: json: unknown field "actor"
  * input holding only `body`, `base_revision` and `blocks`, refusing an undeclared member; the
  * body this client sends always carries `actor`, so it answers `400 INVALID_JSON` naming the
  * unknown field `actor` before it compares the author. A build from #2461 on ignores an
- * undeclared member, so only one older than that answers it, which production's `c823eba4` is.
+ * undeclared member, so only one older than that answers it, and a person's own credential
+ * reaches the comment edit of a newer build, which takes the edit and keeps no earlier body.
  * Only the comment edit reads either code as the server's age, and only in those exact forms: an
  * `INVALID_JSON` naming any other field is passed through. Without this, an agent is told its
  * credential lacks a scope, or that its own request was malformed, and goes asking a person for

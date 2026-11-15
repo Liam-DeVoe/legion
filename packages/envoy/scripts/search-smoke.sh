@@ -102,9 +102,11 @@ while IFS= read -r query || [[ -n "$query" ]]; do
   [[ -z "$query" || "$query" == \#* ]] && continue
   answer="$(curl -fsS -G -H 'X-Dispatch-User: smoke@example.test' "${base}/api/v1/search" \
     --data-urlencode "q=${query}" --data-urlencode "limit=${limit}" --data-urlencode "offset=${offset}")"
-  # An answer from a server that predates totals prints "-" for them. A hit of a post its author
-  # deleted, which the meaning arm returns until the next index pass drops its windows, carries an
-  # empty snippet and its delete mark, and prints the mark in the snippet's place.
+  # An answer from a server that predates totals prints "-" for them. A post a server of this
+  # release deleted is no hit at all, since the delete takes its windows with its body; a hit of
+  # one an earlier build deleted, which the meaning arm returns until the next index pass drops
+  # the windows left behind, carries an empty snippet and its delete mark, and prints the mark in
+  # the snippet's place.
   jq -r --arg query "$query" --argjson offset "$offset" '
     "== \($query)  total=\(.total // "-") reachable=\(.reachable // "-")",
     "   took_ms=\(.took_ms)",

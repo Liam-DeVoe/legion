@@ -20,8 +20,9 @@ export function pageSummaryText(offset: number, count: number, total: number): s
   return `showing ${offset + 1}-${offset + count} of ${total}`;
 }
 
-/** One hit's line. A comment or a message its author deleted can still be a meaning hit until
- *  Dispatch's next index pass drops its windows, and its snippet is then empty: the deleted line
+/** One hit's line. A delete takes the post's windows with its body, so a post a Dispatch of this
+ *  release deleted is no hit at all; one an earlier build deleted is a meaning hit until the next
+ *  index pass drops the windows left behind, and its snippet is then empty: the deleted line
  *  every read prints for one (`deletedMark`) stands where the snippet would. */
 function searchHitLine(result: SearchResult, baseUrl: string): string {
   const href = new URL(result.href, baseUrl).toString();

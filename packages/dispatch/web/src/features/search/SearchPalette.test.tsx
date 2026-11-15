@@ -265,10 +265,11 @@ test("an edited post's hit carries the edited mark, and a post nobody edited doe
   }
 });
 
-// A comment or a message its author deleted can still be a meaning hit until Dispatch's next
-// index pass drops its windows, and its snippet is then empty. The hit draws the deleted line
-// where the snippet would be, naming who deleted it and when, and no edited mark beside its
-// kind; a post nobody deleted draws its snippet and no deleted line.
+// A post an earlier build deleted keeps the windows that delete left behind, so it is a meaning
+// hit until the next index pass drops them, and its snippet is then empty; a post this Dispatch
+// deleted is no hit at all. The hit draws the deleted line where the snippet would be, naming
+// who deleted it and when, and no edited mark beside its kind; a post nobody deleted draws its
+// snippet and no deleted line.
 test("a deleted post's hit draws the deleted line where its snippet would be", async () => {
   const user = userOnFakeClock();
   const deleted: SearchResult = {

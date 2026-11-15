@@ -1805,8 +1805,10 @@ export class DispatchClient {
     return this.#json("POST", ["api", "v1", "comments", id, "resolve"], { actor });
   }
 
-  /** `PATCH /api/v1/comments/{id}`: the author replaces the comment's body whole. Dispatch keeps
-   *  the body it replaces, which `commentHistory` reads. */
+  /** `PATCH /api/v1/comments/{id}`: the author replaces the comment's body whole. A Dispatch of
+   *  this release keeps the body it replaces, which `commentHistory` reads; a person's own
+   *  credential reaches this route on an older build too, which takes the edit and keeps
+   *  nothing. */
   async editComment(
     id: string,
     input: { readonly body: string; readonly actor: Actor }
