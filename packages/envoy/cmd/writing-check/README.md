@@ -999,10 +999,22 @@ DISTINCT rows of each session at or before its cut time, with no row of kind `fi
 order session, `seq`, `raw_file`, `raw_line`. The columns are `session_id`, `host`, `seq`, `ts`,
 `role`, `kind`, `text`, `raw_file` and `raw_line`. `TQ` names the `tq` command.
 
+Before it writes a row, the script masks secrets: in each text value of the row, every match of a
+secret pattern of the transcript store's `redact.py` becomes a marker that names the pattern
+(`[REDACTED:<name>]`). It writes the rows again as JSON with each character as itself.
+
 It writes gzipped JSONL parts, `part-000.jsonl.gz` and on, each under 24 MiB, and `manifest.json`:
-`schema` (`infra-3231-session-export/1`), `columns`, `parts` (`name`, `bytes`, `sha256`),
-`rows_by_session` (0 for a session the store holds no row of), `sessions_missing` and
-`sessions_left_out` (a count). It prints the rows found for each session.
+`schema` (`infra-3231-session-export/2`), `columns`, `parts` (`name`, `bytes`, `sha256`),
+`rows_by_session` (0 for a session the store holds no row of), `masks_by_session` (for each
+session with a mask, the masks by pattern), `sessions_missing` and `sessions_left_out` (a count).
+It prints the rows found for each session. Schema `infra-3231-session-export/1` is the same
+without the masks and their counts.
+
+The sessions this dataset reads, which `dataset/DATASET` records as `sessions_read`: every writer
+session of the dataset, and none is left out, by the owner's answer
+(dispatch://INFRA-3231/ask/5cfc36a0-1965-46b1-a60e-104869be6c62), so `--exclude` is an empty
+file. Session text reaches Claude models only (R2). Every text value is masked for secrets before
+the export.
 
 ### sessions
 
@@ -1011,6 +1023,9 @@ It writes gzipped JSONL parts, `part-000.jsonl.gz` and on, each under 24 MiB, an
 | `--manifest` | The `manifest.json` that `export-sessions.sh` wrote. Its parts are read beside it. |
 | `--cases` | The build directory, or its `cases.jsonl.gz`. |
 | `--out` | The directory for the output files. |
+
+`sessions` reads an export of schema `/1` or `/2`. It carries the manifest's schema and
+`masks_by_session` into `sessions-counts.json`.
 
 `sessions` checks each part's SHA-256 against the manifest, and refuses the export on the first
 part that differs, naming it. It also refuses an export made from another session list: a

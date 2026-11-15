@@ -3562,8 +3562,9 @@ func joinParts(manifestPath, dir string) (string, error) {
 // ---------------------------------------------------------------------------------------------
 // sessions: the ingest of export-sessions.sh's output
 
-// dsExportSchema is the schema export-sessions.sh writes in its manifest.
-const dsExportSchema = "infra-3231-session-export/1"
+// dsExportSchemas are the schemas export-sessions.sh writes in its manifest: /1 holds the rows as
+// the store gave them, /2 masks every secret in them and counts the masks (masks_by_session).
+var dsExportSchemas = []string{"infra-3231-session-export/1", "infra-3231-session-export/2"}
 
 // dsExportManifest is export-sessions.sh's manifest.json.
 type dsExportManifest struct {
@@ -3574,9 +3575,10 @@ type dsExportManifest struct {
 		Bytes  int64  `json:"bytes"`
 		SHA256 string `json:"sha256"`
 	} `json:"parts"`
-	RowsBySession   map[string]int `json:"rows_by_session"`
-	SessionsMissing []string       `json:"sessions_missing"`
-	SessionsLeftOut int            `json:"sessions_left_out"`
+	RowsBySession   map[string]int            `json:"rows_by_session"`
+	MasksBySession  map[string]map[string]int `json:"masks_by_session"`
+	SessionsMissing []string                  `json:"sessions_missing"`
+	SessionsLeftOut int                       `json:"sessions_left_out"`
 }
 
 // Where a case stands in its writer session.
@@ -3616,16 +3618,18 @@ type dsPlace struct {
 
 // dsSessionCounts is sessions-counts.json. It holds no text.
 type dsSessionCounts struct {
-	ManifestSHA256   string            `json:"manifest_sha256"`
-	Parts            int               `json:"parts"`
-	Rows             int               `json:"rows"`
-	SessionsInExport int               `json:"sessions_in_export"`
-	SessionsWithRows int               `json:"sessions_with_rows"`
-	SessionsMissing  int               `json:"sessions_missing"`
-	SessionsLeftOut  int               `json:"sessions_left_out"`
-	Cases            int               `json:"cases"`
-	CasesByStatus    map[string]int    `json:"cases_by_status"`
-	SHA256           map[string]string `json:"sha256"`
+	ManifestSHA256   string                    `json:"manifest_sha256"`
+	Schema           string                    `json:"schema"`
+	Parts            int                       `json:"parts"`
+	Rows             int                       `json:"rows"`
+	SessionsInExport int                       `json:"sessions_in_export"`
+	SessionsWithRows int                       `json:"sessions_with_rows"`
+	SessionsMissing  int                       `json:"sessions_missing"`
+	SessionsLeftOut  int                       `json:"sessions_left_out"`
+	MasksBySession   map[string]map[string]int `json:"masks_by_session,omitempty"`
+	Cases            int                       `json:"cases"`
+	CasesByStatus    map[string]int            `json:"cases_by_status"`
+	SHA256           map[string]string         `json:"sha256"`
 }
 
 func runDatasetSessions(args []string, stdout, stderr io.Writer) int {
@@ -3646,7 +3650,13 @@ func runDatasetSessions(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check dataset sessions: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "parts: %d, rows: %d\n", c.Parts, c.Rows)
+	masks := 0
+	for _, byPattern := range c.MasksBySession {
+		for _, n := range byPattern {
+			masks += n
+		}
+	}
+	fmt.Fprintf(stdout, "schema: %s, parts: %d, rows: %d, secrets masked: %d in %d sessions\n", c.Schema, c.Parts, c.Rows, masks, len(c.MasksBySession))
 	fmt.Fprintf(stdout, "sessions in the export: %d, with rows: %d, missing (0 rows): %d, left out: %d\n",
 		c.SessionsInExport, c.SessionsWithRows, c.SessionsMissing, c.SessionsLeftOut)
 	fmt.Fprintf(stdout, "cases: %d\n", c.Cases)
@@ -3683,8 +3693,13 @@ func ingestSessions(manifestPath, casesPath, out string) (dsSessionCounts, error
 	if err := json.Unmarshal(data, &m); err != nil {
 		return counts, fmt.Errorf("%s: %w", manifestPath, err)
 	}
-	if m.Schema != dsExportSchema || !slices.Contains(m.Columns, "session_id") || !slices.Contains(m.Columns, "ts") || m.RowsBySession == nil {
-		return counts, fmt.Errorf("%s is not a manifest of schema %s with session_id and ts columns", manifestPath, dsExportSchema)
+	if !slices.Contains(dsExportSchemas, m.Schema) || !slices.Contains(m.Columns, "session_id") || !slices.Contains(m.Columns, "ts") || m.RowsBySession == nil {
+		return counts, fmt.Errorf("%s is not a manifest of schema %s with session_id and ts columns", manifestPath, strings.Join(dsExportSchemas, " or "))
+	}
+	for s := range m.MasksBySession {
+		if _, ok := m.RowsBySession[s]; !ok {
+			return counts, fmt.Errorf("%s counts masks of session %s, which it holds no rows of", manifestPath, s)
+		}
 	}
 	dir := filepath.Dir(manifestPath)
 	for _, p := range m.Parts {
@@ -3843,7 +3858,7 @@ func ingestSessions(manifestPath, casesPath, out string) (dsSessionCounts, error
 	if err != nil {
 		return counts, err
 	}
-	counts.ManifestSHA256 = sha256Hex(data)
+	counts.ManifestSHA256, counts.Schema, counts.MasksBySession = sha256Hex(data), m.Schema, m.MasksBySession
 	counts.Parts, counts.SessionsInExport = len(m.Parts), len(m.RowsBySession)
 	counts.SessionsMissing, counts.SessionsLeftOut = len(m.SessionsMissing), m.SessionsLeftOut
 	counts.Cases = len(cases)

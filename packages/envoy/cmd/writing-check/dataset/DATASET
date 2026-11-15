@@ -5,14 +5,11 @@ end: 2026-11-15T03:27:14Z
 owner: sami@theorem.dev
 seed: 20261115
 classify_model: claude-sonnet-4-6 (claude-sonnet-5-5 for the 4 texts claude-sonnet-4-6 refused)
-select_prompt_sha256: 3e652153f3ba7dd934c9272745d8fa3429a0d1dc95dfb13c766500ac4b496e3d
+select_prompt_sha256: 696fd463e734ff1b0cc6cf0cb35796751c9ad1e9998cc34b575d0aed0e27315d
 snapshot_sha256: e8f9a0d09f99e9178c9d4538261fe60d90392f6a314e2ac4774062c7f3f843a7
-verdicts_sha256: 8ae83e4fe7cabb0a345850831fded697840a82356c72bc1e8900d9238d1cd41d
-confirmed_seed: 3231050
-confirmed_draw: python3 random.Random(3231050).sample(sorted question cases by id, 50)
-confirmed_result_sha256: 5357a42440bff38ef66692ff063903b306439fd973e377b21e7998ff26e8c7b4
-confirmed: 34 of 50
-bundle_sha256: aa128a5cb4f564b6bca99d4d7a539004324ae65860df7261436a1bad2cdf9818
-cases_sha256: d44927cf2e9fa9b77a5138f4bc7172537e89f606b69bf67f957c2820f8da16d6
-documents_sha256: a96eb5749929700c5f23e9982f7a7501e0d046c10e25da1395cdaee6e60a3053
-sessions_sha256: 75355ca3e5d37bd4657be43cf557d5041353f4cf90efaf0389edc74cad4e0939
+verdicts_sha256: 0f4578413da6a6798089b48232abdbd2b820951be63114894758e3d59d916733
+bundle_sha256: 4961901ee8d410853779499be864e7800aacfc2413afa19c696b36d8933451d2
+cases_sha256: 893f727ea898bddb6fa8b3cec4743d2254ef126c9741994e8be726a64308f087
+documents_sha256: 7790379e0ea1f6388447ca42a58b0df18c122f8a2ea6d4897438ad6120a08798
+sessions_sha256: 15363e86f1662f6557311e9184f5f09a2554d069aca647ad981d3faa336d8bdc
+sessions_read: Every writer session of the dataset, and none is left out, by the owner's answer (dispatch://INFRA-3231/ask/5cfc36a0-1965-46b1-a60e-104869be6c62); export-sessions.sh runs with an empty --exclude. Session text reaches Claude models only (R2). Every text value is masked for secrets before the export (manifest schema infra-3231-session-export/2).

@@ -686,7 +686,7 @@ func TestExportSessionsScriptFeedsDatasetSessions(t *testing.T) {
 	for path, content := range map[string]string{
 		exclude: leftOut + "\n",
 		rows: row(withRows, 1, "2026-11-10 10:00:00.000000000", "text", "Rerun the flaky test.") +
-			row(withRows, 2, "2026-11-10 10:01:00.000000000", "text", "I will rerun it now.") +
+			row(withRows, 2, "2026-11-10 10:01:00.000000000", "text", "I will rerun it now with password: correct-horse-battery-staple") +
 			row(withRows, 3, "2026-11-10 10:01:10.000000000", "file", "The whole output of a tool.") +
 			row(withRows, 4, "2026-11-10 10:01:30.000000000", "text", "The rerun passed.") +
 			row(withRows, 5, "2026-11-10 10:05:00.000000000", "text", "Written after the last cut.") +
@@ -724,14 +724,25 @@ func TestExportSessionsScriptFeedsDatasetSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Schema != dsExportSchema || len(m.Parts) != 1 || m.Parts[0].Name != "part-000.jsonl.gz" ||
+	if m.Schema != "infra-3231-session-export/2" || len(m.Parts) != 1 || m.Parts[0].Name != "part-000.jsonl.gz" ||
 		m.RowsBySession[withRows] != 3 || m.RowsBySession[noRows] != 0 || len(m.RowsBySession) != 2 ||
+		len(m.MasksBySession) != 1 || m.MasksBySession[withRows]["password"] != 1 ||
 		strings.Join(m.SessionsMissing, ",") != noRows || m.SessionsLeftOut != 1 {
 		t.Fatalf("the manifest is %s", data)
 	}
 	part, _ := os.ReadFile(filepath.Join(export, m.Parts[0].Name))
 	if sha256Hex(part) != m.Parts[0].SHA256 || int64(len(part)) != m.Parts[0].Bytes {
 		t.Fatalf("the part's SHA-256 and size are %s and %d, the manifest's %s and %d", sha256Hex(part), len(part), m.Parts[0].SHA256, m.Parts[0].Bytes)
+	}
+	var exported strings.Builder
+	if err := eachGzipLine(filepath.Join(export, m.Parts[0].Name), func(line []byte) error {
+		exported.Write(line)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(exported.String(), "correct-horse-battery-staple") || !strings.Contains(exported.String(), "[REDACTED:password]") {
+		t.Errorf("the part holds the planted secret unmasked, or no mask: %s", exported.String())
 	}
 
 	ingest := func(out string) (int, string, string) {
@@ -742,6 +753,11 @@ func TestExportSessionsScriptFeedsDatasetSessions(t *testing.T) {
 	out := filepath.Join(dir, "ingest")
 	if code, _, errText := ingest(out); code != 0 {
 		t.Fatalf("dataset sessions: exit %d: %s", code, errText)
+	}
+	var sc dsSessionCounts
+	if data, err := os.ReadFile(filepath.Join(out, dsSessionCountsFile)); err != nil || json.Unmarshal(data, &sc) != nil ||
+		sc.Schema != m.Schema || sc.MasksBySession[withRows]["password"] != 1 || sc.CasesByStatus[dsPlaceFound] != 2 {
+		t.Errorf("sessions-counts.json is %+v (%v), want the export's schema, its one mask and two cases found", sc, err)
 	}
 	var places []dsPlace
 	if err := eachLine(filepath.Join(out, dsPlacesFile), func(line []byte, _ int) error {
