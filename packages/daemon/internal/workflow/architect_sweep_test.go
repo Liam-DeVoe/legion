@@ -156,8 +156,8 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 
 // The start the sweep writes again is the start StartArchitect writes: the same row, at the entry
 // the row already names. It raises no entry, since the work it sends is the work that entry
-// already stands for, and it waits for no admission slot, since the root holds the row the cap
-// counts already.
+// already stands for, and it waits for no admission slot, since a root architect's start takes
+// none, whether its root holds its row or not.
 //
 // What it carries turns on what the row says raised the entry (record.PhaseRow.EntryVerbatim),
 // and on nothing in the task's text. A task the derivation wrote is derived again from the record

@@ -108,13 +108,9 @@ const (
 // LastStartRow when a run begins (internal/daemon's outbox, supervise's Machine.StartedBy) and only
 // then relaunches the claim, so for that moment the record shows the claim still failed or retired
 // beside the start that is relaunching it, and the start's Attempts may be above zero from an
-// earlier run that waited. A lapsed lease holds nothing: a lane that died mid-run leaves its lease
-// on the row until the outbox's sweep runs the row again, and the store's own due predicate reads
-// such a row as free (record's outboxUnleasedDue), so a start under a lapsed lease is read below as
-// one no lane holds. lease_until is the daemon's clock at the claim, or at the lane's latest
-// renewal, plus the outbox's 30-second lease (internal/daemon's outboxLease), and it is compared
-// with the store's now(), as the start's age is (record.QueuedSupervise.Age); the two clocks agree
-// on a deployment to far less than that lease.
+// earlier run that waited. A lapsed lease holds nothing, and record.QueuedSupervise.Running says
+// why and which clock it reads, so a start under a lapsed lease is read below as one no lane
+// holds.
 //
 // A start no lane holds is failing when its id is at or below the claim's LastStartRow, which says
 // it has run against the claim, and its Attempts are above zero, which says a run of it ended
@@ -157,10 +153,10 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunc
 
 // SendArchitectStart writes the start of root's architect again, for the entry its phases row
 // already names (row): the start StartArchitect writes, enqueued directly rather than through
-// StartOrOwe, so it waits for no admission slot and marks no movement (the root holds the row the
-// cap counts from its promotion until its work passes its review, and holds none after it,
-// record.KeepsSlot). It raises no entry, as no resume of the work an entry already names does
-// (enter, SendOwedEntry).
+// StartOrOwe, so it waits for no admission slot and marks no movement: a root architect's start
+// takes no slot, whether the root holds its row, holds none past its review (record.KeepsSlot) or
+// gave it back for a wait (admit's releaseSlotsForWaits). It raises no entry, as no resume of the
+// work an entry already names does (enter, SendOwedEntry).
 //
 // What it sends is what the row says of the entry's task (record.PhaseRow.EntryVerbatim), and
 // never a reading of that task's text. An entry whose task is not marked to be sent as written is

@@ -1933,10 +1933,12 @@ type RoleRun struct {
 // A lane that dies mid-run records neither the row's finish nor its retry, so the row keeps that
 // lane's token and a lease_until in the past until the outbox's sweep wakes its lane and the lane
 // runs it again (internal/daemon's outbox_lanes.go); the store's own due predicate reads such a
-// row as free (outboxUnleasedDue), and Running reads it the same way, as a row between runs.
+// row as free (outboxUnleasedDue), and Running reads it as a row between runs, by the live-lease
+// term the store already writes in Postgres.DropCatchUps: a token that is set and a lease_until
+// after now.
 // lease_until is the daemon's clock at the claim, or at the lane's latest renewal, plus the
-// outbox's 30-second lease (internal/daemon's outboxLease), and it is compared here with the
-// store's now(), as Age is; the two clocks agree on a deployment to far less than that lease. The
+// outbox's lease (internal/daemon's outboxLease), and it is compared here with the store's now(),
+// as Age is; the two clocks agree on a deployment to far less than that lease. The
 // other ends of a run leave no lease at all: Store.RetryOutbox clears it, and a finished row is
 // deleted.
 //

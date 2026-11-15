@@ -247,10 +247,12 @@ func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root rec
 	return !waits, err
 }
 
-// ArchitectHearsSlotted is ArchitectHears for a root the caller already knows holds an admission
-// slot, which reads nothing: record.WaitsForSlot answers false for a root that holds one, so
-// what is left is the rest of that one reading. Admission asks it of the holders of the slots its
-// pass has just read (admit's architectReached), where the slot is a fact in hand.
+// ArchitectHearsSlotted is ArchitectHears for a root the caller already knows waits for no
+// admission slot, which reads nothing: record.WaitsForSlot answers false for such a root, so what
+// is left is the rest of that one reading. Admission asks it of the roots its selection holds
+// (admit's readSlotHolders, through architectServed): each holds a slot, stands past its review
+// in a tree that runs, or was released for a wait in a tree that runs, and no queued root is one
+// of those.
 func ArchitectHearsSlotted(root record.Issue) bool {
 	return claim.IsTreeRoot(root.Key, root.Tree) && !root.Lingers() && !record.OutOfWorkflow(root.Status)
 }

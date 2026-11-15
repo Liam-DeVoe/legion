@@ -296,9 +296,11 @@ func OwedEntry(run record.RoleRun, root record.Issue, entry int64) bool {
 //
 // Such a stop undoes every start older than it, and it may run before them, so every rule that
 // reads it counts only a queued start newer than it: StartFor, asking what a re-admitted tree's
-// promotion must start, OwedEntry, asking whether a role is owed its entry's work, and
-// unpromptedPhaseWorker, asking whether nothing will prompt a live claim. One body is what keeps
-// them from reading the same rows differently.
+// promotion must start, OwedEntry, asking whether a role is owed its entry's work,
+// unpromptedPhaseWorker, asking whether nothing will prompt a live claim, ArchitectRelaunchOf,
+// asking whether a start is a root architect's next move, and catch_up.go's queuedRowCovers,
+// asking whether a queued row covers a ready claim. One body is what keeps them from reading the
+// same rows differently.
 func actingStop(run record.RoleRun, root record.Issue) int64 {
 	lastStart := lastStartRow(run)
 	var stop int64

@@ -2634,10 +2634,10 @@ const (
 // OwesEntryWork is whether the entry sweep's own pass would do anything for the project, read as
 // every admission pass reads the project (reread) and answered by the two selections that pass
 // itself acts on: a role owed the work of the entry its phases row names (owedEntryRoles), and an
-// arm of the stall reading that holds for a root architect the selection holds, slotted or past
-// its review, that no mark has told the controller yet, while a controller is registered to be
-// told (architectStalls, record.Store.ArchitectStallsUntold, wakeStalledArchitects). It writes
-// nothing, so
+// arm of the stall reading that holds for a root architect the selection holds (readSlotHolders
+// names the three kinds of root it holds), that no mark has told the controller yet, while a
+// controller is registered to be told (architectStalls, record.Store.ArchitectStallsUntold,
+// wakeStalledArchitects). It writes nothing, so
 // the entry sweep's gate (internal/daemon's applyEntrySweep) asks it in a read-only transaction
 // of its own, before any fact. The answer is a yes or a no rather than the selection, so no
 // caller outside this package depends on the shape of a row the pass reads. A root architect the
@@ -2735,9 +2735,10 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // workflow.ArchitectAtWork): a root at admitted whatever its gate, and a root a hand-over carried
 // in while it stands in the phase that came with it. The second half of the domain is what
 // reaches a root a hand-over carried in at accepting, retro or merging, which holds no row, and
-// the third is what reaches a root at admitted whose design gate has opened while it waits on an
-// open child, which holds none either. A root that reached accepting under its own power is
-// weighed and passed over by that reach, since the notice that moved it there told its
+// the third is what reaches a root releaseSlotsForWaits gave its row back for, such as a root at
+// admitted whose design gate has opened while it waits on an open child, which holds none either.
+// A root that reached accepting under its own power is weighed and passed over by that reach,
+// since the notice that moved it there told its
 // architect. So the architects this names are exactly those the pass sends a start to, and the
 // sweep's gate opens for no root the pass would send nothing.
 //
@@ -2813,8 +2814,9 @@ type slotReading struct {
 // a row (releaseSlots clears it), and the loop asks the same two terms the past-review half asks,
 // so a parked root, or one whose tree left the workflow, is weighed by nothing here.
 //
-// It reads over at most the cap's worth of slotted issues and the handful past their review,
-// through one batched record.RoleRuns read rather than a read per candidate, and one batched read
+// It reads over at most the cap's worth of slotted issues, the handful past their review and the
+// roots released for a wait, which the cap does not bound, through one batched record.RoleRuns
+// read rather than a read per candidate, and one batched read
 // of the phase entry each holder's row names with the moment it was raised
 // (record.Store.PhaseEntries), the zero entry where the record holds no row of that role. Both
 // are one statement for the whole pass: every root's architect of the domain is weighed beside
@@ -3012,9 +3014,10 @@ func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record
 // question, workflow.ArchitectHears: a root that lingers, one Dispatch has taken out of the
 // workflow, and an issue that is not its tree's root, which is what leaves a child's own
 // sub-architect claim outside the rule, since no daemon start creates one). The slotted form
-// reads nothing, because root either holds one of the slots this pass read or stands past its
-// review in a tree that runs (record.TreeRuns, which no queued root does), and so waits for
-// none. And the root must be inside the reach (workflow.ArchitectAtWork): a root standing at
+// reads nothing, because root is one readSlotHolders holds: it holds one of the slots this pass
+// read, or stands past its review in a tree that runs, or was released for a wait in a tree that
+// runs (record.TreeRuns, which no queued root does), and so waits for none. And the root must be
+// inside the reach (workflow.ArchitectAtWork): a root standing at
 // admitted, whatever its design gate, and a root a hand-over carried in while it stands in the
 // phase that came with it, and no root past admitted under its own power, whose phase role owns
 // its work.
@@ -3037,9 +3040,9 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // the worker was never given, and the phase's resume task where the record holds no task of that
 // entry (workflow's SendOwedEntry). A root's own architect is sent its start instead, which
 // differs from a phase worker's in the two ways a root architect's start differs: the row waits
-// for no admission slot, since the root holds the one row the cap counts from its promotion until
-// its work passes its review and holds none after it (record.KeepsSlot), so there is no slot for
-// that row to wait for either way, and a task the derivation wrote is derived again from the
+// for no admission slot, because a root architect's start takes no slot, whether the root holds
+// its row, holds none past its review (record.KeepsSlot) or gave it back for a wait
+// (releaseSlotsForWaits), and a task the derivation wrote is derived again from the
 // record rather than taken off the row, while a task the resume of a person's answer wrote is
 // sent as written (workflow's SendArchitectStart, over record.PhaseRow.EntryVerbatim). Where the
 // root's architect claim does not exist, that start is what creates it, exactly as admission's
@@ -3085,7 +3088,7 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // whose start row the fences rejected on the pass that rejected it, instead of a pass later.
 //
 // After the sends it reads the three stall arms over the architect of every root the selection
-// holds, slotted or past its review, and wakes the controller for each arm no mark has told yet,
+// holds (readSlotHolders), and wakes the controller for each arm no mark has told yet,
 // while a controller is registered (architectStalls, wakeStalledArchitects), so a root the pass
 // could still do something for is wholly served before the controller is woken about it. The
 // arms read the holders as the pass read them before its sends, and the roots whose architect
