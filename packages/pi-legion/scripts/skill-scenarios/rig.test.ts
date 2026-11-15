@@ -16,6 +16,8 @@ import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { routeFor } from "./gh-call";
+import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
@@ -1024,8 +1026,7 @@ describe("round_world and the worlds' own text findings", () => {
         fn("resolution_protection_routes"),
         fn("blocked_at"),
         'round_world() { printf "%s\\n" "$@" >"$R/round-args"; C1=0123456789abcdef0123;',
-        "  worker_pr=1001; worker_pr_url=https://example.invalid/pull/1001;",
-        '  resolve_route=\'{"match":"r"}\'; }',
+        "  worker_pr=1001; worker_pr_url=https://example.invalid/pull/1001; }",
         "fixture_body() { :; }",
         "fixture_checks() { :; }",
         "fixture_write() { :; }",
@@ -2120,6 +2121,80 @@ describe("health", () => {
     expect(stdout).toContain("health: gh: 2 of 2 runs\n");
   });
 
+  /** The routes rig.sh's fixture_write writes for every world, built here by running it. */
+  function sharedRoutes(): { match: string; stderr?: string; exit?: number }[] {
+    const dir = freshDir("health-shared-routes");
+    const result = bash(
+      [
+        fn("fixture_write"),
+        fn("concluded_checks"),
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
+        assignment("world_login"),
+        "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
+        "worker_pr_url=https://example.invalid/pull/1001",
+        "fixture_write '[]' '\"\"' '[]'",
+      ].join("\n"),
+      [dir]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return (
+      JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8")) as {
+        routes: { match: string; stderr?: string; exit?: number }[];
+      }
+    ).routes;
+  }
+
+  // The world holds no workflow run, so GitHub answers the jobs of a run 404 and gh refuses
+  // `gh run view` and `gh run watch` of one, or naming none where no terminal can pick one: the
+  // answers production gives, which any role meets that follows the merge gate's run read or
+  // pr-body.md's CI watch. Catches those refusals read as a world answering less than production,
+  // which voids a run whose agent met only GitHub; and the declaration read as one of every 404
+  // a route gives, which would pass a world refusing a call GitHub answers (the files of the pull
+  // request) as though it were GitHub's.
+  test("a gh refusal production gives for a workflow run the world has not got is declared for every role", () => {
+    const routes = sharedRoutes();
+    const matching = (argv: string[]) => routeFor(routes, argv)?.match ?? null;
+    const noRun = (by: string) =>
+      [
+        ["api", "repos/example/widgets/actions/runs/7/jobs", "--jq", ".jobs[]"],
+        ["run", "view", "7", "--log-failed"],
+        ["run", "view"],
+        ["run", "watch"],
+        ["run", "watch", "7"],
+      ].map((argv) => gh(by, argv, 1, matching(argv)));
+    const withRoutes = (dir: string, extra: object[] = []) =>
+      writeFileSync(
+        path.join(dir, "fixtures.json"),
+        JSON.stringify({ routes: [...extra, ...routes] })
+      );
+    const reviewing = worldRun("reviewer-text-findings-text-only-head-1", {
+      calls: noRun("reviewer"),
+    }).dir;
+    withRoutes(reviewing);
+    const looping = worldRun("threads-closed-text-fixes-head-2", {
+      calls: [...noRun("implementer"), ...noRun("reviewer")],
+    }).dir;
+    withRoutes(looping);
+    // A world that refuses a call GitHub answers, in GitHub's own words: still the world's.
+    const files = {
+      match: "^gh api .*pulls/1001/files",
+      stderr: "gh: Not Found (HTTP 404)\n",
+      exit: 1,
+    };
+    const refusing = worldRun("threads-closed-text-fixes-head-3", {
+      calls: [gh("reviewer", ["api", "repos/example/widgets/pulls/1001/files"], 1, files.match)],
+    }).dir;
+    withRoutes(refusing, [files]);
+    const { code, stdout } = health(reviewing, looping, refusing);
+    expect(verdict(stdout, reviewing)).toBe("reviewer-text-findings-text-only-head-1  healthy");
+    expect(verdict(stdout, looping)).toBe("threads-closed-text-fixes-head-2  healthy");
+    expect(verdict(stdout, refusing)).toBe(
+      "threads-closed-text-fixes-head-3  unhealthy: gh refusal: calls.jsonl:2, `gh api repos/example/widgets/pulls/1001/files` of the reviewer, exited 1: gh: Not Found (HTTP 404), which threads-closed does not declare for that role"
+    );
+    expect(stdout).toContain("health: gh: 1 of 3 runs\n");
+    expect(code).toBe(1);
+  });
+
   // Catches: a run that reached another run's directory measured as its own: the 2026-11-14
   // agents, refused every push, read the pointer file of a sibling in the same runs directory,
   // and of a run of another batch. Any agent's transcript counts, a later half's too.
@@ -3045,9 +3120,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
 
   // The verb decides what the call is, in every spelling gh takes it in and by the reader the
   // score reads the same call with (`isPost`): a call naming GET is a read of that path
-  // whatever its fields say, so it is answered by the route that lists the pull request's
-  // reviews, it submits nothing, and the review it did not submit is still pending for the call
-  // that does. That last call is written with the leading slash `gh api` takes either way,
+  // whatever its fields say, which GitHub answers 404, since it has no read there; it submits
+  // nothing, and the review it did not submit is still pending for the call that does. That
+  // last call is written with the leading slash `gh api` takes either way,
   // which is how the route reads wherever it is copied from GitHub's own documentation.
   // Catches: a GET answered as the submission of the pending review, which gh never sent and
   // GitHub never answers; a GET read as the submit that left no pending review behind it, where
@@ -3059,9 +3134,10 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     const head = headOf(dir);
     createPending(dir, head);
     for (const verb of [["-X", "GET"], ["--method=GET"], ["-XGET"]])
-      expect(answer(dir, "api", ...verb, submitRoute(6001), "-f", "event=APPROVE")).toEqual({
-        code: 0,
-        out: "[]",
+      expect(call(dir, "api", ...verb, submitRoute(6001), "-f", "event=APPROVE")).toEqual({
+        code: 1,
+        out: "",
+        err: "gh: Not Found (HTTP 404)\n",
       });
     const submitted = call(
       dir,
@@ -3165,13 +3241,13 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     expect(
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews", "--jq", "length")
     ).toEqual({ code: 0, out: "1" });
-    // And a path under one review — its comments — is no read of that review: it falls to the
-    // reviews route, a list, as GitHub answers a list there.
+    // And a path under one review — its comments — is no read of that review: it is the list of
+    // that review's inline comments, as GitHub answers a list there.
     expect(
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001/comments", "--jq", "type")
     ).toEqual({ code: 0, out: "array" });
-    // The create: the id, the URL and the user are the world's, and the state and the head the
-    // review was created at are the call's own (gh-standin.ts).
+    // The create: the id, the URL and the user are the world's, and the state, the head the
+    // review was created at and its body are the call's own (gh-standin.ts).
     const created = call(
       dir,
       "api",
@@ -3188,6 +3264,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       user: { login: WORLD_LOGIN },
       state: "PENDING",
       commit_id: head,
+      body: "",
     });
   });
 
@@ -3228,6 +3305,886 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
         (thread) => thread.id
       )
     ).toEqual(["PRRT_kwDOfix101"]);
+  });
+});
+
+// The routes a world answers are the routes GitHub answers a role, and GitHub answers the same
+// routes whichever label asks: every gh read either label's role texts name, and every route a
+// recorded run called, each declared with its evidence (gh-routes.ts's WORLD_ROUTES, which
+// gh-standin.test.ts pins against the texts). These rows pin the table against the worlds rig.sh
+// builds: every route of the table answered in every world, with the shape GitHub's answer has;
+// and every route a world writes into its fixtures.json reached by a route of the table, so a
+// route added to a world and declared nowhere fails here. Measured at 3a2ea66a: 14 gh calls of
+// round 17's forty and the world-health check's eight runs refused with no refusal production
+// gives (gh-refused-calls.json), which voids each run that meets one.
+/** `text` as the one JSON value it holds, written compactly, or `text` as it is when it holds no
+ * one JSON value: jq indents the values it prints, and a row reads the value. */
+function compact(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text));
+  } catch {
+    return text;
+  }
+}
+describe("the world's gh routes: every read a role text names, answered as GitHub answers it", () => {
+  const WORLDS = [
+    "tester_proof_world",
+    "review_world",
+    "review_world dropped",
+    "approved_world",
+    "approved_world dropped",
+  ] as const;
+  type WorldName = (typeof WORLDS)[number];
+  /** WORLD, with GUARD after a space, built for real under a directory of its own, with the two
+   * steps "the worlds' routes" rows stub stubbed the same way. */
+  function build(name: WorldName): string {
+    const [world = "", guard = ""] = name.split(" ");
+    const dir = freshDir(`gh-routes-${world}`);
+    const result = bash(
+      [
+        fn("fail"),
+        ...[
+          "fixture_open",
+          "fixture_git",
+          "fixture_docs_before",
+          "fixture_first_commit",
+          "fixture_round_files",
+          "fixture_head_commit",
+          "fixture_implement",
+          "fixture_test_handoff",
+          "fixture_checks",
+          "fixture_body",
+          "fixture_write",
+          "concluded_checks",
+          "resolution_protection_routes",
+          "blocked_at",
+          "round_world",
+          world,
+        ].map(fn),
+        'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
+        "fixture_workspace() { :; }",
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
+        assignment("world_author_name"),
+        assignment("world_author_email"),
+        assignment("world_login"),
+        "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
+        `${world} 1 100 "$2"`,
+      ].join("\n"),
+      [dir, guard]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return dir;
+  }
+  const worlds = new Map<WorldName, string>();
+  beforeAll(() => {
+    for (const name of WORLDS) worlds.set(name, build(name));
+  });
+  const dirOf = (name: WorldName) => worlds.get(name) ?? "";
+  /** What the gh stand-in answers `gh <args…>` in the world under `dir`, with an answer that is
+   * one JSON value read as that value written compactly, whatever indentation jq gave it. */
+  function gh(dir: string, ...args: string[]) {
+    const made = Bun.spawnSync(
+      ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+      {
+        env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+      }
+    );
+    return {
+      code: made.exitCode,
+      out: compact(made.stdout.toString().trim()),
+      err: made.stderr.toString(),
+    };
+  }
+  const headOf = (dir: string) =>
+    (JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")) as { head: string }).head;
+  const REPO = "repos/example/widgets";
+  /** The worlds whose base requires conversation resolution and whose head GitHub holds
+   * `BLOCKED` (rig.sh's resolution_protection_routes and blocked_at). */
+  const PROTECTED: readonly WorldName[] = [
+    "review_world",
+    "review_world dropped",
+    "approved_world",
+  ];
+  /** The review threads each world's graph holds. */
+  const THREADS: Record<WorldName, string> = {
+    tester_proof_world: "",
+    review_world: "PRRT_kwDOrig0001",
+    "review_world dropped": "PRRT_kwDOrig0001",
+    approved_world: "PRRT_kwDOfix001,PRRT_kwDOfix002",
+    "approved_world dropped": "PRRT_kwDOfix101",
+  };
+  const approved = (world: WorldName) => world.startsWith("approved_world");
+  /** The reviewThreads query review-threads.md gives, word for word. */
+  const THREAD_QUERY =
+    "query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}}";
+  /** The two queries merger.md gives, word for word. */
+  const MERGER_WATCH =
+    "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state mergedAt isInMergeQueue mergeStateStatus headRefOid mergeQueueEntry{state position}}}}";
+  const MERGER_TIMELINE =
+    "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT],last:20){nodes{__typename ... on AddedToMergeQueueEvent{createdAt actor{login}} ... on RemovedFromMergeQueueEvent{createdAt reason actor{login} beforeCommit{oid}}}}}}}";
+  type Answer = { code: number; out: string; err: string };
+  /** A call of each route of WORLD_ROUTES, as a role writes it in a world whose head is `head`,
+   * any other spelling of it a world answers by a route of its own (`also`), and, for a read,
+   * what GitHub answers it with in `world`. A write's answer is the rows' of gh-standin.test.ts
+   * and "the worlds' routes"; here it is reached and nothing more. */
+  const SAMPLES: Record<
+    string,
+    {
+      argv: (head: string) => string[];
+      also?: string[][];
+      answers?: (got: Answer, world: WorldName, head: string) => unknown;
+    }
+  > = {
+    "GET repos/{owner}/{repo}": {
+      argv: () => [
+        "api",
+        REPO,
+        "--jq",
+        "[.full_name, .default_branch, .squash_merge_commit_message]",
+      ],
+      answers: (got) =>
+        expect(got).toMatchObject({
+          code: 0,
+          out: JSON.stringify(["example/widgets", "main", "COMMIT_MESSAGES"]),
+        }),
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}": {
+      argv: () => ["api", `${REPO}/pulls/1001`, "--jq", ".head.sha"],
+      answers: (got, _, head) => expect(got).toMatchObject({ code: 0, out: head }),
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}/reviews": {
+      argv: () => ["api", "--paginate", `${REPO}/pulls/1001/reviews`, "--jq", "[.[] | .id] | @csv"],
+      answers: (got, world) =>
+        expect(got).toMatchObject({ code: 0, out: approved(world) ? "5001" : "" }),
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}": {
+      argv: () => ["api", `${REPO}/pulls/1001/reviews/5001`, "--jq", ".state"],
+      answers: (got, world) =>
+        expect(got).toMatchObject(
+          approved(world)
+            ? { code: 0, out: "APPROVED" }
+            : { code: 1, err: "gh: Not Found (HTTP 404)\n" }
+        ),
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments": {
+      argv: () => ["api", `${REPO}/pulls/1001/reviews/5001/comments`],
+      answers: (got, world) =>
+        expect(got).toMatchObject(
+          approved(world) ? { code: 0, out: "[]" } : { code: 1, err: "gh: Not Found (HTTP 404)\n" }
+        ),
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}/comments": {
+      argv: () => ["api", `${REPO}/pulls/1001/comments`],
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: "[]" }),
+    },
+    "GET repos/{owner}/{repo}/issues/{number}/comments": {
+      argv: () => ["api", `${REPO}/issues/1001/comments`],
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: "[]" }),
+    },
+    "GET repos/{owner}/{repo}/commits/{ref}/check-runs": {
+      argv: (head) => [
+        "api",
+        `${REPO}/commits/${head}/check-runs`,
+        "--jq",
+        "[.total_count, (.check_runs | length)]",
+      ],
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: "[2,2]" }),
+    },
+    "GET repos/{owner}/{repo}/commits/{ref}/status": {
+      argv: (head) => [
+        "api",
+        `${REPO}/commits/${head}/status`,
+        "--jq",
+        "[.state, .total_count, (.statuses | length), .sha]",
+      ],
+      answers: (got, _, head) =>
+        expect(got).toMatchObject({ code: 0, out: JSON.stringify(["pending", 0, 0, head]) }),
+    },
+    "GET repos/{owner}/{repo}/actions/runs": {
+      argv: (head) => ["api", `${REPO}/actions/runs?head_sha=${head}&per_page=100`],
+      answers: (got) =>
+        expect(got).toMatchObject({
+          code: 0,
+          out: JSON.stringify({ total_count: 0, workflow_runs: [] }),
+        }),
+    },
+    "GET repos/{owner}/{repo}/actions/runs/{run_id}/jobs": {
+      argv: () => ["api", `${REPO}/actions/runs/1/jobs`],
+      answers: (got) =>
+        expect(got).toMatchObject({ code: 1, out: "", err: "gh: Not Found (HTTP 404)\n" }),
+    },
+    "GET repos/{owner}/{repo}/rules/branches/{branch+}": {
+      argv: () => ["api", "--paginate", `${REPO}/rules/branches/main`, "--jq", "[.[].type]"],
+      answers: (got, world) =>
+        expect(got).toMatchObject({
+          code: 0,
+          out: PROTECTED.includes(world) ? '["pull_request"]' : "[]",
+        }),
+    },
+    "GET repos/{owner}/{repo}/branches/{branch}/protection": {
+      argv: () => [
+        "api",
+        `${REPO}/branches/main/protection`,
+        "--jq",
+        ".required_conversation_resolution.enabled",
+      ],
+      answers: (got, world) =>
+        expect(got).toMatchObject(
+          PROTECTED.includes(world)
+            ? { code: 0, out: "true" }
+            : { code: 1, out: "", err: "gh: Branch not protected (HTTP 404)\n" }
+        ),
+    },
+    "GET repos/{owner}/{repo}/branches/{branch+}": {
+      argv: () => ["api", `${REPO}/branches/main`, "--jq", "[.name, .protected]"],
+      answers: (got, world) =>
+        expect(got).toMatchObject({
+          code: 0,
+          out: JSON.stringify(["main", PROTECTED.includes(world)]),
+        }),
+    },
+    "GET repos/{owner}/{repo}/compare/{basehead+}": {
+      argv: () => ["api", `${REPO}/compare/main...legion/LWEVAL-1`, "--jq", ".status"],
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: "ahead" }),
+    },
+    "GET repos/{owner}/{repo}/git/ref/{ref+}": {
+      argv: () => ["api", `${REPO}/git/ref/heads/legion/LWEVAL-1`, "--jq", "[.ref, .object.sha]"],
+      answers: (got, _, head) =>
+        expect(got).toMatchObject({
+          code: 0,
+          out: JSON.stringify(["refs/heads/legion/LWEVAL-1", head]),
+        }),
+    },
+    "GET user": {
+      argv: () => ["api", "user", "--jq", ".login"],
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: WORLD_LOGIN }),
+    },
+    "GH auth status": {
+      argv: () => ["auth", "status"],
+      answers: (got) => expect(got).toMatchObject({ code: 0 }),
+    },
+    "GH pr view": {
+      argv: () => [
+        "pr",
+        "view",
+        "1001",
+        "--json",
+        "headRefOid,isCrossRepository",
+        "--jq",
+        "[.headRefOid, .isCrossRepository]",
+      ],
+      answers: (got, _, head) =>
+        expect(got).toMatchObject({ code: 0, out: JSON.stringify([head, false]) }),
+    },
+    "GH pr list": {
+      argv: () => [
+        "pr",
+        "list",
+        "--head",
+        "legion/LWEVAL-1",
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--jq",
+        ".[0].number",
+      ],
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: "1001" }),
+    },
+    "GH pr diff": {
+      argv: () => ["pr", "diff", "1001", "--name-only"],
+      answers: (got) =>
+        expect(got).toMatchObject({ code: 0, out: expect.stringContaining("greet.ts") }),
+    },
+    "GH pr checks": {
+      argv: () => ["pr", "checks", "1001"],
+      answers: (got) =>
+        expect(got).toMatchObject({ code: 0, out: expect.stringContaining("test\tpass") }),
+    },
+    "GH run view": {
+      argv: () => ["run", "view"],
+      also: [["run", "view", "1", "--log-failed"]],
+      answers: (got) =>
+        expect(got).toMatchObject({
+          code: 1,
+          out: "",
+          err: "run or job ID required when not running interactively\n",
+        }),
+    },
+    "GH run watch": {
+      argv: () => ["run", "watch"],
+      answers: (got) =>
+        expect(got).toMatchObject({
+          code: 1,
+          out: "",
+          err: "run ID required when not running interactively\n",
+        }),
+    },
+    "GRAPHQL query repository.pullRequest.reviewThreads": {
+      argv: () => [
+        "api",
+        "graphql",
+        "--paginate",
+        "--slurp",
+        "-f",
+        `query=${THREAD_QUERY}`,
+        "-F",
+        "o=example",
+        "-F",
+        "r=widgets",
+        "-F",
+        "n=1001",
+        "--jq",
+        '[.[].data.repository.pullRequest.reviewThreads.nodes[].id] | join(",")',
+      ],
+      answers: (got, world) => expect(got).toMatchObject({ code: 0, out: THREADS[world] }),
+    },
+    "GRAPHQL query viewer.login": {
+      argv: () => ["api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login"],
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: WORLD_LOGIN }),
+    },
+    "GRAPHQL query repository.pullRequest": {
+      argv: () => [
+        "api",
+        "graphql",
+        "-F",
+        "number=1001",
+        "-f",
+        "owner=example",
+        "-f",
+        "name=widgets",
+        "-f",
+        `query=${MERGER_WATCH}`,
+      ],
+      answers: (got, world, head) =>
+        expect([got.code, JSON.parse(got.out)]).toEqual([
+          0,
+          {
+            data: {
+              repository: {
+                pullRequest: {
+                  state: "OPEN",
+                  mergedAt: null,
+                  isInMergeQueue: false,
+                  mergeStateStatus: PROTECTED.includes(world) ? "BLOCKED" : "CLEAN",
+                  headRefOid: head,
+                  mergeQueueEntry: null,
+                },
+              },
+            },
+          },
+        ]),
+    },
+    "GRAPHQL query repository.pullRequest.timelineItems": {
+      argv: () => [
+        "api",
+        "graphql",
+        "-F",
+        "number=1001",
+        "-f",
+        "owner=example",
+        "-f",
+        "name=widgets",
+        "-f",
+        `query=${MERGER_TIMELINE}`,
+      ],
+      answers: (got) =>
+        expect(got).toMatchObject({
+          code: 0,
+          out: JSON.stringify({
+            data: { repository: { pullRequest: { timelineItems: { nodes: [] } } } },
+          }),
+        }),
+    },
+    "POST repos/{owner}/{repo}/pulls/{number}/reviews": {
+      argv: (head) => [
+        "api",
+        "--method",
+        "POST",
+        `${REPO}/pulls/1001/reviews`,
+        "-f",
+        `commit_id=${head}`,
+        "-f",
+        "event=APPROVE",
+      ],
+    },
+    "POST repos/{owner}/{repo}/pulls/{number}/reviews/{id}/events": {
+      argv: () => [
+        "api",
+        "--method",
+        "POST",
+        `${REPO}/pulls/1001/reviews/6001/events`,
+        "-f",
+        "event=APPROVE",
+      ],
+    },
+    "PATCH repos/{owner}/{repo}/pulls/{number}": {
+      argv: () => ["api", "--method", "PATCH", `${REPO}/pulls/1001`, "-f", "body=the body"],
+    },
+    "POST repos/{owner}/{repo}/pulls/{number}/comments/{id}/replies": {
+      argv: () => [
+        "api",
+        "--method",
+        "POST",
+        `${REPO}/pulls/1001/comments/7/replies`,
+        "-f",
+        "body=fixed",
+      ],
+    },
+    "POST repos/{owner}/{repo}/pulls/{number}/comments": {
+      argv: (head) => [
+        "api",
+        "--method",
+        "POST",
+        `${REPO}/pulls/1001/comments`,
+        "-f",
+        "body=x",
+        "-f",
+        `commit_id=${head}`,
+      ],
+    },
+    "POST repos/{owner}/{repo}/git/refs": {
+      argv: (head) => [
+        "api",
+        "-X",
+        "POST",
+        `${REPO}/git/refs`,
+        "-f",
+        "ref=refs/heads/legion/LWEVAL-2",
+        "-f",
+        `sha=${head}`,
+      ],
+    },
+    "GH pr comment": { argv: () => ["pr", "comment", "1001", "--body", "a note"] },
+    "GH pr edit": { argv: () => ["pr", "edit", "1001", "--body", "the body"] },
+    "GH pr review": { argv: () => ["pr", "review", "1001", "--approve"] },
+    "GH pr ready": { argv: () => ["pr", "ready", "1001"] },
+    "GRAPHQL mutation resolveReviewThread": {
+      argv: () => [
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}",
+        "-F",
+        "id=PRRT_kwDOfix001",
+      ],
+    },
+    "GRAPHQL mutation addPullRequestReviewThreadReply": {
+      argv: () => [
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{id}}}",
+        "-F",
+        "t=PRRT_kwDOfix001",
+        "-f",
+        "b=fixed",
+      ],
+    },
+  };
+
+  // Catches: a route of the table with no call here, and a call that is no call of its route, so
+  // the rows below would answer some other route under its name.
+  test("every route of the world's table has a call of its own here", () => {
+    const HEAD = "0123456789abcdef0123456789abcdef01234567";
+    expect(
+      WORLD_ROUTES.map(({ route }) => {
+        const sample = SAMPLES[route];
+        const calls = sample === undefined ? [] : [sample.argv(HEAD), ...(sample.also ?? [])];
+        const rows = calls.map((argv) => {
+          const key = routeOf(argv)?.key;
+          return key === undefined ? "no call" : worldRouteOf(key)?.route;
+        });
+        return [route, rows.length === 0 ? ["no call"] : [...new Set(rows)]];
+      })
+    ).toEqual(WORLD_ROUTES.map(({ route }) => [route, [route]]));
+    expect(Object.keys(SAMPLES).sort()).toEqual(WORLD_ROUTES.map(({ route }) => route).sort());
+    // The one spelling a world answers apart: `gh run view <id>`, a run the world has not got.
+    expect(gh(dirOf("tester_proof_world"), ...(SAMPLES["GH run view"]?.also?.[0] ?? []))).toEqual({
+      code: 1,
+      out: "",
+      err: "failed to get run: HTTP 404: Not Found\n",
+    });
+  });
+
+  // Catches a route a role text names, or a recorded run called, that a world refuses or answers
+  // in a shape GitHub never gives: the one regex `check-runs|status` answered the combined status
+  // and the workflow runs with the check-runs list, the repository itself had no answer, and the
+  // review threads paged nowhere.
+  test.each(
+    WORLD_ROUTES.filter(({ route }) => SAMPLES[route]?.answers !== undefined).map(
+      ({ route }) => route
+    )
+  )("every world answers %s as GitHub does", (route) => {
+    const sample = SAMPLES[route];
+    for (const world of WORLDS) {
+      const dir = dirOf(world);
+      const head = headOf(dir);
+      const got = gh(dir, ...(sample?.argv(head) ?? []));
+      try {
+        sample?.answers?.(got, world, head);
+      } catch (error) {
+        throw new Error(`${world}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  });
+
+  // The both-ways pin's world side. Catches a route added to a world that the table does not
+  // declare: a world answering a call no role text names and no recorded run made, with no
+  // evidence for why GitHub serves it. A route another of the same world stands ahead of is dead
+  // there, so a route counts as reached where any world reaches it.
+  test("every route a world writes is one a route of the table reaches", () => {
+    const reached = new Set<string>();
+    const written = new Map<string, string>();
+    for (const world of WORLDS) {
+      const dir = dirOf(world);
+      const head = headOf(dir);
+      const { routes } = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8")) as {
+        routes: { match: string; methods?: string[] }[];
+      };
+      const identity = (one: { match: string; methods?: string[] }) =>
+        `${one.methods?.join(",") ?? "*"} ${one.match}`;
+      for (const one of routes) written.set(identity(one), world);
+      for (const sample of Object.values(SAMPLES))
+        for (const argv of [sample.argv(head), ...(sample.also ?? [])]) {
+          const found = routeFor(routes, argv);
+          if (found !== undefined) reached.add(identity(found));
+        }
+    }
+    expect([...written].filter(([identity]) => !reached.has(identity))).toEqual([]);
+  });
+
+  // gh pages a GraphQL query that takes `$endCursor` until a page has no next one, asking again
+  // with the page's `endCursor` (`--paginate`), and with `--slurp` prints the pages as one list.
+  // Catches: a world whose every page is the first, which holds such a loop for ever, and one
+  // that pages nothing, which hands a `first:1` reader one thread of two.
+  test("the world pages the review threads as GitHub pages them", () => {
+    const dir = dirOf("approved_world");
+    const query = THREAD_QUERY.replace("first:100", "first:1");
+    const paged = gh(
+      dir,
+      "api",
+      "graphql",
+      "--paginate",
+      "--slurp",
+      "-f",
+      `query=${query}`,
+      "-F",
+      "o=example",
+      "-F",
+      "r=widgets",
+      "-F",
+      "n=1001"
+    );
+    expect(paged.code).toBe(0);
+    const pages = JSON.parse(paged.out) as {
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: boolean; endCursor: string };
+              nodes: { id: string }[];
+            };
+          };
+        };
+      };
+    }[];
+    expect(
+      pages.map(({ data }) => {
+        const { pageInfo, nodes } = data.repository.pullRequest.reviewThreads;
+        return [nodes.map(({ id }) => id), pageInfo.hasNextPage, typeof pageInfo.endCursor];
+      })
+    ).toEqual([
+      [["PRRT_kwDOfix001"], true, "string"],
+      [["PRRT_kwDOfix002"], false, "string"],
+    ]);
+    // A pull request the world has not got is GitHub's NOT_FOUND, with the data it found.
+    const elsewhere = gh(
+      dir,
+      "api",
+      "graphql",
+      "-f",
+      `query=${THREAD_QUERY}`,
+      "-F",
+      "o=example",
+      "-F",
+      "r=widgets",
+      "-F",
+      "n=100"
+    );
+    expect(elsewhere).toEqual({
+      code: 1,
+      out: JSON.stringify({
+        data: { repository: { pullRequest: null } },
+        errors: [
+          {
+            type: "NOT_FOUND",
+            path: ["repository", "pullRequest"],
+            message: "Could not resolve to a PullRequest with the number of 100.",
+          },
+        ],
+      }),
+      err: "gh: Could not resolve to a PullRequest with the number of 100.\n",
+    });
+  });
+
+  // gh pages a REST list by `per_page`, and with `--paginate` asks for every page, running `--jq`
+  // over each. Catches a world that hands every page the whole list, which a `--paginate` reader
+  // reads twice.
+  test("the world pages a REST list by per_page", () => {
+    const dir = dirOf("tester_proof_world");
+    const head = headOf(dir);
+    const paged = gh(
+      dir,
+      "api",
+      "--paginate",
+      `${REPO}/commits/${head}/check-runs?per_page=1`,
+      "--jq",
+      ".check_runs[].name"
+    );
+    expect(paged).toEqual({ code: 0, out: "test\nlint", err: "" });
+    const second = gh(
+      dir,
+      "api",
+      `${REPO}/commits/${head}/check-runs?per_page=1&page=2`,
+      "--jq",
+      "[.total_count, [.check_runs[].name]]"
+    );
+    expect(second).toEqual({ code: 0, out: JSON.stringify([2, ["lint"]]), err: "" });
+  });
+
+  // What the run did is the world's state: the comments it posted are the pull request's
+  // conversation, and the inline comments its review carried are the pull request's review
+  // comments, as GitHub answers both. Catches lists frozen at what the world held before the run.
+  test("the conversation and the review comments are the ones the run left", () => {
+    const dir = build("review_world");
+    const head = headOf(dir);
+    expect(gh(dir, "pr", "comment", "1001", "--body", "a note on the change").code).toBe(0);
+    expect(
+      gh(dir, "api", `${REPO}/issues/1001/comments`, "--jq", "[.[] | {user: .user.login, body}]")
+    ).toEqual({
+      code: 0,
+      out: JSON.stringify([{ user: WORLD_LOGIN, body: "a note on the change" }]),
+      err: "",
+    });
+    expect(
+      gh(dir, "pr", "view", "1001", "--json", "comments", "--jq", "[.comments[].body]").out
+    ).toBe(JSON.stringify(["a note on the change"]));
+    const review = path.join(dir, "review.json");
+    writeFileSync(
+      review,
+      JSON.stringify({
+        commit_id: head,
+        event: "COMMENT",
+        body: "one note",
+        comments: [{ path: "greet.ts", line: 1, side: "RIGHT", body: "a line note" }],
+      })
+    );
+    expect(
+      gh(dir, "api", "--method", "POST", `${REPO}/pulls/1001/reviews`, "--input", review).code
+    ).toBe(0);
+    const listed = [".[] | [.pull_request_review_id, .path, .line, .body, .commit_id]"];
+    expect(gh(dir, "api", `${REPO}/pulls/1001/comments`, "--jq", ...listed).out).toBe(
+      JSON.stringify([6001, "greet.ts", 1, "a line note", head])
+    );
+    expect(gh(dir, "api", `${REPO}/pulls/1001/reviews/6001/comments`, "--jq", ...listed).out).toBe(
+      JSON.stringify([6001, "greet.ts", 1, "a line note", head])
+    );
+    expect(
+      gh(dir, "api", `${REPO}/pulls/1001/reviews`, "--jq", "[.[] | [.id, .state, .body]]").out
+    ).toBe(JSON.stringify([[6001, "COMMENTED", "one note"]]));
+  });
+
+  // A call outside the routes the world answers stays the refusal it has always been, recorded
+  // with no route, so `rig.sh health` still reports a world that answers less than production
+  // (health.ts's UNROUTED). Catches a world that answers everything: the loose `pulls/<n>` regex
+  // answered the pull request's files with the pull request, and a GraphQL route answered every
+  // mutation with the review threads.
+  test("a call no route of the world answers is refused, with no route on its record", () => {
+    const dir = build("approved_world");
+    const refused = [
+      ["api", `${REPO}/pulls/1001/files`],
+      [
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($pr:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pr,expectedHeadOid:$head}){mergeQueueEntry{position}}}",
+        "-f",
+        "pr=PR_x",
+        "-f",
+        "head=abc",
+      ],
+    ];
+    for (const argv of refused)
+      expect(gh(dir, ...argv)).toEqual({ code: 1, out: "", err: "gh: Not Found (HTTP 404)\n" });
+    const recorded = readFileSync(path.join(dir, "calls.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line.includes('"argv"'))
+      .map((line) => (JSON.parse(line) as { route: string | null }).route);
+    expect(recorded).toEqual([null, null]);
+  });
+});
+
+// The 14 gh calls the world-health check found refused at 3a2ea66a (gh-refused-calls.json, the
+// tester's file: round 17's forty and the check's eight runs), each made again word for word in
+// the world its run booted — the run's pull request number and head read as this world's — and
+// answered as GitHub answers it: the repository's default branch, the pull request's
+// conversation, the head's combined status and workflow runs, the review threads paged, and the
+// review create carrying the body it was sent. Each failed at 3a2ea66a: the first two had no
+// route, the next two a route that answered another shape, the GraphQL ones a page gh's
+// `--slurp` never prints, and the create an answer with no body.
+describe("the world answers every gh call the census found refused", () => {
+  const refused = JSON.parse(
+    readFileSync(path.join(import.meta.dir, "gh-refused-calls.json"), "utf8")
+  ) as {
+    batch: string;
+    run: string;
+    line: number;
+    argv: string[];
+    input_file?: string;
+    input_body?: Record<string, unknown>;
+  }[];
+  /** The world each scenario case boots (rig.sh's worker_fixture). */
+  const WORLD_OF: Record<string, [string, string]> = {
+    "reviewer-text-findings-text-only": ["review_world", ""],
+    "reviewer-text-findings-defect": ["review_world", "dropped"],
+    "threads-closed-text-fixes": ["approved_world", ""],
+    "threads-closed-code-defect": ["approved_world", "dropped"],
+  };
+  function build(world: string, guard: string): string {
+    const dir = freshDir(`gh-refused-${world}`);
+    const result = bash(
+      [
+        fn("fail"),
+        ...[
+          "fixture_open",
+          "fixture_git",
+          "fixture_docs_before",
+          "fixture_first_commit",
+          "fixture_round_files",
+          "fixture_head_commit",
+          "fixture_implement",
+          "fixture_test_handoff",
+          "fixture_checks",
+          "fixture_body",
+          "fixture_write",
+          "concluded_checks",
+          "resolution_protection_routes",
+          "blocked_at",
+          "round_world",
+          world,
+        ].map(fn),
+        'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
+        "fixture_workspace() { :; }",
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
+        assignment("world_author_name"),
+        assignment("world_author_email"),
+        assignment("world_login"),
+        "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
+        `${world} 1 100 "$2"`,
+      ].join("\n"),
+      [dir, guard]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return dir;
+  }
+  function gh(dir: string, args: string[]) {
+    const made = Bun.spawnSync(
+      ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+      {
+        env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+      }
+    );
+    return {
+      code: made.exitCode,
+      out: compact(made.stdout.toString().trim()),
+      err: made.stderr.toString(),
+    };
+  }
+  /** `argv` with its `--jq` and the filter after it taken off, which prints the answer itself. */
+  const bare = (argv: string[]) =>
+    argv.filter((_, index) => argv[index] !== "--jq" && argv[index - 1] !== "--jq");
+
+  test("the file holds the 14 refused calls the check measured", () => {
+    expect(refused.map(({ batch, run, line }) => `${batch}/${run}:${line}`)).toHaveLength(14);
+  });
+
+  test.each(
+    refused.map((call) => [`${call.batch}/${call.run}/calls.jsonl:${call.line}`, call] as const)
+  )("%s is answered as GitHub answers it", (_, call) => {
+    const [, scenarioCase = ""] = /^(.*)-(?:base|head)-\d+$/.exec(call.run) ?? [];
+    const [world, guard] = WORLD_OF[scenarioCase] ?? ["", ""];
+    const dir = build(world, guard);
+    const head = (
+      JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")) as { head: string }
+    ).head;
+    const text = call.argv.join(" ");
+    const number = /(?:pulls|issues)\/(\d+)|n=(\d+)/.exec(text);
+    const recordedPr = number?.[1] ?? number?.[2];
+    const recordedHead =
+      /[0-9a-f]{40}/.exec(text)?.[0] ?? (call.input_body?.commit_id as string | undefined);
+    const here = (value: string) => {
+      let out = value;
+      if (recordedPr !== undefined)
+        out = out.replaceAll(`/${recordedPr}/`, "/1001/").replaceAll(`n=${recordedPr}`, "n=1001");
+      if (recordedHead !== undefined) out = out.replaceAll(recordedHead, head);
+      return out;
+    };
+    let argv = call.argv.map(here);
+    if (call.input_file !== undefined && call.input_body !== undefined) {
+      const input = path.join(dir, "input.json");
+      writeFileSync(input, here(JSON.stringify(call.input_body)));
+      argv = argv.map((arg) => (arg === call.input_file ? input : arg));
+    }
+    const got = gh(dir, argv);
+    const plain = gh(dir, bare(argv));
+    const threads =
+      world !== "approved_world"
+        ? ["PRRT_kwDOrig0001"]
+        : guard === "dropped"
+          ? ["PRRT_kwDOfix101"]
+          : ["PRRT_kwDOfix001", "PRRT_kwDOfix002"];
+    if (/\/issues\/\d+\/comments/.test(text)) {
+      expect(got).toMatchObject({ code: 0, err: "" });
+      expect([plain.code, JSON.parse(plain.out)]).toEqual([0, []]);
+    } else if (/^repos\/example\/widgets$/.test(call.argv[1] ?? "")) {
+      expect(got).toEqual({ code: 0, out: '"main"', err: "" });
+      expect(JSON.parse(plain.out)).toMatchObject({
+        full_name: "example/widgets",
+        default_branch: "main",
+      });
+    } else if (/\/actions\/runs\?/.test(text)) {
+      expect(got).toEqual({ code: 0, out: "", err: "" });
+      expect(JSON.parse(plain.out)).toEqual({ total_count: 0, workflow_runs: [] });
+    } else if (/\/commits\/[0-9a-f]+\/status/.test(text)) {
+      expect(got).toEqual({ code: 0, out: "", err: "" });
+      expect(JSON.parse(plain.out)).toMatchObject({
+        state: "pending",
+        statuses: [],
+        total_count: 0,
+        sha: head,
+      });
+    } else if (call.argv[1] === "graphql") {
+      expect(got.code).toBe(0);
+      expect(got.out.split("\n").map((row) => row.split("\t")[0])).toEqual(threads);
+      const pages = JSON.parse(plain.out) as {
+        data: { repository: { pullRequest: { reviewThreads: { pageInfo: unknown } } } };
+      }[];
+      expect(pages.map(({ data }) => data.repository.pullRequest.reviewThreads.pageInfo)).toEqual([
+        { hasNextPage: false, endCursor: expect.any(String) },
+      ]);
+    } else {
+      expect(argv.slice(0, 4)).toEqual([
+        "api",
+        "--method",
+        "POST",
+        "repos/example/widgets/pulls/1001/reviews",
+      ]);
+      expect([got.code, JSON.parse(got.out)]).toEqual([
+        0,
+        { state: "CHANGES_REQUESTED", commit_id: head, body_head: head },
+      ]);
+    }
   });
 });
 
@@ -3368,12 +4325,17 @@ describe("what the rig writes into a run's world", () => {
       for (const [where, text] of texts(dir, ["src", "remote.git", "ws"]))
         read.set(`${name}: ${where}`, text);
       const { routes } = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8")) as {
-        routes: { match: string; stdout?: unknown; stderr?: string }[];
+        routes: { match: string; stdout?: unknown; graph?: unknown; stderr?: string }[];
       };
+      // A route's whole answer: what it prints, the GraphQL graph it answers from, and its
+      // refusal.
       for (const [index, route] of routes.entries())
         read.set(
           `${name}: route ${index} (${route.match})`,
-          `${JSON.stringify(route.stdout ?? "")}\n${route.stderr ?? ""}`.replaceAll(dir, "<run>")
+          `${JSON.stringify(route.stdout ?? "")}\n${JSON.stringify(route.graph ?? "")}\n${route.stderr ?? ""}`.replaceAll(
+            dir,
+            "<run>"
+          )
         );
     }
     const brainstorm = freshDir("world-words-brainstorm");
@@ -4339,7 +5301,7 @@ sleep() { command sleep 0.05; }`;
         path.join("..", "..", "..", "node_modules", zod),
         path.join(tree, "packages", "pi-legion", "node_modules", "zod")
       );
-      for (const file of ["gh-standin.ts", "gh-call.ts", "run-records.ts"])
+      for (const file of ["gh-standin.ts", "gh-call.ts", "gh-routes.ts", "run-records.ts"])
         cpSync(path.join(RIG, file), path.join(here, file));
       const { run, result, out } = launched(
         work,

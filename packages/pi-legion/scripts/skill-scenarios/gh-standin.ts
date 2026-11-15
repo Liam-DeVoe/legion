@@ -14,15 +14,21 @@
 // (`headRuns`), and its merge state (`mergeStateStatus`, `mergeable_state`) the one the world
 // reports for that head (gh-call.ts's `mergeStateOn`). The rest of a review's life is this
 // file's own and no world's, since GitHub answers it from what the run has done: the create of a
-// review, refused 422 where GitHub refuses it and otherwise answered with the state and head the
-// call gives it (`reviewCreate`); the submit of a review (`…/reviews/<id>/events`), answered
+// review, refused 422 where GitHub refuses it and otherwise answered with the state, head and
+// body the call gives it (`reviewCreate`); the submit of a review (`…/reviews/<id>/events`), answered
 // from the review's own state (`reviewSubmission`); and the read of one review this run created
-// (`reviewRead`). A call no route matches and no answer of this file's own serves prints
-// `gh: Not Found (HTTP 404)` and exits 1. Nothing is sent anywhere.
-// `--json a,b` picks fields and `--jq`/`-q` runs jq, as gh does. A pull request body edit (`gh pr
-// edit --body`, `--body-file`, or a PATCH through `gh api`) is kept: every answer of the pull
-// request then carries the new one, the edit's own answer among them, as GitHub's would, and the
-// call's record carries it as `body`.
+// (`reviewRead`). A route that names an `answer` is answered from what the run did — the reviews
+// it created and their inline comments, the comments it posted, a ref or a commit's combined
+// status read on its remote (`fromRun`) — and a route that holds a `graph` answers GraphQL from
+// it, paged as GitHub pages a connection (`graphAnswer`, with gh-routes.ts's parser and
+// executor). A REST read's list is paged by `per_page` and `page`, and `--paginate` asks for
+// every page, as gh does (`restPages`). A call no route matches and no answer of this file's own
+// serves prints `gh: Not Found (HTTP 404)` and exits 1, and so does a GraphQL mutation the
+// world's graph holds no answer for. Nothing is sent anywhere.
+// `--json a,b` picks fields and `--jq`/`-q` runs jq over each page, as gh does; `--slurp` prints
+// the pages as one list. A pull request body edit (`gh pr edit --body`, `--body-file`, or a PATCH
+// through `gh api`) is kept: every answer of the pull request then carries the new one, the
+// edit's own answer among them, as GitHub's would, and the call's record carries it as `body`.
 //
 // The record opens with one line of its own, `{at, opened}`, written the first time this
 // stand-in is invoked, as record-publishes.ts writes its `recording` line. rig.sh asks for that
@@ -59,15 +65,30 @@ import {
   valueAt,
   worldOf,
 } from "./gh-call";
+// The GraphQL reader the sweep of the role texts reads their queries with, and the executor that
+// answers a query from the world's graph: one reading of a query for the texts and the world.
+import {
+  endpointOf,
+  executeGraphql,
+  type GraphAnswer,
+  isObject,
+  type Operation,
+  parseGraphql,
+} from "./gh-routes";
 import { CALLS, openingLine } from "./run-records";
 
-/** rig.sh's worker_fixture writes each route as {match, methods?, stdout?, stderr?, exit?}.
+/** rig.sh's worker_fixture writes each route as {match, methods?, stdout?, stderr?, exit?,
+ * answer?, graph?}.
  * `methods` is the verbs that route answers, where it answers some and not others: the create of
  * a review is the POST of the path a GET of it reads the reviews from. A route that names none
  * answers whatever verb reaches it. The verb is read as the score reads it (`methodOf`) and
  * never by a regex over the call: a world that asked for `-X POST` written out sent a create
  * written `-f commit_id=<head>`, `--method=POST` or `-XPOST` to its GET route, recorded no
- * pending review for it, and refused the submit that followed where GitHub answers 200. */
+ * pending review for it, and refused the submit that followed where GitHub answers 200.
+ * `answer` names a reading of the run's own record or remote this stand-in answers the route
+ * with (`fromRun`), `stdout` being what the world held before the run; `graph` is the world's
+ * state as GitHub's GraphQL schema names it, which a GraphQL call is answered from
+ * (`graphAnswer`). */
 const Fixtures = z.looseObject({
   routes: z.array(
     z.object({
@@ -76,6 +97,8 @@ const Fixtures = z.looseObject({
       stdout: z.unknown().optional(),
       stderr: z.string().optional(),
       exit: z.number().optional(),
+      answer: z.string().optional(),
+      graph: z.record(z.string(), z.unknown()).optional(),
     })
   ),
 });
@@ -132,6 +155,9 @@ const readSource = async (source: string) =>
 // The verb is the one the score reads (`methodOf`), so `--method=patch` is the PATCH `-X PATCH`
 // is.
 const prEdit = as === "gh" && args[0] === "pr" && args[1] === "edit";
+/** A `gh pr comment`, whose `-F/--body-file` names the file of the comment it posts, which the
+ * record keeps so the conversation it leaves can be read back (`conversation`). */
+const prComment = as === "gh" && args[0] === "pr" && args[1] === "comment";
 const prPatch =
   as === "gh" &&
   args[0] === "api" &&
@@ -153,6 +179,7 @@ const FILE_FIELD_FLAGS = ["-F", "--field"];
 for (const index of args.keys()) {
   const edited = prEdit ? valueAt(args, index, PR_BODY_FLAGS) : undefined;
   const bodyFile = prEdit ? valueAt(args, index, PR_BODY_FILE_FLAGS) : undefined;
+  const commentFile = prComment ? valueAt(args, index, PR_BODY_FILE_FLAGS) : undefined;
   const source = valueAt(args, index, INPUT_FLAGS);
   const field = valueAt(args, index, FIELD_FLAGS);
   // A flag with nothing after it, and one written against an empty value, names no file and no
@@ -161,7 +188,8 @@ for (const index of args.keys()) {
   else if (bodyFile) {
     files[bodyFile] = await readSource(bodyFile);
     body = files[bodyFile];
-  } else if (source) files[source] = await readSource(source);
+  } else if (commentFile) files[commentFile] = await readSource(commentFile);
+  else if (source) files[source] = await readSource(source);
   else if (field) {
     const [key = "", ...rest] = field.split("=");
     let value = rest.join("=");
@@ -188,9 +216,59 @@ const joined = `${as} ${args.join(" ")}`;
 /** The verb gh sends this call with, which the routes that answer one verb and not another are
  * chosen by (`Fixtures`). */
 const verb = methodOf(args);
-/** The route that answers this call, chosen by that verb and the call's whole text
- * (`routeFor`, the rule the daemon stand-in reads this world by too). */
-const route = routeFor(routes, args, as);
+/** The GraphQL operation a `gh api graphql` call sends, and its variables: the query its `query`
+ * field or its `--input` body holds, read by the parser the sweep of the role texts reads them
+ * with (gh-routes.ts), and every other field as a variable — a `-F` typed as gh types one (`true`,
+ * `false`, `null`, an integer, the text of an `@file`), a `-f` as written — or an `--input`'s own
+ * `variables`. `operation` is undefined for a query that is no GraphQL document. */
+function readGraphql(): { operation: Operation | undefined; variables: Record<string, unknown> } {
+  if (input !== undefined) {
+    const sent = sentBody({ argv: args, stdin, files }) ?? {};
+    return {
+      operation: typeof sent.query === "string" ? parseGraphql(sent.query) : undefined,
+      variables: isObject(sent.variables) ? sent.variables : {},
+    };
+  }
+  let query = "";
+  const variables: Record<string, unknown> = {};
+  for (const index of args.keys()) {
+    const pair = valueAt(args, index, FIELD_FLAGS);
+    if (pair === undefined) continue;
+    const equals = pair.indexOf("=");
+    const name = equals < 0 ? pair : pair.slice(0, equals);
+    const text = equals < 0 ? "" : pair.slice(equals + 1);
+    let value: unknown = text;
+    if (valueAt(args, index, FILE_FIELD_FLAGS) !== undefined) {
+      if (text.startsWith("@")) value = files[text.slice(1)] ?? "";
+      else if (text === "true" || text === "false") value = text === "true";
+      else if (text === "null") value = null;
+      else if (/^-?\d+$/.test(text)) value = Number(text);
+    }
+    if (name === "query") query = String(value);
+    else variables[name] = value;
+  }
+  return { operation: parseGraphql(query), variables };
+}
+const graphqlCall =
+  as === "gh" && args[0] === "api" && endpointOf(args) === "graphql" ? readGraphql() : undefined;
+/** The route `routeFor` chooses for this call by that verb and the call's whole text (the rule
+ * the daemon stand-in reads this world by too). */
+const matched = routeFor(routes, args, as);
+/** The route that answers this call: the one chosen, except for a mutation the world's graph
+ * holds no answer for. GitHub answers such a mutation and the world does not, so it is refused as
+ * every call the world has no answer for is, and `rig.sh health` reads it as the world answering
+ * less than production. */
+const route =
+  matched?.graph !== undefined &&
+  graphqlCall?.operation?.type === "mutation" &&
+  !graphqlCall.operation.selections.every(
+    (selection) =>
+      selection.kind === "field" &&
+      isObject(matched.graph?.mutation) &&
+      selection.name in matched.graph.mutation
+  )
+    ? undefined
+    : matched;
 /** The review this call left on the pull request, as this stand-in answered it: its state and
  * the head it stands at. Set for a create the world answered with a review, for a submit of the
  * pending one, and for a `gh pr review`, which GitHub takes as a review at the pull request's
@@ -423,13 +501,15 @@ function reviewSubmission(): Record<string, unknown> | undefined {
 /** One review this run created on the world's pull request, as this stand-in answered it: the
  * world's answer to its create (the id, the URL and the user whose token the run calls with), the
  * state and the head the create — and, once it was submitted, the submit — were answered with,
- * and the body it carries. */
+ * the body it carries, the inline comments its create sent (`comments[]`) and when it was made. */
 type OwnReview = {
   answer: Record<string, unknown>;
   id: string;
   state: string;
   head: string;
   body: string;
+  comments: Record<string, unknown>[];
+  at: string;
 };
 /** Every review this run created on `repo`'s pull request, by the id it was answered with, and
  * the one it has pending, or `undefined` when it has none. The record this reads is the
@@ -460,6 +540,7 @@ function ownReviews(repo: string): {
   for (const line of readFileSync(RECORD, "utf8").split("\n")) {
     if (line.trim() === "") continue;
     const call = JSON.parse(line) as {
+      at?: string;
       argv?: string[];
       files?: Record<string, string>;
       stdin?: string;
@@ -483,7 +564,15 @@ function ownReviews(repo: string): {
     const answer = routeAnswer(call.route);
     const id = answer?.id;
     if (answer === undefined || (typeof id !== "number" && typeof id !== "string")) continue;
-    const review = { answer, id: String(id), ...call.review, body: text ?? "" };
+    const comments = Array.isArray(sent.comments) ? sent.comments.filter(isObject) : [];
+    const review = {
+      answer,
+      id: String(id),
+      ...call.review,
+      body: text ?? "",
+      comments,
+      at: call.at ?? "",
+    };
     byId.set(review.id, review);
     if (review.state === "PENDING") pending = review;
   }
@@ -509,8 +598,13 @@ function routeAnswer(match: string | null | undefined): Record<string, unknown> 
  * pending review while this run has one pending already, which GitHub refuses as "User can only
  * have one pending review per pull request". The world's routes answered each of these 200 with
  * an id, and the last one replaced the pending review the round had been writing with a new one
- * at another head. */
-function reviewCreate(): { state: string; head: string | undefined } | undefined {
+ * at another head.
+ *
+ * The body is the call's own too, and GitHub answers the create with it (`body`, "" for a create
+ * that sent none): a create answered without it left a reviewer reading its own footer back with
+ * `--jq '(.body|capture(…))'` on null, and exit 1 on a review GitHub had taken
+ * (round17-forty/reviewer-text-findings-defect-head-4/calls.jsonl:29). */
+function reviewCreate(): { state: string; head: string | undefined; body: string } | undefined {
   if (as !== "gh" || args[0] !== "api" || !isPost(args)) return undefined;
   const repo = world?.repo;
   if (repo === undefined || !args.some((arg) => reviewsRoute(arg, repo))) return undefined;
@@ -519,7 +613,8 @@ function reviewCreate(): { state: string; head: string | undefined } | undefined
   if (state === undefined)
     refuse(submittedState(sent.event) === undefined ? CREATE_EVENT : CREATE_BODY);
   if (state === "PENDING" && ownReviews(repo).pending !== undefined) refuse(ONE_PENDING);
-  return { state, head: createdHead(sent, branchTip()) };
+  const body = typeof sent.body === "string" ? sent.body : "";
+  return { state, head: createdHead(sent, branchTip()), body };
 }
 /** `GET …/pulls/<n>/reviews/<id>`, with the query string `gh api` lets a caller append: the
  * repository it names and the id it reads. */
@@ -537,9 +632,21 @@ function reviewRead(): Record<string, unknown> | undefined {
   if (repo === undefined) return undefined;
   const id = args.map((arg) => REVIEW_READ.exec(arg)).find((named) => named?.[1] === repo)?.[2];
   const review = id === undefined ? undefined : ownReviews(repo).byId.get(id);
-  if (review === undefined) return undefined;
-  const { answer, state, head, body } = review;
-  return { ...answer, id: Number(review.id), state, commit_id: head, body };
+  return review === undefined ? undefined : reviewObject(review);
+}
+/** A review this run created as GitHub answers it: the world's answer to its create, with the
+ * state, the head and the body it has now, and the time it was submitted once it is no longer
+ * pending. */
+function reviewObject(review: OwnReview): Record<string, unknown> {
+  const { answer, state, head, body, at: made } = review;
+  return {
+    ...answer,
+    id: Number(review.id),
+    state,
+    commit_id: head,
+    body,
+    ...(state === "PENDING" ? {} : { submitted_at: made }),
+  };
 }
 const submitted = reviewSubmission();
 if (submitted !== undefined)
@@ -668,28 +775,256 @@ if (body !== undefined) {
 // PATCH of the pull request with the pull request as that PATCH left it, and the world's route
 // for it answered the body before the edit, where the generic write route had answered `{id,
 // html_url}` and 23 recorded PATCH calls read `.body` back as null.
+/** GitHub's 404, for a read of something the world has not got. */
+const NOT_FOUND = "gh: Not Found (HTTP 404)\n";
+/** The login the run's token acts as: the world's answer to `gh api user`. */
+function login(): string {
+  const user = routeFor(routes, ["api", "user"])?.stdout;
+  return isObject(user) && typeof user.login === "string" ? user.login : "";
+}
+/** The pull request as the world's `gh pr view` route holds it, or an empty object. */
+function pullRequestHeld(): Record<string, unknown> {
+  const held = routeFor(routes, ["pr", "view"])?.stdout;
+  return isObject(held) ? held : {};
+}
+/** The comments this run posted on the pull request's conversation, oldest first: each
+ * `gh pr comment` of the world's repository and each POST of `repos/<repo>/issues/<n>/comments`
+ * the record holds exiting 0, with the body it posted and when it posted it. */
+function conversation(): { body: string; at: string }[] {
+  if (world === undefined) return [];
+  const path = `repos/${world.repo}/issues/${world.pr}/comments`;
+  const posted: { body: string; at: string }[] = [];
+  for (const line of readFileSync(RECORD, "utf8").split("\n")) {
+    if (line.trim() === "") continue;
+    const call = JSON.parse(line) as {
+      at?: string;
+      as?: string;
+      argv?: string[];
+      files?: Record<string, string>;
+      stdin?: string;
+      exit?: number;
+    };
+    const argv = call.argv ?? [];
+    if (call.as !== "gh" || call.exit !== 0) continue;
+    let text: string | undefined;
+    if (argv[0] === "pr" && argv[1] === "comment") {
+      const named = flagValue(argv, ["-R", "--repo"]);
+      if (named !== undefined && named !== world.repo) continue;
+      const file = flagValue(argv, ["-F", "--body-file"]);
+      text =
+        flagValue(argv, ["-b", "--body"]) ??
+        (file === undefined ? undefined : file === "-" ? call.stdin : call.files?.[file]);
+    } else if (
+      argv[0] === "api" &&
+      isPost(argv) &&
+      argv.some((arg) => arg.replace(/^\//, "").split("?")[0] === path)
+    ) {
+      const sent = sentBody({ argv, stdin: call.stdin, files: call.files }) ?? {};
+      text = typeof sent.body === "string" ? sent.body : undefined;
+    }
+    if (text !== undefined) posted.push({ body: text, at: call.at ?? "" });
+  }
+  return posted;
+}
+/** The conversation comment at `index` of `conversation()`, as GitHub's REST API answers it. */
+function issueComment(comment: { body: string; at: string }, index: number) {
+  const id = 8001 + index;
+  const url = String(pullRequestHeld().url ?? "");
+  return {
+    id,
+    node_id: `IC_kwDOAAAAAc4AAB${id}`,
+    html_url: `${url}#issuecomment-${id}`,
+    issue_url: `https://api.github.com/repos/${world?.repo}/issues/${world?.pr}`,
+    user: { login: login(), type: "Bot" },
+    body: comment.body,
+    created_at: comment.at,
+    updated_at: comment.at,
+    author_association: "NONE",
+  };
+}
+/** Every inline comment the run's review creates sent (`comments[]`), as GitHub's REST API
+ * answers a pull request's review comments, in the order the reviews were created. */
+function inlineComments(): Record<string, unknown>[] {
+  if (world === undefined) return [];
+  const url = String(pullRequestHeld().url ?? "");
+  let next = 9001;
+  return [...ownReviews(world.repo).byId.values()].flatMap((review) =>
+    review.comments.map((comment) => {
+      const id = next++;
+      return {
+        ...comment,
+        id,
+        pull_request_review_id: Number(review.id),
+        side: comment.side ?? "RIGHT",
+        commit_id: review.head,
+        user: { login: login(), type: "Bot" },
+        html_url: `${url}#discussion_r${id}`,
+        created_at: review.at,
+      };
+    })
+  );
+}
+/** A route's answer read from what the run did (rig.sh's fixture_write names which, as `answer`),
+ * with `held` the route's own `stdout`, what the world held before the run:
+ *   - `reviews`: the world's reviews, then each review this run created as it stands;
+ *   - `review`: the world's review the path names by id, or GitHub's 404 (a review this run
+ *     created is `reviewRead`'s, read before the routes);
+ *   - `review-comments`: the inline comments of the run's review creates, all of them, or the
+ *     ones of the review the path names, which is 404 where neither the world nor the run holds it;
+ *   - `issue-comments`: the world's conversation, then each comment the run posted on it;
+ *   - `combined-status`: GitHub's combined status of the ref the path names, resolved on the run's
+ *     own remote — the world's statuses, `state` `pending` where there are none, and 422 for a ref
+ *     the remote has not got;
+ *   - `git-ref`: the ref the path names on the run's own remote, or GitHub's 404. */
+function fromRun(kind: string, held: unknown): unknown {
+  const repo = world?.repo ?? "";
+  const path = (endpointOf(args) ?? "").replace(/^\//, "").split("?")[0] ?? "";
+  const reviewsHeld = () => {
+    const listed = routeFor(routes, ["api", `repos/${repo}/pulls/${world?.pr}/reviews`])?.stdout;
+    return Array.isArray(listed) ? listed : [];
+  };
+  switch (kind) {
+    case "reviews":
+      return [
+        ...(Array.isArray(held) ? held : []),
+        ...(world === undefined ? [] : [...ownReviews(repo).byId.values()].map(reviewObject)),
+      ];
+    case "review": {
+      const id = /\/reviews\/(\d+)$/.exec(path)?.[1];
+      const found = (Array.isArray(held) ? held : []).find(
+        (review) => isObject(review) && String(review.id) === id
+      );
+      if (found === undefined) refuse(NOT_FOUND);
+      return found;
+    }
+    case "review-comments": {
+      const id = /\/reviews\/(\d+)\/comments$/.exec(path)?.[1];
+      if (id === undefined) return [...(Array.isArray(held) ? held : []), ...inlineComments()];
+      const known =
+        (world !== undefined && ownReviews(repo).byId.has(id)) ||
+        reviewsHeld().some((review) => isObject(review) && String(review.id) === id);
+      if (!known) refuse(NOT_FOUND);
+      return inlineComments().filter((comment) => String(comment.pull_request_review_id) === id);
+    }
+    case "issue-comments":
+      return [...(Array.isArray(held) ? held : []), ...conversation().map(issueComment)];
+    case "combined-status": {
+      const ref = /\/commits\/([^/]+)\/status$/.exec(path)?.[1] ?? "";
+      const sha = REF.test(ref)
+        ? fromRemote("rev-parse", "--verify", "--quiet", `${ref}^{commit}`)
+        : undefined;
+      if (sha === undefined || sha === "")
+        refuse(`gh: No commit found for SHA: ${ref} (HTTP 422)\n`);
+      const statuses = isObject(held) && Array.isArray(held.statuses) ? held.statuses : [];
+      const states = statuses.map((status) => (isObject(status) ? status.state : undefined));
+      const state = states.some((one) => one === "error" || one === "failure")
+        ? "failure"
+        : statuses.length === 0 || states.includes("pending")
+          ? "pending"
+          : "success";
+      const commit = `https://api.github.com/repos/${repo}/commits/${sha}`;
+      return {
+        state,
+        statuses,
+        sha,
+        total_count: statuses.length,
+        repository: { full_name: repo },
+        commit_url: commit,
+        url: `${commit}/status`,
+      };
+    }
+    case "git-ref": {
+      const ref = /\/git\/ref\/(.+)$/.exec(path)?.[1] ?? "";
+      const sha = REF.test(ref)
+        ? fromRemote("rev-parse", "--verify", "--quiet", `refs/${ref}^{commit}`)
+        : undefined;
+      if (sha === undefined || sha === "") refuse(NOT_FOUND);
+      return {
+        ref: `refs/${ref}`,
+        url: `https://api.github.com/repos/${repo}/git/refs/${ref}`,
+        object: {
+          sha,
+          type: "commit",
+          url: `https://api.github.com/repos/${repo}/git/commits/${sha}`,
+        },
+      };
+    }
+  }
+  return held;
+}
 let output: unknown;
 if (compared !== undefined) output = compared;
 else if (own !== undefined) output = own;
+else if (route?.answer !== undefined) output = fromRun(route.answer, route.stdout);
 else output = route?.stdout ?? "";
 if (kept !== undefined) output = withBody(output, kept);
-// What GitHub answers the create of a review with is the review it created, and two of its
+// What GitHub answers the create of a review with is the review it created, and three of its
 // fields are the call's own and no world's (`reviewCreate`): the state, which is `PENDING` for a
 // create that names no event and the state its event leaves the review in for one that does,
-// and the head it was created at. The world's route carries what is the world's — the id it
-// answers every create with, the URL and the user whose token the run calls with — since a
-// review a run created has no id of this file's own. The create answered with neither is what
-// left a round reading back `{id, html_url}`: it could not tell whether its approval had been
-// submitted, and it submitted again.
+// the head it was created at, and its body. The world's route carries what is the world's — the
+// id it answers every create with, the URL and the user whose token the run calls with — since a
+// review a run created has no id of this file's own. The create answered with neither state nor
+// head is what left a round reading back `{id, html_url}`: it could not tell whether its
+// approval had been submitted, and it submitted again.
 if (
   created !== undefined &&
   typeof output === "object" &&
   output !== null &&
   !Array.isArray(output)
 ) {
-  const { state, head } = created;
-  output = { ...output, state, ...(head === undefined ? {} : { commit_id: head }) };
+  const { state, head, body: written } = created;
+  output = { ...output, state, body: written, ...(head === undefined ? {} : { commit_id: head }) };
   if (head !== undefined) answered = { state, head };
+}
+/** The pull request `one` as it stands: at the tip of the run's own remote (`tip`), with the
+ * checks of that head (`runs`) and the merge state the world reports for it, and with the
+ * comments the run posted on its conversation after the world's own. A `one` that is no pull
+ * request of the world (it carries no `headRefOid`) is its own answer. */
+function current(
+  one: Record<string, unknown>,
+  tip: string | undefined,
+  runs: CheckRun[] | undefined
+): Record<string, unknown> {
+  if (!("headRefOid" in one)) return one;
+  const comments = Array.isArray(one.comments)
+    ? {
+        comments: [
+          ...one.comments,
+          ...conversation().map((comment, index) => {
+            const rest = issueComment(comment, index);
+            return {
+              id: rest.node_id,
+              author: { login: rest.user.login },
+              authorAssociation: rest.author_association,
+              body: rest.body,
+              createdAt: rest.created_at,
+              url: rest.html_url,
+            };
+          }),
+        ],
+      }
+    : {};
+  if (tip === undefined) return { ...one, ...comments };
+  const nested =
+    "head" in one && typeof one.head === "object" && one.head !== null
+      ? { head: { ...one.head, sha: tip } }
+      : {};
+  const rollup =
+    "statusCheckRollup" in one && runs !== undefined
+      ? {
+          statusCheckRollup: runs.map((run) => ({
+            name: run.name,
+            status: run.status.toUpperCase(),
+            conclusion: (run.conclusion ?? "").toUpperCase(),
+          })),
+        }
+      : {};
+  const state = mergeStateOn(fixtures.mergeStates, tip);
+  const merge = {
+    ...("mergeStateStatus" in one ? { mergeStateStatus: state } : {}),
+    ...("mergeable_state" in one ? { mergeable_state: state.toLowerCase() } : {}),
+  };
+  return { ...one, headRefOid: tip, ...nested, ...rollup, ...merge, ...comments };
 }
 // What GitHub answers for a pull request's head is read from the run's own remote, and only for
 // an answer that carries one: the tip is a `git` call, which a call answered by any other route
@@ -705,58 +1040,136 @@ if (
 ) {
   const tip = branchTip();
   const runs = headRuns();
-  if (tip !== undefined)
-    output = eachAnswer(output, (one) => {
-      if (!("headRefOid" in one)) return one;
-      const nested =
-        "head" in one && typeof one.head === "object" && one.head !== null
-          ? { head: { ...one.head, sha: tip } }
-          : {};
-      const rollup =
-        "statusCheckRollup" in one && runs !== undefined
-          ? {
-              statusCheckRollup: runs.map((run) => ({
-                name: run.name,
-                status: run.status.toUpperCase(),
-                conclusion: (run.conclusion ?? "").toUpperCase(),
-              })),
-            }
-          : {};
-      const state = mergeStateOn(fixtures.mergeStates, tip);
-      const merge = {
-        ...("mergeStateStatus" in one ? { mergeStateStatus: state } : {}),
-        ...("mergeable_state" in one ? { mergeable_state: state.toLowerCase() } : {}),
-      };
-      return { ...one, headRefOid: tip, ...nested, ...rollup, ...merge };
-    });
+  output = eachAnswer(output, (one) => current(one, tip, runs));
 }
 if (checked !== undefined) output = checked.text;
 // An empty diff is GitHub's own answer for a pull request whose branch carries no change, so it
 // stands as the answer rather than falling back to the route's.
 if (diffed !== undefined) output = diffed === "" ? "" : `${diffed}\n`;
+/** GitHub's answer to a query that is no GraphQL document. GitHub refuses it with its parser's
+ * own message, which names where in the query it stopped; this sentence is this stand-in's, since
+ * that message is not measured here. */
+const PARSE_ERROR = "Parse error: the query is no GraphQL document";
+/** The `pageInfo` of the first connection `value` holds, depth first, which is the one gh follows
+ * when it pages a GraphQL query. */
+function pageInfoIn(value: unknown): Record<string, unknown> | undefined {
+  if (Array.isArray(value)) return value.map(pageInfoIn).find((found) => found !== undefined);
+  if (!isObject(value)) return undefined;
+  if ("hasNextPage" in value) return value;
+  return Object.values(value)
+    .map(pageInfoIn)
+    .find((found) => found !== undefined);
+}
+/** A GraphQL call answered from `graph`, the world's state as GitHub's schema names it (rig.sh's
+ * fixture_write): a query from its `query` root, whose pull request is the world's own as it
+ * stands (`current`), and a mutation from its `mutation` root. With `--paginate` and a query that
+ * takes `$endCursor`, gh asks again with the `endCursor` of the page it was answered until that
+ * page has no next one, and so does this: each page is one answer, and a world that answered
+ * every page alike would hold a `--paginate` loop for ever. */
+function graphAnswer(
+  graph: Record<string, unknown>,
+  call: { operation: Operation | undefined; variables: Record<string, unknown> }
+): GraphAnswer[] {
+  const { operation } = call;
+  if (operation === undefined) return [{ errors: [{ message: PARSE_ERROR }] }];
+  let root: Record<string, unknown>;
+  if (operation.type === "query") {
+    const query = isObject(graph.query) ? graph.query : {};
+    const repository = isObject(query.repository) ? query.repository : {};
+    const pullRequest = isObject(repository.pullRequest) ? repository.pullRequest : {};
+    const now = current(pullRequestHeld(), branchTip(), headRuns());
+    root = { ...query, repository: { ...repository, pullRequest: { ...now, ...pullRequest } } };
+  } else root = isObject(graph.mutation) ? graph.mutation : {};
+  const variables = { ...call.variables };
+  const pages =
+    args.includes("--paginate") && operation.variables.some(({ name }) => name === "endCursor");
+  const answers: GraphAnswer[] = [];
+  for (let page = 0; page < 100; page++) {
+    const answer = executeGraphql(operation, root, variables);
+    answers.push(answer);
+    const info = pageInfoIn(answer.data);
+    if (!pages || answer.errors !== undefined || info?.hasNextPage !== true) break;
+    if (typeof info.endCursor !== "string") break;
+    variables.endCursor = info.endCursor;
+  }
+  return answers;
+}
+/** The lists GitHub pages inside an object it answers: a commit's check runs, the workflow runs,
+ * a combined status's statuses and a run's jobs. */
+const PAGED = ["check_runs", "workflow_runs", "statuses", "jobs"];
+/** A REST read's answer, paged as GitHub pages it: `per_page` items (30 unless the query string
+ * names another, at most 100) from the page the query string names (1 unless it names another),
+ * of the list the answer is or the one list it holds (`PAGED`); with `--paginate`, that page and
+ * every page after it, which gh asks for in turn. An answer that is no list is its one page. */
+function restPages(answer: unknown): unknown[] {
+  const query = new URLSearchParams((endpointOf(args) ?? "").split("?")[1] ?? "");
+  const perPage = Math.min(100, Math.max(1, Number(query.get("per_page") ?? 30) || 30));
+  const first = Math.max(1, Number(query.get("page") ?? 1) || 1);
+  const key = isObject(answer) ? PAGED.find((name) => Array.isArray(answer[name])) : undefined;
+  const list = Array.isArray(answer)
+    ? answer
+    : isObject(answer) && key !== undefined
+      ? (answer[key] as unknown[])
+      : undefined;
+  if (list === undefined) return [answer];
+  const pageOf = (page: number) => {
+    const items = list.slice((page - 1) * perPage, page * perPage);
+    return isObject(answer) && key !== undefined ? { ...answer, [key]: items } : items;
+  };
+  const pages = [pageOf(first)];
+  if (args.includes("--paginate"))
+    for (let page = first + 1; (page - 1) * perPage < list.length; page++) pages.push(pageOf(page));
+  return pages;
+}
+const graphPages =
+  route?.graph !== undefined && graphqlCall !== undefined
+    ? graphAnswer(route.graph, graphqlCall)
+    : undefined;
+/** The documents gh prints for this call: one per page it was answered with — a GraphQL page, a
+ * REST page — and one for every other answer; with `--slurp`, the pages as one list. */
+let docs: unknown[] =
+  graphPages ??
+  (as === "gh" && args[0] === "api" && verb === "GET" && typeof output !== "string"
+    ? restPages(output)
+    : [output]);
+if (args.includes("--slurp")) docs = [docs];
 const jsonIndex = args.indexOf("--json");
 if (jsonIndex >= 0) {
   const fields = (args[jsonIndex + 1] ?? "").split(",");
-  output = eachAnswer(output, (one) =>
-    Object.fromEntries(fields.filter((field) => field in one).map((field) => [field, one[field]]))
+  docs = docs.map((doc) =>
+    eachAnswer(doc, (one) =>
+      Object.fromEntries(fields.filter((field) => field in one).map((field) => [field, one[field]]))
+    )
   );
 }
-let text = typeof output === "string" ? output : JSON.stringify(output);
 const jqIndex = args.findIndex((arg) => arg === "--jq" || arg === "-q");
 const filter = jqIndex >= 0 ? args[jqIndex + 1] : undefined;
+const texts = docs.map((doc) => (typeof doc === "string" ? doc : JSON.stringify(doc)));
+// gh runs `--jq` over each page on its own, and without it prints the pages of a list as the one
+// list they make.
+let text: string;
 if (filter !== undefined) {
-  const jq = Bun.spawnSync(["jq", "-r", filter], { stdin: new TextEncoder().encode(text) });
-  text = jq.stdout.toString();
-  if (jq.exitCode !== 0) {
-    process.stderr.write(jq.stderr.toString());
-    exit(1);
+  text = "";
+  for (const one of texts) {
+    const jq = Bun.spawnSync(["jq", "-r", filter], { stdin: new TextEncoder().encode(one) });
+    text += jq.stdout.toString();
+    if (jq.exitCode !== 0) {
+      process.stderr.write(jq.stderr.toString());
+      exit(1);
+    }
   }
-}
+} else if (docs.length > 1 && docs.every(Array.isArray)) text = JSON.stringify(docs.flat());
+else text = texts.join("\n");
 if (text !== "") process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
 if (route?.stderr && own === undefined) process.stderr.write(route.stderr);
+// GitHub answers a GraphQL query it refuses, or finds part of it naming nothing, with `errors`
+// beside whatever data it found, and gh prints each and exits 1.
+const graphErrors = (graphPages ?? []).flatMap((page) => page.errors ?? []);
+for (const error of graphErrors) process.stderr.write(`gh: ${error.message}\n`);
 // An answer this stand-in gave of its own is GitHub's own answer, whatever the route behind it
 // says: the review and 200 for the one review this run left pending, which is every review of
 // these worlds a run left pending itself, and for a review this run created. `gh pr checks`
 // exits as gh does on the checks it printed.
 if (checked !== undefined) exit(checked.status);
+if (graphErrors.length > 0) exit(1);
 exit(own === undefined ? (route?.exit ?? 0) : 0);

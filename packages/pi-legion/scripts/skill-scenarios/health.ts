@@ -235,8 +235,8 @@ function guardRefusal(run: Run): string | undefined {
   return undefined;
 }
 
-/** The status line of the world's one refusing route (rig.sh's fixture_write): GitHub's answer to
- * the protection of a branch that has none. */
+/** GitHub's answer to the protection of a branch that has none, which the world's protection
+ * route gives for every unprotected base (rig.sh's fixture_write). */
 const PROTECTION_404 = "gh: Branch not protected (HTTP 404)";
 /** The gh stand-in's 422s, each GitHub's own answer to that call (gh-standin.ts): the create of a
  * review with an event GitHub does not take, a REQUEST_CHANGES or COMMENT with no body, or a
@@ -247,22 +247,43 @@ const SUBMIT_422 = "review submit 422";
 /** The gh stand-in's own fallback for a call no route of the world answers, `gh: Not Found (HTTP
  * 404)`: the world is missing an answer GitHub would give, so it is never declared. */
 const UNROUTED = "gh: Not Found (HTTP 404) (no route of the world answers it)";
+/** The world holds no workflow run (rig.sh's fixture_write: its checks are check runs of no
+ * Actions workflow), so three of its routes give the refusal production gives for a run that is
+ * not there: GitHub's 404 for the jobs of a run (`…/actions/runs/<id>/jobs`, read back from the
+ * call by `JOBS`, since another route's 404 is another refusal), gh's own for `gh run view` or
+ * `gh run watch <id>` of such a run, and gh's for `gh run view` or `gh run watch` naming no run
+ * where no terminal can pick one. */
+const JOBS_404 = "gh: Not Found (HTTP 404) (the jobs of a workflow run the world holds none of)";
+const RUN_404 = "failed to get run: HTTP 404: Not Found";
+const VIEW_ID_REQUIRED = "run or job ID required when not running interactively";
+const WATCH_ID_REQUIRED = "run ID required when not running interactively";
+const NO_RUN = [JOBS_404, RUN_404, VIEW_ID_REQUIRED, WATCH_ID_REQUIRED];
+/** `repos/<owner>/<repo>/actions/runs/<id>/jobs`, with the leading slash and the query string
+ * `gh api` takes. */
+const JOBS = /^\/?repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/jobs(?:\?.*)?$/;
 
 /** The gh refusals each scenario provokes on purpose, or that a correct agent meets in it, by the
- * role that meets them; every other refusal is unhealthy (rule 5). Both labels' worlds are one
+ * role that meets them; every other refusal is unhealthy (rule 7). Both labels' worlds are one
  * GitHub, so the table names no label; calls.jsonl records no phase, so it names none. Declared:
  *   - the reviewer's PROTECTION_404, in both scenarios: the merge gate has the reviewer read the
  *     base branch's protection (skills/legion-worker/references/merge-gate.md), every world's
  *     base is unprotected, and GitHub answers that read 404 "Branch not protected";
  *   - the reviewer's CREATE_422 and SUBMIT_422, in both scenarios: the create and the submit of a
  *     review are the reviewer's own step in both worlds, and the stand-in refuses one exactly
- *     where GitHub refuses it, so a reviewer that met one met GitHub.
- * Not declared: any refusal of the implementer, which reads no protection and makes no review in
- * threads-closed; any UNROUTED, which is the world missing an answer; and any refusal of a route
- * the worlds add later, until a row here says why a correct agent meets it. */
+ *     where GitHub refuses it, so a reviewer that met one met GitHub;
+ *   - NO_RUN, for every role of both scenarios: the merge gate has the reviewer find a check's
+ *     run and its jobs, and pr-body.md has a role watch CI with `gh run watch` and `gh run view`;
+ *     in a world that holds no workflow run those reads get production's own refusals, so a role
+ *     that met one met production.
+ * Not declared: the implementer's PROTECTION_404 and 422s, since it reads no protection and makes
+ * no review in threads-closed; any UNROUTED, which is the world missing an answer; and any other
+ * refusal of a route the worlds add later, until a row here says why a correct agent meets it. */
 const GH_DECLARED: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
-  "reviewer-text-findings": { reviewer: [PROTECTION_404, CREATE_422, SUBMIT_422] },
-  "threads-closed": { reviewer: [PROTECTION_404, CREATE_422, SUBMIT_422] },
+  "reviewer-text-findings": { reviewer: [PROTECTION_404, CREATE_422, SUBMIT_422, ...NO_RUN] },
+  "threads-closed": {
+    reviewer: [PROTECTION_404, CREATE_422, SUBMIT_422, ...NO_RUN],
+    implementer: NO_RUN,
+  },
 };
 
 /** A call of calls.jsonl as the gh stand-in records it (gh-standin.ts's `exit`); the record's
@@ -297,8 +318,11 @@ const OWN_READ = /\/compare\/[^?]+\.\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
  *   - the create of a review (`reviewCreate`) a route matched that left no review was refused 422
  *     (CREATE_422); one that left a review was taken, as above;
  *   - a call a route matched is the route's refusal where the route has a status of its own (its
- *     stderr's first line), and otherwise was answered, its status being its `--jq`'s or
- *     `--json`'s over that answer;
+ *     stderr's first line; JOBS_404 for the jobs of a run, read off the call), and otherwise was
+ *     answered, its status being its `--jq`'s or `--json`'s over that answer, gh's exit on the
+ *     errors of a GraphQL answer, or the refusal production gives where the stand-in reads the
+ *     route's answer from the run and finds nothing there (a review, a ref or a commit the world
+ *     has not got, gh-standin.ts's `fromRun`), which is GitHub's answer and is not judged;
  *   - a call no route matched is the stand-in's fallback 404 (UNROUTED) unless the stand-in
  *     answers it itself: `gh pr checks`, which exits 1 or 8 on the checks it printed as gh does,
  *     `gh pr diff`, a comparison and the read of one review (OWN_READ). Their non-zero statuses
@@ -322,7 +346,12 @@ function ghRefusal(
   if (call.route !== null && call.route !== undefined) {
     const route = routes.find((one) => one.match === call.route);
     if (route?.exit === undefined || route.exit === 0) return undefined;
-    return (route.stderr ?? `exit ${route.exit}`).split("\n")[0];
+    const refusal = (route.stderr ?? `exit ${route.exit}`).split("\n")[0];
+    return refusal === "gh: Not Found (HTTP 404)" &&
+      argv[0] === "api" &&
+      argv.some((arg) => JOBS.test(arg))
+      ? JOBS_404
+      : refusal;
   }
   if (argv[0] === "pr" && (argv[1] === "checks" || argv[1] === "diff")) return undefined;
   if (argv[0] === "api" && methodOf(argv) === "GET" && argv.some((arg) => OWN_READ.test(arg)))
@@ -330,7 +359,7 @@ function ghRefusal(
   return UNROUTED;
 }
 
-/** Rule 5: the first `gh` call of calls.jsonl the stand-in refused with a refusal GH_DECLARED does
+/** Rule 7: the first `gh` call of calls.jsonl the stand-in refused with a refusal GH_DECLARED does
  * not declare for the scenario and the calling role. */
 function ghUndeclared(run: Run): string | undefined {
   const file = path.join(run.dir, CALLS);

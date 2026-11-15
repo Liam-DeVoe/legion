@@ -4,6 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { sentBody } from "./gh-call";
+import {
+  commandsIn,
+  routeOf,
+  sweep,
+  templateMatches,
+  WORLD_ROUTES,
+  worldRouteOf,
+} from "./gh-routes";
 
 // GitHub answers the pull request's head as the commit its branch points at, and the worker skill
 // has every pushing role read that head after its own push and stop when it is not its commit. A
@@ -252,12 +260,14 @@ test("a create with no body leaves a pending review, at the pull request's own h
   });
 });
 
-// What GitHub answers a create with is the review it created, carrying the state it is in and
-// the head it was created at: `PENDING` where the create named no event, and the state the
-// event leaves it in where it named one. Catches: a world's frozen `{id, html_url}` answered as
-// it stands, which told a reviewer nothing about whether its approval had been submitted —
-// measured in the threads-closed head arm, where a round read that answer back and submitted a
-// second time.
+// What GitHub answers a create with is the review it created, carrying the state it is in, the
+// head it was created at and its body: `PENDING` where the create named no event, and the state
+// the event leaves it in where it named one; `""` for a create that sent no body. Catches: a
+// world's frozen `{id, html_url}` answered as it stands, which told a reviewer nothing about
+// whether its approval had been submitted — measured in the threads-closed head arm, where a round
+// read that answer back and submitted a second time — and a create answered without its body,
+// which left a reviewer reading its own footer back on null and exiting 1
+// (round17-forty/reviewer-text-findings-defect-head-4/calls.jsonl:29).
 test("a create is answered with the review's state and the head it was created at", () => {
   const { dir, first, second } = runDir({ fixture: true });
   const pending = apiPost(dir, REVIEWS, "-f", `commit_id=${second}`);
@@ -267,6 +277,7 @@ test("a create is answered with the review's state and the head it was created a
     user: { login: WORLD_LOGIN },
     state: "PENDING",
     commit_id: second,
+    body: "",
   });
   const approved = apiPost(dir, REVIEWS, "-f", `commit_id=${first}`, "-f", "event=APPROVE");
   expect(JSON.parse(approved.stdout.toString())).toMatchObject({
@@ -442,7 +453,7 @@ test("a create whose event is empty is pending, as one naming none is", () => {
 // (`text-only-head-3` and `defect-base-3` of review 5887659447); and a read that answers the
 // state the review was created in after it was submitted. The user and the URL are the world's
 // answer to the create; the state, the head and the body are the run's. An id this run did not
-// create is the routes' to answer.
+// create, and the world does not hold, is GitHub's 404.
 test("a GET of a review this run created answers that review as it stands", () => {
   const { dir, first } = runDir({ fixture: true });
   const read = () =>
@@ -461,7 +472,11 @@ test("a GET of a review this run created answers that review as it stands", () =
     0,
     { id: 6001, state: "APPROVED", commit_id: first, user: WORLD_LOGIN, body: "ok" },
   ]);
-  expect(ghCall(dir, "api", `${REVIEWS}/5001`)).toEqual({ code: 0, out: "[]", err: "" });
+  expect(ghCall(dir, "api", `${REVIEWS}/5001`)).toEqual({
+    code: 1,
+    out: "",
+    err: "gh: Not Found (HTTP 404)\n",
+  });
 });
 
 // gh reads a `-F key=@path` field's value out of the file at `path`, and the review GitHub keeps
@@ -663,22 +678,22 @@ test("a comment's --body-file is recorded with the file's text, in either spelli
 
 // The verb decides what the call is, in every spelling gh takes it in and by the reader the
 // score reads the same call with (score.ts's `isPost`): a call naming GET is a read of that
-// path whatever its fields say, so it submits nothing and falls to the routes, where the
-// listing of the pull request's reviews answers it; and the review it did not submit is still
-// pending for the call that does, which is written here with the leading slash `gh api` takes
-// either way. Catches: a GET answered as the submission of the pending review, which gh never
-// sent and GitHub never answers; a GET read as the submit that leaves no pending review behind
-// it, where the submit after it would be refused 422; and a submit read as none for its
-// leading slash, which the generic POST route would then answer `{id:6001}` with no head on
-// it — the approval at no head this endpoint exists to stop.
+// path whatever its fields say, so it submits nothing, and GitHub has no read there, so it is
+// GitHub's 404; and the review it did not submit is still pending for the call that does, which
+// is written here with the leading slash `gh api` takes either way. Catches: a GET answered as
+// the submission of the pending review, which gh never sent and GitHub never answers; a GET read
+// as the submit that leaves no pending review behind it, where the submit after it would be
+// refused 422; and a submit read as none for its leading slash, which the generic POST route
+// would then answer `{id:6001}` with no head on it — the approval at no head this endpoint exists
+// to stop.
 test("a GET of the submit route submits nothing, and a submit with a leading slash submits", () => {
   const { dir, first } = runDir({ fixture: true });
   createPending(dir, { commit_id: first, body: "two findings" });
   for (const verb of [["-X", "GET"], ["--method=GET"], ["-XGET"]]) {
     const read = ghCall(dir, "api", ...verb, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
-    expect(read.code).toBe(0);
-    expect(read.out).toBe("[]");
-    expect(read.err).toBe("");
+    expect(read.code).toBe(1);
+    expect(read.out).toBe("");
+    expect(read.err).toBe("gh: Not Found (HTTP 404)\n");
   }
   const submitted = ghCall(
     dir,
@@ -704,11 +719,11 @@ test("a submit written -XPOST is the submit --method POST is", () => {
   expect(JSON.parse(submitted.out)).toEqual({ id: 6001, commit_id: first, state: "APPROVED" });
 });
 // A call on the submit path that gh does not send as a POST submits nothing: `-X PUT` names
-// another verb, and a call with no method and no field is the GET gh sends by default. Both
-// fall to the routes — the first to the route every write falls to, the second to the listing
-// of the reviews — and the review stays pending for the call that does submit it. Catches: a
-// verb read as "anything but GET", which would answer the PUT as the round's submission, and
-// one read as "a POST unless it says otherwise", which would answer the bare call that way.
+// another verb, and a call with no method and no field is the GET gh sends by default. The first
+// falls to the route every write falls to, and the second is GitHub's 404, since GitHub has no
+// read there; the review stays pending for the call that does submit it. Catches: a verb read as
+// "anything but GET", which would answer the PUT as the round's submission, and one read as "a
+// POST unless it says otherwise", which would answer the bare call that way.
 test("a PUT of the submit route and a bare one submit nothing", () => {
   const { dir, first } = runDir({ fixture: true });
   createPending(dir, { commit_id: first, body: "two findings" });
@@ -719,8 +734,8 @@ test("a PUT of the submit route and a bare one submit nothing", () => {
     html_url: "https://example.invalid/pull/1001#issuecomment-6001",
   });
   const bare = ghCall(dir, "api", `${REVIEWS}/6001/events`);
-  expect(bare.code).toBe(0);
-  expect(bare.out).toBe("[]");
+  expect(bare.code).toBe(1);
+  expect(bare.err).toBe("gh: Not Found (HTTP 404)\n");
   const submitted = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submitted.exitCode).toBe(0);
   expect(JSON.parse(submitted.stdout.toString())).toEqual({
@@ -1400,4 +1415,144 @@ test("a pull request read through the api carries the run's own head in head.sha
   expect(sha()).toBe(first);
   git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", second);
   expect(sha()).toBe(second);
+});
+
+// The routes a world answers are every gh read either label's role texts name, and every route a
+// recorded run called (gh-routes.ts's WORLD_ROUTES). The sweep reads the texts at test time, from
+// this checkout and from the base label's (SKILL_SCENARIOS_BASE_CHECKOUT, the checkout
+// `rig.sh profile base` was built from), so a read main adds to a text fails here until the world
+// answers it. rig.test.ts pins the other half: every route of the table answered in every world,
+// and every route a world writes reached by a route of the table.
+const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
+const baseCheckout = process.env.SKILL_SCENARIOS_BASE_CHECKOUT;
+if (baseCheckout === undefined)
+  console.warn(
+    `Skipped the base label's role-text rows in ${import.meta.path}. ` +
+      "SKILL_SCENARIOS_BASE_CHECKOUT names no checkout to sweep. Name the checkout `rig.sh profile " +
+      "base` was built from and run the tests again."
+  );
+const checkouts: [string, string][] = [
+  ["head", CHECKOUT],
+  ...(baseCheckout === undefined ? [] : ([["base", baseCheckout]] as [string, string][])),
+];
+
+// Catches a sweep that misses a spelling a text writes a call in, so the route that text names
+// goes unpinned: `--paginate`, `-X`/`--method`, a query string, each placeholder form
+// (`<o>/<r>`, `{owner}/{repo}`, `<n>`, `$base_path`, `<approved sha>...<new head>`), a code span
+// that breaks across lines, a command continued with a backslash, a gh call inside `$(…)`, a
+// GraphQL query and mutation, `gh pr` and `gh run`; and one that reads a bare `gh api graphql` in
+// prose, which sends no query, as a route.
+test("the sweep reads every spelling a role text writes a gh call in", () => {
+  const text = [
+    "List them: `gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | .state'`.",
+    "gh api -X POST repos/{owner}/{repo}/git/refs -f ref=refs/heads/x -f sha=<commit>",
+    "Edit with `gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F body=@body.md`.",
+    "Runs: (`gh api 'repos/<o>/<r>/actions/runs?head_sha=<headRefOid>&per_page=100' --jq '.workflow_runs[]'`)",
+    "```bash",
+    "base=$(gh pr view <n> -R <o>/<r> --json baseRefName -q .baseRefName) && \\",
+    "  gh api --paginate \"repos/<o>/<r>/rules/branches/$base_path\" --jq '.[].type' && \\",
+    "  gh api --method GET \\",
+    "    \"repos/<o>/<r>/branches/$base_path\" --jq '.protection'",
+    "```",
+    "Read the push (`gh api repos/<o>/<r>/compare/<approved sha>...<new head>`), then",
+    "the body (`gh api",
+    "repos/{owner}/{repo}/pulls/{number} --jq .body`, edit).",
+    "gh api graphql --paginate -f query='query($o:String!,$endCursor:String){repository(owner:$o,name:\"w\"){pullRequest(number:1){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id}}}}}' -F o=x",
+    "gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<id>",
+    "Watch with `gh pr checks --watch`, `gh run view` or `gh run watch`; `gh run rerun <run-id> --failed`.",
+    "Verify thread state in `gh api graphql`, never from that section.",
+  ].join("\n");
+  const keys = commandsIn(text).map(({ argv, line }) => [line, routeOf(argv)?.key ?? null]);
+  expect(keys).toEqual([
+    [1, "GET repos/{}/{}/pulls/{}/reviews"],
+    [2, "POST repos/{}/{}/git/refs"],
+    [3, "PATCH repos/{}/{}/pulls/{}"],
+    [4, "GET repos/{}/{}/actions/runs"],
+    [6, "GH pr view"],
+    [7, "GET repos/{}/{}/rules/branches/{}"],
+    [8, "GET repos/{}/{}/branches/{}"],
+    [11, "GET repos/{}/{}/compare/{}"],
+    [12, "GET repos/{}/{}/pulls/{}"],
+    [14, "GRAPHQL query repository.pullRequest.reviewThreads"],
+    [15, "GRAPHQL mutation resolveReviewThread"],
+    [16, "GH pr checks"],
+    [16, "GH run view"],
+    [16, "GH run watch"],
+    [16, "GH run rerun"],
+    [17, null],
+  ]);
+  expect(routeOf(commandsIn(text)[0]?.argv ?? [])?.kind).toBe("read");
+  expect(routeOf(commandsIn(text)[1]?.argv ?? [])?.kind).toBe("write");
+});
+
+// The merge gate's own reads and the thread listing are the ones a reviewer makes on every head.
+// Catches a sweep that reads none of them, which pins nothing of the reads round 17 lost runs on.
+test("the sweep finds the merge gate's reads and the review-thread query", () => {
+  const { named } = sweep(CHECKOUT);
+  const of = (file: string) =>
+    new Set(named.filter((one) => one.file.endsWith(file)).map(({ key }) => key));
+  expect([...of("skills/legion-worker/references/merge-gate.md")]).toEqual(
+    expect.arrayContaining([
+      "GET repos/{}/{}/commits/{}/status",
+      "GET repos/{}/{}/actions/runs",
+      "GET repos/{}/{}/actions/runs/{}/jobs",
+      "GET repos/{}/{}/commits/{}/check-runs",
+      "GET repos/{}/{}/rules/branches/{}",
+      "GET repos/{}/{}/branches/{}",
+      "GET repos/{}/{}/compare/{}",
+      "GET repos/{}/{}",
+    ])
+  );
+  expect([...of("skills/legion-worker/references/review-threads.md")]).toEqual(
+    expect.arrayContaining([
+      "GRAPHQL query repository.pullRequest.reviewThreads",
+      "GRAPHQL mutation resolveReviewThread",
+    ])
+  );
+});
+
+// The both-ways pin's text side, against each checkout. Catches a read a role text names that
+// the world does not answer — a refusal production never gives, which voids the run that meets
+// it — and a text whose GraphQL query the sweep cannot read, which would pass unpinned.
+for (const [label, root] of [
+  ["head", CHECKOUT],
+  ["base", baseCheckout ?? ""],
+] as const)
+  test.skipIf(label === "base" && baseCheckout === undefined)(
+    `every gh read the ${label} label's role texts name is a route the world answers`,
+    () => {
+      const { named, unread } = sweep(root);
+      expect(unread).toEqual([]);
+      expect(named.filter(({ kind }) => kind === "read").length).toBeGreaterThan(0);
+      expect(
+        named
+          .filter(({ kind, key }) => kind === "read" && worldRouteOf(key) === undefined)
+          .map(({ key, file, line }) => `${key} (${file}:${line})`)
+      ).toEqual([]);
+    }
+  );
+
+// The both-ways pin's world side. Catches a route the world answers that neither label's texts
+// name and that carries no evidence: a recorded run that called it
+// (`<batch>/<run>/calls.jsonl:<line>`, with its reason), or why GitHub serves it to a role.
+test("every route the world answers is named by a role text or declared with its evidence", () => {
+  const named = checkouts.flatMap(([, root]) => sweep(root).named.map(({ key }) => key));
+  expect(
+    WORLD_ROUTES.filter(
+      (row) =>
+        row.evidence === undefined &&
+        !named.some((key) => worldRouteOf(key) === row && templateMatches(row.route, key))
+    ).map(({ route }) => route)
+  ).toEqual([]);
+  for (const { route, evidence } of WORLD_ROUTES) {
+    if (evidence === undefined) continue;
+    expect([route, "run" in evidence ? evidence.run : "world"]).toEqual([
+      route,
+      expect.stringMatching(/^(?:world|[\w.-]+\/[\w.-]+\/calls\.jsonl:\d+)$/),
+    ]);
+    expect([route, "run" in evidence ? evidence.reason : evidence.world]).toEqual([
+      route,
+      expect.stringMatching(/\w/),
+    ]);
+  }
 });

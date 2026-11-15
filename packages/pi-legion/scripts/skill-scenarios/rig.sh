@@ -117,7 +117,7 @@
 #                   the implementer, which the reviewer's approval reaches in its own live
 #                   session; its world is worker_fixture's with the approval's additions: the
 #                   pull request is approved, the reviewer left its text findings as open review
-#                   threads, which the `reviewThreads` route serves and <run>/threads.json
+#                   threads, which the world's GraphQL graph serves and <run>/threads.json
 #                   records, the body carries the reviewer's `Threads:` count and one open entry
 #                   per thread, `resolveReviewThread` answers as GitHub answers a role with
 #                   write access, and the issue holds the implementer's and the tester's passing
@@ -1980,14 +1980,13 @@ text_finding_trigger=' and on every push to main'
 # behavioural finding stands.
 #
 # It leaves the caller's own $src, $when, $C1, $worker_pr and $worker_pr_url set, as the steps it
-# calls do, and in $resolve_route the one gh route both worlds serve: `resolveReviewThread`,
-# which answers success, as GitHub answers a role with write access and as it does in every world
-# of this fixture. Each world adds its own routes around it, in the order the stand-in matches
-# them (gh-standin.ts). No world routes `gh pr diff`: the stand-in answers that from the run's own
-# remote at the call, since a diff frozen here would read the same whatever the run pushed. No
-# world routes the submit of a review (`…/reviews/<id>/events`) either: the stand-in answers that
-# from what the run has already done, since what GitHub answers there turns on the review's own
-# state and no frozen answer could tell a pending review from a submitted one.
+# calls do. Each world adds its own routes around the ones fixture_write writes for every world,
+# in the order the stand-in matches them (gh-standin.ts). No world routes `gh pr diff`: the
+# stand-in answers that from the run's own remote at the call, since a diff frozen here would read
+# the same whatever the run pushed. No world routes the submit of a review (`…/reviews/<id>/events`)
+# either: the stand-in answers that from what the run has already done, since what GitHub answers
+# there turns on the review's own state and no frozen answer could tell a pending review from a
+# submitted one.
 round_world() {
   [ $# = 5 ] || fail "round_world: expected INDEX START GUARD DOC_LINE TRIGGER, got $# argument(s)"
   local index=$1 start=$2 guard=$3 doc_line=$4 workflow_trigger=$5
@@ -2000,8 +1999,6 @@ round_world() {
   fixture_implement '["greet.ts","greet.test.ts","docs/cli.md",".github/workflows/greet.yml"]'
   fixture_test_handoff
   fixture_workspace
-  resolve_route=$(jq -n '{match:"^gh api .*resolveReviewThread",
-    stdout:{data:{resolveReviewThread:{thread:{isResolved:true}}}}}')
 }
 
 # The world a review round reads, which reviewer-text-findings' two cases build: the round's base
@@ -2016,26 +2013,21 @@ round_world() {
 # after its approval reads `reviewing`, and the wake of the implementer it owns at the approval
 # is the one step that starts the fix (review 5887659447, finding 3).
 review_world() {
-  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body resolve_route extra
+  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body threads
   round_world "$index" "$start" "$guard" "$text_finding_doc_line" "$text_finding_trigger"
   fixture_body "**Threads:** 0 resolved, 1 unresolved." "$(fixture_checks implementer tester)"
-  extra=$(jq -n --argjson resolve "$resolve_route" --argjson protection "$(resolution_protection_routes)" '$protection + [
-    $resolve,
-    {match:"^gh api .*graphql",
-     stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
-       nodes:[{id:"PRRT_kwDOrig0001", isResolved:false,
-               comments:{nodes:[{author:{login:"style-bot[bot]"},
-                 body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}}]}}}}}}
-  ]')
-  fixture_write "$extra" '""' '[]' "$(blocked_at "$C1")"
+  threads=$(jq -n '[{id:"PRRT_kwDOrig0001", isResolved:false, path:"greet.test.ts", line:4,
+    comments:[{author:{login:"style-bot[bot]"},
+      body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}]')
+  fixture_write "$(resolution_protection_routes)" '""' '[]' "$(blocked_at "$C1")" "$threads"
 }
 
 # The world an approval that left text threads open leaves behind, which threads-closed's two
 # cases build: the round's base world (round_world), and then the approval — the pull request
 # is APPROVED, its body carries the reviewer's `Threads:` count and one open entry per thread,
 # the reviewer's handoff body is at $R/review.json for the runner to record, the threads
-# themselves are in the `reviewThreads` route and in $R/threads.json, which the score reads,
-# and `resolveReviewThread`
+# themselves are in the world's GraphQL graph (fixture_write's THREADS) and in $R/threads.json,
+# which the score reads, and `resolveReviewThread`
 # answers as GitHub answers a role with write access: success. It encodes no verdict of its own —
 # a stand-in that refused the mutation would prove the claim the scenario is there to measure —
 # and the day a live reviewer finds GitHub refusing it, this answer and the rule change together
@@ -2046,7 +2038,7 @@ review_world() {
 # check. `gh pr diff` is the diff of the run's own
 # remote at the call, so the
 # reviewer reads the fix the implementer pushed and no world freezes a diff of its own
-# (gh-standin.ts). The `reviewThreads` route is the fixture's own answer and no record of the run:
+# (gh-standin.ts). The world's review threads are the fixture's own answer and no record of the run:
 # a reply the implementer wrote does not appear under its thread, and a thread the reviewer
 # resolved still reads `isResolved: false`. The score reads the calls each role made and never
 # that state, so neither changes what a run scores, but a role that lists the threads again after
@@ -2068,7 +2060,7 @@ review_world() {
 # protected by nothing and its approved head is `CLEAN`, so the round ended on the approval and
 # the loop runs in `accepting` (run_threads_closed says why).
 approved_world() {
-  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body resolve_route extra
+  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body extra
   local threads entries threads_line reviews
   # The threads the approval left, and the two files the world is written with. Every world but
   # the dropped guard's documents the name as printed exactly as given, which the trim makes
@@ -2118,18 +2110,17 @@ $entries"
      keyFindings:[$threads[] | {severity:"minor", file:.path, description:.open}]}' >"$R/review.json"
   fixture_body "$threads_line" "$(fixture_checks implementer tester)"
   # A resolution succeeds, as GitHub answers a role with write access; a reply goes through the
-  # GraphQL mutation or the REST reply route; the threads the approval left open are the ones
-  # $R/threads.json holds. Three routes answer the reviews path, in the order the stand-in
-  # matches them: the create of a review, which is the POST of that path and is chosen by the
-  # call's own verb (`methods`, read as the score reads it, so a create written `-f
-  # commit_id=<head>` with no method is the create `--method POST` is); one review read by its
-  # id, which GitHub answers with that review and which the list route answered with every
-  # review of the pull request; and the reviews already there, which are the one approval. The
+  # GraphQL mutation (fixture_write's graph) or the REST reply route; the threads the approval
+  # left open are the ones $R/threads.json holds, which fixture_write's graph serves. The create
+  # of a review is the POST of the reviews path, chosen by the call's own verb (`methods`, read as
+  # the score reads it, so a create written `-f commit_id=<head>` with no method is the create
+  # `--method POST` is), and it stands ahead of fixture_write's own; the reviews already there,
+  # which are the one approval, are REVIEWS, which fixture_write lists and reads by id. The
   # create's answer carries what is the world's — the id it gives every create, the URL, and the
-  # user whose token the run calls with — while the state and the head it was created at are the
-  # call's own and the stand-in answers them (gh-standin.ts), since a world cannot know whether
-  # the create it is answering named an event. Nothing here records what a run did: the score
-  # reads the calls the stand-in recorded, never these answers.
+  # user whose token the run calls with — while the state, the head it was created at and its body
+  # are the call's own and the stand-in answers them (gh-standin.ts), since a world cannot know
+  # whether the create it is answering named an event. Nothing here records what a run did: the
+  # score reads the calls the stand-in recorded, never these answers.
   #
   # The submit of a review (`…/reviews/<id>/events`) is routed by no world: GitHub answers it from
   # the review's own state, and the gh stand-in answers it for every world of this rig
@@ -2151,25 +2142,15 @@ $entries"
     protection=$(resolution_protection_routes)
     states=$(blocked_at "$C1")
   fi
-  extra=$(jq -n --argjson resolve "$resolve_route" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
-    --arg login "$world_login" \
-    --argjson threads "$threads" --argjson reviews "$reviews" --argjson protection "$protection" '$protection + [
-    $resolve,
-    {match:"^gh api .*addPullRequestReviewThreadReply",
-     stdout:{data:{addPullRequestReviewThreadReply:{comment:{id:"PRRC_kwDOfix900", url:($url+"#discussion_r900")}}}}},
+  extra=$(jq -n --arg url "$worker_pr_url" --argjson number "$worker_pr" \
+    --arg login "$world_login" --argjson protection "$protection" '$protection + [
     {match:("^gh api .*pulls/" + ($number|tostring) + "/comments/[0-9]+/replies"),
      stdout:{id:7001, html_url:($url+"#discussion_r7001")}},
-    {match:"^gh api .*graphql",
-     stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
-       nodes:[$threads[] | {id:.id, isResolved:false, path:.path, line:.line,
-         comments:{nodes:[{author:{login:"legion-review[bot]"}, body:.body}]}}]}}}}}},
-    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), methods:["POST"],
-     stdout:{id:5002, html_url:($url+"#pullrequestreview-5002"), user:{login:$login}}},
-    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews/" + ($reviews[0].id|tostring) + "( |$)"),
-     stdout:$reviews[0]},
-    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews}
+    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews([ ?]|$)"), methods:["POST"],
+     stdout:{id:5002, html_url:($url+"#pullrequestreview-5002"), user:{login:$login}}}
   ]')
-  fixture_write "$extra" '"APPROVED"' "$reviews" "$states"
+  fixture_write "$extra" '"APPROVED"' "$reviews" "$states" "$(jq '[.[] | {id, isResolved:false, path, line,
+    comments:[{author:{login:"legion-review[bot]"}, body}]}]' <<<"$threads")"
 }
 
 # The steps the three worlds are built from. Each reads and sets the world function's own
@@ -2400,15 +2381,32 @@ $2
 # ahead of), and GitHub answers that base on a public repository with 200 twice: an empty list
 # of rules, and the branch itself with `protected: false` and no required check. The bodies hold
 # the fields that answer those two reads and leave out the commit and link fields no reader of
-# this gate reads. Both are ahead of the check-runs route, which matches the word `status`
-# anywhere in the call, and the jq the rule writes for the protection read holds it
-# (`required_status_checks`); the rules route is ahead of the branch route, whose regex matches
-# the rules path too, and so is the protection route, which that same regex matches: a call on
-# GitHub's protection endpoint, `…/branches/<base>/protection`, answered from the branch route
-# got the branch object and 200, where GitHub answers a branch nothing protects 404 `Branch not
+# this gate reads. The rules route is ahead of the branch route, whose regex matches the rules
+# path too, and so is the protection route, which that same regex matches: a call on GitHub's
+# protection endpoint, `…/branches/<base>/protection`, answered from the branch route got the
+# branch object and 200, where GitHub answers a branch nothing protects 404 `Branch not
 # protected`. A reviewer reading that 200 is told this base's protection by a body that is no
 # answer to the call it made. The stand-in answers from the first route that matches the whole
 # call.
+#
+# Every other read a role text of either label names, and every read the census saw an agent
+# make, is a shared route too, each answered as GitHub answers it from the world's state
+# (gh-routes.ts's WORLD_ROUTES, which rig.test.ts pins both ways against the texts): the
+# repository itself, with its default branch; a commit's combined status, its check runs, the
+# workflow runs and a run's jobs, four GitHub routes with four shapes, where one regex over
+# `check-runs|status` once answered the first three with the check-runs list, so a read of the
+# statuses or the runs failed on a shape GitHub never gives; the pull request's conversation and inline
+# comments; a ref; and GraphQL, whose queries the stand-in answers from the graph written here
+# (gh-standin.ts's `graphAnswer`): the pull request, its review threads (THREADS), its timeline,
+# the viewer, and the two mutations a role makes on a thread. A route answered from what the run
+# did — the reviews it created, the comments it posted, the ref a commit status names — carries
+# `answer`, which names the stand-in's reading of the run's own record and remote; its `stdout`
+# is what the world held before the run. The world holds no workflow run and no commit status:
+# its checks are check runs of no Actions workflow, so the runs list and the statuses are empty,
+# a run's jobs and `gh run view`/`gh run watch` are GitHub's and gh's refusals for a run that is
+# not there, which health.ts declares for every role (GH_DECLARED's NO_RUN) since a role that meets
+# one meets production, and the combined status reads `pending`, as GitHub's does for a head with
+# none.
 #
 # The route every call that creates something falls to is chosen by the call's verb and not by a
 # regex over its text (`methods`, which the stand-in reads with the score's own reader): gh sends
@@ -2431,29 +2429,56 @@ $2
 # names none for is `CLEAN` (gh-call.ts's `mergeStateOn`). The pull request's own answers carry
 # the state of the head the run's remote is at (gh-standin.ts), and the daemon stand-in moves the
 # record on it as main's engine moves on `record.MergeState` (daemon-standin.ts's `servedPhase`).
+# fixture_write EXTRA DECISION REVIEWS MERGE_STATES [THREADS] writes THREADS, the pull request's
+# review threads as GitHub's GraphQL names them (`id`, `isResolved`, `path`, `line`, and
+# `comments`, each with its `author` and `body`), into the graph, and a world with none passes
+# none.
 fixture_write() {
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
     --arg login "$world_login" \
     --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
     --argjson number "$worker_pr" --argjson extra "$1" \
     --argjson decision "$2" --argjson reviews "$3" --argjson runs "$(concluded_checks)" \
-    --argjson states "${4:-"{}"}" '
-    {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
+    --argjson states "${4:-"{}"}" --argjson threads "${5:-"[]"}" '
+    ($number|tostring) as $n
+    | ($repo | split("/")) as [$owner, $name]
+    | ($repo | gsub("(?<c>[.+*?()|\\[\\]{}^$\\\\])"; "\\\(.c)")) as $repo_re
+    | {number:$number, id:("PR_kwDOAAAAAc4AAA" + $n), url:$url, html_url:$url,
+     title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false, isCrossRepository:false,
      headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
-     mergeStateStatus:"CLEAN", mergeable_state:"clean",
-     reviewDecision:$decision, reviews:$reviews, latestReviews:$reviews,
+     mergeStateStatus:"CLEAN", mergeable_state:"clean", mergedAt:null, autoMergeRequest:null,
+     reviewDecision:$decision, reviews:$reviews, latestReviews:$reviews, comments:[],
      head:{sha:$head, ref:$ref}, base:{ref:$base},
      statusCheckRollup:[$runs[] | {name, status:(.status|ascii_upcase), conclusion:(.conclusion|ascii_upcase)}]} as $pr
+    | {id:1, node_id:"R_kgDOAAAAAQ", name:$name, full_name:$repo, owner:{login:$owner, type:"Organization"},
+       private:false, visibility:"public", fork:false, archived:false, disabled:false,
+       html_url:("https://github.com/" + $repo), url:("https://api.github.com/repos/" + $repo),
+       default_branch:$base, allow_squash_merge:true, allow_merge_commit:true, allow_rebase_merge:true,
+       allow_auto_merge:false, delete_branch_on_merge:false,
+       squash_merge_commit_title:"COMMIT_OR_PR_TITLE", squash_merge_commit_message:"COMMIT_MESSAGES",
+       merge_commit_title:"MERGE_MESSAGE", merge_commit_message:"PR_TITLE",
+       permissions:{admin:false, maintain:false, push:true, triage:true, pull:true}} as $repository
     | {mergeStates:$states, routes:($extra + [
       {match:"^gh pr view", stdout:$pr},
       {match:"^gh pr list", stdout:[$pr]},
       {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
-      {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
-      {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews([ ?]|$)"), methods:["POST"],
+      {match:"^gh api .*graphql", graph:{
+        query:{viewer:{login:$login},
+          repository:{__args:{owner:$owner, name:$name}, name:$name, nameWithOwner:$repo,
+            defaultBranchRef:{name:$base},
+            pullRequest:{__args:{number:$number}, reviewThreads:$threads, timelineItems:[],
+              isInMergeQueue:false, mergeQueueEntry:null}}},
+        mutation:{resolveReviewThread:{thread:{isResolved:true}},
+          addPullRequestReviewThreadReply:{comment:{id:"PRRC_kwDOfix900", url:($url+"#discussion_r900")}}}}},
+      {match:("^gh api .*pulls/" + $n + "/reviews([ ?]|$)"), methods:["POST"],
        stdout:{id:6001, html_url:($url+"#pullrequestreview-6001"), user:{login:$login}}},
-      {match:("^gh api .*pulls/" + ($number|tostring) + "([ ?]|$)"), methods:["PATCH"], stdout:$pr},
+      {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), methods:["PATCH"], stdout:$pr},
       {match:"^gh api ", methods:["POST","PATCH","PUT"], stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
-      {match:("^gh api .*pulls/" + ($number|tostring) + "/(reviews|comments)"), stdout:[]},
+      {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+/comments([ ?]|$)"), answer:"review-comments", stdout:[]},
+      {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+([ ?]|$)"), answer:"review", stdout:$reviews},
+      {match:("^gh api .*pulls/" + $n + "/reviews([ ?]|$)"), answer:"reviews", stdout:$reviews},
+      {match:("^gh api .*pulls/" + $n + "/comments([ ?]|$)"), answer:"review-comments", stdout:[]},
+      {match:("^gh api .*issues/" + $n + "/comments([ ?]|$)"), answer:"issue-comments", stdout:[]},
       {match:("^gh api .*/rules/branches/" + $base), stdout:[]},
       {match:("^gh api .*/branches/" + $base + "/protection"),
        stderr:"gh: Branch not protected (HTTP 404)\n", exit:1},
@@ -2461,9 +2486,17 @@ fixture_write() {
        stdout:{name:$base, protected:false,
          protection:{enabled:false, required_status_checks:{enforcement_level:"off", contexts:[], checks:[]}},
          protection_url:("https://api.github.com/repos/" + $repo + "/branches/" + $base + "/protection")}},
-      {match:"^gh api .*(check-runs|status)", stdout:{total_count:($runs|length), check_runs:$runs}},
-      {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
-      {match:"^gh (api user|auth status)", stdout:{login:$login}}
+      {match:"^gh api .*commits/[^/ ]+/check-runs([ ?]|$)", stdout:{total_count:($runs|length), check_runs:$runs}},
+      {match:"^gh api .*commits/[^/ ]+/status([ ?]|$)", answer:"combined-status", stdout:{statuses:[]}},
+      {match:"^gh api .*actions/runs/[0-9]+/jobs([ ?]|$)", stderr:"gh: Not Found (HTTP 404)\n", exit:1},
+      {match:"^gh api .*actions/runs([ ?]|$)", stdout:{total_count:0, workflow_runs:[]}},
+      {match:"^gh api .*git/ref/", answer:"git-ref"},
+      {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), stdout:$pr},
+      {match:("^gh api (.* )?/?repos/" + $repo_re + "([?][^ ]*)?( |$)"), stdout:$repository},
+      {match:"^gh (api user|auth status)", stdout:{login:$login}},
+      {match:"^gh run (view|watch) ([^ ]+ )*[0-9]+( |$)", stderr:"failed to get run: HTTP 404: Not Found\n", exit:1},
+      {match:"^gh run view", stderr:"run or job ID required when not running interactively\n", exit:1},
+      {match:"^gh run watch", stderr:"run ID required when not running interactively\n", exit:1}
     ])}' >"$R/fixtures.json"
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
     --argjson pr "$worker_pr" --arg head "$C1" \

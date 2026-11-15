@@ -414,9 +414,13 @@ tool result of any
 agent, and no `out*.txt`, holds a line the push guard prints when it refuses a push or cannot run;
 no `gh` call the gh stand-in refused (`calls.jsonl`) with a refusal `health.ts`'s `GH_DECLARED`
 does not declare for the scenario and the calling role (a call no route of the world answers
-never is); no tool call names a path under another run's directory; no tool call reads a path
-another of the runs given wrote last before the read, or a `/tmp` entry that was there before the
-run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp` entries taken before the
+never is; the refusals production gives for a workflow run the world holds none of, GitHub's 404
+for its jobs and gh's for `gh run view` and `gh run watch`, are, for every role; the world answers
+every `gh` read either label's role texts name, which `gh-routes.ts`'s `WORLD_ROUTES` lists and the
+rig's tests pin against both checkouts); no tool call names a path under another run's directory;
+no tool call reads a path another of the runs given wrote last before the read, or a `/tmp` entry
+that was there before the run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp`
+entries taken before the
 batch); no tool call names a path its world hides (by `rig.sh world`: under the scratch root, the
 issue workspaces, the work directory or any label's checkout, the other runs' given included)
 outside its own directory, `/tmp` and what its world shows again; no tool call reads another
