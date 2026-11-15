@@ -40,11 +40,12 @@ A fix you are not sure of is not step 1: hand it over, or ask when a person must
   evidence on stdin) and open no second one.
 - A test you re-ran green (`skill://legion-worker/references/red-at-the-head.md`) is one
   occurrence of a known failure, not a new finding. Post the occurrence as a `dispatch comment`
-  on the issue that tracks that test, whatever that issue's status, unless it reads `done`, found
-  with `dispatch search` on the test's full name. Then tell the controller, as [Send a finding to the
-  controller](#send-a-finding-to-the-controller) says. Where no issue tracks the test, or where
-  the one that does reads `done`, say so in that message, name the test, the job, the head and
-  both results, and file nothing yourself. The controller files or reopens the issue, one per
+  on the issue that tracks that test, unless it reads `done`, found with `dispatch search` on the
+  test's full name. Then tell the controller as that page's *What becomes of the record* says: one
+  `envoy_publish`, and the report-issue comment only when no controller takes it and no issue
+  tracks the test. It is never an ask. Where no issue tracks the test, or where the one that does
+  reads `done`, say so in that message, name the test, the job, the head and both results, and
+  file nothing yourself. The controller files or reopens the issue, one per
   test, never one per occurrence.
 
 These issues are filed:

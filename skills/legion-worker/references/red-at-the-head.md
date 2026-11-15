@@ -31,6 +31,17 @@ Before it presses the re-run, the role records on the Dispatch issue all eight o
 A record short of one of the eight is a record the next reader cannot act on, and the eight are
 counted as such.
 
+**The run that holds the check must have ended first.** A lane can fail and read `completed`
+while other lanes of its workflow run still run. Until that run ends,
+`gh run view <run-id> --log-failed` answers `run <id> is still in progress; logs will be available
+when it is complete` and exits 1, and GitHub refuses `gh run rerun` (measured on run 43686474806).
+So before the log read the role reads the run's own status,
+`gh run view <run-id> --json status --jq .status`, and reads the log and presses the re-run only on
+`completed`. Until then it waits for the pull request's checks event, as *The act and the wait*
+says: that settlement comes once every check run of the head has ended. A re-run GitHub refuses
+all the same starts no attempt, so it spends nothing: the role records GitHub's answer and presses
+it again on the next wake.
+
 The role reads that first line with `gh run view <run-id> --log-failed`. A read that fails is
 recorded as failed, with the error, and the role makes the re-run all the same. Where the log
 can be read and holds no line that states the failure, the record says that, naming the step and
@@ -61,7 +72,10 @@ Four readings decide it:
    the architect, and that red is re-run by nobody.
 2. An aggregate check is resolved to the lane that failed it. That lane is judged in its place.
 3. A failing test is the change's when its own package is one the pull request changes: the Go
-   package for a Go test, the directory of the test file for a Bun or a Playwright suite.
+   package for a Go test, the directory of the test file for a Bun or a Playwright suite. A run of
+   that test in the role's own pod does not move it: a test that passes locally is still the
+   change's when this reading says so, and the round fails on it with no re-run, since a re-run
+   spent on a red the change made is the same lap this page exists to save, paid the other way.
 4. A failure in no test is the change's only when the failing step reads a file the pull request
    changes. Such a file is the workflow file that job runs, the manifest or the lock file the step
    installs from, or the Dockerfile it builds.
@@ -77,14 +91,20 @@ These are therefore not the change's:
 
 A lint, type, build or format failure of the change's own code is the change's.
 
-## One re-run belongs to the head, and it is counted on the counted set
+## One re-run belongs to the head
 
-**The counted set** is what GitHub counts for the pull request, never every run at the commit.
-The role reads it one of two ways. At the pull request's current head:
+**The counted set** is what GitHub counts for the pull request, never every run at the commit:
+every check of the head's rollup, the lanes under an aggregate and the checks the base does not
+require included. The role reads it one of two ways. At the pull request's current head:
 
 ```bash
-gh pr checks <n> --required
+gh pr checks <n>
 ```
+
+Never with `--required`, which prints the checks the base requires and no other: at `ed157dc9` it
+printed 1 row where the rollup held 46, so a lane under the aggregate `ci-ok` and a check the base
+does not require are never in it, and on a base that requires nothing it prints that no required
+checks are reported and exits 1 (dispatch://INFRA-3035, on cybermonklabs/legion#3658).
 
 At a named head, which is what a role holds after a push, the rollup of that commit:
 
@@ -167,17 +187,19 @@ that check `completed`, the role presses no re-run and ends no round on it: it s
 pull request's topic and ends the turn, as below, and reads the counted set again when the wake
 brings it back. GitHub fills a head's checks over seconds and minutes, so a counted set that is
 silent about a check it has been told of is one that has not caught up, and a re-run pressed
-there spends the head's one re-run on a run nobody counted. The wait ends three ways: the
-counted set reports that check, and the role acts on it; the counted set settles with every
-check it holds `completed` and that one absent, or the head moves, and the role then records
-what it was told and what the counted set carries, re-runs nothing, goes on with its round and
-tells the architect, as the last bullet of this section says — and that second way counts only
-after the role has waited at least once, since a counted set read seconds after the task looks
-the same whether it has settled without the check or has not reached it yet, so the first read
-of a turn never ends the wait; or no wake comes at all, and the
-bound is the role's own next wake, which for a phase worker that ends its turn with nothing else
-coming is the daemon's backstop about an hour after its pod goes idle, and the role then reads
-the counted set once more and takes whichever of those two the reading gives.
+there spends the head's one re-run on a run nobody counted. The wait ends one of three ways:
+
+- The counted set reports that check: the role acts on it.
+- The counted set settles with every check it holds `completed` and that one absent, or the head
+  moves. This ends the wait only once the role has waited at least once. The first read of a turn
+  never ends the wait, since a counted set read seconds after the task looks the same whether it
+  has settled without the check or has not reached it yet. When it does end the wait, the role
+  records what it was told and what the counted set carries, re-runs nothing, goes on with its
+  round, and tells the architect, as the last bullet of this section says.
+- No wake comes at all: the bound is the role's own next wake, which for a phase worker that ends
+  its turn with nothing else coming is the daemon's backstop about an hour after its pod goes
+  idle. The role then reads the counted set once more and takes whichever of the first two the
+  reading gives.
 
 The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. Then, in the
 same turn, it does these two things and nothing else:
@@ -203,13 +225,15 @@ result of the wait and no poll at all:
 
 ## When the cause is another tree's, so no re-run clears it
 
-**A test that fails and fails again is the round's failure, never an external cause.** The role
-records it and the round fails, as *Red again* above says. This section is the other case, and
-the difference is where the lane broke: a step that failed **before any test of the change ran**
-— a setup or install step, a toolchain, a runner, a registry, or a file another tree owns — or
-one whose own output shows the defect belongs to another tree.
+**This section is for a red the one re-run cannot clear.** A fetch that answered 5xx, a registry
+that refused, a runner that ended: on its first red each of these takes its one re-run, as *Which
+red is the change's* says, and most clear there. This section takes over in two cases: the re-run
+came back red at a step that ran **before any test of the change** — a setup or install step, a
+toolchain, a runner, a registry — or the lane's own output already shows the defect is in a file
+another tree owns. A test that fails and fails again is neither: it is the round's failure, as
+*Red again* above says, never an external cause.
 
-There a second run of the lane meets the same defect, so the re-run does not end it. The role
+In both cases a further run of the lane meets the same defect, so no re-run ends it. The role
 records the external cause in the same record this page already asks for — the lane, the error,
 the head, and the change it waits on — tells the architect, and ends its round where it stands:
 a tester completes its phase with a failing verdict, and a reviewer submits the
@@ -259,12 +283,15 @@ again* above) and owes no occurrence.
    again — whether it is open, whether its fix has merged, whether it is still the owner — since
    a stale key reads exactly like a tracked defect and becomes the resting place: one was carried
    as the remedy for four rounds after it had stopped being one (dispatch://INFRA-1192).
-2. `dispatch comment --issue <that KEY> --body-file -`, the occurrence on that issue, whatever
-   its status, unless it reads `done`: the test, the job, the head, and both results, the failing
-   run and the green re-run.
-3. The message to the controller, by the route
-   `skill://legion-worker/references/findings.md` gives, which is an `envoy_publish` to the
-   controller topic the role's `Legion addressing` line names.
+2. `dispatch comment --issue <that KEY> --body-file -`, the occurrence on that issue, unless it
+   reads `done`: the test, the job, the head, and both results, the failing run and the green
+   re-run.
+3. The message to the controller: an `envoy_publish` to the controller topic the role's
+   `Legion addressing` line names, with `expects_reply: false`. When the publish answers that no
+   controller took it (`skill://legion-worker/references/findings.md`, *When no controller takes
+   it*) and step 2 had nowhere to go, the role posts the same text as a `dispatch comment` on the
+   report issue, its first line `Clear defect from <role token>`, which the controller reads at
+   its next start. It opens no ask: a person has nothing to decide.
 
 Where step 1 finds no issue, or finds one that reads `done`, step 2 has nowhere to go: the role
 says so in step 3's message instead, naming the test, the job, the head and both results. It
@@ -276,4 +303,4 @@ files no issue itself in either case. The controller keeps the census, one issue
 The merger's rule is in `skill://legion-worker/references/merge-gate.md` (*A `failed_checks`
 ejection at an unchanged head is queued once more*): no role re-runs a merge-group run, and no
 re-run of this page's kind belongs to one. Keeping it in one place keeps the two from drifting,
-since the guard pins that page's wording and not this one's.
+since the guard pins the merge-queue wording there.
