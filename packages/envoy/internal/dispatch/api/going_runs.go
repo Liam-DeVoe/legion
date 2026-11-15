@@ -106,9 +106,11 @@ type goingRunWrite struct {
 	// request of it landed; 0 for a write whose call was never planned.
 	Sends int `json:"sends,omitempty"`
 	// Delivery is the last delivery of the message a send to an agent wrote, absent for every
-	// other write and for a message that has none: the route answers a send 201 even where its
-	// delivery failed, and where the listener queued it for a session that is not running, so
-	// this is what tells a failed send, and a queued one, from one that reached the session.
+	// other write: the route answers a send 201 even where its delivery failed, and where the
+	// listener queued it for a session that is not running, so this is what tells a failed send,
+	// and a queued one, from one that reached the session. A send whose route's answer was never
+	// read has it read by its message's id (goingWriteClaim.sentDelivery); a landed send that holds
+	// none had no attempt that could be read, so whether its words reached the session is unknown.
 	Delivery *goingDelivery `json:"delivery,omitempty"`
 	// Undo is the undo the catalogue row the write went through states (GoingUndo.Kind), which
 	// is the undo it gets: the rows of one action may state different undos. It is absent for a

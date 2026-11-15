@@ -20,6 +20,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -80,10 +81,10 @@ type goingSunkAnswer struct {
 // them in that transaction (goingLanding.step), so the change and what its route answered of it
 // commit together or not at all. The routes whose answer says what they found and left call it
 // just before their commit - an issue's update, create, claim and release, an ask's edit and open,
-// a thread's resolve, a follow, a document's edit and upload, an approval request - and nothing
-// else is changed of them: off the bar's in-process path it does nothing. A value that does not
-// encode is logged and recorded as none, which leaves a write taken over after its process ended
-// with what it left unread.
+// a thread's resolve, a follow, a document's edit and upload, an approval request, and a send to
+// an agent, whose answer names the message it stored - and nothing else is changed of them: off
+// the bar's in-process path it does nothing. A value that does not encode is logged and recorded
+// as none, which leaves a write taken over after its process ended with what it left unread.
 func goingRecordAnswer(ctx context.Context, status int, value any) {
 	sink, carries := ctx.Value(goingAnswerKey{}).(*goingAnswerSink)
 	if !carries {
@@ -168,6 +169,23 @@ func (l *goingLandings) landed(ctx context.Context, index int, spec goingSend) (
 		return false, goingLandingUnread{err}
 	}
 	return landed, nil
+}
+
+// recordedAnswer is what the route of the request at index recorded beside its landing on the
+// pending claim (goingRecordAnswer), nil where it recorded none or the claim is no longer pending.
+// It is the writes route's own read, outside every commit step, on ctx as given.
+func (l goingLandings) recordedAnswer(ctx context.Context, index int) (json.RawMessage, error) {
+	column, condition := l.element()
+	var answer []byte
+	err := l.s.deps.Store.Pool.QueryRow(ctx, fmt.Sprintf(`
+		select e->'requests'->$5::int->'answer'
+		from going_runs r, jsonb_array_elements(r.%[1]s) e
+		where r.id = $1::uuid and r.author_login = $2 and %[2]s`, column, condition),
+		l.run, l.login, l.write, l.undo, index).Scan(&answer)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return answer, err
 }
 
 // goingLandingsPlanned merges $5, an object of the write's own keys, into the pending claim of

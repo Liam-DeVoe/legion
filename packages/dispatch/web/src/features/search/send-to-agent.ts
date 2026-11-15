@@ -32,33 +32,52 @@ export interface SendToAgentWrite {
 
 /** What became of one send: it reached the session (`sent`); the listener took it for a session
  *  it knows and that is not running, and hands it over when that session runs again (`queued`);
- *  or it did not reach the session, with why (`refused`). */
+ *  Dispatch stored the words and whether they reached the session is not known (`stored`); or it
+ *  did not reach the session, with why (`refused`). */
 export type SendToAgentOutcome =
-  | { readonly kind: "sent" | "queued" }
+  | { readonly kind: "sent" | "queued" | "stored" }
   | { readonly kind: "refused"; readonly refusal: string };
 
 /** How the offer sends: this direct send, or a write of the bar's run where its proposal offers
- *  the send. Either answers what became of the words (`sendOutcome`); the tests pass their own. */
+ *  the send. The direct send answers what its message's attempt says (`sendOutcome`), and a write
+ *  of the run what its line says (`runSendOutcome`); the tests pass their own. */
 export type SendToAgent = (writes: Writes, write: SendToAgentWrite) => Promise<SendToAgentOutcome>;
 
+/** A delivery attempt as a send reads it: the message's own (`MessageDelivery`) or the one a write
+ *  of the bar's run records (`GoingWriteLine.delivery`). */
+interface SentAttempt {
+  readonly error: string | null;
+  readonly state: string;
+}
+
 /**
- * What the last delivery attempt of the message a send wrote says became of the words: the one
- * reading both ways of sending make, so the bar says the same of the same attempt whichever way
- * it went. The direct send reads the attempt off the message Dispatch answered, and a write of
- * the bar's run off the line Dispatch recorded for it (`GoingWriteLine.delivery`), which carries
- * that message's last attempt as the route answered it. A `failed` attempt is refused with its
- * own reason, a `queued` one is stored for a session that has stopped, and any other, or none
- * at all, reads as sent, as `deliveryOutcomeState` reads a state for every surface.
+ * What the last delivery attempt of the message the direct send wrote says became of the words. A
+ * `failed` attempt is refused with its own reason, a `queued` one is stored for a session that has
+ * stopped, and any other, or none at all, reads as sent, as `deliveryOutcomeState` reads a state
+ * for every surface: Dispatch answers the direct send once its first attempt has settled.
  */
-export function sendOutcome(
-  attempt: { readonly error: string | null; readonly state: string } | undefined
-): SendToAgentOutcome {
+export function sendOutcome(attempt: SentAttempt | undefined): SendToAgentOutcome {
   if (attempt === undefined) return { kind: "sent" };
   const state = deliveryOutcomeState(attempt.state);
   if (state === "failed") {
     return { kind: "refused", refusal: attempt.error ?? "Dispatch gave no reason." };
   }
   return { kind: state === "queued" ? "queued" : "sent" };
+}
+
+/**
+ * What a write of the bar's run that sent the words says became of them, from the last delivery
+ * attempt its line records (`GoingWriteLine.delivery`), which Dispatch reads by the message's id
+ * where the send's own answer was never read. The write landed, so the words are stored: a line
+ * that records no attempt - none could be read, or Dispatch kept no line for the landing - or an
+ * attempt still `pending`, whose sender ended before it settled, says that and no more (`stored`),
+ * never that they reached the session. Every other attempt reads as the direct send reads it.
+ */
+export function runSendOutcome(attempt: SentAttempt | undefined): SendToAgentOutcome {
+  if (attempt === undefined || deliveryOutcomeState(attempt.state) === "pending") {
+    return { kind: "stored" };
+  }
+  return sendOutcome(attempt);
 }
 
 /**

@@ -1,9 +1,10 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, type Mock, mock, spyOn, test } from "bun:test";
 import type { IssueClaimHolderState } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -11,8 +12,9 @@ import type { IssueClaim, IssueDetails, Message } from "../../api/types";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SearchPalette } from "./SearchPalette";
+import { useSendToAgentOffer } from "./SendToAgentOffer";
 import { searchAnswer } from "./search-fixture";
-import { handoffBody } from "./send-to-agent";
+import { handoffBody, type SendToAgent, type SendToAgentOutcome } from "./send-to-agent";
 
 const words = "find out why the rota is empty and write it up";
 const session = "session-one";
@@ -221,6 +223,77 @@ test("a send the listener queued for a session that has stopped says so, and is 
     expect(bar.createAgentMessage).toHaveBeenCalledTimes(1);
   } finally {
     bar.restore();
+  }
+});
+
+/** The offer alone over the issue, pressing through `send` as the bar's run supplies it. */
+function OfferAlone({ send }: { readonly send: SendToAgent }): ReactNode {
+  const offer = useSendToAgentOffer({ block: undefined, issue: issueKey, send, words });
+  return (
+    <>
+      {offer?.row === undefined ? null : (
+        <button onClick={offer.row.select} type="button">
+          {offer.row.label}
+        </button>
+      )}
+      {offer?.said}
+    </>
+  );
+}
+
+// Each outcome a send answers is said in its own words. A send the bar's run stored, whose
+// delivery Dispatch could not read or that is still on its way, says the words are stored and
+// that whether they reached the session is not known - never that they were sent - and, as a sent
+// or a queued one, offers no second press, which would store a second copy. Only a refusal, which
+// stored nothing, offers the row again.
+test("each outcome of a send is said in its own words, and only a refusal offers the row again", async () => {
+  const user = userEvent.setup();
+  const cases: readonly [SendToAgentOutcome, RegExp, string, boolean][] = [
+    [{ kind: "sent" }, /^Sent to .+, the agent on CORE-7\.$/, "status", false],
+    [
+      { kind: "queued" },
+      /^Queued: .+ is stopped; it gets the message if it runs again within 72 hours$/,
+      "status",
+      false,
+    ],
+    [
+      { kind: "stored" },
+      /^Stored for .+, the agent on CORE-7; whether it reached the session is not known\.$/,
+      "status",
+      false,
+    ],
+    [
+      { kind: "refused", refusal: "the session takes no aside" },
+      /^Could not send it to the agent on CORE-7: the session takes no aside$/,
+      "alert",
+      true,
+    ],
+  ];
+  for (const [outcome, said, role, offeredAgain] of cases) {
+    const getIssue = spyOn(api, "getIssue").mockResolvedValue(issueDetails(sessionClaim, "live"));
+    const listAgents = spyOn(api, "listAgents").mockRejectedValue(new Error("no registry"));
+    const send = mock<SendToAgent>(async () => outcome);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <OfferAlone send={send} />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await user.click(await waitFor(() => screen.getByText(offerLabel)));
+      const line = await waitFor(() => screen.getByTestId("search-send-to-agent-said"));
+      expect(line.textContent, outcome.kind).toMatch(said);
+      expect(line.getAttribute("role"), outcome.kind).toBe(role);
+      expect(screen.queryByText(offerLabel) !== null, outcome.kind).toBe(offeredAgain);
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      queryClient.clear();
+      getIssue.mockRestore();
+      listAgents.mockRestore();
+    }
   }
 });
 

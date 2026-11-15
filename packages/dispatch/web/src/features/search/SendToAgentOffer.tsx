@@ -16,9 +16,9 @@ import { type SendToAgent, type SendToAgentOutcome, sendToAgent } from "./send-t
 export const SEND_TO_AGENT_GROUP_ID = "search-group-send-to-agent";
 export const SEND_TO_AGENT_OPTION_ID = "search-option-send-to-agent";
 
-/** Where the offer stands once a press has been made: the send out, the message sent or queued
- *  for a session that has stopped, or a refusal in the person's words. Nothing pressed is no
- *  state at all (`useWordsState`). */
+/** Where the offer stands once a press has been made: the send out, the message sent, queued for
+ *  a session that has stopped, or stored with its delivery unknown, or a refusal in the person's
+ *  words. Nothing pressed is no state at all (`useWordsState`). */
 type OfferState =
   | { readonly kind: "sending"; readonly words: string }
   | {
@@ -131,7 +131,8 @@ export function useSendToAgentOffer({
   };
 }
 
-/** The one line the bar says about the message it is sending, sent, queued, or could not send. */
+/** The one line the bar says about the message it is sending, sent, queued, stored with its
+ *  delivery unknown, or could not send. */
 function SendToAgentSaid({
   issue,
   state,
@@ -142,33 +143,44 @@ function SendToAgentSaid({
   if (state === undefined) {
     return null;
   }
-  if (state.kind === "sending") {
-    return (
-      <p className={barNoteClassName} role="status">
-        Sending to the agent on {issue}…
-      </p>
-    );
+  switch (state.kind) {
+    case "sending":
+      return (
+        <p className={barNoteClassName} role="status">
+          Sending to the agent on {issue}…
+        </p>
+      );
+    case "refused":
+      return (
+        <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="alert">
+          Could not send it to the agent on {issue}: {state.refusal}
+        </p>
+      );
+    // Queued is neither sent nor refused: the words are stored for a session that has stopped
+    // since the bar offered it, so the line is `queuedParts`, as on the Agents card and the
+    // Conversation tab, and the row stays gone, since a second press would store a second copy.
+    case "queued":
+      return (
+        <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="status">
+          <AgentParts parts={queuedParts(state.agent)} />
+        </p>
+      );
+    // Stored is a send of the bar's run Dispatch wrote and whose delivery it could not say: the
+    // words are kept, so the row stays gone as for a queued one, and the line never claims they
+    // reached the session.
+    case "stored":
+      return (
+        <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="status">
+          Stored for {state.agent}, the agent on {issue}; whether it reached the session is not
+          known.
+        </p>
+      );
+    case "sent":
+      return (
+        <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="status">
+          Sent to {state.agent}, the agent on {issue}.
+        </p>
+      );
   }
-  if (state.kind === "refused") {
-    return (
-      <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="alert">
-        Could not send it to the agent on {issue}: {state.refusal}
-      </p>
-    );
-  }
-  // Queued is neither sent nor refused: the words are stored for a session that has stopped
-  // since the bar offered it, so the line is `queuedParts`, as on the Agents card and the
-  // Conversation tab, and the row stays gone, since a second press would store a second copy.
-  if (state.kind === "queued") {
-    return (
-      <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="status">
-        <AgentParts parts={queuedParts(state.agent)} />
-      </p>
-    );
-  }
-  return (
-    <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="status">
-      Sent to {state.agent}, the agent on {issue}.
-    </p>
-  );
+  return state satisfies never;
 }

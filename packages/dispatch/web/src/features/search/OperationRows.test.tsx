@@ -681,7 +681,8 @@ test("a new issue the run made is the issue its write names, with no read of it 
 
 // The send through the run says what the direct send says of the same delivery: a failed one is
 // refused with its reason, one the listener stored for a session that has stopped is queued, and
-// only one that reached the session is sent.
+// only one that reached the session is sent. A write that landed with no delivery Dispatch could
+// read, or with its attempt still pending, stored the words and no more is known: it is never sent.
 test("a send through the run answers what became of its delivery, as the direct send does", async () => {
   const words = "tell the agent";
   // Each send is its own run's: a run writes each of its invocations once.
@@ -771,6 +772,13 @@ test("a send through the run answers what became of its delivery, as the direct 
     expect(await send("run-3")).toEqual({ kind: "queued" });
     delivered({ error: null, state: "sent" }, "m-4");
     expect(await send("run-4")).toEqual({ kind: "sent" });
+    delivered(undefined, "m-5");
+    expect(await send("run-5")).toEqual({ kind: "stored" });
+    delivered({ error: null, state: "pending" }, "m-6");
+    expect(await send("run-6")).toEqual({ kind: "stored" });
+    // A landing Dispatch kept no line for.
+    written.mockImplementation(async () => null);
+    expect(await send("run-7")).toEqual({ kind: "stored" });
   } finally {
     hook.unmount();
     client.clear();

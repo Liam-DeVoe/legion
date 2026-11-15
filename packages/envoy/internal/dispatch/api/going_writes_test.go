@@ -1055,6 +1055,56 @@ func TestGoingRunOffersASendToAStoppedSessionAndItsPickIsQueued(t *testing.T) {
 	}
 }
 
+// A send to an agent whose route's answer the bar never read still answers the delivery its
+// message's last attempt holds, on its line and on the run's record: where the route committed
+// the message and then answered 503, and where the process making the write ended after that
+// commit and a later press took the write over. The send went to a session that is not running,
+// so the attempt is queued, and the line never reads as a send that reached the session. Neither
+// press sends the message a second time.
+func TestGoingWriteOfASendToAgentWhoseAnswerWasNotReadAnswersItsDelivery(t *testing.T) {
+	listener := stoppedAndLive(t)
+	rig := newGoingWritesRigOn(t, listener.url, func(database *store.Store) *store.Store { return database })
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	route := http.MethodPost + " /api/v1/agents/s1/messages"
+	press := map[string]any{"offer": "dispatch_send_to_agent", "invocation": 0, "approved": goingApprovedPerson}
+	for _, test := range []struct {
+		name  string
+		write func(t *testing.T, run string) *httptest.ResponseRecorder
+	}{
+		{"committed, then answered 503", func(t *testing.T, run string) *httptest.ResponseRecorder {
+			rig.served.inProcess = goingCommittedThenRefused(inner, route, map[string]int{})
+			defer func() { rig.served.inProcess = inner }()
+			return rig.write(t, "alice", run, press)
+		}},
+		{"taken over after its process ended", func(t *testing.T, run string) *httptest.ResponseRecorder {
+			rig.served.inProcess = goingDiesAfter(inner, route)
+			rig.dieWriting(t, run, press)
+			rig.served.inProcess = inner
+			rig.ageGoingWrites(t, run)
+			return rig.write(t, "alice", run, press)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sends := len(listener.sentTo("s1"))
+			run := rig.proposed(t, "alice", true, "dispatch_send_to_agent", map[string]any{
+				"session": "s1", "body": "Pick this up when you are back.", "delivery": "aside",
+			})
+			line := goingLineOf(t, test.write(t, run))
+			if !line.Outcome.OK || line.Delivery == nil || line.Delivery.State != model.DeliveryStateQueued || line.Delivery.Error != nil {
+				t.Fatalf("the send answered the line %+v, delivery %+v, want it landed with its delivery queued", line, line.Delivery)
+			}
+			writes := rig.record(t, "alice", run).Writes
+			if len(writes) != 1 || writes[0].Delivery == nil || writes[0].Delivery.State != model.DeliveryStateQueued {
+				t.Fatalf("the run's record holds %+v, want one write whose delivery is queued", writes)
+			}
+			if sent := len(listener.sentTo("s1")) - sends; sent != 1 {
+				t.Fatalf("the listener took %d sends for s1, want one", sent)
+			}
+		})
+	}
+}
+
 // A reasoned close posts its reason as a message before the close itself. When the close is then
 // refused, the message stays posted, and the write's record names it, so what landed is never
 // lost with the refusal.

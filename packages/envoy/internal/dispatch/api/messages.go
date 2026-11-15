@@ -389,6 +389,15 @@ func (s *server) createStoredMessage(
 			ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, "", status, false,
 		)
 	}
+	// An issue-less message is the agents route's (createAgentMessage), whose answer is the message
+	// it stored: handed to the command bar's landing of this request, which records it in this
+	// transaction (goingRecordAnswer), so a send whose answer the bar never read - answered 5xx
+	// after this commit, or whose process ended - still names its message, whose last delivery
+	// attempt the bar reads by that id (goingWriteClaim.sentDelivery). It holds no attempt yet: the
+	// first is sent and settled after this commit.
+	if issueKey == nil {
+		goingRecordAnswer(ctx, http.StatusCreated, newShapedMessage(message, false))
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err
 	}

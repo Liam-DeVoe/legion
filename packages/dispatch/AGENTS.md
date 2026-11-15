@@ -424,6 +424,11 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   Each reads a queued attempt as queued even when it is also a duplicate.
   A queued attempt offers no Retry (`isSafeRetry` needs `failed`): the message is already stored,
   and a second send would store a second copy for that session to read.
+  The search bar's send through a command-bar run reads the attempt its write's line records
+  (`runSendOutcome` in `features/search/send-to-agent.ts`): a landed send whose line records no
+  attempt Dispatch could read, or one still `pending`, says
+  `Stored for <session>, the agent on <issue>; whether it reached the session is not known.` and
+  never that it was sent, and like a queued one offers no second press.
 - The mention composer suggests only a prefix every refusing target advertises, and a card offers
   BTW only when its session takes it.
 - A message with no `/aside ` or `/btw ` command that answers no thread goes in `plainDelivery`

@@ -497,6 +497,9 @@ func (c goingWriteClaim) landed(before, after goingObservation) {
 		c.write.Fields = before.fields
 	}
 	c.write.Delivery, c.write.Unchanged = after.delivery, after.unchanged
+	if c.write.Action == "dispatch_send_to_agent" && c.write.Delivery == nil {
+		c.write.Delivery = c.sentDelivery()
+	}
 	c.write.Before, c.write.After = goingJSONOrNull(before.value), goingJSONOrNull(after.value)
 	switch {
 	case after.stood != nil:
@@ -510,6 +513,50 @@ func (c goingWriteClaim) landed(before, after goingObservation) {
 	if c.record(cmp.Or(after.issue, before.issue)) {
 		WriteJSON(c.w, http.StatusOK, goingWriteLineOf(c.write))
 	}
+}
+
+// sentDelivery is the last delivery attempt of the message a landed send to an agent stored, for a
+// send whose line holds none: its route's answer was never read - it answered 5xx after its commit,
+// or the process making the write ended - or held no attempt. The message is the one its route
+// recorded beside the landing of the send's last request (goingRecordAnswer, createStoredMessage),
+// read off the write as it holds it or else off its pending claim, and its attempt is read by its
+// id. The read is for the line alone and decides nothing. It is nil where no attempt can be read: a
+// landing that recorded no answer, as an earlier release's, or a read that failed. The bar reads a
+// landed send with none as words stored whose delivery is unknown, never as sent.
+func (c goingWriteClaim) sentDelivery() *goingDelivery {
+	if len(c.write.Requests) == 0 {
+		return nil
+	}
+	ctx, cancel := goingBookkeeping(c.ctx)
+	defer cancel()
+	index := len(c.write.Requests) - 1
+	answer := c.write.Requests[index].Answer
+	if len(answer) == 0 {
+		landings := goingLandings{s: c.s, run: c.run, login: c.login, write: c.write.ID}
+		read, err := landings.recordedAnswer(ctx, index)
+		if err != nil {
+			slog.Warn("dispatch: read what a going send's route recorded beside its landing", "write", c.write.ID, "error", err)
+			return nil
+		}
+		answer = read
+	}
+	var sent struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(answer, &sent) != nil || sent.ID == "" {
+		return nil
+	}
+	deliveries, err := c.s.loadMessageDeliveries(ctx, c.s.deps.Store.Pool, []string{sent.ID})
+	if err != nil {
+		slog.Warn("dispatch: read the last delivery of a going send's message", "write", c.write.ID, "error", err)
+		return nil
+	}
+	attempts := deliveries[sent.ID]
+	if len(attempts) == 0 {
+		return nil
+	}
+	last := attempts[len(attempts)-1]
+	return &goingDelivery{State: last.State, Error: last.Error}
 }
 
 // answerGoingWriteLanded answers a request for an invocation whose latest write is pending past
