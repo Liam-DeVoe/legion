@@ -13,11 +13,13 @@ import (
 )
 
 // These two rows hold the paths of requestReach.settle that no HTTP/1 row reaches. Over HTTP/1
-// the round trip waits for its write loop before it returns, so WroteRequest has fired and `sent`
-// decides the outcome; these need HTTP/2, where the round trip can return while the write of the
-// request body is still going. Each points the Broker at an HTTP/2 stand-in whose handler holds a
-// request whose body is still being written (a never-closed pipe, ContentLength -1), so
-// WroteRequest never fires.
+// the client's round trip waits for its write loop before it returns an error, so WroteRequest has
+// fired and `sent` decides the outcome; and Go's HTTP/1 server reads a request body before it
+// answers, so it never answers a body that does not end. These need HTTP/2, where the round trip
+// can return for an ended context while the write of the request body is still going, and where
+// the server can answer before it reads the body. Each points the Broker at an HTTP/2 stand-in
+// whose handler holds a request whose body is still being written (a never-closed pipe,
+// ContentLength -1), so WroteRequest never fires.
 
 // neverEndingBody replaces each request's body with a pipe that writes an opening and is never
 // closed, with ContentLength -1, so the transport's write of the request body never ends:

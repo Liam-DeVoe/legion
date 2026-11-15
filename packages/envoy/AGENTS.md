@@ -5953,7 +5953,7 @@ That failure exits 1, and its error names the enrollment and the failed write: `
 So a helper that stops on a signal never closes a client's connection with no answer while a broker call runs.
 That includes `install`'s restart, which `drain` does not hold back when an `enroll-session-key` is already in flight.
 The stop ends each op's context, so the wait is at most the bound plus 1 s.
-When `Serve` waits for any op, it logs the WARN `the helper is stopping; it waits for the connections that may still owe a broker call's answer` with their count (`connections`) and the bound.
+When `Serve` has connections to wait for, it logs the WARN `the helper is stopping; it waits for the connections that may still owe a broker call's answer` with their count (`connections`) and the bound.
 Every other op gives back its place in that wait once its request is read, so a connection whose request is still being read holds the stop for at most its 5 s.
 `unregister` answers at once with the session retired: `retire` fires the bounded revoke of an unnamed session's enrollments on goroutines of their own, as every sibling path fires it, and the revoke logs its own failure.
 

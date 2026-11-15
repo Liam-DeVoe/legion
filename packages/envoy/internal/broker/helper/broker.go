@@ -231,12 +231,11 @@ type BrokerError struct {
 	Message string
 }
 
-// Error names only the fields it has: the status always, the code where there is one, the message
-// where there is one. A front door's 502 with no JSON body would otherwise read "broker 502 : ",
-// and an unknown outcome's answer shows that text to an operator (sentCause, server.go). The
-// filled form does not change: "broker 403 SESSION_HELD: the session … belongs to …" reads byte
-// for byte as before, since refresh_test.go and nocredential_test.go match
-// "broker 401 LAUNCHER_INVALID" as a prefix.
+// Error names only the fields it has: the status always, then the code where there is one, then
+// ": " and the message where there is one. A front door's 502 with no JSON body reads "broker 502",
+// not "broker 502 : ", and an unknown outcome's answer shows that text to an operator (sentCause,
+// server.go). With both fields set it reads "broker 403 SESSION_HELD: the session … belongs to …",
+// which nocredential_test.go matches as a prefix ("broker 401 LAUNCHER_INVALID").
 func (e *BrokerError) Error() string {
 	s := fmt.Sprintf("broker %d", e.Status)
 	if e.Code != "" {
@@ -1619,9 +1618,10 @@ func traceReach(ctx context.Context) (context.Context, *requestReach) {
 // The record is complete when the round trip returns, on every path but one. HTTP/1 waits for
 // its write loop before it returns an error (persistConn.mapRoundTripError reads writeLoopDone),
 // HTTP/2 waits for the stream on its other errors, and GotFirstResponseByte runs before either
-// hands back a response. WroteRequest alone would not do for a response: HTTP/2 can hand back a
-// 2xx before it has finished the write of the request body. The one path is HTTP/2's round trip
-// whose context ends: it returns at once, and the write of the request can still be finishing.
+// hands back a response. WroteRequest alone would not do for a response: either protocol can hand
+// back a 2xx before it has finished the write of the request body, since each writes the request
+// while it waits for the answer. The one path is HTTP/2's round trip whose context ends: it
+// returns at once, and the write of the request can still be finishing.
 // So a request whose context ended while the transport held a connection for it is unknown,
 // whether or not the trace saw the write end.
 func (r *requestReach) settle(err error) error {

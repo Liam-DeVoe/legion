@@ -919,10 +919,10 @@ func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
 }
 
 // TestABrokerErrorNamesOnlyTheFieldsItHas pins BrokerError.Error's four shapes: the status alone,
-// the status with a code, the status with a message, and the filled form. The filled form may not
-// change — refresh_test.go and nocredential_test.go match "broker 401 LAUNCHER_INVALID" as a
-// prefix — so it is pinned here byte for byte; each shape with an empty part drops that part, so a
-// front door's 502 with no JSON body does not read "broker 502 : ".
+// the status with a code, the status with a message, and the filled form. The filled form is what
+// the broker's own refusals carry, and nocredential_test.go matches its "broker 401
+// LAUNCHER_INVALID" prefix; each shape with an empty part drops that part, so a front door's 502
+// with no JSON body does not read "broker 502 : ".
 func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
 	for _, tc := range []struct {
 		err  BrokerError
