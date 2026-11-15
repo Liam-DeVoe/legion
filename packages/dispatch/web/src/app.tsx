@@ -1,5 +1,5 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
@@ -43,8 +43,8 @@ import {
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPaletteHost } from "./features/search/SearchPaletteHost";
+import { lazyChunk, prefetchChunk } from "./features/shell/chunk-loads";
 import { holdUntilContentDraws } from "./features/shell/content-drawn";
-import { prefetchChunk, renderChunk } from "./features/shell/DeploymentResilience";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
@@ -112,11 +112,12 @@ import {
   textTransparent,
 } from "./theme/classes";
 
-/** The three route chunks a cold landing can need, each named once: the router's `lazy` below
- *  and the entry's preload (`preloadRouteChunk`) call the same import, so the chunk the entry
- *  starts cannot be another than the one the router renders. The Inbox's chunk is the fourth,
- *  started wherever the Inbox is the page rather than the peek, and its import is named once in
- *  the same way, in the module that owns it (`features/inbox/InboxHost.tsx`, `loadInboxChunk`). */
+/** The three route chunks a cold landing can need, each named once: the router's `lazyChunk`
+ *  below and the entry's preload (`preloadRouteChunk`) call the same import, so the chunk the
+ *  entry starts cannot be another than the one the router renders. The Inbox's chunk is the
+ *  fourth, started wherever the Inbox is the page rather than the peek, and its import is named
+ *  once in the same way, in the module that owns it (`features/inbox/InboxHost.tsx`,
+ *  `loadInboxChunk`). */
 const loadIssuePage = () =>
   import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }));
 const loadProjectPage = () =>
@@ -124,13 +125,14 @@ const loadProjectPage = () =>
 const loadDocumentPage = () =>
   import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }));
 
-// The three the entry can prefetch, under `renderChunk`, which is what tells the chunk-failure
-// recovery that a reader is waiting on this download rather than the entry having prefetched it
-// (`features/shell/DeploymentResilience.tsx`). Every other route of this file is under it too,
-// further down: these three are only the ones named twice, here and in the preload.
-const IssuePage = lazy(() => renderChunk(loadIssuePage));
-const ProjectPage = lazy(() => renderChunk(loadProjectPage));
-const DocumentPage = lazy(() => renderChunk(loadDocumentPage));
+// The three the entry can prefetch, through `lazyChunk` like every route of this file: the
+// router's ask is under `renderChunk`, which is what tells the chunk-failure recovery that a
+// reader is waiting on this download rather than the entry having prefetched it
+// (`features/shell/DeploymentResilience.tsx`). These three are only the ones named twice, here
+// and in the preload.
+const IssuePage = lazyChunk(loadIssuePage);
+const ProjectPage = lazyChunk(loadProjectPage);
+const DocumentPage = lazyChunk(loadDocumentPage);
 
 /** The chunks the live document pulls as it renders, which the route chunk does not carry: the
  *  editor's own library (`features/doc/editor.ts`, `loadEditorLibrary`) and the Yjs transport it
@@ -189,7 +191,7 @@ function issueDrawsDocument(route: IssueRoute): boolean {
  * to hold it: the landing read takes every address that is neither an issue nor a project as
  * the Inbox, while the Inbox is the page at the addresses `InboxPage` is mounted at and a peek
  * drawer over every other, so the arm below asks `routeIsInbox` as well. A chunk that fails
- * here is left to the router: `lazy` asks for the same import again, and that failure - a
+ * here is left to the router: `lazyChunk` asks for the same import again, and that failure - a
  * reader in front of a page that cannot draw - is the one `DeploymentResilience` reloads for
  * (`prefetchChunk`).
  *
@@ -248,92 +250,68 @@ export function preloadRouteChunk(pathname: string): void {
   }
 }
 
-// Every other route of the shell, each under `renderChunk` as the three above are, and for the
+// Every other route of the shell, each through `lazyChunk` as the three above are, and for the
 // same reason: a reader is waiting on this download the moment the router renders the route, so
 // its failure is one the chunk-failure recovery must reload for. Only a chunk nothing is waiting
-// on may be passed over, which is what every `prefetchChunk` call is: the preload below, the
+// on may be passed over, which is what every `prefetchChunk` call is: the preload above, the
 // Inbox peek's chunk after a page's first paint and the boot warm of the Markdown engine
-// (`features/shell/DeploymentResilience.tsx`). Left bare, as these were, a route chunk that
+// (`features/shell/DeploymentResilience.tsx`). Left bare, as these once were, a route chunk that
 // failed while the entry's prefetch of another chunk was still out was read as that prefetch's
 // and reloaded nothing, leaving the reader in front of a page that could not draw
-// (dispatch://INFRA-1109).
+// (dispatch://INFRA-1109); `lazy` itself is now refused here by the repository's `biome.json`.
 
-const PrioritiesPage = lazy(() =>
-  renderChunk(() =>
-    import("./features/priorities/PrioritiesPage").then((module) => ({
-      default: module.PrioritiesPage,
-    }))
-  )
+const PrioritiesPage = lazyChunk(() =>
+  import("./features/priorities/PrioritiesPage").then((module) => ({
+    default: module.PrioritiesPage,
+  }))
 );
 
-const PriorityPage = lazy(() =>
-  renderChunk(() =>
-    import("./features/priorities/PriorityPage").then((module) => ({
-      default: module.PriorityPage,
-    }))
-  )
+const PriorityPage = lazyChunk(() =>
+  import("./features/priorities/PriorityPage").then((module) => ({
+    default: module.PriorityPage,
+  }))
 );
 
-const AgentsPage = lazy(() =>
-  renderChunk(() =>
-    import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
-  )
+const AgentsPage = lazyChunk(() =>
+  import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
 );
 
-const MachinesPage = lazy(() =>
-  renderChunk(() =>
-    import("./features/machines/MachinesPage").then((module) => ({ default: module.MachinesPage }))
-  )
+const MachinesPage = lazyChunk(() =>
+  import("./features/machines/MachinesPage").then((module) => ({ default: module.MachinesPage }))
 );
 
-const MachinePage = lazy(() =>
-  renderChunk(() =>
-    import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
-  )
+const MachinePage = lazyChunk(() =>
+  import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
 );
 
-const AgentArtifactPage = lazy(() =>
-  renderChunk(() =>
-    import("./features/artifacts/AgentArtifactPage").then((module) => ({
-      default: module.AgentArtifactPage,
-    }))
-  )
+const AgentArtifactPage = lazyChunk(() =>
+  import("./features/artifacts/AgentArtifactPage").then((module) => ({
+    default: module.AgentArtifactPage,
+  }))
 );
 
-const BroadcastsPage = lazy(() =>
-  renderChunk(() =>
-    import("./features/agents/BroadcastsPage").then((module) => ({
-      default: module.BroadcastsPage,
-    }))
-  )
+const BroadcastsPage = lazyChunk(() =>
+  import("./features/agents/BroadcastsPage").then((module) => ({
+    default: module.BroadcastsPage,
+  }))
 );
 
-const BroadcastPage = lazy(() =>
-  renderChunk(() =>
-    import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
-  )
+const BroadcastPage = lazyChunk(() =>
+  import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
 );
 
-const DeliveryPage = lazy(() =>
-  renderChunk(() =>
-    import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
-  )
+const DeliveryPage = lazyChunk(() =>
+  import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
 );
-const PipelinePage = lazy(() =>
-  renderChunk(() =>
-    import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
-  )
+const PipelinePage = lazyChunk(() =>
+  import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
 );
 
-const AnswersPage = lazy(() =>
-  renderChunk(() =>
-    import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
-  )
+const AnswersPage = lazyChunk(() =>
+  import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
 );
-const SettingsPage = lazy(() =>
-  renderChunk(() =>
-    import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
-  )
+const SettingsPage = lazyChunk(() =>
+  import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
 );
 
 function IssuePageFallback(): ReactNode {

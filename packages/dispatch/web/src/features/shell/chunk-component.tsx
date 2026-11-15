@@ -1,6 +1,6 @@
 import { type ComponentType, type ReactNode, useEffect, useState } from "react";
 
-import { renderChunk } from "./DeploymentResilience";
+import { renderChunk } from "./chunk-loads";
 
 /**
  * A component whose code is a chunk of its own: the issue page's tab panels

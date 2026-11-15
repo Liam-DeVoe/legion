@@ -1,7 +1,7 @@
-import { lazy, type ReactNode, Suspense, useEffect, useState } from "react";
+import { type ReactNode, Suspense, useEffect, useState } from "react";
 
+import { lazyChunk } from "../shell/chunk-loads";
 import { useContentDrawn } from "../shell/content-drawn";
-import { renderChunk } from "../shell/DeploymentResilience";
 
 /**
  * Where the shell mounts the reference-preview layer, and where that layer's code is fetched:
@@ -23,11 +23,11 @@ import { renderChunk } from "../shell/DeploymentResilience";
  * to close a card when a drag starts (`features/project/IssueBoard.tsx`), so the board's chunk
  * carries the card's module with it.
  */
-// Under `renderChunk`, like every chunk a render waits on: this layer is what draws the card a
-// reader is pointing at, so a download that fails must spend one of the tab's recovery reloads
+// Through `lazyChunk`, like every chunk a `Suspense` waits on: this layer is what draws the card
+// a reader is pointing at, so a download that fails must spend one of the tab's recovery reloads
 // rather than be read as the entry's prefetch (`features/shell/DeploymentResilience.tsx`).
-const RefPreviewHost = lazy(() =>
-  renderChunk(() => import("./RefPreview").then((module) => ({ default: module.RefPreviewHost })))
+const RefPreviewHost = lazyChunk(() =>
+  import("./RefPreview").then((module) => ({ default: module.RefPreviewHost }))
 );
 
 export function RefPreviewLayer(): ReactNode {

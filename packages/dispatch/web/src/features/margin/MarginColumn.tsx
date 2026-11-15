@@ -1,9 +1,9 @@
-import { lazy, type ReactNode, Suspense } from "react";
+import { type ReactNode, Suspense } from "react";
 import { useLocation } from "react-router-dom";
 
 import { routeHasMargin } from "../refs/routes";
+import { lazyChunk } from "../shell/chunk-loads";
 import { useContentDrawn } from "../shell/content-drawn";
-import { renderChunk } from "../shell/DeploymentResilience";
 import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 
 import type { MarginProps } from "./Margin";
@@ -32,15 +32,13 @@ import { MARGIN_COLUMN_CLASS, marginColumnWidth } from "./margin-width";
  * the reader left behind on an issue are still there when they come back to it
  * (`useMarginSheet.ts`).
  */
-// Under `renderChunk`, which tells the chunk-failure recovery that a reader is waiting on this
-// download: the margin is mounted by the route, not prefetched by the entry, so a failure here
-// must spend the tab's reload rather than be read as the entry's prefetch
+// Through `lazyChunk`, whose `renderChunk` tells the chunk-failure recovery that a reader is
+// waiting on this download: the margin is mounted by the route, not prefetched by the entry, so a
+// failure here must spend the tab's reload rather than be read as the entry's prefetch
 // (`features/shell/DeploymentResilience.tsx`). The empty frame makes the wait invisible, not
 // harmless: a margin that never arrives is a page missing its comments, its threads and its
 // composer.
-const Margin = lazy(() =>
-  renderChunk(() => import("./Margin").then((module) => ({ default: module.Margin })))
-);
+const Margin = lazyChunk(() => import("./Margin").then((module) => ({ default: module.Margin })));
 
 /**
  * The margin's desktop column, empty: the class and the width `Margin.tsx` gives its column

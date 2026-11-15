@@ -12,6 +12,7 @@ import type { ReactNode } from "react";
 
 import { api } from "../api/client";
 import { useEventFeed, WHOLE_CACHE_REFRESH_MS } from "../api/event-feed";
+import * as eventRefreshLoad from "../api/event-refresh-load";
 import { liveSocketFor } from "../api/live-socket";
 import { DispatchQueryClient } from "../api/query-client";
 import type { AuthenticatedUser, DispatchEvent, LiveServerFrame } from "../api/types";
@@ -373,6 +374,48 @@ test("an event this page cannot read is skipped and refreshes everything", async
   } finally {
     hook.unmount();
     logged.mockRestore();
+    wholeCache.restore();
+  }
+});
+
+// The map's chunk can fail to download without the tab reloading for it: the browser is offline,
+// the tab's recovery reloads are spent, or the page is being left
+// (`features/shell/DeploymentResilience.tsx`, `reloadForChunkFailure`). The event that was waiting
+// on the map then refreshes everything, as an event the page cannot map does, and the next event
+// starts the import again: a feed that kept the one failed download would log every later event
+// and refresh nothing for as long as the tab stayed open.
+test("a map chunk that fails to download refreshes everything for the event waiting on it, and a later event loads the map again", async () => {
+  const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
+  // A list an `issue.updated` of CORE-1 refreshes through the map, and no whole-cache probe.
+  const projectIssues = ["issues", "CORE"] as const;
+  queryClient.setQueryData(projectIssues, { loaded: true });
+  const listIsStale = () =>
+    queryClient.getQueryCache().find({ queryKey: projectIssues, exact: true })?.isStale();
+  const wholeCache = countWholeCacheRefreshes(queryClient);
+  // The first download is held open, so the first event is waiting on it when it fails.
+  const firstDownload = Promise.withResolvers<eventRefreshLoad.EventRefreshMap>();
+  const load = spyOn(eventRefreshLoad, "loadEventRefresh").mockImplementationOnce(
+    () => firstDownload.promise
+  );
+  const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+  try {
+    const { socket, sub } = openFeed();
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    receive(socket, eventFrame(sub, issueUpdated(1)));
+    firstDownload.reject(new TypeError("Failed to fetch dynamically imported module"));
+    await waitFor(() => expect(wholeCache.count()).toBe(1));
+
+    // The whole-cache refresh marked the list stale; it lands again, fresh, so only the next
+    // event's own refresh can mark it.
+    queryClient.setQueryData(projectIssues, { loaded: true });
+    expect(listIsStale()).toBe(false);
+    receive(socket, eventFrame(sub, issueUpdated(2)));
+    await waitFor(() => expect(listIsStale()).toBe(true));
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(wholeCache.count()).toBe(1);
+  } finally {
+    hook.unmount();
+    load.mockRestore();
     wholeCache.restore();
   }
 });

@@ -2,7 +2,8 @@
  *  each with the page component it renders, and the lazily loaded pieces that are no route of
  *  their own. A page whose chunk no walked route loads is a chunk the walk never asks the other
  *  build's process for, so `e2e/__tests__/two-builds-routes.test.ts` holds this list to the
- *  router: every `lazy()` page and every `<Route>` of `app.tsx` must be here, and nothing else.
+ *  router: every `lazyChunk()` page and every `<Route>` of `app.tsx` must be here, and nothing
+ *  else.
  *
  *  This module holds data only, so the bun test can import it without Playwright. */
 

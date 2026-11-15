@@ -5,13 +5,13 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { REQUEST_DEADLINE_MS } from "../../api/client";
+import { Timeline } from "../delivery/Timeline";
 import * as markdownEngine from "../refs/markdown-engine";
+import { prefetchChunk, renderChunk } from "./chunk-loads";
 import {
   DeploymentResilience,
   importWhenOnline,
   installChunkFailureRecovery,
-  prefetchChunk,
-  renderChunk,
   spendChunkReload,
 } from "./DeploymentResilience";
 
@@ -168,6 +168,64 @@ test("a render-time chunk that fails while a prefetch is out still reloads", asy
     await expect(rendering).rejects.toThrow("Failed to fetch dynamically imported module");
     prefetched.resolve(undefined);
   } finally {
+    reload.mockRestore();
+    window.sessionStorage.clear();
+  }
+});
+
+// The same rule for a chunk a mounted component imports for itself, which no route or host
+// names: the delivery timeline's charting library (`features/delivery/Timeline.tsx`), without
+// which the chart draws nothing. A prefetch the shell starts at a first paint - the search bar's,
+// the Markdown engine's warm, the Inbox peek's - can still be out while it downloads, and a
+// reader in front of a chart that cannot draw is waiting on it all the same. Started bare, its
+// failure was read as that prefetch's and reloaded nothing (dispatch://INFRA-1109).
+test("a chunk a mounted component imports for itself reloads for its failure while a prefetch is out", () => {
+  window.sessionStorage.clear();
+  installChunkFailureRecoveryForTest();
+  const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
+  // A prefetch that never answers inside this row.
+  const prefetched = Promise.withResolvers<unknown>();
+  prefetchChunk(() => prefetched.promise);
+  // The chart's import starts in the mount effect, which `render` runs; no promise settles before
+  // the failure below, so the import is still out when it is reported.
+  const view = render(
+    <Timeline
+      chosen={[]}
+      colorBy="repo"
+      colorScale={new Map()}
+      components={{}}
+      filters={{
+        author: [],
+        component: [],
+        deployed: [],
+        issue: [],
+        parentAgent: [],
+        priority: [],
+        repo: [],
+        rework: [],
+        search: "",
+        session: [],
+      }}
+      lanes={false}
+      onBrush={() => undefined}
+      onSelect={() => undefined}
+      prs={[]}
+      runs={[]}
+      sessionGroups={[]}
+      waiting={[]}
+      window={{ end: "2026-11-15T00:00:00Z", start: "2026-11-01T00:00:00Z" }}
+    />
+  );
+
+  try {
+    window.dispatchEvent(new Event("vite:preloadError", { cancelable: true }));
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(storedChunkReloads()).toHaveLength(1);
+  } finally {
+    view.unmount();
+    prefetched.resolve(undefined);
     reload.mockRestore();
     window.sessionStorage.clear();
   }

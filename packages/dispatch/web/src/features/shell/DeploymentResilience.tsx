@@ -10,6 +10,7 @@ import {
   primaryButtonHoverBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { onlyPrefetchesOut, prefetchChunk } from "./chunk-loads";
 
 // The tab's recovery reloads, as a JSON array of the epoch-millisecond times they started: a chunk
 // that failed to download reloads the page while fewer than CHUNK_RELOAD_BUDGET of them fall in the
@@ -209,73 +210,39 @@ function spendAskedChunkReload(): void {
   }
 }
 
-// Chunk downloads nobody is waiting for, and chunk downloads a reader is waiting for.
+// Chunk downloads nobody is waiting for, and chunk downloads a reader is waiting for: which of
+// the two a failure is decides whether it reloads.
 //
 // The entry starts the landed route's chunks beside the landing read, before React has rendered
 // anything (`app.tsx`, `preloadRouteChunk`), and the router asks for the same chunk again when it
-// renders that route (`renderChunk`, used by the `lazy` routes there). A prefetch is nobody
-// waiting: its failure says only that the download has not happened yet, and the router's own ask
-// for the same chunk fails a moment later, in front of a reader whose page cannot draw. That
-// second failure is the one this recovery was written for.
+// renders that route (`renderChunk`, which every `lazyChunk` route there goes through). A
+// prefetch is nobody waiting: its failure says only that the download has not happened yet, and
+// the router's own ask for the same chunk fails a moment later, in front of a reader whose page
+// cannot draw. That second failure is the one this recovery was written for.
 //
 // Reloading for the prefetch instead costs the reader what the render's failure does not. It
 // throws the document away while it is still loading - measured on the stubbed layer: with the
 // prefetch judged, the three reloads of a chunk that never downloads all happen before the
 // document fires `load`, so the reader is shown nothing at all until the budget is spent - and a
 // download that only the prefetch lost, one the render would have got, would spend a reload for
-// nothing. So a failure while the entry's prefetch is still out and no route render is waiting on
-// a chunk is read as the prefetch's, and reloads nothing.
+// nothing. So a failure while a prefetch is still out and no render is waiting on a chunk is read
+// as the prefetch's, and reloads nothing.
 //
-// WHAT THAT RULE RESTS ON, which is why `renderChunk` is on every chunk a render waits for and
-// not only on the three the entry prefetches. The suppression asks "is a reader waiting on any
-// chunk?", and it can only answer from the chunks that were started through these two functions.
-// A chunk a reader waits for and that was started some other way is invisible to it: it fails,
-// `renderedChunksOut` is still zero, a prefetch of some other chunk happens to be in flight, and
-// the page reloads nothing although the reader is in front of a page that cannot draw. That was
-// the state of it until dispatch://INFRA-1109 - eleven `lazy` routes of `app.tsx`, the machine
-// sign-in route, the margin, and the editor library and Yjs transport a mounting document awaits
-// were all started bare. So: a chunk a render waits on goes through `renderChunk`, a chunk
-// nothing waits on through `prefetchChunk`, and nothing imports a chunk through neither.
-//
-// `vite:preloadError` is dispatched from the rejection itself, before any `then` of the promise
-// these hold runs, so a render's failure always finds its own count still up.
-let prefetchedChunksOut = 0;
-let renderedChunksOut = 0;
-
-/** Starts a chunk nothing is waiting for yet, and swallows its failure: the same import runs
- *  again under `renderChunk` when the router renders the route, and that is where a reader meets
- *  a chunk that will not download. */
-export function prefetchChunk(load: () => Promise<unknown>): void {
-  prefetchedChunksOut += 1;
-  void load()
-    .catch(() => undefined)
-    .finally(() => {
-      prefetchedChunksOut -= 1;
-    });
-}
-
-/** Starts a chunk a reader is waiting on: a route the router is rendering, or a library a mounted
- *  component awaits before it can draw. While one of these is out, a chunk failure reloads from
- *  the tab's budget however many prefetches are in flight beside it. */
-export function renderChunk<T>(load: () => Promise<T>): Promise<T> {
-  renderedChunksOut += 1;
-  const chunk = load();
-  void chunk
-    .catch(() => undefined)
-    .finally(() => {
-      renderedChunksOut -= 1;
-    });
-  return chunk;
-}
+// WHAT THAT RULE RESTS ON is that every chunk a reader waits for is started under `renderChunk`,
+// every chunk nobody waits for under `prefetchChunk`, and no chunk under neither: the rule can
+// see only the chunks those two started. `chunk-loads.ts`, where they and `lazyChunk` live,
+// says how that is held - for a component a `Suspense` waits on, by construction, since `lazy`
+// itself is refused everywhere in `web/src` but that module (the `noRestrictedImports` rule of
+// the repository's `biome.json`) - and which chunks were started bare until dispatch://INFRA-1109.
 
 // Reloads the page for a chunk that failed to download while online, from the tab's budget.
 function reloadForChunkFailure(): void {
   if (leavingPage) {
     return;
   }
-  // A chunk the entry prefetched and no render has asked for yet: the router asks again, and
-  // that failure is the one a reader meets (`prefetchChunk` above).
-  if (prefetchedChunksOut > 0 && renderedChunksOut === 0) {
+  // A chunk a prefetch started and no render has asked for yet: the render asks again, and
+  // that failure is the one a reader meets (above).
+  if (onlyPrefetchesOut()) {
     return;
   }
   // A chunk that fails to download while the browser is offline is a network outage, not a
@@ -379,15 +346,19 @@ export function DeploymentResilience(): ReactNode {
   // down with it anyway - on a cold landing beside the landing read (`app.tsx`,
   // `preloadRouteChunk`) - and no body draws before that read has answered.
   //
-  // Under `prefetchChunk`: nobody is waiting on this download, since a body that draws gets the
-  // engine through its own chunk, under `renderChunk`, and that failure is the one that reloads.
-  // The warm itself runs outside it, as it did when this module imported the engine statically.
+  // Under `prefetchChunk`, the engine's own downloads - the headless editor and its serializer -
+  // as well as its module: nobody is waiting on this warm. A body that draws awaits the same load
+  // under `renderChunk` (`features/refs/markdown-engine.ts`, `withEngine`), and so does a past
+  // version's change marks (`features/doc/VersionView.tsx`), and a failure while either waits is
+  // the one that reloads. The warm ran outside the prefetch until dispatch://INFRA-1109, as it
+  // had when this module imported the engine statically, which left those downloads under
+  // neither function (`chunk-loads.ts`).
   useEffect(() => {
     const timer = window.setTimeout(() => {
       prefetchChunk(() =>
-        import("../refs/markdown-engine").then((markdownEngine) => {
-          void markdownEngine.warmMarkdownRenderer().catch(() => undefined);
-        })
+        import("../refs/markdown-engine").then((markdownEngine) =>
+          markdownEngine.warmMarkdownRenderer()
+        )
       );
     }, 0);
     return () => window.clearTimeout(timer);

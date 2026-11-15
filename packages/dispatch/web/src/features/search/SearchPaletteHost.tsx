@@ -1,6 +1,6 @@
 import { type ComponentType, type ReactNode, useEffect, useState } from "react";
 
-import { prefetchChunk, renderChunk } from "../shell/DeploymentResilience";
+import { prefetchChunk, renderChunk } from "../shell/chunk-loads";
 
 /**
  * Where the shell places the search and actions bar, and where the bar's code is fetched: after

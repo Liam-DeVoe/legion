@@ -1,4 +1,4 @@
-import { renderChunk } from "../features/shell/DeploymentResilience";
+import { renderChunk } from "../features/shell/chunk-loads";
 import type { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 
 /** What the feed reads an event with, once the chunk holding the map has arrived. */
@@ -17,8 +17,8 @@ export interface EventRefreshMap {
  * live document, once that document's first block is in the page, which is long after the
  * shell's first paint (`features/shell/content-drawn.ts`) - and every event it receives is read
  * once the download is in: the feed keeps the event in the log itself, at once, and the
- * refreshes an event asks for are chained onto this one promise, in the order the events
- * arrived (`api/event-feed.ts`).
+ * refreshes an event asks for are chained onto the one promise of this download the feed holds,
+ * in the order the events arrived (`api/event-feed.ts`).
  *
  * What a reader loses by its being late: nothing of the page they landed on, and, for the
  * round trip this download takes, the refresh of a change another person makes in that moment -
@@ -27,7 +27,9 @@ export interface EventRefreshMap {
  * Under `renderChunk`: a reader in front of a page that stops refreshing is waiting on this
  * download as much as on a route's, so a failure spends the tab's recovery reload rather than
  * leaving the page stale for as long as it is open
- * (`features/shell/DeploymentResilience.tsx`).
+ * (`features/shell/DeploymentResilience.tsx`). Where no reload can be spent, the feed refreshes
+ * everything for the events that waited on the failed download and asks for it again with the
+ * next event (`api/event-feed.ts`).
  */
 export function loadEventRefresh(): Promise<EventRefreshMap> {
   return renderChunk(() => import("./event-refresh"));

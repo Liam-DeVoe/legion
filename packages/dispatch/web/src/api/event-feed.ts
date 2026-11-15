@@ -8,7 +8,7 @@ import {
 } from "../features/inbox/ask-thread-freshness";
 import { whenContentDrawn } from "../features/shell/content-drawn";
 
-import { loadEventRefresh } from "./event-refresh-load";
+import { type EventRefreshMap, loadEventRefresh } from "./event-refresh-load";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
@@ -250,9 +250,33 @@ export function useEventFeed({
     trackQueryFetches(queryClient);
     // The map from an event to the queries it changes, started with the feed - or, on a landing
     // whose page draws a live document, once that document has drawn (`whenContentDrawn`) - and
-    // awaited by each event below. One promise for the life of this subscription, so the events
-    // are read in order (`event-refresh-load.ts`).
-    const refreshMap = whenContentDrawn().then(loadEventRefresh);
+    // awaited by each event below. One promise at a time, which every event waits on, so the
+    // events are read in order (`event-refresh-load.ts`).
+    //
+    // A download that fails clears it, and the next event starts the import again. The failure
+    // does not always reload the tab: nothing reloads while the browser is offline, once the
+    // tab's recovery reloads are spent, or while the page is being left
+    // (`features/shell/DeploymentResilience.tsx`, `reloadForChunkFailure`). A feed that kept the
+    // one failed promise then read every later event against it, refreshing nothing for as long
+    // as the tab stayed open. The events waiting on the failed download refresh everything
+    // instead, below, as an event this page cannot map does; a later event asks for the chunk
+    // again, which Chromium can answer with the same failure from its module map
+    // (`features/shell/DeploymentResilience.tsx`, `importWhenOnline`), and that event too then
+    // refreshes everything, under that refresh's own throttle, rather than nothing.
+    let refreshMap: Promise<EventRefreshMap> | undefined;
+    const awaitRefreshMap = (): Promise<EventRefreshMap> => {
+      if (refreshMap === undefined) {
+        const loading = whenContentDrawn().then(loadEventRefresh);
+        refreshMap = loading;
+        // Registered before any event's own handler, so an event that arrives after the failure
+        // finds no promise and starts the import again rather than meeting the same failure.
+        void loading.catch(() => {
+          refreshMap = undefined;
+        });
+      }
+      return refreshMap;
+    };
+    void awaitRefreshMap();
 
     const scheduleFlush = () => {
       if (flush !== undefined) {
@@ -361,7 +385,7 @@ export function useEventFeed({
         // same promise, so they are read in the order they arrived (`event-refresh-load.ts`).
         // The chunk is in after the first round trip, so this is a promise already settled for
         // all but the first few events of a page.
-        void refreshMap.then(
+        void awaitRefreshMap().then(
           ({ askThreadsIssue, eventRefreshTargets }) => {
             try {
               const targets = eventRefreshTargets(
@@ -378,8 +402,10 @@ export function useEventFeed({
             }
           },
           () => {
-            // The map never arrived. The chunk-failure recovery has the tab's reload; nothing
-            // here can say which queries the event changed.
+            // The map's chunk did not download, so nothing here can say which queries the event
+            // changed. The chunk-failure recovery reloads the tab where it can; where it cannot,
+            // this refresh is what keeps the page from showing the change as never made.
+            refreshEverything();
           }
         );
       },

@@ -1,6 +1,6 @@
-import { lazy, type ReactNode, Suspense } from "react";
+import { type ReactNode, Suspense } from "react";
 
-import { renderChunk } from "../shell/DeploymentResilience";
+import { lazyChunk } from "../shell/chunk-loads";
 
 /**
  * Where the shell places the Create issue dialog, and where that dialog's code is fetched: when
@@ -15,13 +15,11 @@ import { renderChunk } from "../shell/DeploymentResilience";
  * What a reader loses by its being late: the frames between the keystroke and the chunk's
  * arrival show no dialog, and then the dialog opens with its title box focused as ever.
  */
-// Under `renderChunk`, like every chunk a render waits on: the reader has asked for the dialog,
-// so a download that fails must spend one of the tab's recovery reloads rather than be read as
-// the entry's prefetch (`features/shell/DeploymentResilience.tsx`).
-const Dialog = lazy(() =>
-  renderChunk(() =>
-    import("./CreateIssueDialog").then((module) => ({ default: module.CreateIssueDialog }))
-  )
+// Through `lazyChunk`, like every chunk a `Suspense` waits on: the reader has asked for the
+// dialog, so a download that fails must spend one of the tab's recovery reloads rather than be
+// read as the entry's prefetch (`features/shell/DeploymentResilience.tsx`).
+const Dialog = lazyChunk(() =>
+  import("./CreateIssueDialog").then((module) => ({ default: module.CreateIssueDialog }))
 );
 
 export function CreateIssueDialogHost({ onClose }: { onClose: () => void }): ReactNode {

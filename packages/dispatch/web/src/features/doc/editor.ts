@@ -3,7 +3,8 @@ import type { Doc } from "yjs";
 
 import type { BlockSchema } from "../../api/types";
 import { requestMermaidDrawing } from "../refs/mermaid-diagrams";
-import { importWhenOnline, renderChunk } from "../shell/DeploymentResilience";
+import { renderChunk } from "../shell/chunk-loads";
+import { importWhenOnline } from "../shell/DeploymentResilience";
 import type { AnchoredBlock } from "./ask-block";
 import type { WatchPicture } from "./picture-view";
 import { MARKS_MAP_NAME } from "./roots";
@@ -119,7 +120,10 @@ export function bindRemoteMarks(doc: Doc, handle: EditorHandle): () => void {
 }
 
 // A standalone Yjs document for an editor with no live connection (a historical version).
+// `renderChunk`, as `createEditor`'s library above: the past version that calls this draws
+// nothing until Yjs is in, so a reader is waiting on the download and its failure must spend one
+// of the tab's recovery reloads (`features/shell/chunk-loads.ts`).
 export async function createDoc(): Promise<Doc> {
-  const { Doc } = await importWhenOnline(() => import("yjs"));
+  const { Doc } = await renderChunk(() => importWhenOnline(() => import("yjs")));
   return new Doc();
 }

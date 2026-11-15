@@ -734,13 +734,14 @@ export class DispatchApiClient {
    *  goes up (an upload's), as the response's headers arrive and as each piece of its body does,
    *  `read` included: a transfer that keeps moving goes on however slowly, either way, and one
    *  that stops fails as headers that never come do. A caller's `init.signal` still aborts the
-   *  request, as itself. */
+   *  request, as itself. `noRouteRetry` is `answered`'s. */
   private async exchange<T>(
     path: string,
     init: RequestInit,
     deadlineMs: number | null | undefined,
     read: (response: Response) => Promise<T>,
-    uploaded?: (loaded: number, total: number) => void
+    uploaded?: (loaded: number, total: number) => void,
+    noRouteRetry = true
   ): Promise<T> {
     const limit =
       deadlineMs !== undefined
@@ -748,7 +749,9 @@ export class DispatchApiClient {
         : (init.method ?? "GET").toUpperCase() === "GET"
           ? REQUEST_DEADLINE_MS
           : null;
-    if (limit === null) return read(await this.answered(path, init, undefined, uploaded));
+    if (limit === null) {
+      return read(await this.answered(path, init, undefined, uploaded, noRouteRetry));
+    }
     const deadline = new AbortController();
     let timer = setTimeout(() => deadline.abort(), limit);
     const caller = init.signal ?? undefined;
@@ -759,7 +762,9 @@ export class DispatchApiClient {
     try {
       const signal =
         caller === undefined ? deadline.signal : AbortSignal.any([caller, deadline.signal]);
-      return await read(await this.answered(path, { ...init, signal }, arrived, uploaded));
+      return await read(
+        await this.answered(path, { ...init, signal }, arrived, uploaded, noRouteRetry)
+      );
     } catch (error) {
       // An answer Dispatch gave stays its answer and the caller's abort stays the caller's: only
       // what the deadline cut short is a timeout.
@@ -787,12 +792,17 @@ export class DispatchApiClient {
    *  `init`, so the same body: while a release rolls out, the next attempt may reach the build
    *  that serves the route. After the last attempt it throws
    *  `NO_ROUTE_ROLLING_RELEASE_MESSAGE`. An abort of `init.signal` during a wait - the caller's,
-   *  or the deadline's - rejects at once with the abort's reason and sends nothing more. */
+   *  or the deadline's - rejects at once with the abort's reason and sends nothing more.
+   *
+   *  `noRouteRetry` false sends the request once and throws a no-route answer as it came, for a
+   *  read whose caller has a fallback of its own for a Dispatch without the route (`getLanding`):
+   *  there the waits only hold back that fallback. */
   private answered(
     path: string,
     init: RequestInit,
     arrived?: () => void,
-    uploaded?: (loaded: number, total: number) => void
+    uploaded?: (loaded: number, total: number) => void,
+    noRouteRetry = true
   ): Promise<Response> {
     // Every read and write of the page funnels through here, so this one line asks Dispatch for
     // the display tree of every stored text it answers with (`Dispatch-Trees`); no other client
@@ -825,6 +835,7 @@ export class DispatchApiClient {
       if (!response.ok) throw await errorFrom(response);
       return response;
     };
+    if (!noRouteRetry) return attempt();
     return retryNoRoute(attempt, isNoRoute, {
       exhausted: () =>
         new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE }),
@@ -843,8 +854,20 @@ export class DispatchApiClient {
     return this.exchange(path, init, deadlineMs, async (response) => response);
   }
 
-  private json<T>(path: string, init: RequestInit = {}, deadlineMs?: number | null): Promise<T> {
-    return this.exchange(path, init, deadlineMs, (response) => response.json() as Promise<T>);
+  private json<T>(
+    path: string,
+    init: RequestInit = {},
+    deadlineMs?: number | null,
+    noRouteRetry = true
+  ): Promise<T> {
+    return this.exchange(
+      path,
+      init,
+      deadlineMs,
+      (response) => response.json() as Promise<T>,
+      undefined,
+      noRouteRetry
+    );
   }
 
   /**
@@ -919,15 +942,21 @@ export class DispatchApiClient {
    *  shaped read, so the trees are part of the body the document holds. A read states a response
    *  shape of its own only where the document cannot hold it - `getIssueEvents` and
    *  `listIssueAskThreads`, each saying beside it what that is - and those two go through `json`
-   *  with `routeUrl`. */
+   *  with `routeUrl`. `noRouteRetry` is `answered`'s. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
     query?: QueryParams<Op<P, "get">>,
     init: RequestInit = {},
-    deadlineMs?: number | null
+    deadlineMs?: number | null,
+    noRouteRetry = true
   ): Promise<Json200<Op<P, "get">>> {
-    return this.json<Json200<Op<P, "get">>>(routeUrl(pattern, params, query), init, deadlineMs);
+    return this.json<Json200<Op<P, "get">>>(
+      routeUrl(pattern, params, query),
+      init,
+      deadlineMs,
+      noRouteRetry
+    );
   }
 
   private async post<P extends PathsOf<"post">>(
@@ -1745,9 +1774,14 @@ export class DispatchApiClient {
    *  parts costs on its own. `page` names which part the answer carries, and `key`, `project`
    *  and `slug` name what that page is about; the route refuses a page it does not know and a
    *  page whose names are absent with `400 LANDING_INPUT`. A Dispatch older than the route
-   *  answers 404, which is what the caller falls back on (`api/queries.ts`, `readLanding`). */
+   *  answers 404, which is what the caller falls back on (`api/queries.ts`, `readLanding`).
+   *
+   *  Sent once, without the no-route retry every other request has (`answered`): that 404 is
+   *  answered by the caller's fallback, the reads the page made before this route, so sending it
+   *  again through the retry's waits only kept a cold page on its skeleton for them, during the
+   *  very rolling deploy that puts such a Dispatch in front of the browser. */
   getLanding(read: Query<"/api/v1/landing", "get">) {
-    return this.read("/api/v1/landing", {}, read);
+    return this.read("/api/v1/landing", {}, read, {}, undefined, false);
   }
 
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the

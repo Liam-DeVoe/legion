@@ -12,6 +12,7 @@ import { useLayoutEffect, useState } from "react";
 import type { DisplayTree } from "../../api/types";
 import { compiledBlockSchema } from "../doc/schema";
 import { renderAskBlockShell, renderTypedBlock } from "../doc/typed-block-drawing";
+import { renderChunk } from "../shell/chunk-loads";
 import type { ParsedBody, ParseRequest } from "./markdown-parse.worker";
 import { markdownWorkerThreshold } from "./markdown-worker-threshold";
 import { referenceSpans } from "./reference-spans";
@@ -139,7 +140,12 @@ function loadEngine(): Promise<MarkdownEngine> {
 
 /** Loads the headless Proof chunk before Markdown-bearing UI needs to render; it reads no schema
  *  from a server, since the manifest is this build's own. The parse worker is not loaded here: a
- *  page that draws no long body downloads none of it. */
+ *  page that draws no long body downloads none of it.
+ *
+ *  It starts the download under neither chunk-failure function: the caller says whether a reader
+ *  waits on it - the change marks of a past version do (`features/doc/VersionView.tsx`,
+ *  `renderChunk`), the shell's boot warm does not (`features/shell/DeploymentResilience.tsx`,
+ *  `prefetchChunk`) - as a body that draws says it itself, below (`withEngine`). */
 export async function warmMarkdownRenderer(): Promise<void> {
   await loadEngine();
 }
@@ -411,6 +417,13 @@ export function loadedEngine(): MarkdownEngine | undefined {
  * schema and Proof's headless chunk arrive otherwise. `undefined` where neither could load,
  * which the cause of is reported and the schema cache does not retain, so the next caller tries
  * the fetch again. Returns the cancel, after which `use` never runs.
+ *
+ * The wait is under `renderChunk`: a body that draws, or the words a headline reads, wait on the
+ * headless editor and the serializer coming down, so a download that fails must spend one of the
+ * tab's recovery reloads. The download itself may be the boot warm's, a prefetch nobody waited
+ * on (`features/shell/DeploymentResilience.tsx`); the two are told apart here, at the wait,
+ * because the load is shared. Awaited bare, as it once was, its failure while a prefetch was out
+ * was read as that prefetch's and reloaded nothing (dispatch://INFRA-1109).
  */
 function withEngine(use: (engine: MarkdownEngine | undefined) => void): () => void {
   if (readyEngine !== undefined) {
@@ -421,7 +434,7 @@ function withEngine(use: (engine: MarkdownEngine | undefined) => void): () => vo
   void (async () => {
     let engine: MarkdownEngine | undefined;
     try {
-      engine = await loadEngine();
+      engine = await renderChunk(loadEngine);
     } catch (error) {
       console.error("Rendering literal Markdown, the Markdown engine is unavailable", error);
     }

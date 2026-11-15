@@ -1,6 +1,6 @@
-import { lazy, type ReactNode, Suspense } from "react";
+import { type ReactNode, Suspense } from "react";
 
-import { renderChunk } from "./DeploymentResilience";
+import { lazyChunk } from "./chunk-loads";
 import type { KeyBindingDescription } from "./keymap";
 
 /**
@@ -13,11 +13,11 @@ import type { KeyBindingDescription } from "./keymap";
  * (`appKeymap.describe()` in `app.tsx`), so the sheet shows the bindings of the row the reader
  * was on however long the download takes.
  */
-// Under `renderChunk`, like every chunk a render waits on: the reader has asked for the sheet,
-// so a download that fails must spend one of the tab's recovery reloads rather than be read as
-// the entry's prefetch (`features/shell/DeploymentResilience.tsx`).
-const Sheet = lazy(() =>
-  renderChunk(() => import("./ShortcutHelp").then((module) => ({ default: module.ShortcutHelp })))
+// Through `lazyChunk`, like every chunk a `Suspense` waits on: the reader has asked for the
+// sheet, so a download that fails must spend one of the tab's recovery reloads rather than be
+// read as the entry's prefetch (`features/shell/DeploymentResilience.tsx`).
+const Sheet = lazyChunk(() =>
+  import("./ShortcutHelp").then((module) => ({ default: module.ShortcutHelp }))
 );
 
 export function ShortcutHelpHost({

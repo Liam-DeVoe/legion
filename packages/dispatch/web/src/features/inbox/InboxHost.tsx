@@ -1,10 +1,10 @@
-import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef } from "react";
+import { type ReactNode, type RefObject, Suspense, useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { landingReadOf } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { afterNextPaint } from "../shell/after-next-paint";
-import { prefetchChunk, renderChunk } from "../shell/DeploymentResilience";
+import { lazyChunk, prefetchChunk } from "../shell/chunk-loads";
 import type { InboxProps } from "./Inbox";
 import type * as InboxChunk from "./inbox-chunk";
 
@@ -26,16 +26,14 @@ import type * as InboxChunk from "./inbox-chunk";
  * download: a reader who peeks at the Inbox from an issue and then opens `/` fetches nothing the
  * second time.
  */
-// Under `renderChunk`, like every chunk a render waits on: a reader who lands on the Inbox's own
-// page or opens the peek is in front of a page that cannot draw until this arrives, so a
+// Through `lazyChunk`, like every chunk a `Suspense` waits on: a reader who lands on the Inbox's
+// own page or opens the peek is in front of a page that cannot draw until this arrives, so a
 // download that fails must spend one of the tab's recovery reloads rather than be read as the
 // entry's prefetch (`features/shell/DeploymentResilience.tsx`).
-const InboxList = lazy(() =>
-  renderChunk(() => loadInboxChunk().then((module) => ({ default: module.Inbox })))
-);
+const InboxList = lazyChunk(() => loadInboxChunk().then((module) => ({ default: module.Inbox })));
 
-const InboxPeek = lazy(() =>
-  renderChunk(() => loadInboxChunk().then((module) => ({ default: module.InboxDrawer })))
+const InboxPeek = lazyChunk(() =>
+  loadInboxChunk().then((module) => ({ default: module.InboxDrawer }))
 );
 
 /** Whether the Inbox's chunk has arrived in this tab: once it has, nothing starts it again. */

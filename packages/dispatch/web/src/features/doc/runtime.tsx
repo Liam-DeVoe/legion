@@ -1,6 +1,6 @@
 import { createContext } from "react";
 
-import { renderChunk } from "../shell/DeploymentResilience";
+import { renderChunk } from "../shell/chunk-loads";
 import { type ConnectDocument, loadDocumentTransport } from "./connection";
 import { type CreateEditor, createEditor } from "./editor";
 

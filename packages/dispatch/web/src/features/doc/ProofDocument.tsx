@@ -52,6 +52,7 @@ import {
 } from "../refs/routes";
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { chunk, chunkComponent } from "../shell/chunk-component";
+import { renderChunk } from "../shell/chunk-loads";
 import { contentDrawn } from "../shell/content-drawn";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
@@ -829,9 +830,11 @@ export function ProofDocument({
           () => undefined,
           async (error: unknown) => {
             if (isArtifactNotFound(error)) {
+              // Under `renderChunk`: the admission waits on this delete before it settles on
+              // the block the page then draws (`features/shell/chunk-loads.ts`).
               try {
-                const { deletePendingEdits } = await importWhenOnline(
-                  () => import("./pending-edits")
+                const { deletePendingEdits } = await renderChunk(() =>
+                  importWhenOnline(() => import("./pending-edits"))
                 );
                 await deletePendingEdits(artifact.id);
               } catch (deleteError) {
