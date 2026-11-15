@@ -84,14 +84,35 @@ func TestRepositoryCorrectionOpensAnUpdateRoundNamingBothRepositories(t *testing
 	rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
 
 	rig.tick()
-
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 		c := rig.awaitRound(role, podUpdateRound)
 		if c.UpdateReasons != podUpdateRepositoryReason {
 			t.Errorf("%s UpdateReasons = %q, want %q", role, c.UpdateReasons, podUpdateRepositoryReason)
 		}
-		if c.Pending == nil || !strings.HasPrefix(c.Pending.ID, "update:"+podUpdateRound+":") {
-			t.Errorf("%s pending = %+v, want the round's task", role, c.Pending)
+	}
+	// The round asks each role over Envoy, at the sweep after its post lands on the claims
+	// (unaskedClaims), and queues no task: the ask is what tells a role the round's reasons, so it
+	// is what has to name both repositories.
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	text := supervise.UpdateTask(podUpdateRound, podUpdateRepositoryReason, podUpdateStart.Add(podUpdateGrace))
+	asked := map[claim.Role]int{}
+	for _, ask := range rig.asks() {
+		asked[ask.Role]++
+		if ask.Round != podUpdateRound || ask.Text != text {
+			t.Errorf("the ask to the %s = %+v, want round %s with the text:\n%s", ask.Role, ask, podUpdateRound, text)
+		}
+		if !strings.Contains(ask.Text, podUpdateRepo) || !strings.Contains(ask.Text, podUpdateCorrectedRepo) {
+			t.Errorf("the ask to the %s says %q, want it to name both %s and %s", ask.Role, ask.Text, podUpdateRepo, podUpdateCorrectedRepo)
+		}
+	}
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+		if asked[role] != 1 {
+			t.Errorf("the %s was asked %d times, want once", role, asked[role])
+		}
+		if p := rig.claimOf(role).Pending; p != nil {
+			t.Errorf("the %s holds %+v, want no task queued for the round", role, p)
 		}
 	}
 }
@@ -238,40 +259,6 @@ func TestRepositoryCorrectionAddsNoReasonWhereNothingDisagrees(t *testing.T) {
 				t.Fatalf("the pod was replaced %d times, want never", len(calls))
 			}
 		})
-	}
-}
-
-// The rescue branches are in the repository the pod pushed to, which after a correction is the
-// repository the issue has left: the push check runs inside the pod, against the remote the pod's
-// own clone has, from the workspace that clone was laid out at (rescue.RepositoryOf). The message
-// names that repository, so the agent that reads it does not look for the branch in the
-// repository the issue is recorded on now, which holds none of it.
-func TestRepositoryCorrectionNamesTheRepositoryTheRescueBranchesAreIn(t *testing.T) {
-	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-	rig.rt.RescueWith(func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-		return []runtime.WorkspaceRescue{{
-			Dir: "/legion/workspaces/" + podUpdateRepo + "/" + strings.ToLower(podUpdateIssue), Status: runtime.RescueRescued,
-			Branches: []runtime.RescuedBranch{{Name: podUpdateRescueTarget, Commit: "a1b2c3d", Pushed: true,
-				Commits: []runtime.RescuedCommit{{ID: "a1b2c3d", Subject: "work"}}}},
-		}}, nil
-	})
-	rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
-
-	rig.tick()
-	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-	rig.signal(claim.RoleImplementer, "")
-	rig.awaitReplacement(1, "once the one worker answered the correction's round")
-
-	messages := rig.messages()
-	if len(messages) != 1 {
-		t.Fatalf("the issue was told %q, want one message naming the rescue branch", messages)
-	}
-	where := "In the repository `" + podUpdateRepo + "`, the push check pushed 1 commit to the branch `" + podUpdateRescueTarget + "`."
-	if !strings.Contains(messages[0], where) {
-		t.Errorf("the issue was told %q, want it to say %q", messages[0], where)
-	}
-	if strings.Contains(messages[0], podUpdateCorrectedRepo) {
-		t.Errorf("the issue was told %q, which names %s: the branch is not in the repository the issue moved to", messages[0], podUpdateCorrectedRepo)
 	}
 }
 

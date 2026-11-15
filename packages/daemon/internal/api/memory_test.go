@@ -29,10 +29,11 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // answer under `why`, the two issues whose current phase names a phase worker role carry the
 // entry that role stands on and the entry it was given, every issue of a live tree carries that
 // tree's quiet time, and one issue carries the correction of its repository and one the change
-// Dispatch has named that the daemon has not applied, so one state proves all seventeen
-// downgrades and that they compose. What the sixteenth band is measured on in finer grain — both
-// halves of the quiet time on each member of one tree, and neither on an issue whose tree has
-// left the workflow — is quiet_time_test.go's state of its own.
+// Dispatch has named that the daemon has not applied, so one state proves seventeen of the
+// eighteen downgrades and that they compose; it stands no member of the line of the kind 132
+// added, whose downgrade waiting_on_issue_test.go proves. What the sixteenth band is measured on
+// in finer grain — both halves of the quiet time on each member of one tree, and neither on an
+// issue whose tree has left the workflow — is quiet_time_test.go's state of its own.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -127,12 +128,14 @@ var (
 // views' `leakCheckCause` too, and still neither entry number, nor the held list, nor the quiet
 // time, nor a repository correction; a pod from 94 to 97 the two entry numbers too, and still no
 // held list, no quiet time and no repository correction; a pod from 98 to 110 the held list too,
-// and still no tree quiet time and no repository correction; a pod from 111 to 118 the quiet
-// time too, and still nothing of a repository correction; a pod below 46 none of the seventeen;
-// and a pod at 119, this daemon's declared contract, a pod whose claims record no contract and a
-// caller in no pod — the operator's `legion state`, whose memory line reads the draws, whose
-// queue line reads the wakes and whose tool-call line reads the step records — are served all of
-// them, the quiet time of every live tree with the rest.
+// and still no tree quiet time and no repository correction; a pod from 111 to 136 the quiet
+// time too, and still nothing of a repository correction — the fixture stands no member of the
+// line of the one kind 132 added, so 132's strip finds nothing here (waiting_on_issue_test.go
+// reads it); a pod below 46 none of the eighteen; and a pod at 137, this daemon's declared
+// contract, a pod whose claims record no contract and a caller in no pod — the operator's
+// `legion state`, whose memory line reads the draws, whose queue line reads the wakes and whose
+// tool-call line reads the step records — are served all of them, the quiet time of every live
+// tree with the rest.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -207,11 +210,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// correction is whether the caller is served what a correction of an issue's repository
-		// left on its record (repositoryCorrectionContract, 119), this daemon's own contract.
+		// left on its record (repositoryCorrectionContract, 137), this daemon's own contract.
 		correction bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
-		{name: "a pod below PodUpdateContract, below all seventeen", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
+		{name: "a pod below PodUpdateContract, below all eighteen", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(memoryContract - 1), rounds: true},
 		// The band at 49 and 50, above memoryContract and below treeContract: the memory group
 		// is served and the two tree keys, `wakesWaiting`, the gated steps, the retired stranded
@@ -287,9 +290,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from 98 to 110, from heldContract to below quietTimeContract: the held list
 		// is served too, and the tree quiet time and the four repository keys are held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
-		// The band from 111 to 118, from quietTimeContract to below repositoryCorrectionContract,
+		// The band from 111 to 136, from quietTimeContract to below repositoryCorrectionContract,
 		// the last band under the declared contract: the tree quiet time is served too, and the
-		// four repository keys are the ones held back. Its two rows are its two edges.
+		// four repository keys are the ones held back; waitingOnIssueContract stands inside it,
+		// and this fixture stands nothing its strip takes. Its two rows are its two edges.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		{name: "a pod a contract below repositoryCorrectionContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryCorrectionContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, correction: true},

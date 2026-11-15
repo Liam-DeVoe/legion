@@ -430,18 +430,18 @@ test("a reminder machine made afresh reports nothing while the daemon answers th
   }
 });
 
-// The daemon's own update task arrives as a prompt, which the reminder reads as an inbound
+// The daemon's own update message arrives over Envoy, which the reminder reads as an inbound
 // message. It moves the rhythm's count and nothing else, so a role whose phase has closed is
 // reminded of nothing after it. There is no guard for this: with no model of the phase, nothing
 // an inbound message moves can decide that a reminder goes out.
-test("an update task sent to a role whose phase is closed produces no reminder", async () => {
+test("an update message sent to a role whose phase is closed produces no reminder", async () => {
   const { reminder, timers, sent } = rig({ owed: async () => OWES_NOTHING });
 
   // The role finished its phase: its last tool call was the completion, and its turn settled.
   reminder.apply({ kind: "tool-call" });
   expect(await reminder.settle(said("Handed off."))).toBeUndefined();
 
-  // The daemon's update task, and the turn it starts.
+  // The daemon's update message, and the turn it starts.
   reminder.turnStarted();
   reminder.apply({ kind: "inbound" });
   expect(await reminder.settle(said("Nothing of mine to push."))).toBeUndefined();
@@ -738,11 +738,9 @@ test("a refused turn at the limit, whose claim the daemon failed, reminds nothin
 // The wait a `ready_for_update` answer creates is `awaiting-update`, and nothing is armed in it:
 // the daemon is what wakes the worker, with the task it held behind the round, once the round
 // has replaced the pod. A timer fired in that wait would steer a real turn into the worker
-// instead, and a new turn is exactly what the daemon reads as the answer retracted
-// (`takeBackSignal`), so the sweep would ask the worker to push again, the round would
-// restart at every `waitingMs`, and the late-round notice — measured from the latest answer —
-// would never name the `ReplacePod` error or the sibling turn that will not end. The WAITING
-// reply's own wait is untouched: it is the reminder's to time out.
+// instead: its work would go with the pod, and before the round's bound a running turn holds the
+// replacement back, so a reminder every `waitingMs` would keep the round from ending early. The
+// WAITING reply's own wait is untouched: it is the reminder's to time out.
 test("the wait an update answer creates arms no reminder, where a WAITING reply still arms one", async () => {
   const { reminder, timers, sent, entries, asked } = rig({});
 

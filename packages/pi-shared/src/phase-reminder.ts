@@ -518,10 +518,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       // Neither wait earns a reminder now. The wait a `ready_for_update` answer created is the
       // daemon's to end, so nothing is armed in it: the round replaces the pod, and the task it
       // held behind the round reaches the worker in the process that comes back on the new pod,
-      // while a reminder steered in meanwhile is the turn the daemon reads as the answer
-      // retracted (`awaiting-update` in `./phase-stall`). The machine sends no reminder into a
-      // quiet wait either, so the timer carries the one this settling message earned, for when
-      // the wait has been long enough.
+      // while a reminder steered in meanwhile starts a turn of work the replacement throws away,
+      // and before the round's bound a running turn holds that replacement back (`awaiting-update`
+      // in `./phase-stall`). The machine sends no reminder into a quiet wait either, so the timer
+      // carries the one this settling message earned, for when the wait has been long enough.
       if (!remind) {
         continued = false;
         if (stall.state === "waiting") armReminder(text, deps.limits.waitingMs);

@@ -230,8 +230,8 @@ func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
 // After Dispatch corrected an issue's repository, every launch of the issue's claims is told
 // both repositories: the one it works now, which the repository sentence already names, and the
 // one it left, with the moment the daemon applied the correction, written as an RFC 3339 time in
-// UTC whatever zone the record's moment carries. The sentence says where the issue's branch, its
-// pull request and the old pod's rescue branch stayed, since those never move, and it is
+// UTC whatever zone the record's moment carries. The sentence says where the issue's branch and
+// its pull request stayed, since those never move, and it is
 // rendered at every launch from then on rather than once: no claim turns it off. An issue no
 // correction has reached is told none of it. A daemon with no reader, which is told no
 // repository at all, is the test above's last case.
@@ -267,7 +267,7 @@ func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
 		return spec.Prompt.Addressing
 	}
 	const sentences = "The daemon changed your issue's repository from acme/widgets at 2026-11-12T07:30:00Z. " +
-		"Your issue's branch, your issue's pull request and any rescue branch of the old pod are on acme/widgets. " +
+		"Your issue's branch and your issue's pull request are on acme/widgets. " +
 		"Your work on this issue is on zeta/tools now."
 
 	s.repository = func(context.Context, string) (launchRepository, error) {
@@ -282,8 +282,8 @@ func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
 	if !strings.Contains(corrected, "Your issue's repository is zeta/tools (default branch main); the project's repositories are acme/widgets, zeta/tools.") {
 		t.Fatalf("the addressing of a corrected issue = %q, want the repository it works now named before the correction", corrected)
 	}
-	// The second launch of the same claim is told it again: the branch, the pull request and the
-	// rescue branch stay on acme/widgets for the life of the issue, so nothing stops saying so.
+	// The second launch of the same claim is told it again: the branch and the pull request stay
+	// on acme/widgets for the life of the issue, so nothing stops saying so.
 	if again := launch(); again != corrected {
 		t.Fatalf("the second launch's addressing = %q, want the first's %q", again, corrected)
 	}

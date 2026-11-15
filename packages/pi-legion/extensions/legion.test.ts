@@ -2557,10 +2557,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
     });
 
-    // INFRA-484: the update task arrives as the daemon's own prompt, an inbound message, and
+    // INFRA-484: the update message reaches the worker as an inbound message, and
     // `ready_for_update` finishes nothing the daemon records. The turn the worker answers in must
-    // still end: a continuation would do work the pod's replacement throws away, and the daemon,
-    // which waits for a turn to end before it replaces anything, would see none.
+    // still end: a continuation would do work the pod's replacement throws away, and before the
+    // round's bound the daemon waits for every turn to end before it replaces the pod.
     test("a ready_for_update answer earns no continuation: the answering turn ends, and no timer is armed in the wait", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -2588,11 +2588,11 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(await worker.settles(answered)).toBeUndefined();
       expect(steered(worker)).toEqual([]);
       // The wait the answer created arms no timer: the daemon's update round is its watchdog, and
-      // a reminder fired here would steer a real `agent_start`, which the daemon reads as a new
-      // turn and so as the answer retracted — the round would restart at every wait and never
-      // converge (INFRA-484, the `awaiting-update` state of `@legion/pi-shared/phase-stall`,
-      // which a record holds as the plain `waiting`). The WAITING reply's own wait keeps its
-      // timer, which the case above holds.
+      // a reminder fired here would steer a real `agent_start`, a turn of work the replacement
+      // throws away, and before the round's bound a running turn holds that replacement back
+      // (INFRA-484, the `awaiting-update` state of `@legion/pi-shared/phase-stall`, which a record
+      // holds as the plain `waiting`). The WAITING reply's own wait keeps its timer, which the
+      // case above holds.
       expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       expect(recorded(worker).at(-1)).toEqual({
         state: "waiting",
@@ -2608,7 +2608,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(steered(worker)).toEqual([]);
     });
 
-    test("a successful handoff_complete posts the completion with a fresh grant and the commit found in the pane; once the daemon answers nothing is owed, no inbound message reminds, the daemon's update task included", async () => {
+    test("a successful handoff_complete posts the completion with a fresh grant and the commit found in the pane; once the daemon answers nothing is owed, no inbound message reminds, the daemon's update message included", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
 
@@ -2648,9 +2648,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       await worker.arrives(envoyEvent);
       expect(await worker.settles("Answered the reviewer.")).toBeUndefined();
 
-      // The daemon's own update task reaches the role whose phase has closed as a prompt, a
-      // user message like any assignment. It moves the rhythm's count and nothing else, so it
-      // reminds of nothing.
+      // The daemon's own update message reaches the role whose phase has closed as an inbound
+      // message, here a user message, which an Envoy delivery is the same input as. It moves the
+      // rhythm's count and nothing else, so it reminds of nothing.
       await worker.arrives({
         message: {
           role: "user",

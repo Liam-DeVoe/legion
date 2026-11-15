@@ -22,8 +22,8 @@ import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
  * a settle is reminded at all is the daemon's answer alone, asked at that settle. A process that
  * restarts, or a pod that is replaced, therefore changes nothing about whether a role is
  * reminded: it holds no state a restart could reset, and an inbound message moves the rhythm and
- * nothing else, so the daemon's own update task reaching a role whose phase has finished reminds
- * it of nothing (dispatch://INFRA-2746).
+ * nothing else, so the daemon's own update message reaching a role whose phase has finished
+ * reminds it of nothing (dispatch://INFRA-2746).
  */
 
 /** Where the reminder's rhythm stands:
@@ -32,15 +32,15 @@ import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
  * - `waiting`: the worker's last reply said with a WAITING line what it waits on, or its turn
  *   ended with background work of its own still running; both buy the longer quiet wait
  *   `LEGION_STALL_WAITING_MS` before the next reminder;
- * - `awaiting-update`: the worker has answered the daemon's update task (`ready_for_update`), so
- *   it is to start nothing until the daemon comes back to it. This wait earns no reminder and no
- *   wait of any length, because the daemon is what wakes the worker: a round, once opened, ends
- *   only by replacing its pod or because that pod is gone, so the process is replaced and the
+ * - `awaiting-update`: the worker has answered the daemon's update message (`ready_for_update`),
+ *   so it is to start nothing until the daemon comes back to it. This wait earns no reminder and
+ *   no wait of any length, because the daemon is what wakes the worker: a round, once opened,
+ *   ends only by replacing its pod or because that pod is gone, so the process is replaced and the
  *   session comes back on the new pod with the task the round held behind it (`endPodUpdate` in
  *   `packages/daemon/internal/supervise/table.go`). That task arrives as the daemon's own prompt,
  *   which is an inbound message and makes the rhythm `active` again. A reminder steered into
- *   this wait would instead be a turn the daemon reads as the answer retracted
- *   (`takeBackSignal`), so the round would restart at every wait and never converge (INFRA-484).
+ *   this wait would instead start a turn of work the replacement throws away, and before the
+ *   round's bound a turn in progress holds that replacement back (INFRA-484).
  * The reminding never stops where a reminder is the worker's only wake: one that changes nothing
  * is followed by another, for as long as the daemon answers that the work is owed. */
 export type PhaseStall = "active" | "waiting" | "awaiting-update";
@@ -59,7 +59,7 @@ export type PhaseStallInput =
    * daemon's answer at the next settle; it is something happening, so the count starts again. */
   | { readonly kind: "inbound" }
   /** The `legion` tool's `ready_for_update` returned without throwing: the worker has pushed
-   * what it wants kept and answered the daemon's update task on its pod (INFRA-484). */
+   * what it wants kept and answered the daemon's update message on its pod (INFRA-484). */
   | { readonly kind: "update-answered" }
   /** The settling assistant message ran at least one real tool call (`assistantRanTool`). */
   | { readonly kind: "tool-call" }
@@ -161,7 +161,7 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
       // update wait: either way something happened, and the count starts again.
       return { state: { state: "active", count: 0 } };
     case "update-answered":
-      // The worker has answered the update task and is to start nothing until the daemon comes
+      // The worker has answered the update message and is to start nothing until the daemon comes
       // back to it, so a turn ending now has earned no reminder: a reminder here would continue
       // that turn in the same run, with work a replacement would throw away and no new turn for
       // the daemon to see. The wait this begins is the daemon's to end, never a timer's.

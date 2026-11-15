@@ -67,7 +67,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // it was written. It reads a changes request's version (awaiting_answered_version) only beside the
 // answer it was written with: a daemon of an earlier release writes a later answer and leaves the
 // version as it was, and that answer then reads as one with no version (PutIssue).
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), case when awaiting_answered_version_at = awaiting_answered_at then coalesce(awaiting_answered_version, 0) else 0 end, awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), memory_group, memory_draw_mode, memory_drawn_at, moved_at, tree_stalled_told_at`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), case when awaiting_answered_version_at = awaiting_answered_at then coalesce(awaiting_answered_version, 0) else 0 end, awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), memory_group, memory_draw_mode, memory_drawn_at, moved_at, tree_stalled_told_at, released_for_wait_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -242,14 +242,16 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		answeredBy, answeredDetail = issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail
 		sinceSeq, since = markValues(issue.Awaiting.Since)
 	}
-	// Ten columns are named nowhere in the update set, so a copy of the issue read before a write
-	// of any of them never writes the stored value back: repo, default_branch and github_repo;
-	// handout_seq, declared_seq and declared_at, which are StartHandout's, TakeInThrough's,
-	// Declare's and ClearDeclared's alone; memory_group, memory_draw_mode and memory_drawn_at,
-	// which are DrawMemory's and CarryMemory's; and moved_at, which is MarkIssueMoved's. For the
-	// repository that is what lets a correction stand: an observation prepared before it carries
-	// the old repository and writes none of it, and a correction has a writer of its own,
-	// CorrectIssueRepository. For the memory it is what makes a tree's memory group write-once: a
+	// Eleven columns are named nowhere in the update set, so a copy of the issue read before a
+	// write of any of them never writes the stored value back: repo, default_branch and
+	// github_repo; handout_seq, declared_seq and declared_at, which are StartHandout's,
+	// TakeInThrough's, Declare's and ClearDeclared's alone; memory_group, memory_draw_mode and
+	// memory_drawn_at, which are DrawMemory's and CarryMemory's; moved_at, which is
+	// MarkIssueMoved's; and released_for_wait_at, which is ReleaseSlotForWait's and
+	// ClearReleasedForWait's. For the repository that is what lets a correction stand: an
+	// observation prepared before it carries the old repository and writes none of it, and a
+	// correction has a writer of its own, CorrectIssueRepository. For the memory it is what makes
+	// a tree's memory group write-once: a
 	// re-admission, a new generation and ClearTreeGeneration each record the issue again from a
 	// copy read before the draw, and each keeps it. For the movement it is what keeps it safe,
 	// since every write site that marks one holds a copy of the issue read before its own fact and
@@ -529,13 +531,13 @@ func scanIssue(row scanner) (*Issue, error) {
 	var answeredVersion int
 	var repoBefore, repoChangePending, repoChangeReason string
 	var sinceSeq *int64
-	var since, declaredAt, memoryDrawnAt, repoCorrectedAt, treeStalledToldAt *time.Time
+	var since, declaredAt, memoryDrawnAt, repoCorrectedAt, treeStalledToldAt, releasedForWaitAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &repoBefore, &repoCorrectedAt, &repoChangePending, &repoChangeReason,
 		&awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail, &answeredVersion,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.ToldParent, &issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt, &treeStalledToldAt); err != nil {
+		&issue.ToldParent, &issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt); err != nil {
 		return nil, err
 	}
 	if declaredAt != nil {
@@ -560,6 +562,10 @@ func scanIssue(row scanner) (*Issue, error) {
 	if treeStalledToldAt != nil {
 		utc := treeStalledToldAt.UTC()
 		issue.TreeStalledToldAt = &utc
+	}
+	if releasedForWaitAt != nil {
+		utc := releasedForWaitAt.UTC()
+		issue.ReleasedForWaitAt = &utc
 	}
 	if generation < 0 {
 		return nil, fmt.Errorf("issue %s has negative generation %d", issue.Key, generation)
@@ -587,7 +593,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_raised_at from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_raised_at, entry_moved_back from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -632,8 +638,8 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		raisedAt = phase.EntryRaisedAt
 	}
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
-		decision, completed_at, entry, entry_task, entry_raised_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		decision, completed_at, entry, entry_task, entry_raised_at, entry_moved_back)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
@@ -641,10 +647,11 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		cap_told = excluded.cap_told, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at,
-		entry = excluded.entry, entry_task = excluded.entry_task, entry_raised_at = excluded.entry_raised_at`,
+		entry = excluded.entry, entry_task = excluded.entry_task, entry_raised_at = excluded.entry_raised_at,
+		entry_moved_back = excluded.entry_moved_back`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
 		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
-		phase.Entry, phase.EntryTask, raisedAt,
+		phase.Entry, phase.EntryTask, raisedAt, phase.EntryMovedBack,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -659,7 +666,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var raisedAt *time.Time
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
 		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
-		&phase.Entry, &phase.EntryTask, &raisedAt); err != nil {
+		&phase.Entry, &phase.EntryTask, &raisedAt, &phase.EntryMovedBack); err != nil {
 		return PhaseRow{}, err
 	}
 	if raisedAt != nil {
@@ -1866,6 +1873,26 @@ func (s *Postgres) PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error {
 func (s *Postgres) ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error {
 	if _, err := tx.Exec(ctx, "delete from slots where issue = $1", issue); err != nil {
 		return fmt.Errorf("release slot for %s: %w", issue, err)
+	}
+	return nil
+}
+
+// ReleaseSlotForWait deletes the row and writes the mark in one statement, because the two are
+// one fact: the delete's returning feeds the update, so a transaction can neither take the row
+// away without the mark nor mark an issue that kept its row. An issue holding no row is marked
+// by neither, which is the truth about it — nothing released it for a wait.
+func (s *Postgres) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue string, at time.Time) error {
+	_, err := tx.Exec(ctx, `with released as (delete from slots where issue = $1 returning issue)
+		update issues set released_for_wait_at = $2 from released where issues.key = released.issue`, issue, at)
+	if err != nil {
+		return fmt.Errorf("release the slot of %s for what it waits on: %w", issue, err)
+	}
+	return nil
+}
+
+func (s *Postgres) ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error {
+	if _, err := tx.Exec(ctx, "update issues set released_for_wait_at = null where key = $1", issue); err != nil {
+		return fmt.Errorf("clear the release of %s's slot for what it waits on: %w", issue, err)
 	}
 	return nil
 }

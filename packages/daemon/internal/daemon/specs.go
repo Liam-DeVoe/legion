@@ -415,11 +415,10 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 // corrected is what a correction of the issue's repository left on its record, and nil for an
 // issue no correction has reached. Where there is one, the issue's own repository sentence is
 // followed by the correction's three: that the daemon changed the repository, and when; that the
-// issue's branch, its pull request and any rescue branch of the old pod stay on the repository
-// the issue left; and that the work is on the new repository now. They are rendered at every
-// launch of the issue from then on, so the correction stays in the system prompt for the life of
-// the issue, and no claim turns them off: the branch, the pull request and the rescue branch of
-// that issue are on the old repository for ever.
+// issue's branch and its pull request stay on the repository the issue left; and that the work
+// is on the new repository now. They are rendered at every launch of the issue from then on, so
+// the correction stays in the system prompt for the life of the issue, and no claim turns them
+// off: the branch and the pull request of that issue are on the old repository for ever.
 //
 // A correction that left an open pull request behind (RepositoryCorrection.PullRequest) adds two
 // more sentences, which name that pull request and the repository it is open on. They are the
@@ -455,7 +454,7 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 		return fragment, nil
 	}
 	fragment += " " + fmt.Sprintf("The daemon changed your issue's repository from %s at %s. "+
-		"Your issue's branch, your issue's pull request and any rescue branch of the old pod are on %s. "+
+		"Your issue's branch and your issue's pull request are on %s. "+
 		"Your work on this issue is on %s now.",
 		corrected.Before, corrected.At.UTC().Format(time.RFC3339), corrected.Before, repo.String())
 	if corrected.PullRequest == nil {

@@ -15,6 +15,8 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,20 +212,38 @@ func TestRepositoryCorrectionOpensAnOrdinaryRoundForEachIssueADefaultChangeMoved
 
 	rig.tick()
 
-	first := rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	first := rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
 	if first.UpdateReasons != podUpdateRepositoryReason {
 		t.Errorf("%s's round reasons = %q, want %q", podUpdateIssue, first.UpdateReasons, podUpdateRepositoryReason)
 	}
-	other := rig.awaitRoundOf(second, defaultChangeSecondRound)
+	other := rig.awaitAskedOf(second, defaultChangeSecondRound)
 	if other.UpdateReasons != podUpdateRepositoryReason {
 		t.Errorf("%s's round reasons = %q, want %q", defaultChangeSecondIssue, other.UpdateReasons, podUpdateRepositoryReason)
 	}
 	if first.UpdateRound == other.UpdateRound {
 		t.Fatalf("both issues are in the round %q, want a round of each issue's own pod", first.UpdateRound)
 	}
-	for _, c := range []supervise.Claim{first, other} {
-		if c.Pending == nil || c.Pending.ID == "" {
-			t.Errorf("%s was asked nothing for round %q, want the round's own task", c.Issue, c.UpdateRound)
+	// Each round asks its own issue's role over Envoy, naming its own round and pod and both
+	// repositories, and no ask of one issue names the other's pod.
+	rounds := map[string]string{podUpdateIssue: podUpdateRound, defaultChangeSecondIssue: defaultChangeSecondRound}
+	pods := map[string]string{podUpdateIssue: podUpdatePod, defaultChangeSecondIssue: defaultChangeSecondPod}
+	asked := map[string]int{}
+	for _, row := range rig.rows(record.OutboxKindUpdateAsk) {
+		var ask record.UpdateAsk
+		if err := json.Unmarshal(row.Payload, &ask); err != nil {
+			t.Fatalf("decode update ask %d: %v", row.ID, err)
+		}
+		asked[row.Issue]++
+		if ask.Round != rounds[row.Issue] || ask.Pod != pods[row.Issue] {
+			t.Errorf("the ask on %s = %+v, want round %s of pod %s", row.Issue, ask, rounds[row.Issue], pods[row.Issue])
+		}
+		if !strings.Contains(ask.Text, podUpdateRepo) || !strings.Contains(ask.Text, podUpdateCorrectedRepo) {
+			t.Errorf("the ask on %s says %q, want it to name both %s and %s", row.Issue, ask.Text, podUpdateRepo, podUpdateCorrectedRepo)
+		}
+	}
+	for issue := range rounds {
+		if asked[issue] != 1 {
+			t.Errorf("%s was asked %d times, want once, by its own round", issue, asked[issue])
 		}
 	}
 }
@@ -269,9 +289,10 @@ func (r *podUpdateRig) correctsIssue(issue, repo, branch string) {
 	correctRecord(r.t, r.pool, r.records, issue, repo, branch, r.clock.Now())
 }
 
-// awaitRoundOf waits for the round the sweep opens to be recorded on one claim named by its
-// token, which is how a test reads an issue the rig's role map does not name (awaitRound).
-func (r *podUpdateRig) awaitRoundOf(token claim.Token, round string) supervise.Claim {
+// awaitAskedOf sweeps until one claim named by its token records round and the sweep's publish
+// mark of its ask (supervise.Claim.UpdateTaskedAt), which is how a test reads an issue the rig's
+// role map does not name (awaitAsked).
+func (r *podUpdateRig) awaitAskedOf(token claim.Token, round string) supervise.Claim {
 	r.t.Helper()
 	claimOf := func() supervise.Claim {
 		m, ok := r.sup.Machine(token)
@@ -280,9 +301,21 @@ func (r *podUpdateRig) awaitRoundOf(token claim.Token, round string) supervise.C
 		}
 		return m.Claim()
 	}
-	testwait.Eventually(r.t, string(token)+": the update round "+round, func() bool {
+	asked := func() bool {
 		c := claimOf()
 		return c.UpdateRound == round && c.UpdateTaskedAt != nil
+	}
+	landing := true
+	testwait.Eventually(r.t, string(token)+": the ask of the update round "+round, func() bool {
+		if asked() {
+			return true
+		}
+		if landing {
+			landing = false
+			return false
+		}
+		r.tick()
+		return asked()
 	})
 	return claimOf()
 }

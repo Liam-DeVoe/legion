@@ -51,7 +51,7 @@ var leftPullRequestMoment = time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
 // correctionSentences is what every launch of a corrected issue is told about the correction
 // itself, which the pull request's sentences follow.
 const correctionSentences = "The daemon changed your issue's repository from acme/widgets at 2026-11-12T09:30:00Z. " +
-	"Your issue's branch, your issue's pull request and any rescue branch of the old pod are on acme/widgets. " +
+	"Your issue's branch and your issue's pull request are on acme/widgets. " +
 	"Your work on this issue is on zeta/tools now."
 
 // leftPullRequestSentences name the pull request the correction left open on the repository the

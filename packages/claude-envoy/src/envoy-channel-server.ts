@@ -2130,7 +2130,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.
       const answer = await executeLegionTool(legionRuntime, request.params.arguments, extra.signal)
-      // `ready_for_update` answers the pod's update task, and the worker then waits for its
+      // `ready_for_update` answers the pod's update message, and the worker then waits for its
       // process to be replaced, so the `Stop` of the turn it answered in blocks nothing
       // (`updateAnswered`, `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does
       // (`createLegionTool` in `packages/pi-legion/src/tools.ts`).

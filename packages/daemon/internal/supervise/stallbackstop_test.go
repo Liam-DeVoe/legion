@@ -1,11 +1,8 @@
 package supervise
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"go/ast"
 	"go/importer"
 	"go/parser"
@@ -13,7 +10,6 @@ import (
 	"go/types"
 	"io"
 	"os"
-	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testtypes"
 )
 
 // backstopBound is the bound the daemon's sweep would hand this claim's role: four hours for an
@@ -795,40 +792,35 @@ func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
 }
 
 // compiledDependencies is where the compiler left the types of everything this package imports:
-// the build that runs this test has written them into its cache, and the go command reports the
-// file of each. The walk above reads those rather than type-checking the dependency tree from
-// its source, which this package's dependencies make tens of seconds of the test binary's run
-// (the source read sealed makes, in table_test.go, is the longest test in the package by
-// itself). also names other packages, by directory, whose dependencies are listed with this
-// package's, for a test that type-checks their source too.
-func compiledDependencies(t *testing.T, also ...string) func(string) (io.ReadCloser, error) {
+// the go command reports the file of each from its build cache (testtypes.CompiledDependencies).
+// The walk above reads those rather than type-checking the dependency tree from its source,
+// which this package's dependencies make tens of seconds of the test binary's run (the source
+// read sealed makes, in table_test.go, is the longest test in the package by itself). also names
+// other packages, by directory, whose dependencies are looked up after this package's, for a test
+// that type-checks their source too.
+func compiledDependencies(t *testing.T, also ...string) importer.Lookup {
 	t.Helper()
-	args := append([]string{"list", "-deps", "-export", "-json=ImportPath,Export", "."}, also...)
-	listed, err := exec.Command("go", args...).Output()
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			t.Fatalf("ask the go command where this package's dependencies were compiled: %v: %s", err, exit.Stderr)
+	patterns := append([]string{"github.com/sjawhar/legion/daemon/internal/supervise"}, also...)
+	lookups := make([]importer.Lookup, 0, len(patterns))
+	for _, pattern := range patterns {
+		compiled, err := testtypes.CompiledDependencies(pattern)
+		if err != nil {
+			t.Fatal(err)
 		}
-		t.Fatalf("ask the go command where this package's dependencies were compiled: %v", err)
+		lookups = append(lookups, compiled)
 	}
-	exports := map[string]string{}
-	decoder := json.NewDecoder(bytes.NewReader(listed))
-	for decoder.More() {
-		var dependency struct{ ImportPath, Export string }
-		if err := decoder.Decode(&dependency); err != nil {
-			t.Fatalf("read the go command's answer: %v", err)
-		}
-		if dependency.Export != "" {
-			exports[dependency.ImportPath] = dependency.Export
-		}
+	if len(lookups) == 1 {
+		return lookups[0]
 	}
 	return func(path string) (io.ReadCloser, error) {
-		export, found := exports[path]
-		if !found {
-			return nil, fmt.Errorf("the go command reported no compiled types for %s", path)
+		var err error
+		for _, lookup := range lookups {
+			var file io.ReadCloser
+			if file, err = lookup(path); err == nil {
+				return file, nil
+			}
 		}
-		return os.Open(export)
+		return nil, err
 	}
 }
 

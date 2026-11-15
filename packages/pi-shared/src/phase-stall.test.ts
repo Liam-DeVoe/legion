@@ -144,8 +144,8 @@ test("a record's last message reads back no longer than the notice quotes", () =
 });
 
 // An inbound message moves the rhythm's count and nothing else: a user message (the daemon's
-// task, its update task, a person's direct message) and an Envoy delivery are each the same input,
-// and none says anything of what the claim owes.
+// task, a person's direct message) and an Envoy delivery (the update round's message among them)
+// are each the same input, and none says anything of what the claim owes.
 test("every message from outside the session is one inbound input, and the reminder's own is none", () => {
   expect(isInbound({ role: "user", content: "Run the update." })).toBe(true);
   expect(isInbound({ role: "custom", customType: "envoy-message", details: {} })).toBe(true);
@@ -158,11 +158,11 @@ test("every message from outside the session is one inbound input, and the remin
   }
 });
 
-// INFRA-484: the worker has answered the daemon's update task (`ready_for_update`), so it is to
+// INFRA-484: the worker has answered the daemon's update message (`ready_for_update`), so it is to
 // start nothing until the daemon comes back to it. A reminder here would continue the answering
 // turn in the same run: the work that continuation did would go with the pod, and the daemon
 // would see no turn end.
-test("a worker that answered the update task stands in awaiting-update, where a settle earns no reminder", () => {
+test("a worker that answered the update message stands in awaiting-update, where a settle earns no reminder", () => {
   const answered = stepPhaseStall({ state: "active", count: 2 }, { kind: "update-answered" });
   expect(answered).toEqual({ state: { state: "awaiting-update", count: 0 } });
   expect(

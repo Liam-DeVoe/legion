@@ -477,10 +477,10 @@ test("a refused turn whose claim the daemon has failed is reminded of nothing", 
   }
 })
 
-// INFRA-484: the update task reaches Claude Code as a prompt, an inbound message, and
+// INFRA-484: the update message reaches Claude Code as an inbound message, and
 // `ready_for_update` finishes nothing the daemon records. The `Stop` of the turn the worker
 // answers in must still block nothing: a blocked `Stop` continues that same turn, so the work it
-// did would go with the pod, and the daemon would see no turn end.
+// did would go with the pod, and before the round's bound the daemon waits for every turn to end.
 test("a ready_for_update answer blocks no Stop: the answering turn ends, and nothing is armed in the wait", async () => {
   const { endpoint, record, inbox, close } = await harness({
     record: recorded("active", 1),
@@ -503,8 +503,8 @@ test("a ready_for_update answer blocks no Stop: the answering turn ends, and not
     expect(await record()).toEqual({ state: "waiting", count: 0, ...said })
     // Nothing is written into the wait the answer created, and nothing ever will be: it arms no
     // timer at all. The daemon's update round is its watchdog, and a reminder fired here would be
-    // a prompt, which starts a turn the daemon reads as the answer retracted — the round would
-    // restart at every wait and never converge (INFRA-484, the `awaiting-update` state of
+    // a prompt, which starts a turn of work the replacement throws away, and before the round's
+    // bound a running turn holds that replacement back (INFRA-484, the `awaiting-update` state of
     // `@legion/pi-shared/phase-stall`, which a record holds as the plain `waiting`). A case
     // asserting that nothing happens has no condition to wait for, so this is one of the file's
     // fixed waits, over the quiet wait itself and so over every wait this endpoint arms, and the
@@ -594,11 +594,11 @@ test("every other prompt is an inbound message, which starts the count again", a
   }
 })
 
-// The daemon's own update task reaches a role whose phase has closed as a prompt like any
-// other. With no model of the phase, nothing a prompt moves can decide that a reminder goes out,
-// so the daemon's answer that the claim owes nothing keeps it quiet: no guard says so, the
-// construction does.
-test("an update task sent to a role whose phase is closed produces no reminder", async () => {
+// The daemon's own update message reaches a role whose phase has closed as a prompt like any
+// other, an Envoy delivery this server wrote. With no model of the phase, nothing a prompt moves
+// can decide that a reminder goes out, so the daemon's answer that the claim owes nothing keeps it
+// quiet: no guard says so, the construction does.
+test("an update message sent to a role whose phase is closed produces no reminder", async () => {
   const { endpoint, inbox, asked, close } = await harness({
     record: recorded("active", 0),
     claim: implementer,

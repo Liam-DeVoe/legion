@@ -400,7 +400,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// two leave together (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// correction is whether the caller is served what a correction of an issue's repository
-		// left on its record, the four keys repositoryCorrectionContract added at 119, this
+		// left on its record, the four keys repositoryCorrectionContract added at 137, this
 		// daemon's own contract, so a pod at it is served them and a pod still running an older
 		// plugin is not.
 		correction bool
@@ -429,11 +429,14 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// the three bands left above it.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true},
 		// The band from heldContract to below quietTimeContract: the held list is served too,
-		// and the tree quiet time and the repository corrections are the two bands left above it.
+		// and the tree quiet time and the repository corrections are the two key-carrying bands
+		// left above it.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true},
 		// The band from quietTimeContract to below repositoryCorrectionContract: the tree quiet
-		// time is served too, and the repository corrections are the one band left above it.
-		// Its two rows are its two edges.
+		// time is served too, and the repository corrections are the one key-carrying band left
+		// above it. waitingOnIssueContract stands inside it, and its strip takes a word of the
+		// line's `kind` and no key, so it moves nothing here; waiting_on_issue_test.go reads that
+		// word. Its two rows are its two edges.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		{name: "a pod a contract below repositoryCorrectionContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryCorrectionContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, correction: true},
@@ -532,7 +535,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `treeMovedAt` and `quietHours` (withoutQuietTime), and with the four keys of a
 			// repository correction gone, which a pod below repositoryCorrectionContract is served
 			// without (withoutRepositoryCorrection). Every row that reaches here is below all of
-			// them, so those seventeen strips take their keys whatever the row is.
+			// them, so those eighteen strips take their keys whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
