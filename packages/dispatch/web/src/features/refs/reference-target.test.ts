@@ -13,11 +13,11 @@ import { createElement, type ReactNode } from "react";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
+import { artifactAtAddress } from "../../api/issue-cache";
 import type { Agent, GraphReferences, IssueReferenceSummary } from "../../api/types";
 import { agentsQuery } from "./agent-registry";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import {
-  artifactAtAddress,
   blockQuery,
   documentSummaryQuery,
   issueSummaryQuery,

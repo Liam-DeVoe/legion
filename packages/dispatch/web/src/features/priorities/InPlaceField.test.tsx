@@ -54,3 +54,31 @@ test("a text written elsewhere replaces what a field the reader is not holding s
   );
   view.unmount();
 });
+
+/** A field whose value nothing moves, with every text it wrote recorded in `saves`, in order. */
+function recordingField() {
+  const saves: string[] = [];
+  const view = render(
+    <InPlaceField label="Title" onSave={(next) => saves.push(next)} value="Old" />
+  );
+  return { field: within(view.container).getByRole("textbox", { name: "Title" }), saves, view };
+}
+
+// Enter leaves the field, and leaving is what writes: the same text sent twice would be a
+// second write of a priority nobody changed again.
+test("Enter writes what the reader typed once", async () => {
+  const user = userEvent.setup();
+  const { field, saves, view } = recordingField();
+  await user.type(field, " new{Enter}");
+  expect(saves).toEqual(["Old new"]);
+  view.unmount();
+});
+
+test("leaving the field by Tab writes what the reader typed once", async () => {
+  const user = userEvent.setup();
+  const { field, saves, view } = recordingField();
+  await user.type(field, " new");
+  await user.tab();
+  expect(saves).toEqual(["Old new"]);
+  view.unmount();
+});

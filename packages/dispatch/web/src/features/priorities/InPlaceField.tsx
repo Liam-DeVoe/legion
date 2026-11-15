@@ -9,9 +9,9 @@ import { useInPlaceDraft } from "./useInPlaceDraft";
 
 /**
  * A one-line field edited where it is read - a title, or an owner picked from what other rows
- * hold - saved as it is written (`useInPlaceDraft`), and at once on Enter. A priority's
- * description, which is markdown a person writes, is the shared text field instead
- * (`PriorityDescription`).
+ * hold - saved as it is written (`useInPlaceDraft`), and at once on Enter, which leaves the
+ * field and so writes once, as leaving it any other way does. A priority's description, which
+ * is markdown a person writes, is the shared text field instead (`PriorityDescription`).
  */
 export function InPlaceField({
   autoFocus = false,
@@ -37,7 +37,7 @@ export function InPlaceField({
   placeholder?: string;
   value: string;
 }): ReactNode {
-  const { draft, hold, leave, save, type } = useInPlaceDraft(value, onSave, onDone);
+  const { draft, hold, leave, type } = useInPlaceDraft(value, onSave, onDone);
   // A field opened by a click on what it edits takes the focus once, with the caret at the end
   // of the text, so the reader writes on from where the text stands.
   const input = useRef<HTMLInputElement>(null);
@@ -64,7 +64,6 @@ export function InPlaceField({
         onKeyDown={(event) => {
           if (event.key !== "Enter") return;
           event.preventDefault();
-          save();
           event.currentTarget.blur();
         }}
         placeholder={placeholder}

@@ -116,9 +116,10 @@ test("the plain-text projection names a reference by its resolved name", async (
 });
 
 // The projection reads the whole text unless its caller asks for the first line alone, which a
-// closed priority row does: the line is cut from the parsed document, so its references are
+// closed priority row does: the line is read from the parsed document, so its references are
 // still named, and the lines and blocks after it are not read at all. A heading's line and a
-// list's first line read the same way.
+// list's first line read the same way, and so does a block of HTML: its first line reads as its
+// literal characters, which is how the projection draws HTML.
 test("the plain-text projection reads the first line alone where it is asked to", async () => {
   const markdown = "Tied to **dispatch://CORE-1**\nhere.\n\n- A list after it";
   const view = draw(
@@ -150,6 +151,21 @@ test("the plain-text projection reads the first line alone where it is asked to"
       <PlainText firstLine markdown={"```\n\nfirst code\nsecond\n```"}>
         {(text) => <span data-testid="code">{text ?? ""}</span>}
       </PlainText>
+      <PlainText
+        firstLine
+        markdown={'<img src="https://example.com/a.png">\nThe priority keeps one build.'}
+      >
+        {(text) => <span data-testid="html-image">{text ?? ""}</span>}
+      </PlainText>
+      <PlainText
+        firstLine
+        markdown={"<details>\n<summary>Why this priority</summary>\nThe fleet first.\n</details>"}
+      >
+        {(text) => <span data-testid="html-details">{text ?? ""}</span>}
+      </PlainText>
+      <PlainText firstLine markdown={"<br>\nThe next line."}>
+        {(text) => <span data-testid="html-break">{text ?? ""}</span>}
+      </PlainText>
     </>
   );
   try {
@@ -166,6 +182,16 @@ test("the plain-text projection reads the first line alone where it is asked to"
     await waitFor(() => expect(view.getByTestId("break").textContent).toBe("After a hard break"));
     await waitFor(() => expect(view.getByTestId("table").textContent).toBe("Name Owner"));
     await waitFor(() => expect(view.getByTestId("code").textContent).toBe("first code"));
+    // A block of HTML is one node holding all of its lines, and its first line is its first
+    // line's literal characters, as the projection draws them: never blank, and never the
+    // lines after it.
+    await waitFor(() =>
+      expect(view.getByTestId("html-image").textContent).toBe(
+        '<img src="https://example.com/a.png">'
+      )
+    );
+    await waitFor(() => expect(view.getByTestId("html-details").textContent).toBe("<details>"));
+    await waitFor(() => expect(view.getByTestId("html-break").textContent).toBe("<br>"));
     await waitFor(() =>
       expect(view.getByTestId("whole").textContent).toBe(
         "Tied to CORE-1 Fix the thing here. A list after it"

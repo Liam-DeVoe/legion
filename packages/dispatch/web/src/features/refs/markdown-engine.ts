@@ -75,10 +75,11 @@ export interface MarkdownEngine {
    * holding a heading), is drawn as its literal fence lines around its formatted content rather
    * than refused or silently dropped, a Pandoc `::: warning` fence or a `::leaf` / `:text{` line
    * reads as paragraph text, and so does a `:::` opener inside 32 open container directives, the
-   * deepest the parser nests them (`directive-container.ts`), so none of them throws. Proof's
-   * schema has no node for CommonMark's raw-HTML spans (a bare tag-shaped substring outside a
-   * code span or fence, e.g. `<img src=x>`) or a mark span of a kind this schema does not carry,
-   * so the parser still throws for them. HTML-like text inside a code span or fence parses
+   * deepest the parser nests them (`directive-container.ts`), so none of them throws. A
+   * CommonMark raw-HTML span or block (a bare tag-shaped substring outside a code span or fence,
+   * e.g. `<img src=x>`) parses as an `html` node holding its literal characters, a block of HTML
+   * inside a paragraph of its own; a mark span of a kind this schema does not carry has no node,
+   * so the parser still throws for one. HTML-like text inside a code span or fence parses
    * safely as literal text, so nothing is escaped beforehand: escaping the whole source
    * regardless of context would print literal backslashes around any
    * code span or fence containing something tag-shaped. Reference-style links and images
@@ -548,23 +549,77 @@ function nameReferences(text: string, names: ReferenceNames, addresses: string[]
   return named + text.slice(cursor);
 }
 
-/** The words a parsed document renders, on one line: text as it reads (references named), raw
- *  inline HTML as the literal characters a body shows for it, and every block boundary, hard
- *  break or other leaf a space. */
-function plainWords(doc: ProseMirrorNode, names: ReferenceNames): ProjectedText {
-  const parts: string[] = [];
-  const addresses: string[] = [];
-  doc.descendants((node, _position, parent) => {
+/** The words a parsed document renders, line by line, each line with the `dispatch://` addresses
+ *  it wrote: text as it reads (references named), raw inline HTML as the literal characters a
+ *  body shows for it, and every leaf but a hard break a space. A line ends at every block
+ *  boundary, at a hard break, and at a newline in a text or an HTML value - which is where a code
+ *  block's lines end, and a block of HTML's, which the engine draws as one `html` node holding
+ *  all of its lines. A table's row is the exception: it reads as one line, every boundary or
+ *  break inside it a space, so its cells read in a row. */
+function plainLines(doc: ProseMirrorNode, names: ReferenceNames): ProjectedText[] {
+  const lines: ProjectedText[] = [];
+  let words = "";
+  let addresses: string[] = [];
+  // Where the table row being read ends: a node that starts before it is one of its cells.
+  let rowEnd = -1;
+  const breakLine = (position: number): void => {
+    if (position < rowEnd) {
+      words += " ";
+      return;
+    }
+    lines.push({ addresses, words });
+    words = "";
+    addresses = [];
+  };
+  // A reference never spans a newline (`reference-spans.ts`), so each line of a text is named
+  // on its own.
+  const write = (position: number, text: string, name: boolean): void => {
+    for (const [index, line] of text.split("\n").entries()) {
+      if (index > 0) {
+        breakLine(position);
+      }
+      words += name ? nameReferences(line, names, addresses) : line;
+    }
+  };
+  doc.descendants((node, position, parent) => {
     if (node.isText) {
       const code =
         parent?.type.spec.code === true || node.marks.some((mark) => mark.type.spec.code === true);
-      parts.push(code ? (node.text ?? "") : nameReferences(node.text ?? "", names, addresses));
-    } else if (node.isBlock || node.isLeaf) {
-      parts.push(node.type.name === "html" ? String(node.attrs.value ?? "") : " ");
+      write(position, node.text ?? "", !code);
+    } else if (node.type.name === "html") {
+      write(position, String(node.attrs.value ?? ""), false);
+    } else if (node.isBlock || node.type.name === "hardbreak") {
+      breakLine(position);
+      if (node.type.name === "table_row" || node.type.name === "table_header_row") {
+        rowEnd = position + node.nodeSize;
+      }
+    } else if (node.isLeaf) {
+      words += " ";
     }
     return true;
   });
-  return { addresses, words: parts.join("") };
+  breakLine(doc.content.size);
+  return lines;
+}
+
+/** The words a parsed document renders, on one line: its lines (`plainLines`) a space apart. */
+function plainWords(doc: ProseMirrorNode, names: ReferenceNames): ProjectedText {
+  const lines = plainLines(doc, names);
+  return {
+    addresses: lines.flatMap((line) => line.addresses),
+    words: lines.map((line) => line.words).join(" "),
+  };
+}
+
+/** The first of a parsed document's lines (`plainLines`) that holds any words, with the
+ *  addresses written on it alone; nothing where no line holds words. A line holding nothing but
+ *  an image or a break holds no words, since the projection draws neither, so the next line is
+ *  read; a line of HTML holds its literal characters, as the projection draws them, so a block
+ *  of HTML reads as its first line. */
+function firstLineOf(doc: ProseMirrorNode, names: ReferenceNames): ProjectedText {
+  return (
+    plainLines(doc, names).find((line) => line.words.trim() !== "") ?? { addresses: [], words: "" }
+  );
 }
 
 /** A headline, whether it had to be cut to fit, and the `dispatch://` addresses it drew. */
@@ -600,15 +655,17 @@ export interface MarkdownHeadline {
  * that leaves it out reads every reference as its short form, which is what a title drawn over
  * one record's text does (`useReferenceTarget`), since a name inside a name resolves nothing.
  *
- * `firstLine` projects the text's first line alone: the first line that holds any words (of a
- * paragraph, a heading, a list item, a code block, or a table's whole row), the lines before it
- * that hold none - an image alone, a break - passed over (`firstLineOf`), for a
- * place that shows the opening line of a text and no more of it. A text read from `markdown` is
- * parsed with its soft breaks kept as line breaks for this reading, so a paragraph's first line
- * is the line its author wrote; a tree's soft break is whatever Go's reading made of it, a space,
- * so only a hard break ends that line. Only a closed row of the priorities table asks for it
- * today (`priorities-columns.tsx`); every other caller reads the whole text, which is the
- * default. `cut` still says only whether the projected words were cut to `max`.
+ * `firstLine` projects the text's first line alone (`firstLineOf`): the first line of the
+ * projection that holds any words - of a paragraph, a heading, a list item, a code block, a
+ * table's whole row, or a block of HTML, which reads as its own first line's literal characters
+ * (`<details>`) - the lines before it that hold none - an image alone, a break - passed over, for
+ * a place that shows the opening line of a text and no more of it. A text read from `markdown`
+ * is parsed with its soft breaks kept as line breaks for this reading, so a paragraph's first
+ * line is the line its author wrote; a tree's soft break is whatever Go's reading made of it, a
+ * space, so only a hard break ends that line. Only a closed row of the priorities table asks for
+ * it today (`priorities-columns.tsx`); every other caller reads the whole text, which is the
+ * default. `cut` still says only whether the projected words were cut to `max`, and `addresses`
+ * holds only the line's own.
  *
  * `undefined` where neither is given, until the engine has answered (one pre-paint commit once
  * it is loaded on the page, and for a parsed body until the worker's answer lands), and for a
@@ -629,9 +686,9 @@ export function useMarkdownHeadline(
         setHeadline(undefined);
         return;
       }
-      // The line is cut from the parsed document, never from the markdown, so the projection
-      // reads it as it reads a whole text.
-      const projected = plainWords(firstLine ? firstLineOf(document) : document, names);
+      // The line is read from the parsed document, never from the markdown, by the projection
+      // that reads a whole text, so the two cannot disagree on what a line holds.
+      const projected = firstLine ? firstLineOf(document, names) : plainWords(document, names);
       const characters = Array.from(projected.words.replace(/\s+/g, " ").trim());
       const cut = characters.length > max;
       setHeadline({
@@ -659,52 +716,4 @@ export function useMarkdownHeadline(
     );
   }, [firstLine, markdown, max, names, tree]);
   return headline;
-}
-
-/** `document` cut to its first line that holds words. Each textblock's lines end at its hard
- *  breaks, and a code block's at its newlines, whose text keeps its lines; a line holding nothing
- *  but an image or a break holds no words for the projection, which draws neither, so the next
- *  line is read. A table's row is one line, its cells read in a row, so a header row is its
- *  header and not its first cell. Nothing at all where no line holds words. */
-function firstLineOf(document: ProseMirrorNode): ProseMirrorNode {
-  let line: { readonly from: number; readonly to: number } | undefined;
-  const holdsWords = (from: number, to: number): boolean =>
-    document.textBetween(from, to, " ").trim() !== "";
-  document.descendants((node, position) => {
-    if (line !== undefined) {
-      return false;
-    }
-    if (node.type.name === "table_row" || node.type.name === "table_header_row") {
-      if (holdsWords(position, position + node.nodeSize)) {
-        line = { from: position, to: position + node.nodeSize };
-      }
-      return false;
-    }
-    if (!node.isTextblock) {
-      return true;
-    }
-    const contentStart = position + 1;
-    let from = contentStart;
-    const end = (to: number): void => {
-      if (line === undefined && holdsWords(from, to)) {
-        line = { from, to };
-      }
-    };
-    node.forEach((child, offset) => {
-      const at = contentStart + offset;
-      if (child.type.name === "hardbreak") {
-        end(at);
-        from = at + child.nodeSize;
-      } else if (child.isText) {
-        const text = child.text ?? "";
-        for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
-          end(at + index);
-          from = at + index + 1;
-        }
-      }
-    });
-    end(contentStart + node.content.size);
-    return false;
-  });
-  return line === undefined ? document.cut(0, 0) : document.cut(line.from, line.to);
 }

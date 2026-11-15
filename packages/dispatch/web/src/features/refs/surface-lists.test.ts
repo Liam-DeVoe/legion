@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-
 import {
   DISPATCH_READING_SURFACES,
   DISPATCH_WRITING_BOXES,
   type DispatchReadingSurfaceRow,
   type DispatchWritingBoxRow,
 } from "@legion/contracts";
+import * as ts from "typescript";
 
 /**
  * The two lists say what the framework covers: `DISPATCH_WRITING_BOXES` every box a person
@@ -43,26 +43,30 @@ interface Construct {
   readonly pattern: RegExp;
 }
 
-/** What a box is made of: the plain textarea of a box that takes no picker, the two editors
- *  that host the picker in their own way (a document's body through `createProofEditor`, an
- *  agent's live conversation through assistant-ui's composer input), and a mount of the shared
- *  field, either bare or through the composer that dresses it. The `createProofEditor` pattern
- *  skips its own declaration in the editor package, which is no mount. */
+/** The two editors that host the picker in their own way: a document's body through
+ *  `createProofEditor`, an agent's live conversation through assistant-ui's composer input. A box
+ *  made of one picks its row beside the mount rather than on it (the document body's picker, the
+ *  live conversation's triggers). The pattern skips `createProofEditor`'s own declaration in the
+ *  editor package, which is no mount. */
+const EDITOR_MOUNT: Construct = {
+  name: "an editor mount",
+  pattern: /(?<!function )\bcreateProofEditor\(|<ComposerPrimitive\.Input\b/,
+};
+
+/** The elements that mount the shared field, bare or through the composer that dresses it. A
+ *  mount picks the box's row on its own attributes (`picksOf`). */
+const SHARED_FIELD_ELEMENTS: readonly string[] = ["MentionField", "MentionComposer"];
+
+/** What a box is made of: the plain textarea of a box that takes no picker, an editor that
+ *  hosts the picker, and a mount of the shared field. */
 const WRITING_CONSTRUCTS: readonly Construct[] = [
   { name: "a textarea element", pattern: /<textarea\b/ },
+  EDITOR_MOUNT,
   {
-    name: "an editor mount",
-    pattern: /(?<!function )\bcreateProofEditor\(|<ComposerPrimitive\.Input\b/,
+    name: "a mount of the shared field",
+    pattern: new RegExp(SHARED_FIELD_ELEMENTS.map((element) => `<${element}\\b`).join("|")),
   },
-  { name: "a mount of the shared field", pattern: /<MentionField\b|<MentionComposer\b/ },
 ];
-
-/** The two editors that host the picker their own way: a box made of one picks its row beside
- *  the mount rather than on it (the document body's picker, the live conversation's triggers). */
-const EDITOR_CONSTRUCT = /(?<!function )\bcreateProofEditor\(|<ComposerPrimitive\.Input\b/;
-
-/** The opening of a mount of the shared field, whose own tag picks the box's row. */
-const SHARED_FIELD_MOUNT = /<(?:MentionField|MentionComposer)\b/g;
 
 /** What a reading surface is made of: a mount of the one renderer, as a body or as a line or
  *  two of one, and a mount of a reference card - the cards under a body that is nothing but
@@ -195,7 +199,7 @@ function sourceLines(text: string): string[] {
 }
 
 /** Each scanned file's own text, read once: the row checks below read a word anywhere in it,
- *  and the walk reads it with its comments blanked. */
+ *  the walk reads it with its comments blanked, and the pick reader parses it (`picksOf`). */
 const TEXT_BY_FILE = new Map(
   SCANNED_FILES.map((file) => [file, readFileSync(join(REPO_ROOT, file), "utf8")] as const)
 );
@@ -219,57 +223,106 @@ function writesWord(file: string, word: string): boolean {
   return TEXT_BY_FILE.get(file)?.includes(word) === true;
 }
 
-/** The opening tag of each mount of the shared field in `code`: from `<MentionField` or
- *  `<MentionComposer` to the `>` that ends the tag, a `>` inside a `{...}` value or a string
- *  being no end. */
-function sharedFieldTags(code: string): string[] {
-  const tags: string[] = [];
-  for (const match of code.matchAll(SHARED_FIELD_MOUNT)) {
-    let depth = 0;
-    let quote = "";
-    let at = match.index;
-    for (; at < code.length; at += 1) {
-      const char = code[at];
-      if (quote !== "") {
-        quote = char === quote ? "" : quote;
-      } else if (char === '"' || char === "'" || char === "`") {
-        quote = char;
-      } else if (char === "{") {
-        depth += 1;
-      } else if (char === "}") {
-        depth -= 1;
-      } else if (char === ">" && depth === 0) {
-        break;
-      }
-    }
-    tags.push(code.slice(match.index, at + 1));
-  }
-  return tags;
+/** What one file's code picks of the writing list, read from its syntax tree, so a comment, a
+ *  string anywhere else - a mutation key, a test id - and an attribute of another element are
+ *  no pick. */
+interface Picks {
+  /** The rows its shared-field mounts pick on their own attributes: `box="<id>"`,
+   *  `writing={dispatchWritingBox("<id>", ...)}`, or `writing={NAME}` where NAME is a `const` of
+   *  the file initialised with that call. */
+  readonly mounts: ReadonlySet<string>;
+  /** Every row it calls `dispatchWritingBox("<id>", ...)` with, anywhere: an editor hosts the
+   *  picker beside its mount, so a box made of one picks its row there. */
+  readonly calls: ReadonlySet<string>;
 }
 
-/** Whether `file` picks `box` in its code, its comments blanked, in one of the two forms a box
- *  picks its row by: a shared-field mount whose own tag says `box="<box>"`, or
- *  `writing={dispatchWritingBox("<box>", ...)}` either written there or held in a constant the
- *  tag names; or, where `editor` is set, `dispatchWritingBox("<box>", ...)` anywhere, since an
- *  editor hosts the picker beside its mount. Any other string - a mutation key, a test id - is
- *  no pick, and a mount picking another row stands in for nothing. */
-function picksBox(file: string, box: string, editor: boolean): boolean {
-  const code = LINES_BY_FILE.get(file)?.join("\n") ?? "";
-  const call = `dispatchWritingBox("${box}"`;
-  if (editor && code.includes(call)) {
-    return true;
+/** The row a `dispatchWritingBox("<id>", ...)` call picks; `undefined` for any other node,
+ *  a call whose row is no string literal included. */
+function writingBoxCall(node: ts.Node | undefined): string | undefined {
+  if (
+    node === undefined ||
+    !ts.isCallExpression(node) ||
+    !ts.isIdentifier(node.expression) ||
+    node.expression.text !== "dispatchWritingBox"
+  ) {
+    return undefined;
   }
-  const held = new Set(
-    [...code.matchAll(/\b([A-Za-z_$][\w$]*)\s*=\s*dispatchWritingBox\(\s*"([^"]+)"/g)]
-      .filter((match) => match[2] === box)
-      .map((match) => match[1])
-  );
-  return sharedFieldTags(code).some((tag) => {
-    const named = /\bwriting=\{\s*([A-Za-z_$][\w$]*)\s*\}/.exec(tag)?.[1];
-    return (
-      tag.includes(`box="${box}"`) || tag.includes(call) || (named !== undefined && held.has(named))
-    );
-  });
+  const [box] = node.arguments;
+  return box !== undefined && ts.isStringLiteral(box) ? box.text : undefined;
+}
+
+/** `source`'s picks, parsed as the TSX it is: the parser ends a string, a comment and a tag
+ *  where TypeScript does, escapes included, so a mount's attributes are its own and no more. */
+function picksOf(file: string, source: string): Picks {
+  const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const calls = new Set<string>();
+  const held = new Map<string, string>();
+  const mounts: ts.JsxOpeningLikeElement[] = [];
+  const visit = (node: ts.Node): void => {
+    const call = writingBoxCall(node);
+    if (call !== undefined) {
+      calls.add(call);
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0
+    ) {
+      const box = writingBoxCall(node.initializer);
+      if (box !== undefined) {
+        held.set(node.name.text, box);
+      }
+    }
+    if (
+      (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+      SHARED_FIELD_ELEMENTS.includes(node.tagName.getText(tree))
+    ) {
+      mounts.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  // The mounts are read once the whole file has been, since a constant one names may be
+  // declared below it.
+  const picked = new Set<string>();
+  for (const mount of mounts) {
+    for (const attribute of mount.attributes.properties) {
+      if (!ts.isJsxAttribute(attribute) || attribute.initializer === undefined) {
+        continue;
+      }
+      const name = attribute.name.getText(tree);
+      const value = attribute.initializer;
+      let box: string | undefined;
+      if (name === "box" && ts.isStringLiteral(value)) {
+        box = value.text;
+      } else if (name === "writing" && ts.isJsxExpression(value)) {
+        const { expression } = value;
+        box =
+          expression !== undefined && ts.isIdentifier(expression)
+            ? held.get(expression.text)
+            : writingBoxCall(expression);
+      }
+      if (box !== undefined) {
+        picked.add(box);
+      }
+    }
+  }
+  return { calls, mounts: picked };
+}
+
+/** Each scanned file's picks, read the first time a covered row of it asks. */
+const PICKS_BY_FILE = new Map<string, Picks>();
+
+/** Whether `file` picks `box`: on a shared-field mount's own attributes, or, where `editor` is
+ *  set, in a `dispatchWritingBox("<box>", ...)` call anywhere, since an editor hosts the picker
+ *  beside its mount. A mount picking another row stands in for nothing. */
+function picksBox(file: string, box: string, editor: boolean): boolean {
+  let picks = PICKS_BY_FILE.get(file);
+  if (picks === undefined) {
+    picks = picksOf(file, TEXT_BY_FILE.get(file) ?? "");
+    PICKS_BY_FILE.set(file, picks);
+  }
+  return picks.mounts.has(box) || (editor && picks.calls.has(box));
 }
 
 /** One place the walk found a construct. */
@@ -302,6 +355,30 @@ const READING_SITES = sitesOf(READING_CONSTRUCTS, new Set());
 
 const WRITING_FILES = new Set(DISPATCH_WRITING_BOXES.flatMap((row) => row.files));
 const READING_FILES = new Set(DISPATCH_READING_SURFACES.flatMap((row) => row.files));
+
+/** The workflow whose `changes` job decides which jobs a pull request runs. */
+const CI_WORKFLOW = ".github/workflows/ci.yaml";
+
+/**
+ * The globs of `dispatch_references`, the paths filter of `CI_WORKFLOW`'s `changes` job that
+ * starts the reference rows on a pull request. The filters are one YAML string inside the
+ * workflow's YAML, and a filter may name a group of them through its anchor, so both are parsed
+ * and the list is flattened, as dorny/paths-filter flattens it.
+ */
+function referenceFilter(): Bun.Glob[] {
+  const workflow = Bun.YAML.parse(readFileSync(join(REPO_ROOT, CI_WORKFLOW), "utf8")) as {
+    jobs?: { changes?: { steps?: { id?: string; with?: { filters?: string } }[] } };
+  };
+  const filters = workflow.jobs?.changes?.steps?.find((step) => step.id === "filter")?.with
+    ?.filters;
+  const groups = Bun.YAML.parse(filters ?? "") as Record<string, unknown> | null;
+  return [groups?.dispatch_references]
+    .flat(Number.POSITIVE_INFINITY)
+    .filter((pattern): pattern is string => typeof pattern === "string")
+    .map((pattern) => new Bun.Glob(pattern));
+}
+
+const REFERENCE_FILTER = referenceFilter();
 
 /** The file, or the file and the list it is missing from: a failure a person can act on
  *  without opening anything first. */
@@ -346,6 +423,40 @@ describe("the walk reads the dashboard's source", () => {
     // pass over nothing at all.
     expect(WRITING_SITES.length).toBeGreaterThan(15);
     expect(READING_SITES.length).toBeGreaterThan(40);
+  });
+
+  test("reads the reference rows' filter in ci.yaml", () => {
+    // A guard on the reading of the workflow: were it to find no filter, no covered row's file
+    // would be in it, and every covered row below would fail for a reason none of them has.
+    expect(REFERENCE_FILTER.length).toBeGreaterThan(20);
+  });
+});
+
+// ------------------------------------------------------------------------------------------
+// A mount's pick is read from its own attributes
+// ------------------------------------------------------------------------------------------
+
+describe("a mount's pick is read from its own attributes", () => {
+  // A string's escaped quote ends neither the string nor the tag, so the element after a mount
+  // is never read as part of it.
+  const fixture = (field: string): string =>
+    [
+      "export const Box = () => (",
+      "  <>",
+      `    <MentionField label={"Quote \\" here"} ${field}body={draft} onChange={type} />`,
+      '    <AskCard box="priority-description" />',
+      "  </>",
+      ");",
+    ].join("\n");
+
+  test("a box on the element after a mount is no pick of it", () => {
+    expect([...picksOf("fixture.tsx", fixture("")).mounts]).toEqual([]);
+  });
+
+  test("a box on the mount itself is its pick", () => {
+    expect([...picksOf("fixture.tsx", fixture('box="ask-answer" ')).mounts]).toEqual([
+      "ask-answer",
+    ]);
   });
 });
 
@@ -392,17 +503,25 @@ describe("every row of the writing list is a box the dashboard still draws", () 
     );
     if (row.covered) {
       // A covered box takes the picker: a mount of the shared field in a file of it picks the
-      // row on its own tag, or a file of it mounts an editor that hosts the picker and a file of
-      // it picks the row beside it (the document body's editor is mounted in one file and its
-      // picker picks the row in another). A comment naming the row, a string that is no pick,
-      // and a mount picking another row are none of these.
-      const editor = row.files.some((file) =>
-        LINES_BY_FILE.get(file)?.some((line) => EDITOR_CONSTRUCT.test(line))
-      );
+      // row on its own attributes, or a file of it mounts an editor that hosts the picker and a
+      // file of it picks the row beside it (the document body's editor is mounted in one file
+      // and its picker picks the row in another). A comment naming the row, a string that is no
+      // pick, and a mount picking another row are none of these.
+      const editor = row.files.some((file) => holdsAny(file, [EDITOR_MOUNT]));
       const picked = row.files.some((file) => picksBox(file, row.box, editor));
       expect(
         picked ? label : `no mount in a file of ${label} picks its row: ${row.files.join(", ")}`
       ).toBe(label);
+      // A pull request runs the reference rows only where it changes a path ci.yaml's
+      // `dispatch_references` filter names, so a covered box's file the filter misses is one a
+      // pull request can take the picker out of with none of those rows run.
+      for (const file of row.files) {
+        expect(
+          REFERENCE_FILTER.some((glob) => glob.match(file))
+            ? file
+            : `${file} (named by ${label}) is in no glob of ${CI_WORKFLOW}'s dispatch_references`
+        ).toBe(file);
+      }
     }
   });
 

@@ -2,9 +2,8 @@ import { itemFromSearch } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
 
-import { primarySpec, roleDocument } from "../../api/issue-cache";
+import { artifactAtAddress, primarySpec, roleDocument } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
-import { artifactAtAddress } from "../refs/reference-target";
 import { type IssueRoute, isPrimaryDocumentArtifactRoute, issueTabForRoute } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 

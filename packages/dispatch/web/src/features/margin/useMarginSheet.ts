@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import type { WriteBounds } from "../../api/client";
-import { primarySpec } from "../../api/issue-cache";
+import { artifactAtAddress, primarySpec } from "../../api/issue-cache";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
@@ -13,7 +13,6 @@ import type { CarriedBlockIds } from "../conversation/send-request";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
-import { artifactAtAddress } from "../refs/reference-target";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
 import type { MarginComposer } from "./CommentsTab";

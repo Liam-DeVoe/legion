@@ -11,7 +11,7 @@ import {
 } from "@tanstack/react-query";
 
 import { ApiError, api, artifactVersionPath } from "../../api/client";
-import { primarySpec } from "../../api/issue-cache";
+import { artifactAtAddress, primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
 import type {
   ArchitectureComponentRead,
@@ -251,29 +251,6 @@ export function summarySpec(
   summary: IssueReferenceSummary | undefined
 ): IssueReferenceSummaryDocument | undefined {
   return (summary?.documents ?? []).find((document) => document.primary);
-}
-
-/** The artifact among `artifacts` that an address names - the `<name>` of an `artifact/<name>`
- *  reference or of an issue's `/artifacts/<name>` page - found as the server's read route finds it
- *  (`resolveDocumentReference`): the artifact whose slug it is, else the document whose name it
- *  is. A document renamed to a slug-shaped name keeps the slug its first name gave it, so an
- *  address written with its current name opens it and is drawn as it. An owner's names and slugs
- *  never name two artifacts (`renameArtifact`), and only a document, never a file or an image, is
- *  found by its name. One rule for every list that answers it - an issue summary's documents, an
- *  issue's artifacts - so a link drawn from a reference and the page it opens find the same
- *  artifact. The name is the document read's alone: the block read and the reference graph
- *  resolve only the slug, so a block named through the name answers not-found and reads as its
- *  words, and a reference written through the name is no backlink of the document. The picker
- *  writes only the slug. Undefined until the list is read, and once it is read without it. */
-export function artifactAtAddress<T extends Pick<Artifact, "kind" | "name" | "slug">>(
-  artifacts: readonly T[] | null | undefined,
-  address: string
-): T | undefined {
-  const listed = artifacts ?? [];
-  return (
-    listed.find((candidate) => candidate.slug === address) ??
-    listed.find((candidate) => candidate.kind === "doc" && candidate.name === address)
-  );
 }
 
 /** The block a route names, as the reference its graph read is keyed by; undefined for a route

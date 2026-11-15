@@ -14,9 +14,10 @@ export interface InPlaceDraft {
   readonly type: (next: string) => void;
   /** The reader is holding the field, so the server's text no longer replaces the draft. */
   readonly hold: () => void;
-  /** Writes the draft now, if it differs from `value`. */
-  readonly save: () => void;
-  /** The reader left the field: the draft is written now and `onDone` is told. */
+  /** The reader left the field: the draft is written now and `onDone` is told. A host's key
+   *  that ends the edit (Enter in `InPlaceField`) leaves the field rather than writing beside
+   *  it, since a write of its own would go out before this one, which still compares against the
+   *  old `value`, and the same text would be written twice. */
   readonly leave: () => void;
 }
 
@@ -77,7 +78,6 @@ export function useInPlaceDraft(
       save();
       onDone?.();
     },
-    save,
     type: (next: string) => {
       setDraft(next);
       stop();
