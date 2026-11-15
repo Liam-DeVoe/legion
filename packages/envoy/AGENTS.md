@@ -4612,7 +4612,8 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   Once the stream reaches that consumer's floor, the keep paths keep it, and the messages between the old end and its floor are skipped.
   For an earlier build's consumer, the window closes at the first start of a listener that runs this build and holds that session's consumer.
   A session it relays is repaired by the relay restart it makes at its start.
-  A session it no longer relays is reached by the sweep's delete instead, whose first pass runs at the listener's start and then every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5 minutes by default), at most 256 consumers a pass.
+  A session whose record has left the bucket is reached by the sweep's delete instead, whose first pass runs at the listener's start and then every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5 minutes by default), at most 256 consumers a pass.
+  A session whose record names another machine is repaired by that machine's relay.
   In production, the clustered hub's session listener first runs this build at the later of dispatch://INFRA-3635's roll, which moves that hub's listener image, and dispatch://INFRA-3426's window, which first renders that listener.
   The VM hub's listener, which serves sessions until that window, never runs this build; dispatch://INFRA-811 retires it.
   The sweep's delete path was measured on the real binary (dispatch://INFRA-3501): the delete recorded floor 17, the next consumer started at 18, and messages 14 to 16 were skipped; this build's code gives the same result for that timing.
@@ -4813,11 +4814,10 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   So an attempt record names a delivery this path made, or a refusal it resolved and reported, and never a message it left to a relay or a session it could not read.
   What those two branches cost is the exception dedupe: each further copy of the event, and each redelivery of it, is reported again rather than skipped as an attempt already made.
   The entry records the sequence that consumer starts at (`consumer_start`, written by the registration from `bus.SessionConsumers.Ensure`, the same number that registration's answer carries), and only a message at or after it is the consumer's:
-  one stored below that start -- one deferred as unplaceable before the session's first consumer was created, say -- is in no consumer, so the durable path takes it up as it would for a session with none: `session.Resolve` answers it with `session.ErrNoSessionRecord`, and on the session's agent subject it NAKs while the session is live or unresponsive, with a delivery exception; on a followed topic it NAKs only while the session is live, and raises no exception.
-  On the agent subject it logs `listener agent delivery failed` and raises a `delivery_failed` exception; on a followed topic it logs `listener delivery failed` and raises none.
+  one stored below that start -- one deferred as unplaceable before the session's first consumer was created, say -- is in no consumer, and the durable path does not deliver it; which message it NAKs, defers or skips, and what it logs, is decided by `agentSubjectDelivery` and `fanoutDelivery` in `cmd/listener/delivery.go`.
   Only a registration writes that start (`sessionEntryFromSubscribe`), so a repair or a relay restart that creates the consumer below it leaves the entry above the consumer's real start until the session's next registration, every 90 s, rewrites it from `Ensure`'s answer.
   A create that clamps a start past the end to the stream's first sequence does that where an earlier build or a restored stream left a start past the end on the entry, and so does a restart at a floor the server lowered after data loss ("Data loss" above) or at the stream's first sequence after its sequences went back.
-  In that window the durable path takes up a message between the two starts as above, though the consumer holds it and its relay delivers it; once the next registration rewrites the start, the path skips it.
+  In that window a message between the two starts reads as in no consumer, as above, though the consumer holds it and its relay delivers it; once the next registration rewrites the start, `ConsumerHoldsStored` answers that the consumer holds it.
   An entry an earlier release wrote carries no start, which reads as today: the consumer holds every stored message of it.
 
 - **Lane receipts are gone:** a role forward is stored only.
