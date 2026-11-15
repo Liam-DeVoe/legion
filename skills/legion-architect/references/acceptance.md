@@ -24,8 +24,8 @@ its spec, none unmet; a parent only on an approved head that carries its childre
 parent's head", below).
 
 A view's requirements are the parts of its ancestor's requirements that its `Delivers:` line
-names, at the version that line pins. Accept a view on those parts, and read its empty requirement
-list as no gap ("A root that is a view on an approved ancestor" in
+names, at the version that line pins, so accept a view on those parts and read its empty
+requirement list as no gap ("A root that is a view on an approved ancestor" in
 `skill://legion-architect/references/design-gate.md`).
 
 Each requirement block of the issue needs a check that serves it, whose latest result passed and is

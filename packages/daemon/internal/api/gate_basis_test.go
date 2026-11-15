@@ -140,6 +140,17 @@ func basisWorld(seq int64) statusRecorder {
 	}
 }
 
+// liveTextPastApproval gives P's primary document live text past version 3, the version the
+// person approved: the live text adds requirement p5 and drops p2. Dispatch keeps a document's
+// live text ahead of its latest version until that text settles into a version (refs/blocks.go,
+// "a document whose live text stays ahead of its latest version"), so its approval read still
+// shows version 3 approved at its latest. The fake serves that text as version 4, the version it
+// would settle into, so a registration judged at the live text rather than at version 3 would
+// read it.
+func liveTextPastApproval(world *statusRecorder) {
+	world.withVersion(pSpec, 4, requirementBlocks("p1", "p3", "p:4", "p5"))
+}
+
 // withVersion gives a document a version's text.
 func (r *statusRecorder) withVersion(document string, version int, markdown string) {
 	if r.versions[document] == nil {
@@ -361,6 +372,11 @@ func TestBasisGateRefusals(t *testing.T) {
 		{name: "a check that serves a requirement block of P's decisions document", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/artifact/decisions-md#b-d1"))
 		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/artifact/decisions-md#b-d1"}},
+		{name: "P's live text past its approved version: a check serving P5, which only the live text holds", change: func(world *statusRecorder, _ map[string]any) {
+			liveTextPastApproval(world)
+			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-p5"))
+		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS",
+			says: []string{"check k1", "serves dispatch://LEGION-150/spec#b-p5", "LEGION-150's primary document at version 3 (it marks p1, p2, p3, p:4)"}},
 
 		// A read Dispatch fails.
 		{name: "a failed read of P's approved version", change: func(world *statusRecorder, _ map[string]any) { delete(world.versions, pSpec) },
@@ -468,6 +484,11 @@ func TestBasisGateOpenings(t *testing.T) {
 				{Version: 3, State: "approved", Kind: "person", Actor: basisAlice},
 				{Version: 2, State: "changes_requested", Kind: "person", Actor: basisAlice, Reason: "name the rollback path"},
 			}
+		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
+		// P's live text past the version the person approved drops p2: the view is judged at the
+		// approved version 3, which marks p2, so R's one check of p2 opens the step on it.
+		{name: "P's live text past its approved version: a check serving P2, which the live text drops", change: func(world *statusRecorder, _ map[string]any) {
+			liveTextPastApproval(world)
 		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
 		{name: "G's approval with P neither reviewed nor requested", change: func(world *statusRecorder, body map[string]any) {
 			gUnderP(world)

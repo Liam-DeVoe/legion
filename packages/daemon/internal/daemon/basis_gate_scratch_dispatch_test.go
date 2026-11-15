@@ -827,9 +827,10 @@ func onBasis(issue string, version int, served ...string) func(record.DesignGate
 // or Dispatch itself gave, and the criteria step, in TestBasisGateRefusals and
 // TestTheCriteriaStepsBasisGateIsTheAncestorsVerificationDocument (internal/api); R waiting on a
 // person, in TestARegistrationOnABasisAnswersAWaitingRootAsItLeavesTheStep (internal/workflow).
-// P's live text after its approved version cannot be written on the rig: every route of the
-// scratch Dispatch that writes a document writes a version, and the daemon reads requirement
-// blocks only from the version it names (api's requirementsOf, DocumentVersion).
+// P's live text after its approved version cannot be written on the rig, since every route of the
+// scratch Dispatch that writes a document writes a version; the fake client holds it, in
+// TestBasisGateRefusals and TestBasisGateOpenings (internal/api), where the view is judged at the
+// approved version and not at the live text.
 //
 // The drop seam (overrides.dropConsumedEvent) is used once: the person's approval of R's latest
 // version reaches the daemon as an event it drops, and the registration's own read carries that
