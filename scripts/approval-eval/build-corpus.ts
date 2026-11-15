@@ -13,6 +13,7 @@ import {
   verdictOf,
 } from "./corpus-io";
 import { type DispatchEvent, pageEventLog } from "./dispatch-read";
+import { noteIssueCreated, reserveOf } from "./reserve";
 
 /**
  * Builds the corpus of one person's approval decisions: every ask that person answered, up to a
@@ -26,6 +27,10 @@ import { type DispatchEvent, pageEventLog } from "./dispatch-read";
  * settlement can write the same answer again under its editor, so the repeats of one answer (its
  * ask and its own `at`) collapse to the earliest event; an answer the person changed carries a
  * later `at` and is a second case.
+ *
+ * The same walk reads each issue's `issue.created` event, so each case carries when its issue was
+ * created. The reserve of INFRA-2897's next final test reads that time (`reserve.ts`), and the
+ * build prints how many of its cases the reserve holds from every command.
  *
  * Nothing it writes goes into this repository: `--out` is an absolute path outside the workspace,
  * since a corpus of a production log is large and the workspace is snapshotted whole.
@@ -119,6 +124,12 @@ export interface CaseRow {
   words: string | null;
   hasWords: boolean;
   askCreatedAt: string | null;
+  /**
+   * When the case's issue was created, from the log's `issue.created` event: null where the walk
+   * found none, and absent from a corpus built before the build recorded it. The reserve of the
+   * next final test reads it (`reserve.ts`).
+   */
+  issueCreatedAt?: string | null;
   answeredAt: string;
   eventCreatedAt: string;
   approval: CaseApproval | null;
@@ -321,7 +332,7 @@ function countsOf(rows: readonly CaseRow[]): Counts {
   return counts;
 }
 
-function report(counts: Counts, snapshot: Snapshot, directory: string): string {
+function report(counts: Counts, snapshot: Snapshot, directory: string, reserved: number): string {
   const verdicts = counts.approvalByVerdict;
   return [
     `corpus for ${snapshot.person} through event ${snapshot.throughEventId}`,
@@ -334,6 +345,7 @@ function report(counts: Counts, snapshot: Snapshot, directory: string): string {
     `    question             ${counts.byKind.question}`,
     `  cases with their words ${counts.withWordsByKind.approval} approval,` +
       ` ${counts.withWordsByKind.question} question`,
+    `  reserved cases         ${reserved} (every command holds them: reserve.ts)`,
     `  written to             ${directory}`,
   ].join("\n");
 }
@@ -352,11 +364,13 @@ async function build(flags: Flags): Promise<number> {
     console.log(`no --through given: pinned to the log's newest event, ${through}`);
   }
   const seeds = new Map<string, CaseSeed>();
+  const issueCreated = new Map<string, string>();
   let keptEvents = 0;
   const walk = await pageEventLog({
     through,
     onPage: (events) => {
       for (const event of events) {
+        noteIssueCreated(issueCreated, event);
         if (KEPT_TYPES[event.type] !== true) continue;
         keptEvents += 1;
         const seed = caseOf(event, flags.person);
@@ -366,7 +380,13 @@ async function build(flags: Flags): Promise<number> {
     },
   });
   const readFinishedAt = new Date().toISOString();
-  const rows = withConfounds([...seeds.values()]);
+  const rows = withConfounds(
+    [...seeds.values()].map((seed) => ({
+      ...seed,
+      issueCreatedAt: seed.issueKey === null ? null : (issueCreated.get(seed.issueKey) ?? null),
+    }))
+  );
+  const reserved = rows.filter((row) => reserveOf(row) === "held").length;
   const counts = countsOf(rows);
   const snapshot: Snapshot = {
     person: flags.person,
@@ -384,7 +404,7 @@ async function build(flags: Flags): Promise<number> {
   );
   await writeFile(join(directory, "snapshot.json"), `${JSON.stringify(snapshot, null, 2)}\n`);
   await writeFile(join(directory, "counts.json"), `${JSON.stringify(counts, null, 2)}\n`);
-  console.log(report(counts, snapshot, directory));
+  console.log(report(counts, snapshot, directory, reserved));
   if (rows.length === 0) {
     console.error(`no case: ${flags.person} answered no ask through event ${through}`);
     return 1;
