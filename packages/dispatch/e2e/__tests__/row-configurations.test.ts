@@ -136,9 +136,9 @@ test(
     // project of the resolved configuration whatever the command selected - this head's
     // wall-clock listing names three projects and reports all fifteen - so an assertion over
     // the project list could not fail, and would pass with the wall-clock listing missing
-    // altogether. Measured at this head, the two listings hold 1,427 rows and every project
-    // owns some: the smallest is `firefox-download-navigation` with one, and the wall-clock
-    // three hold 23, 14 and 17.
+    // altogether. Measured at this head, the two listings hold 1,483 rows (1,432 and 51) and
+    // every project owns some: the smallest is `firefox-download-navigation` with one, and the
+    // wall-clock three hold 22, 13 and 16.
     const projectsWithRows = new Set(rows.map((row) => row.project));
     const namedProjects = (realConfig.projects ?? [])
       .map((project) => project.name)

@@ -331,7 +331,7 @@ case "$mode" in
     lane=$3
     # THE LANE'S MACHINE TIME, AND WHY A RUN REFUSES ITSELF OVER IT.
     #
-    # dispatch://INFRA-1109 cut this suite from 45 to 49 runner-minutes a full run to under 34,
+    # dispatch://INFRA-1109 cut this suite from 45 to 49 runner-minutes a full run to 35 to 40,
     # and the reason it had grown that far is that nothing in the tree refused the growth: the
     # suite cost about 25 runner-minutes as two jobs on 2026-11-07 (run 42406948509) and 45 to
     # 49 over twelve jobs on 2026-11-10 (run 42809067358, 2,945 s), and no check saw it between
@@ -366,14 +366,16 @@ case "$mode" in
     #   pull-request lane:   900 - 37 =   863 s
     #
     # So this number answers a suite grown by half and never a slow afternoon. The full lane's
-    # bound was 2,040 s when this mode was written, from readings of 1,974, 1,997, 2,003 and
-    # 2,025 s taken on 2026-11-11; it became 2,400 s when the machines moved, not when this
-    # suite did, and 2,700 s when one slow afternoon proved that an absolute figure near the
+    # bound was 2,040 s when this mode was written, from four runs of 2026-11-11 and 2026-11-12,
+    # 43045412941, 43074443876, 43079610268 and 43150379433, which cost 2,061, 1,974, 1,997 and
+    # 2,041 s with their merge jobs (2,025, 1,946, 1,964 and 2,003 s without); it became 2,400 s
+    # when the machines moved, not when this suite did, and 2,700 s when one slow afternoon
+    # proved that an absolute figure near the
     # measurement is a figure the fleet decides. On 2026-11-15 two runs of one tree cost 2,252
     # and 2,450 s (43664675139, 43667557013), whose real-stack row medians were 2,746 and
     # 3,126 ms: the lane's cost tracked the runner and not the rows. The default branch moved
-    # with it, as it always does - the green merge-queue runs of that day cost 2,975 to 3,181 s
-    # (43670163444, 43675730856, 43673644573, 43673491600, 43675808276) - which is
+    # with it, as it always does - the thirteen green merge-queue runs of that day up to 15:03Z
+    # cost 2,975 to 3,347 s, with a median of 3,126 s (dispatch-browser.yaml's head) - which is
     # why the ratio is what R5 and R4 read and this ceiling is not.
     # The pull-request lane keeps 900 s, since the default branch runs no such lane and there
     # is no same-day figure to take a ratio against.
