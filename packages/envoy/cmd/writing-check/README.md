@@ -23,6 +23,12 @@ go run ./cmd/writing-check reproduce --outputs <outputs.jsonl> --labels <labels.
 go run ./cmd/writing-check regress --cases <cases.jsonl> --repeat-bound <share> <reader flags>
 go run ./cmd/writing-check reading --in <cases.jsonl> --after <event id> --through <event id> [--exclude <manifest>]... --out <dir> <reader flags>
 go run ./cmd/writing-check validate --description <scanner.yaml> --exposure-log <file> [--manifests <dir>]
+go run ./cmd/writing-check dataset fetch --end <RFC 3339 time> --out <snapshot.jsonl.gz> [--labelled <sets tarball>]
+go run ./cmd/writing-check dataset classify --snapshot <snapshot.jsonl.gz> --out <verdicts.jsonl> [--model <id>]
+go run ./cmd/writing-check dataset pack --snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] --out <bundle.tar.gz>
+go run ./cmd/writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) --out <dir>
+go run ./cmd/writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
+cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 ```
 
 Run it from `packages/envoy`.
@@ -753,3 +759,290 @@ A field whose figures wait for the freeze or the final test carries `pending: tr
 
 `TestValidateRefusesAGroupInTwoSetsAndNoBaseline` is the negative control: a copy of a valid
 description with one group in two sets and the baseline taken out is refused for both.
+
+## dataset
+
+`dataset` builds the dataset of INFRA-3231's R1. It holds texts the owner could not read and texts
+he read with no trouble. Each case holds Dispatch's record as it stood when the agent wrote the
+text. The work has these steps:
+
+1. `fetch` copies the event log up to an end time into one snapshot file.
+2. `classify` gives each text that a person wrote one verdict of the selection prompt.
+3. `pack` puts the snapshot, the verdicts and the seed, and the result of the confirmation read
+   when there is one, into one bundle.
+4. `build` reads only those inputs. So the same inputs build the same bytes, and a later edit in
+   Dispatch (a changed comment, a new issue title) changes nothing.
+5. `export-sessions.sh` writes the writer sessions out of the transcript store, on a machine that
+   can read it, from the session list `build` writes.
+6. `sessions` checks that export and gives each case its place in its writer session.
+
+The dataset is a file artifact of INFRA-3231. It is never a file of this repository.
+`dataset/DATASET` holds the end time, the seed and the SHA-256 of each input and each output.
+`build --from <bundle>` prints the same SHA-256.
+
+### fetch
+
+| Flag | Meaning |
+| --- | --- |
+| `--end` | The end time, RFC 3339. The snapshot holds the events created at or before it. |
+| `--out` | The snapshot file, gzipped JSONL. |
+| `--labelled` | The labelled sets (`writing-check-sets-and-labels-tar-gz`), as the tarball or the directory it was extracted to. |
+| `--work` | The work directory (default `<out>.work`). |
+| `--owner` | The person whose texts select the cases (default `sami@theorem.dev`). |
+| `--concurrency` | The reads in flight at once (default 4). |
+
+`fetch` does these steps:
+
+1. It pages `GET /api/v1/events/log` from the first event, 1,000 events a page, across every
+   project. It keeps each event created at or before `--end`. It stops when the log ends, or when
+   the events are 10 minutes past the end time, because an event that commits late can carry an
+   earlier time.
+2. It reads the whole body of each comment and message whose event cut it (`body_truncated`)
+   from `GET /api/v1/comments/{id}` and `GET /api/v1/messages/{id}`.
+3. It reads the document versions that the cases read (`GET /api/v1/artifacts/{id}/versions/{n}`).
+   For each agent text that can become a case, it reads each document of the text's issue at the
+   version in force just before the text. For a document version, it also reads the version and
+   the version before it. These agent texts can become a case: the agent text that each owner
+   text answers, the first agent reply to each owner text, each ask he answered by options alone,
+   each version he reviewed with no reason, each labelled write, and each text he links on
+   INFRA-3231. The verdicts and the seed do not change this set, so one snapshot serves every
+   build. The log refers to many more versions, and their text is much larger than all the
+   cases' text, so `fetch` reads only these.
+4. From `--labelled`, it reads every `labels.jsonl`. It keeps each write labelled `failure`, that
+   is, with a sentence the labeller found states no fact. It skips planted copies (a record with
+   a `copy` id).
+
+The snapshot is gzipped JSONL. Each line's `kind` is its first field:
+
+| Kind | Holds |
+| --- | --- |
+| `header` | The first line: `format`, `end`, `owner`, `naming_issue` (INFRA-3231), the first and last event id and the count of each kind of line. |
+| `event` | One row of the event log, as Dispatch served it, in id order. |
+| `body` | `of` (`comment` or `message`), `id`, and the whole body in `text`. |
+| `version` | `artifact_id`, `number`, and the Markdown in `text`. |
+| `label` | One labelled write: `event_id`, `source_id`, `family`, the `sets` that label it and the `shapes` of its sentences that state no fact. A label holds no text. |
+
+A body or a version that Dispatch would not serve (404 or 403) has no `text`. Its `unreadable`
+field gives the reason.
+
+A stopped `fetch` continues when you run it again with the same flags. The work directory keeps
+each page of the log as a file, and the bodies and versions as JSONL. `fetch` refuses a work
+directory made for another end time or owner. `fetch` makes at most 20 requests a second across
+all its reads, and retries a request as `fetch` does above. It prints the snapshot's SHA-256.
+
+### classify
+
+`classify` reads every text that a person wrote for themselves: an event whose actor is a `user`
+with no acting session. These texts are comments, messages, asks, answers to asks, notes on asks
+(a decline or a resolution) and the reasons of reviews. It does not read a person's issue titles
+or document versions, or the reason Dispatch itself writes when it carries an approval forward.
+
+Each call sends `dataset/select.md` as the system prompt. The user message holds the agent text
+that the person's text replies to (see "The reply walk" below), cut at 12,000 bytes; the part of a
+document the text points to, when it points to one; and the person's text, cut at 8,000 bytes.
+The reply is one object of a schema: `verdict` is one of `asks_word_meaning`,
+`cannot_understand`, `jargon_complaint`, `asks_agent_question` and `none`, and `words` lists the
+words the person asks about. The server's records job (R8) reads the same prompt.
+
+| Flag | Meaning |
+| --- | --- |
+| `--snapshot`, `--out` | The snapshot, and the verdicts file (JSONL). |
+| `--model` | The Claude model (default `claude-sonnet-4-6`). The call is sent at temperature 0 with thinking off. |
+| `--endpoint`, `--key-file` | The model gateway, Anthropic messages (default `$ANTHROPIC_BASE_URL` and `/var/run/model-gateway-key/key`). |
+| `--concurrency` | The calls in flight at once (default 8). |
+| `--limit` | Classify at most this many texts in this run (default 0: all). |
+
+Each line of the verdicts file holds the text's id (`text`: its key and its event id), the event,
+the person, the `verdict` and its `words`, the `model` the provider served, the model asked for,
+the prompt's SHA-256 (`prompt_sha256`), the user message's SHA-256, the tokens and the number of
+attempts. A call that fails with a 429, a 5xx, a network error or the time bound is tried again up
+to 6 times, after 2 s, then twice as long each time. A reply that is not one verdict of the schema
+is asked again at once, up to 3 times. A text that still has no verdict gets a line with an
+`error`. The next run classifies each text that has no line without an error. The summary prints
+the verdicts of the owner and of the other people, the served models, the prompt's SHA-256 and
+the tokens of every call that the file records.
+
+### The reply walk
+
+A text's parent is the text it replies to:
+
+- For a comment, its parent is the comment it answers (`answers`, else `reply_to`), its ask
+  (`ask_id`), or the document version its anchor points to.
+- For a message, its parent is the message in `in_reply_to`.
+- For an answer or a note on an ask, its parent is the ask. For an approval request that holds
+  no words of its requester, its parent is the document version the request asks about.
+- For a review, its parent is the version it reviews.
+
+The agent text that a person's text answers is the first agent text up its chain of parents. When
+the chain holds no agent text, it is the last agent text before it in its thread. For a message
+on no issue, it is next the last agent text in its conversation with that session. Last, it is the
+last agent text on its issue. A case's `found` field says which rule found it (`reply_chain`,
+`thread`, `conversation`, `issue`). The first agent reply to a text is an agent text whose parent
+is that text (`direct_reply`). When there is none, it is the first agent text after the text in
+its thread or its conversation.
+
+The text of a document version is the blocks that the version before it does not hold, as `fetch`
+reads them. An agent's text is a text that `writingcheck.Checks` checks.
+
+### build
+
+| Flag | Meaning |
+| --- | --- |
+| `--snapshot`, `--verdicts`, `--seed` | The three inputs. |
+| `--confirmed`, `--confirmed-seed` | Optional, together: the result of a fresh reader's read of a sample of question cases (`{"reader", "confirmed", "total", "items": [{"case_id", "about_words"}]}`), and the seed of its draw. |
+| `--from` | A bundle `pack` wrote, in place of the other inputs: the tarball, its manifest, or a directory that holds one of them. |
+| `--out` | The directory for the output files. |
+
+`build` refuses a verdicts file that has no verdict for one of the owner's texts. It makes the
+four groups of R1:
+
+- **question**: each owner text with the verdict `asks_word_meaning`, `cannot_understand` or
+  `jargon_complaint`, with the agent text it answers.
+- **answer**: the first agent reply to each owner text with the verdict `asks_agent_question`.
+  Each text the owner links in his texts on INFRA-3231 (`.../comment/<id>`, `.../ask/<id>`,
+  `.../message/<id>`) is also in the dataset, in the group it fits. A link to his own question
+  about words is that question case. A link to his other text gives the answer case of its first
+  agent reply. A link to an agent text marks that text's cases, or else makes it an answer case.
+  Such a case has `named_by_owner`.
+- **phrase**: an agent text that the owner corrected for one of the six phrase shapes of
+  `skills/plain-words`. The owner's text has a verdict about words and names the shape inside
+  quotes, and the agent text holds the shape, by the expressions of INFRA-3231's decisions
+  document. Each labelled write of an R1 kind is also a phrase case.
+- **plain**: agent texts that the owner answered by the reply chain or in their thread, or acted
+  on (an ask he answered by options alone, a version he reviewed with no reason). No owner text
+  that answers them has a verdict other than `none`, and they are in no other group. The seed's
+  hash orders them, and `build` takes as many as there are question cases.
+
+Each case holds these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `id`, `group` | `<group>/<text key>@<event id>`. For a question case, the text is the owner's question. For the other groups, it is the agent text. |
+| `agent_text` | The agent's text: its key, event, time, kind, family, source id, actor, session, text and SHA-256. |
+| `owner_reply` | The owner's text that answers the agent text, with its verdict (verdict, words, model, prompt SHA-256). For a plain case with no such text, the act (`kind: act`). |
+| `question` | For an answer case, the owner's question that the agent text answers. |
+| `phrase` | For a phrase case, the shapes and the sources (`correction`, `labelled:<set>`). |
+| `kind` | `ask`, `comment`, `message` or `document`. |
+| `conversation` | `true` for a reply in a thread, to a message or on an ask. `false` for a text outside a conversation. |
+| `writer_session`, `write_time` | The session that wrote the agent text, from the event's actor (the session, or the session that acted for a person), and the time it wrote it, which is where its session is cut. |
+| `record` | Dispatch's record just before the write: the project; the issue with its title then, its parent and its root; each of the issue's documents at the version then in force (`artifact_id`, `name`, `version`, `sha256`); and the texts of the agent text's thread written before it. |
+| `tree`, `split_group`, `part` | The case's issue tree, its split group, and `held_out` or `development`. |
+| `found`, `named_by_owner` | How the agent text was found, and whether the owner links the case on INFRA-3231. |
+
+The split follows Decision 17 of the plan. A case's tree is the root of its issue. For a message on
+no issue, the tree is its session's conversation. For a project document, the tree is the
+document. `assignGroups` (`group`) joins trees that share a document or a near copy (word 5-gram
+Jaccard at least 0.9) into split groups. A split group's key is its least tree. Each split group
+goes whole to one part. The split groups are taken in the order of a SHA-256 of the seed and
+their key. A split group goes to the held-out part when that brings each case group's held-out
+share, taken together, nearer 40%: the sum over the four case groups of the squared distance of
+each held-out share from 40% falls. A split group that holds cases of several case groups counts
+in each. `build` fails if one tree is in both parts.
+
+`build` writes these files to `--out`:
+
+- `cases.jsonl.gz`: the cases, by id.
+- `documents.jsonl.gz`: the Markdown of each document version that a record names (`artifact_id`,
+  `version`, `sha256`, `markdown`).
+- `sessions.tsv`: the session list that `export-sessions.sh` reads: one line
+  `<session id>\t<cut time>` for each writer session, its cut the latest `write_time` of its
+  cases, in UTC. A writer session whose id is not a UUID, which the transcript store cannot hold,
+  is left out and counted.
+- `counts.json`: the counts for each group, by case kind, writer session (present or absent, and
+  written before the transcript store's last load), conversation flag, `found`, and held-out and
+  development sizes. It also holds the parts' cases, split groups and trees,
+  `no_tree_in_both_parts`, the owner's verdicts, the served models, the plain pool, the owner's
+  links, the labelled writes, the cases left out with the reason, the sessions listed and left
+  out of `sessions.tsv`, and the SHA-256 of the other files. It holds no text.
+
+With `--confirmed`, `counts.json` also holds `confirmed_sample`: the cases the reader confirms
+ask about words, the cases it read, the seed, the draw (`python3
+random.Random(<seed>).sample(sorted question cases by id, <total>)`, which drew the sample), the
+reader, and the result file's SHA-256. `build` refuses a result whose counts do not match its
+items, a case read twice, and a case that is not a question case of this build. The cases do not
+change.
+
+`build` prints the SHA-256 of `documents.jsonl.gz`, `sessions.tsv` and `cases.jsonl.gz`.
+
+The verdicts file holds the verdict of each person's text. A harness that gives a reviewer the
+words a reader asked about before (Decision 19) takes only the verdicts of texts written before
+the case's `write_time`. The case's own owner reply comes after that time.
+
+### pack
+
+`pack` writes a gzipped tarball of `seeds.json` (`{"seed": N}`, with `"confirmed_seed": N` when
+the bundle holds a confirmation read), `snapshot.jsonl.gz`, `verdicts.jsonl` and, from
+`--confirmed`, `confirmed.json`. The tarball holds no time, owner or mode of the files, so the
+same inputs write the same bytes. A bundle larger than `--part-size` (default 24 MiB, below
+Dispatch's 25 MiB file limit) is also written as parts, `<bundle>.part-000` and on, with
+`<bundle>.manifest.json`. The manifest gives each part's size and SHA-256, and the bundle's.
+`build --from` the manifest joins the parts. It refuses a part or a joined bundle whose SHA-256
+differs from the manifest.
+
+`TestDatasetFlippedVerdictChangesTheDigest` is the negative control of
+`TestDatasetBuildIsDeterministic`: the same inputs build the same SHA-256, and one changed verdict
+changes it.
+
+### export-sessions.sh
+
+`export-sessions.sh` runs on a machine whose `tq` reads the transcript store. A Legion pod cannot
+reach the store today.
+
+```sh
+export-sessions.sh --sessions sessions.tsv --exclude exclude.txt --out <empty dir>
+```
+
+`--sessions` is the `sessions.tsv` that `build` writes. `--exclude` holds one session id per line:
+the sessions to leave out, whose rows are never read. For each batch of sessions (50, or `BATCH`),
+the script runs `tq sql --format JSONEachRow` over the store's `messages` table. It reads the
+DISTINCT rows of each session at or before its cut time, with no row of kind `file`, in the
+order session, `seq`, `raw_file`, `raw_line`. The columns are `session_id`, `host`, `seq`, `ts`,
+`role`, `kind`, `text`, `raw_file` and `raw_line`. `TQ` names the `tq` command.
+
+It writes gzipped JSONL parts, `part-000.jsonl.gz` and on, each under 24 MiB, and `manifest.json`:
+`schema` (`infra-3231-session-export/1`), `columns`, `parts` (`name`, `bytes`, `sha256`),
+`rows_by_session` (0 for a session the store holds no row of), `sessions_missing` and
+`sessions_left_out` (a count). It prints the rows found for each session.
+
+### sessions
+
+| Flag | Meaning |
+| --- | --- |
+| `--manifest` | The `manifest.json` that `export-sessions.sh` wrote. Its parts are read beside it. |
+| `--cases` | The build directory, or its `cases.jsonl.gz`. |
+| `--out` | The directory for the output files. |
+
+`sessions` checks each part's SHA-256 against the manifest, and refuses the export on the first
+part that differs, naming it. It also refuses an export made from another session list: a
+session the export holds that no case names, or a count of the cases' sessions absent from the
+export other than the manifest's `sessions_left_out`. It refuses parts whose rows of a session
+differ from the manifest's count.
+
+A case's place in its writer session is the last row, in the export's order, whose `ts` is at
+or before the case's `write_time`. Each case gets one status:
+
+| Status | Meaning |
+| --- | --- |
+| `found` | The session has rows at or before the write. |
+| `no_row_before_write` | The session's first row comes after the write. |
+| `session_missing` | The store holds no row of the session (`rows_by_session` is 0). |
+| `session_left_out` | The export left the session out (`--exclude`). |
+| `session_not_a_store_id` | The session id is not a UUID, so `sessions.tsv` does not list it. |
+| `no_writer_session` | The case has no writer session. |
+
+`sessions` writes these files to `--out`. No session text is stored once per case:
+
+- `session-rows.jsonl.gz`: each row of the export once, as `session_id`, `index` (its place in
+  its session, from 0) and `row` (the row as the export holds it).
+- `places.jsonl`: for each case, `case_id`, `session_id`, `status`, `rows` (the case's session is
+  the rows of its session with an index below it), and the `ts` and `seq` of the last of them.
+- `sessions-counts.json`: the manifest's SHA-256, the parts, the rows, the sessions in the
+  export, with rows, missing and left out, the cases by status, and the SHA-256 of the other two
+  files. It holds no text.
+
+It prints the counts: the cases with a session (`found`), the sessions missing and left out, and
+the cases whose session is missing or left out.
+
+`TestExportSessionsScriptFeedsDatasetSessions` runs the script against a stand-in `tq` and then
+`sessions` over its output. Its negative control changes one byte of a part, and `sessions`
+refuses it.

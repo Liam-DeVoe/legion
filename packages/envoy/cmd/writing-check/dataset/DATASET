@@ -1,0 +1,18 @@
+# The dataset of INFRA-3231's R1. Its files are artifacts of INFRA-3231, never files of this
+# repository. From packages/envoy, `go run ./cmd/writing-check dataset build --from <bundle> --out <dir>`
+# prints cases_sha256, documents_sha256 and sessions_sha256 below. README.md, "dataset", says how.
+end: 2026-11-15T03:27:14Z
+owner: sami@theorem.dev
+seed: 20261115
+classify_model: claude-sonnet-4-6 (claude-sonnet-5-5 for the 4 texts claude-sonnet-4-6 refused)
+select_prompt_sha256: 3e652153f3ba7dd934c9272745d8fa3429a0d1dc95dfb13c766500ac4b496e3d
+snapshot_sha256: e8f9a0d09f99e9178c9d4538261fe60d90392f6a314e2ac4774062c7f3f843a7
+verdicts_sha256: 8ae83e4fe7cabb0a345850831fded697840a82356c72bc1e8900d9238d1cd41d
+confirmed_seed: 3231050
+confirmed_draw: python3 random.Random(3231050).sample(sorted question cases by id, 50)
+confirmed_result_sha256: 5357a42440bff38ef66692ff063903b306439fd973e377b21e7998ff26e8c7b4
+confirmed: 34 of 50
+bundle_sha256: aa128a5cb4f564b6bca99d4d7a539004324ae65860df7261436a1bad2cdf9818
+cases_sha256: d44927cf2e9fa9b77a5138f4bc7172537e89f606b69bf67f957c2820f8da16d6
+documents_sha256: a96eb5749929700c5f23e9982f7a7501e0d046c10e25da1395cdaee6e60a3053
+sessions_sha256: 75355ca3e5d37bd4657be43cf557d5041353f4cf90efaf0389edc74cad4e0939
