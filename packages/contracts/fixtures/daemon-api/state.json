@@ -7,8 +7,17 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 128,
-    "caller": 128
+<<<<<<< conflict 1 of 1
+%%%%%%% diff from: xvrtuzrn 25f3e38a "feat(legion): a phase completion names the head its evidence is about (#3793)"
+\\\\\\\        to: rnskzukn 00f04d1d "style(e2e): format stage4b-gh-files.test.ts"
+-    "daemon": 123,
+-    "caller": 123
++    "daemon": 128,
++    "caller": 128
++++++++ llzkwysk ff69e078 "feat(daemon): each commit names its Legion role and session in its trailers (#4012)"
+    "daemon": 132,
+    "caller": 132
+>>>>>>> conflict 1 of 1 ends
   },
   "admission": {
     "cap": 3,

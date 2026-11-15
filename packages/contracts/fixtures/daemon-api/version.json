@@ -1,3 +1,10 @@
 {
-  "daemonApiVersion": 128
+<<<<<<< conflict 1 of 1
+%%%%%%% diff from: xvrtuzrn 25f3e38a "feat(legion): a phase completion names the head its evidence is about (#3793)"
+\\\\\\\        to: rnskzukn 00f04d1d "style(e2e): format stage4b-gh-files.test.ts"
+-  "daemonApiVersion": 123
++  "daemonApiVersion": 128
++++++++ llzkwysk ff69e078 "feat(daemon): each commit names its Legion role and session in its trailers (#4012)"
+  "daemonApiVersion": 132
+>>>>>>> conflict 1 of 1 ends
 }
