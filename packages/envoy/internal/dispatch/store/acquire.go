@@ -82,9 +82,10 @@ const (
 	// than a request, and a refused pass only runs at its next tick - but not without end, so a
 	// pool that never frees a connection shows as an error.
 	backgroundAcquireBound = 30 * time.Second
-	// leaseAcquireBound is the lease pool's. The pool has a connection for every lease name and
-	// spare (LeasePoolSize), so a wait at all means a connection is held by something that is not
-	// a listed lease; a pass refused here skips (duty.Exclusive), and the next tick tries again.
+	// leaseAcquireBound is the lease pool's. The pool has a connection for every caller that
+	// reserved one and two spare (LeasePoolSize), so a wait at all means a connection is held by
+	// something that is not a reserved caller; a pass refused here skips (duty.Exclusive), and the
+	// next tick tries again, and a hold's renewal refused here is tried again on the next renewal.
 	leaseAcquireBound = 2 * time.Second
 	// listenAcquireBound is the listener pool's. Its one connection is hijacked as soon as it is
 	// dialled (listenerPoolSize), so an acquire is a wait for the dials ahead of it - four

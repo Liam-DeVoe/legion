@@ -38,7 +38,7 @@ var removalClears = []string{
 func TestASettlementThatWaitedBehindARemovalEndsQuietly(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
-	service, artifactID := newTestServiceOn(t, database)
+	service, artifactID := newTestServiceWithDocument(t, database)
 	// Only the settlement this test runs settles this room, at the moment it chooses.
 	service.settle = time.Hour
 	// The room the settlement reads, with the document's text in it, as every room a settlement

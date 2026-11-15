@@ -45,10 +45,10 @@ import (
 // inside one aligned hour would be that whole reading twice. The period is also what paces the
 // retention, which runs on every tick whether or not the fill has anything left to do.
 //
-// The name is duty's constant and not a string of this package's: duty spells every lease name
-// once, refuses a name that is not on its list, and the lease pool holds a connection for each
-// of them (store.LeaseNameCount), so a name spelled here as well could drift from the list the
-// pool is sized from.
+// The name is duty's constant and not a string of this package's: duty spells every periodic
+// loop's lease name once, so a name spelled here as well could drift from the one other readers of
+// the lease (duty.LeaseHeld) ask for. The connection the pass holds its lease on is the caller
+// cmd/dispatch reserves for it (store.LeaseCallers).
 const (
 	fillLease  = duty.TextTreeFillLease
 	fillPeriod = time.Hour

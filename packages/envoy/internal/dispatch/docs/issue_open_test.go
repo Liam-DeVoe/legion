@@ -2343,8 +2343,12 @@ func TestASettlementRefusedByAClosedIssueAtItsWarmUpDoesNothing(t *testing.T) {
 	// Task B is the process the settlement runs on: it holds no room and no record of the
 	// document, so nothing there remembers the close, and neither task runs a room sync.
 	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
-	if _, recorded := taskB.recordedIssueClosed(artifactID); recorded {
-		t.Fatal("task B records the document's issue, so its settlement would end before the warm-up it is here to test")
+	if state := taskB.lockExistingState(artifactID); state != nil {
+		recorded := !state.closedRead.IsZero()
+		taskB.unlockState(artifactID, state)
+		if recorded {
+			t.Fatal("task B records the document's issue, so its settlement would end before the warm-up it is here to test")
+		}
 	}
 	if owed, _, err := readOwedSettlement(ctx, database.Pool, artifactID); err != nil || !owed {
 		t.Fatalf("the document owes no settlement to run (owed %t, %v)", owed, err)

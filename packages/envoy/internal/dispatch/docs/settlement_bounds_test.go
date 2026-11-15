@@ -235,7 +235,7 @@ func TestASettlementWhoseStatementStallsStaysOwedAndCountsNoFailure(t *testing.T
 	database := storetest.Reopened(t, storetest.Open(t), func(config *pgxpool.Config) {
 		config.ConnConfig.DialFunc = socket.Dial
 	})
-	service, artifactID := newTestServiceOn(t, database)
+	service, artifactID := newTestServiceWithDocument(t, database)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)

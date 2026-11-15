@@ -4,6 +4,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -64,4 +67,28 @@ func callsOSExit(call *ast.CallExpr) bool {
 	}
 	imported, ok := selector.X.(*ast.Ident)
 	return ok && imported.Name == "os"
+}
+
+// relativeToEnvoy is path, a file of this package, as it reads from packages/envoy.
+func relativeToEnvoy(path string) string {
+	return "cmd/dispatch/" + strings.TrimPrefix(filepath.ToSlash(filepath.Clean(path)), "./")
+}
+
+// goFilesIn is dir's non-test Go files, sorted.
+func goFilesIn(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	var files []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, name))
+	}
+	sort.Strings(files)
+	return files
 }

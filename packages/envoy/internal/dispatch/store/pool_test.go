@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -666,10 +665,7 @@ func TestEachPoolIsServedWhileAnotherIsFullyAcquired(t *testing.T) {
 			t.Errorf("a %s query with the request pool fully acquired: %v, want it answered", separate.name, err)
 		}
 	}
-	leases, err := pool.Leases()
-	if err != nil {
-		t.Fatalf("open the leases pool: %v", err)
-	}
+	leases := reservedLeases(t, pool)
 	var one int
 	if err := leases.QueryRow(ctx, "select 1").Scan(&one); err != nil {
 		t.Errorf("a leases query with the request pool fully acquired: %v, want it answered", err)
@@ -994,10 +990,7 @@ func TestTheRawPoolsAnswerErrPoolBusyWhenFull(t *testing.T) {
 		}
 	}
 
-	leases, err := pool.Leases()
-	if err != nil {
-		t.Fatalf("open the leases pool: %v", err)
-	}
+	leases := reservedLeases(t, pool)
 	holdEvery(t, leases.Stat().MaxConns(), leases.Acquire)
 	started := time.Now()
 	conn, err := leases.Acquire(context.Background())
@@ -1140,7 +1133,8 @@ func TestEachPoolNamesItsConnectionsInPgStatActivity(t *testing.T) {
 		holdOne(t, opened.Acquire)
 	}
 	for _, open := range []func() (*RawPool, error){
-		pool.Rooms, pool.RoomAppends, pool.Leases, pool.Horizon, pool.Compaction,
+		pool.Rooms, pool.RoomAppends, pool.Horizon, pool.Compaction,
+		func() (*RawPool, error) { return reservedLeases(t, pool), nil },
 		func() (*RawPool, error) { return pool.separate(HealthPool, healthPoolSize) },
 	} {
 		opened, err := open()
@@ -1209,13 +1203,19 @@ func holdOne(t *testing.T, acquire func(context.Context) (*pgxpool.Conn, error))
 	return conn
 }
 
-// The lease pool has a connection for every lease name duty.Exclusive accepts, and two spare.
-func TestTheLeasePoolCountsEveryLeaseName(t *testing.T) {
-	names := len(duty.LeaseNames())
-	if LeaseNameCount != names || LeasePoolSize != names+2 {
-		t.Errorf("LeaseNameCount %d and LeasePoolSize %d, want %d lease names and %d connections",
-			LeaseNameCount, LeasePoolSize, names, names+2)
+// reservedLeases reserves one caller of pool's lease pool, named for the test, and returns the
+// pool its connection is taken from.
+func reservedLeases(t *testing.T, pool *Pool) *RawPool {
+	t.Helper()
+	callers, err := pool.Leases()
+	if err != nil {
+		t.Fatalf("open the leases pool: %v", err)
 	}
+	leases, err := callers.For(t.Name())
+	if err != nil {
+		t.Fatalf("reserve a connection of the leases pool: %v", err)
+	}
+	return leases
 }
 
 // A read-only transaction takes no BeforeCommit step: the step writes, and Postgres refuses a

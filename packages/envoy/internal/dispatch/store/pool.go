@@ -189,6 +189,9 @@ type Pool struct {
 	// will ever close.
 	mu        sync.Mutex
 	separates map[string]openedPool
+	// leaseCallers is the registry Leases hands out, holding the reservations of the lease
+	// pool: one registry per pool, so every caller's reservation is counted together.
+	leaseCallers *LeaseCallers
 	// closed refuses every separate pool but the health probe's from the moment Close begins
 	// (open); healthClosed refuses that one too, once Close has closed every other pool
 	// (healthPool).

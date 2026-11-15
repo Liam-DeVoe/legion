@@ -185,6 +185,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		reopening    bool
 		heldAdvances []string
 	}
+	// A credential that names one project is refused a target outside it where a target's
+	// project is read, since this route's own address names no target (project_scope.go): the
+	// lock step refuses it before any lock, and writeBlockedBy again under them.
+	callerProject, _ := s.callerProject(r)
 	// openPatch locks the rows the PATCH names, reads the issue under them, and refuses what only
 	// those rows can decide: a stale expected_sequence, an invalid parent, a closed issue, an
 	// advances write the revision rule refuses, and documents other than the ones gated. The
@@ -197,7 +201,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				return issuePatchWrite{}, err
 			}
 			if dependencyWrite {
-				if err := lockProjectIssueDependencies(ctx, tx, project); err != nil {
+				if err := lockIssueDependencyWrite(ctx, tx, project, callerProject, blockers); err != nil {
 					return issuePatchWrite{}, err
 				}
 			}
@@ -425,7 +429,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.BlockedBy != nil {
-		if err := writeBlockedBy(r.Context(), tx, key, before.Project, blockers); err != nil {
+		if err := writeBlockedBy(r.Context(), tx, key, before.Project, callerProject, blockers); err != nil {
 			s.writeHandlerError(w, r, err)
 			return
 		}

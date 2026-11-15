@@ -227,6 +227,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/artifacts/{id}/_test/newer-content": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Test hook: append an element no build knows, so the document holds newer content. */
+    post: operations["postApiV1ArtifactsByIdTestNewerContent"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/artifacts/{id}/_test/outside-schema": {
     parameters: {
       query?: never;
@@ -3953,6 +3970,8 @@ export interface components {
     CreateBroadcastInput: {
       body: string;
       delivery: string;
+      /** @description refused whenever present (400 INVALID_JSON): a broadcast's idempotency key is the Idempotency-Key header and never a body member */
+      idempotency_key?: string;
       session_ids: string[] | null;
     };
     CreateCommentDeliveryInput: {
@@ -4731,6 +4750,7 @@ export interface components {
     GraphReferences: {
       edges: components["schemas"]["GraphEdge"][] | null;
       node: components["schemas"]["GraphNodeRead"];
+      unknown_kinds?: string[];
     };
     Handoff: {
       author: components["schemas"]["Actor"];
@@ -7173,6 +7193,58 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["LiveWritePauseState"];
         };
+      };
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
+      503: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ArtifactsByIdTestNewerContent: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
       500: {

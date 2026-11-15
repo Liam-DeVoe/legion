@@ -16,11 +16,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 )
 
-// The file store's two touchpoints on the artifact routes: an upload's object write before the
-// transaction (putUploadedFile) and a version's download (serveFileVersion). storeArtifact and
-// getArtifactVersion (artifacts.go) call them; the rows they read and write are theirs.
+// The file store's touchpoints on the artifact routes: an upload's object write before the
+// transaction (putUploadedFile), whether its row keeps the bytes too (fleetServesFilesFromRows),
+// and a version's download (serveFileVersion). storeArtifact and getArtifactVersion
+// (artifacts.go) call them; the rows they read and write are theirs.
 
 // putUploadedFile writes an upload's bytes to the file store under sha before storeArtifact opens
 // its transaction, and answers the request itself when the upload is refused or the store refuses
@@ -37,9 +39,10 @@ import (
 // decide: an upload this check passes that a concurrent write then makes refusable (another
 // upload taking its name with another kind, the issue closing), or whose insert fails, leaves an
 // object no row names, which a later upload of the same bytes reuses. The row records the hash
-// the object is keyed by and no bytes. A write the request's own context cut off - the refusal
-// of the units its body asked back, or a client that went away - is the request's, not the
-// store's, and is answered as admission.WriteUnserved answers it, with no ERROR line.
+// the object is keyed by, and the bytes too only while a live server process has no bucket
+// (fleetServesFilesFromRows). A write the request's own context cut off - the refusal of the
+// units its body asked back, or a client that went away - is the request's, not the store's, and
+// is answered as admission.WriteUnserved answers it, with no ERROR line.
 func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, sha string, input artifactUploadInput, target artifactTarget) bool {
 	if kind == "doc" || s.deps.Files == nil {
 		return true
@@ -89,6 +92,21 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 		return err
 	}
 	return newArtifactKeyRefusal(target, slug)
+}
+
+// fleetServesFilesFromRows reports whether any live server process (processes.Bucketless, read in
+// the upload's transaction) has no bucket: one started without DISPATCH_FILE_STORE_BUCKET, or one
+// of a build that predates the fleet columns (PredatesFleetColumns), which registers no file_store
+// and so reads as having none. Such a process serves a file only from its row, and answers 503
+// FILE_STORE_UNAVAILABLE for a row that holds no bytes, so while one is live an upload keeps its
+// bytes in its row as well as in the bucket. backfill-files moves them out once every process has
+// a bucket.
+func fleetServesFilesFromRows(ctx context.Context, db processes.Querier) (bool, error) {
+	bucketless, err := processes.Bucketless(ctx, db)
+	if err != nil {
+		return false, err
+	}
+	return len(bucketless) > 0, nil
 }
 
 // serveFileVersion answers a file version's download from what its row holds: a row holding

@@ -133,12 +133,14 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 //     which began at the signal, beside the HTTP drain and the document shutdown: a message in its
 //     handler finishes and is acknowledged, or is given up and handed back to NATS, delivery's
 //     intakeStopBudget (15 s) after the signal at the latest, the one deadline of that stop, which
-//     counts from the signal and which a bind under way at the signal spends rather than extends.
-//     That budget ends well inside this shutdown's deadline, so it never makes the shutdown longer
-//     than the stages above already can. It comes before the pools close because nothing else keeps
-//     them open for a handler: one waiting on GitHub holds no connection, so stage 5 finds the
-//     pools idle, and its writes would fail on a closed pool once GitHub answered, with its message
-//     acknowledged all the same.
+//     counts from the signal and which a take-over under way at the signal spends rather than
+//     extends. Each intake then releases its hold through the lease pool, so another process takes
+//     its durable over at once. That budget ends well inside this shutdown's deadline, so it never
+//     makes the shutdown longer than the stages above already can. It comes before the pools close
+//     because nothing else keeps them open for a handler: one waiting on GitHub holds no
+//     connection, so stage 5 finds the pools idle, and its writes would fail on a closed pool once
+//     GitHub answered, with its message acknowledged all the same, and because a hold released
+//     through a closed pool is a hold left in place for its TTL.
 //  5. It waits until every request has answered and no connection of writePools is in use.
 //  6. It waits for the events outbox to stop, so its last batch is recorded and its publisher
 //     hold released through the pools before they close (waitForOutbox); a process with no
