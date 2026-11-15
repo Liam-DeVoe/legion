@@ -605,41 +605,61 @@ describe("userConfigChain", () => {
     await chmod(path.join(dir, "jj"), 0o755);
     return { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir };
   }
+  /** The pidfiles a row's fake jj writes its child's pid to, each recorded before the row waits on
+   *  it: the afterEach below kills every pid it finds in them, so a child the code under test fails
+   *  to kill is collected whether the row returns or the runner abandons it at its limit, and one
+   *  whose pid lands only after the row ended is collected too. */
+  const pidFiles: string[] = [];
+  /** Advanced by the afterEach below, so a poll a row started stops once that row has ended. */
+  let rowGeneration = 0;
+  /** The pid in `pidFile`, or undefined while the wrapper has not written one. */
+  async function pidIn(pidFile: string): Promise<number | undefined> {
+    const pid = await readFile(pidFile, "utf8")
+      .then((value) => Number(value.trim()))
+      .catch(() => 0);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  }
   // The same hang guard the rows below carry, for the same reason: removing a handful of
   // temporary directories is not work this suite measures, but it runs at bun's implicit 5 s
   // hook limit, which a loaded machine exceeds — at 240 busy loops on 2 CPUs this hook timed out
   // once in 20 runs and failed a row that had already passed its assertion.
   afterEach(async () => {
+    rowGeneration += 1;
+    for (const pidFile of pidFiles.splice(0)) {
+      const pid = await pidIn(pidFile);
+      if (pid === undefined) continue;
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // The expected path: the process group killed it first.
+      }
+    }
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   }, 60_000);
   // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
-  // are external OS state, which Bun's fake timers cannot advance. The helper's own 30 s is a
-  // hang guard and no bound on the work: what it waits for costs 14 ms unloaded, and at the rung
-  // the rows that call it declare — 96 busy loops, 48 per CPU — the whole of such a row costs
-  // 10285.47 / 10724.39 / 12515.71 ms (min/median/max over 20 runs on this two-CPU pod), of
-  // which this wait is a part, so 30 s is above twice the whole row. It sits inside each row's
-  // own 60 s limit on purpose, so that the row's `finally` runs and kills the fake jj's
-  // `sleep 300` rather than leaving it for five minutes: a `killGroup` that misses the child, or
-  // a pidfile that is never written, ends the row here, named, with nothing left behind. At 240
-  // busy loops it is the wrong size, which is why those rows' rung is 96: the wrapper's fork
-  // alone took 33478 ms there and this guard fired on a correct run, and under a 240_000
-  // provisional the same 20 runs were 20 of 20, charged 10317.06 to 43011.52 ms. The old 3 s
-  // deadlines were removed because they sat below the file's 5 s per-test limit and two of them
-  // ran in series in one row.
-  const POLL_GUARD_MS = 30_000;
-  /** Polls `read` until it answers, warning once at 2 s and giving up at the guard above, with
-   *  `what` named either way. */
+  // are external OS state, which Bun's fake timers cannot advance. The poll carries no deadline of
+  // its own, so what decides a row that waits here is that row's own per-test limit, which names
+  // it: a pidfile that is never written, or a child the kill misses, ends the row there, and the
+  // afterEach above kills the fake jj's `sleep 300` either way instead of leaving it for five
+  // minutes. Once the row has ended, the afterEach advances `rowGeneration` and the poll stops. An
+  // earlier version gave up at 30 s, inside the rows' 60 s limit, so that the row's own `finally`
+  // could kill the child; at 240 busy loops the wrapper's fork alone took 33478 ms and that 30 s
+  // failed a correct run, which is a bound on real time deciding a row, so the kill moved to the
+  // afterEach and the bound went. The old 3 s deadlines before it were removed because they sat
+  // below the file's 5 s per-test limit and two of them ran in series in one row.
+  /** Polls `read` until it answers, warning once at 2 s, which names what it waits for and decides
+   *  nothing. */
   async function polled<T>(what: string, read: () => Promise<T | undefined>): Promise<T> {
+    const generation = rowGeneration;
     const start = performance.now();
     let warned = false;
     for (;;) {
       const value = await read();
       if (value !== undefined) return value;
-      const waited = performance.now() - start;
-      if (waited > POLL_GUARD_MS) {
-        throw new Error(`gave up waiting for ${what} after ${Math.round(waited)} ms`);
+      if (generation !== rowGeneration) {
+        throw new Error(`stopped waiting for ${what}: the row ended`);
       }
-      if (!warned && waited > 2_000) {
+      if (!warned && performance.now() - start > 2_000) {
         warned = true;
         console.warn(`still waiting for ${what} after 2 s`);
       }
@@ -647,14 +667,11 @@ describe("userConfigChain", () => {
     }
   }
 
-  /** The wrapper's child pid, once it has written it. */
-  const pidFrom = (pidFile: string): Promise<number> =>
-    polled(`the jj wrapper to write ${pidFile}`, async () => {
-      const pid = await readFile(pidFile, "utf8")
-        .then((value) => Number(value.trim()))
-        .catch(() => 0);
-      return Number.isInteger(pid) && pid > 0 ? pid : undefined;
-    });
+  /** The wrapper's child pid, once it has written it; its pidfile is recorded for the afterEach. */
+  const pidFrom = (pidFile: string): Promise<number> => {
+    pidFiles.push(pidFile);
+    return polled(`the jj wrapper to write ${pidFile}`, () => pidIn(pidFile));
+  };
 
   /** Returns once signal 0 says the kernel has reaped the child. */
   const reaped = (pid: number): Promise<true> =>
@@ -697,26 +714,20 @@ describe("userConfigChain", () => {
     const env = await withJj(`sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`);
     // The bound has to outlast the host's own process start: a group killed before the wrapper
     // has forked writes no pid, and the row then waits for something that cannot arrive. Measured
-    // in this pod at 240 busy loops on 2 CPUs, the wrapper takes up to 3.1 s (p50 995 ms) to
-    // write its pid, against 14 ms unloaded; 10 s is the production default, about three times
-    // that worst case and six times below this row's 60 s limit, so it cannot decide a healthy
-    // run. `sleep 300` means jj still times out, so the row's subject — the bound fires, the
-    // group is killed, the forked child dies — is unchanged. The row above keeps 200 ms because
-    // it needs no fork: its subject is only that the resolve gives up and exports nothing.
-    // Undefined is the bound firing rather than jj answering, which is this row's premise.
+    // on one pod at 240 busy loops on 2 CPUs, the wrapper took up to 3.1 s (p50 995 ms) to write
+    // its pid, against 14 ms unloaded, and on a later pod at that load up to 33478 ms, which is
+    // past this 10 s; at the row's own rung of 96, below, the whole row costs at most 12515.71 ms.
+    // 10 s is the production default, and `sleep 300` means jj still times out, so the row's
+    // subject — the bound fires, the group is killed, the forked child dies — is unchanged. The row
+    // above keeps 200 ms because it needs no fork: its subject is only that the resolve gives up
+    // and exports nothing. Undefined is the bound firing rather than jj answering, which is this
+    // row's premise.
     expect(await userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env)).toBeUndefined();
     const pid = await pidFrom(pidFile);
-    try {
-      // The check: this returns only once the child is gone, and the child's own sleep outlives
-      // the row, so a kill that never reached it ends the row at the limit below.
-      await reaped(pid);
-    } finally {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // The expected path: the process group killed it first.
-      }
-    }
+    // The check: this returns only once the child is gone, and the child's own sleep outlives the
+    // row, so a kill that never reached it ends the row at the limit below, and the afterEach above
+    // collects the child.
+    await reaped(pid);
     // A hang guard, not a measurement: an unbounded wait on the wrapper, a pidfile that is never
     // written, or a forked child the kill misses each hangs the row rather than passing it. Its
     // own cost, read from bun's junit reporter on this two-CPU pod: 10285.47 / 10724.39 /
@@ -743,17 +754,9 @@ describe("userConfigChain", () => {
     // firing is the subject.
     const paths = await userConfigChain(120_000, env);
     const pid = await pidFrom(pidFile);
-    try {
-      expect(paths).toBe("/u/a.toml");
-      // The check, as above: the detached child's 300 s sleep outlives the row unless it is killed.
-      await reaped(pid);
-    } finally {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // The expected path: the process group killed it first.
-      }
-    }
+    expect(paths).toBe("/u/a.toml");
+    // The check, as above: the detached child's 300 s sleep outlives the row unless it is killed.
+    await reaped(pid);
     // A hang guard, not a measurement: a pidfile that is never written, or a detached child the
     // kill misses, hangs the row rather than passing it.
   }, 60_000);
