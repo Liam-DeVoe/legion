@@ -837,12 +837,15 @@ with no acting session. These texts are comments, messages, asks, answers to ask
 (a decline or a resolution) and the reasons of reviews. It does not read a person's issue titles
 or document versions, or the reason Dispatch itself writes when it carries an approval forward.
 
-Each call sends `dataset/select.md` as the system prompt. The user message holds the agent text
-that the person's text replies to (see "The reply walk" below), cut at 12,000 bytes; the part of a
-document the text points to, when it points to one; and the person's text, cut at 8,000 bytes.
-The reply is one object of a schema: `verdict` is one of `asks_word_meaning`,
-`cannot_understand`, `jargon_complaint`, `asks_agent_question` and `none`, and `words` lists the
-words the person asks about. The server's records job (R8) reads the same prompt.
+Each call sends the selection prompt, `internal/dispatch/wordrecords/select.md`, as the system
+prompt. The user message holds the agent text that the person's text replies to (see "The reply
+walk" below), cut at 12,000 bytes; the part of a document the text points to, when it points to
+one; and the person's text, cut at 8,000 bytes. The reply is one object of a schema: `verdict` is
+one of `asks_word_meaning`, `cannot_understand`, `jargon_complaint`, `asks_agent_question` and
+`none`, and `words` lists the words the person asks about. The server's records job (R8) sends the
+same prompt and builds its user message with the same code (`wordrecords.Input`), so one
+definition of a question about words serves both; `select_prompt_sha256` in `dataset/DATASET` is
+the prompt's SHA-256.
 
 | Flag | Meaning |
 | --- | --- |

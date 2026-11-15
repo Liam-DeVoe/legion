@@ -2548,6 +2548,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/readers/{login}/words": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The words one person asked about (INFRA-3231's R8): {reader, words}, each word {word, times, last} once, as the person last wrote it, however its case differs, with how many of their records name it and when they last asked, the most recently asked first, at most 200. A record is a text of theirs in which the records job found them asking what a word means, saying they cannot understand a text or complaining about its words, or a Define use. ?before= (RFC 3339) keeps the records written before it alone; any other value is 400 INVALID_QUERY. Any agent's token reads any reader's words, and a person signed in at a browser their own: another person's are 403 READER_WORDS_FORBIDDEN. */
+    get: operations["getApiV1ReadersByLoginWords"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/references": {
     parameters: {
       query?: never;
@@ -2931,7 +2948,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One UTC day of the writing check's decisions, ?day=YYYY-MM-DD (default today): {day, total, outcomes, routes}, each a count by outcome (findings, clean, the exemptions and the reader's fail-open outcomes) and by "<method> <route>". A day that is not YYYY-MM-DD is 400 INVALID_QUERY. Rows are kept 90 days. */
+    /** @description The counts of the texts agents and people write (INFRA-3231's R8) for the UTC days ?first= to ?last=, both YYYY-MM-DD and both counted (default: last today, first the 13 days before it; at most 366 days): {first, last, days, rows}. days lists each day of the range, {day, total, outcomes, routes}: the writing check's and the reviewer's decisions counted by outcome and by "<method> <route>". rows lists each day, project and person that has a count, {day, project, person, word_questions, texts, texts_unread, asks_answered, asks_replied_before_answer, rewrite_uses, define_uses, reviewer_held, reviewer_rewrote, reviewer_passed, reviewer_posted_unreviewed, posted_over_finding}: the texts the person wrote that the records job read, those in which they ask what a word means, say they cannot understand a text or complain about its words, and those still waiting for the job's model; the asks they answered and those of them a person commented on in the ask's thread before the answer; their Rewrite and Define uses; the texts written to them that the reviewer held, rewrote, passed and posted unreviewed; and the texts written to them that posted over a finding. project is "" for a text on no project or one whose project was not recorded, and person "" for a person the record does not name. A day that is not YYYY-MM-DD, a first after last and a longer range are 400 INVALID_QUERY. The decisions are kept 90 days. Any signed-in caller reads it. */
     get: operations["getApiV1WritingCheckCounts"];
     put?: never;
     post?: never;
@@ -5687,6 +5704,16 @@ export interface components {
       project: string;
       renamed_to?: null | string;
     };
+    ReaderWord: {
+      /** Format: date-time */
+      last: string;
+      times: number;
+      word: string;
+    };
+    ReaderWordsResponse: {
+      reader: string;
+      words: components["schemas"]["ReaderWord"][] | null;
+    };
     RebuildArtifactInput: {
       markdown?: null | string;
     };
@@ -6221,6 +6248,12 @@ export interface components {
       snippet: string;
     };
     WritingCheckCounts: {
+      days: components["schemas"]["WritingCheckDay"][] | null;
+      first: string;
+      last: string;
+      rows: components["schemas"]["WritingCheckRow"][] | null;
+    };
+    WritingCheckDay: {
       day: string;
       outcomes: {
         [key: string]: number;
@@ -6239,6 +6272,23 @@ export interface components {
       deployment: string;
       endpoint_host: string;
       tokens_per_minute: number;
+    };
+    WritingCheckRow: {
+      asks_answered: number;
+      asks_replied_before_answer: number;
+      day: string;
+      define_uses: number;
+      person: string;
+      posted_over_finding: number;
+      project: string;
+      reviewer_held: number;
+      reviewer_passed: number;
+      reviewer_posted_unreviewed: number;
+      reviewer_rewrote: number;
+      rewrite_uses: number;
+      texts: number;
+      texts_unread: number;
+      word_questions: number;
     };
     WritingCheckRuleLeftOut: {
       id: string;
@@ -12862,6 +12912,41 @@ export interface operations {
       };
     };
   };
+  getApiV1ReadersByLoginWords: {
+    parameters: {
+      query?: {
+        before?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        login: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ReaderWordsResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1References: {
     parameters: {
       query?: {
@@ -13690,7 +13775,8 @@ export interface operations {
   getApiV1WritingCheckCounts: {
     parameters: {
       query?: {
-        day?: string;
+        first?: string;
+        last?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -14047,6 +14133,8 @@ export type ProjectGatedSteps = components["schemas"]["ProjectGatedSteps"];
 export type ProjectGatedStepsInput = components["schemas"]["ProjectGatedStepsInput"];
 export type PutArchitectureSourceInput = components["schemas"]["PutArchitectureSourceInput"];
 export type PutRepoProjectInput = components["schemas"]["PutRepoProjectInput"];
+export type ReaderWord = components["schemas"]["ReaderWord"];
+export type ReaderWordsResponse = components["schemas"]["ReaderWordsResponse"];
 export type RebuildArtifactInput = components["schemas"]["RebuildArtifactInput"];
 export type RecordCheckResultInput = components["schemas"]["RecordCheckResultInput"];
 export type RecordDecisionResp = components["schemas"]["RecordDecisionResp"];
@@ -14117,8 +14205,10 @@ export type WorkUnderNoPriority = components["schemas"]["WorkUnderNoPriority"];
 export type WriteAdvice = components["schemas"]["WriteAdvice"];
 export type WriteSuggestion = components["schemas"]["WriteSuggestion"];
 export type WritingCheckCounts = components["schemas"]["WritingCheckCounts"];
+export type WritingCheckDay = components["schemas"]["WritingCheckDay"];
 export type WritingCheckDetector = components["schemas"]["WritingCheckDetector"];
 export type WritingCheckModel = components["schemas"]["WritingCheckModel"];
+export type WritingCheckRow = components["schemas"]["WritingCheckRow"];
 export type WritingCheckRuleLeftOut = components["schemas"]["WritingCheckRuleLeftOut"];
 export type WritingCheckState = components["schemas"]["WritingCheckState"];
 export type WritingRulesInput = components["schemas"]["WritingRulesInput"];

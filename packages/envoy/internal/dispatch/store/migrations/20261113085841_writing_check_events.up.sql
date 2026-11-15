@@ -5,9 +5,15 @@
 -- the check decided for each write it saw: a sentence that breaks a rule (findings), written
 -- clean, let through because the reader failed (the reader's fail-open outcomes), or not read at
 -- all because the writer is a person, a project's daemon or Dispatch itself, because a plugin
--- generated the text (exempt_generated), or because the upload is a file the check does not
--- read. A person reads it with the SQL in cmd/dispatch/README.md ("Writing check"), and
--- GET /api/v1/writing-check/counts counts one UTC day of it.
+-- generated the text (exempt_generated), because a person typed the command that wrote it in a
+-- session (exempt_person_typed), or because the upload is a file the check does not read. It
+-- also records what the reviewer did with an agent's text: held it (held), let it post as the
+-- review found nothing (passed), had the writer edit it (edited) or post it as written over the
+-- findings (posted_as_written), posted its own rewrite (rewrite_posted), posted it with no review
+-- (posted_unreviewed), or reviewed it after it posted (reviewed_after, its rules the findings);
+-- and each Rewrite a person asks for (rewrite_requested). A person reads it with the SQL in
+-- cmd/dispatch/README.md ("Writing check"), and GET /api/v1/writing-check/counts counts it by day,
+-- and by day, project and reader.
 --
 -- The server inserts the row outside the write's own transaction, after the decision and before
 -- the answer, so a failed insert is logged and never fails the write, and a write that rolls back
@@ -17,7 +23,8 @@
 -- exemptions are read by it, so a daemon-named write made with a person's token is counted under
 -- that token. rules and fields are the rule ids the write broke and the request fields they
 -- stand in, for a write with findings; candidates is how many sentences the code stage gave the
--- reader, and reader_ms how long the reader took, null where it was not called.
+-- reader, and reader_ms how long the reader took, null where it was not called. project is the
+-- project of the text's issue or document, null where the writer did not record it.
 --
 -- A new table no earlier release names: nothing existing is read or rewritten, and the release
 -- before this one neither reads nor writes it, so it rolls (cmd/dispatch/README.md, "Database
@@ -34,16 +41,19 @@ create table writing_check_events (
   token_id text,
   outcome text not null check (outcome in (
     'findings', 'exempt_person', 'exempt_daemon', 'exempt_system', 'exempt_unread_upload',
-    'exempt_generated', 'clean', 'reader_timeout', 'reader_error', 'reader_malformed',
-    'reader_budget', 'candidate_cap', 'model_mismatch', 'no_model'
+    'exempt_generated', 'exempt_person_typed', 'clean', 'reader_timeout', 'reader_error',
+    'reader_malformed', 'reader_budget', 'candidate_cap', 'model_mismatch', 'no_model',
+    'held', 'passed', 'edited', 'posted_as_written', 'rewrite_posted', 'posted_unreviewed',
+    'reviewed_after', 'rewrite_requested'
   )),
   rules text[] not null default '{}',
   fields text[] not null default '{}',
   candidates int not null default 0,
   reader_ms int,
-  detail text
+  detail text,
+  project text
 );
 
--- The sweep deletes by age and the counts route reads one day, both by created_at. The table is
+-- The sweep deletes by age and the counts route reads days, both by created_at. The table is
 -- new and empty, so the index is built with it.
 create index writing_check_events_created_at_idx on writing_check_events (created_at);

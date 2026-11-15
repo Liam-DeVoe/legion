@@ -465,7 +465,15 @@ type liveWritePauseQuery struct {
 
 // writingCheckCountsQuery is GET /api/v1/writing-check/counts's query.
 type writingCheckCountsQuery struct {
-	Day string `query:"day"`
+	// First and Last are the range's first and last UTC days, YYYY-MM-DD, both counted.
+	First string `query:"first"`
+	Last  string `query:"last"`
+}
+
+// readerWordsQuery is GET /api/v1/readers/{login}/words's query.
+type readerWordsQuery struct {
+	// Before, an RFC 3339 time, keeps the words of the records written before it alone.
+	Before string `query:"before"`
 }
 
 // --- the shapes ------------------------------------------------------------------------------
@@ -739,6 +747,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/writing-check":    {Status: http.StatusOK, Response: writingCheckState{}},
 	"GET /api/v1/writing-check/counts": {
 		Status: http.StatusOK, Response: store.WritingCheckCounts{}, Params: writingCheckCountsQuery{},
+	},
+	"GET /api/v1/readers/{login}/words": {
+		Status: http.StatusOK, Response: readerWordsResponse{}, Params: readerWordsQuery{},
 	},
 	"POST /api/v1/writing-rules": {
 		Status: http.StatusOK, Response: writingRulesResponse{}, Request: writingRulesInput{},

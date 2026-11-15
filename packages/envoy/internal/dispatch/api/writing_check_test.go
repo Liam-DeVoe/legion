@@ -696,8 +696,9 @@ func TestTheWritingCheckReadsAMarkdownUploadAndNotAFile(t *testing.T) {
 }
 
 // TestTheWritingCheckCountsAndStateRoutes reads the two read routes. The counts list every
-// outcome the day recorded, the agent's broadcast's exempt_no_reader and a plugin's generated
-// reply's exempt_generated among them.
+// outcome each day of the range recorded, the agent's broadcast's exempt_no_reader and a plugin's
+// generated reply's exempt_generated among them, and give the write that posted over a finding to
+// its reader.
 func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 	rig := newWritingCheckRig(t, writingCheckOn(nil))
 	comments := "/api/v1/issues/" + rig.fixture.issue + "/comments"
@@ -705,24 +706,45 @@ func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 	rig.asSession(http.MethodPost, comments, map[string]any{"body": cleanProse})
 	rig.asSessionGenerated(http.MethodPost, "/api/v1/messages/"+rig.fixture.message+"/reply", map[string]any{"body": badProse, "attempt": 1})
 	rig.asTokenFor(checkWriter, http.MethodPost, "/api/v1/broadcasts", map[string]any{"body": badProse, "delivery": "btw", "session_ids": []string{"s-reader"}})
-	today := time.Now().UTC().Format(time.DateOnly)
-	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?day="+today, nil, "alice")
+	now := time.Now().UTC()
+	today, yesterday := now.Format(time.DateOnly), now.AddDate(0, 0, -1).Format(time.DateOnly)
+	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?first="+yesterday+"&last="+today, nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("counts: %d %s", response.Code, response.Body.String())
 	}
 	counts := decodeBody[store.WritingCheckCounts](t, response)
-	if counts.Day != today || counts.Total != 4 || counts.Outcomes[writingCheckFindings] != 1 || counts.Outcomes[writingCheckGenerated] != 1 ||
-		counts.Outcomes["clean"] != 1 || counts.Outcomes[writingCheckNoReader] != 1 ||
-		counts.Routes["POST /api/v1/issues/{key}/comments"] != 2 || counts.Routes["POST /api/v1/messages/{id}/reply"] != 1 ||
-		counts.Routes["POST /api/v1/broadcasts"] != 1 {
-		t.Errorf("counts = %+v", counts)
+	if counts.First != yesterday || counts.Last != today || len(counts.Days) != 2 || counts.Days[0].Day != yesterday || counts.Days[0].Total != 0 {
+		t.Fatalf("counts = %+v, want yesterday with nothing and today", counts)
 	}
-	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?day=2026-01-01", nil, "alice"); response.Code != http.StatusOK ||
-		decodeBody[store.WritingCheckCounts](t, response).Total != 0 {
+	if day := counts.Days[1]; day.Day != today || day.Total != 4 || day.Outcomes[writingCheckFindings] != 1 || day.Outcomes[writingCheckGenerated] != 1 ||
+		day.Outcomes["clean"] != 1 || day.Outcomes[writingCheckNoReader] != 1 ||
+		day.Routes["POST /api/v1/issues/{key}/comments"] != 2 || day.Routes["POST /api/v1/messages/{id}/reply"] != 1 ||
+		day.Routes["POST /api/v1/broadcasts"] != 1 {
+		t.Errorf("today = %+v", day)
+	}
+	overFinding := 0
+	for _, row := range counts.Rows {
+		if row.Day != today {
+			t.Errorf("a row of another day: %+v", row)
+		}
+		overFinding += row.PostedOverFinding
+	}
+	if overFinding != 1 {
+		t.Errorf("rows = %+v, want the one write with findings counted as posted over a finding", counts.Rows)
+	}
+	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts", nil, "alice"); response.Code != http.StatusOK {
+		t.Errorf("no query: %d %s", response.Code, response.Body.String())
+	} else if counts := decodeBody[store.WritingCheckCounts](t, response); counts.Last != today || len(counts.Days) != 14 || counts.Days[13].Total != 4 {
+		t.Errorf("no query = %+v, want the 14 days to today", counts)
+	}
+	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?first=2026-01-01&last=2026-01-01", nil, "alice"); response.Code != http.StatusOK ||
+		decodeBody[store.WritingCheckCounts](t, response).Days[0].Total != 0 {
 		t.Errorf("an empty day: %d %s", response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?day=today", nil, "alice"); response.Code != http.StatusBadRequest {
-		t.Errorf("a malformed day: %d %s, want 400", response.Code, response.Body.String())
+	for _, query := range []string{"first=today", "last=2026-1-1", "first=2026-01-02&last=2026-01-01", "first=2025-01-01&last=2026-01-02"} {
+		if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?"+query, nil, "alice"); response.Code != http.StatusBadRequest {
+			t.Errorf("?%s: %d %s, want 400", query, response.Code, response.Body.String())
+		}
 	}
 	state := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check", nil, "alice")
 	if state.Code != http.StatusOK {

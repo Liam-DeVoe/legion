@@ -1188,6 +1188,9 @@ A process that finds it held tries again
 - The writing check event sweep (`api.RunWritingCheckEventSweep`) deletes the `writing_check_events` rows older than 90 days (`store.WritingCheckRetention`, Writing check below) once a day, its first pass at start.
   It takes no lease and records no `duty_passes` row, so it holds no connection of the lease pool: the pass is one delete by age on the shared pool, which every process runs, and a second process's pass the same day deletes nothing the first left.
 
+- The records job of the words people ask about (`wordrecords.Job.Run`, lease `word-records`, The word records below) runs every 10 seconds through `duty.RunLeased`, its first pass at start, while `DISPATCH_WORD_RECORDS` is `on` and its model group is set.
+  Its tick records its period in `duty_passes`, so one process serves each period; a pass reads the event log after its cursor up to the safe horizon, then classifies up to 100 texts that are due, 4 calls at a time.
+
 Outside these classes, the document compaction sweep (lease `document-compaction`) runs every hour from a tick at start whether or not NATS is configured, the display tree fill (lease `text-tree-fill`, `texttreefill.Run`) runs every hour from a tick at start and holds its lease for a whole pass, which is as long as it takes to store a tree for every stored text that has none at this build's display-parser version, the outbox's publish scan is woken, never periodic (`outbox.Run`), the settlement resumption still runs every minute, the block index reconciliation (lease `block-index`) runs every 30 s (every 2 s while a batch is full) and the repair of closed and reopened issues' asks (lease `issue-ask-repair`, Database migrations below) every 10 minutes after its boot pass, each recording its passes in `duty_passes` with its period, and the per-feature listeners (the delivery live hub, the event stream relay and the events outbox) keep their own connections and keep-alive pings.
 
 **One shared listener per process.**
@@ -2678,9 +2681,44 @@ A command a person typed (`DISPATCH_PERSON_TYPED=1`) is never refused.
 The setting is read on the server, so one change applies to every session:
 
 - `GET /api/v1/settings/writing-rules` answers `{refusal, extra}`, the refusal `on` or `off` and the rule sets of `DISPATCH_WRITING_RULES_EXTRA`. The command keeps the answer in the session's state file for 10 minutes, and a server without the route refuses nothing.
-- `POST /api/v1/writing-rules` takes `{route, body}` of a write the command has not sent, `route` being `"<method> <path>"`, and answers `{reader, text}`: the person who reads that write, decided as the writing check decides it (`writing_check_reader.go`), and the rules text. `reader_words` adds the words that person asked about before (R8's records; none until they exist), and `ask_parts` adds the five parts of an ask to an ask's rules.
+- `POST /api/v1/writing-rules` takes `{route, body}` of a write the command has not sent, `route` being `"<method> <path>"`, and answers `{reader, text}`: the person who reads that write, decided as the writing check decides it (`writing_check_reader.go`), and the rules text. `reader_words` adds the words that person asked about before (The word records, below), and `ask_parts` adds the five parts of an ask to an ask's rules.
 
 The server embeds the skill from `internal/dispatch/writingcheck/plainwords/skill/`, a copy that `go generate ./internal/dispatch/writingcheck/plainwords` makes; `TestTheCopyIsTheSkill` fails while the copy and `skills/plain-words` differ.
+
+### The word records
+
+The records job (`internal/dispatch/wordrecords`, INFRA-3231's R8) records each text in which a person asks what a word of an agent's text means, says they cannot understand the text, or complains about its words.
+It runs while `DISPATCH_WORD_RECORDS` is `on` and its model group (`DISPATCH_WORD_RECORDS_MODEL_*`) is set, as a pass every 10 seconds under the lease `word-records`, the first at start (Background loops, above).
+
+- It reads the event log after its cursor (`word_records_cursor`), up to the safe horizon (`events.Horizon`), so it reads only what has committed, after the write's own transaction: no write waits on it or on its model.
+  Its first pass starts at the first event created at or after `DISPATCH_WORD_RECORDS_FROM`, which is the backfill; nothing written before that time is read.
+- A text is a person's when a user writes it with no session acting for them, as the dataset command reads it (`cmd/writing-check`, "classify"): a comment, a message (every copy of a broadcast is one text), a question ask, an answer with words, a note that declines, retracts or resolves an ask, and a review's reason.
+  A text a person typed in a session (`Dispatch-Person-Typed: 1`, whose event's payload holds `person_typed: true`) is the person's the actor names, or the person the session's credential names (a personal token's owner); where it names nobody, such as a pod's shared token, the person is unknown and the counts give it apart.
+- Each text is one `word_questions` row, pending until the job's model gives it a verdict of the selection prompt (`internal/dispatch/wordrecords/select.md`, the dataset's own prompt) with the agent text it answers: up the text's replies to the first agent text, else the agent's last message in a direct conversation, else the agent's last text on the issue.
+  A row whose verdict is `asks_word_meaning`, `cannot_understand` or `jargon_complaint` is a word question and holds the words.
+  A call that fails leaves the row `failed` and it is read again after 30 seconds, doubled after each failure up to an hour, until a verdict comes.
+- A Define use is a word question of its own (`store.RecordDefineUse`).
+
+`GET /api/v1/readers/{login}/words` answers `{reader, words}`: each word the reader asked about once, `{word, times, last}`, the most recently asked first; `?before=` (RFC 3339) keeps the records written before it.
+Any agent's token reads any reader's words, because the reviewer and the written rules read them, and a person at a browser their own; another person's are `403 READER_WORDS_FORBIDDEN`.
+
+A day's word questions, by person:
+
+```sql
+select person, verdict, words, answers
+from word_questions
+where about_words and day = '2026-11-13'
+order by person, written_at;
+```
+
+The texts the job has not classified yet, with why:
+
+```sql
+select id, event_id, state, attempts, next_attempt_at, last_error
+from word_questions
+where state <> 'done'
+order by next_attempt_at;
+```
 
 ### Model groups
 
@@ -2760,15 +2798,23 @@ A reader fault (`reader_timeout`, `reader_error`, `reader_malformed`, `reader_bu
 ### Records
 
 Each decision is one row of `writing_check_events`:
-the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the rules broken and their fields, the code stage's candidate count, how long the model reader took, and `reader`, the login of the person who reads the text (null where no person does), on every row.
+the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the rules broken and their fields, the code stage's candidate count, how long the model reader took, `reader`, the login of the person who reads the text (null where no person does), on every row, and `project`, the project of the text's issue or document where the writer records it.
 The outcomes are `findings` (a sentence breaks a rule; the write went on), `clean`, `exempt_person`, `exempt_daemon`, `exempt_system`, `exempt_unread_upload`, `exempt_no_reader`, `exempt_generated`, and the reader's fail-open outcomes with `no_model`.
+The table also admits the reviewer's outcomes (`held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`), a person's typed command (`exempt_person_typed`) and each Rewrite a person asks for (`rewrite_requested`, its `reader` the person who asked), which the reviewer and Rewrite record.
 A write that carries no prose text is not recorded.
 The server inserts the row outside the write's transaction, after the decision and before the answer; an insert that fails is logged and the write goes on.
 A daily sweep deletes the rows older than 90 days (Background loops, above).
 
 `GET /api/v1/writing-check` answers the check as this process runs it:
 `enabled`, the `rules` it applies, `rules_left_out` with each reason, the `detector` (`on` and why not), the reader's `model` (endpoint host, deployment, api version, tokens per minute, never a credential), `reader_calls` since the process started, and `bundle_model_id`.
-`GET /api/v1/writing-check/counts?day=YYYY-MM-DD` counts one UTC day by outcome and by route.
+`GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, rows}`:
+
+- `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route.
+- `rows`: each day, project and person with a count.
+  From `word_questions` (The word records, above): `word_questions`, `texts` (every text of the person the job read), `texts_unread` (still waiting for its model) and `define_uses`.
+  From the event log: `asks_answered`, the asks the person answered, and `asks_replied_before_answer`, those of them a person commented on in the ask's thread before the answer.
+  From `writing_check_events`, each row given to its `reader` and `project`: `rewrite_uses` (`rewrite_requested`), `reviewer_held`, `reviewer_rewrote` (`rewrite_posted`), `reviewer_passed`, `reviewer_posted_unreviewed`, and `posted_over_finding` (`findings`, `posted_as_written`, and `reviewed_after` with findings).
+  `project` is `""` for a text on no project or whose project was not recorded, and `person` `""` for a person the record does not name.
 
 A day's writes with findings, by rule and route:
 

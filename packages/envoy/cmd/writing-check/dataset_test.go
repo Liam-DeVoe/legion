@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
 )
 
 // The fixtures below are written for these tests: every text is invented, and the owner and the
@@ -121,7 +123,7 @@ func (f *dsFixture) writeVerdicts(t *testing.T, path string) {
 	t.Helper()
 	var lines []dsVerdict
 	for _, k := range sortedKeys(f.verdicts) {
-		lines = append(lines, dsVerdict{Text: k, Verdict: f.verdicts[k], Words: []string{}, Model: "claude-standin", PromptSHA256: sha256Hex([]byte(dsSelectPrompt))})
+		lines = append(lines, dsVerdict{Text: k, Verdict: f.verdicts[k], Words: []string{}, Model: "claude-standin", PromptSHA256: sha256Hex([]byte(wordrecords.SelectPrompt))})
 	}
 	if _, err := writeJSONL(path, lines); err != nil {
 		t.Fatal(err)
@@ -158,16 +160,16 @@ func standardFixture() *dsFixture {
 		agent := f.comment(fmt.Sprintf("c-%d", i), child, fixtureAgent, fixtureWords(rng, 40), "")
 		switch i % 4 {
 		case 0:
-			f.owner(fixtureOwnerID(i), child, "What does "+fixtureWords(rng, 2)+" mean here?", agent, dsWordMeaning)
+			f.owner(fixtureOwnerID(i), child, "What does "+fixtureWords(rng, 2)+" mean here?", agent, wordrecords.WordMeaning)
 		case 1:
-			f.owner(fixtureOwnerID(i), child, "Looks right, go ahead.", agent, dsNone)
+			f.owner(fixtureOwnerID(i), child, "Looks right, go ahead.", agent, wordrecords.None)
 		case 2:
-			f.owner(fixtureOwnerID(i), child, "Why did the "+fixtureWords(rng, 2)+" stop?", agent, dsAgentQuestion)
+			f.owner(fixtureOwnerID(i), child, "Why did the "+fixtureWords(rng, 2)+" stop?", agent, wordrecords.AgentQuestion)
 			f.comment(fmt.Sprintf("r-%d", i), child, fixtureOther, "It stopped because "+fixtureWords(rng, 20), fixtureOwnerID(i))
 		case 3:
-			f.owner(fixtureOwnerID(i), root, "Thanks, that is clear.", "", dsNone)
+			f.owner(fixtureOwnerID(i), root, "Thanks, that is clear.", "", wordrecords.None)
 			f.comment(fmt.Sprintf("p-%d", i), root, fixtureAgent, fixtureWords(rng, 25), "")
-			f.owner(fmt.Sprintf("q-%d", i), root, "Fine by me.", fmt.Sprintf("p-%d", i), dsNone)
+			f.owner(fmt.Sprintf("q-%d", i), root, "Fine by me.", fmt.Sprintf("p-%d", i), wordrecords.None)
 		}
 	}
 	// Near copies: two trees whose agent texts repeat one long text with one word changed.
@@ -175,30 +177,30 @@ func standardFixture() *dsFixture {
 	f.issue("NEAR-1", "", "Near one", "One.")
 	f.issue("NEAR-2", "", "Near two", "Two.")
 	f.comment("near-a", "NEAR-1", fixtureAgent, long+" alpha", "")
-	f.owner("near-oa", "NEAR-1", "I cannot follow this at all.", "near-a", dsCannotUnderstand)
+	f.owner("near-oa", "NEAR-1", "I cannot follow this at all.", "near-a", wordrecords.CannotUnderstand)
 	f.comment("near-b", "NEAR-2", fixtureAgent, long+" omega", "")
-	f.owner("near-ob", "NEAR-2", "What is this list for?", "near-b", dsWordMeaning)
+	f.owner("near-ob", "NEAR-2", "What is this list for?", "near-b", wordrecords.WordMeaning)
 	// A document version the owner asks about in his review.
 	f.event("artifact.version", fixtureAgent, "TREE-101", map[string]any{"artifact_id": "art-TREE-101", "name": "spec.md", "version": map[string]any{"number": 2}})
 	second := *firstVersion(f, "art-TREE-101") + "\n\nThe warm path skips the index on a hit."
 	f.versions = append(f.versions, snapLine{Kind: "version", ArtifactID: "art-TREE-101", Number: 2, Text: &second})
 	f.event("artifact.changes_requested", fixturePerson, "TREE-101", map[string]any{"artifact_id": "art-TREE-101", "version": 2, "reason": "What is the warm path?"})
-	f.verdicts["review:"+fmt.Sprint(f.next)+"@"+fmt.Sprint(f.next)] = dsWordMeaning
+	f.verdicts["review:"+fmt.Sprint(f.next)+"@"+fmt.Sprint(f.next)] = wordrecords.WordMeaning
 	// An ask the owner answers by choosing an option only, and one he answers with words.
 	f.event("ask.opened", fixtureAgent, "TREE-5", map[string]any{"id": "ask-1", "question": "Which mirror goes first?", "options": []map[string]any{{"label": "East", "description": "the east mirror"}, {"label": "West"}}})
 	f.event("ask.answered", fixturePerson, "TREE-5", map[string]any{"id": "ask-1", "answer": map[string]any{"selected": []string{"East"}}})
 	f.event("ask.opened", fixtureAgent, "TREE-9", map[string]any{"id": "ask-2", "question": "Do I rotate the keys now or at the window?"})
 	f.event("ask.answered", fixturePerson, "TREE-9", map[string]any{"id": "ask-2", "answer": map[string]any{"text": "What is the window?"}})
-	f.verdicts["answer:ask-2:"+fmt.Sprint(f.next)+"@"+fmt.Sprint(f.next)] = dsWordMeaning
+	f.verdicts["answer:ask-2:"+fmt.Sprint(f.next)+"@"+fmt.Sprint(f.next)] = wordrecords.WordMeaning
 	// A phrase the owner corrects, and a labelled phrase.
 	f.comment("phrase-a", "TREE-13", fixtureAgent, "This names the owner of the queue.", "")
-	f.owner("phrase-o", "TREE-13", `Do not write "names the" when you mean who owns it.`, "phrase-a", dsJargon)
+	f.owner("phrase-o", "TREE-13", `Do not write "names the" when you mean who owns it.`, "phrase-a", wordrecords.JargonComplaint)
 	f.comment("phrase-b", "TREE-21", fixtureAgent, "The report shows the cost of each run.", "")
-	f.owner("phrase-ok", "TREE-21", `Good, "shows the cost" is what I wanted.`, "phrase-b", dsNone)
+	f.owner("phrase-ok", "TREE-21", `Good, "shows the cost" is what I wanted.`, "phrase-b", wordrecords.None)
 	f.comment("label-a", "TREE-17", fixtureAgent, "The table shows the gap between the two runs.", "")
 	f.labels = append(f.labels, snapLine{Kind: "label", EventID: f.next, SourceID: "label-a", Family: "comment", Sets: []string{"t09-dev-sample"}, Shapes: []string{"shows"}})
 	// The owner links one of his questions on the naming issue.
-	f.owner("link-o", fixtureNaming, "An example: dispatch://TREE-2/comment/"+fixtureOwnerID(2), "", dsNone)
+	f.owner("link-o", fixtureNaming, "An example: dispatch://TREE-2/comment/"+fixtureOwnerID(2), "", wordrecords.None)
 	return f
 }
 
@@ -311,8 +313,8 @@ func TestDatasetFlippedVerdictChangesTheDigest(t *testing.T) {
 	}
 	flipped := 0
 	for k, v := range f.verdicts {
-		if strings.HasPrefix(k, "comment:"+fixtureOwnerID(1)+"@") && v == dsNone {
-			f.verdicts[k] = dsJargon
+		if strings.HasPrefix(k, "comment:"+fixtureOwnerID(1)+"@") && v == wordrecords.None {
+			f.verdicts[k] = wordrecords.JargonComplaint
 			flipped++
 		}
 	}
@@ -549,7 +551,7 @@ func TestDatasetFetchWritesTheSnapshotBuildReads(t *testing.T) {
 	f.issue("FETCH-1", "", "Fetch", "The first spec.")
 	f.comment("cut-1", "FETCH-1", fixtureAgent, "The first part.", "")
 	f.events[len(f.events)-1]["payload"].(map[string]any)["body_truncated"] = true
-	f.owner("ask-1", "FETCH-1", "What is the part here?", "cut-1", dsWordMeaning)
+	f.owner("ask-1", "FETCH-1", "What is the part here?", "cut-1", wordrecords.WordMeaning)
 	end := f.events[len(f.events)-1]["created_at"].(string)
 	f.comment("late-1", "FETCH-1", fixtureAgent, "Written a minute after the end.", "")
 	f.next += 30

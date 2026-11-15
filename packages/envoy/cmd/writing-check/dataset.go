@@ -5,8 +5,9 @@ package main
 // verdict of the selection prompt, build is a pure function of the snapshot, the verdicts and a
 // seed, and pack puts those three inputs into one bundle that build --from reads. Every file
 // these steps write holds Dispatch text, so each belongs under $TMPDIR and never in a repository;
-// the repository holds the prompt and the digests (dataset/DATASET). README.md, "dataset", says
-// what each step does.
+// the repository holds the prompt (internal/dispatch/wordrecords/select.md, which the server's
+// records job reads too) and the digests (dataset/DATASET). README.md, "dataset", says what each
+// step does.
 
 import (
 	"archive/tar"
@@ -16,7 +17,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	_ "embed"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -35,20 +35,14 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	xrate "golang.org/x/time/rate"
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
 )
-
-// dsSelectPrompt is the selection prompt: the system prompt of every classify call. The server's
-// records job (R8) reads the same file, so one definition of a question about words serves both.
-//
-//go:embed dataset/select.md
-var dsSelectPrompt string
 
 const (
 	// dsFormat is the snapshot's format, written in its header.
@@ -71,46 +65,17 @@ const (
 	dsPartSize = 24 << 20
 )
 
-// Bounds of classify's calls.
+// Bounds of classify's calls. The parts of each call's user message are cut at
+// wordrecords.AgentChars, wordrecords.QuoteChars and wordrecords.PersonChars.
 const (
 	dsDefaultModel         = "claude-sonnet-4-6"
 	dsDefaultKeyFile       = "/var/run/model-gateway-key/key"
-	dsAgentChars           = 12_000
-	dsPersonChars          = 8_000
-	dsQuoteChars           = 2_000
 	dsClassifyOutput       = 1024
 	dsClassifyCallTime     = 180 * time.Second
 	dsClassifyRetries      = 6
 	dsClassifyBackoff      = 2 * time.Second
 	dsClassifyReplyRetries = 3
 )
-
-// The verdicts of the selection prompt.
-const (
-	dsWordMeaning      = "asks_word_meaning"
-	dsCannotUnderstand = "cannot_understand"
-	dsJargon           = "jargon_complaint"
-	dsAgentQuestion    = "asks_agent_question"
-	dsNone             = "none"
-)
-
-var dsVerdicts = []string{dsWordMeaning, dsCannotUnderstand, dsJargon, dsAgentQuestion, dsNone}
-
-// dsAboutWords is whether a verdict selects a question case.
-func dsAboutWords(verdict string) bool {
-	return verdict == dsWordMeaning || verdict == dsCannotUnderstand || verdict == dsJargon
-}
-
-// dsVerdictSchema is the JSON schema of a classify reply.
-var dsVerdictSchema = json.RawMessage(`{
-	"type": "object",
-	"properties": {
-		"verdict": {"type": "string", "enum": ["asks_word_meaning", "cannot_understand", "jargon_complaint", "asks_agent_question", "none"]},
-		"words": {"type": "array", "items": {"type": "string"}}
-	},
-	"required": ["verdict", "words"],
-	"additionalProperties": false
-}`)
 
 // The case groups of R1, in the order the split takes them: the rarest first.
 const (
@@ -189,7 +154,7 @@ const dsUsage = `usage: writing-check dataset <step> [flags]
 
 steps:
   fetch     read the event log up to an end time, every body an event cut and the document versions the cases read, into one snapshot
-  classify  give each text a person wrote one verdict of the selection prompt (dataset/select.md)
+  classify  give each text a person wrote one verdict of the selection prompt (internal/dispatch/wordrecords/select.md)
   build     build the cases, their documents, the session list and the counts from a snapshot, its verdicts and a seed
   pack      put the snapshot, the verdicts and the seed into one bundle that build --from reads
   sessions  check the session export's parts and give each case its place in its writer session
@@ -2052,30 +2017,14 @@ func readVerdicts(path string) (map[string]dsVerdict, error) {
 	return out, nil
 }
 
-// dsClip is s cut to at most n bytes at a rune boundary, with a line that says how much was cut.
-func dsClip(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	cut := n
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + fmt.Sprintf("\n[cut here: %d more characters]", utf8.RuneCountInString(s[cut:]))
-}
-
-// classifyInput is the user message of one classify call: the agent text the person's text
-// replies to, the quoted part of a document, and the person's text.
+// classifyInput is the user message of one classify call (wordrecords.Input): the agent text the
+// person's text replies to, the quoted part of a document, and the person's text.
 func (ix *dsIndex) classifyInput(p *dsText) string {
-	var b strings.Builder
-	if a, _ := ix.answered(p); a != nil && strings.TrimSpace(a.Text) != "" {
-		fmt.Fprintf(&b, "<agent_text kind=%q>\n%s\n</agent_text>\n\n", a.Kind, dsClip(a.Text, dsAgentChars))
+	var agent wordrecords.Text
+	if a, _ := ix.answered(p); a != nil {
+		agent = wordrecords.Text{Kind: a.Kind, Text: a.Text}
 	}
-	if p.Quote != "" {
-		fmt.Fprintf(&b, "<quoted_part>\n%s\n</quoted_part>\n\n", dsClip(p.Quote, dsQuoteChars))
-	}
-	fmt.Fprintf(&b, "<person_text kind=%q>\n%s\n</person_text>\n", p.Kind, dsClip(p.Text, dsPersonChars))
-	return b.String()
+	return wordrecords.Input(agent, p.Quote, wordrecords.Text{Kind: p.Kind, Text: p.Text})
 }
 
 // dsClassifier makes classify's calls.
@@ -2097,11 +2046,11 @@ func (c *dsClassifier) classify(ctx context.Context, p *dsText, input string) ds
 	for attempt := 1; ; attempt++ {
 		result, err := c.call(ctx, agentloop.Request{
 			Model:       c.model,
-			System:      dsSelectPrompt,
+			System:      wordrecords.SelectPrompt,
 			Input:       []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: input}}}},
 			NoCache:     true,
 			Bounds:      agentloop.Bounds{Time: dsClassifyCallTime, Calls: 1, OutputTokens: dsClassifyOutput},
-			Final:       dsVerdictSchema,
+			Final:       wordrecords.VerdictSchema,
 			Temperature: &zero,
 		})
 		v.Attempts = attempt
@@ -2127,18 +2076,12 @@ func (c *dsClassifier) classify(ctx context.Context, p *dsText, input string) ds
 		case result.Fault != "":
 			v.Error = cmp.Or(result.Detail, string(result.Fault))
 		default:
-			var reply struct {
-				Verdict string   `json:"verdict"`
-				Words   []string `json:"words"`
-			}
-			if err := json.Unmarshal(result.Value, &reply); err != nil || !slices.Contains(dsVerdicts, reply.Verdict) {
-				v.Error = fmt.Sprintf("the reply is not one verdict of the schema: %.300s", result.Value)
+			verdict, words, err := wordrecords.ParseVerdict(result.Value)
+			if err != nil {
+				v.Error = err.Error()
 				break
 			}
-			if reply.Words == nil {
-				reply.Words = []string{}
-			}
-			v.Verdict, v.Words = reply.Verdict, reply.Words
+			v.Verdict, v.Words = verdict, words
 			return v
 		}
 		if replies == dsClassifyReplyRetries {
@@ -2216,7 +2159,7 @@ func runDatasetClassify(ctx context.Context, args []string, stdout, stderr io.Wr
 		return fail(err)
 	}
 	defer file.Close()
-	c := &dsClassifier{model: model, requested: *modelID, promptSHA: sha256Hex([]byte(dsSelectPrompt)), call: agentloop.Run, sleep: sleepCtx}
+	c := &dsClassifier{model: model, requested: *modelID, promptSHA: sha256Hex([]byte(wordrecords.SelectPrompt)), call: agentloop.Run, sleep: sleepCtx}
 	var mu sync.Mutex
 	var writeErr error
 	n, failed := 0, 0
@@ -2316,7 +2259,7 @@ func writeClassifySummary(w io.Writer, ix *dsIndex, persons []*dsText, verdicts 
 	for _, k := range sortedKeys(models) {
 		fmt.Fprintf(w, "  %s: %d\n", cmp.Or(k, "(none)"), models[k])
 	}
-	fmt.Fprintf(w, "prompt sha256: %s\n", sha256Hex([]byte(dsSelectPrompt)))
+	fmt.Fprintf(w, "prompt sha256: %s\n", sha256Hex([]byte(wordrecords.SelectPrompt)))
 	fmt.Fprintf(w, "calls recorded: %d; tokens: input %d, output %d\n", calls, in, out)
 	fmt.Fprintf(w, "wall time: %s\n", elapsed.Round(time.Second))
 }
@@ -2777,7 +2720,7 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 
 	// Question cases: each text of the owner about words, with the agent text it answers.
 	for _, o := range owners {
-		if !dsAboutWords(verdictOf[o].Verdict) {
+		if !wordrecords.AboutWords(verdictOf[o].Verdict) {
 			continue
 		}
 		a, found := ix.answered(o)
@@ -2802,7 +2745,7 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 		return c
 	}
 	for _, o := range owners {
-		if verdictOf[o].Verdict != dsAgentQuestion {
+		if verdictOf[o].Verdict != wordrecords.AgentQuestion {
 			continue
 		}
 		r, found := ix.firstReply(o)
@@ -2819,7 +2762,7 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 		case t == nil:
 			counts.NamedLinks["not_in_snapshot"]++
 			continue
-		case t.Person == ix.owner && dsAboutWords(verdictOf[t].Verdict):
+		case t.Person == ix.owner && wordrecords.AboutWords(verdictOf[t].Verdict):
 			if c := cases[dsGroupQuestion+"/"+t.tid()]; c != nil {
 				c.NamedByOwner = true
 				counts.NamedLinks["question"]++
@@ -2875,7 +2818,7 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 		}
 	}
 	for _, o := range owners {
-		if !dsAboutWords(verdictOf[o].Verdict) {
+		if !wordrecords.AboutWords(verdictOf[o].Verdict) {
 			continue
 		}
 		a, _ := ix.answered(o)
@@ -2923,7 +2866,7 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 		}
 		seenPool[a] = true
 		for _, o := range answeredBy[a] {
-			if verdictOf[o].Verdict != dsNone {
+			if verdictOf[o].Verdict != wordrecords.None {
 				return
 			}
 		}

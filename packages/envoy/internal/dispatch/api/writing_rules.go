@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/plainwords"
@@ -190,12 +191,20 @@ func (s *server) writingRulesText(ctx context.Context, route, reader string) (st
 	return text.String(), nil
 }
 
-// readerWords answers the words the person login asked about before: the records of R8, in
-// which the server records each text where a person asks what an agent's word means. Those
-// records and their store do not exist yet. INFRA-3231's task t07 builds them and makes this
-// function read them. Until then it answers no word for every reader.
-func (s *server) readerWords(context.Context, string) ([]string, error) {
-	return nil, nil
+// readerWords answers the words the person login asked about before, the most recently asked
+// first: R8's records (store.ReaderWords), the words of each text in which the records job found
+// the person asking what an agent's word means, saying they could not understand a text or
+// complaining about its words, and of each Define use.
+func (s *server) readerWords(ctx context.Context, login string) ([]string, error) {
+	words, err := s.deps.Store.ReaderWords(ctx, model.CanonicalLogin(login), time.Time{})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(words))
+	for i, word := range words {
+		out[i] = word.Word
+	}
+	return out, nil
 }
 
 // pendingWriteInput decodes body as the request of the route pattern into the type the reader

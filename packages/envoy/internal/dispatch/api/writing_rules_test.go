@@ -32,8 +32,9 @@ func TestTheWritingRulesSettingsAnswerWhatTheDeploymentSet(t *testing.T) {
 }
 
 // The rules for a write are the skill's text whole, for the person who reads that write as the
-// writing check decides it; the parts of an ask come after them for an ask alone, and no reader
-// has asked about a word until R8's records exist.
+// writing check decides it; the parts of an ask come after them for an ask alone, and a reader
+// with no word recorded (R8) gets no words (TestWordRecordsRecordAQuestionAndNeverDelayAPersonsWrite
+// reads the words of one who has).
 func TestTheWritingRulesAnswerTheSkillForTheWritesReader(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{writingRules: WritingRulesConfig{
 		Refusal: true, Extra: []string{WritingRulesReaderWords, WritingRulesAskParts},

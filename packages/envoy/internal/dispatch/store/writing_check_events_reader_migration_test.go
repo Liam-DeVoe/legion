@@ -85,16 +85,23 @@ func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *test
 			t.Errorf("the outcome %q was stored, want the outcome check to refuse it", outcome)
 		}
 	}
+	// The counts read word_questions too, which a later migration creates.
+	if err := store.migrate(ctx, migrationsThrough(t, wordQuestionsVersion)); err != nil {
+		t.Fatalf("migrate through %d: %v", wordQuestionsVersion, err)
+	}
 	var today time.Time
 	if err := store.Pool.QueryRow(ctx, `select now()`).Scan(&today); err != nil {
 		t.Fatalf("read the database's clock: %v", err)
 	}
-	counts, err := store.CountWritingCheckEvents(ctx, today.UTC())
+	counts, err := store.CountWritingCheck(ctx, today.UTC(), today.UTC())
 	if err != nil {
 		t.Fatalf("count the day: %v", err)
 	}
-	if counts.Outcomes["exempt_no_reader"] != 1 || counts.Outcomes["findings"] != 1 || counts.Outcomes["clean"] != 1 ||
-		counts.Outcomes["exempt_generated"] != 1 || counts.Total != 4 {
-		t.Errorf("counts = %+v, want one exempt_no_reader and one exempt_generated beside the findings and the clean row", counts)
+	if len(counts.Days) != 1 {
+		t.Fatalf("counts = %+v, want one day", counts)
+	}
+	if day := counts.Days[0]; day.Outcomes["exempt_no_reader"] != 1 || day.Outcomes["findings"] != 1 || day.Outcomes["clean"] != 1 ||
+		day.Outcomes["exempt_generated"] != 1 || day.Total != 4 {
+		t.Errorf("counts = %+v, want one exempt_no_reader and one exempt_generated beside the findings and the clean row", day)
 	}
 }

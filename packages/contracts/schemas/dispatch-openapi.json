@@ -10400,6 +10400,60 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/readers/{login}/words": {
+      "get": {
+        "description": "The words one person asked about (INFRA-3231's R8): {reader, words}, each word {word, times, last} once, as the person last wrote it, however its case differs, with how many of their records name it and when they last asked, the most recently asked first, at most 200. A record is a text of theirs in which the records job found them asking what a word means, saying they cannot understand a text or complaining about its words, or a Define use. ?before= (RFC 3339) keeps the records written before it alone; any other value is 400 INVALID_QUERY. Any agent's token reads any reader's words, and a person signed in at a browser their own: another person's are 403 READER_WORDS_FORBIDDEN.",
+        "operationId": "getApiV1ReadersByLoginWords",
+        "parameters": [
+          {
+            "name": "login",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReaderWordsResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/references": {
       "get": {
         "description": "Edges of one node in the reference graph: ?to=\u003cdispatch ref\u003e backlinks or ?from= links; ?kind=, ?since=\u003cevents.id\u003e (mentions only, read up to the event log's safe horizon: every mention committed before the read, unless an open transaction holds the horizon back past 1 s, when the read answers the mentions at or below it and a later read the rest). A caller with no cursor starts from since=0, which lists every mention committed before the read that carries a source_seq, and after that reads again from the highest source_seq an answer showed it. A mention written with no event (a rebuild, a backfill, an older build) carries no source_seq until a later write of its source stamps it with that write's event, and until then only a read without since lists it. A signed-in page may start from GET /auth/whoami's event_head instead, which takes a cookie or a trusted header and not a bearer, so a bearer caller starts from 0. Never take a since from max(events.id) read straight from the database: event ids are not commit order, and an id taken that way can stand above an edge that commits later. An empty answer is not proof that nothing is new, so the caller reads again with the id it holds. A ?to= reference whose item id or block id is written short (8 characters or more, never a whole uuid) names the one item of the owner the reference names that carries it: the issue of dispatch://\u003cKEY\u003e/ask/\u003cprefix\u003e, the document of a #b-\u003cprefix\u003e; the node answered carries the whole id, a prefix two of them carry is 409 ID_AMBIGUOUS listing both, and one nothing carries is the 404 the reference as written always gave. A whole id is read whatever owner the reference names, as it always was.",
@@ -11642,11 +11696,18 @@
     },
     "/api/v1/writing-check/counts": {
       "get": {
-        "description": "One UTC day of the writing check's decisions, ?day=YYYY-MM-DD (default today): {day, total, outcomes, routes}, each a count by outcome (findings, clean, the exemptions and the reader's fail-open outcomes) and by \"\u003cmethod\u003e \u003croute\u003e\". A day that is not YYYY-MM-DD is 400 INVALID_QUERY. Rows are kept 90 days.",
+        "description": "The counts of the texts agents and people write (INFRA-3231's R8) for the UTC days ?first= to ?last=, both YYYY-MM-DD and both counted (default: last today, first the 13 days before it; at most 366 days): {first, last, days, rows}. days lists each day of the range, {day, total, outcomes, routes}: the writing check's and the reviewer's decisions counted by outcome and by \"\u003cmethod\u003e \u003croute\u003e\". rows lists each day, project and person that has a count, {day, project, person, word_questions, texts, texts_unread, asks_answered, asks_replied_before_answer, rewrite_uses, define_uses, reviewer_held, reviewer_rewrote, reviewer_passed, reviewer_posted_unreviewed, posted_over_finding}: the texts the person wrote that the records job read, those in which they ask what a word means, say they cannot understand a text or complain about its words, and those still waiting for the job's model; the asks they answered and those of them a person commented on in the ask's thread before the answer; their Rewrite and Define uses; the texts written to them that the reviewer held, rewrote, passed and posted unreviewed; and the texts written to them that posted over a finding. project is \"\" for a text on no project or one whose project was not recorded, and person \"\" for a person the record does not name. A day that is not YYYY-MM-DD, a first after last and a longer range are 400 INVALID_QUERY. The decisions are kept 90 days. Any signed-in caller reads it.",
         "operationId": "getApiV1WritingCheckCounts",
         "parameters": [
           {
-            "name": "day",
+            "name": "first",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "last",
             "in": "query",
             "schema": {
               "type": "string"
@@ -23917,6 +23978,47 @@
         ],
         "type": "object"
       },
+      "ReaderWord": {
+        "properties": {
+          "last": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "times": {
+            "type": "integer"
+          },
+          "word": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "word",
+          "times",
+          "last"
+        ],
+        "type": "object"
+      },
+      "ReaderWordsResponse": {
+        "properties": {
+          "reader": {
+            "type": "string"
+          },
+          "words": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderWord"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "reader",
+          "words"
+        ],
+        "type": "object"
+      },
       "RebuildArtifactInput": {
         "properties": {
           "markdown": {
@@ -26199,6 +26301,41 @@
       },
       "WritingCheckCounts": {
         "properties": {
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/WritingCheckDay"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "first": {
+            "type": "string"
+          },
+          "last": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/WritingCheckRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "first",
+          "last",
+          "days",
+          "rows"
+        ],
+        "type": "object"
+      },
+      "WritingCheckDay": {
+        "properties": {
           "day": {
             "type": "string"
           },
@@ -26267,6 +26404,73 @@
           "deployment",
           "api_version",
           "tokens_per_minute"
+        ],
+        "type": "object"
+      },
+      "WritingCheckRow": {
+        "properties": {
+          "asks_answered": {
+            "type": "integer"
+          },
+          "asks_replied_before_answer": {
+            "type": "integer"
+          },
+          "day": {
+            "type": "string"
+          },
+          "define_uses": {
+            "type": "integer"
+          },
+          "person": {
+            "type": "string"
+          },
+          "posted_over_finding": {
+            "type": "integer"
+          },
+          "project": {
+            "type": "string"
+          },
+          "reviewer_held": {
+            "type": "integer"
+          },
+          "reviewer_passed": {
+            "type": "integer"
+          },
+          "reviewer_posted_unreviewed": {
+            "type": "integer"
+          },
+          "reviewer_rewrote": {
+            "type": "integer"
+          },
+          "rewrite_uses": {
+            "type": "integer"
+          },
+          "texts": {
+            "type": "integer"
+          },
+          "texts_unread": {
+            "type": "integer"
+          },
+          "word_questions": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day",
+          "project",
+          "person",
+          "word_questions",
+          "texts",
+          "texts_unread",
+          "asks_answered",
+          "asks_replied_before_answer",
+          "rewrite_uses",
+          "define_uses",
+          "reviewer_held",
+          "reviewer_rewrote",
+          "reviewer_passed",
+          "reviewer_posted_unreviewed",
+          "posted_over_finding"
         ],
         "type": "object"
       },

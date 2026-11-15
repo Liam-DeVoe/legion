@@ -317,22 +317,52 @@ func (s *server) getWritingCheck(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, s.deps.WritingCheck.state())
 }
 
-// getWritingCheckCounts is GET /api/v1/writing-check/counts: one UTC day of writing_check_events
-// counted by outcome and by route; ?day= is that day, YYYY-MM-DD, and today where it is absent.
+// writingCheckCountsDays is the counts route's range when its query names none, the last 14 days
+// with today, and writingCheckCountsMostDays the longest range it counts.
+const (
+	writingCheckCountsDays     = 14
+	writingCheckCountsMostDays = 366
+)
+
+// getWritingCheckCounts is GET /api/v1/writing-check/counts: R8's counts of the UTC days ?first=
+// to ?last=, both YYYY-MM-DD and both included (store.CountWritingCheck). last is today where it
+// is absent, and first the 13 days before last. Any signed-in caller reads it (Decision 14 of
+// INFRA-3231's plan).
 func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	day := time.Now().UTC()
-	if raw := strings.TrimSpace(r.URL.Query().Get("day")); raw != "" {
+	query := r.URL.Query()
+	day := func(name string, fallback time.Time) (time.Time, bool) {
+		raw := strings.TrimSpace(query.Get(name))
+		if raw == "" {
+			return fallback, true
+		}
 		parsed, err := time.Parse(time.DateOnly, raw)
 		if err != nil {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, "day must be one UTC day written YYYY-MM-DD")
-			return
+			writeError(w, "INVALID_QUERY", http.StatusBadRequest, name+" must be one UTC day written YYYY-MM-DD")
+			return time.Time{}, false
 		}
-		day = parsed
+		return parsed, true
 	}
-	counts, err := s.deps.Store.CountWritingCheckEvents(r.Context(), day)
+	now := time.Now().UTC()
+	last, ok := day("last", time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC))
+	if !ok {
+		return
+	}
+	first, ok := day("first", last.AddDate(0, 0, 1-writingCheckCountsDays))
+	if !ok {
+		return
+	}
+	switch {
+	case first.After(last):
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "first must be no later than last")
+		return
+	case last.Sub(first) >= writingCheckCountsMostDays*24*time.Hour:
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("the range from first to last holds at most %d days", writingCheckCountsMostDays))
+		return
+	}
+	counts, err := s.deps.Store.CountWritingCheck(r.Context(), first, last)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

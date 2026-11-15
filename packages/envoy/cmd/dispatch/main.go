@@ -587,9 +587,11 @@ func main() {
 	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
 	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
 	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
+	//     start, with or without NATS), the display tree fill (texttreefill.Run, every hour
 	//     from a tick at start, whose first pass of a display parser version runs until every
-	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
+	//     stored text has a tree at it) and the records job of the words people ask about
+	//     (wordrecords.Job.Run, lease word-records, every 10 s from a tick at start, only while
+	//     its model group is set), each recording its passes in duty_passes like the timers
 	//     above; each tick sends its statements whether or not anything is owed. The writing
 	//     check's event sweep (api.RunWritingCheckEventSweep, every day from a tick at start)
 	//     polls too, with no lease and no duty_passes row: its pass is one delete by age, which
@@ -917,6 +919,20 @@ func main() {
 	// runs whether the check is on or off, so rows a deployment wrote before it turned the check
 	// off still age out.
 	go api.RunWritingCheckEventSweep(ctx, database)
+	// INFRA-3231's R8: the records job reads the texts people write from the event log after
+	// each write has committed, up to the safe horizon of the API server's one events.Horizon, as
+	// the suggestion outcome sweep does, and asks its model group whether each asks about an
+	// agent's words. A pass every 10 seconds under the lease word-records, the first at start, so
+	// one process serves each period (duty.RunLeased). It is off with DISPATCH_WORD_RECORDS=off
+	// and while its model group is unset, which newWordRecords logs.
+	wordRecords, err := newWordRecords(boot.Writing, pacer, database, background.EventHorizon())
+	if err != nil {
+		slog.Error("dispatch: build the records job", "error", err)
+		os.Exit(1)
+	}
+	if wordRecords != nil {
+		go wordRecords.Run(ctx, leases)
+	}
 	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens})
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
