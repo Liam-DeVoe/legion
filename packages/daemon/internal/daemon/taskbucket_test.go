@@ -475,7 +475,7 @@ func TestTaskBucketLeavesADeleteMarkerYoungerThanTheBound(t *testing.T) {
 // claim's value from the daemon rather than from the frame. The Go stand-in for the plugin reads
 // claims/task after the value was written and written again, and is handed the bucket's latest
 // revision under the bucket's own epoch, which it reports seen and takes.
-func TestClaimsTaskAnswersTheBucketsLatestRevision(t *testing.T) {
+func TestTaskBucketValueLostToARelayIsReadFromClaimsTaskAtItsLatestRevision(t *testing.T) {
 	r := newBucketRig(t)
 	r.boot()
 	w := r.spawn("LEGION-1", "")
