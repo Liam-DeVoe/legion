@@ -2218,6 +2218,14 @@ type AskResolution struct {
 // (sessionanswers) - and api imports the other two, so neither can import api.
 const AskResolutionDeclined = "declined"
 
+// AskResolutionWithdrawn is the AskResolution kind an issue's close records on each open ask it
+// withdraws. Only the server writes it (the resolve route admits retracted and resolved alone), so
+// the kind alone tells a close's withdrawal: the issue's reopen restores every ask resolved so,
+// and a settlement of the closed issue's document treats none as decided, since the reopen undoes
+// it. It is a constant of this package because the close and the reopen (api) and that settlement
+// (docs) read it, and api imports docs, so docs cannot import api.
+const AskResolutionWithdrawn = "withdrawn"
+
 // DeclineDispatchWords is what Dispatch writes beside a person's note when they decline to
 // answer: the four sentences the asking agent reads to decide what to do next.
 const DeclineDispatchWords = "The person chose not to answer this question. " +

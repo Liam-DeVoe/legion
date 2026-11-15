@@ -118,6 +118,97 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	}
 }
 
+// rewordedDecisionSpec is the spec of
+// TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen: a decision whose
+// question alice's browser rewords while the issue is closed.
+const rewordedDecisionSpec = "Context\n\n" +
+	":::ask{#rewording-decision urgency=\"med\" multiple=\"false\"}\nShip it on Friday?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+
+// An ask the close withdrew, whose block a person rewords inside the close margin, takes the
+// person's question once the issue reopens, as it did before a closed issue's document settled
+// (R2): a withdrawal is no decision, since the reopen undoes it, so the closed issue's settlement
+// leaves the block as the person wrote it rather than writing the row's question back into it as
+// it does for a decided ask. alice's browser, connected before the close, rewords the decision's
+// question once the close has withdrawn the ask and swept the document, and the resumption
+// settles the document on the closed issue: the version holds the person's question, and the ask
+// stays withdrawn with the question it was asked. The reopen restores the ask and writes its block
+// open, which leaves the document owed, and the resumption after the reopen settles it on the
+// open issue, which takes the block's question into the open ask, as settlement takes the
+// rewording of any open ask's block.
+func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen(t *testing.T) {
+	const asked, reworded = "Ship it on Friday?", "Ship it on Monday instead?"
+	handler, database, documentService := newClosedSettlementHandler(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "TEST", "An ask whose block is reworded while closed", rewordedDecisionSpec)
+	spec := issue.PrimaryArtifactID
+	awaitIndexedAskBlock(t, handler, spec, "rewording-decision", asked)
+	ask := requireBlockAsk(t, handler, issue.Key, spec, "rewording-decision")
+	awaitSettled(t, database, spec)
+	peer := connectBrowserPeer(t, documentService, spec)
+	closeIssueThroughPatch(t, handler, database, issue.Key)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	requireWithdrawn(t, handler, issue.Key, ask, alice)
+
+	// The close's ask-state write left the spec owed, and its settlement may store updates of its
+	// own: it is done before the count the browser's reword is waited for against.
+	awaitSettled(t, database, spec)
+	stored := storedUpdateCount(t, database, spec)
+	peer.edit(t, func(tree *pmdoc.Node) error {
+		for _, child := range tree.Children {
+			if id, _ := child.Attrs[pmdoc.BlockIDAttr].(string); id != "rewording-decision" {
+				continue
+			}
+			if len(child.Children) == 0 || len(child.Children[0].Children) != 1 || child.Children[0].Children[0].Text != asked {
+				return fmt.Errorf("the block's question is not the one text run %q", asked)
+			}
+			child.Children[0].Children[0].Text = reworded
+			return nil
+		}
+		return fmt.Errorf("the document holds no block under %q", "rewording-decision")
+	})
+	peer.barrier(t)
+	awaitStoredUpdates(t, database, spec, stored+1)
+	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
+		t.Fatalf("resume the closed issue's owed settlements: %v", err)
+	}
+	// The browser's update marked the document owed in the transaction that stored it, so the
+	// document owes nothing once a settlement after it has committed.
+	awaitSettled(t, database, spec)
+	if live, version := documentTexts(t, handler, spec); !strings.Contains(version, reworded) || strings.Contains(version, asked) ||
+		!strings.Contains(live, reworded) {
+		t.Fatalf("the closed issue's settlement left the latest version:\n%s\nand the live text:\n%s\nwant both to hold the person's question %q in place of %q",
+			version, live, reworded, asked)
+	}
+	requireWithdrawn(t, handler, issue.Key, ask, alice)
+	if got := readBlockAsk(t, handler, ask); got.Question != asked {
+		t.Fatalf("the withdrawn ask asks %q on the closed issue, want %q, the question it was asked", got.Question, asked)
+	}
+
+	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
+		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
+	}
+	if !documentOwesSettlement(t, database, spec) {
+		t.Fatal("the reopen left the document owing no settlement, so nothing takes the block's question into the restored ask")
+	}
+	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
+		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
+	}
+	var restored model.Ask
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if restored = readBlockAsk(t, handler, ask); restored.State == "open" && restored.Question == reworded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the reopened issue's settlement never took the block's question into ask %s (latest read %s asking %q), want open asking %q",
+				ask, restored.State, restored.Question, reworded)
+		}
+	}
+	version := awaitSettledVersionHolding(t, handler, database, spec, reworded)
+	if open := `#rewording-decision urgency="med" multiple="false" state="open"`; !strings.Contains(version, open) || strings.Contains(version, asked) {
+		t.Fatalf("the reopened issue's newest version reads:\n%s\nwant the block open (%s) asking %q, not %q", version, open, reworded, asked)
+	}
+}
+
 // openAskLists are the open-ask lists openAskListsHolding reads: the issue's own open asks, the
 // person's Inbox, and the project's open asks (dispatch open-asks).
 var openAskLists = []string{"the issue's open asks", "alice's Inbox", "the project TEST's open asks"}

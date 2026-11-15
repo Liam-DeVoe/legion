@@ -14,13 +14,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// withdrawnResolution is the resolution kind an issue's close records on each ask it withdraws.
-// Only the server writes it (the resolve route refuses it), so the reopen recognises the close's
-// withdrawals by this kind alone.
-const withdrawnResolution = "withdrawn"
-
-// withdrawnAsk is the SQL predicate, on asks a, that holds for an ask a close withdrew.
-const withdrawnAsk = `a.state = 'resolved' and a.resolution->>'kind' = '` + withdrawnResolution + `'`
+// withdrawnAsk is the SQL predicate, on asks a, that holds for an ask a close withdrew
+// (model.AskResolutionWithdrawn).
+const withdrawnAsk = `a.state = 'resolved' and a.resolution->>'kind' = '` + model.AskResolutionWithdrawn + `'`
 
 // withdrawnReason is the reason recorded on an ask the close of issueKey withdrew.
 func withdrawnReason(issueKey string) string {
@@ -112,7 +108,7 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 	withdrawn := make([]model.Ask, 0, len(open))
 	appended := make([]model.Event, 0, len(open))
 	for _, ask := range open {
-		ask, err := docs.WriteAskResolution(ctx, tx, ask, withdrawnResolution, reason, actor)
+		ask, err := docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionWithdrawn, reason, actor)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -2363,6 +2363,8 @@ That repair keeps the parts the block already asks, and rewrites the rest throug
 a block it cannot give the decided wording is left as it is, logged at ERROR, and the row still keeps its decided wording.
 A person who wants another question writes a new ask block;
 reopening the ask would put a new question in a person's Inbox for an edit they may not have meant as one.
+An ask an issue's close withdrew is not decided, since the reopen opens it again (`closeWithdrawn`, `model.AskResolutionWithdrawn`):
+while the issue is closed, settlement leaves the wording a person gives its block and the row keeps the question it was asked, and the settlement after the reopen takes the block's wording into the restored ask, as it takes an open ask's.
 An ask settlement restores after a retraction follows the state the restoration gives it:
 one restored open takes its block's text, one restored with its answer keeps the wording that answer was given on.
 A decided ask that a release before this rule reworded - its row holding a document's edit beside the decision made on the wording before it - gets back the wording its decision was given on, the previous wording of the first `ask.edited` after its latest `ask.answered` or `ask.resolved` with no `ask.opened` between, in code rather than by a migration, since the pre-deploy census refuses a migration that rewrites rows (`cmd/dispatch/README.md`, "Pre-deploy census"):

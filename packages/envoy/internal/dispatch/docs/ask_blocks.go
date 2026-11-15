@@ -242,6 +242,13 @@ func settlementRetraction(resolution model.AskResolution) bool {
 		(resolution.Actor.SameAs(SettlementActor) || strings.HasPrefix(resolution.Reason, SettlementRetractionReason))
 }
 
+// closeWithdrawn reports whether ask is resolved as its issue's close withdrew it
+// (model.AskResolutionWithdrawn). That resolution is no decision on the ask's question: the
+// issue's reopen opens the ask again (api.restoreIssueAsksTx).
+func closeWithdrawn(ask model.Ask) bool {
+	return ask.State == "resolved" && ask.Resolution != nil && ask.Resolution.Kind == model.AskResolutionWithdrawn
+}
+
 // reconcileAskBlocks makes the asks rows and the ask blocks of tree, the document settlement read,
 // agree. A new block is authored by the update that introduced it (askBlockSources.author), as the
 // room recorded it or, failing that, as the durable record does, which this reads in tx; one whose
@@ -268,7 +275,11 @@ func settlementRetraction(resolution model.AskResolution) bool {
 // it, as a returning block's ask is restored on an open issue. No open ask whose block left is
 // retracted, and no open ask takes its block's new wording; a copy shows its source's state as on
 // an open issue. An ask the close withdrew whose block left stays withdrawn: the reopen restores
-// it and marks its block document owed, and the settlement after the reopen retracts it.
+// it and marks its block document owed, and the settlement after the reopen retracts it. Nor is
+// the close's withdrawal a decision whose wording settlement writes back (writeDecidedWording):
+// the block of an ask the close withdrew keeps the wording a person gave it while the issue was
+// closed, the row keeps the question it was asked, and the settlement after the reopen takes the
+// block's wording into the restored ask, as it takes an open ask's.
 func (s *Service) reconcileAskBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -420,7 +431,11 @@ func (s *Service) reconcileAskBlocks(
 		}
 
 		reworded := false
-		if previous := model.NewAskEditPrevious(ask); !block.asks(previous) && ask.State != "open" {
+		// The close's withdrawal decides nothing (closeWithdrawn): on a closed issue the block of
+		// an ask the close withdrew keeps the wording a person gave it, which the settlement after
+		// the reopen, left owed by the reopen's ask-state write, takes into the restored ask.
+		decided := ask.State != "open" && !(issueClosed && closeWithdrawn(ask))
+		if previous := model.NewAskEditPrevious(ask); !block.asks(previous) && decided {
 			// A decided ask's wording is fixed, as the edit route holds it (ASK_NOT_OPEN): its
 			// answer or resolution decides the question it was given on, so the block gets that
 			// wording back rather than the row taking the block's, which would show the decision on
