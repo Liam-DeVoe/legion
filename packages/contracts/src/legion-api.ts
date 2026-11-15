@@ -1593,7 +1593,9 @@ export const LegionWaveReleaseRequest = z.strictObject({
  * on its own issue, or the tree architect's on an issue it owns, from `accepting`. An architect's
  * grant serves its whole tree, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
- * grant's (`ISSUE_NOT_GRANTS`). */
+ * grant's (`ISSUE_NOT_GRANTS`). Since contract 134 the daemon refuses it on an issue in
+ * `awaiting_children` (`WAITING_ON_CHILDREN`, naming its open Dispatch children and the start it
+ * holds), which stands in no phase a move back acts on (dispatch://INFRA-3320, R11). */
 export const LegionPhaseBackwardRequest = z.strictObject({
   grantId: nonEmptyString,
   to: z.enum(LEGION_PHASE_BACKWARD_TARGETS),
@@ -1629,7 +1631,9 @@ export const LegionEscalateRequest = z.strictObject({
  * is refused after that while a root whose design-gate step rests on the issue's approval is still
  * in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, naming each), and last while a Dispatch
  * child of the issue is open (`SIGNOFF_CHILD_OPEN`, naming each with its Dispatch status): the
- * daemon answers the first of the three that holds (dispatch://INFRA-3320, R8). */
+ * daemon answers the first of the three that holds (dispatch://INFRA-3320, R8). On an issue in
+ * `awaiting_children` it is refused `WAITING_ON_CHILDREN`, naming its open Dispatch children and
+ * the start it holds, before any of those (R11). */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

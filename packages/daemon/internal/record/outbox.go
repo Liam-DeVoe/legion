@@ -1111,6 +1111,12 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // architect's notice carries, and TaskFollows that the recipient is also the role the new phase
 // starts — the implementer sent back from retro — whose task for that phase follows this message.
 // It stops nothing: the recipient keeps its turn, its jobs, its process and its session.
+//
+// A move into awaiting_children sends it too, with that phase as To: a parent whose Dispatch
+// child is open starts no phase, so the daemon ends the phase its worker is in and no task of
+// that worker's follows (workflow's AwaitChildren, dispatch://INFRA-3320 R10). The shape is the
+// same, and Message chooses the words from To, so a release that knows no such phase still
+// decodes and delivers the row.
 type PhaseEnded struct {
 	Role        claim.Role  `json:"role"`
 	From        phase.Phase `json:"from"`
@@ -1127,7 +1133,21 @@ func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
 // prompt says the same, internal/prompts/go/worker-common.md), and the reason last, behind the
 // `Reason:` label a started worker's task carries it under (workflow's task), so the GitHub names
 // in it are marked off from the daemon's own sentences in both places.
+//
+// Into awaiting_children no other role owns the working copy while the parent waits, so the
+// words are R10's own (dispatch://INFRA-3320): the phase ended and no task follows, a completion
+// of it is refused, the worker commits and pushes what it has and does no more work on it, and
+// the issue's next task comes once its children are finished. The reason names each open child.
 func (p PhaseEnded) Message(issue string) string {
+	if p.To == phase.AwaitingChildren {
+		return fmt.Sprintf("%s: the daemon ended your %s phase, and the issue is in %s now: it waits on its open Dispatch children, and no task of yours follows."+
+			" A completion of %s is refused (HANDOFF_NOT_CURRENT_PHASE)."+
+			" Commit and push what you have to the issue's branch, and do no more work on %s."+
+			" The daemon gives the issue its next task once its children are finished."+
+			" Nothing of yours is stopped: your turn, your jobs, your process and your session run on."+
+			" Reason: %s.",
+			issue, p.From, p.To, p.From, p.From, p.Reason)
+	}
 	follows := ""
 	if p.TaskFollows {
 		follows = fmt.Sprintf(" Your %s task follows.", p.To)
@@ -1717,6 +1737,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.TaskFollows && value.Role != claim.RoleImplementer {
 			return fmt.Errorf("only the implementer is told its task follows, since the phase a conflicting head opens is its own; the %s is not", value.Role)
 		}
+		if value.TaskFollows && value.To == phase.AwaitingChildren {
+			return fmt.Errorf("no task follows a move into awaiting_children, since no role works that phase")
+		}
 	case HookPrompt:
 		if value.Hook == "" {
 			return fmt.Errorf("a hook prompt carries the name of the hook that fired it")
@@ -1798,12 +1821,18 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // root's architect, and the ancestor's, of a person's changes request on the ancestor's version
 // an open step rests on; and `resting-root` tells the ancestor's architect that a root's step
 // rests on it.
+//
+// `awaiting-children` tells a parent's architect that the parent entered awaiting_children in place
+// of a phase start, because a Dispatch child of it is open (workflow's AwaitChildren,
+// dispatch://INFRA-3320 R10): the start it holds, each open child and what ends the wait. It
+// replaces the phase-finished or checks-red notice that start would have sent, and carries that
+// notice's summary and verdict.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"basis-ended", "basis-changes-requested", "resting-root",
-	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
+	"child-closed", "child-status", "children-first", "awaiting-children", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted",
 	"session-lost", "session-store-fault",
 }

@@ -69,6 +69,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		RoleMessage{Role: "legion.sjawhar-legion.LEGION-208.implementer", Body: "Pull request #42: CI settled at c0de: unit failed."},
 		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"},
 		PhaseEnded{Role: claim.RoleImplementer, From: phase.Retro, To: phase.Implementing, Reason: "the head conflicts with main", TaskFollows: true},
+		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren,
+			Reason: "the head conflicts with main, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)"},
 		HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 			Count: 3, Counts: map[string]int{"testing-implementing": 1, "reviewing-implementing": 3},
 			PullRequest: "sjawhar/legion#42", Prompt: "Read the reviewer's thread before you write anything."},
@@ -325,6 +327,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a phase-ended message out of the phase the issue is in", payload: PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "names the phase that ended and the different phase"},
 		{name: "a phase-ended message without a reason", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing}, reason: "carries the reason the architect's notice carries"},
 		{name: "a phase-ended task that follows for another role", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "CI is red at head: pytest", TaskFollows: true}, reason: "only the implementer is told its task follows"},
+		{name: "a phase-ended task that follows a move into awaiting_children", payload: PhaseEnded{Role: claim.RoleImplementer, From: phase.Retro, To: phase.AwaitingChildren, Reason: "LEGION-209 is open", TaskFollows: true}, reason: "no task follows a move into awaiting_children"},
 		{name: "a hook prompt with no hook", payload: HookPrompt{Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "carries the name of the hook that fired it"},
 		{name: "a hook prompt to an architect", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleArchitect, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
 		{name: "a hook prompt to no role", payload: HookPrompt{Hook: "back-to-implementing", From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
@@ -878,6 +881,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-209 is done"},
 		{Kind: "child-status", Role: claim.RoleArchitect, Reason: "LEGION-209 is todo; it runs again under LEGION-208"},
 		{Kind: "children-first", Role: claim.RoleArchitect, Reason: "LEGION-208 starts no phase of its own while LEGION-209 is open under it"},
+		{Kind: "awaiting-children", Role: claim.RoleArchitect, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass",
+			Reason: "LEGION-208 is in awaiting_children, holding the start of reviewing: the tester completed testing"},
 		{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: "LEGION-209 has waited for its release since 2026-11-08T09:00:00Z"},
 		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: its repository is not one Legion serves"},
 		{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: answered,
@@ -968,5 +973,29 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 				t.Fatalf("the published %s notice is %s, want %s: a published notice that is not the notice the daemon wrote means the re-held copy is not the one its architect was owed", notice.Kind, gotWire, wantWire)
 			}
 		})
+	}
+}
+
+// A phase-ended message into awaiting_children gives R10's words (dispatch://INFRA-3320) on the
+// shape every phase-ended message has: the phase ended and no task follows, a completion of it is
+// refused, the worker commits and pushes what it has and does no more work on it, the issue's next
+// task comes once its children are finished, and the reason that names the open children comes
+// last. Today's sentence that tells the worker to leave its work uncommitted is not among them,
+// since no other role works the workspace during the wait; a move into any other phase keeps it.
+func TestAPhaseEndedMessageIntoAwaitingChildrenGivesTheWaitsOwnWords(t *testing.T) {
+	reason := "the head conflicts with main, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo), LEGION-210 (backlog)"
+	got := PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: reason}.Message("LEGION-208")
+	want := "LEGION-208: the daemon ended your testing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
+		" A completion of testing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
+		" Commit and push what you have to the issue's branch, and do no more work on testing." +
+		" The daemon gives the issue its next task once its children are finished." +
+		" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
+		" Reason: " + reason + "."
+	if got != want {
+		t.Fatalf("the message = %q, want %q", got, want)
+	}
+	other := PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}.Message("LEGION-208")
+	if !strings.Contains(other, "leave whatever you have uncommitted") || strings.Contains(other, "Commit and push") {
+		t.Fatalf("the message into implementing = %q, want today's words, which keep the work uncommitted", other)
 	}
 }

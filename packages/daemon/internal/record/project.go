@@ -786,14 +786,15 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // awaiting_person; the four phases a worker works up to the review — planning, implementing,
 // testing and reviewing; and held, which is reached here only where the record names no earlier
 // phase for the hold (StandsAt). Every other phase holds none: accepting, retro and merging each
-// stand past the issue's review, and done has finished.
+// stand past the issue's review, done has finished, and awaiting_children is a parent waiting on
+// its open children, which work under slots of their own (dispatch://INFRA-3320 R11).
 //
 // It is written as one list so that a later change adds or removes one entry and every reader of
 // the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
 // the cap's own half (KeepsSlot) and the mark a start of a phase worker carries for the slot it
 // waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable while the issue holds
-// no slot. PastReview is the complement of the three phases this refuses, for the repair that
-// must reach an issue holding no row.
+// no slot. PastReview is the complement of the three phases past the review that this refuses,
+// for the repair that must reach an issue holding no row.
 func PhaseKeepsSlot(at phase.Phase) bool {
 	switch at {
 	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,

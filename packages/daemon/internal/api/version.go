@@ -1738,6 +1738,13 @@ package api
 // from it, and `pendingTask.phase` names no phase no role works. The change ships store migration
 // `20261114232555_awaiting_children`, which adds the phase value and the parent's held start to the
 // issues table; it moves the daemon's own record and is no part of this number.
+// `POST /legion/v1/phase/backward` and `POST /legion/v1/signoff` on a parent in that phase answer
+// one more refusal, `WAITING_ON_CHILDREN`, naming its open children and the start it holds: each
+// acts on a phase, and the parent stands in none (dispatch://INFRA-3320 R11). The refusal's shape
+// is the one every refusal has. The new notice kind `awaiting-children`, which tells the parent's
+// architect of the wait in place of the phase-finished or checks-red notice of the start it holds,
+// is no part of this number either: it reaches an architect's session as text, as every notice
+// kind does.
 // (This change took 126 against the base 50bfbb0dec73, which carried 111, when the open pull
 // requests held 112 to 125 as read on 2026-11-14: 126 was the lowest number above the base's
 // that none of them declared. It kept 126 at the forward merge of 2026-11-14 that brought main

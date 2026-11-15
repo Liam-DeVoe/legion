@@ -329,6 +329,11 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // ends that phase. A merge before merging is the architect's to act on, as the shipped daemon
 // routes it: it is told, and the merge closes the issue once it reaches merging (transition). A
 // redelivered merge changes nothing.
+//
+// A merge also ends a parent's debt of a forward merge of its children's work
+// (record.Issue.ForwardMergeOwed): there is no branch left to merge the default branch into, so
+// the return from a wait on the children keeps the path of a merged pull request
+// (dispatch://INFRA-3320 R12).
 func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMerged) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
@@ -341,6 +346,12 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	if issue.ForwardMergeOwed {
+		issue.ForwardMergeOwed = false
+		if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	if issue.Phase == phase.Merging {
 		return intake.Result{}, e.closeMergedTelling(ctx, tx, *issue, pr)

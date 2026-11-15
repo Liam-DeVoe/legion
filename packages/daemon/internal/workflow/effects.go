@@ -877,6 +877,9 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
 // pass reads it as the tester's report, never as a field of its own completion.
+//
+// An implementing task of a parent that still owes the forward merge of its children's work ends
+// with the request for it (ForwardMergeRequest).
 func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
@@ -894,6 +897,9 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	}
 	if reason != "" {
 		text += " Reason: " + reason + "."
+	}
+	if request := ForwardMergeRequest(issue, pr); request != "" {
+		text += " " + request
 	}
 	return text
 }
