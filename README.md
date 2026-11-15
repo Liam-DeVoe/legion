@@ -144,9 +144,12 @@ root `package.json`.
 bun install                                          # every workspace
 bunx biome check .                                   # what CI's required lint job runs; `<package>/` for one package
 cd packages/<package> && bun run typecheck && bun run test
-go -C packages/daemon test ./...                     # the Legion daemon
-go -C packages/envoy test ./...                      # Envoy, Dispatch's server and the Secrets Broker
+go -C packages/daemon test -timeout 35m ./...       # the Legion daemon
+go -C packages/envoy test -timeout 60m ./...        # Envoy, Dispatch's server and the Secrets Broker
 ```
+
+Each `-timeout` is the one `docs/testing.md` gives the module's slowest package, with its reading:
+`internal/daemon` in "Go's package deadline", `internal/dispatch/docs` under the cleanup detector.
 
 The Go tests of both modules start their NATS servers in the test process (the daemon's, one for
 each test), so they need no NATS server of yours.

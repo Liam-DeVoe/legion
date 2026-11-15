@@ -22,13 +22,18 @@
     "dist",
     "agents"
   ],
+  "//": [
+    "test: each command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (a builds Job) or on CI.",
+    "The first, 15000: rig.test.ts's Docker row ste runs omp in the directory on its prompt, 5,996.95 ms over 20 green merge-group runs on CI (the builds farm runs no Docker); under the loops the slowest hook, rig-isolation.test.ts's beforeAll, took 3,408.91 ms and the slowest row 2,100.99 ms.",
+    "The second, 300000: a call the abort does not end: the worker ends its own process ..., 117,806.72 ms under the loops (77,259.43 ms on CI)."
+  ],
   "scripts": {
     "build": "bun build extensions/legion.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils",
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
     "typecheck": "bunx tsc --noEmit",
     "analyze:patterns": "bun scripts/analyze-patterns.ts",
-    "test": "bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 --path-ignore-patterns '**/*-omp.test.ts' --path-ignore-patterns '**/daemon-pane.test.ts' && bun test --preload @legion/test-fixtures/row-deadline --timeout 600000 ./extensions/*-omp.test.ts ./scripts/skill-scenarios/daemon-pane.test.ts",
+    "test": "bun test --preload @legion/test-fixtures/row-deadline --timeout 15000 --path-ignore-patterns '**/*-omp.test.ts' --path-ignore-patterns '**/daemon-pane.test.ts' && bun test --preload @legion/test-fixtures/row-deadline --timeout 300000 ./extensions/*-omp.test.ts ./scripts/skill-scenarios/daemon-pane.test.ts",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

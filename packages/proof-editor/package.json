@@ -38,12 +38,15 @@
   },
   "main": "src/lib.ts",
   "types": "src/lib.ts",
+  "//": [
+    "test: --timeout 45000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): upstream/ is what the pinned sources emit, 15,902.19 ms."
+  ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit -p tsconfig.check.json",
     "upstream-declarations": "bun scripts/upstream-declarations.ts",
     "build-upstream-tarball": "bun scripts/build-upstream-tarball.ts",
     "parity-fuzz": "bun scripts/parity-fuzz.ts",
-    "test": "bun test --timeout 300000 --preload @legion/test-fixtures/row-deadline src/tests tests",
+    "test": "bun test --timeout 45000 --preload @legion/test-fixtures/row-deadline src/tests tests",
     "lint": "bunx biome check ."
   },
   "dependencies": {

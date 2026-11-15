@@ -39,11 +39,10 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
-# No green e2e.yaml run of this proof is on record up to 2026-11-14 (its two runs, 43426378156 and
-# 43591396871, failed), so the guard is the one its siblings' run sets, which makes this same run
-# around another driver: twice the longest green run of any of them, handoff-records.sh's 217 s
-# proof step (run 43017653696), rounded up to the minute. The pull request's own e2e.yaml run is
-# this proof's first green reading.
+# Twice the longest green run on record of this proof or of its siblings, whose run makes this
+# same run around another driver, rounded up to the minute: this proof's one green e2e.yaml job up
+# to 2026-11-15 (in a failed run) took 145 s (run 43679368771), and the siblings' longest,
+# handoff-records.sh's proof step, 217 s (run 43017653696).
 proof_guard 480
 live_daemon_proof 'conflict no takeover' conflict-no-takeover TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive \
   "${CONFLICT_NO_TAKEOVER_EVIDENCE_DIR:-}"

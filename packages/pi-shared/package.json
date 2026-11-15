@@ -142,9 +142,12 @@
       "bun": "./test/skills-guard.ts"
     }
   },
+  "//": [
+    "test: --timeout 10000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): the row against a real jj workspace, the implementer's report refuses an @- the branch does not carry, 4,607.91 ms (the slowest hook, skills-partition.test.ts's beforeAll, 824.79 ms)."
+  ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout 60000 --preload @legion/test-fixtures/row-deadline",
+    "test": "bun test --timeout 10000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/ test/"
   },
   "devDependencies": {

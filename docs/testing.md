@@ -72,6 +72,13 @@ The wait has one bound, and the test command sets it (R5):
 
 - In a shell proof, the bound is the proof's guard less its margin.
 
+The margin is the time a test's cleanups take after its wait gives up and before Go's own deadline, Bun's timeout or the proof's guard ends the run.
+It is 30 s in both Go modules (`margin` in `packages/daemon/internal/testwait` and in `packages/envoy/internal/testwait`), `max(1000 ms, guard / 20)` in Bun (`packages/test-fixtures/src/deadline.ts`), and 30 s in a shell proof (`proof_margin_seconds` in `scripts/e2e/lib/rig.sh`).
+The Go margin is measured: at 61b66deb, in builds Jobs under 8 busy loops on 2 CPUs, three runs of each rig with the heaviest cleanups and a planted wait that never holds, from the wait's line to the test's `--- FAIL` line.
+The daemon's in-process daemon took at most 0.394 s (`TestTheCutoverStartsTheMergersTheOldBuildLeftStopped`, Job margin-cutover-8) and its idle rig 0.587 s (`TestIdleReleaseAndWake`, margin-idle-8).
+Envoy's `cmd/dispatch` two-process pair took at most 1.116 s (margin-mp-8), `internal/dispatch/docs`'s two processes 0.302 s (margin-docs-8) and a broker fleet of four pods 0.209 s (margin-broker-8).
+Every reading is far below half of 30 s, so both modules keep 30 s; measure again before lowering it.
+
 A fact that the product writes after the test's last action is waited for, and never read once.
 A log line that the product writes is such a fact.
 When a wait gives up, its failure names the fact it waited for and, where the condition can say it, the last state it read.
@@ -426,32 +433,48 @@ With a long test name and a socket under it, or under a directory made from it (
 
 ## Go's package deadline
 
-`go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`), which reads as a failure of the change under test.
-`packages/envoy/internal/dispatch/api` alone takes close to that, about 600 s on a workstation, so every command that runs that package, on its own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 20m`:
+`go test` panics a package that runs longer than its `-timeout`, ten minutes by default (`panic: test timed out after 10m0s`), which reads as a failure of the change under test.
+Each Go command of `.github/workflows/ci.yaml` passes a `-timeout` of at least twice its slowest package over the job's 20 newest green merge-group runs, and the step's comment there gives that reading (R5).
+Up to 2026-11-15 the guards and their readings were:
+
+- `test`, "Test the Go daemon": 15 minutes, against `internal/store`'s 294.064 s; the race step: 30 minutes, against `internal/daemon`'s 770.102 s under `-race`.
+
+- `envoy-go`: 20 minutes for the unit step, against `cmd/broker`'s 477.995 s; 10 minutes for each plain run of what the race build cannot run, against `internal/dispatch/docs`'s 49.044 s; 10 and 5 minutes for natslive's `internal/testnats` and `internal/bus` (3.538 s and 5.029 s); 300 s for the integration step (7.683 s).
+
+- `envoy-go-race`: 30 minutes, against `internal/dispatch/store`'s 664.278 s.
+  `envoy-go-race-api`: 50 minutes, against `internal/dispatch/api`'s 1471.384 s.
+  `envoy-go-race-docs`: 65 minutes, against `internal/dispatch/docs`'s 1881.151 s.
+  `envoy-go-docs-finalizers`: 45 minutes, against `internal/dispatch/docs`'s 1261.698 s.
+
+- `dispatch-memory`: 70 minutes, against 1963.339 s; `dispatch-multiprocess`: 25 minutes, against 718.638 s; `broker-multiprocess`: 20 minutes, against 60.731 s; `listener-server-change`: 15 minutes, against 152.28 s.
+
+- `envoy-infra-go`: 10 minutes for the unit step, against `gcp`'s 28.059 s, and 30 for each natslive call, against `core`'s 124.22 s on a restored cache, since a cold cache installs four tools first.
+  `envoy-smoke`: 5 minutes for the smoke test (16.133 s) and 15 for the live tests (145.791 s).
+  `envoy-go-checks` and `airlock-lean`: 10 minutes for each command, against at most 121.054 s, the two-minute fuzz.
+
+A command a person or an issue pod runs takes its reading from the machines that run it, which are slower than CI's.
+`packages/envoy/internal/dispatch/api` took up to 1471.384 s under `-race` in `envoy-go-race-api`, and a plain run is faster (about 600 s on a workstation), so every command that runs that package, on its own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 50m`:
 
 ```sh
 cd packages/envoy
-go test -timeout 20m ./internal/dispatch/api
+go test -timeout 50m ./internal/dispatch/api
 ```
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
-CI's `envoy-go` job runs it that way, alone and before the module's other packages (`.github/workflows/ci.yaml`), and `envoy-go-race-api`, the race job that runs that package by itself, gives it 30 minutes;
-`docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+CI runs the whole package only under `-race`, alone, in `envoy-go-race-api`; `envoy-go` runs by name only the few tests the race build cannot run.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own.
 Run it alone rather than beside the module's other Postgres-backed packages:
 together they share one database service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package.
-The test job now runs it only under the race detector, in its race step, once per job;
+The test job runs it only under the race detector, in its race step, once per job;
 the plain step ("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector.
-On CI's runners, while the plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job 125688799071).
-Under `-race` it took up to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709 measured, on main and on pull requests, and ran go test's own ten minutes out on main at job 125691048644 of run 41562777668; the race step gives it 30 minutes.
-On a busy machine it takes longer still (908 s under `-race` on a shared devbox), so a command that runs the whole package, alone or in a pattern that includes it, passes `-timeout 30m`:
+Under `-race` it took up to 770.102 s over the race step's 20 newest green merge-group runs up to 2026-11-15, and 908 s on a shared devbox, so a command that runs the whole package, alone or in a pattern that includes it, passes `-timeout 35m`:
 
 ```sh
 cd packages/daemon
-go test -race -timeout 30m ./internal/daemon/
+go test -race -timeout 35m ./internal/daemon/
 ```
 
 A Legion issue pod does not run that whole package either: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
@@ -474,7 +497,7 @@ Go's own detector finds a closure that reaches its object:
 
 ```sh
 cd packages/envoy
-GODEBUG=checkfinalizers=1 go test -count=1 -timeout 34m ./internal/dispatch/docs/
+GODEBUG=checkfinalizers=1 go test -count=1 -timeout 60m ./internal/dispatch/docs/
 ```
 
 It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable from cleanup or cleanup argument` line per site naming that site's file and line, and ends the run with `fatal error: detected possible issues with cleanups and/or finalizers`.
@@ -483,7 +506,8 @@ the room load `keepInstance` passed reached a document of its own, which is the 
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one:
 with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects.
+CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects, with `-timeout 45m` against the job's slowest green run of 1261.698 s.
+The command above gives 60 minutes because an issue pod's run of the package took 1690 s (recorded on dispatch://INFRA-3149).
 It is one of the eight slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:

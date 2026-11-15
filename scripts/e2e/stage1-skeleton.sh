@@ -157,8 +157,8 @@ readyz_200() {
 }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
-# Twice the longest green run on record, rounded up to the minute: e2e.yaml's 22 green jobs up to
-# 2026-11-14, the longest proof step 108 s (run 41948835293), against ci.yaml's Stage 1 step, which
+# Twice the longest green run on record, rounded up to the minute: e2e.yaml's 24 green jobs up to
+# 2026-11-15, the longest proof step 111 s (run 43611577738), against ci.yaml's Stage 1 step, which
 # builds from a warm Go cache and took at most 7 s in 140 green test jobs (run 43570026107).
 proof_guard 240
 # A devbox's first tmux can be a wrapper script or a mise shim. mise runs it from the daemon's

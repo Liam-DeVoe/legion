@@ -3751,14 +3751,14 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.test == 'true') }}
     runs-on: ubuntu-24.04
-    # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
-    # prints the goroutine dump that names it. A step's worst case is therefore its largest
-    # measured green duration plus its own -timeout, not its compile plus its -timeout: 325 s of
-    # setup before the plain step starts, then that step's 839 s (measured while it still ran
-    # internal/daemon, so an upper bound for it now) and its 15 minutes, then the race step's
-    # 694 s and its 30, then 13 s for the steps after it, which is 4571 s, or about 76 minutes
-    # (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main push runs).
-    timeout-minutes: 80
+    # Each guarded step's -timeout, --timeout or proof_guard must fire before the runner cancels the
+    # job, so a hung test prints what it was waiting on. The limit is the job's sum over its 20
+    # newest green merge-group runs up to 2026-11-15: every step at its longest green duration, 489 s
+    # for the steps that run no guarded command and 7 s the job's clock holds over its steps, and
+    # each guarded step's longest green duration plus its guard - the plain Go step 536 s + 900 s,
+    # the race step 930 s + 1800 s, the Stage 1 proof 6 s + 240 s, and the eight bare `bun test`
+    # steps 155 s + 110 s - which is 5173 s, or 87 minutes.
+    timeout-minutes: 90
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -3814,8 +3814,13 @@ jobs:
 
       # release.yaml's $CLAUDE_ENVOY_VERSION_ARGS covers scripts/build-inputs.txt, so a build input
       # missing from it is one no release bumps a version for.
+      #
+      # Each bare `bun test` step of this job loads the row-deadline preload and sets its one guard,
+      # --timeout, at least twice the slowest row or hook its command ran under 8 busy loops on
+      # 2 CPUs in a builds Job at 61b66deb (two runs); the reading is beside each. Here 2,992.78 ms,
+      # "scripts/build-inputs.txt matches every file the build reads".
       - name: Check the Claude Code plugin's build input list covers what the build reads
-        run: bun test tests/build-inputs.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 10000 tests/build-inputs.test.ts
         working-directory: packages/claude-envoy
 
       # release-push.test.sh renders its fold-notes cases with the real changie, and the step
@@ -3839,18 +3844,21 @@ jobs:
       - name: Test the release version bump
         run: .github/scripts/release-bump.test.sh
 
+      # Guard 5000 ms: the slowest row under 8 loops took 396.72 ms.
       - name: Test third-party notices
-        run: bun test scripts/third-party-notices.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/third-party-notices.test.ts
 
       # The checker's own unit tests only. scripts/semantic-line-breaks.guides.test.ts checks the
       # guides' layout and runs on demand, deliberately not here: no CI gate over the guides.
+      # Guard 5000 ms: the slowest row under 8 loops took 806.66 ms.
       - name: Test the semantic line-break checker
-        run: bun test scripts/semantic-line-breaks.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/semantic-line-breaks.test.ts
 
       # The seed that writes the first priorities from the table kept by hand, driven against a
       # fake Dispatch of the test's own: it reaches no network and no deployment.
+      # Guard 5000 ms: the slowest row under 8 loops took 797.60 ms.
       - name: Test the priorities seed
-        run: bun test scripts/priorities-seed.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/priorities-seed.test.ts
 
       - name: Test the Bun pin check
         run: .github/scripts/check-bun-version.test.sh
@@ -3985,8 +3993,10 @@ jobs:
       - name: Typecheck the Dispatch census script
         run: bunx tsc --noEmit -p scripts/dispatch
 
+      # Guard 15000 ms: the slowest row under 8 loops took 5,190.57 ms ("ask census --json >
+      # refuses a value for --json, and keeps every other flag's refusal").
       - name: Test the Dispatch census script
-        run: bun test scripts/dispatch
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 15000 scripts/dispatch
 
       - name: Lint the GitHub App registration script
         run: bunx biome check --error-on-warnings scripts/github-apps
@@ -4002,8 +4012,10 @@ jobs:
       - name: Typecheck the session message-wait script
         run: bunx tsc --noEmit -p scripts/sessions
 
+      # Guard 5000 ms: the slowest hook under 8 loops, message-wait.test.ts's beforeAll, took
+      # 2,197.48 ms; its one row took 0.13 ms.
       - name: Test the session message-wait script
-        run: bun test scripts/sessions
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/sessions
 
       - name: Lint the approval-eval statistics
         run: bunx biome check --error-on-warnings scripts/approval-eval
@@ -4012,8 +4024,9 @@ jobs:
       - name: Typecheck the approval-eval statistics
         run: bunx tsc --noEmit -p scripts/approval-eval
 
+      # Guard 5000 ms: the slowest row under 8 loops took 196.24 ms.
       - name: Test the approval-eval statistics
-        run: bun test scripts/approval-eval
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/approval-eval
 
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -4031,8 +4044,11 @@ jobs:
           restore-keys: ${{ format('go-daemon-{0}-', runner.os) }}
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
+      # Guard 60000 ms: the slowest hook under 8 loops, held-port.test.ts's beforeAll, which runs
+      # that build, took 21,991.12 ms on a warm Go cache (the slowest row 13,106.99 ms); this job
+      # restores go-daemon's cache rather than envoy's, so the build here may be colder than that.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
-        run: bun test scripts/e2e/lib
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 60000 scripts/e2e/lib
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check
@@ -4095,7 +4111,9 @@ jobs:
       # The step runs every package of the module except the three the race step below tests, so
       # each of those runs once per job, under the detector. `set -o pipefail` is what makes a
       # failed go list, or a pattern that matches every package, fail the step rather than pass it
-      # with nothing tested.
+      # with nothing tested. Its -timeout 15m is three times its slowest package over this job's
+      # 20 newest green merge-group runs up to 2026-11-15: internal/store, 294.064 s (run
+      # 43675808276).
       - name: Test the Go daemon
         run: |
           set -o pipefail
@@ -4114,11 +4132,11 @@ jobs:
       # they are deterministic under it.
       #
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
-      # test's ten-minute default, internal/daemon, by far the slowest of the three packages, took
-      # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
-      # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
-      # slowest run.
+      # test's ten-minute default, internal/daemon, by far the slowest of the three packages, ran
+      # the ten minutes out on main at job 125691048644 (run 41562777668). No single test dominates
+      # it: a local run timed 648 tests one after another, the slowest at 44 s. Over this job's 20
+      # newest green merge-group runs up to 2026-11-15 it took at most 770.102 s (run 43685022971),
+      # and the 30 minutes are 2.3 times that.
       - name: Test the concurrent packages under the race detector
         run: go test -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
@@ -4156,6 +4174,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.contracts == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 43 s, 5 s of its clock over them, and its test step's longest, 6 s,
+    # plus the package script's guard of 15 s: 69 s in all.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4192,6 +4213,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.test_fixtures == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 34 s, 7 s of its clock over them, and its test step's longest, 1 s,
+    # plus the package script's guard of 10 s: 52 s in all.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4220,6 +4244,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.conflicts_script == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 87 s, 4 s of its clock over them, and its test step's longest, 5 s,
+    # plus its guard of 5 s: 101 s in all.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4231,8 +4259,11 @@ jobs:
       # scripts/conflicts is no workspace; the root package pins its TypeScript and Bun types.
       - name: Typecheck the conflict measurement script
         run: bunx tsc --noEmit -p scripts/conflicts
+      # Its one guard, --timeout 5000, is at least twice the slowest row or hook of the command
+      # under 8 busy loops on 2 CPUs in a builds Job at 61b66deb (two runs): 1,986.02 ms, "fix
+      # states > classifyFixes refuses a merge whose parent cannot be fetched".
       - name: Test the conflict measurement script
-        run: bun test scripts/conflicts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/conflicts
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -4247,6 +4278,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.broker_client == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 34 s, 7 s of its clock over them, and its test step's longest, 1 s,
+    # plus the package script's guard of 5 s: 47 s in all.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4275,6 +4309,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_client == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 55 s, 6 s of its clock over them, and its two test steps' longest
+    # plus their package scripts' guards, broker-client's 1 s + 5 s and envoy-client's 53 s + 150 s
+    # (its two commands' 30 s and 120 s): 270 s in all.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4352,6 +4390,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.pi_shared == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 53 s, 4 s of its clock over them, and its test step's longest, 7 s,
+    # plus the package script's guard of 10 s: 74 s in all.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4382,7 +4423,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.pi_envoy == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 84 s, 6 s of its clock over them, and its test step's longest,
+    # 291 s, plus the package script's two guards, 90 s and 240 s: 711 s, or 12 minutes.
+    timeout-minutes: 15
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.
@@ -4491,6 +4535,10 @@ jobs:
     # pull request's run and a merge group's both download the 34 MB release asset rather than
     # restore it, and that download is the 2 s above.
     # dispatch://INFRA-2125 shortens the suite and is the fix; this line is the stopgap.
+    # The sum under the one-guard rule, over the job's 20 newest green merge-group runs up to
+    # 2026-11-15: its other steps at their longest, 98 s, 6 s of its clock over them, and its test
+    # step's longest, 709 s, plus the package script's two guards, 15 s and 300 s: 1128 s, or
+    # 19 minutes, under the 28.
     timeout-minutes: 28
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
@@ -4590,6 +4638,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.dispatch_ui == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 117 s, 5 s of its clock over them, and its two test steps' longest
+    # plus their package scripts' guards, the proof editor's 31 s + 45 s and the dashboard's
+    # 106 s + 70 s (its two bun test commands' 10 s and 60 s): 374 s, or 7 minutes.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4706,6 +4758,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.claude_envoy == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 50 s, 4 s of its clock over them, and its test step's longest, 104 s,
+    # plus the package script's two guards, 15 s and 120 s: 293 s in all.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4770,7 +4825,12 @@ jobs:
     # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
-    timeout-minutes: 30
+    #
+    # The limit is at least the job's sum over its 20 newest green merge-group runs up to
+    # 2026-11-15: its other steps at their longest, 832 s (the cluster.sh test's 381 s and the
+    # vm.sh test's 185 s among them), 6 s of its clock over them, and its two go test steps'
+    # longest plus their -timeout, 9 s + 600 s and 8 s + 600 s: 2055 s, or 35 minutes.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4828,9 +4888,11 @@ jobs:
       # step tests every package of the module but the race lane's, these two among them, so they
       # run again in the merge queue: leaving them out there would add a second exclusion list to
       # the grep that picks that step's packages, to save a few seconds a group. This step accepts
-      # the overlap, as the display-tree fixture check below does for pmdoc.
+      # the overlap, as the display-tree fixture check below does for pmdoc. -timeout 10m against
+      # a slowest package of 1.36 s, cmd/architecture-check, over the 13 green merge-group runs on
+      # record that ran this step up to 2026-11-15 (run 43629067617).
       - name: Test the architecture-note rules and their command
-        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./cmd/architecture-check/
+        run: go test -count=1 -timeout 10m ./internal/dispatch/architecture/notes/ ./cmd/architecture-check/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
@@ -4843,9 +4905,10 @@ jobs:
         working-directory: packages/envoy/internal/dispatch/pmdoc/gen
       # The fixture the web app's view tests draw (pmdoc/web_fixtures_test.go): a corpus text
       # whose display reading changed and a fixture nobody regenerated fails here rather than
-      # leaving a view's test asserting against a stale tree.
+      # leaving a view's test asserting against a stale tree. -timeout 10m against a slowest run
+      # of 0.021 s over this job's 20 newest green merge-group runs up to 2026-11-15.
       - name: Check the web app's display-tree fixture is up to date
-        run: go test -count=1 -run TestWebDisplayFixture ./internal/dispatch/pmdoc/ -args --check
+        run: go test -count=1 -timeout 10m -run TestWebDisplayFixture ./internal/dispatch/pmdoc/ -args --check
         working-directory: packages/envoy
       - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
         run: bash scripts/dev-broker.test.sh
@@ -4920,14 +4983,12 @@ jobs:
     if: needs.changes.outputs.envoy_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
-    # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
-    # before it at their measured times plus its own limit: about 1 minute of setup, then the
-    # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
-    # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
-    # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, natslive's default 10 and the bus matrix's own 5 are 53, and the integration
-    # step's 5 is less.
-    timeout-minutes: 60
+    # prints the dump that names it. The limit is at least the job's sum over its 20 newest green
+    # merge-group runs up to 2026-11-15: its other steps at their longest, 137 s, 10 s of its clock
+    # over them, and each go test step's longest plus the -timeout of every command in it - the
+    # race-impossible step 166 s + 30 minutes, the unit step 1086 s + 20, natslive 13 s + 15 and
+    # the integration step 9 s + 5 - which is 5621 s, or 94 minutes.
+    timeout-minutes: 95
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -4996,9 +5057,9 @@ jobs:
       # horizon, which any open transaction on this job's Postgres delays. The three -run lists are
       # derived in .github/scripts/ci_job_reads.py from the race lane's own packages and those
       # files' //go:build !race and raceEnabled, so a test added to either and missing here fails
-      # the ci-filters job naming this step. Measured over three runs on a two-vCPU pod: the bus
-      # under a tenth of a second, the API 8 to 10 s, the documents package 92 to 127 s, so 10
-      # minutes each is ample.
+      # the ci-filters job naming this step. Over this job's 20 newest green merge-group runs up to
+      # 2026-11-15 the bus took at most 0.038 s, the API 9.001 s and the documents package 49.044 s
+      # (run 43687633216), so 10 minutes each is twelve times the slowest.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
@@ -5010,7 +5071,9 @@ jobs:
       # built in .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built
       # from, so what this step leaves out and what the lane runs cannot drift apart. What is left
       # is the rest of the module, the two longest packages of it (the API's and the documents
-      # service's) now among the ones the lane runs, so its 20 minutes are ample.
+      # service's) now among the ones the lane runs. Its 20 minutes are 2.5 times its slowest
+      # package over this job's 20 newest green merge-group runs up to 2026-11-15: cmd/broker,
+      # 477.995 s (run 43687633216).
       - name: Unit test envoy Go package
         run: |
           go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m
@@ -5038,15 +5101,19 @@ jobs:
       # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
       # source at run time, and no test name is spelled here. Each assignment is a line of its
       # own: under bash -e it carries the script's exit status, so an empty or refused list fails
-      # the step instead of running -run "", which matches every test.
+      # the step instead of running -run "", which matches every test. Over this job's 20 newest
+      # green merge-group runs up to 2026-11-15 internal/testnats took at most 3.538 s here and
+      # internal/bus 5.029 s (run 43582507175), against 10 and 5 minutes.
       - name: Test the container-backed NATS matrix (natslive)
         run: |
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
-          go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+          go test -count=1 -timeout 10m -tags natslive -run "$rig" ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
         working-directory: packages/envoy
 
+      # 300 s against at most 7.683 s over this job's 20 newest green merge-group runs up to
+      # 2026-11-15 (run 43582507175).
       - name: Integration test envoy (a real NATS server, in the test process)
         run: go test ./internal/integration/ -timeout 300s -count=1
         working-directory: packages/envoy
@@ -5074,7 +5141,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_infra_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 323 s (the vet's 223 s among them), 6 s of its clock over them, the
+    # unit step's longest 68 s plus its 10 minutes, and the natslive step's longest 238 s plus its
+    # three calls' 30 minutes each: 6635 s, or 111 minutes.
+    timeout-minutes: 115
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
@@ -5113,12 +5184,16 @@ jobs:
       - name: Vet envoy-infra, its live-test tags included
         run: go vet -tags pulumilive,natslive ./...
         working-directory: packages/envoy/infra
+      # -timeout 10m against a slowest package of 28.059 s, gcp, over this job's 20 newest green
+      # merge-group runs up to 2026-11-15 (run 43278643090).
       - name: Unit test envoy-infra
-        run: go test -count=1 ./...
+        run: go test -count=1 -timeout 10m ./...
         working-directory: packages/envoy/infra
       - name: Live tests of envoy-infra against nats-server (natslive)
         # gcp's live tests build helm, nats-server, the config reloader and the exporter with go
         # install first, minutes on a cold cache, so the package gets more than go test's 10 m.
+        # Over this job's 20 newest green merge-group runs up to 2026-11-15, on a restored cache,
+        # core took at most 124.22 s and gcp 102.654 s (runs 43675808276 and 43338810495).
         # One call per package, never one union -run over the three: a name an untagged test of
         # one package shares with a natslive test of another would then run a second time with
         # nothing to say so. Each assignment is a line of its own, so under bash -e an empty or
@@ -5193,8 +5268,11 @@ jobs:
     if: needs.changes.outputs.envoy_go_race == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
     # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 30 minutes, which is 36.
+    # the dump that names it. It is 2.7 times the step's slowest package over this job's 20 newest
+    # green merge-group runs up to 2026-11-15: internal/dispatch/store, 664.278 s (run
+    # 43675730856). The limit is at least the job's sum over those runs: its other steps at their
+    # longest, 73 s, 6 s of its clock over them, and the step's longest 811 s plus its 30 minutes:
+    # 2690 s, or 45 minutes.
     timeout-minutes: 45
     services:
       postgres:
@@ -5235,10 +5313,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_api == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 30 minutes, which is 36.
-    timeout-minutes: 45
+    # The step's -timeout 50m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it. It is twice and more the package's slowest run over this job's 20
+    # newest green merge-group runs up to 2026-11-15, 1471.384 s (run 43673491600), which the 30
+    # minutes it had before held only 1.2 times. The limit is at least the job's sum over those
+    # runs: its other steps at their longest, 84 s, 6 s of its clock over them, and the step's
+    # longest 1611 s plus its 50 minutes: 4701 s, or 79 minutes.
+    timeout-minutes: 80
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5266,7 +5347,7 @@ jobs:
           go-version-file: packages/envoy/go.mod
           cache: false
       - name: Race-test the Dispatch API
-        run: go test -count=1 -race -timeout 30m ./internal/dispatch/api/
+        run: go test -count=1 -race -timeout 50m ./internal/dispatch/api/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
@@ -5290,10 +5371,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # The step's -timeout 60m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race binary,
-    # then the step's own 60 minutes, which is 66 under this limit of 70.
-    timeout-minutes: 70
+    # The step's -timeout 65m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it. It is twice and more the package's slowest run over this job's 20
+    # newest green merge-group runs up to 2026-11-15, 1881.151 s (run 43584271399), which the 60
+    # minutes it had before held only 1.9 times. The limit is at least the job's sum over those
+    # runs: its other steps at their longest, 65 s, 7 s of its clock over them, and the step's
+    # longest 1941 s plus its 65 minutes: 5913 s, or 99 minutes.
+    timeout-minutes: 100
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5344,7 +5428,7 @@ jobs:
       # because the job restores the Go build cache above, and a cached pass must not stand in
       # for a run.
       - name: Race-test the document service
-        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
+        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 65m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
@@ -5367,20 +5451,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # The step's -timeout 34m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it. Both numbers come from this job's own green runs, the slowest of
-    # them 128761197501: 1136.829 s in the package, against 1016.966 s in 128809181011,
-    # 1012.796 s in 128790317116 and 864.037 s in 128751128912, and about 71 s of checkout,
-    # setup and compile before any of them. The package has grown three times under this pull
-    # request, first when main took in #2414's tests (953 services built to 1068), again on the
-    # merge of #2870, which moved work into this lane, and now with #2960's wedged-commit row,
-    # measured at 56 s in series in an issue pod (the row's own 47.69 s, and 8.29 s more in the
-    # residency case, which gives each of its trials a connection of its own). The step's
-    # deadline is the smallest whole minute at which the slowest package time, that growth
-    # included, is at most 60 % of it, and this limit is six minutes above that. Measure again
-    # before changing either, and from the slowest run rather than the newest: a package that
-    # has grown past 60 % of its deadline is a deadline to raise, not a flake to re-run.
-    timeout-minutes: 40
+    # The step's -timeout 45m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it. It is twice and more the package's slowest run over this job's 20
+    # newest green merge-group runs up to 2026-11-15, 1261.698 s (run 43188011059), which the 34
+    # minutes it had before held only 1.6 times. The package has grown under several pull requests
+    # (#2414's tests, #2870, which moved work into this lane, #2960's wedged-commit row), so
+    # measure again from the slowest run rather than the newest: a package past half its
+    # deadline is a deadline to raise, not a flake to re-run. The limit is at least the job's sum
+    # over those runs: its other steps at their longest, 90 s, 6 s of its clock over them, and the
+    # step's longest 1292 s plus its 45 minutes: 4088 s, or 69 minutes.
+    timeout-minutes: 70
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5427,7 +5507,7 @@ jobs:
       # and the count of services the tests left alive is the half of this job that no detector
       # of Go's reports.
       - name: Test the document service under the cleanup detector
-        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/
+        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 45m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
@@ -5451,7 +5531,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.dispatch_memory == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    # The step's -timeout 70m is twice and more the package's slowest run over this job's 20 newest
+    # green merge-group runs up to 2026-11-15, 1963.339 s (run 43677717022), which the 60 minutes
+    # it had before held only 1.8 times. The limit is at least the job's sum over those runs: its
+    # other steps at their longest, 78 s, 6 s of its clock over them, and the step's longest
+    # 2033 s plus its 70 minutes: 6317 s, or 106 minutes.
+    timeout-minutes: 110
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5477,7 +5562,7 @@ jobs:
       - name: Memory tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
-          go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          go test -tags memory -count=1 -timeout 70m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
@@ -5505,7 +5590,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.dispatch_multiprocess == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The step's -timeout 25m is twice and more the package's slowest run over this job's 20 newest
+    # green merge-group runs up to 2026-11-15, 718.638 s (run 43677717022), which the 20 minutes it
+    # had before held only 1.7 times. The limit is at least the job's sum over those runs: its
+    # other steps at their longest, 72 s, 5 s of its clock over them, and the step's longest 780 s
+    # plus its 25 minutes: 2357 s, or 40 minutes.
+    timeout-minutes: 40
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5531,7 +5621,7 @@ jobs:
       - name: Two-process tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch
+          go test -tags multiprocess -count=1 -timeout 25m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
@@ -5562,6 +5652,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.listener_server_change == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # The step's -timeout 15m is 5.9 times the package's slowest run over this job's 20 newest
+    # green merge-group runs up to 2026-11-15, 152.28 s (run 43582507175). The limit is at least
+    # the job's sum over those runs: its other steps at their longest, 28 s, 5 s of its clock over
+    # them, and the step's longest 234 s plus its 15 minutes: 1167 s, or 20 minutes.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -5618,6 +5712,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.broker_multiprocess == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # The step's -timeout 20m is many times the package's slowest run over this job's 20 newest
+    # green merge-group runs up to 2026-11-15, 60.731 s (run 43582507175). The limit is at least
+    # the job's sum over those runs: its other steps at their longest, 51 s, 6 s of its clock over
+    # them, and the step's longest 187 s plus its 20 minutes: 1444 s, or 25 minutes.
     timeout-minutes: 30
     services:
       postgres:
@@ -5666,7 +5764,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.airlock_lean == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Each go test's -timeout 10m holds its slowest run over this job's 20 newest green merge-group
+    # runs up to 2026-11-15 many times: the seed corpus 0.051 s (run 43278643090), the two-minute
+    # fuzz 121.054 s (run 43335301897). The limit is at least the job's sum over those runs: its
+    # other steps at their longest, 57 s, 7 s of its clock over them, and the two steps' longest,
+    # 16 s and 133 s, each plus its 10 minutes: 1413 s, or 24 minutes.
+    timeout-minutes: 25
     env:
       # The built model the two runs below compare the Go code against. Naming no file makes
       # FuzzAirlock skip (internal/broker/airlock/airlock_fuzz_test.go:32-46), and a skip is a
@@ -5707,10 +5810,10 @@ jobs:
         run: bash packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
       # The committed seed corpus (testdata/fuzz/FuzzAirlock): every seed through both sides.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -run FuzzAirlock ./internal/broker/airlock/
+        run: go test -timeout 10m -run FuzzAirlock ./internal/broker/airlock/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
-        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/
+        run: go test -timeout 10m -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/
         working-directory: packages/envoy
 
 
@@ -5732,7 +5835,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_smoke == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 288 s (the listener image's build 195 s among them), 6 s of its clock
+    # over them, the smoke test's longest 56 s plus its 5 minutes, and the live tests' longest
+    # 372 s plus their 15 minutes: 1922 s, or 33 minutes.
+    timeout-minutes: 35
     env:
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image would be one more registry pull a test could fail on.
@@ -5827,9 +5934,10 @@ jobs:
           docker run --rm --entrypoint ls "$ENVOY_SMOKE_IMAGE" -l
           /usr/share/doc/legion/THIRD_PARTY_NOTICES /srv/dispatch-web/THIRD_PARTY_NOTICES.txt
       # 5m bounds only what the test does: pull NATS, start both containers behind the test's
-      # own 60 s health wait, and assert. This job has measured 1.82 s, 3.16 s and 1.88 s (the
-      # last in run 36508580490), and 2.2–20.7 s across four runs on a devbox at load average
-      # 80, so the bound is deliberate headroom, not a build budget.
+      # own 60 s health wait, and assert. Over this job's 20 newest green merge-group runs up to
+      # 2026-11-15 the package took at most 16.133 s (run 43673491600), and 2.2–20.7 s across
+      # four runs on a devbox at load average 80, so the bound is deliberate headroom, not a
+      # build budget.
       - name: Container smoke test (testcontainers)
         run: go test -tags smoke -v -timeout 5m ./internal/smoke/
         working-directory: packages/envoy
@@ -5865,6 +5973,8 @@ jobs:
       # go commands.
       - name: Start the machine watch over the live tests
         run: .github/scripts/disk_watch.py start --path /tmp --state "$RUNNER_TEMP/disk-watch.json"
+      # 15m against at most 145.791 s over this job's 20 newest green merge-group runs up to
+      # 2026-11-15 (run 43509904983).
       - name: Live tests of envoy-infra's host:Listener
         run: go test -tags pulumilive -v -timeout 15m ./host/
         working-directory: packages/envoy/infra
@@ -5905,9 +6015,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_e2e_local == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Its setup, the longest of 105 green runs up to 2026-11-14 at 56 s besides the two steps below,
-    # plus each script's guard: e2e-local.test.sh's 360 s and e2e-local.sh's 300 s, which each
-    # script carries with its reading. 716 s in all.
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 44 s, 10 s of its clock over them, and each script's longest plus
+    # the guard it carries with its reading, e2e-local.test.sh 51 s + 360 s and e2e-local.sh 25 s
+    # + 300 s: 790 s, or 14 minutes.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -5978,7 +6089,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_session_stall == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 85 s, 6 s of its clock over them, and each test step's longest plus
+    # its guard - the six bare `bun test` steps 397 s + 750 s and the role takeover smoke 111 s +
+    # 360 s - which is 1709 s, or 29 minutes.
+    timeout-minutes: 30
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -6018,19 +6133,28 @@ jobs:
       - name: Build contracts for the stall suites
         run: bun run build
         working-directory: packages/contracts
+      # Each bare `bun test` step of this job loads the row-deadline preload and sets its one guard,
+      # --timeout, at least twice the slowest row or hook its command ran under 8 busy loops on
+      # 2 CPUs in a builds Job at 61b66deb (two runs); the reading is beside each. Here the row
+      # "B: with natsConnectionOptions it reconnects ... when its first redial also hangs" took
+      # 50,109.26 ms and the file's beforeAll 25,685.20 ms.
       - name: Stall test of envoy-client's NATS connection options
-        run: bun test src/__tests__/nats-stall.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/nats-stall.test.ts
         working-directory: packages/envoy-client
       # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
-      # this one as a file because of the leading "./".
+      # this one as a file because of the leading "./". Guard 180000 ms: the row "a killed session
+      # stays unresponsive until the gone horizon, then reads gone ..." took 60,810.22 ms.
       - name: Session state rig of a stalled session
-        run: bun test ./test/session-stall.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 180000 ./test/session-stall.ts
         working-directory: packages/envoy-client
+      # Guard 90000 ms: the row took 30,499.69 ms and its file's beforeAll 16,397.25 ms.
       - name: Stall test of pi-envoy
-        run: bun test extensions/envoy.test.ts -t "NATS path freezes"
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 90000 extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
+      # Guard 120000 ms: the row "a session whose redial once hung still exits on SIGTERM" took
+      # 53,001.47 ms and the file's beforeAll 14,816.41 ms.
       - name: Stall test of claude-envoy
-        run: bun test tests/envoy-channel-stall.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 tests/envoy-channel-stall.test.ts
         working-directory: packages/claude-envoy
       # The role takeover smoke (INFRA-404, A5): one line per row of its spec's R8 table, driven
       # with real client processes against a listener and natsd this job already sets Go up for.
@@ -6040,15 +6164,18 @@ jobs:
         run: bash packages/pi-envoy/scripts/smoke-role-takeover.sh
       # The design-gate advice over the real CLI and a real Dispatch server (dispatch://INFRA-1727):
       # the server this suite starts is built from this tree, so what it asserts is the sentence a
-      # person reads in a terminal rather than one rendered from a stub.
+      # person reads in a terminal rather than one rendered from a stub. Guard 120000 ms: the
+      # file's beforeAll, which builds and starts that server, took 52,389.38 ms (its slowest row
+      # 2,113.07 ms).
       - name: Design-gate advice of the real CLI against a real Dispatch
-        run: bun test src/__tests__/design-gate-advice.live.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/design-gate-advice.live.test.ts
         working-directory: packages/envoy-client
       # The moved-approval-request advice over the same real CLI and real Dispatch
       # (dispatch://INFRA-3096): it proves the field the server fills on a write that takes an
-      # open approval request back from the person is the field the CLI reads and prints.
+      # open approval request back from the person is the field the CLI reads and prints. Guard
+      # 120000 ms: the file's beforeAll took 45,890.03 ms (its slowest row 2,000.90 ms).
       - name: Moved-approval advice of the real CLI against a real Dispatch
-        run: bun test src/__tests__/moved-approval-advice.live.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

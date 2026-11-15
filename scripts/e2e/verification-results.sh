@@ -71,8 +71,8 @@ evidence=''
 timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
-# Twice the longest green run on record, rounded up to the minute: 13 green e2e.yaml jobs (4 of
-# them in green runs) up to 2026-11-14, the longest proof step 148 s (run 43547760198).
+# Twice the longest green run on record, rounded up to the minute: 15 green e2e.yaml jobs (4 of
+# them in green runs) up to 2026-11-15, the longest proof step 148 s (run 43547760198).
 proof_guard 300
 
 # DISPATCH_BIN is this script's input, read before the sweep below drops every DISPATCH_* variable.
