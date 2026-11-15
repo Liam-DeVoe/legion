@@ -236,7 +236,8 @@ func (r *repositories) Refused() []refusedRepository {
 
 // lookup is the served repository resolved names, in any spelling, or why Legion does not serve
 // it: left out (leftOut) with its reason, or not mapped to the project at all. unread is a
-// repository left out for now because its installation read failed (refusedRepository.readErr).
+// repository left out for now because GitHub did not answer its installation read, or its
+// default-branch read past GitHub's rate limit (refusedRepository.readErr).
 // The mapping is read under the name resolved carries and then, when the mapping does not name
 // it, under the other name of the configured rename that names it (ghrepo.Under), so an issue
 // resolved to the repository as it was is recorded on the one the project serves, under one name:
@@ -313,8 +314,9 @@ func (r *repositories) WithoutWebhookApp() []webhookAppGap {
 	return slices.Clone(r.withoutWebhookApp)
 }
 
-// awaitingRead is every repository a failed installation read left as it stands, by reason: each
-// left out for its failed read, and each served one kept on its last answer. While any is, the
+// awaitingRead is every repository a read GitHub did not answer left as it stands, by reason: each
+// left out for its failed installation read or its default-branch read past GitHub's rate limit,
+// and each served one kept on its last answer. While any is, the
 // mapping is read again of the daemon's own (refreshOnMappingChange).
 func (r *repositories) awaitingRead() []string {
 	waiting := refusalReasons(readFailures(r.Refused()))
@@ -1153,7 +1155,7 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 			return
 		case <-w.mappingChanged:
 		case <-recheck:
-			w.log.Info("workflow: reading the repository mapping again for what a failed installation read left as it stands",
+			w.log.Info("workflow: reading the repository mapping again for what a read GitHub did not answer (an installation read, or a default-branch read past GitHub's rate limit) left as it stands",
 				"waiting", waiting, "waited", wait.String())
 			if !cut {
 				recheckIn = min(2*recheckIn, installReadRetry.Max)
@@ -1415,7 +1417,7 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		for _, tree := range slices.Sorted(maps.Keys(byTree)) {
 			row, err := record.NewOutboxRow(tree, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-				"GitHub answered %s's App installation read again, and the daemon recovered its issues from Dispatch's listing, but these children your release_children released while it was unread are still not recorded: %s",
+				"GitHub answered for %s again (its App installation read, or its default-branch read past GitHub's rate limit), and the daemon recovered its issues from Dispatch's listing, but these children your release_children released while it was unread are still not recorded: %s",
 				strings.Join(repos, ", "), strings.Join(byTree[tree], "; "))}, now)
 			if err != nil {
 				return err
@@ -1463,7 +1465,8 @@ func recoveredOn(repos, silenced map[string]bool, listing []dispatch.IssueSummar
 	}
 }
 
-// repositoryUnread is whether resolved is left out for now because its installation read failed:
+// repositoryUnread is whether resolved is left out for now because GitHub did not answer its
+// installation read, or its default-branch read past GitHub's rate limit:
 // release_children's answer for a child whose apply recorded nothing (api.Options.RepositoryUnread).
 func (w *workflowRuntime) repositoryUnread(resolved string) bool {
 	_, _, _, unread := w.repositories.lookup(resolved)

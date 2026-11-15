@@ -22,8 +22,10 @@ const defaultBranchTTL = 10 * time.Minute
 // defaultBranches is each repository as GitHub names it (ghbranch.Read: its own spelling of owner
 // and name, and its default branch), read as the implement App — the App that creates an issue's
 // branch and provisions its workspace — and kept per repository, in any spelling, for ttl from
-// the read. Reads of one repository that overlap share one request to GitHub; a read GitHub
-// refuses is returned and not kept.
+// the read. Reads of one repository that overlap share one request to GitHub. A read GitHub
+// refuses for any reason but its rate limit is returned and keeps nothing; one GitHub's rate limit
+// refuses is answered from the read kept, however old, which then stands until the limit ends
+// (Named), and one held from a record stands until the limit ends too (hold).
 //
 // A caller hands it a name a record or Dispatch carries, which after a configured rename's
 // transfer is the name the repository moved away from, on an installation that no longer covers
@@ -67,7 +69,8 @@ type pendingDefaultBranch struct {
 
 // newDefaultBranches reads under githubAPI, the GitHub REST root ("" is https://api.github.com),
 // with tokens' implement App, for the repository repos serves each asked-for one under (nil: each
-// under its own name), keeping each answer for ttl on now's clock.
+// under its own name), keeping each answer it reads for ttl on now's clock (a branch held through
+// GitHub's rate limit stands until the limit ends instead).
 func newDefaultBranches(tokens appauth.Tokens, repos *repositories, githubAPI string, ttl time.Duration, now func() time.Time) *defaultBranches {
 	return &defaultBranches{
 		tokens: tokens, repos: repos, githubAPI: githubAPI, ttl: ttl, now: now,
