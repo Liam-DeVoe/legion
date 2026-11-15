@@ -396,8 +396,9 @@ which `extensions/legion.ts` calls from its `agent_start` handler, for any turn 
 `task` subagent's event; a session that is given no turn at all — a role brought back with no
 task — claims at the bound instead, `claimFirstTurnBoundMs` (30 s,
 `LEGION_CLAIM_FIRST_TURN_BOUND_MS`), so it is addressable and hears what waited for it. Only the
-claim is deferred: `session_start` still awaits the whole boot, and Oh My Pi reads no input until
-every such handler has returned, so a boot that waited there for a first turn would deadlock.
+claim is deferred: `session_start` still awaits the whole boot, and Oh My Pi runs no RPC command
+that starts a turn until every such handler has returned, so a boot that waited there for a first
+turn would deadlock.
 The boot measures no capability rows, and neither that `claims/ready` nor the
 regain's carries a report. The session measures its rows afterwards instead, on the 5 s interval
 it already runs and only while it is idle (INFRA-927, `src/capability-schedule.ts` driven from

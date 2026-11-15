@@ -893,34 +893,24 @@ test.skipIf(skip)(
   120_000
 );
 
-// Oh My Pi reads no RPC command until every send an extension started during its startup has
-// settled (runtime-init.ts `initializeExtensions`: `runner.sends.drain()`), and an idle card sent
-// with `triggerTurn` lasts as long as the turn it starts: a card that reached pi-envoy while the
-// session started ran its whole turn inside that drain, and `get_state` and `prompt` waited for
-// it. The stand-in holds the registration envoy.ts's `session_start` awaits, with the relay
-// subject already open (it is opened before the registration that asks for the consumer), so the
-// cards reach pi-envoy inside the host's startup: the RPC command written meanwhile is not even
-// read until startup is over.
+// RPC mode answers a command that starts no turn, `get_state` among them, while Oh My Pi's startup
+// still runs, and holds one that starts a turn or changes the session until startup ends
+// (rpc-mode.ts `waitsForStartup`); its startup ends once the startup handlers ran, without waiting
+// for a turn one of them started (`drainSends: false`). The stand-in holds the registration
+// envoy.ts's `session_start` awaits, with the relay subject already open (it is opened before the
+// registration that asks for the consumer), so the cards reach pi-envoy inside the host's startup,
+// and the `get_state` written meanwhile is answered before that startup is released.
 test.skipIf(skip)(
   "a card that arrives while the session starts holds no RPC input",
   async () => {
     const session = await startSession({ holdStartup: true });
     const early = session.command({ type: "get_state" });
-    let answeredEarly = false;
-    void early.then(
-      () => {
-        answeredEarly = true;
-      },
-      () => undefined
-    );
     const cards = [await session.card("s1"), await session.card("s2")];
-    expect(answeredEarly).toBe(false);
+    await within("get_state written while the session starts", 5_000, early);
     session.releaseStartup();
 
-    // The cards' turn is held at its model request, and the host still answers RPC commands:
-    // the one written during startup, and one written now.
+    // The cards' turn is held at its model request, and the host still answers RPC commands.
     const woken = await session.nextTurn("the turn the startup cards' wake started");
-    await within("get_state written during startup", 5_000, early);
     await within("get_state written while the turn is held", 5_000, session.state());
 
     const messages = conversation(woken.request);

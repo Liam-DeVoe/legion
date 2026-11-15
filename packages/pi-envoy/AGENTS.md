@@ -75,17 +75,18 @@ is typed while the host is idle, while an automatic compaction runs with the hos
 live run going, whatever order its `session_compact` and `auto_compaction_end` arrive in. A folded
 targeted Aside gets no wake, since it was an aside before too and the host folded it with no turn
 under the latch or in plan mode just the same.
-A card that reaches an RPC session while Oh My Pi starts must not start a turn there: the host
-settles every extension send of its startup before it returns from `initializeExtensions`, and RPC
-mode reads no command until then, while an idle card with `triggerTurn` is a send that lasts its
-whole run, so such a card held the daemon's `get_state` and task back until that turn ended. The
-host gives an extension no event once that drain is over, so the card is its own witness: in the
+A card that reaches an RPC session while Oh My Pi starts must not start a turn there: RPC mode's
+startup ends once the startup handlers ran, without waiting for a turn one of them started, and it
+holds every command that starts a turn, the daemon's task among them, until then (it answers a
+`get_state` during startup), so such a card would take the session's first turn and the daemon's
+task would arrive inside it.
+The host gives an extension no event once its startup is over, so the card is its own witness: in the
 startup phase (`ctx.mode` "rpc": RPC mode, and ACP, which initialises extensions in it too and whose
 bridge defers a turn the agent starts, so there the wake is hidden next-turn context, as an idle
 card's own turn is) a card that finds the host idle, a targeted Aside included, goes as a `followUp` with
 no `triggerTurn`, which the host appends with no turn only once its startup hold has settled, and
-the check its `message_end` arms runs on the host's timer, when an idle host has no startup send
-pending; it sends the wake outside the drain and ends the phase. A card the host has not yet
+the check its `message_end` arms runs on the host's timer, when an idle host has no held startup send
+still to start; it sends the wake after every turn startup started and ends the phase. A card the host has not yet
 emitted holds the check back for up to 30 s (`STARTUP_CARD_CAP_MS`), and a busy check leaves the
 startup cards to the running turn and checks again at its `agent_end`. Print and json mode prompt
 right after their own startup awaits, where a wake's turn would make that prompt fail as busy, and
@@ -140,9 +141,9 @@ compaction that fails or is cancelled after aborting the run, or a switch that f
 abort and its `session_switch`, then a prompt sent while the host is busy, or one that reaches it
 with no `input` event (another extension's `sendUserMessage` or triggered message, an ACP prompt,
 a wake of the host's own); or a run another sender starts with no wait while a manual compaction
-has the agent disconnected (`agent-session.ts` `#promptAgentInitiatedMessage`, ~9083-9095), which
+has the agent disconnected (`agent-session.ts` `#promptAgentInitiatedMessage`, ~11321-11344), which
 leaves the host busy at that `session_compact`. Another extension's startup send
-still loading its pictures on an idle host can let the startup wake join the host's startup drain;
+still loading its pictures on an idle host can let the startup wake start its turn before that send;
 the drain of `/reload-plugins` is not covered; a startup targeted Aside in plan mode gets a wake an
 aside never got; and an RPC session that receives no card while it starts stays in the startup
 phase until its first idle card, which gets its turn through the wake. A BTW
@@ -347,7 +348,7 @@ the terminal runs it; the extension, custom and skill commands (`pi.getCommands`
 markdown file commands and prompt templates the live session expands, read from the host's own
 `AgentSession` (`slashCommands`, `promptTemplates`) by finding, in `AgentRegistry.global().list()`,
 the ref whose live session id is this session's. At the pin, `createAgentSession` defaults its
-main session to that registry (sdk.ts:2204) and registers it (sdk.ts:4067), so print and `--mode rpc`
+main session to that registry (sdk.ts:2604) and registers it (sdk.ts:4821), so print and `--mode rpc`
 main sessions list file commands and templates too. The ref is looked up whenever commands refresh,
 since the host keeps one `AgentSession` across `/new`, `/resume` and a fork and changes its id; a
 host without the registry export, or one listing no session under this id, lists none of those two
