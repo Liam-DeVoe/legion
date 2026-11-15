@@ -1,0 +1,25 @@
+| Picture | Changed pixels | Share |
+| --- | ---: | ---: |
+| ask-card-01-closed-inbox | 21309 | 1.64% |
+| ask-card-02-menu-open | 21474 | 1.66% |
+| ask-card-03-rewriting | 21309 | 1.64% |
+| ask-card-04-rewritten | 27713 | 2.14% |
+| ask-card-05-original-shown | 21557 | 1.66% |
+| ask-card-06-rewrite-failed | 21105 | 1.63% |
+| ask-card-07-reviewer-rewritten-inbox | 35664 | 2.75% |
+| ask-card-08-define-ask-from-record | 21030 | 1.62% |
+| ask-card-09-define-ask-with-agent | 20991 | 1.62% |
+| ask-card-10-define-document-read-view | 28197 | 2.18% |
+| ask-card-11-define-document-edit-bar | 61791 | 4.77% |
+| ask-card-12-define-document-edit-view | 55900 | 4.31% |
+| ask-card-13-shortcut-help | 10646 | 0.82% |
+| ask-card-14-phone-card | 13975 | 4.25% |
+| ask-card-15-phone-menu | 13521 | 4.11% |
+| ask-card-16-approval-menu | 50646 | 3.91% |
+| ask-card-17-reaches | 20806 | 1.61% |
+| ask-card-18-block-rewritten | 19998 | 1.54% |
+| ask-card-19-block-original | 52714 | 4.07% |
+| ask-card-20-handed-on | 21609 | 1.67% |
+| ask-card-21-comment-rewritten | 50761 | 3.92% |
+| ask-card-22-comment-original | 45505 | 3.51% |
+| ask-card-23-issue-rewritten | 52777 | 4.07% |

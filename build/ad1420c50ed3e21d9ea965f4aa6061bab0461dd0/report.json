@@ -1,0 +1,163 @@
+[
+  {
+    "changed": 21309,
+    "height": 900,
+    "name": "ask-card-01-closed-inbox",
+    "share": 0.01644212962962963,
+    "width": 1440
+  },
+  {
+    "changed": 21474,
+    "height": 900,
+    "name": "ask-card-02-menu-open",
+    "share": 0.016569444444444446,
+    "width": 1440
+  },
+  {
+    "changed": 21309,
+    "height": 900,
+    "name": "ask-card-03-rewriting",
+    "share": 0.01644212962962963,
+    "width": 1440
+  },
+  {
+    "changed": 27713,
+    "height": 900,
+    "name": "ask-card-04-rewritten",
+    "share": 0.02138348765432099,
+    "width": 1440
+  },
+  {
+    "changed": 21557,
+    "height": 900,
+    "name": "ask-card-05-original-shown",
+    "share": 0.01663348765432099,
+    "width": 1440
+  },
+  {
+    "changed": 21105,
+    "height": 900,
+    "name": "ask-card-06-rewrite-failed",
+    "share": 0.01628472222222222,
+    "width": 1440
+  },
+  {
+    "changed": 35664,
+    "height": 900,
+    "name": "ask-card-07-reviewer-rewritten-inbox",
+    "share": 0.02751851851851852,
+    "width": 1440
+  },
+  {
+    "changed": 21030,
+    "height": 900,
+    "name": "ask-card-08-define-ask-from-record",
+    "share": 0.016226851851851853,
+    "width": 1440
+  },
+  {
+    "changed": 20991,
+    "height": 900,
+    "name": "ask-card-09-define-ask-with-agent",
+    "share": 0.016196759259259258,
+    "width": 1440
+  },
+  {
+    "changed": 28197,
+    "height": 900,
+    "name": "ask-card-10-define-document-read-view",
+    "share": 0.021756944444444443,
+    "width": 1440
+  },
+  {
+    "changed": 61791,
+    "height": 900,
+    "name": "ask-card-11-define-document-edit-bar",
+    "share": 0.04767824074074074,
+    "width": 1440
+  },
+  {
+    "changed": 55900,
+    "height": 900,
+    "name": "ask-card-12-define-document-edit-view",
+    "share": 0.043132716049382715,
+    "width": 1440
+  },
+  {
+    "changed": 10646,
+    "height": 900,
+    "name": "ask-card-13-shortcut-help",
+    "share": 0.008214506172839506,
+    "width": 1440
+  },
+  {
+    "changed": 13975,
+    "height": 844,
+    "name": "ask-card-14-phone-card",
+    "share": 0.042456556082148496,
+    "width": 390
+  },
+  {
+    "changed": 13521,
+    "height": 844,
+    "name": "ask-card-15-phone-menu",
+    "share": 0.04107728764126868,
+    "width": 390
+  },
+  {
+    "changed": 50646,
+    "height": 900,
+    "name": "ask-card-16-approval-menu",
+    "share": 0.039078703703703706,
+    "width": 1440
+  },
+  {
+    "changed": 20806,
+    "height": 900,
+    "name": "ask-card-17-reaches",
+    "share": 0.016054012345679013,
+    "width": 1440
+  },
+  {
+    "changed": 19998,
+    "height": 900,
+    "name": "ask-card-18-block-rewritten",
+    "share": 0.015430555555555555,
+    "width": 1440
+  },
+  {
+    "changed": 52714,
+    "height": 900,
+    "name": "ask-card-19-block-original",
+    "share": 0.04067438271604938,
+    "width": 1440
+  },
+  {
+    "changed": 21609,
+    "height": 900,
+    "name": "ask-card-20-handed-on",
+    "share": 0.01667361111111111,
+    "width": 1440
+  },
+  {
+    "changed": 50761,
+    "height": 900,
+    "name": "ask-card-21-comment-rewritten",
+    "share": 0.03916743827160494,
+    "width": 1440
+  },
+  {
+    "changed": 45505,
+    "height": 900,
+    "name": "ask-card-22-comment-original",
+    "share": 0.035111882716049383,
+    "width": 1440
+  },
+  {
+    "changed": 52777,
+    "height": 900,
+    "name": "ask-card-23-issue-rewritten",
+    "share": 0.04072299382716049,
+    "width": 1440
+  }
+]
