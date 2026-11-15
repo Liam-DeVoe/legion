@@ -120,8 +120,8 @@ type sessionDeliveryOutcome struct {
 	// epoch is the plugin's epoch, recorded on the entry when the session is relayed.
 	epoch string
 	// consumerStart is the stream sequence the session's consumer starts at, recorded on the entry
-	// beside the epoch: the durable path still delivers a stored message below it, which is in no
-	// consumer (session.SessionEntry.ConsumerStart).
+	// beside the epoch: a stored message below it is in no consumer, so the durable path takes it
+	// up and raises a delivery exception for it (session.SessionEntry.ConsumerStart).
 	consumerStart uint64
 	// ackFloor is the stream sequence the session's consumer had everything acked through when
 	// this registration's consumer call read it (bus.SessionConsumerStart.AckFloor). It is where

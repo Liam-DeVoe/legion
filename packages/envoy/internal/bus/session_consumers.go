@@ -573,11 +573,12 @@ func (state sessionStreamState) firstStart() uint64 {
 // start this call dropped (recordDroppedStart); and where that floor is past the stream's end,
 // which a consumer an earlier build created there holds and one a one-copy stream's whole loss
 // left unreconciled holds too, it is recorded and returned as the sequence before the stream's
-// first instead (recordResumeFloorAt), the stream's first sequence minus one and 0 for an empty
-// stream, not as the stream's last sequence. The messages the stream holds at the sequences up
-// to its last were stored after that consumer's start was fixed and were never handed to it, so
-// the next create of the session starts at the stream's first sequence, as create's reset of a
-// start past the end and the relay's restart do, and skips none of them. The session is then
+// first instead (recordResumeFloorAt): the stream's first sequence minus one, which is 0 for a
+// stream that has stored nothing and for one whose first sequence is still 1, not the stream's
+// last sequence. The messages the stream holds at the sequences up to its last were stored after
+// that consumer's start was fixed and were never handed to it, so the next create of the session
+// starts at the stream's first sequence, as create's reset of a start past the end and the relay's
+// restart do, and skips none of them. The session is then
 // handed again what it was handed before at those sequences, which its plugin's ledger drops
 // within 72 hours (DELIVERY_DUPLICATE_WINDOW_MS) and 20,000 frames (DELIVERY_LEDGER_LIMIT,
 // packages/envoy-client/src/delivery-ledger.ts).

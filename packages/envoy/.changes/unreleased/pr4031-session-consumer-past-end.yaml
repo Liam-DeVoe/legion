@@ -28,3 +28,12 @@ body: |-
   stream's first sequence at the relay's next restart of the session, through the same reset and
   its WARN line, so it gets the messages now stored at those sequences. This includes a consumer
   that an earlier build created past the end.
+
+  Two limits remain, both limits of resuming by stream sequence. First, a consumer the stream
+  catches up with before anything restarts it (one an earlier build created past the end, or one
+  an unreconciled whole loss of a one-copy stream left there) is kept once the stream reaches its
+  floor, and the messages between the old end and that floor are skipped. For an earlier build's
+  consumer, that window closes at the restart of every relay that this build's listener makes at
+  its start. Second, after a restore from an older backup that keeps the stream's
+  `envoy_stream_id`, a stream that grows past a client's resume point R before that client returns
+  puts R + 1 inside the stream, so the messages between the restored end and R are skipped.
