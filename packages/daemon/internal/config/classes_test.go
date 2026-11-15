@@ -245,6 +245,7 @@ func TestTheFixedPathsAreTheOnesBootSettled(t *testing.T) {
 		"runtime.kubernetes", "runtime.kubernetes.idle_release",
 		"runtime.kubernetes.idle_release.backstop_minutes",
 		"runtime.kubernetes.idle_release.idle_minutes", "runtime.kubernetes.namespace",
+		"runtime.kubernetes.repository_cache.volume",
 		"runtime.tmux", "runtime.tmux.take_over", "stalled_tree_notice_hours", "state_dir",
 		"worker_background_hours",
 		"worker_silence_minutes", "worker_stall_backstop_hours",

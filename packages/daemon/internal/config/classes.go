@@ -157,6 +157,7 @@ const (
 	whyStore    = "the store's pool is connected at boot and holds every record the daemon is working from"
 	whyRuntime  = "the processes the daemon supervises are that runtime's, panes of its own tmux server or pods of its Sandboxes, and no running process moves to the other"
 	whyNamespc  = "every Sandbox, pod, volume, Service and Secret the daemon works with lives in it: a daemon that changed it would see none of the pods it is supervising"
+	whyCacheVol = "a repository cache's volume is its Sandbox's claim template, made with the cache and kept through every replacement of its pod, so a new size reaches only a cache made after a restart and never one the daemon is already serving from"
 	whyTakeOve  = "it is read once at boot, when the daemon adopts the claims of the tmux server it takes over; a later change has nothing left to adopt"
 	whyIdleRel  = "the idle release is settled at boot into the workflow's idle pass and the outbox's backstop, and the daemon builds neither again: a change of it reaches the next boot and nothing before it"
 	whyMemory   = "a tree's memory group is drawn once, as the tree is opened, under the mode admission and the API server were given at boot, and the instructions are read at boot into the launch specs: a change of either reaches the next boot and no tree already drawn"
@@ -560,7 +561,7 @@ var Classes = []Row{
 	{Field: "Kubernetes.Kubeconfig", Path: "runtime.kubernetes.kubeconfig", Class: ClassRebuild, Holder: HolderRuntime, Secret: true},
 	{Field: "Kubernetes.Context", Path: "runtime.kubernetes.context", Class: ClassRebuild, Holder: HolderRuntime, Secret: true},
 	{Field: "Kubernetes.RepositoryCache", Path: "runtime.kubernetes.repository_cache", Class: ClassRebuild, Holder: HolderRuntime, Block: true},
-	{Field: "RepositoryCacheConfig.Volume", Path: "runtime.kubernetes.repository_cache.volume", Class: ClassRebuild, Holder: HolderRuntime},
+	{Field: "RepositoryCacheConfig.Volume", Path: "runtime.kubernetes.repository_cache.volume", Class: ClassFixed, Why: whyCacheVol},
 	{Field: "RepositoryCacheConfig.RefreshMinutes", Path: "runtime.kubernetes.repository_cache.refresh_minutes", Class: ClassRebuild, Holder: HolderRuntime},
 	{Field: "RepositoryCacheConfig.RetainHours", Path: "runtime.kubernetes.repository_cache.retain_hours", Class: ClassRebuild, Holder: HolderRuntime},
 	{Field: "RepositoryCacheConfig.Resources", Path: "runtime.kubernetes.repository_cache.resources", Class: ClassRebuild, Holder: HolderRuntime},

@@ -127,6 +127,18 @@ func (r *Runtime) cacheManifest(repo ghrepo.Repository) sandbox {
 	}
 }
 
+// cacheCommand is the cache container's command for repo, as cachePodTemplate writes it: `legion
+// workspace-init cache` with the fetch's repository, its root, its listen address and the fetch
+// period runtime.kubernetes.repository_cache.refresh_minutes (--refresh). The period is read here
+// and nowhere else, so a change of it reaches a running cache only by this command drifting from
+// the one a fresh template would write (templateCommandDrifted).
+func (r *Runtime) cacheCommand(repo ghrepo.Repository) []string {
+	return []string{
+		r.tools.Legion, "workspace-init", "cache", "--repo", repo.String(), "--root", CacheRoot,
+		"--listen", fmt.Sprintf(":%d", repocache.Port), "--refresh", r.cacheConfig.Refresh.String(),
+	}
+}
+
 // cachePodTemplate is a cache's pod: one container, cacheContainer, running `legion workspace-init
 // cache` on the runtime's image, on the Legion pool under gVisor with the workers' pod security and
 // the probe's placement, mounting its volume at CacheRoot and its Secret's two tokens read-only —
@@ -139,12 +151,9 @@ func (r *Runtime) cacheManifest(repo ghrepo.Repository) sandbox {
 func (r *Runtime) cachePodTemplate(name string, repo ghrepo.Repository) podTemplate {
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
 	container := corev1.Container{
-		Name:  cacheContainer,
-		Image: r.image,
-		Command: []string{
-			r.tools.Legion, "workspace-init", "cache", "--repo", repo.String(), "--root", CacheRoot,
-			"--listen", fmt.Sprintf(":%d", repocache.Port), "--refresh", r.cacheConfig.Refresh.String(),
-		},
+		Name:    cacheContainer,
+		Image:   r.image,
+		Command: r.cacheCommand(repo),
 		Env: []corev1.EnvVar{
 			{Name: "PATH", Value: imagePath},
 			{Name: "TMPDIR", Value: initTempDir},
@@ -421,27 +430,31 @@ func (r *Runtime) cacheURL(name string) string {
 
 // reconcileCachePod makes s's pod (again) when it must be: s is Suspended (a fresh create, or one a
 // failed earlier run left Suspended), s's pod template reserves other than the configuration's
-// runtime.kubernetes.repository_cache.resources (templateResized: the operator changed them), or
-// the pod it owns runs an image other than the runtime's (imageDrift), runs as a ServiceAccount
-// other than the configured runtime.kubernetes.pod.service_account (accountDrift: the account is
-// fixed for the pod's life, so a cache pod reaches the new one only by being made again), or has
-// ended (terminal: evicted, say). A pod it would replace while that pod still runs waits until the
-// cache serves no stream (cacheStreams), for either drift: replacing it ends every tar it is
-// sending, which fails each fetch reading one and has the daemon make its issue pod again, so the
-// replacement is left to a later sweep while a tar is sent or queued. It then suspends s when it
-// is not already, waits the old pod out (awaitPodGone), and sets the pod template, on the
-// runtime's image and reservation, and Running in one patch, as relaunch does. The Sandbox and
-// its volume are kept through every replacement: a drifted pod costs a new pod, not a new clone.
-// A Running Sandbox whose template reserves what the configuration does, and whose pod is live on
-// the right image under the right account or not made yet — the controller makes one — is left
-// alone.
+// runtime.kubernetes.repository_cache.resources (templateResized: the operator changed them), s's
+// pod template runs the cache container with a command other than the one cachePodTemplate would
+// write now (templateCommandDrifted: the operator changed the fetch period
+// runtime.kubernetes.repository_cache.refresh_minutes, which is written into the command and read
+// nowhere after, so a running cache reaches the new period only by being made again), or the pod it
+// owns runs an image other than the runtime's (imageDrift), runs as a ServiceAccount other than the
+// configured runtime.kubernetes.pod.service_account (accountDrift: the account is fixed for the
+// pod's life, so a cache pod reaches the new one only by being made again), or has ended (terminal:
+// evicted, say). A pod it would replace while that pod still runs waits until the cache serves no
+// stream (cacheStreams), for any drift: replacing it ends every tar it is sending, which fails each
+// fetch reading one and has the daemon make its issue pod again, so the replacement is left to a
+// later sweep while a tar is sent or queued. It then suspends s when it is not already, waits the
+// old pod out (awaitPodGone), and sets the pod template, on the runtime's image, reservation and
+// command, and Running in one patch, as relaunch does. The Sandbox and its volume are kept through
+// every replacement: a drifted pod costs a new pod, not a new clone. A Running Sandbox whose
+// template reserves and commands what the configuration does, and whose pod is live on the right
+// image under the right account or not made yet — the controller makes one — is left alone.
 func (r *Runtime) reconcileCachePod(ctx context.Context, s *sandbox, repo ghrepo.Repository) error {
 	pod := r.storedPod(s.Name)
 	owned := ownedBy(pod, s.UID) && pod.DeletionTimestamp == nil
 	_, imageDrifted := imageDrift(pod, r.image)
 	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
 	drifted := imageDrifted || accountDrifted
-	if s.mode() != modeSuspended && !templateResized(s, r.cacheConfig.Resources) && (!owned || (!drifted && !terminal(pod))) {
+	commandDrifted := templateCommandDrifted(s, r.cacheCommand(repo))
+	if s.mode() != modeSuspended && !templateResized(s, r.cacheConfig.Resources) && !commandDrifted && (!owned || (!drifted && !terminal(pod))) {
 		return nil
 	}
 	if s.mode() != modeSuspended && owned && !terminal(pod) {
@@ -476,6 +489,27 @@ func templateResized(s *sandbox, want corev1.ResourceRequirements) bool {
 	for _, c := range s.Spec.PodTemplate.Spec.Containers {
 		if c.Name == cacheContainer {
 			return !equality.Semantic.DeepEqual(c.Resources, want)
+		}
+	}
+	return true
+}
+
+// templateCommandDrifted is whether s's pod template runs the cache container with a command other
+// than the one cachePodTemplate would write now, want (r.cacheCommand). It compares the whole
+// command, not the --refresh flag alone: cachePodTemplate derives every element of the command from
+// the configuration and the repository, so a cache the configuration still describes matches it and
+// the wider comparison costs no churn. It reads the template, never the pod, as templateResized
+// does. The --refresh period is written into the command when the pod is made (cacheCommand) and
+// read nowhere after, so a cache made before runtime.kubernetes.repository_cache.refresh_minutes
+// changed keeps fetching at the boot's period until this brings it back. At the first reconcile
+// after this change a cache of an earlier release whose command differs in any element — its
+// refresh period moved, or an earlier release wrote the command another way — is suspended and
+// replaced under the same stream-wait path the other drifts take; one whose command matches is left
+// alone.
+func templateCommandDrifted(s *sandbox, want []string) bool {
+	for _, c := range s.Spec.PodTemplate.Spec.Containers {
+		if c.Name == cacheContainer {
+			return !slices.Equal(c.Command, want)
 		}
 	}
 	return true

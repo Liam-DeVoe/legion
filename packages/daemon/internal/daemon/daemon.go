@@ -297,6 +297,13 @@ func bootBudget(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
 }
 
+// whyNoWorkflowDispatchURL is why a daemon that booted with no dispatch_url refuses a change of
+// it by name (config.Live.RefusePath): openWorkflow opened nothing, so the daemon built no
+// Dispatch client, App manager or NATS intake, and a change of the key would name the
+// dispatch-client holder this daemon never built and reach nothing until a restart opens a
+// workflow from the new URL.
+const whyNoWorkflowDispatchURL = "the daemon booted with no dispatch_url and runs no workflow, so it built no Dispatch client for a change of this key to reach: the key reaches nothing until a restart opens a workflow from it"
+
 func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, o overrides) error {
 	if log == nil {
 		log = slog.Default()
@@ -445,6 +452,12 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
+	}
+	if workflow == nil {
+		// No workflow opened (cfg.DispatchURL unset), so nothing holds dispatch_url: refuse a
+		// change of it by name on this daemon, for the route and the file arm alike, rather than
+		// answer `rebuilt` for a Dispatch client this daemon never built (whyNoWorkflowDispatchURL).
+		live.RefusePath("dispatch_url", whyNoWorkflowDispatchURL)
 	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()

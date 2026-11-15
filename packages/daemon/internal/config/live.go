@@ -143,7 +143,13 @@ type Live struct {
 	mu sync.Mutex
 	// overlay is the stored route overlay, dotted path to the value the route asked for. The
 	// caller seeds it from its durable store; Apply keeps it current.
-	overlay   map[string]any
+	overlay map[string]any
+	// pinned is the paths this daemon refuses beyond the class table's fixed rows, each to the
+	// reason it gives: a rebuild key whose holder this daemon built nothing for at boot, so a
+	// change of it reaches nothing until a restart (RefusePath). It is the per-daemon twin of a
+	// ClassFixed row, which the class table — one table for every daemon — cannot carry. Guarded
+	// by mu, like overlay; the daemon seeds it at boot, before the API serves.
+	pinned    map[string]string
 	observers []func(cfg *Config, applied []Change)
 }
 
@@ -262,6 +268,23 @@ func (l *Live) OnChange(fn func(cfg *Config, applied []Change)) {
 	l.observers = append(l.observers, fn)
 }
 
+// RefusePath records that this daemon refuses every change of path, by name, with reason,
+// whatever the path's class in the table: a rebuild key whose holder this daemon built nothing
+// for at boot, so a change of it reaches nothing until a restart. It is the per-daemon twin of
+// a ClassFixed row, which the class table cannot carry because the table is one table for every
+// daemon and this refusal holds only for the daemon that booted without the holder. The route
+// refuses the path by name before it resolves, and the file arm pins it back to the value boot
+// settled, as the fixed pins are (Apply, pinDaemon). The daemon seeds it at boot, before the API
+// serves, so no apply runs beside this.
+func (l *Live) RefusePath(path, reason string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.pinned == nil {
+		l.pinned = map[string]string{}
+	}
+	l.pinned[path] = reason
+}
+
 // Apply settles one settings change and reports what it did.
 //
 // source is SourceFile, where the file is read again under the stored route overlay and overlay
@@ -322,6 +345,10 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 				refused = append(refused, Refusal{Path: path, Reason: "unknown setting"})
 			case row.Class == ClassFixed:
 				refused = append(refused, Refusal{Path: path, Reason: row.Why})
+			case l.pinned[path] != "":
+				// Fixed for this daemon alone (RefusePath): the holder a change of it names was
+				// never built, so it is refused by name as a fixed path is, before it is merged.
+				refused = append(refused, Refusal{Path: path, Reason: l.pinned[path]})
 			case overlay[path] == nil:
 				delete(merged, path)
 			default:
@@ -352,6 +379,7 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 	// did, and no later settle reports the carrier's zero values as changes of its own.
 	reading := settingsOf(&next)
 	pinned := pinFixed(settled, &next)
+	pinned = append(pinned, pinDaemon(settled, &next, l.pinned)...)
 	if source == SourceFile {
 		refused = append(refused, pinned...)
 	} else {
@@ -362,8 +390,13 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 	// value boot settled, and the pin put that value back wherever the reading moved it
 	// (pinFixed). A fixed path the reading moved, a fixed member of a block only one of the two
 	// readings carries among them, would otherwise be reported changed to a caller that named no
-	// such key.
-	applied = slices.DeleteFunc(applied, func(change Change) bool { return change.Class == ClassFixed })
+	// such key. A path this daemon pins for itself (pinDaemon) is the same: the holder it names
+	// was never built, so the reading's value is pinned back and the change is no change of the
+	// daemon's, dropped here so no observer is told to rebuild a holder that does not exist.
+	applied = slices.DeleteFunc(applied, func(change Change) bool {
+		_, daemonPinned := l.pinned[change.Path]
+		return change.Class == ClassFixed || daemonPinned
+	})
 	l.overlay = merged
 	l.settled.Store(&next)
 	l.reading = reading
@@ -611,6 +644,42 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 // path on the route, the block around it, or the file.
 func pinFixed(settled, next *Config) []Refusal {
 	return pinBlock(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), "", nil)
+}
+
+// pinDaemon pins every path this daemon refuses for itself (Live.pinned, RefusePath) back to the
+// value boot settled, into next, and names each it moved with the reason the daemon gave it. It
+// is pinFixed's per-daemon twin: the path's class in the table is rebuild, but this daemon built
+// no holder the change could reach, so for this daemon the key is fixed and reaches nothing until
+// a restart. The paths are read in sorted order, so two readings are refused the same way every
+// time. A path whose value did not move is pinned nothing and refused nothing, as pinFixed leaves
+// an unmoved fixed path, so the route arm's own pre-resolve refusal of the key the caller named
+// (Apply) is not doubled here.
+func pinDaemon(settled, next *Config, paths map[string]string) []Refusal {
+	var pinned []Refusal
+	for _, path := range slices.Sorted(maps.Keys(paths)) {
+		was, now := fieldByPath(settled, path), fieldByPath(next, path)
+		if !was.IsValid() || !now.IsValid() || Render(now) == Render(was) {
+			continue
+		}
+		now.Set(was)
+		pinned = append(pinned, Refusal{Path: path, Reason: paths[path]})
+	}
+	return pinned
+}
+
+// fieldByPath is the configuration field the dotted path is read into, as a reflect.Value of
+// cfg's own — settable when cfg is addressable, as a *Config's fields are — or the zero Value
+// when no row of the class table names the path, or the path sits under a block this reading
+// does not carry. It walks the table's one field-to-row rule (WalkSettings), so it reaches
+// exactly the paths the diff and the pins do.
+func fieldByPath(cfg *Config, path string) reflect.Value {
+	var found reflect.Value
+	WalkSettings(cfg, func(row Row, value reflect.Value) {
+		if row.Path == path {
+			found = value
+		}
+	})
+	return found
 }
 
 // pinBlock pins every fixed value of one block of the configuration — was as boot settled it,

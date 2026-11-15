@@ -766,7 +766,7 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `runtime.kubernetes.repository_cache.refresh_minutes` | rebuild | `runtime` |
 | `runtime.kubernetes.repository_cache.resources` | rebuild | `runtime` |
 | `runtime.kubernetes.repository_cache.retain_hours` | rebuild | `runtime` |
-| `runtime.kubernetes.repository_cache.volume` | rebuild | `runtime` |
+| `runtime.kubernetes.repository_cache.volume` | fixed | — |
 | `runtime.kubernetes.resources` | launch | `runtime` |
 | `runtime.kubernetes.resources.<pod>.cpu` | launch | `runtime` |
 | `runtime.kubernetes.resources.<pod>.cpu_request` | launch | `runtime` |
@@ -830,6 +830,8 @@ Each line below is the reason the route answers with, for the keys it names.
 - `runtime` — the processes the daemon supervises are that runtime's, panes of its own tmux server or pods of its Sandboxes, and no running process moves to the other.
 
 - `runtime.kubernetes`, `runtime.kubernetes.namespace` — every Sandbox, pod, volume, Service and Secret the daemon works with lives in it: a daemon that changed it would see none of the pods it is supervising.
+
+- `runtime.kubernetes.repository_cache.volume` — a repository cache's volume is its Sandbox's claim template, made with the cache and kept through every replacement of its pod, so a new size reaches only a cache made after a restart and never one the daemon is already serving from.
 
 - `runtime.tmux`, `runtime.tmux.take_over` — it is read once at boot, when the daemon adopts the claims of the tmux server it takes over; a later change has nothing left to adopt.
 

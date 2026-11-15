@@ -155,6 +155,52 @@ func TestARouteChangeOfAFixedPathIsRefusedByName(t *testing.T) {
 	}
 }
 
+// runtime.kubernetes.repository_cache.volume is fixed: a cache's volume is its Sandbox's claim
+// template, made with the cache and kept through every replacement of its pod, so a new size
+// reaches only a cache made after a restart. The route refuses it by name with whyCacheVol and
+// nothing moves, and the file arm pins it back to the value boot settled and refuses it too, as
+// every fixed path is refused on both arms.
+func TestTheRepositoryCacheVolumeIsFixed(t *testing.T) {
+	live, path := newLive(t, kubernetesLiveFile, nil)
+	booted := live.Snapshot().Runtime.Kubernetes.RepositoryCache.Volume
+
+	applied, refused, err := live.Apply(SourceRoute, "sami@theorem.dev",
+		map[string]any{"runtime.kubernetes.repository_cache.volume": "200Gi"})
+	if err != nil {
+		t.Fatalf("Apply route: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("the route applied %+v, want none", applied)
+	}
+	if len(refused) != 1 || refused[0].Path != "runtime.kubernetes.repository_cache.volume" || refused[0].Reason != whyCacheVol {
+		t.Fatalf("the route refused %+v, want the volume refused with whyCacheVol", refused)
+	}
+	if got := live.Snapshot().Runtime.Kubernetes.RepositoryCache.Volume; got != booted {
+		t.Errorf("the volume = %q after a refused route change, want the booted %q", got, booted)
+	}
+	if _, held := live.overlay["runtime.kubernetes.repository_cache.volume"]; held {
+		t.Error("the refused volume is in the stored overlay")
+	}
+
+	// The file arm: an operator grows the cache volume in legion.yaml. It is pinned back to the
+	// value boot settled and refused by name, so no snapshot ever carries a size the daemon is
+	// not serving from.
+	rewrite(t, path, kubernetesLiveFile+"    repository_cache:\n      volume: 200Gi\n")
+	applied, refused, err = live.Apply(SourceFile, "", nil)
+	if err != nil {
+		t.Fatalf("Apply file: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("the file applied %+v, want none", applied)
+	}
+	if len(refused) != 1 || refused[0].Path != "runtime.kubernetes.repository_cache.volume" || refused[0].Reason != whyCacheVol {
+		t.Fatalf("the file settle refused %+v, want the volume pinned and named with whyCacheVol", refused)
+	}
+	if got := live.Snapshot().Runtime.Kubernetes.RepositoryCache.Volume; got != booted {
+		t.Errorf("the volume = %q after the file grew it, want the booted %q pinned back", got, booted)
+	}
+}
+
 func TestARouteChangeOfAnUnknownPathIsRefused(t *testing.T) {
 	live, _ := newLive(t, minimalFile, nil)
 
