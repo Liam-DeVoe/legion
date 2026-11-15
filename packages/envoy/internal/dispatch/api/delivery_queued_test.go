@@ -675,6 +675,49 @@ func TestASwitchInTheOldShapeIsStillRefusedForAStoppedSession(t *testing.T) {
 	}
 }
 
+// A switch whose attempt 1 an earlier release wrote carries no connected_only: that release had
+// no column to write it in, and during the rolling update or after it the person's Retry, or a
+// "Use ... instead", of that switch reaches a server of this release. The switch rule
+// (isSessionSwitchCommand) decides a switch whatever its request says, so the attempt such a press
+// opens asks the listener for a session that is running now, the stopped session refuses it, and
+// nothing is stored for it - as it is for the same switch sent afresh.
+func TestARetryOfASwitchAnEarlierReleaseWroteIsRefusedForAStoppedSession(t *testing.T) {
+	listener := stoppedAndLive(t)
+	handler, database := newTargetedMessageHandler(t, listener.url)
+
+	created := postAgentMessage(t, handler, "s1", map[string]any{"body": "/model acme/model-b", "delivery": "steer"}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("the switch: status=%d body=%s", created.Code, created.Body.String())
+	}
+	message := decodeBody[model.Message](t, created)
+	// The row as an earlier release left it: the column it never wrote reads null.
+	if _, err := database.Pool.Exec(context.Background(),
+		`update message_deliveries set connected_only = null where message_id = $1 and attempt = 1`, message.ID); err != nil {
+		t.Fatalf("write attempt 1 as an earlier release wrote it: %v", err)
+	}
+	storedBefore := len(listener.sentTo("s1"))
+
+	for _, press := range []struct{ name, delivery string }{
+		{name: "Retry", delivery: "steer"},
+		{name: "Use Aside instead", delivery: "aside"},
+	} {
+		again := dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/deliveries",
+			map[string]any{"delivery": press.delivery}, "alice")
+		if again.Code != http.StatusCreated {
+			t.Fatalf("%s: status=%d body=%s", press.name, again.Code, again.Body.String())
+		}
+		attempt := decodeBody[model.MessageDelivery](t, again)
+		if attempt.State != "failed" || attempt.Error == nil || *attempt.Error != "the session is stopped" {
+			t.Fatalf("%s of an earlier release's switch answered %#v, want a failed attempt reading \"the session is stopped\"",
+				press.name, attempt)
+		}
+	}
+	if stored := listener.sentTo("s1"); len(stored) != storedBefore {
+		t.Fatalf("the listener stored %d sends of the earlier release's switch for the stopped session, want none",
+			len(stored)-storedBefore)
+	}
+}
+
 // The claim holder's liveness read stays the registry's own: a stopped session holds no claim, so
 // it must read as no holder at all and the read must not ask for stopped sessions. A delivery's
 // read of the same session, beside it, finds it.
