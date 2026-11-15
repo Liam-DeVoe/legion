@@ -246,14 +246,8 @@ func TestTwoProcessesStoreEachChangeOnce(t *testing.T) {
 	second := storetest.SecondProcess(t, database)
 	other := NewSampler(second.Pool)
 
-	firstLeases, err := database.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the first process's lease pool: %v", err)
-	}
-	secondLeases, err := second.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the second process's lease pool: %v", err)
-	}
+	firstLeases := storetest.Leases(t, database.Pool)
+	secondLeases := storetest.Leases(t, second.Pool)
 
 	// The two ticks a RunLeased loop makes for one period, with the moment each was due: the
 	// value the ticker delivered, which is the same on both processes.
