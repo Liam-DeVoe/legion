@@ -607,10 +607,12 @@ func SessionFromVolume(file, root string) (string, error) {
 // `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
 // for the `default` model role, which every pod's operator overlay sets, and a resumed session
 // otherwise runs the session file's recorded model. On the pinned release, a resumed launch under
-// this role alias appends a replacement `model_change` for its resolved model; later launches
-// without the flag read that durable replacement. A profile with no `default` role is not refused
-// here: Oh My Pi launches silently on a built-in model instead, which is the deployment's to
-// notice (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
+// this role alias appends a `model_change` naming what the role resolved to at that launch, so a
+// launch without the flag would run that earlier launch's model rather than the role's current
+// one; every launch carries the flag so each runs the model the role names now. A profile with no
+// `default` role is not refused here: Oh My Pi launches silently on a built-in model instead,
+// which is the deployment's to notice (deploy/kubernetes/operator-route/README.md, "Changing a
+// role's model").
 func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()

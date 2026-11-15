@@ -3,7 +3,6 @@ package tmux
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,32 +18,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
-// recordedModelChanges returns the models in the session file's model-change records.
-func recordedModelChanges(t *testing.T, path string) []string {
-	t.Helper()
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var models []string
-	for _, line := range bytes.Split(contents, []byte("\n")) {
-		if len(line) == 0 {
-			continue
-		}
-		var record struct {
-			Type  string `json:"type"`
-			Model string `json:"model"`
-		}
-		if err := json.Unmarshal(line, &record); err != nil {
-			t.Fatalf("parse session record %q: %v", line, err)
-		}
-		if record.Type == "model_change" {
-			models = append(models, record.Model)
-		}
-	}
-	return models
-}
-
 // A pane that resumes the session its claim recorded runs the model the operator's settings put
 // on the `default` role, not the one that session saved: the pane's command carries `--model
 // @default`, and @default is Oh My Pi's own name for that role. Measured on the pinned binary: a
@@ -53,16 +26,9 @@ func recordedModelChanges(t *testing.T, path string) []string {
 // out is the control, and reports the saved model instead.
 //
 // **The control runs first, and it must.** A resume carrying a role alias writes a
-// `model_change` of its own into the session it resumed, naming what the role resolved to
-// (upstream oh-my-pi #18534, in the fork from 18.18.6; through 18.16.0 it wrote nothing). So the
-// flagged arm leaves the session pinned to `operator/configured`, and a control run after it
-// would read that back and measure nothing but the arm before it. Run before the flagged arm,
-// the control reads the pin the saving turn wrote, which is the only thing it was ever asking
-// about, and it reads the same on either build.
-//
-// The resumes leave the session's earlier bytes alone and add no second file. That is worth
-// checking but explains nothing about role resolution: the flag rides every launch because the
-// operator's current role is resolved per launch (TestInnerCommand).
+// `model_change` of its own naming what the role resolved to (upstream oh-my-pi #18534), so a
+// control run after the flagged arm would read `operator/configured` back. The resumes leave the
+// session's earlier bytes alone and add no second file.
 func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
@@ -94,6 +60,7 @@ func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 		err := cmd.Run()
 		return out.String(), errOut.String(), err
 	}
+
 	// A session of the profile's own, saved on operator/saved: print mode answers one short turn
 	// through the test's provider and writes the file the pane resumes below.
 	if stdout, stderr, err := run(shellprefix.Word(omp)+" -p 'Reply ok.'", ""); err != nil {
@@ -136,7 +103,7 @@ func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	if got := testbin.StateModel(t, plain); got != "operator/saved" {
 		t.Errorf("without the flag the resumed pane runs %s, want the session's own operator/saved", got)
 	}
-	if got, want := recordedModelChanges(t, saved[0]), []string{"operator/saved"}; !slices.Equal(got, want) {
+	if got, want := testbin.ModelChanges(t, saved[0]), []string{"operator/saved"}; !slices.Equal(got, want) {
 		t.Errorf("after the plain control, recorded model changes = %q, want %q", got, want)
 	}
 
@@ -149,7 +116,7 @@ func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
 		t.Errorf("the resumed pane runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
 	}
-	if got, want := recordedModelChanges(t, saved[0]), []string{"operator/saved", "operator/configured"}; !slices.Equal(got, want) {
+	if got, want := testbin.ModelChanges(t, saved[0]), []string{"operator/saved", "operator/configured"}; !slices.Equal(got, want) {
 		t.Errorf("after the role-alias resume, recorded model changes = %q, want %q", got, want)
 	}
 

@@ -398,8 +398,7 @@ const GITHUB_PROBE_CWD = "/";
  * runs on its App's installation token, which GitHub answers `GET /user` to with 403 "Resource not
  * accessible by integration", and `{viewer{login}}` is how such a token reads its own identity —
  * the read the repository's proofs make (`internal/api/real_github_test.go`,
- * `scripts/e2e/stage4b-sandbox-tree.sh`). The command runs from `GITHUB_PROBE_CWD`, not the
- * workspace, so the row measures the role's credential and not the workspace's git remotes. */
+ * `scripts/e2e/stage4b-sandbox-tree.sh`). */
 const checkGitHub: Check = async (host, _input, signal) => {
   const result = await host.run(
     "gh",

@@ -11,7 +11,9 @@ import (
 // (processes.test.ts:1126 fresh, :3950 resumed). The model flag rides both launches: a resumed
 // session would otherwise run its recorded model rather than the one the pod's overlay puts on
 // the `default` role. On the pinned release, a resumed launch under the role alias appends a
-// replacement `model_change`, which later launches without the flag read.
+// `model_change` naming what the role resolved to at that launch, so a launch without the flag
+// would run that earlier launch's model rather than the role's current one; every launch carries
+// the flag so each runs the model the role names now.
 func TestInnerCommand(t *testing.T) {
 	parts := runtime.PromptParts{RolePromptPaths: []string{"/roles/architect-root.md"}}
 	prompt := `--append-system-prompt "$(cat /roles/architect-root.md)"`
