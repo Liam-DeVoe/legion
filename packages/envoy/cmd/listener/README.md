@@ -360,7 +360,7 @@ During a roll two builds run for one machine id, and each must deliver what the 
   A relay's restart writes the filter this build compiles for the session's followed topics, and a consumer keeps its position when its filter changes, so a topic either build knows is delivered from the sequence the session had reached.
 
 - **Fields a build does not know are kept.**
-  Session registrations, interests, role claims and the lease record keep every JSON field they carry across every read-modify-write.
+  Session registrations, interests, role claims and the lease record keep every JSON field they carry across every read-modify-write, and a known-session record (`session.KnownSession`) across every rewrite this listener makes of its copy of it.
 
 A build from before INFRA-557 binds the durable with `nats.Bind` and knows no lease.
 Run one beside this build only during a roll from the old build to this one:

@@ -30,7 +30,7 @@ func lostStreamRead(t *testing.T) (*SessionConsumers, *testnats.UnansweredRelay)
 	}
 	t.Cleanup(owner.Close)
 	relay := testnats.StartUnansweredRelayOn(t, uri, "$JS.API.STREAM.INFO."+Stream)
-	consumers, err := ConnectSessionConsumers([]string{relay.URL()}, 0)
+	consumers, err := ConnectSessionConsumers([]string{relay.URL()}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect session consumers through the relay: %v", err)
 	}

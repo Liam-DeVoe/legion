@@ -2975,15 +2975,17 @@ It publishes to:
   delete nothing. `HostPermissions` and `DispatchPermissions` hold it through those same base
   entries; `SessionPermissions` does not, so a session holding that set alone reads no stored
   message itself and takes its own from the consumer its listener relays;
-- for each key-value bucket, `envoy_interests`, `envoy_roles`, `envoy_sessions`, `legion_agents`
-  (the Legion agent registry), `envoy_ci_state` and `envoy_listener` (the machine's delivery lease
-  and the delivery state its listeners share, `packages/envoy/cmd/listener/README.md`), the calls
-  nats.go's key-value store makes: the info, create and update of the bucket's stream
-  `KV_<bucket>`, its direct and stream message gets, writes to its keys, and its watchers'
-  consumer create and delete and their flow-control replies. The update is the raise a start, or
-  the listener's keeper every 30 seconds after, sends when it finds a bucket with fewer copies
-  than `ENVOY_NATS_REPLICAS`; neither writes fewer copies than it found, and a grant without it
-  makes that raise time out after 10 seconds with
+- for each key-value bucket, `envoy_interests`, `envoy_roles`, `envoy_sessions`,
+  `envoy_known_sessions`, `legion_agents` (the Legion agent registry), `envoy_ci_state`,
+  `envoy_dpop_proofs` and `envoy_listener` (the machine's delivery lease and the delivery state
+  its listeners share, `packages/envoy/cmd/listener/README.md`), the calls nats.go's key-value
+  store makes: the info, create and update of the bucket's stream `KV_<bucket>`, its direct and
+  stream message gets, writes to its keys, and its watchers' consumer create and delete and their
+  flow-control replies.
+  The update is the raise a start, or the listener's keeper every 30 seconds after, sends when it
+  finds a bucket with fewer copies than `ENVOY_NATS_REPLICAS` (for `envoy_known_sessions` the
+  keeper alone, since a start opens that bucket as it finds it); neither writes fewer copies than
+  it found, and a grant without it makes that raise time out after 10 seconds with
   `raise KV_<bucket>: ENVOY_NATS_REPLICAS=<n>: context deadline exceeded`.
   The writes are `$KV.<bucket>.>` for every bucket but `envoy_listener`, where they are
   the machine's own keys alone: its lease `$KV.envoy_listener.lease.listener-<m>`, the
@@ -2991,19 +2993,37 @@ It publishes to:
   `$KV.envoy_listener.handback.listener-<m>.>`, its delivery
   ledger `$KV.envoy_listener.delivery.listener-<m>.>`, and every session's last-seen record
   `$KV.envoy_listener.seen.>`, so one machine's user cannot take or clear another machine's lease
-  or ledger, or vouch for another machine's hand-over. The last-seen keys are not scoped to the
-  writing machine because they are read
-  across machines: a role claim names its holder session and no machine, and
+  or ledger, or vouch for another machine's hand-over.
+  The last-seen keys are not scoped to the writing machine because they are read across machines:
+  a role claim names its holder session and no machine, and
   `GET /v1/roles/<role>` on any listener answers a lapsed holder's `last_seen` out of that
-  session's record, whichever machine it registered through. A listener whose grant lacks
+  session's record, whichever machine it registered through.
+  A listener whose grant lacks
   `envoy_listener` logs an ERROR naming it and delivers without a lease, as its machine's only
   deliverer; one whose grant lacks `legion_agents`, an image newer than the release that applied
   its grant, serves everything else and answers 503 on the registry routes (`/v1/legion/agents`)
   while it retries the open in the background (1 s doubling to 1 min, and at once after each NATS
   reconnect), so the routes serve once the grant reaches it, by a reload or a reconnect, without
-  a restart;
+  a restart.
+  A listener whose grant lacks `envoy_known_sessions` logs one WARN naming that bucket and serves
+  everything else: a publish answers no recipient count, and a send to a session with no registry
+  entry answers 404.
+  That WARN is the store's own line, not the whole log a missing grant leaves: the server refuses
+  each open attempt's publish to `$JS.API.STREAM.INFO.KV_envoy_known_sessions`, which the
+  connection reports as one `envoy nats async error` at ERROR per attempt (`options`' async error
+  callback, `internal/bus/connect.go`).
+  It retries the open in the background (1 s doubling to 5 min, and at once after each NATS
+  reconnect), so it takes the grant without a restart;
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection
   sends.
+
+Each bucket in that list is granted to every user built on this set: the listener's own, the host
+user a host's sessions share (`HostPermissions`) and Dispatch's.
+So every session on a host can write another session's record in any of those buckets, its
+session entry in `envoy_sessions` and its known-session record in `envoy_known_sessions` among
+them.
+dispatch://INFRA-840, which gives each session a NATS user of its own, is the place that narrows
+that reach; nothing here can, since one user serves every session on the host.
 
 It subscribes to `_INBOX.>`, and to the role lanes in the queue group every listener shares,
 `notifications.role.> envoy-roles`, so each role message is forwarded once whichever machine's
@@ -3036,11 +3056,17 @@ and to nothing else — no other `notifications.` subject,
 so a session can read no topic the listener does not relay to it. While sessions share one user,
 each holds the same set, so the relay subject carries `*` and one session can read another's
 relay frames, until the per-session credentials
-of dispatch://INFRA-840. It does not
+of dispatch://INFRA-840.
+It does not
 subscribe to `_INBOX.>`, so a client holding this set alone may answer a request but not make one:
 sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does, would otherwise
 each receive every other session's replies, so request/reply from such a session is refused by
-design. A host's user, holding `HostPermissions`, subscribes to `_INBOX.>` for its listener.
+design.
+The listener's connection probe of a session needs no rule of its own: it is a request on that
+same relay subject, which the session's relay subscription receives and answers on the probe's own
+reply inbox under this set's `_INBOX.>` publish, and the listener's `notifications.>` publish and
+`_INBOX.>` subscribe carry the listener's side.
+A host's user, holding `HostPermissions`, subscribes to `_INBOX.>` for its listener.
 
 `HostPermissions(machineID)` is the grant of a host's one NATS user, which its listener and every
 session on the host share: in each direction the listener's base entries, the session consumers'

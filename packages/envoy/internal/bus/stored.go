@@ -287,6 +287,71 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 	return reply, nil
 }
 
+// RequestCore sends a core NATS request on subject carrying header and no body, and returns its
+// one reply. It is the request the listener's connection probe makes (cmd/listener): one on a
+// session's relay subject (DeliverSubject) carrying the Envoy-Probe header, whose answer says
+// whether a plugin of that session still subscribes the subject. Its publish is confirmed as
+// requestConfirmed's is (publishConfirmed), so a request the server refuses under the
+// connection's publish permissions returns ErrPublishDenied at once; one publishConfirmed cannot
+// confirm for another reason still waits for its reply, and returns that reason if ctx ends
+// first. A no-responders status reply is nats.ErrNoResponders, as requestConfirmed maps it, and a
+// ctx with no deadline waits storedMessageWait.
+//
+// The reply is taken over a channel subscription of this request's own, not conn.SubscribeSync
+// as requestConfirmed takes it: that call sizes its channel at nats.Options.SubChanLen, 65,536
+// slots by default, so each request would allocate and zero half a megabyte to hold the one reply
+// it waits for, and the send route probes once per send to a session with an entry. The channel
+// holds nats.RequestChanLen replies, as nats.go's own request does: a request has one reply, and
+// the slack is for a subject that draws a second (two processes of one session subscribed to its
+// relay subject), which a one-slot channel would drop as a slow consumer and record on the whole
+// connection, failing another goroutine's publish as unconfirmed.
+//
+// A request whose connection is lost before its reply comes - the connection replaced, closed, or
+// reconnected in place (connWatch.lostRequest) - returns ErrRequestLostWithConnection at that
+// event, as requestConfirmed's does, rather than waiting out ctx: nats.go leaves a channel
+// subscription's channel open when its connection closes, and wakes no subscription when its
+// connection drops, so the reply would never come.
+func (c *Client) RequestCore(ctx context.Context, subject string, header nats.Header) (*nats.Msg, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
+		defer cancel()
+	}
+	if err := c.ensureConnWithContext(ctx); err != nil {
+		return nil, err
+	}
+	watch := c.watchConnection()
+	conn := watch.conn
+	inbox := conn.NewInbox()
+	replies := make(chan *nats.Msg, nats.RequestChanLen)
+	subscription, err := conn.ChanSubscribe(inbox, replies)
+	if err != nil {
+		return nil, err
+	}
+	defer subscription.Unsubscribe()
+	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Header: header}, conn.PublishMsg)
+	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
+		return nil, err
+	}
+	waitCtx, stopWatching := watch.bound(ctx)
+	defer stopWatching()
+	select {
+	case reply := <-replies:
+		if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
+			return nil, nats.ErrNoResponders
+		}
+		return reply, nil
+	case <-waitCtx.Done():
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, cmp.Or(err, ctxErr)
+		}
+		if lostWithConnection(waitCtx) {
+			return nil, fmt.Errorf("bus: request to %q: %w", subject, ErrRequestLostWithConnection)
+		}
+		return nil, waitCtx.Err()
+	}
+}
+
 // CheckFilterSubject refuses a subject a stored-message read cannot filter on: one NATS does not
 // accept in a subject (checkSubject), or one with a `>` anywhere but as its last token.
 func CheckFilterSubject(subject string) error {

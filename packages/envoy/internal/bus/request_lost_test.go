@@ -128,7 +128,7 @@ func TestAConsumerCallLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 		t.Fatalf("no consumer name for %s", session)
 	}
 	relay := testnats.StartUnansweredRelayOn(t, uri, consumerAPI("INFO", name))
-	consumers, err := ConnectSessionConsumers([]string{relay.URL()}, 0)
+	consumers, err := ConnectSessionConsumers([]string{relay.URL()}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect session consumers through the relay: %v", err)
 	}

@@ -233,17 +233,18 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 // storedSeq, may need this listener's durable path, read from the subject alone, and when it does
 // not, how many sessions of this machine hold it in a consumer of their own
 // (session.SessionEntry.ConsumerHoldsStored; a message stored below a consumer's start is in no
-// consumer, so the durable path still delivers it). The listener's own kept lane
-// (bus.KeptTopicPrefix) never needs it and counts nothing: a kept copy carries the role topic its
-// sender published it on, so a listener that delivered it from the durable would arbitrate that
-// role message again on every pod of every machine, where the copy is the role's next holder's
-// alone and the kept lane's drain hands it over (role_keep.go). The durable takes every subject
-// the stream stores (consumerFilterAll), so this is what keeps the lane out of delivery, rather
-// than a filter no build-independent durable can carry. A role lane's subject always needs it. A
-// session's agent subject does unless the session's consumer holds it or the session is another
-// listener's (agentSubjectNeedsDelivery). Any other subject does when it matches a topic of an
-// interest of this machine (the registry's subject index) whose session's consumer does not hold
-// it; with none, the fan-out would deliver it to nobody and report nothing.
+// consumer, and the durable path does not deliver it; which message it NAKs, defers or skips, and
+// what it logs, is decided by agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go).
+// The listener's own kept lane (bus.KeptTopicPrefix) never needs it and counts nothing: a kept
+// copy carries the role topic its sender published it on, so a listener that delivered it from
+// the durable would arbitrate that role message again on every pod of every machine, where the
+// copy is the role's next holder's alone and the kept lane's drain hands it over (role_keep.go).
+// The durable takes every subject the stream stores (consumerFilterAll), so this is what keeps the
+// lane out of delivery, rather than a filter no build-independent durable can carry. A role lane's
+// subject always needs it. A session's agent subject does unless the session's consumer holds it
+// or the session is another listener's (agentSubjectNeedsDelivery). Any other subject does when it
+// matches a topic of an interest of this machine (the registry's subject index) whose session's
+// consumer does not hold it; with none, the fan-out would deliver it to nobody and report nothing.
 func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, storedSeq uint64) (needed bool, skipped int) {
 	if strings.HasPrefix(subject, bus.KeptTopicPrefix) {
 		return false, 0

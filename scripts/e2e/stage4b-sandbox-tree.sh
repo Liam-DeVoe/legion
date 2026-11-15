@@ -3914,8 +3914,8 @@ for child in "$child1" "$child2"; do
   on_issue "$child" until_true 900 "planner worker on $child, a child of $tree1, to register from an issue pod of its own" issue_worker_live "$child" planner
   assert_claim_endpoints "$child" planner
   record_resident "$child" planner || fail "$child's planner has no session and pod to keep: $(claim_view "$child" planner)"
-  # The tree an issue runs under is recorded on its claims (legion claims list, OperatorClaim.tree),
-  # not on the state view's issue entry, which carries no tree.
+  # The tree an issue runs under is recorded on its claims (legion claims list, OperatorClaim.tree);
+  # this step reads it there.
   child_tree=$(claims_cli list --json | jq -r --arg issue "$child" '[.claims[] | select(.issue == $issue and .role == "planner") | .tree] | first // ""') ||
     fail "legion claims list could not be read for $child's planner"
   [ "$child_tree" = "$tree1" ] ||
@@ -6293,8 +6293,18 @@ until [ -n "$planner_killed" ]; do
   if hold_end_charged "$(claim_token "$tree4" planner)"; then planner_killed=$ended_incarnation; fi
 done
 note "killed $tree4's planner mid-turn (process $planner_killed in pod $ended_pod_uid)"
-interrupted_needle="Your previous turn on this task was interrupted when your process died."
-planner_resent() { session_contains "$tree4" planner "$interrupted_needle"; }
+# The task goes again behind the sentence the claim's record of the kill composes
+# (packages/daemon/internal/supervise/relaunch.go, relaunchSentence): its first statement says the
+# turn was interrupted, and the next names the death as its cause. Both are read, each as a fixed
+# string of the planner's session, because neither alone says the kill was what it told.
+interrupted_needle="Your previous turn on this task was interrupted."
+death_needle="ended because the process died: "
+# One read of the session serves both needles, since each poll reads the whole session text.
+planner_resent() {
+  local text
+  text=$(claim_session_text "$tree4" planner) || return 1
+  grep -Fq -- "$interrupted_needle" <<<"$text" && grep -Fq -- "$death_needle" <<<"$text"
+}
 on_tree "$tree4" until_true 600 "$tree4's planner to be sent its task again, told its turn was interrupted" planner_resent
 send_agent "$tree4" planner "Stage 4b proof planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 on_tree "$tree4" wait_for_phase "$tree4" implementing "$plan_seconds"
