@@ -204,6 +204,31 @@ func TestADeadlineContextUnderAnEndedParentIsEnded(t *testing.T) {
 	}
 }
 
+// A parent's cancel ends the deadline context by the time the cancel returns, as it ends a
+// context.WithDeadline's: Err and Done read it ended without waiting for any goroutine.
+func TestADeadlineContextEndsWithItsParentsCancel(t *testing.T) {
+	c := clocktest.New(epoch)
+	for range 1000 {
+		parent, cancelParent := context.WithCancel(context.Background())
+		ctx, cancel := c.WithDeadline(parent, epoch.Add(time.Hour))
+		cancelParent()
+		if err := ctx.Err(); err != context.Canceled {
+			cancel()
+			t.Fatalf("right after its parent's cancel the context reports %v, want context.Canceled", err)
+		}
+		select {
+		case <-ctx.Done():
+		default:
+			cancel()
+			t.Fatal("right after its parent's cancel the context's Done is open, want it closed")
+		}
+		cancel()
+	}
+	if armed := c.Armed(); len(armed) != 0 {
+		t.Errorf("armed after every deadline context ended: %v, want nothing", armed)
+	}
+}
+
 // Held reads the wall clock plus what Advance and Set added, and its timers fire on those moves.
 func TestHeldFollowsTheWallClockPlusWhatWasAdded(t *testing.T) {
 	c := clocktest.Held()

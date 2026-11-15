@@ -353,6 +353,11 @@ func (c *Fake) withDeadline(parent context.Context, due func(now time.Time) time
 // answers Deadline (its parent's), Value, and so the cause context.Cause reads; Done and Err are
 // its own, so a context derived from it, which cannot take it for one of the context package's
 // own, is ended by the context package's watch of Done with the error Err gives.
+//
+// A parent's end cancels inner at once, and Done and Err read inner before they answer, so a
+// caller that looks after the parent's cancel returned sees this context ended too, as it would
+// a context.WithDeadline's: the end context.AfterFunc runs comes on a goroutine of its own, and
+// a publish that read Err before that goroutine ran would send what its cancel meant to stop.
 type deadlineContext struct {
 	context.Context
 	cancelInner context.CancelCauseFunc
@@ -364,20 +369,33 @@ type deadlineContext struct {
 	err    error
 }
 
-func (ctx *deadlineContext) Done() <-chan struct{} { return ctx.done }
+func (ctx *deadlineContext) Done() <-chan struct{} {
+	ctx.endWithParent()
+	return ctx.done
+}
 
 func (ctx *deadlineContext) Err() error {
+	ctx.endWithParent()
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 	return ctx.err
 }
 
+// endWithParent ends the context with its parent's error once the parent has ended.
+func (ctx *deadlineContext) endWithParent() {
+	if err := ctx.Context.Err(); err != nil {
+		ctx.end(err, context.Cause(ctx.Context))
+	}
+}
+
 // end ends the context once, with err as its error and cause as its cause: the cause is set on
-// inner before Done closes, so whoever sees Done closed reads both.
+// inner before Done closes, so whoever sees Done closed reads both. A second end waits for the
+// first to close Done, so an Err that ended the context itself never answers before it is ended.
 func (ctx *deadlineContext) end(err, cause error) {
 	ctx.mu.Lock()
 	if ctx.ending {
 		ctx.mu.Unlock()
+		<-ctx.done
 		return
 	}
 	ctx.ending = true
