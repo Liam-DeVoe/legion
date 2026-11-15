@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { type CaseRow, countsOf } from "../build-corpus";
 import { type Corpus, CorpusError, readCorpus } from "../corpus-io";
 import type { DispatchEvent } from "../dispatch-read";
-import { FreshError, type FreshReport, refuseHeldReports } from "../fresh-agent";
-import { PoolError, type RunOutcomes, refuseHeldRuns } from "../pool-runs";
+import { FreshError, type FreshReport, refuseReportsOutside } from "../fresh-agent";
+import { PoolError, type RunOutcomes, refuseRunsOutside } from "../pool-runs";
 import {
   noteIssueCreated,
   pickedKey,
@@ -212,12 +212,7 @@ describe("readCorpus and the reserve", () => {
     expect(corpus.rows.map((row) => row.caseId)).toEqual(["open"]);
     expect(corpus.byCaseId.has("reserved")).toBe(false);
     expect(corpus.byCaseId.has("question")).toBe(false);
-    expect(corpus.reserve).toEqual({
-      cases: 2,
-      issues: 1,
-      readUnder: null,
-      held: new Set(["reserved", "question"]),
-    });
+    expect(corpus.reserve).toEqual({ cases: 2, issues: 1, readUnder: null });
     expect(printed).toContain("held out 2 cases on 1 issue");
   });
 
@@ -226,7 +221,6 @@ describe("readCorpus and the reserve", () => {
     const { corpus } = await read(await corpusOnDisk([reserved, open]));
     expect(corpus.rows.map((row) => row.caseId)).toEqual(["reserved", "open"]);
     expect(corpus.reserve.readUnder).toBe("dispatch://INFRA-2897/comment/claim-run");
-    expect(corpus.reserve.held.size).toBe(0);
   });
 
   test("refuses a value of the variable that names no reference", async () => {
@@ -253,10 +247,9 @@ describe("readCorpus and the reserve", () => {
 });
 
 describe("what a command prints from a file an earlier run wrote", () => {
-  const held = new Set(["reserved@2026-11-15T01:00:00Z"]);
+  const after = "2026-11-15T01:00:00Z";
 
   test("a build's counts leave a reserved case's verdict out", () => {
-    const after = "2026-11-15T01:00:00Z";
     const reserved: CaseRow = {
       ...caseRow("reserved", PICKED, after, "2026-11-14T09:00:00Z"),
       verdict: "request_changes",
@@ -267,20 +260,37 @@ describe("what a command prints from a file an earlier run wrote", () => {
     expect(counts.approvalByVerdict).toEqual({ approve: 1, request_changes: 0, other: 0 });
   });
 
-  test("fresh-agent refuses a directory whose kept report covers a held case", () => {
-    const report = { caseIds: ["open@x", "reserved@2026-11-15T01:00:00Z"] } as FreshReport;
-    expect(() => refuseHeldReports({ without: report }, held, "/nowhere")).toThrow(FreshError);
-    expect(() => refuseHeldReports({ without: report }, new Set(), "/nowhere")).not.toThrow();
+  /** The ids a read of a corpus holding one reserved and one open case leaves readable. */
+  async function readable(): Promise<Map<string, CaseRow>> {
+    delete process.env[RESERVE_VARIABLE];
+    const reserved = caseRow("reserved", PICKED, after, "2026-11-14T09:00:00Z");
+    const open = caseRow("open", NOT_PICKED, after, "2026-11-14T09:00:00Z");
+    return (await read(await corpusOnDisk([reserved, open]))).corpus.byCaseId;
+  }
+
+  test("fresh-agent refuses a kept report over a reserved case or one the corpus never had", async () => {
+    const corpus = await readable();
+    const report = (caseIds: string[]): FreshReport => ({ caseIds }) as FreshReport;
+    for (const outside of ["reserved", "of-another-corpus"]) {
+      const shapes = { without: report(["open", outside]) };
+      expect(() => refuseReportsOutside(shapes, corpus, "/nowhere")).toThrow(FreshError);
+    }
+    expect(() =>
+      refuseReportsOutside({ without: report(["open"]) }, corpus, "/nowhere")
+    ).not.toThrow();
   });
 
-  test("pool-runs refuses a run that holds a held case", () => {
+  test("pool-runs refuses a run over a reserved case or one the corpus never had", async () => {
+    const corpus = await readable();
     const run = (ids: string[]): RunOutcomes => ({
       directory: "/nowhere/run",
       cases: new Map(ids.map((id) => [id, { skill: true, control: false }])),
       finishedAt: null,
       skillSha: null,
     });
-    expect(() => refuseHeldRuns([run(["open@x"]), run([...held])], held)).toThrow(PoolError);
-    expect(() => refuseHeldRuns([run(["open@x"])], held)).not.toThrow();
+    for (const outside of ["reserved", "of-another-corpus"]) {
+      expect(() => refuseRunsOutside([run(["open"]), run([outside])], corpus)).toThrow(PoolError);
+    }
+    expect(() => refuseRunsOutside([run(["open"])], corpus)).not.toThrow();
   });
 });

@@ -193,9 +193,9 @@ bootstrap intervals over the case-level differences, two-sided at 90 and at 95 p
 both read off one draw.
 
 Options:
-  --corpus <dir>     Required. The corpus the runs were made from. A run holding a case its
-                     reserve holds (reserve.ts) is refused, since its outcomes are of
-                     INFRA-2897's next final test.
+  --corpus <dir>     Required. The corpus the runs were made from. A run holding a case this
+                     corpus does not hold is refused, since the reserve of INFRA-2897's next
+                     final test (reserve.ts) may hold that case.
   --run <dir>        Required, and repeated: each a directory fresh-agent.ts wrote, holding
                      answers-<shape>.jsonl. Two runs that do not cover one case list are
                      refused, naming the cases.
@@ -1360,16 +1360,20 @@ function readFlags(argv: readonly string[]): Flags {
 }
 
 /**
- * Refuses a run holding a case the corpus's reserve left out (`reserve.ts`): its outcomes are
- * agreements with the person's answers on INFRA-2897's next final test.
+ * Refuses a run holding a case the corpus does not hold: such a case is one the reserve left out
+ * (`reserve.ts`), whose outcomes are agreements with the person's answers on INFRA-2897's next
+ * final test, or one of another corpus, which nothing here can say is not reserved.
  */
-export function refuseHeldRuns(runs: readonly RunOutcomes[], held: ReadonlySet<string>): void {
+export function refuseRunsOutside(
+  runs: readonly RunOutcomes[],
+  corpus: ReadonlyMap<string, unknown>
+): void {
   for (const run of runs) {
-    const over = [...run.cases.keys()].filter((caseId) => held.has(caseId)).length;
-    if (over > 0) {
+    const outside = [...run.cases.keys()].filter((caseId) => !corpus.has(caseId)).length;
+    if (outside > 0) {
       throw new PoolError(
-        `${run.directory} holds ${counted(over, "case")} the reserve holds (reserve.ts): ` +
-          "its outcomes are of the next final test, so it is not pooled"
+        `${run.directory} holds ${counted(outside, "case")} the corpus does not hold, which ` +
+          "the reserve may hold (reserve.ts), so it is not pooled"
       );
     }
   }
@@ -1380,7 +1384,7 @@ async function pool(flags: Flags): Promise<number> {
   const corpus = await readCorpus(flags.corpus);
   const runs: RunOutcomes[] = [];
   for (const directory of flags.runs) runs.push(await readRun(directory, flags.shape));
-  refuseHeldRuns(runs, corpus.reserve.held);
+  refuseRunsOutside(runs, corpus.byCaseId);
   const options = { resamples: flags.resamples, seed: flags.seed, shape: flags.shape };
   // The two digests are of two files and neither is read from the other, so they are read
   // together: the record carries both and the order they came back in is in nothing it prints.

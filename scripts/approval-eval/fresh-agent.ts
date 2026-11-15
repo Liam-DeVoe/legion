@@ -1203,21 +1203,22 @@ async function writeReport(out: string, report: FreshReport): Promise<void> {
 }
 
 /**
- * Refuses a run into a directory whose `fresh-agent.json` holds a report over a case this read's
- * reserve left out (`reserve.ts`): the command prints every report the file holds, and a figure
- * over such a case is a figure of INFRA-2897's next final test.
+ * Refuses a run into a directory whose `fresh-agent.json` keeps a report over a case this corpus
+ * does not hold: the command prints every report the file keeps, and such a case is one the
+ * reserve left out (`reserve.ts`), whose figure is a figure of INFRA-2897's next final test, or
+ * one of another corpus, which nothing here can say is not reserved.
  */
-export function refuseHeldReports(
+export function refuseReportsOutside(
   shapes: FreshShapes,
-  held: ReadonlySet<string>,
+  corpus: ReadonlyMap<string, CaseRow>,
   out: string
 ): void {
   for (const [shape, report] of Object.entries(shapes)) {
-    const over = report?.caseIds.filter((caseId) => held.has(caseId)).length ?? 0;
-    if (over > 0) {
+    const outside = report?.caseIds.filter((caseId) => !corpus.has(caseId)).length ?? 0;
+    if (outside > 0) {
       throw new FreshError(
-        `${reportPath(out)} holds the ${shape} report over ${counted(over, "case")} the reserve ` +
-          "holds (reserve.ts): move that file aside before this run"
+        `${reportPath(out)} keeps the ${shape} report over ${counted(outside, "case")} this ` +
+          "corpus does not hold, which the reserve may hold (reserve.ts): move that file aside"
       );
     }
   }
@@ -1231,7 +1232,7 @@ async function fresh(flags: Flags): Promise<number> {
   const corpus = await readCorpus(flags.corpus);
   const out = await outDirectory(flags.out);
   await mkdir(out, { recursive: true });
-  refuseHeldReports(await readShapes(out), corpus.reserve.held, out);
+  refuseReportsOutside(await readShapes(out), corpus.byCaseId, out);
   // Before a case directory, a profile or a prompt is built: a run into a directory already
   // holding this shape's answers stops here, having paid for nothing and read nothing.
   await settleAnswers(
