@@ -5910,7 +5910,7 @@ nothing is saved, and the refresh is retried.
 A lost answer keeps the login only while a retry lands inside the broker's five-minute rotation grace:
 retrying every 15 s lands one there whenever the outage is shorter, and an outage longer than the grace right after a lost answer makes the next retry a reuse, which revokes the machine and ends its sessions.
 The cost is one request every 15 s per machine during an outage.
-A 401 `LAUNCHER_INVALID` on a launcher call drops the credential and wakes the loop, unless the call's bound ends while a refresh holds `credMu`, when it drops nothing and leaves that refresh to settle the login (`dropOutsideRefresh`, below);
+A 401 `LAUNCHER_INVALID` on a launcher call drops the credential and wakes the loop, unless the call's bound ends while a refresh holds `credMu`, when it drops nothing and leaves that refresh to settle the login (`dropOutsideRefresh`, below), which it does only when it succeeds or the broker answers `invalid_grant`: a refresh that fails with a 5xx, a timeout or a 429 settles nothing, and the refused credential stays held, and `login-status` reports it held, until a later refused call drops it;
 the loop refreshes a dropped login at once:
 `invalid_grant` deletes the file; an answer keeps the rotated login in it, since that 401 can also be a proof the broker could not verify;
 an answer whose save fails is installed, so the helper keeps working, and the file removed, as a refresh's is;
@@ -6054,7 +6054,7 @@ The bound sits under the 30 s this client gives one pass-through call (`passThro
 `Broker.Login` carries the caller's deadline into the device authorization POST as that one call's HTTP client timeout (`deviceAuthContext`), because x/oauth2 builds that request without the context and a deadline alone cannot cut it.
 The bound holds against the helper's own work too: no lock the helper holds for that work outlives a caller's bound.
 A call that finds the box's sign-in trading (`brokerclient.SignInAuthority`, whose trade for a registered session's `enrollLoop` runs on a context with no deadline) waits for it only while its own context lives, and so does the drop a 401 `LAUNCHER_INVALID` makes behind a machine-login refresh that holds `credMu` (`dropOutsideRefresh`);
-that drop then drops nothing and the refresh settles the credential.
+that drop then drops nothing, and the refresh settles the credential only when it succeeds or the broker answers `invalid_grant`; a refresh that fails otherwise leaves the refused credential held until a later refused call drops it.
 Both locks are `internal/ctxlock` mutexes, whose `LockContext` takes a free lock at once, as `sync.Mutex` does, and otherwise waits only while its context lives.
 `TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading` and `TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin` hold one of each and read the timed-out answer inside the bound.
 A call that does run out of the bound ends the command: `machine login` against a broker slower than the bound exits 1 saying the call timed out, and since the bound cut the device authorization POST, `Broker.Login` records no pending login and starts no poll, so the next `machine login` starts a login of its own.
@@ -6259,11 +6259,12 @@ It also checks where those codes are produced:
 every helper `Response` literal that is not `OK: true` must name its fields and set `Code` to a documented `Code*` constant, and every `int`-returning function in `cmd/agent-secrets` (and every `os.Exit` there) may return only `0`, `1`, a documented `exit*` constant or another such function's result.
 It also checks where a refusal is written (`checkRefusalWrites`, `cmd/broker-refgen/recorder.go`):
 in `api/`, `approval/` and `airlockproxy/` a status from 400 to 499 reaches the wire only as the status argument of a registered writer (`writeError`, `writePageRefusal` and an `oauth.Refusal`'s `Status` in `api/`, `writeMessage` in `approval/`, which notes the code each call passes it, and `Server.refuse` in `airlockproxy/`), so every refusal names the code its record and its count read;
-outside those writers each way net/http writes a 4xx fails the build naming its file and line:
+outside those writers each of the forms below fails the build naming its file and line (what refgen does not see is named after them):
 a `WriteHeader` (called on a writer, or as a method expression with the writer first), `http.Error`, `http.Redirect` or `http.RedirectHandler` whose status is a 4xx or one refgen cannot read as a constant, or which is taken as a value rather than called;
 `http.NotFound`, `http.NotFoundHandler` and `http.StripPrefix`, called or taken as a value, which write a fixed 404;
 `http.ServeContent`, `http.ServeFile`, `http.ServeFileFS`, `http.FileServer` and `http.FileServerFS`, called or taken as a value, which write a status net/http chooses as it serves, one refgen cannot read;
 and a `ServeMux` (a fixed 400, 404 or 405) the package builds, by `http.NewServeMux`, `http.Handle`, `http.HandleFunc`, `http.DefaultServeMux` or a value of its type, and any `CrossOriginProtection` (a fixed 403), which writes its 403 around the package's own handlers however the package holds it.
+Three forms stay unchecked, and none exists at this head: a server with no handler (`&http.Server{}` with no `Handler`, or `http.Serve(l, nil)`), which serves `DefaultServeMux` and answers every request 404; a raw status line written on a hijacked connection; and a writer in another package.
 The one exception belongs to the API port: in `api/` and `approval/` a pointer to a `ServeMux` the package is handed is accepted, such as the mux `api.Register` is given, which `cmd/broker` serves behind `answer.Middleware`, which records the mux's own answers too;
 in `airlockproxy/` such a pointer is refused, since that port's line is `Server.refuse`'s alone and a mux it were handed would answer its own 400, 404 and 405 with no line.
 A status that is the enclosing function's parameter is followed to its callers, and the two forwarding writes of `airlockproxy` (`statusWriter.WriteHeader`, `answerWriter.WriteHeader`), which carry a status they did not choose, are left out.

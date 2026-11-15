@@ -1214,7 +1214,9 @@ func isLauncherInvalid(err error) bool {
 // (dropOutsideRefresh). A refusal of a credential a newer login or a refresh has already replaced
 // drops nothing and is returned as it came: the helper holds a credential, and the caller's retry
 // uses it. A ctx that ends while a refresh in flight holds credMu drops nothing as well, leaving
-// that refresh to settle cred, and the refusal is returned as it came while the helper still holds
+// that refresh to settle cred, which it does only when it succeeds or the broker answers
+// invalid_grant: a refresh that fails with a 5xx, a timeout or a 429 settles nothing, and cred stays
+// held until a later call the broker refuses under it drops it. The refusal is returned as it came while the helper still holds
 // a credential: a pass-through op then answers inside its bound with the broker's refusal, and
 // brokerCallFailure says it timed out. A credential it drops is handed to the refresh loop, which
 // refreshes it at once so its machine file is deleted if the broker has ended the login

@@ -684,7 +684,8 @@ func CorrelationID(r *http.Request) string {
 	return string(kept)
 }
 
-// clip cuts caller-written text to its first fieldBytes, dropping a rune the cut splits: what a
+// clip cuts caller-written text to its first fieldBytes and drops every invalid UTF-8 run in the
+// bytes it keeps (strings.ToValidUTF8), a rune the cut splits among them: what a
 // line written for an answer keeps of each text field (ClipFields), and a refusal's line of each
 // secret name (SecretNames).
 func clip(text string) string {

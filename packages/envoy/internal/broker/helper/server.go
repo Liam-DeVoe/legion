@@ -164,9 +164,10 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		s.Log.Info("undrained: taking new sessions again")
 		resp = Response{OK: true}
 	case "login":
-		// login, login-status, enroll-session-key and unenroll-session-key are pass-through broker
-		// calls, not registry-session ops: a key the helper does not hold is not a registry session
-		// (see Broker.EnrollSessionKey), so none of these needs peer's pid at all.
+		// login, login-status, enroll-session-key and unenroll-session-key need no registered
+		// session: three are pass-through broker calls (passThroughOps), and login-status reads the
+		// helper's own state and calls nothing. A key the helper does not hold is not a registry
+		// session (see Broker.EnrollSessionKey), so none of these needs peer's pid at all.
 		resp = s.login(callCtx)
 	case "login-status":
 		resp = s.loginStatus()
