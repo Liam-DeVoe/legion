@@ -3151,8 +3151,8 @@ a note.
 
 ## Accessibility and visual review
 
-Two layers read one list of pages, `e2e/review-routes.ts`: an accessibility pass that runs on
-every pull request and a containerised visual review that runs on the full lane. Each entry of
+Two layers read one list of pages, `e2e/review-routes.ts`: an accessibility pass and a
+containerised visual review, both of which run on the full lane only. Each entry of
 that table carries the router path it stands for, the URL to open against `e2e/review-seed.ts`'s
 corpus, the locator that says the page is drawn, and which of the two layers reviews it, so the
 count of pages each covers is a program's answer rather than a sentence here.
@@ -3164,7 +3164,8 @@ conformance failure and this gate refuses a pull request. One row per page reads
 a reset, a seed and a sign-in paid once rather than twice, and each (route, scheme) prints an
 `A11Y …` line with its counts by impact and attaches the whole axe result to the report. A row
 fails on any serious or critical finding no exclusion entry covers. The rows are untagged, so
-`chromium` runs them and the pass reaches every pull request. What axe decides is the part of
+the full lane's `chromium` project runs them, and the pull-request lane, which runs only `@pr`
+rows, does not; a pull request meets the pass in the merge queue. What axe decides is the part of
 WCAG a program can decide, which is a minority of it: a keyboard journey that has to end
 somewhere sensible, a reading order a person judges, a label that is present and wrong rather
 than missing, a focus order that is legal and useless - none of those are findings, and all of
@@ -3247,7 +3248,7 @@ to a route of the router through `e2e/two-builds-routes.ts` and refuses a router
 entry reviews or excludes with a reason, so a page `web/src/app.tsx` adds is reviewed or
 written off, never silently unreviewed. `toHaveScreenshot` detects a change against a file
 somebody committed; it binds no element to the swatch `web/src/theme/classes.ts` names for it,
-which is why `e2e/theme.e2e.ts` keeps one computed-colour row on the pull-request lane.
+which is why `e2e/theme.stub.e2e.ts` keeps one computed-colour row on the pull-request lane.
 
 Both projects run inside the pinned Playwright image and nowhere else, because a baseline a
 person takes and a baseline CI compares must be the same rendering, and a host's browser build,
