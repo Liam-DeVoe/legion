@@ -1454,19 +1454,16 @@ jobs:
   #   the upload                                       1             1             -             2             1
   #   the whole job                                  180           201           163           318           272
   #
-  # The rule is in this file's head. The browser step's maximum is 106 s, so 106 x 1.15 = 122 s
-  # -> 3 min. The measured half of the rule gives this job that step's 180 s plus the measured
+  # The rule is in this file's head. The browser step's maximum was 106 s, so 106 x 1.15 = 122 s
+  # -> 3 min, and the measured half of the rule gave this job that step's 180 s plus the measured
   # maximum of every step without one, which is 314 s of the five columns together:
-  # 494 s -> 9 min, and that is this job's first term.
+  # 494 s -> 9 min.
   #
-  # Budget: that 540 s plus the arithmetic of this job's slowest retried step, which is the
-  # setup-bun step below at 2562 s - the shard job's step of that name derives the figure -
-  # above the workspace install's 5 x 180 + 150 = 1050 s. The image
-  # pull is no term of it: it is a ghcr.io pull of a package this repository publishes, which
-  # retries nowhere in this tree, for the reason its own step says and
-  # .github/scripts/check-download-retry.sh's exception (a) writes down.
-  # 540 + 2562 = 3102 s -> 52 min, which stands above the largest step budget of this job, so
-  # no job budget fires before a step's own.
+  # The browser step then outran its budget, which is this rule's signal to derive it again. Over
+  # the 17 merge-group runs of this job from 2026-11-14T08:40Z to 2026-11-15T06:25Z that passed,
+  # it read 111-179 s, and two runs that day timed out on it at 183 s and 182 s (run 43687635217,
+  # a merge group, and run 43691184536, a pull request). So 183 x 1.15 = 211 s -> 4 min, and the
+  # job budget is that step's 240 s plus the same 314 s: 554 s -> 10 min.
   #
   # The first of those runs was the only one this job had when these budgets were first written,
   # and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's own floor, and
@@ -1481,10 +1478,20 @@ jobs:
   # before any step budget could fire. That inverts this file's rule, which says the job budget
   # is the backstop that never fires first, so it is re-derived above from the maximum those
   # runs measured. A download this job does not control may not decide a required check.
+  #
+  # Budget: that 554 s re-derived above, 600 s, as this job's first term, plus the arithmetic of
+  # its slowest retried step, which is the setup-bun step below at 2562 s - the shard job's step
+  # of that name derives the figure - above the workspace install's 5 x 180 + 150 = 1050 s. The
+  # image pull is no term of it: it is a ghcr.io pull of a package this repository publishes,
+  # which retries nowhere in this tree, for the reason its own step says and
+  # .github/scripts/check-download-retry.sh's exception (a) writes down.
+  # 600 + 2562 = 3162 s -> 53 min, which stands above the largest step budget of this job, so
+  # no job budget fires before a step's own. It was 540 + 2562 = 3102 s -> 52 until main's #3516
+  # raised the first term from 9 minutes to 10.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 52
+    timeout-minutes: 53
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1562,7 +1569,7 @@ jobs:
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
-        timeout-minutes: 3
+        timeout-minutes: 4
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of the stack
           # e2e/visual-run.sh starts among it. TMPDIR and that stack's Postgres image are
