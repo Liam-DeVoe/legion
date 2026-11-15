@@ -2,12 +2,15 @@ package bus
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -63,6 +66,11 @@ func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 // The refusal the row plants beside it is of the delete of the bucket's stream, which no step of
 // EnsureKeyValue publishes to. The row reads that record itself before it reads the call's
 // error, because a row that never saw the refusal recorded would pass whatever refusedSend read.
+//
+// Each send's wait is RequestTimeout armed on the clock of the client that owns the connection
+// (withinRequestTimeout), and the row hands that client a fake: once a send is on the wire, as
+// the relay counts it, and its bound is armed, the row moves the fake past the bound, so the start
+// spends its sends as the row moves the clock rather than in thirty seconds of the wall clock.
 func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 	const bucket = "envoy_denied_other_subject"
 	// The delete of the bucket's own stream: a subject no step of this call publishes to, and
@@ -76,7 +84,8 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 		accountInfoSubject(), "$JS.API.STREAM.UPDATE.KV_"+bucket, "_INBOX.>")
 	t.Setenv("NATS_NKEY_SEED", seed)
 	relay := startUnansweredRelayOn(t, grant.URL, openSubject(bucket))
-	conn, js := relayedJetStream(t, relay)
+	fake := clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))
+	conn, js := relayedJetStream(t, relay, WithClock(fake))
 	owner := clientOwning(conn)
 	if owner == nil {
 		t.Fatal("no client owns the connection the start looks the bucket up on, so nothing records the server's refusals")
@@ -95,6 +104,25 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 	if len(ensured) != 0 {
 		t.Fatalf("the start ended (%v) before the connection recorded the refusal of %s, so it met none and this row holds nothing",
 			<-ensured, deleteSubject)
+	}
+	// Each send ends on its own bound, which moves only when the row moves the fake, one
+	// RequestTimeout past the moment the send armed it. A start that ended before its sends ran
+	// out, on an answer, stops the moving, and the checks below say what it ended on.
+	for sends := 1; sends <= unansweredSends; sends++ {
+		armed := testwait.Until(t, fmt.Sprintf("lookup %d of the start on the wire with its bound armed, or the start's end", sends), func() ([]time.Time, bool) {
+			if len(ensured) != 0 {
+				return nil, true
+			}
+			armed := fake.Armed()
+			return armed, relay.sent() >= sends && len(armed) > 0
+		})
+		if armed == nil {
+			break
+		}
+		if want := []time.Time{fake.Now().Add(RequestTimeout)}; !slices.Equal(armed, want) {
+			t.Fatalf("lookup %d of the start left %v armed on the client's clock, want its bound alone at %v, RequestTimeout after the send", sends, armed, want[0])
+		}
+		fake.Advance(RequestTimeout)
 	}
 	err := testwait.Receive(t, "the start whose lookup nothing answers to spend its sends", ensured)
 	if errors.Is(err, ErrPublishDenied) {
@@ -130,7 +158,8 @@ func refusalOfAnotherSubject(t *testing.T, relay *unansweredRelay, owner *Client
 	// (deniedPublish): one violation is this row's proof that the refusal was recorded, and the
 	// other is left in the record, where a send reading a refusal of any subject rather than of
 	// its own finds it. With one, the row would prove the record and leave nothing to catch that
-	// reading.
+	// reading. The row moves the clock that ends the step's send only once that second one is
+	// recorded too, since the server reports each publish's refusal on its own.
 	for range 2 {
 		if err := conn.Publish(subject, nil); err != nil {
 			t.Fatalf("publish to %s, which the connection's grant does not cover: %v", subject, err)
@@ -139,8 +168,20 @@ func refusalOfAnotherSubject(t *testing.T, relay *unansweredRelay, owner *Client
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the publishes the server refuses: %v", err)
 	}
-	return testwait.Until(t, "the connection's record of the refusal of "+subject, func() (error, bool) {
+	denial := testwait.Until(t, "the connection's record of the refusal of "+subject, func() (error, bool) {
 		denial := owner.deniedPublish(subject, sentAt)
 		return denial, denial != nil
 	})
+	testwait.Eventually(t, "the second refusal of "+subject+" to stand in the connection's record", func() bool {
+		return heldRefusals(owner, subject) > 0
+	})
+	return denial
+}
+
+// heldRefusals is how many refusals of subject the connection's record holds, read without taking
+// any, as deniedPublish takes the one it returns.
+func heldRefusals(owner *Client, subject string) int {
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	return len(owner.deniedPublishes[subject])
 }

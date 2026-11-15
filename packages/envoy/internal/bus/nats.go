@@ -95,8 +95,9 @@ func WithPublishAcknowledgementClock(clock AcknowledgementClock) ConnectOption {
 // WithClock sets the clock the client's own timers wait on, clock.Real unless a test names its
 // clocktest.Fake: the keeper's period (keep), the refresh of the deployed stream's subjects
 // (followDeployedSubjects), a window's deadline and its wait for a connection (WindowUntil), a
-// Request's timeout, the reconnect wait's recheck (reconnectRecheck) and Drain's deadlines. Each is
-// a timer of this process, so a test moves the fake past it once the client has armed it
+// Request's timeout, the bound of each lookup EnsureKeyValue sends on this client's connection
+// (withinRequestTimeout), the reconnect wait's recheck (reconnectRecheck) and Drain's deadlines.
+// Each is a timer of this process, so a test moves the fake past it once the client has armed it
 // (clocktest.Fake.AwaitArmed) rather than shortening it, and tells one from another by the moment
 // it is armed for. What nats.go and the server time for themselves (a flush, a dial, a JetStream
 // acknowledgement's PublishAsyncTimeout, a ping, a pull request's expiry) stays on the wall clock,

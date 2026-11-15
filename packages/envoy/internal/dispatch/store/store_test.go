@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -56,13 +55,7 @@ func randomDatabaseSuffix(t *testing.T) string {
 // fires - and the last two wrong in the worse one, refusing to boot on a valid password.
 func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 	base := testpg.DispatchServer.Database(t, "dispatch_test")
-	withPoolSize, err := url.Parse(base)
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	query := withPoolSize.Query()
-	query.Set(poolSizeParam, "4")
-	withPoolSize.RawQuery = query.Encode()
+	withPoolSize := testpg.WithParameter(t, base, poolSizeParam, "4")
 
 	// The rows that must not be refused point at a closed port: the observable is whether the
 	// refusal fired, not whether the credentials are real.
@@ -71,7 +64,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 		databaseURL string
 		refused     bool
 	}{
-		"url query":            {withPoolSize.String(), true},
+		"url query":            {withPoolSize, true},
 		"keyword value":        {"host=127.0.0.1 " + poolSizeParam + "=4", true},
 		"keyword value spaced": {"host=127.0.0.1 " + poolSizeParam + " = 4", true},
 		"quoted value containing the parameter": {

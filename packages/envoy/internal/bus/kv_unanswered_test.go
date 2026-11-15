@@ -220,9 +220,10 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 // of it. The denied row holds the other half of that path, where the record names a refusal and
 // the send is not made again (TestADeniedBucketLookupIsNotSentAgain). A connection no client owns
 // returns refusedSend at its early exit, so a row on one would never reach the record at all.
-func relayedJetStream(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext) {
+// options are the client's own, such as the clock a row moves its lookups' bounds on (WithClock).
+func relayedJetStream(t *testing.T, relay *unansweredRelay, options ...ConnectOption) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
-	client, err := Connect([]string{relay.url})
+	client, err := Connect([]string{relay.url}, options...)
 	if err != nil {
 		t.Fatalf("connect the client whose connection the start opens the bucket on: %v", err)
 	}

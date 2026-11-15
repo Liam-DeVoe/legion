@@ -67,10 +67,11 @@ type KeyValue struct {
 // deadline of its own: the STREAM.INFO that opens the handle, a read of the bucket's stream, a
 // key's history. It is the JetStream MaxWait the listener and Dispatch open their legacy handles
 // with, so a read moved off the legacy handle waits no longer than it did there, and no less,
-// whatever MaxWait the legacy handle carries. A start that sends a request again because the
-// server left it unanswered takes that bound once per send (sentAgain, wrapKeyValue for a
-// start's caller), so the bound is one send's and not one step's: what a step of EnsureKeyValue
-// costs is counted in that function's doc.
+// whatever MaxWait the legacy handle carries. It bounds each send of EnsureKeyValue's lookup of a
+// bucket too, armed on the clock of the client owning the connection (withinRequestTimeout). A
+// start that sends a request again because the server left it unanswered takes that bound once
+// per send (sentAgain, wrapKeyValue for a start's caller), so the bound is one send's and not one
+// step's: what a step of EnsureKeyValue costs is counted in that function's doc.
 const RequestTimeout = 10 * time.Second
 
 // A create a clustered server answers is committed to the JetStream metadata group, not applied
@@ -145,6 +146,42 @@ func namedRequest(request string, err error) error {
 	return fmt.Errorf("%s: %w", request, err)
 }
 
+// withinRequestTimeout is send, one JetStream request of a legacy handle, which takes no context,
+// held to RequestTimeout armed on the clock of the client that owns conn (armBound), as
+// RequestCore's bound is, as well as to the wait nats.go holds it to itself: the MaxWait of the
+// JetStream context it goes through, on the wall clock, which no clock of this package reaches.
+// It answers what send answers, or the bound's context.DeadlineExceeded once the bound runs out
+// first, which unanswered reads as the silence it is. Every production caller's MaxWait is
+// RequestTimeout (EnsureKeyValue), so on the wall clock the two run out together and the send it
+// leaves running ends with them; on a test's fake clock the call ends where the test moves the
+// clock, and the request nats.go still waits on ends at its own MaxWait or when the connection
+// closes, its answer dropped: a lookup reads and changes nothing, and sentAgain sends it again. A
+// connection no client owns has no client clock, so nats.go alone bounds its send.
+func withinRequestTimeout[T any](conn *nats.Conn, send func() (T, error)) (T, error) {
+	owner := clientOwning(conn)
+	if owner == nil {
+		return send()
+	}
+	ctx, cancel := owner.armBound(context.Background(), RequestTimeout)
+	defer cancel()
+	type answer struct {
+		value T
+		err   error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		value, err := send()
+		answered <- answer{value: value, err: err}
+	}()
+	select {
+	case got := <-answered:
+		return got.value, got.err
+	case <-ctx.Done():
+		var none T
+		return none, ctx.Err()
+	}
+}
+
 // EnsureKeyValue opens the KV bucket config names on conn, through js, creating it with config when
 // it does not exist. config.Replicas is the deployment's replica count (ReplicasEnvVar): a new
 // bucket is created at it, and an existing bucket with fewer copies is raised to it
@@ -172,9 +209,11 @@ func namedRequest(request string, err error) error {
 // internal/bus/nats.go:511), and internal/legionagents/store.go:75 opens its own with
 // nats.MaxWait(openTimeout), the same ten seconds (store.go:29). That wait bounds one request and
 // not one step of this call, so what a step that draws no answer costs is counted a request at a
-// time, and every case of it is counted here. Where the server answers nothing at all, each send
-// ends at its first unanswered request, so each step costs unansweredSends waits of ten seconds:
-// 30 s for the lookup, and 30 s for the create, which nats.go leaves at the first of the requests
+// time, and every case of it is counted here. The lookup's sends are held to RequestTimeout on
+// the clock of the client that owns conn as well (withinRequestTimeout), the same ten seconds on
+// the wall clock. Where the server answers nothing at all, each send ends at its first
+// unanswered request, so each step costs unansweredSends waits of ten seconds: 30 s for the
+// lookup, and 30 s for the create, which nats.go leaves at the first of the requests
 // the comment on the create below lists. The create costs more when some of its requests do
 // answer: at most 60 s where every account info answers and the STREAM.CREATE behind it draws
 // nothing, and up to 120 s where the server answers that create "stream name already in use",
@@ -251,7 +290,9 @@ func ensureKeyValue(c clock.Clock, conn *nats.Conn, js nats.JetStreamContext, co
 	// still reads nats.ErrBucketNotFound.
 	lookUpBucket := func() (nats.KeyValue, error) {
 		kv, err := sentAgain(lookup, func() (nats.KeyValue, error) {
-			return refusedSend(conn, lookupSubjects, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+			return refusedSend(conn, lookupSubjects, func() (nats.KeyValue, error) {
+				return withinRequestTimeout(conn, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+			})
 		})
 		return kv, namedRequest(lookup, err)
 	}
