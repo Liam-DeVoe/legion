@@ -8,11 +8,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A server that allows ServerConnections beyond its reserve gives no budget, so every process runs
-// production's pool sizes; a smaller one gives each of MaxProcessesAtOnce processes its share
-// beside SuiteHeadroom, rounded down; and one whose share is below the smallest pools is refused,
-// naming the max_connections it needs. A Postgres at its default of 100, with the default reserve
-// of 3, gives each process (100 - 3 - 20) / 4 = 19.
+// A server that allows FullSizeServerConnections beyond its reserve gives no budget, so every
+// process runs production's pool sizes; a smaller one gives each of MaxProcessesAtOnce processes its
+// share beside SuiteHeadroom, rounded down; and one whose share is below the smallest pools is
+// refused, naming the max_connections it needs. A Postgres at its default of 100, with the default
+// reserve of 3, gives each process (100 - 3 - 20) / 4 = 19.
 func TestPoolBudgetIsEachProcessesShareOfTheServer(t *testing.T) {
 	const reserve = postgresSuperuserReserve
 	for _, row := range []struct {
@@ -20,9 +20,9 @@ func TestPoolBudgetIsEachProcessesShareOfTheServer(t *testing.T) {
 		maxConnections int
 		want           int
 	}{
-		{"a server sized for production's pools", ServerConnections + reserve, 0},
-		{"a larger one", ServerConnections + reserve + 100, 0},
-		{"one connection short of production's pools", ServerConnections + reserve - 1, (ServerConnections - 1 - SuiteHeadroom) / MaxProcessesAtOnce},
+		{"a server sized for production's pools", FullSizeServerConnections + reserve, 0},
+		{"a larger one", FullSizeServerConnections + reserve + 100, 0},
+		{"one connection short of production's pools", FullSizeServerConnections + reserve - 1, (FullSizeServerConnections - 1 - SuiteHeadroom) / MaxProcessesAtOnce},
 		{"Postgres's default of 100", 100, 19},
 		{"the smallest server the suite runs on", MinServerConnections() + reserve, store.MinBudget()},
 	} {
@@ -42,18 +42,23 @@ func TestPoolBudgetIsEachProcessesShareOfTheServer(t *testing.T) {
 }
 
 // Every budget PoolBudget gives fits the server it was read from: MaxProcessesAtOnce processes at
-// that budget, the suite's own SuiteHeadroom and the superuser reserve together are never more
-// than the server allows, and each process can scale its pools to it (store.ScaledPoolSizes).
+// that budget - or at store.ConnectionsPerTestProcess, production's sizes and the test hooks'
+// listener, where the budget is zero - the suite's own SuiteHeadroom and the superuser reserve
+// together are never more than the server allows, and each process can scale its pools to a
+// budget it is given (store.ScaledPoolSizes).
 func TestEveryPoolBudgetFitsItsServer(t *testing.T) {
 	for _, reserve := range []int{0, postgresSuperuserReserve, 10} {
-		for maxConnections := MinServerConnections() + reserve; maxConnections < ServerConnections+reserve; maxConnections++ {
+		for maxConnections := MinServerConnections() + reserve; maxConnections <= FullSizeServerConnections+reserve; maxConnections++ {
 			budget, err := PoolBudget(maxConnections, reserve)
 			if err != nil {
 				t.Fatalf("max_connections=%d, reserve %d: %v", maxConnections, reserve, err)
 			}
-			if opened := MaxProcessesAtOnce*budget + SuiteHeadroom + reserve; opened > maxConnections {
+			if opened := MaxProcessesAtOnce*processConnections(budget) + SuiteHeadroom + reserve; opened > maxConnections {
 				t.Fatalf("max_connections=%d, reserve %d: a budget of %d opens %d with the suite and the reserve",
 					maxConnections, reserve, budget, opened)
+			}
+			if budget == 0 {
+				continue
 			}
 			// PoolBudget refuses a share below store.MinBudget, the least ScaledPoolSizes takes, so
 			// this holds while the two agree on that floor; it is here to fail if they drift apart.
@@ -61,5 +66,47 @@ func TestEveryPoolBudgetFitsItsServer(t *testing.T) {
 				t.Fatalf("max_connections=%d, reserve %d: a budget of %d: %v", maxConnections, reserve, budget, err)
 			}
 		}
+	}
+}
+
+// processConnections is the most connections one Dispatch process a test starts opens under
+// budget, a PoolBudget answer: the budget itself, or, for zero, production's sizes and the test
+// hooks' listener (store.ConnectionsPerTestProcess).
+func processConnections(budget int) int {
+	if budget == 0 {
+		return store.ConnectionsPerTestProcess
+	}
+	return budget
+}
+
+// A pod's test server - legion-testpg's max_connections, ServerConnections plus Postgres's
+// default superuser reserve of 3 - is one connection per process short of production's sizes, the
+// test hooks' listener counted, so PoolBudget scales each process there by that one connection:
+// MaxProcessesAtOnce processes at the budget it gives, beside SuiteHeadroom and the reserve, fit
+// the server. A CI lane's server, at the size .github/scripts/pg-connection-ceiling.sh computes
+// (FullSizeServerConnections, which internal/dispatch/store/cmd/connections prints, plus the
+// server's reserve), runs every process at production's sizes: PoolBudget answers 0 there.
+//
+// Before the threshold counted the hooks' listener, PoolBudget answered 0 at 471, and four
+// processes at production's sizes, 113 connections each with that listener, and the suite's 20
+// needed 472 of the 468 the server leaves beside its reserve.
+func TestAPodsTestServerScalesEachProcessByTheHooksListener(t *testing.T) {
+	const reserve = postgresSuperuserReserve
+	pod := ServerConnections + reserve
+	budget, err := PoolBudget(pod, reserve)
+	if err != nil {
+		t.Fatalf("max_connections=%d, reserve %d: %v", pod, reserve, err)
+	}
+	if opened := MaxProcessesAtOnce*processConnections(budget) + SuiteHeadroom + reserve; opened > pod {
+		t.Fatalf("max_connections=%d, reserve %d: PoolBudget = %d, so %d processes open %d each, and with the suite's %d and the reserve that is %d, over the server's %d",
+			pod, reserve, budget, MaxProcessesAtOnce, processConnections(budget), SuiteHeadroom, opened, pod)
+	}
+	if want := store.ConnectionsPerTestProcess - 1; budget != want {
+		t.Errorf("max_connections=%d, reserve %d: PoolBudget = %d, want %d, production's sizes and the test hooks' listener less one connection",
+			pod, reserve, budget, want)
+	}
+	ci := FullSizeServerConnections + reserve
+	if budget, err := PoolBudget(ci, reserve); err != nil || budget != 0 {
+		t.Errorf("max_connections=%d, the CI lanes' size with reserve %d: PoolBudget = %d, %v; want 0, production's pool sizes", ci, reserve, budget, err)
 	}
 }

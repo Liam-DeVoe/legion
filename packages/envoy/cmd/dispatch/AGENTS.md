@@ -881,18 +881,24 @@ go vet ./...
 (`docs/testing.md`, "Go's package deadline").
 
 Every Dispatch process a test starts is checked against the Postgres it meets
-(`connection_ceiling_test.go`). A server that allows `testlimits.ServerConnections` beyond its
-superuser reserve, as every CI lane's does (`.github/scripts/pg-connection-ceiling.sh`) and as
-`legion-testpg`'s does, runs every process at production's pool sizes. A smaller one, such as a
-Postgres at its default `max_connections` of 100, gives each of `testlimits.MaxProcessesAtOnce`
-processes its share of the server beside `testlimits.SuiteHeadroom` (`testlimits.PoolBudget`: 19
-connections at 100 with the default reserve of 3). The start hands the process that share as
-`DISPATCH_TEST_POOL_BUDGET`, and the process scales its pools to it, each scaled down toward, never
-below, the smallest size that still serves its callers (`store.ScaledPoolSizes`);
-`TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget` holds four such processes under
-load to it. A server too small for even those refuses every start, naming the `max_connections` it
-needs (`testlimits.MinServerConnections` plus the reserve: 95 with the default reserve). A row that
-needs production's sizes is refused by name on a server that scales them
+(`connection_ceiling_test.go`). A server that allows `testlimits.FullSizeServerConnections` beyond
+its superuser reserve (four processes at `store.ConnectionsPerTestProcess`, production's pools and
+the test hooks' listener every test process holds, beside `testlimits.SuiteHeadroom`), as every CI
+lane's does (`.github/scripts/pg-connection-ceiling.sh`), runs every process at production's pool
+sizes. A smaller one, such as `legion-testpg`'s (`testlimits.ServerConnections` beyond the reserve,
+one connection per process short of that) or a Postgres at its default `max_connections` of 100,
+gives each of `testlimits.MaxProcessesAtOnce` processes its share of the server beside
+`testlimits.SuiteHeadroom` (`testlimits.PoolBudget`: one connection under production's sizes on
+`legion-testpg`'s server, and 19 connections at 100 with the default reserve of 3). The start hands
+the process that share as `DISPATCH_TEST_POOL_BUDGET`, and the process scales its pools to it, each
+scaled down toward, never below, the smallest size that still serves its callers
+(`store.ScaledPoolSizes`); `TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget`
+holds four such processes on one database and one NATS server to it, each counted through a
+database relay of its own: under load released to all four at once, through both delivery intakes'
+take-overs at once from a killed holder, and until the outbox has drained. A server too small for
+even those refuses every start, naming the `max_connections` it needs
+(`testlimits.MinServerConnections` plus the reserve: 95 with the default reserve). A row that needs
+production's sizes is refused by name on a server that scales them, `legion-testpg`'s among them
 (`requireProductionPools`): the memory rows, `TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses`
 (which holds four leased passes inside their leases at once), `TestTheOutboxLoadSteps`, and a start
 of an earlier build that does not read the setting.

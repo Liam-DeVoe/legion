@@ -625,6 +625,13 @@ var minimumPoolSizes = PoolSizes{Shared: 1, Rooms: 1, RoomAppends: 1, Leases: 3,
 // a connection budget is only ever a test process's, which runs with them, so a budget counts it.
 const testHooksListenerConnections = 1
 
+// ConnectionsPerTestProcess is the most connections one Dispatch process a test starts opens at
+// production's pool sizes: ConnectionsPerProcess and the test hooks' listener
+// (testHooksListenerConnections), which every such process holds. It is the smallest connection
+// budget that keeps production's sizes (ScaledPoolSizes), and what internal/dispatch/testlimits
+// sizes a test server by.
+const ConnectionsPerTestProcess = ConnectionsPerProcess + testHooksListenerConnections
+
 // unscaledConnections is what a process given a connection budget opens outside PoolSizes,
 // whatever its budget: the health probe's pool, the registry's, and one connection per listener
 // it may hold at once, the test hooks' included.

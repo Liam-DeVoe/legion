@@ -150,6 +150,65 @@ func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *t
 	}
 }
 
+// A delivery exception on a lane only a subject added since the listener last read the deployed
+// stream's subjects captures - a newer build's start adding its own during a roll - is stored under
+// its one-copy message id too: publishDeliveryException judges the lane as its publish's transport
+// does, on a fresh read of the subjects (bus.Client.PublishTakesJetStream), not on the subjects its
+// client holds, which the row proves stale before the exception. The same exception handed twice,
+// as two listeners each raise it for one stored message from their own durables, is stored once,
+// under exception.<reason>.<origin>.
+//
+// Judged on the subjects the client held, the first exception went to Publish, whose transport read
+// the subjects again and stored it under the exception's own dedupe key; that read was kept, so the
+// second was judged captured and stored under exception.<reason>.<origin>: two copies.
+func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T) {
+	const (
+		topic  = "notifications.x.z"
+		lane   = bus.ExceptionTopicPrefix + topic
+		added  = bus.ExceptionTopicPrefix + "notifications.x.>"
+		reason = "delivery_failed"
+		origin = "origin-added"
+	)
+	if bus.StreamCaptures(lane) {
+		t.Fatalf("this build compiles a subject capturing %s; the test needs one it does not", lane)
+	}
+	client := connectToNewerBuildsStream(t)
+	js := client.JS()
+	info, err := js.StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read %s: %v", bus.Stream, err)
+	}
+	config := info.Config
+	config.Subjects = append(slices.Clone(config.Subjects), added)
+	if _, err := js.UpdateStream(&config); err != nil {
+		t.Fatalf("another build adds %s: %v", added, err)
+	}
+	if client.DeployedStreamCaptures(lane) {
+		t.Fatalf("the listener judged %s captured before reading the stream's subjects again; the row needs a stale read", lane)
+	}
+
+	item := listenerTestEnvelope(topic, "exception-added-lane")
+	for range 2 {
+		if err := publishDeliveryException(client, item, reason, "ses_added_exception", origin); err != nil {
+			t.Fatalf("publish the delivery exception: %v", err)
+		}
+	}
+	info, err = js.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: lane})
+	if err != nil {
+		t.Fatalf("read %s: %v", bus.Stream, err)
+	}
+	if got := info.State.Subjects[lane]; got != 1 {
+		t.Fatalf("the stream holds %d exceptions on %s after the same exception was raised twice, want 1: they were stored under two message ids", got, lane)
+	}
+	stored, err := js.GetLastMsg(bus.Stream, lane)
+	if err != nil {
+		t.Fatalf("read the exception on %s: %v", lane, err)
+	}
+	if got, want := stored.Header.Get(natsgo.MsgIdHdr), "exception."+reason+"."+origin; got != want {
+		t.Fatalf("stored message id = %q, want %q", got, want)
+	}
+}
+
 // connectToNewerBuildsStream starts a server, creates on it the stream a newer build carrying
 // extra leaves (deployNewerBuildsStream), and connects this build's listener client to it, which
 // owns the stream and leaves it as it is.

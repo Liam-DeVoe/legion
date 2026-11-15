@@ -3,15 +3,17 @@
 // its own.
 //
 // Three places read it. .github/scripts/pg-connection-ceiling.sh raises a CI lane's server to
-// ServerConnections plus that server's superuser reserve, through
+// FullSizeServerConnections plus that server's superuser reserve, through
 // internal/dispatch/store/cmd/connections, so every lane runs the Dispatch processes it starts at
-// production's pool sizes. packages/daemon/docker/legion-testpg starts a pod's test server at that
-// size, as a literal that testlimits_test.go holds to ServerConnections. And every start of a
-// Dispatch process in cmd/dispatch's tests is checked against MaxProcessesAtOnce and against the
-// server it meets (cmd/dispatch/connection_ceiling_test.go): a server smaller than
-// ServerConnections gives each process a connection budget its pools scale to (PoolBudget), and a
-// server too small for even the smallest pools refuses the start by name, rather than as a 53300
-// refusal inside a room, a lease or a socket.
+// production's pool sizes. packages/daemon/docker/legion-testpg starts a pod's test server at
+// ServerConnections plus the reserve, as a literal that testlimits_test.go holds to
+// ServerConnections: one connection per process short of FullSizeServerConnections, so each
+// process there runs its pools scaled to a budget one connection under production's. And every
+// start of a Dispatch process in cmd/dispatch's tests is checked against MaxProcessesAtOnce and
+// against the server it meets (cmd/dispatch/connection_ceiling_test.go): a server smaller than
+// FullSizeServerConnections gives each process a connection budget its pools scale to
+// (PoolBudget), and a server too small for even the smallest pools refuses the start by name,
+// rather than as a 53300 refusal inside a room, a lease or a socket.
 package testlimits
 
 import (
@@ -37,8 +39,9 @@ import (
 // refused by name, and this number is raised to what it runs.
 const MaxProcessesAtOnce = 4
 
-// RequiredConnections is what MaxProcessesAtOnce Dispatch processes may open together at
-// production's pool sizes.
+// RequiredConnections is what MaxProcessesAtOnce Dispatch processes would open together at
+// production's pool sizes as a deployment runs them, store.ConnectionsPerProcess each: without the
+// test hooks' listener every process a test starts holds besides (store.ConnectionsPerTestProcess).
 const RequiredConnections = MaxProcessesAtOnce * store.ConnectionsPerProcess
 
 // SuiteHeadroom is the connections a test suite opens outside any Dispatch process: each
@@ -46,10 +49,21 @@ const RequiredConnections = MaxProcessesAtOnce * store.ConnectionsPerProcess
 // Postgres log shows a 53300 refusal that no guard refused first needs more.
 const SuiteHeadroom = 20
 
-// ServerConnections is what a test server must allow beyond its superuser reserve
-// (superuser_reserved_connections) for every Dispatch process a suite starts to run at production's
-// pool sizes. A smaller server scales them (PoolBudget).
+// ServerConnections is RequiredConnections beside SuiteHeadroom, the test hooks' listeners left
+// out: the size of a pod's test server beyond its superuser reserve
+// (packages/daemon/docker/legion-testpg, whose literal testlimits_test.go holds to it plus
+// Postgres's default reserve). It is FullSizeServerConnections less one connection per process,
+// so PoolBudget gives each process there a budget one connection under production's sizes, and
+// its pools scale to that.
 const ServerConnections = RequiredConnections + SuiteHeadroom
+
+// FullSizeServerConnections is what a test server must allow beyond its superuser reserve
+// (superuser_reserved_connections) for every Dispatch process a suite starts to run at
+// production's pool sizes: MaxProcessesAtOnce processes of store.ConnectionsPerTestProcess each,
+// the test hooks' listener counted, beside SuiteHeadroom. Every CI lane's server allows it
+// (.github/scripts/pg-connection-ceiling.sh, through internal/dispatch/store/cmd/connections). A
+// smaller server scales them (PoolBudget).
+const FullSizeServerConnections = MaxProcessesAtOnce*store.ConnectionsPerTestProcess + SuiteHeadroom
 
 // MinServerConnections is the fewest connections a test server must allow beyond its superuser
 // reserve for a suite to run at all: MaxProcessesAtOnce processes with every pool at its smallest
@@ -58,15 +72,16 @@ func MinServerConnections() int { return MaxProcessesAtOnce*store.MinBudget() + 
 
 // PoolBudget is how many connections each Dispatch process a test starts may open on a server that
 // allows maxConnections with reserved of them kept for superusers. It is zero on a server that
-// allows ServerConnections beyond its reserve, as every CI lane's does: there every process runs
-// production's pool sizes. On a smaller server, such as a Postgres at its default of 100, it is
+// allows FullSizeServerConnections beyond its reserve, as every CI lane's does: there every process
+// runs production's pool sizes, the test hooks' listener beside them. On a smaller server, such as a
+// pod's test server (ServerConnections) or a Postgres at its default of 100, it is
 // that server's share for one of MaxProcessesAtOnce processes beside SuiteHeadroom,
 // (maxConnections - reserved - SuiteHeadroom) / MaxProcessesAtOnce rounded down, which the test
 // harness hands each process it starts (DISPATCH_TEST_POOL_BUDGET) and the process scales its pools
 // to (store.OpenWithin). A share below store.MinBudget is refused, and the error names the
 // max_connections the server needs.
 func PoolBudget(maxConnections, reserved int) (int, error) {
-	if maxConnections-reserved >= ServerConnections {
+	if maxConnections-reserved >= FullSizeServerConnections {
 		return 0, nil
 	}
 	budget := (maxConnections - reserved - SuiteHeadroom) / MaxProcessesAtOnce
@@ -77,9 +92,9 @@ func PoolBudget(maxConnections, reserved int) (int, error) {
 		"of testlimits.MaxProcessesAtOnce=%d Dispatch processes %d beside the %d the suite opens itself "+
 		"(testlimits.SuiteHeadroom), and one process needs %d with every pool at its smallest (store.MinBudget). "+
 		"Restart the server with -c max_connections=%d or more (testlimits.MinServerConnections plus the reserve). "+
-		"From %d (testlimits.ServerConnections plus the reserve), as every CI lane's server allows "+
+		"From %d (testlimits.FullSizeServerConnections plus the reserve), as every CI lane's server allows "+
 		"(.github/scripts/pg-connection-ceiling.sh), every process runs production's pool sizes; below that, "+
 		"each runs pools scaled to its share",
 		maxConnections, reserved, MaxProcessesAtOnce, max(budget, 0), SuiteHeadroom, store.MinBudget(),
-		MinServerConnections()+reserved, ServerConnections+reserved)
+		MinServerConnections()+reserved, FullSizeServerConnections+reserved)
 }

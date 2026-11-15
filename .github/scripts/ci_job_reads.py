@@ -1234,7 +1234,7 @@ GATES = [
         # containers have no Go, and in the visual job before its timed browser step.
         *[pinned_step(job, step, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/store/cmd/connections"],
-             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
+             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.FullSizeServerConnections",
              {"mode": "build"}),
         ], workflow=BROWSER_SITE)
           for job, step in ((BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP),

@@ -374,9 +374,13 @@ the listener's own stop of 28 seconds are 33 seconds together, inside the pod's 
 40 seconds, which leaves a margin of 7 seconds (`listenerGraceMargin`). The margin covers the
 kubelet's own latency between the preStop hook's return and SIGTERM, the container's teardown
 and a late tick on a loaded node. It does not cover a listener that runs over its own deadlines.
-A hung pod holds its durable for the whole grace, so the replacement pod's time to its first
-`/healthz` answer plus that grace has to stay under the 135-second bind deadline. At 40 seconds
-the start allowance is 95 seconds.
+A hung pod holds its durable for the whole grace, and the replacement pod waits that out however
+long it is: it stands by for the machine's delivery lease for as long as it runs
+(`packages/envoy/cmd/listener/lease.go`), so no deadline of its own bounds the grace. What bounds
+the grace is the old pod's stop alone, the preStop wait and the listener's 28-second stop with the
+margin above. The listener's 135-second `durableTakeoverAlarmAfter` (`cmd/listener/receive.go`)
+times only the wait on a binding that a listener from before the lease holds, during the first
+roll onto the lease.
 
 One pod has one cost: while that pod is unready or restarting, the Tailscale Service's port
 9020 refuses connections. Port 4222 stays up through it, which is what the split is for.

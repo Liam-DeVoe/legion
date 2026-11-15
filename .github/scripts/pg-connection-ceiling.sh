@@ -3,7 +3,8 @@
 # so the setting takes.
 #
 # A lane's Postgres is raised so that every Dispatch process its tests start runs at production's
-# pool sizes. What a lane's server must allow for that is testlimits.ServerConnections
+# pool sizes, with the test hooks' listener every such process holds besides. What a lane's server
+# must allow for that is testlimits.FullSizeServerConnections
 # (packages/envoy/internal/dispatch/testlimits) beyond its own superuser_reserved_connections. On
 # a smaller server packages/envoy/cmd/dispatch/connection_ceiling_test.go scales each process's
 # pools to its share of the server (testlimits.PoolBudget), which tests smaller pools than
@@ -16,7 +17,7 @@
 #   container  the service container id (${{ job.services.postgres.id }})
 #
 # It holds no number of its own: internal/dispatch/store/cmd/connections prints
-# testlimits.ServerConnections, and this script adds only the server's own
+# testlimits.FullSizeServerConnections, and this script adds only the server's own
 # superuser_reserved_connections.
 set -euo pipefail
 
@@ -27,7 +28,7 @@ server=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/c
 reserved=$(docker exec "$container" psql -U postgres -Atc "select current_setting('superuser_reserved_connections')")
 want=$((server + reserved))
 
-echo "pg-connection-ceiling: ${server} connections the suite needs (testlimits.ServerConnections) + ${reserved} reserved for superusers = ${want}"
+echo "pg-connection-ceiling: ${server} connections the suite needs (testlimits.FullSizeServerConnections) + ${reserved} reserved for superusers = ${want}"
 docker exec "$container" psql -U postgres -c "alter system set max_connections = ${want}"
 docker restart "$container" >/dev/null
 for _ in $(seq 1 30); do

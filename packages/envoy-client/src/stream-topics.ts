@@ -43,10 +43,10 @@ export function streamStores(topic: string): boolean {
 
 /**
  * Whether nothing would ever be delivered to a session on `topic`: a `notifications.` topic no
- * stream subject captures and that is no role lane (`bus.ReachesNoSession` in packages/envoy/
- * internal/bus). A session takes its messages from its own consumer, which holds what the stream
- * stored, so such an interest would be stored and deliver nothing. A role lane still travels over
- * core NATS and is registered by its holder (POST /v1/roles/set).
+ * stream subject captures and that is no role lane (`bus.Client.ReachesNoSession` in
+ * packages/envoy/internal/bus). A session takes its messages from its own consumer, which holds
+ * what the stream stored, so such an interest would be stored and deliver nothing. A role lane
+ * still travels over core NATS and is registered by its holder (POST /v1/roles/set).
  *
  * POST /v1/interests/subscribe leaves such a topic out of the registration and names it in a
  * warning, the rest of the registration stored; POST /v1/messages/publish refuses such a publish

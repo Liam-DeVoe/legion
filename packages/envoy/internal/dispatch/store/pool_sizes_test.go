@@ -22,7 +22,7 @@ func TestPoolSizesHoldEveryPoolConnectionsPerProcessCounts(t *testing.T) {
 // each process 19 (testlimits.PoolBudget): every pool at its minimum, and the one connection left
 // over to the shared pool, which gives up the most of production's size.
 func TestScaledPoolSizesUseTheBudgetAndKeepEveryMinimum(t *testing.T) {
-	production := ConnectionsPerProcess + testHooksListenerConnections
+	production := ConnectionsPerTestProcess
 	for budget := MinBudget(); budget <= production+10; budget++ {
 		sizes, err := ScaledPoolSizes(budget)
 		if err != nil {

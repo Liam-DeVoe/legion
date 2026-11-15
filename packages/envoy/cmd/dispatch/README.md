@@ -1132,7 +1132,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 Two processes at their ceiling hold 224, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 Those sizes are every deployment's.
-Only a test process given `DISPATCH_TEST_POOL_BUDGET`, which is refused without `DISPATCH_TEST_HOOKS=1`, runs smaller ones: it opens at most that many connections, each pool scaled toward the smallest size that still serves its callers (`store.ScaledPoolSizes`), so that the processes a test suite starts fit a test server smaller than production's sizes need (`cmd/dispatch/connection_ceiling_test.go`).
+Only a test process given `DISPATCH_TEST_POOL_BUDGET`, which is refused without `DISPATCH_TEST_HOOKS=1`, runs smaller ones: it opens no more connections than that budget, each pool scaled toward the smallest size that still serves its callers (`store.ScaledPoolSizes`), so that the processes a test suite starts fit a test server smaller than production's sizes need (`cmd/dispatch/connection_ceiling_test.go`).
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -105,10 +106,15 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 // which keeps nothing: the report of a team message reached only a reader subscribed at that
 // moment, where the stream's copy reaches a session's consumer whenever that session comes back.
 // origin, when not empty, identifies the stored message the exception is about (exceptionOrigin):
-// an exception on a lane the deployed stream captures (bus.Client.DeployedStreamCaptures, the
-// judgement its transport takes too) then carries Nats-Msg-Id exception.<reason>.<origin>, so the
-// stream keeps one copy however many listeners raise it for that message, each from its own
-// durable, a lane only a newer build's subjects capture among them.
+// an exception on a lane a publish takes JetStream for then carries Nats-Msg-Id
+// exception.<reason>.<origin>, so the stream keeps one copy however many listeners raise it for
+// that message, each from its own durable, a lane only a newer build's subjects capture among
+// them. The lane is judged as the publish's transport judges it (bus.Client.PublishTakesJetStream:
+// on a fresh read of the deployed stream's subjects when the client's own leave the lane
+// uncaptured), within exceptionLaneJudgement, so a lane only a read since the client's last
+// captures is stored under that one id too, rather than published through Publish under the
+// exception's own dedupe key, a second copy beside the one another listener stored under the
+// one-copy id.
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
@@ -117,7 +123,7 @@ func publishDeliveryException(client *bus.Client, item contracts.Envelope, reaso
 	if err != nil {
 		return err
 	}
-	if origin != "" && client.DeployedStreamCaptures(exception.Topic) {
+	if origin != "" && exceptionTakesJetStream(client, exception.Topic) {
 		// One stored copy however many listeners raise it, each reading the same message from its
 		// own durable: they agree on the origin, where they would each mint their own message id.
 		if err := client.PublishStoredAs(context.Background(), exception.Topic, exception, "exception."+reason+"."+origin); err != nil {
@@ -129,6 +135,20 @@ func publishDeliveryException(client *bus.Client, item contracts.Envelope, reaso
 		return fmt.Errorf("publish delivery exception: %w", err)
 	}
 	return nil
+}
+
+// exceptionLaneJudgement bounds publishDeliveryException's judgement of its lane: its wait for a
+// read of the deployed stream's subjects, which the bus bounds at 2 s itself
+// (bus.Client.DeployedStreamCapturesFresh). It is that same 2 s, so the handler waits no longer
+// than the read does, and a read the server leaves unanswered costs the exception at most 2 s.
+const exceptionLaneJudgement = 2 * time.Second
+
+// exceptionTakesJetStream reports whether a publish of an exception on lane takes JetStream
+// (bus.Client.PublishTakesJetStream), judged within exceptionLaneJudgement.
+func exceptionTakesJetStream(client *bus.Client, lane string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), exceptionLaneJudgement)
+	defer cancel()
+	return client.PublishTakesJetStream(ctx, lane)
 }
 
 // exceptionOrigin identifies the stored message an exception is about for its Nats-Msg-Id: the

@@ -21,6 +21,14 @@ import (
 func freshSubjectsClient(t *testing.T) (*Client, nats.JetStreamContext, string) {
 	t.Helper()
 	uri := testnats.URL(t)
+	client, js := freshSubjectsClientVia(t, uri, uri)
+	return client, js, uri
+}
+
+// freshSubjectsClientVia is freshSubjectsClient on the server at uri, whose client dials dial
+// instead: uri itself, or a relay to it.
+func freshSubjectsClientVia(t *testing.T, uri, dial string) (*Client, nats.JetStreamContext) {
+	t.Helper()
 	js := rawJetStream(t, uri)
 	current := *streamCfg
 	current.Replicas = 1
@@ -28,12 +36,12 @@ func freshSubjectsClient(t *testing.T) (*Client, nats.JetStreamContext, string) 
 	if _, err := js.AddStream(&current); err != nil {
 		t.Fatalf("create the stream: %v", err)
 	}
-	client, err := Connect([]string{uri}, withStreamSubjectsRefresh(time.Hour))
+	client, err := Connect([]string{dial}, withStreamSubjectsRefresh(time.Hour))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	return client, js, uri
+	return client, js
 }
 
 // streamInfoReads subscribes a connection of the row's own to the subject a read of the stream's
@@ -295,12 +303,12 @@ func TestASubjectsReadThatStartsAfterTheKeptOneReplacesIt(t *testing.T) {
 }
 
 // A publish on a topic only a subject added since the client last read the stream's subjects
-// captures - a newer build's start adding its own during a roll - goes through JetStream: the
-// publish judges its transport on a fresh read of the subjects (PublishReportingDuplicateWithin,
-// DeployedStreamCapturesFresh), not on the subjects the client holds, which the row proves stale
-// right before the publish, with no read of them since the newer build added its subject. The
-// stream stores the envelope under its Nats-Msg-Id, and keeps one copy of a repeat of the publish,
-// which it reports a duplicate.
+// captures - a newer build's start adding its own during a roll - goes through JetStream: with no
+// read of the subjects in flight, the publish judges its transport on a fresh read of them
+// (PublishReportingDuplicateWithin, PublishTakesJetStream), not on the subjects the client holds,
+// which the row proves stale right before the publish, with no read of them since the newer build
+// added its subject. The stream stores the envelope under its Nats-Msg-Id, and keeps one copy of a
+// repeat of the publish, which it reports a duplicate.
 //
 // Before a publish judged a topic core only on a fresh read, it sent this one over core NATS on the
 // stale subjects (UsesCoreTransport): the stream stored that copy too, as it stores any publish on
@@ -364,6 +372,67 @@ func TestAPublishJudgesItsTransportOnAFreshReadOfTheSubjects(t *testing.T) {
 	}
 	if got := info.State.Subjects[topic]; got != 1 {
 		t.Fatalf("the stream holds %d messages on %s after a publish and its repeat, want 1", got, topic)
+	}
+}
+
+// A publish's transport answers on the subjects the client holds while a read of them is in flight
+// and unanswered, and does not wait for that read (PublishTakesJetStream): a judgement that loses a
+// message for good (DeployedStreamCapturesFresh) of a topic no stream captures starts a read, which
+// the relay leaves unanswered for its whole firstStreamSubjectsRead (2 s); a publish of that topic
+// then returns within 100 ms, sending no read of its own, while that judgement still waits.
+//
+// Before the transport answered on the subjects held during a read in flight, it joined that read
+// as every other fresh judgement does, so a core publish of a topic no stream captures - a delivery
+// exception on a github, dispatch, slack or legion lane - waited the read out, up to 2 s.
+func TestAPublishsTransportDoesNotWaitOnAnUnansweredSubjectsRead(t *testing.T) {
+	const (
+		uncaptured = "notifications.nostream.inflight"
+		bound      = 100 * time.Millisecond
+	)
+	if StreamCaptures(uncaptured) {
+		t.Fatalf("this build compiles a subject capturing %s; the row needs a topic no stream captures", uncaptured)
+	}
+	uri := testnats.URL(t)
+	relay := testnats.StartUnansweredRelayOn(t, uri, streamInfoSubject)
+	client, _ := freshSubjectsClientVia(t, uri, relay.URL())
+	relay.Arm(1)
+	waiting := make(chan bool, 1)
+	go func() { waiting <- client.DeployedStreamCapturesFresh(context.Background(), uncaptured) }()
+	awaitRelaySent(t, relay, 1)
+
+	envelope := contracts.Envelope{
+		EventID:        "evt-transport-in-flight",
+		Source:         "dispatch",
+		Topic:          uncaptured,
+		DedupeKey:      "dispatch.transport-in-flight.1",
+		IssuedAt:       contracts.NowMillis(),
+		PayloadSummary: "a topic no stream captures, published while a read of the subjects goes unanswered",
+		TraceID:        "trace-transport-in-flight",
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), publishBound)
+	defer cancel()
+	began := time.Now()
+	if _, err := client.PublishReportingDuplicateWithin(ctx, envelope); err != nil {
+		t.Fatalf("publish on %s: %v", uncaptured, err)
+	}
+	if took := time.Since(began); took > bound {
+		t.Fatalf("the publish on %s took %s, over %s: its transport waited on the unanswered read of the stream's subjects in flight", uncaptured, took.Round(time.Millisecond), bound)
+	}
+	select {
+	case answer := <-waiting:
+		t.Fatalf("the judgement that started the read answered %t before the publish returned; the row needs that read still in flight", answer)
+	default:
+	}
+	if sent := relay.Sent(); sent != 1 {
+		t.Fatalf("the stream's subjects were read %d times, want only the one in flight: the publish's transport read them again", sent)
+	}
+	select {
+	case answer := <-waiting:
+		if answer {
+			t.Fatalf("the judgement of %s whose read went unanswered answered captured", uncaptured)
+		}
+	case <-time.After(2 * firstStreamSubjectsRead):
+		t.Fatalf("the judgement of %s did not end within twice the read's own bound of %s", uncaptured, firstStreamSubjectsRead)
 	}
 }
 

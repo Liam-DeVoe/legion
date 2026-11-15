@@ -37,7 +37,7 @@ test("an uncaptured topic, bare prefixes and the relay subject are not stored", 
 
 test("a topic nothing would be delivered on is one no stream subject captures, a role lane apart", () => {
   // What the listener leaves out of a registration, and refuses a publish to by name
-  // (`bus.ReachesNoSession`).
+  // (`bus.Client.ReachesNoSession`).
   expect(streamDeliversNothing("notifications.team")).toBe(true);
   expect(streamDeliversNothing("notifications.github")).toBe(true);
   expect(streamDeliversNothing("notifications.lxspec.probe.all")).toBe(true);

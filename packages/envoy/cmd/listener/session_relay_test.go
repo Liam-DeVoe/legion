@@ -591,6 +591,53 @@ func TestRelayRunWakeAfterARestartEndsTheRetryWaitAtOnce(t *testing.T) {
 	}
 }
 
+// A paused run waits its whole pause backoff out even when a wake was sent before the pause
+// began: the pause drops that wake as it begins (relayRun.dropWake), so a registration heard
+// before the pause costs the session no step of its backoff, and only one heard during the pause
+// ends it. The pause below is 300 ms and must last at least that long with a wake sent before it;
+// an hour-long pause, with a wake sent before it too, must still be running 300 ms in and end
+// within 5 s of the wakes sent during it. Kept, the wake sent before ended each pause at once.
+func TestRelayRunPauseOutlastsAWakeSentBeforeIt(t *testing.T) {
+	run := &relayRun{resume: make(chan struct{}, 1)}
+	if !run.wake() {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	const pause = 300 * time.Millisecond
+	started := time.Now()
+	if !run.waitPause(context.Background(), pause) {
+		t.Fatal("the pause reported the run stopped")
+	}
+	if waited := time.Since(started); waited < pause {
+		t.Fatalf("the pause ended after %s, want its whole %s: the wake sent before it began cut it short", waited.Round(time.Millisecond), pause)
+	}
+
+	if !run.wake() {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	goesOn := make(chan bool, 1)
+	go func() { goesOn <- run.waitPause(context.Background(), time.Hour) }()
+	select {
+	case <-goesOn:
+		t.Fatalf("an hour-long pause ended within %s on the wake sent before it began", pause)
+	case <-time.After(pause):
+	}
+	// Woken again and again, so a wake lands after the pause has begun whenever it began.
+	ended := time.After(5 * time.Second)
+	for {
+		run.wake()
+		select {
+		case ok := <-goesOn:
+			if !ok {
+				t.Fatal("the pause reported the run stopped")
+			}
+			return
+		case <-ended:
+			t.Fatal("the pause did not end on the wakes sent during it")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 // A session that stops answering is taken for unreachable: within the receipt wait of the oldest
 // frame it has not answered the relay sends nothing more, and it logs that once. It resumes on its
 // own, with no registration: after its pause backoff it restarts at the ack floor and sends the

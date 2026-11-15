@@ -27,14 +27,15 @@ import (
 // So every start checks two things, against constants rather than numbers written here. It refuses
 // a start that would run more processes at once than testlimits.MaxProcessesAtOnce. And it fits
 // the process to the server it meets (testlimits.PoolBudget). A server that allows
-// testlimits.ServerConnections beyond its superuser reserve runs every process at production's
-// pool sizes; every CI lane's server is sized to it (.github/scripts/pg-connection-ceiling.sh), so
-// CI tests the pools production runs. A smaller server, such as a Postgres at its default of
-// 100, gives each process its share of the server, which the start hands the process as
-// DISPATCH_TEST_POOL_BUDGET and the process scales its pools to (store.OpenWithin). A server too
-// small for even the smallest pools refuses the start, naming the max_connections it needs. A row
-// that needs production's sizes says so (requireProductionPools) and is refused, by name, on a
-// server that would scale them.
+// testlimits.FullSizeServerConnections beyond its superuser reserve runs every process at
+// production's pool sizes; every CI lane's server is sized to it
+// (.github/scripts/pg-connection-ceiling.sh), so CI tests the pools production runs. A smaller
+// server, such as a pod's test server (legion-testpg's, testlimits.ServerConnections, one
+// connection per process short) or a Postgres at its default of 100, gives each process its share
+// of the server, which the start hands the process as DISPATCH_TEST_POOL_BUDGET and the process
+// scales its pools to (store.OpenWithin). A server too small for even the smallest pools refuses
+// the start, naming the max_connections it needs. A row that needs production's sizes says so
+// (requireProductionPools) and is refused, by name, on a server that would scale them.
 //
 // dispatchProcessesRunning is the count of Dispatch processes running in this test binary. It is
 // one count for the whole binary because one `go test` binary is what one lane's server serves,
@@ -124,17 +125,17 @@ func readServerCeiling(t *testing.T, config *pgx.ConnConfig) serverCeiling {
 // budget requireConnectionCeiling answered a start or, for a row that checks before it starts any
 // process, serverPoolBudget's; a budget of zero is production's sizes, and passes. why is what the
 // row does that needs production's sizes. Such a row runs on a server that allows
-// testlimits.ServerConnections beyond its superuser reserve, as every CI lane's does.
+// testlimits.FullSizeServerConnections beyond its superuser reserve, as every CI lane's does.
 func requireProductionPools(t *testing.T, budget int, why string) {
 	t.Helper()
 	if budget == 0 {
 		return
 	}
 	t.Fatalf("%s, so it needs production's pool sizes. The Postgres this test binary meets allows fewer than "+
-		"testlimits.ServerConnections=%d beyond its superuser reserve, which scales each Dispatch process's "+
+		"testlimits.FullSizeServerConnections=%d beyond its superuser reserve, which scales each Dispatch process's "+
 		"pools to a budget of %d connections (testlimits.PoolBudget). Run it against a server that allows "+
 		"%d beyond its reserve, as every CI lane's does (.github/scripts/pg-connection-ceiling.sh).",
-		why, testlimits.ServerConnections, budget, testlimits.ServerConnections)
+		why, testlimits.FullSizeServerConnections, budget, testlimits.FullSizeServerConnections)
 }
 
 // readsPoolBudget reports whether binary, an envoy-dispatch build, reads DISPATCH_TEST_POOL_BUDGET:
