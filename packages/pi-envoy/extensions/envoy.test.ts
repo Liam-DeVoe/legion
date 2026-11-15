@@ -657,7 +657,18 @@ beforeEach(() => {
   writeFileSync(process.env.ENVOY_CONFIG_FILE, `${JSON.stringify(ASKGATE_OFF)}\n`);
 });
 
+/**
+ * Advanced by the file's `afterEach`, so a poll a row started sees that its row has ended — at its
+ * limit included — and stops, rather than running on into the rows after it, whose stubs of
+ * `globalThis.fetch` it would then post through.
+ */
+let rowGeneration = 0;
+
 afterEach(async () => {
+  rowGeneration += 1;
+  // A row abandoned at its limit while it held the test's clock would otherwise leave fake timers
+  // on for every row after it (`onTestClock` says what that costs), so the clock is put back first.
+  jest.useRealTimers();
   // A managed-timer callback that rejects fails the test that scheduled it.
   await Promise.all(contextTimers.splice(0));
   process.chdir(originalStartCwd);
@@ -1363,25 +1374,45 @@ function stubBroker(label: string) {
 }
 
 /**
- * Settles `pending` on the test's clock (`jest.useFakeTimers`, on for the call), moving it a
- * second at a time: a write Dispatch keeps failing is asked again under its key until the
- * accept's 10 s bound, and those pauses and that bound pass at once rather than in real time.
+ * Settles `pending` on the test's clock (`jest.useFakeTimers`, on for the call), moving it
+ * `stepMs` at a time for at most `steps` steps, and answers with what it settled to and how far
+ * the test's clock had moved when it settled. The default, a second at a time for a minute, is for
+ * a write Dispatch keeps failing, which is asked again under its key until the accept's 10 s
+ * bound: those pauses and that bound pass at once rather than in real time.
+ *
+ * A pending that has not settled when the steps run out fails here, at once and with real timers
+ * already restored. Left to the row's own limit instead, Bun abandons the row with fake timers
+ * still on, and every later row's `setTimeout` and `Bun.sleep` stop with them: measured on bun
+ * 1.4.4, one such defect in the `session_shutdown` row failed six correct rows after it and cost
+ * the file about 145 s more.
  */
-async function onTestClock<T>(pending: () => Promise<T>): Promise<T> {
+async function onTestClock<T>(
+  pending: () => Promise<T>,
+  { stepMs = 1_000, steps = 60 }: { stepMs?: number; steps?: number } = {}
+): Promise<{ value: T; elapsedMs: number }> {
   jest.useFakeTimers();
+  let settled = false;
+  let elapsedMs = 0;
+  let watched: Promise<T> | undefined;
   try {
-    let settled = false;
-    const watched = pending().finally(() => {
+    const startedAt = Date.now();
+    watched = pending().finally(() => {
       settled = true;
+      // Read while the test's clock is still the clock.
+      elapsedMs = Date.now() - startedAt;
     });
-    for (let second = 0; second < 60 && !settled; second++) {
+    for (let step = 0; step < steps && !settled; step++) {
       for (let flush = 0; flush < 50 && !settled; flush++) await Promise.resolve();
-      jest.advanceTimersByTime(1_000);
+      if (!settled) jest.advanceTimersByTime(stepMs);
     }
-    return await watched;
+    for (let flush = 0; flush < 50 && !settled; flush++) await Promise.resolve();
   } finally {
     jest.useRealTimers();
   }
+  if (watched === undefined || !settled) {
+    throw new Error(`did not settle within ${steps * stepMs} ms of the test's clock`);
+  }
+  return { value: await watched, elapsedMs };
 }
 
 /** The stream id every registration answer and relay frame in this file names. */
@@ -1836,9 +1867,10 @@ async function settle(): Promise<void> {
 // clock, which `setSystemTime` leaves alone.
 // The deadline is a hang guard rather than a budget: what can hang here is a condition no
 // listener, relay or resubscribe path ever makes true, which would spin this loop forever.
-// 60_000 sits above the per-test limit of every row in this file but the four that carry
-// 120_000 — the two live-stack freeze rows and the two session_shutdown hang guards — so a
-// stuck row reddens at the runner's limit, which names the test, and never here. The warning at
+// 60_000 sits above the per-test limit of every row in this file but those that carry 120_000 —
+// the live-stack freeze row, the two `session_shutdown` hang guards and the live stack's own
+// `beforeAll` — so a stuck row reddens at the runner's limit, which names the test, and never
+// here. The warning at
 // 2_000 keeps the diagnosis the old deadline gave — once per call, not once per poll — while the
 // polling goes on, and from then on each poll also yields a real millisecond: `settle()` alone is
 // 25 `setImmediate` round trips and no delay, so a condition that never holds would spin a core
@@ -11864,11 +11896,14 @@ console.log(JSON.stringify(args));
        * again after a grace instead of deciding on one tick, and a refresh is awaited where it
        * shows — at the listener. It polls until the count moves: a refresh that never resumes is
        * left to the row's own limit, which names the test, rather than decided on a deadline
-       * here, which would hand the caller a stale count and say nothing about why.
+       * here, which would hand the caller a stale count and say nothing about why. Once that limit
+       * has ended the row, the file's `afterEach` advances `rowGeneration` and this loop stops,
+       * so it ticks no dead extension into the rows after it.
        */
       const refreshed = async (): Promise<number> => {
         const seen = registrations;
-        while (registrations === seen) {
+        const generation = rowGeneration;
+        while (registrations === seen && generation === rowGeneration) {
           // The tick's own pacing, not a bound on the row: a tick inside the refresh interval
           // posts nothing, so this hands the loop on to the next tick.
           const waiting = Promise.withResolvers<void>();
@@ -19876,39 +19911,30 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
 
     natsState.drainHangs = true;
-    // The budget is the composite, not the constant alone: Oh My Pi kills a `session_shutdown`
-    // handler at 2 s, and what has to fit inside that is everything this handler does — the
-    // synchronous work at `envoy.ts:3720-3741` and the race at `:3757-3760` — however many
-    // awaited steps it grows. So the handler runs on the test's clock (`jest.useFakeTimers`,
-    // which `envoy.ts:3743` obeys), where no real time passes and load cannot stretch what is
-    // read: the clock moves only as this loop advances it, and the handler's own end is what
-    // stops it. A handler that waits the hanging drain out never ends and reddens at this row's
-    // guard; one whose deadline is used wrongly at `envoy.ts:3743`, or that grows a step waiting
-    // on another timer, ends past the cap and reddens here.
-    jest.useFakeTimers();
-    try {
-      const startedAt = Date.now();
-      let settled = false;
-      const handled = fixture.handlers
-        .get("session_shutdown")?.({}, sessionContext("ses_shutdown"))
-        .finally(() => {
-          settled = true;
-        });
-      for (let step = 0; step < 100 && !settled; step += 1) {
-        for (let flush = 0; flush < 50 && !settled; flush += 1) await Promise.resolve();
-        if (!settled) jest.advanceTimersByTime(100);
-      }
-      await handled;
-      // 2_000 is Oh My Pi's own `SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`, a literal here because Oh
-      // My Pi is not a dependency of this package.
-      expect(Date.now() - startedAt).toBeLessThan(2_000);
-      expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(2_000);
-    } finally {
-      jest.useRealTimers();
-    }
+    // The budget is the handler's own waits, not the constant alone: Oh My Pi kills a
+    // `session_shutdown` handler at 2 s, and what has to fit inside that is the handler's `deadline`
+    // timer and the `Promise.race` over the deregistration and the drain, however many awaited
+    // timer steps the handler grows ahead of them. So the handler runs on the test's clock
+    // (`onTestClock`), which its `deadline` timer obeys and load cannot stretch: the clock moves
+    // only as `onTestClock` advances it, and the handler's own end is what stops it. A deadline used
+    // wrongly, or one more step waiting on a timer, ends past the cap and reddens here; a handler
+    // that waits the hanging drain out never ends, and `onTestClock` fails it at once, with real
+    // timers restored, rather than at this row's limit. What the test's clock cannot see is
+    // synchronous work: a `Bun.sleepSync(1_500)` added to the handler still passes this row,
+    // because no timer is waited on there.
+    const { elapsedMs } = await onTestClock(
+      async () => {
+        await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
+      },
+      { stepMs: 100, steps: 100 }
+    );
+    // 2_000 is Oh My Pi's own `SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`, a literal here because Oh My
+    // Pi is not a dependency of this package.
+    expect(elapsedMs).toBeLessThan(2_000);
+    expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(2_000);
 
     // The handler deregistered and returned while the drain had started and not returned: one
-    // that waits the drain out reaches neither of these, because it hangs to this row's limit.
+    // that waits the drain out reaches neither of these, because `onTestClock` fails it above.
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
     expect(natsState.drainStarted).toBe(true);
     // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
@@ -20046,9 +20072,9 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
 
     // The DELETE is on the wire at all, which the five-second settle inside a one-second deadline
-    // never managed. That it is sent inside the 2 s Oh My Pi gives the handler is proved by the
-    // `SHUTDOWN_DEADLINE_MS` assertion in "session_shutdown resolves within its budget when drain
-    // hangs on a dead connection".
+    // never managed. That the handler's own waits end inside the 2 s Oh My Pi gives it is read on
+    // the test's clock by "session_shutdown resolves within its budget when drain hangs on a dead
+    // connection"; this row reads only that the DELETE was sent.
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
 
     registration.resolve(
