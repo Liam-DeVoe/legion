@@ -470,8 +470,9 @@ jobs:
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
-              # storetest's DatabaseURL makes a test's own database with internal/testpg.
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
@@ -979,6 +980,7 @@ jobs:
               - 'packages/envoy/internal/broker/store/migrations/**'
               - 'packages/envoy/internal/broker/wake/*'
               - 'packages/envoy/internal/buildversion/*'
+              - 'packages/envoy/internal/fileowner/*'
               - 'packages/envoy/internal/ratelimit/*'
               # The screenshots build packages/dispatch's web app, which aliases contracts' and the
               # proof editor's sources (web/vite.config.ts:63-81), and boot its e2e harness
@@ -1386,8 +1388,9 @@ jobs:
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/ratelimit/*'
-              # storetest's DatabaseURL makes a test's own database with internal/testpg.
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
             # The dashboard's and the proof editor's fast checks (dispatch-ui): what their lint,
             # typecheck, unit tests and the dashboard's build and asset checks read. No Go and no
             # Dispatch server: the job runs neither.
@@ -1547,6 +1550,7 @@ jobs:
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               # The image pull before its tests, of the consts in testnats/nats.go and
               # testpg/testpg.go.
@@ -1794,6 +1798,7 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/internal/webhook/testdata/**'
               - 'packages/envoy/migrationid/*'
@@ -1849,6 +1854,7 @@ jobs:
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
+              - 'packages/envoy/internal/fileowner/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/logging/*'
@@ -1860,8 +1866,9 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/serverwait/*'
-              # storetest's DatabaseURL makes a test's own database with internal/testpg.
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # The step takes the multiprocess tag's test list from this script at run time.
