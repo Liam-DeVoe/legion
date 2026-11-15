@@ -170,6 +170,12 @@ test("AskCard links a non-primary block ask to its owning artifact", async () =>
     block_id: "decision-1",
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The card reads the block's document for the question's marks; this one holds no such block,
+  // so the card shows the ask's own question.
+  const documentRead = spyOn(api, "getArtifactTextWithBlocks").mockResolvedValue({
+    blocks: [],
+    markdown: "",
+  } as never);
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -182,6 +188,7 @@ test("AskCard links a non-primary block ask to its owning artifact", async () =>
     expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/design-notes#b-decision-1");
   } finally {
     view.unmount();
+    documentRead.mockRestore();
   }
 });
 

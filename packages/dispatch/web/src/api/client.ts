@@ -1534,6 +1534,18 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/text", { id });
   }
 
+  /** An issue document's text with its blocks, by the issue's key and the document's slug: what
+   *  Define reads to name a block it cites (`citationLabel`). */
+  getIssueArtifactTextWithBlocks(key: string, slug: string) {
+    return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key, slug }, { blocks: true });
+  }
+
+  /** A document's text with its blocks, by its id: what Define reads to name a block of an
+   *  issue's spec it cites (`citationLabel`). */
+  getArtifactTextWithBlocks(id: string) {
+    return this.read("/api/v1/artifacts/{id}/text", { id }, { blocks: true });
+  }
+
   rebuildArtifact(id: string, markdown: string | undefined, bounds: WriteBounds) {
     return this.post(
       "/api/v1/artifacts/{id}/rebuild",

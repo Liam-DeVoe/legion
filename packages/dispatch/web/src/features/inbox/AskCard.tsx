@@ -85,6 +85,7 @@ import type { OwnedAsk } from "./ask-name";
 import { newerRewrite, originalWording } from "./ask-rewrite";
 import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
+import { useBlockQuestion } from "./block-question";
 import { DeclineControl } from "./DeclineControl";
 import { DefinePopover, type SelectedWords, selectedWordsIn } from "./DefinePopover";
 import { EarlierApproval } from "./EarlierApproval";
@@ -416,6 +417,9 @@ export function AskCard({
       : newerRewrite(rewriting.data?.rewrite, displayedAsk.rewrite);
   const rewriteRunning = rewriting.isPending || shownRewrite?.state === "rewriting";
   const original = originalWording(shownRewrite, showingOriginal);
+  // A decision block's question as its document holds it, with the marks the ask's own plain
+  // question leaves out; the card draws it wherever it is not the block itself.
+  const blockQuestion = useBlockQuestion(inBlock ? {} : displayedAsk);
   // In a decision block the agent's wording stands in place of the document's text: the block's
   // frame is marked while it does, and its content hole hides (`styles.css`). The mark is on the
   // frame, outside the editor's content, so the editor reads nothing of it.
@@ -1033,9 +1037,13 @@ export function AskCard({
             data-ask-question=""
           >
             <MarkdownBody
-              markdown={original?.body ?? displayedAsk.question}
+              markdown={original?.body ?? blockQuestion ?? displayedAsk.question}
               source={source}
-              tree={original === undefined ? displayedAsk.question_tree : undefined}
+              tree={
+                original === undefined && blockQuestion === undefined
+                  ? displayedAsk.question_tree
+                  : undefined
+              }
             />
           </div>
         )}

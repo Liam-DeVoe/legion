@@ -533,6 +533,11 @@ test("the design's 23 pictures, taken from the build beside the demo's", async (
     picture(PHONE, async (page, shoot) => {
       await phoneCard(page, seeded.flip);
       await shoot("ask-card-14-phone-card");
+      // Below the reading column's width the Inbox draws each question's card in its list; the
+      // decision block's card shows the bold its writer gave the question.
+      await expect(cardOf(page, seeded.coldStart).locator("[data-ask-question] strong")).toHaveText(
+        "Recommended: from the snapshot."
+      );
     }));
   await test.step("ask-card-15-phone-menu", () =>
     picture(PHONE, async (page, shoot) => {
@@ -576,6 +581,8 @@ test("the design's 23 pictures, taken from the build beside the demo's", async (
         await expect(popover.locator('[data-define-agent="answered"]')).toContainText(
           FLIP_AUDIT.agent ?? ""
         );
+        // The citation names the requirement it cites by its own label, after its document.
+        await expect(popover.getByRole("link")).toHaveText("PANE-5 spec · R3 →");
         // The agent's words arrive with a short transition; the picture waits for it to end.
         await page.waitForTimeout(200);
         await shoot("ask-card-09-define-ask-with-agent");
@@ -641,6 +648,12 @@ test("the design's 23 pictures, taken from the build beside the demo's", async (
   await test.step("ask-card-18-block-rewritten", () =>
     picture(DESKTOP, async (page, shoot) => {
       await openBlock(page);
+      // The margin's card of the decision block shows the bold its writer gave the question.
+      await expect(
+        cardOf(page.locator("[data-margin-item]"), seeded.coldStart).locator(
+          "[data-ask-question] strong"
+        )
+      ).toHaveText("Recommended: from the snapshot.");
       await shoot("ask-card-18-block-rewritten");
     }));
   await test.step("ask-card-19-block-original", () =>

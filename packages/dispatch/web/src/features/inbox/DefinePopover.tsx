@@ -16,9 +16,15 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
-import { buildReferencePath, parseNodeReference, shortForm } from "../refs/routes";
+import {
+  buildReferencePath,
+  type DispatchReferenceRoute,
+  parseNodeReference,
+  shortForm,
+} from "../refs/routes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { DefinitionPlace } from "./ask-rewrite";
+import { citationLabel } from "./citation-label";
 
 /** How often the popover reads the definition again while the agent's answer is on its way, and
  *  for how long at most: the side question waits 60 seconds for its answer (`agent.until`). */
@@ -68,22 +74,68 @@ function agentAnswerDue(definition: Definition | undefined, openedAt: number): b
   return Date.now() <= deadline + AGENT_POLL_MS;
 }
 
-/** A link of the record to the place that defines the words: a `dispatch://` reference opens
- *  that place in the app, a web address opens in a tab of its own, and anything else is no
- *  link. */
-function DefinitionLink({ href, onFollow }: { href: string; onFollow: () => void }): ReactNode {
-  const className = `mt-1.5 mr-3 inline-block text-xs font-medium ${linkText} ${linkHoverText}`;
-  const route = parseNodeReference(href);
-  if (route !== undefined) {
-    return (
-      <Link className={className} onClick={onFollow} to={buildReferencePath(route)}>
-        {shortForm(route)} →
-      </Link>
-    );
+/** The text of a document a citation names, with its blocks: an issue's spec by the issue's
+ *  document, or another document of the issue by its slug. Undefined for any other place. */
+async function citedText(route: DispatchReferenceRoute) {
+  if (route.kind === "spec") {
+    const issue = await api.getIssue(route.key);
+    return api.getArtifactTextWithBlocks(issue.primary_artifact_id);
   }
+  if (route.kind === "artifact" && "key" in route) {
+    return api.getIssueArtifactTextWithBlocks(route.key, route.slug);
+  }
+  return undefined;
+}
+
+/** How Define's citation reads (INFRA-3231's R7): the document, then the block it cites by what
+ *  the block carries (`citationLabel`), "PANE-5 spec · R3"; the document alone where the
+ *  citation names no block, and the reference's own short form until the document is read. */
+function useCitationName(route: DispatchReferenceRoute): string {
+  const blockId = "block" in route ? route.block?.id : undefined;
+  const text = useQuery({
+    enabled: blockId !== undefined && (route.kind === "spec" || route.kind === "artifact"),
+    queryFn: () => citedText(route),
+    queryKey: ["define-citation", buildReferencePath(route)],
+  }).data;
+  const document = shortForm({ ...route, block: undefined } as DispatchReferenceRoute);
+  if (blockId === undefined) return document;
+  if (text === undefined) return shortForm(route);
+  return `${document} · ${citationLabel(text.markdown, text.blocks ?? [], blockId)}`;
+}
+
+/** A link of the record to the place that defines the words: a `dispatch://` reference opens
+ *  that place in the app, named as `useCitationName` names it; a web address opens in a tab of
+ *  its own, and anything else is no link. */
+function DefinitionLink({ href, onFollow }: { href: string; onFollow: () => void }): ReactNode {
+  const route = parseNodeReference(href);
+  return route === undefined ? (
+    <WebDefinitionLink href={href} />
+  ) : (
+    <ReferenceDefinitionLink onFollow={onFollow} route={route} />
+  );
+}
+
+const definitionLinkClass = `mt-1.5 mr-3 inline-block text-xs font-medium ${linkText} ${linkHoverText}`;
+
+function ReferenceDefinitionLink({
+  route,
+  onFollow,
+}: {
+  route: DispatchReferenceRoute;
+  onFollow: () => void;
+}): ReactNode {
+  const name = useCitationName(route);
+  return (
+    <Link className={definitionLinkClass} onClick={onFollow} to={buildReferencePath(route)}>
+      {name} →
+    </Link>
+  );
+}
+
+function WebDefinitionLink({ href }: { href: string }): ReactNode {
   if (!/^https?:\/\//.test(href)) return null;
   return (
-    <a className={className} href={href} rel="noreferrer" target="_blank">
+    <a className={definitionLinkClass} href={href} rel="noreferrer" target="_blank">
       {href} →
     </a>
   );
