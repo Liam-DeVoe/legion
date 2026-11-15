@@ -112,7 +112,7 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 			}
 		}
 		if !definition.Computed() {
-			folded, err := foldedReadings(ctx, w.Tx, removed)
+			folded, err := foldedReadings(ctx, w.Tx, evalID, removed)
 			if err != nil {
 				return err
 			}
@@ -129,11 +129,11 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 	return written, nil
 }
 
-// foldedReadings is each of replaced that its eval's day rows hold: one written while the eval
-// was logged (writtenWhileLogged). A reading written while the eval was computed was stored and
-// never folded (WriteReadings), so a correction of it after a register write made the eval logged
-// appends to its day rows as a write that replaces nothing does.
-func foldedReadings(ctx context.Context, tx pgx.Tx, replaced []Reading) ([]Reading, error) {
+// foldedReadings is each of replaced, readings of the eval evalID, that its day rows hold: one
+// written while the eval was logged (writtenWhileLogged). A reading written while the eval was
+// computed was stored and never folded (WriteReadings), so a correction of it after a register
+// write made the eval logged appends to its day rows as a write that replaces nothing does.
+func foldedReadings(ctx context.Context, tx pgx.Tx, evalID string, replaced []Reading) ([]Reading, error) {
 	if len(replaced) == 0 {
 		return nil, nil
 	}
@@ -142,7 +142,9 @@ func foldedReadings(ctx context.Context, tx pgx.Tx, replaced []Reading) ([]Readi
 		ids[index] = reading.ID
 	}
 	rows, err := tx.Query(ctx, `
-		select r.id::text from eval_readings r where r.id = any($1::text[]::uuid[]) and `+writtenWhileLogged, ids)
+		with `+loggedSpans+`
+		select r.id::text from eval_readings r
+		where r.eval_id = $1 and r.id = any($2::text[]::uuid[]) and `+writtenWhileLogged, evalID, ids)
 	if err != nil {
 		return nil, fmt.Errorf("read which corrected readings were folded: %w", err)
 	}

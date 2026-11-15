@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -113,6 +114,29 @@ func TestTheLegionModeWritesAHistoryObservedFromPartway(t *testing.T) {
 	t.Logf("%s: %d issues, %d finished (%d before, %d after), %d of %d with phase work observed, %d waited for a slot, %d sat in icebox and %d in backlog, %d merged pull requests, filings by an implementer %d, a reviewer %d and the controller %d; first observation %s; windows %s..%s and %s..%s",
 		loaded.Project, loaded.Issues, loaded.Finished, early, late, observed, worked, queued, icebox, backlog, merged, later, outside, controller, loaded.FirstObserved.Format(time.RFC3339),
 		before.From.Format(time.DateOnly), before.To.Format(time.DateOnly), after.From.Format(time.DateOnly), after.To.Format(time.DateOnly))
+}
+
+// TestWindowsOfRefusesAFirstFinishedDayThatStartsAtTheFirstObservationOrAfter: the window before
+// the first observation starts at the midnight of the first finished issue's day, so a history
+// whose first issue finished on a day after its first observation, or on the day of an observation
+// made at that day's midnight, has no such window and is refused, its refusal saying the day
+// starts at or after the first observation; one observed later on the first finished day is not.
+func TestWindowsOfRefusesAFirstFinishedDayThatStartsAtTheFirstObservationOrAfter(t *testing.T) {
+	day := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	for _, refused := range []struct{ observed, finished time.Time }{
+		{day.Add(10 * time.Hour), day.AddDate(0, 0, 1).Add(9 * time.Hour)},
+		{day, day.Add(9 * time.Hour)},
+	} {
+		_, err := evalfixture.WindowsOf(legiontest.Fixture{FirstObserved: refused.observed, FirstFinished: refused.finished, To: now})
+		if err == nil || !strings.Contains(err.Error(), "starts at or after the first observation") {
+			t.Errorf("observed at %s, first finished at %s: answered %v, want a refusal naming a day that starts at or after the first observation",
+				refused.observed.Format(time.RFC3339), refused.finished.Format(time.RFC3339), err)
+		}
+	}
+	windows, err := evalfixture.WindowsOf(legiontest.Fixture{FirstObserved: day.Add(10 * time.Hour), FirstFinished: day.Add(9 * time.Hour), To: now})
+	if err != nil || !windows.Before.From.Equal(day) {
+		t.Errorf("observed later on the first finished day: windows %+v, %v; want one starting at %s", windows, err, day.Format(time.DateOnly))
+	}
 }
 
 // TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema: -base refuses a database of this head,

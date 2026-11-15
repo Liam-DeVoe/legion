@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -114,6 +115,35 @@ func TestEachBadRowIsRefusedByItsIndexAndCode(t *testing.T) {
 			}
 			t.Logf("refused %s: %s; rows %+v", refused.Code, refused.Message, refused.Rows)
 		})
+	}
+}
+
+// TestAReadingsNIsHeldWholeToTheLargestInt64: n is the one whole number a readings write takes,
+// and eval_readings holds it as a bigint, as wide as the int64 a row's n is decoded into. So the
+// largest int64 is stored whole, and an n past it is refused READING_INVALID naming n, and stores
+// nothing, rather than reaching the store.
+func TestAReadingsNIsHeldWholeToTheLargestInt64(t *testing.T) {
+	r := newRig(t)
+	written := r.write(t, "sizes", alice, row(t, map[string]any{
+		"series": "score", "row_kind": "run", "value": 1, "n": int64(math.MaxInt64), "measured_at": at(3, 9, 0),
+	}))
+	var stored int64
+	if err := r.database.Pool.QueryRow(t.Context(), `select n from eval_readings where id = $1`, written.Readings[0].ID).Scan(&stored); err != nil {
+		t.Fatalf("read the stored n: %v", err)
+	}
+	if stored != math.MaxInt64 {
+		t.Errorf("n %d was stored as %d", int64(math.MaxInt64), stored)
+	}
+	before := r.count(t, `select count(*) from eval_readings`)
+	_, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: "sizes", Caller: alice, BuiltBy: testBuild, Rows: []json.RawMessage{
+		row(t, map[string]any{"series": "score", "row_kind": "run", "value": 1, "n": json.Number("9223372036854775808"), "measured_at": at(3, 10, 0)}),
+	}})
+	var refused *Error
+	if !errors.As(err, &refused) || !slices.ContainsFunc(refused.Rows, func(row RowError) bool { return row.Code == CodeReadingInvalid && row.Field == "n" }) {
+		t.Fatalf("n 9223372036854775808 was answered %v, want row 0 refused %s on n", err, CodeReadingInvalid)
+	}
+	if after := r.count(t, `select count(*) from eval_readings`); after != before {
+		t.Errorf("the refused n moved eval_readings from %d rows to %d", before, after)
 	}
 }
 
@@ -571,4 +601,79 @@ func TestACorrectionOfAReadingNeverFoldedTakesNothingFromItsDayRow(t *testing.T)
 		t.Errorf("after the correction of the unfolded reading the day holds n %d, samples %v; want 2, [2 7]", after.N, samples)
 	}
 	t.Logf("the day held samples %v before the correction and %v after it", before.Samples, samples)
+}
+
+// TestACorrectionBatchOverSeveralDaysFoldsEachDayFromTheReadingsThatStand: one batch correcting a
+// reading on each of three days folds every row a corrected reading counted in again from the
+// readings that stand, the project's row and each repository's, and leaves out a reading written
+// while the eval was computed, between two logged versions, which no row ever folded; a row no
+// corrected reading counted in is appended to.
+func TestACorrectionBatchOverSeveralDaysFoldsEachDayFromTheReadingsThatStand(t *testing.T) {
+	r := newRig(t)
+	reading := func(series string, value float64, measured time.Time, repo, replaces string) json.RawMessage {
+		fields := map[string]any{"series": series, "row_kind": "run", "value": value, "measured_at": measured}
+		if repo != "" {
+			fields["attributes"] = map[string]any{"repo": repo}
+		}
+		if replaces != "" {
+			fields["replaces"] = replaces
+		}
+		return row(t, fields)
+	}
+	first := r.write(t, "build-minutes", alice,
+		reading("minutes", 1, at(4, 9, 0), "acme/api", ""),
+		reading("minutes", 2, at(4, 10, 0), "", ""),
+		reading("minutes", 3, at(5, 9, 0), "acme/web", ""),
+		reading("queue", 4, at(5, 10, 0), "acme/api", ""),
+		reading("minutes", 5, at(6, 9, 0), "acme/api", ""),
+	).Readings
+	evalID := EvalID(r.project, "build-minutes")
+	// The newest version again with another source, as the seed writes a computed one over a slug
+	// a reading registered, and as a register write stored a logged one before R5's rule.
+	setSource := func(source string) {
+		t.Helper()
+		if _, err := r.database.Pool.Exec(t.Context(), `
+			insert into eval_versions (eval_id, version, project_key, slug, name, question, number_rule, decision, doc_block,
+				failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person, issue_key, kind,
+				source, state, replaced_by, links, written_via, written_by)
+			select eval_id, version + 1, project_key, slug, name, question, number_rule, decision, doc_block,
+				failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person, issue_key, kind,
+				$2, state, replaced_by, links, written_via, written_by
+			from evals_current where eval_id = $1
+		`, evalID, source); err != nil {
+			t.Fatalf("make build-minutes %s: %v", source, err)
+		}
+	}
+	setSource("computed:evals.ComputedForTheTest")
+	r.write(t, "build-minutes", alice, reading("minutes", 100, at(5, 11, 0), "", ""))
+	setSource(SourceLogged)
+	r.write(t, "build-minutes", alice, reading("minutes", 6, at(6, 10, 0), "acme/web", ""))
+	r.write(t, "build-minutes", alice,
+		reading("minutes", 10, at(4, 9, 0), "acme/api", first[0].ID),
+		reading("minutes", 30, at(5, 9, 0), "acme/web", first[2].ID),
+		reading("minutes", 50, at(6, 9, 0), "acme/api", first[4].ID),
+		reading("queue", 7, at(5, 12, 0), "", ""),
+	)
+
+	for _, want := range []struct {
+		series, repo string
+		day          time.Time
+		samples      []float64
+	}{
+		{"minutes", "", at(4, 0, 0), []float64{2, 10}},
+		{"minutes", "acme/api", at(4, 0, 0), []float64{10}},
+		{"minutes", "", at(5, 0, 0), []float64{30}},
+		{"minutes", "acme/web", at(5, 0, 0), []float64{30}},
+		{"queue", "", at(5, 0, 0), []float64{4, 7}},
+		{"queue", "acme/api", at(5, 0, 0), []float64{4}},
+		{"minutes", "", at(6, 0, 0), []float64{6, 50}},
+		{"minutes", "acme/api", at(6, 0, 0), []float64{50}},
+		{"minutes", "acme/web", at(6, 0, 0), []float64{6}},
+	} {
+		got := r.day(t, evalID, want.series, want.repo, want.day)
+		if got.N != len(want.samples) || !slices.Equal(got.Samples, want.samples) {
+			t.Errorf("the %s row of %s, repo %q, holds n %d, samples %v; want %v", want.day.Format(time.DateOnly), want.series, want.repo,
+				got.N, got.Samples, want.samples)
+		}
+	}
 }

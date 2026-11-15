@@ -288,18 +288,37 @@ func finite(values ...float64) bool {
 	return true
 }
 
-// writtenWhileLogged is the test that the reading r was written while its eval was logged: the
-// version in force at its recorded_at, which is the write's own transaction time as a version's
-// created_at is, has source logged. Such a reading is the one a logged eval's day rows fold.
-const writtenWhileLogged = `(select v.source from eval_versions v
-	where v.eval_id = r.eval_id and v.created_at <= r.recorded_at
-	order by v.version desc limit 1) = '` + SourceLogged + `'`
+// loggedSpans is the common table expression logged_spans(from_at, until_at), which a statement
+// testing writtenWhileLogged heads: the spans of time [from_at, until_at) over which a version of
+// the eval $1 names, one whose source is logged, was the version in force. The version in force
+// at a moment is the newest version created at or before it, so a version is in force from its
+// created_at until the earliest created_at of any newer version (for ever, for the newest); a
+// span that ends where it starts is a version a newer one replaced at once, and holds no moment.
+// It is materialized, so the statement reads and orders the eval's versions once, whatever number
+// of readings it tests against them.
+const loggedSpans = `logged_spans as materialized (
+	select from_at, until_at from (
+		select source, created_at as from_at, coalesce(min(created_at) over (
+			order by version desc rows between unbounded preceding and 1 preceding), 'infinity') as until_at
+		from eval_versions where eval_id = $1
+	) spans
+	where source = '` + SourceLogged + `' and until_at > from_at
+)`
+
+// writtenWhileLogged is the test that the reading r, of the eval loggedSpans reads, was written
+// while its eval was logged: its recorded_at, which is the write's own transaction time as a
+// version's created_at is, lies in a span of logged_spans. Such a reading is the one a logged
+// eval's day rows fold.
+const writtenWhileLogged = `exists (select from logged_spans s where r.recorded_at >= s.from_at and r.recorded_at < s.until_at)`
 
 // standingParts is, for each of keys, the parts of the readings its row folds that were stored
 // before the write (whose own readings written names), in the order they were written: the
 // standing readings of its day and series (of its repository, for a repository's row) that have a
 // value and were written while the eval was logged (writtenWhileLogged). One statement reads
-// every key's, each the eval's standing readings of one day through eval_readings_row.
+// every key's: the eval's standing readings of each day the keys name, once a day, through
+// eval_readings_row with that day's range in its index condition, each then matched to the keys
+// of its day. Joined to every key at once instead, the readings were planned, for a week's keys,
+// as one scan of the eval that each key then filtered whole.
 func standingParts(ctx context.Context, tx pgx.Tx, evalID string, keys []dayKey, written []string) (map[dayKey][]dayPart, error) {
 	standing := map[dayKey][]dayPart{}
 	if len(keys) == 0 {
@@ -310,13 +329,21 @@ func standingParts(ctx context.Context, tx pgx.Tx, evalID string, keys []dayKey,
 		series[index], repos[index], days[index] = key.series, key.repo, key.day
 	}
 	rows, err := tx.Query(ctx, `
-		select k.at, r.value, coalesce(r.n, 1)::float8, r.measured_at
-		from unnest($2::text[], $3::text[], $4::timestamptz[]) with ordinality as k(series, repo, day, at)
-		join eval_readings r on r.eval_id = $1 and r.superseded_at is null and r.value is not null
-			and r.series = k.series and r.measured_at >= k.day and r.measured_at < k.day + interval '24 hours'
-			and (k.repo = '' or r.attributes ->> 'repo' = k.repo)
-			and r.id <> all($5::text[]::uuid[])
-			and `+writtenWhileLogged+`
+		with `+loggedSpans+`, k as (
+			select * from unnest($2::text[], $3::text[], $4::timestamptz[]) with ordinality as k(series, repo, day, at)
+		)
+		select k.at, r.value, r.weight, r.measured_at
+		from (select distinct day from k) d
+		cross join lateral (
+			select r.series, r.attributes ->> 'repo' as repo, r.value, coalesce(r.n, 1)::float8 as weight,
+				r.measured_at, r.recorded_at, r.id
+			from eval_readings r
+			where r.eval_id = $1 and r.superseded_at is null and r.value is not null
+				and r.measured_at >= d.day and r.measured_at < d.day + interval '24 hours'
+				and r.id <> all($5::text[]::uuid[])
+				and `+writtenWhileLogged+`
+		) r
+		join k on k.day = d.day and k.series = r.series and (k.repo = '' or r.repo = k.repo)
 		order by k.at, r.recorded_at, r.measured_at, r.id
 	`, evalID, series, repos, days, written)
 	if err != nil {

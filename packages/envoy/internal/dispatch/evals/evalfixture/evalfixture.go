@@ -17,7 +17,9 @@
 //     rows and the fixture never writes, so the mode differs from Legion only in the schema it
 //     requires of the database.
 //   - Attribution (-attribution): k15's case of D1 (Attribution).
-//   - Delivery (-delivery): deliverytest's delivery history of the project, a week by default.
+//   - Delivery (-delivery): deliverytest's delivery history of the project over the days its
+//     caller names (the command's -days, a week by default), or deliverytest's own default of
+//     120 days (deliverytest.DefaultDays) for a caller that names none.
 //   - MergePR (-merge-pr): one pull request of those rows merged at a given moment, k12's one
 //     change.
 //
@@ -120,7 +122,8 @@ type Windows struct {
 }
 
 // WindowsOf is the two windows of a Legion history, refused for a history with no observation or
-// none before its first finished issue's day.
+// no finished issue, and for one whose first finished issue's day starts at or after its first
+// observation, since no window then starts on a day with input before that observation.
 func WindowsOf(history legiontest.Fixture) (Windows, error) {
 	if history.FirstObserved.IsZero() || history.FirstFinished.IsZero() {
 		return Windows{}, errors.New("the history holds no observation or no finished issue, so no window falls on either side of the first observation")
@@ -128,7 +131,7 @@ func WindowsOf(history legiontest.Fixture) (Windows, error) {
 	boundary := nextMidnight(history.FirstObserved)
 	before := Window{From: measures.Midnight(history.FirstFinished), To: boundary}
 	if !before.From.Before(history.FirstObserved) {
-		return Windows{}, fmt.Errorf("the first issue finished on %s, the day of the first observation (%s), so no window starts on a day with input before it",
+		return Windows{}, fmt.Errorf("the first issue finished on %s, a day that starts at or after the first observation (%s), so no window starts on a day with input before it",
 			before.From.Format(time.DateOnly), history.FirstObserved.Format(time.RFC3339))
 	}
 	if before.To.Sub(before.From) > maxWindow {
@@ -225,9 +228,10 @@ type DeliveryResult struct {
 	Fixture deliverytest.Fixture `json:"-"`
 }
 
-// WriteDelivery is the Delivery mode: days days of deliverytest's delivery history ending at now,
-// every pull request counted for project (deliverytest.Spec.OneProject), its issues numbered after
-// the ones the project has already, and seed its random draws.
+// WriteDelivery is the Delivery mode: days days of deliverytest's delivery history ending at now
+// (deliverytest.DefaultDays where days is 0 or less), every pull request counted for project
+// (deliverytest.Spec.OneProject), its issues numbered after the ones the project has already, and
+// seed its random draws.
 func WriteDelivery(ctx context.Context, pool *store.Pool, project string, days int, seed uint64, now time.Time) (DeliveryResult, error) {
 	offset, err := issueOffset(ctx, pool, project)
 	if err != nil {

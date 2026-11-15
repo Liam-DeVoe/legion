@@ -25,8 +25,12 @@ import (
 )
 
 // The budgets of the first paint (spec R8 and R16): database time for 84 days with an 84-day
-// compare range and for 28 days with none, the compressed body, and the server time of the first
-// paint that reads the day rows of one repository.
+// compare range and for 28 days with none, the compressed body of each read of the evals' first
+// paint, and the server time of the first paint that reads the day rows of one repository. The
+// body budget is the evals' alone: the root's R3 keeps the row-level merge timeline out of the
+// first paint (it pages, dispatch://INFRA-2918 R13), so a read of the Delivery page
+// (paintCase.delivery) has its body measured and judged by no budget, and its database time
+// judged as every read's is.
 const (
 	budget84Ms     = 150
 	budget28Ms     = 60
@@ -53,8 +57,9 @@ func (w window) live() map[string]string {
 
 // paintCase is one read of a first paint: a GET (path) or a live view's snapshot (view, of kind),
 // and its budgets, none where zero. A read of a group is judged with the group's other reads too,
-// their database time together against groupBudgetMs. delivery marks a read of the Delivery
-// timeline's first paint (timelineCases).
+// their database time together against groupBudgetMs. delivery marks a read of the Delivery page:
+// the timeline's first paint at this head (timelineCases) and the base head's (baseCases), whose
+// body no budget judges.
 type paintCase struct {
 	name           string
 	path           string
@@ -157,10 +162,10 @@ func timelineCases(prefix string, today time.Time) []paintCase {
 func baseCases(today time.Time) []paintCase {
 	w84, c84 := before(today, 84), before(today.AddDate(0, 0, -84), 84)
 	return []paintCase{
-		{name: "base-timeline-84d", kind: "timeline", view: map[string]any{"kind": "timeline", "window": w84.live(), "query": ""}},
-		{name: "base-measures-compare-84d", kind: "measures", view: map[string]any{"kind": "measures", "window": c84.live(), "query": ""}},
-		{name: "base-pipeline-84d", kind: "pipeline", view: map[string]any{"kind": "pipeline", "window": w84.live()}},
-		{name: "base-pipeline-compare-84d", kind: "pipeline", view: map[string]any{"kind": "pipeline", "window": c84.live()}},
+		{name: "base-timeline-84d", kind: "timeline", view: map[string]any{"kind": "timeline", "window": w84.live(), "query": ""}, delivery: true},
+		{name: "base-measures-compare-84d", kind: "measures", view: map[string]any{"kind": "measures", "window": c84.live(), "query": ""}, delivery: true},
+		{name: "base-pipeline-84d", kind: "pipeline", view: map[string]any{"kind": "pipeline", "window": w84.live()}, delivery: true},
+		{name: "base-pipeline-compare-84d", kind: "pipeline", view: map[string]any{"kind": "pipeline", "window": c84.live()}, delivery: true},
 	}
 }
 
@@ -431,7 +436,8 @@ func planCase(ctx context.Context, r *report, explain *explainer, one *measuredC
 }
 
 // judgePaint prints each read of the paint with its statements and plans, and judges its budgets
-// (outside -info).
+// (outside -info): a read of the evals' first paint by its body too, and a read of the Delivery
+// page by its database time alone, with a line saying its body was measured outside the budget.
 func judgePaint(r *report, o options, measured []measuredCase) {
 	total, plans := 0.0, 0
 	for _, one := range measured {
@@ -469,7 +475,12 @@ func judgePaint(r *report, o options, measured []measuredCase) {
 		if one.budgetMs > 0 && own > one.budgetMs {
 			r.fail("paint case=%s db_ms=%.2f is over its budget of %.0f ms", one.name, own, one.budgetMs)
 		}
-		if gz > budgetGzip {
+		switch {
+		case one.delivery:
+			r.result("paint-body case=%s gzip_bytes=%d budget=none: a read of the Delivery page, whose body is measured and judged by no "+
+				"budget, since the %d-byte budget of R8 bounds the evals' first paint, which the root's R3 keeps the row-level merge timeline out of",
+				one.name, gz, budgetGzip)
+		case gz > budgetGzip:
 			r.fail("paint case=%s gzip_bytes=%d is over its budget of %d", one.name, gz, budgetGzip)
 		}
 		if one.serverBudgetMs > 0 && (one.serverMs < 0 || one.serverMs > one.serverBudgetMs) {

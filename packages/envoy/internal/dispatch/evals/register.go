@@ -3,6 +3,7 @@ package evals
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"slices"
 	"sort"
@@ -403,8 +404,15 @@ func validateRegistration(change Registration) error {
 		if series.Agg.Set && !slices.Contains(aggs, series.Agg.Value) {
 			return fieldRefusal(CodeFieldInvalid, at+".agg", "series %s: agg %q is not one of %s", series.Series, series.Agg.Value, strings.Join(aggs, ", "))
 		}
-		if series.MinN.Set && series.MinN.Value != nil && *series.MinN.Value < 0 {
-			return fieldRefusal(CodeFieldInvalid, at+".min_n", "series %s: min_n %d is below 0", series.Series, *series.MinN.Value)
+		if series.MinN.Set && series.MinN.Value != nil {
+			// eval_series.min_n is a Postgres integer, so a min_n past math.MaxInt32 is one the
+			// insert could not bind, and is refused here, named, as one below 0 is.
+			switch minN := *series.MinN.Value; {
+			case minN < 0:
+				return fieldRefusal(CodeFieldInvalid, at+".min_n", "series %s: min_n %d is below 0", series.Series, minN)
+			case minN > math.MaxInt32:
+				return fieldRefusal(CodeFieldInvalid, at+".min_n", "series %s: min_n %d is past %d, the largest the store holds", series.Series, minN, math.MaxInt32)
+			}
 		}
 		if series.Links.Set {
 			if err := validateLinks(series.Links.Value, at+".links"); err != nil {
