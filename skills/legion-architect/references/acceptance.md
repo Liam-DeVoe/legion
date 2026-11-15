@@ -82,20 +82,19 @@ Any other failed read decides nothing: sign off nothing on it.
 
 While a line holds the sign-off:
 
-1. Subscribe to the document's own events with `envoy_subscribe`:
-   `notifications.dispatch.document.<PROJECT>.merge-holds-md.>`. Dispatch publishes each event of
-   a project document on `notifications.dispatch.document.<PROJECT>.<slug>.<type>`, and a new
-   version of it, the controller's edit included, has the type `artifact.version`.
-2. End the turn with a line that starts with WAITING and names the hold: its repositories, its
-   reason and its end.
-3. A live session gets the document's event when the controller edits it. A session whose pod the
-   daemon released hears no document event: its next delivery wakes it, a notice or a task from
-   the daemon, a message on its role topic, or a mention. So read the document again at every
-   wake, whatever woke you, before you sign off.
-4. Once no line holds a sign-off of your tree, `envoy_unsubscribe` that topic, and accept as
-   [Accepting](#accepting) says.
+1. End the turn with a line that starts with WAITING and names the hold: its repositories, its
+   reason and its end. Subscribe to nothing for the hold.
+2. At each change of the document, the daemon sends a `merge-holds-changed` notice to the
+   architect of each issue in `accepting`. The notice wakes you also when the daemon released your
+   pod, which a Dispatch document event does not do. Its `reason` names the document.
+3. On that notice, read the document again. If a line still holds the sign-off, end the turn
+   again as step 1 says. If no line holds it, accept as [Accepting](#accepting) says.
+4. Another wake tells you nothing of the hold: a notice of another kind, a task, a message on your
+   role topic, or a mention. Read the document again before you sign off on any wake.
 
-The document is the whole hold, so send the controller no message about it.
+The passing of an end time sends no event. The controller deletes a line whose end is past on its
+next tick, and that deletion sends the notice. The document is the whole hold, so send the
+controller no message about it.
 
 ## The last round
 

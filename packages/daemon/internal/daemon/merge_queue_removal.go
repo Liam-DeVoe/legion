@@ -115,26 +115,13 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 //
 // Each attempt reads, in this order, what ends or holds the row. The row finishes undelivered,
 // with one log line naming why, once the issue has left merging at the row's head (mergingAt, the
-// read row's own rule), and once the merger's claim has failed or retired, since that claim will
-// not hold its role again. While the root's design gate is closed (designGateClosed) a released
-// merger is neither woken nor told, and the row waits for the gate to open: a merger the gate holds
-// may not know the gate closed, and woken by this message it could enqueue the pull request again
-// against the gate, which holds the merge (mergerWaitsForTheDesignGate holds its start the same
-// way). A merger whose session holds its role is told at once, gate or none. The three other
-// answers of the confirmed publish route keep the ordinary retry, as they do for a phase-ended
-// message: a holder that did not confirm in time (notify.ErrNotDelivered), one that does not
-// advertise the delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS
-// grant denies (notify.ErrPublishDenied).
+// read row's own rule). The rest is the delivery every merger's row makes (tellMerger).
 func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, payload record.MergeQueueRemoval) error {
 	if r.notices == nil {
 		return errors.New("merge-queue removal executor has no Envoy publisher")
 	}
 	if r.supervisor == nil {
 		return errors.New("merge-queue removal executor has no claim supervisor")
-	}
-	token, err := claim.NewToken(r.project, row.Issue, claim.RoleMerger)
-	if err != nil {
-		return fmt.Errorf("the merger of %s: %w", row.Issue, err)
 	}
 	issue, pr, left, err := r.mergingAt(ctx, row.Issue, payload.Number, payload.Head)
 	if err != nil {
@@ -145,9 +132,38 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 		r.log.Info("outbox merge-queue removal finished undelivered: the issue left merging at that head", append(attributes, "why", left)...)
 		return nil
 	}
+	return r.tellMerger(ctx, row, issue, "merge-queue removal", payload.Message(row.Issue, pr.Repo), attributes)
+}
+
+// tellMerger publishes message, the text of a row that only the merger of the row's issue reads,
+// to that merger's Envoy topic, once the row's executor has found that the issue still works the
+// phase the row is about: a merge-queue removal (mergeQueueRemoval) and a change of the merge holds
+// (mergeHoldsChanged). what names the row in its log lines and its waits, and attributes are the
+// row's fields that every line carries.
+//
+// The row finishes undelivered, with one log line, once the merger's claim has failed or retired,
+// since that claim will not hold its role again. While the root's design gate is closed
+// (designGateClosed) a released merger is neither woken nor told, and the row waits for the gate to
+// open: a merger the gate holds may not know the gate closed, and woken by the message it could
+// enqueue the pull request again against the gate, which holds the merge
+// (mergerWaitsForTheDesignGate holds its start the same way). A merger whose session holds its
+// role is told at once, gate or none. A released merger is woken (wakeForDelivery) before the
+// publish, which would otherwise answer ErrNoHolder for it on every attempt and wait for a session
+// nothing brings back. The row waits on its backoff until the woken session holds the role, as it
+// waits while the listener answers that nobody holds it (notify.ErrNoHolder) or that its holder is
+// unresponsive (notify.ErrHolderUnresponsive). The three other answers of the confirmed publish
+// route keep the ordinary retry, as they do for a phase-ended message: a holder that did not
+// confirm in time (notify.ErrNotDelivered), one that does not advertise the delivery mode
+// (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
+// (notify.ErrPublishDenied).
+func (r *outbox) tellMerger(ctx context.Context, row record.OutboxRow, issue record.Issue, what, message string, attributes []any) error {
+	token, err := claim.NewToken(r.project, row.Issue, claim.RoleMerger)
+	if err != nil {
+		return fmt.Errorf("the merger of %s: %w", row.Issue, err)
+	}
 	held := r.supervisedClaim(token)
 	if held.State == supervise.StateFailed || held.State == supervise.StateRetired {
-		r.log.Info("outbox merge-queue removal finished undelivered: the merger's claim has failed or retired", append(attributes, "state", held.State)...)
+		r.log.Info("outbox "+what+" finished undelivered: the merger's claim has failed or retired", append(attributes, "state", held.State)...)
 		return nil
 	}
 	if held.Released() {
@@ -156,29 +172,26 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 			return err
 		}
 		if closed {
-			return wait.Errorf("the merge-queue removal of %s waits for the design gate of %s to open before it wakes the released merger", row.Issue, issue.Tree)
+			return wait.Errorf("the %s of %s waits for the design gate of %s to open before it wakes the released merger", what, row.Issue, issue.Tree)
 		}
 	}
-	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
-	// merger on every attempt and wait for a session nothing brings back.
-	if woken, err := r.wakeForDelivery(ctx, token, "the merge-queue removal of "+row.Issue); err != nil {
+	if woken, err := r.wakeForDelivery(ctx, token, "the "+what+" of "+row.Issue); err != nil {
 		return err
 	} else if woken {
-		return wait.Errorf("the merge-queue removal of %s waits for its merger's released pod to come back", row.Issue)
+		return wait.Errorf("the %s of %s waits for its merger's released pod to come back", what, row.Issue)
 	}
-	message := payload.Message(row.Issue, pr.Repo)
 	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
-		r.log.Info("outbox merge-queue removal delivered to the merger", attributes...)
+		r.log.Info("outbox "+what+" delivered to the merger", attributes...)
 		return nil
 	case errors.Is(published, notify.ErrNoHolder):
-		return wait.Errorf("the merge-queue removal of %s waits for a session to hold its merger's role: %w", row.Issue, published)
+		return wait.Errorf("the %s of %s waits for a session to hold its merger's role: %w", what, row.Issue, published)
 	case errors.Is(published, notify.ErrHolderUnresponsive):
-		return wait.Errorf("the merge-queue removal of %s waits for its merger, whose session the listener reports %s: %w",
-			row.Issue, notify.StateUnresponsive, published)
+		return wait.Errorf("the %s of %s waits for its merger, whose session the listener reports %s: %w",
+			what, row.Issue, notify.StateUnresponsive, published)
 	}
-	return fmt.Errorf("publish the merge-queue removal of %s to its merger: %w", row.Issue, published)
+	return fmt.Errorf("publish the %s of %s to its merger: %w", what, row.Issue, published)
 }
 
 // mergingAt reads, in one transaction, what a merge-queue row reads of its issue before it acts:

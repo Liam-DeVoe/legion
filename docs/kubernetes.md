@@ -1887,6 +1887,43 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release whose controller and architects hold claims and whose daemon tells a held role of a merge hold
+
+This release adds the outbox kind `merge_holds_changed`, the notice kind `merge-holds-changed`, and two suspension sources of a claim, `controller` and `architect`.
+Its migration `20261115103123_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, so it stands above `20261114031356_merge_queue_removal`.
+Its migrations `20261115060739_claim_suspended_by_controller` and `20261115083448_claim_suspended_by_architect` add the two sources to the claims' check (`claims_suspended_by_check`).
+The migrations change no column.
+
+**The rows of the new kinds must go before the earlier image is pinned.**
+A `merge_holds_changed` row tells the merger of an issue in `merging` that the project's merge holds document changed, and a `notice` row of kind `merge-holds-changed` tells the architect of an issue in `accepting` the same.
+An earlier release puts no `merge_holds_changed` row in an outbox lane (`laneKinds` in `record/outbox.go`), so such a row waits through the rollback and runs at the roll forward, when the change it tells of may be long over.
+An earlier release refuses the notice at each attempt (`unknown notice kind`, `validNoticeKind` in `record/outbox.go`), so nobody gets it.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The message to a merger, and the notice to an architect, that the merge holds document changed.
+delete from outbox where kind = 'merge_holds_changed';
+delete from outbox where kind = 'notice' and payload->>'kind' = 'merge-holds-changed';
+```
+
+Each deleted row costs one thing: one merger or one architect is not told of one change of the merge holds document.
+After the rollback, no role reads that document, because the earlier release's role prompts and skills do not name it, so a line in it holds no sign-off and no merge.
+
+**The earlier release does not hold a claim that the controller or an architect suspended, unless you move it to the operator.**
+An earlier release keeps a claim suspended against its own rules only when the operator suspended it (`suspended_by = 'operator'`, supervise's `RuleHolds` and the repair in `admit.go`), and it repairs every other suspended claim as it repairs one the daemon itself suspended.
+To keep each such claim suspended through the rollback, run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- Hand each suspension the controller or an architect holds to the operator.
+update claims set suspended_by = 'operator'
+  where state = 'suspended' and suspended_by in ('controller', 'architect');
+```
+
+It prints `UPDATE <n>`, and a rerun prints `UPDATE 0`.
+Each moved claim then stays suspended until the operator resumes it with `legion claims resume`, or the controller starts it in a new session with `fresh_session`: the earlier release gives the controller no resume, and the architects no operation on a claim.
+Leave the statement out, and the earlier release repairs each such claim as one the daemon suspended.
+The two checks keep the new names after the rollback, and the rollback needs no statement for them: an earlier release never writes them, so the checks refuse nothing that release writes.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.

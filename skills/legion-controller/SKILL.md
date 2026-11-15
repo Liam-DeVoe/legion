@@ -206,7 +206,10 @@ merge holds are one Dispatch document of the project, `merge-holds.md` (slug `me
 and only you write it. Each hold is one line under its `Holds` heading: the repositories it holds,
 its reason and its end. No line means no hold, and a project with no such document has none. The
 architect reads the document before every `sign_off`, and the merger before it merges, so the
-document is the whole hold. Send a hold to no tree, no architect and no role topic.
+document is the whole hold. Send a hold to no tree, no architect and no role topic. At each change
+of the document the daemon sends a `merge-holds-changed` notice to the architect of each issue in
+`accepting`, and a message of the same text to the merger of each issue in `merging`. That wakes a
+held role, also one whose pod the daemon released.
 
 Write a hold once, as one line, when a person or your deployment instructions ask for it:
 
@@ -230,8 +233,8 @@ dispatch doc-edit --project <PROJECT> --artifact merge-holds-md \
   --summary 'Lift the hold on <repositories>'
 ```
 
-On each `tick`, read the document and delete each line whose end is past. A held role waits on
-the document's own events, and the passing of a time publishes no event.
+On each `tick`, read the document and delete each line whose end is past. The passing of a time
+sends no event and wakes no held role; the deletion does.
 
 The document's header, with no line under `Holds`:
 

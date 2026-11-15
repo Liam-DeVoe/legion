@@ -267,9 +267,14 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
 	}
 
+	// The Dispatch durable hears every issue event, the project's repository mapping changes, and
+	// every event of the project's merge holds document (mergeHoldsSubject). A durable an earlier
+	// daemon created with fewer filters takes the whole list here and keeps its position
+	// (openConsumer): JetStream keeps the stream sequence it delivers next, so an event of the
+	// document at or past that sequence is delivered to it, and one it has passed is not.
 	dispatch, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
-		FilterSubjects: []string{"notifications.dispatch.issue.>", mappingSubject(spec.Project)},
+		FilterSubjects: []string{"notifications.dispatch.issue.>", mappingSubject(spec.Project), mergeHoldsSubject(spec.Project)},
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        spec.AckWait,
 	})

@@ -693,6 +693,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.mergeQueueRead(ctx, row, value)
 	case record.MergeQueueRemoval:
 		return r.mergeQueueRemoval(ctx, row, value)
+	case record.MergeHoldsChanged:
+		return r.mergeHoldsChanged(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
@@ -1569,9 +1571,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // the round replaces the pod. It rides the role-message lane (record.LaneRoleMessage), so it
 // waits behind no architect notice of its issue.
 //
-// It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
-// first. A role whose pod an idle release took is not brought back to be asked: its topic has no
-// holder, and the round ends at its bound whether or not the role answers.
+// It wakes nothing, where phaseEnded, hookPrompt and the merger's two rows (tellMerger) call
+// wakeForDelivery first. A role whose pod an idle release took is not brought back to be asked:
+// its topic has no holder, and the round ends at its bound whether or not the role answers.
 //
 // An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
 // row reads the claim before it publishes, through the machine's view as every other read of a
@@ -1627,17 +1629,18 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 // one delivery. It is the publish that phaseEnded, hookPrompt and updateAsk share. Each of them
 // decides what comes before the publish, and each wraps the error it returns.
 //
-// Three other executors publish to a role's topic, each through its own call of the publisher and
+// Three other paths publish to a role's topic, each through its own call of the publisher and
 // with its own rules for what the publisher answers: deliverNotice, an architect's notice, holds
 // the row for a topic with no holder while the owning architect can hold its role again
 // (noticeAnswered); roleMessage ends the row for a topic with no holder, waits for a holder
 // the listener calls unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder
 // that refuses the delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own
-// NATS grant denies (notify.ErrPublishDenied); and mergeQueueRemoval, the merger's message of a
-// removal from the merge queue, holds the row for a topic with no holder and for an unresponsive
-// holder while the merger's claim has neither failed nor retired, and retries every other
-// failure (merge_queue_removal.go). So whoever changes the rule for a topic with no holder must
-// read all six executors, not this function alone.
+// NATS grant denies (notify.ErrPublishDenied); and tellMerger, the merger's message of a removal
+// from the merge queue (mergeQueueRemoval) or of a change of the merge holds (mergeHoldsChanged),
+// holds the row for a topic with no holder and for an unresponsive holder while the merger's
+// claim has neither failed nor retired, and retries every other failure
+// (merge_queue_removal.go). So whoever changes the rule for a topic with no holder must read all
+// seven executors, not this function alone.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row: noHolder is logged at Info with
 // fields, and the answer is false with no error. Every other failure is returned as the

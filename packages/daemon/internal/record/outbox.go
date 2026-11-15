@@ -52,6 +52,9 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
+	// OutboxKindMergeHoldsChanged tells the merger of an issue in merging that the project's merge
+	// holds document changed (MergeHoldsChanged).
+	OutboxKindMergeHoldsChanged OutboxKind = "merge_holds_changed"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
@@ -67,15 +70,16 @@ const (
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
 // none of them back. The role-message lane runs the kinds the daemon addresses to one role of
 // the issue on that role's own topic: the end of a phase and a hook's words, which go to a phase
-// worker (phase_ended, hook_prompt), the message that tells the merger its pull request left the
-// merge queue (merge_queue_removal), and an update round's ask, which goes to any role whose
+// worker (phase_ended, hook_prompt), the messages that tell the merger its pull request left the
+// merge queue (merge_queue_removal) and that the project's merge holds changed
+// (merge_holds_changed), and an update round's ask, which goes to any role whose
 // process runs in the issue's pod, its architect included (update_ask). It also runs the read of
 // GitHub that comes before a merge-queue removal's message (merge_queue_read). It is a lane of its
 // own because the board lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
 // phase ended, given the words a hook fired on a move back, told that its pull request left the
-// merge queue, or asked to get ready for the replacement of its pod must hear it while that is
-// news, not after whatever its tree's architect is owed.
+// merge queue or that the merge holds changed, or asked to get ready for the replacement of its
+// pod must hear it while that is news, not after whatever its tree's architect is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -94,7 +98,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
+	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged},
 	LaneClaim:       {OutboxKindClaimRelease},
 }
 
@@ -1219,6 +1223,53 @@ func (p MergeQueueRemoval) Message(issue, repo string) string {
 		issue, repo, p.Number, p.Head, unread)
 }
 
+// MergeHoldsDocument is the slug of the Dispatch document of a project that holds the project's
+// merge holds (merge-holds.md). Only the project's controller writes it, one line per hold
+// (skill://legion-controller, "Merge holds"). An architect reads it before every sign_off, and a
+// merger reads it before it merges. Dispatch publishes each event of the document on
+// notifications.dispatch.document.<project>.merge-holds-md.<type>, which the daemon's Dispatch
+// consumer hears (intake.MergeHoldsChanged).
+const MergeHoldsDocument = "merge-holds-md"
+
+// MergeHoldsChangedReason is what a role is told when an event of project's merge holds document
+// reaches the daemon: the holds changed, the document that holds them, and what to do. The
+// architect's merge-holds-changed notice carries it as its reason, and the merger's message
+// (MergeHoldsChanged.Message) carries it after the issue key, so the two roles read one text. It
+// names no hold: the document is the whole hold, and the role reads the document again. Every
+// role in accepting or merging is told, held or not, so the text tells each one what to do in
+// both cases. The sentences are short and plain, because an agent reads them (ASD-STE100).
+func MergeHoldsChangedReason(project string) string {
+	return fmt.Sprintf("The merge holds of project %s changed. They are in dispatch://%s/artifact/%s."+
+		" Read that document again."+
+		" If a line holds your sign-off or your merge, end your turn again with a WAITING line that names the hold."+
+		" If no line holds it, go on.",
+		project, project, MergeHoldsDocument)
+}
+
+// MergeHoldsChanged tells the merger of an issue in merging, on the merger's own role topic, that
+// the merge holds document of Project changed (MergeHoldsDocument). The fact of an event of that
+// document writes it (intake.MergeHoldsChanged), and the same fact writes a merge-holds-changed
+// notice to the architect of each issue in accepting. A held merger ends its turn with a WAITING
+// line and subscribes to nothing, so this row is what wakes it when a hold changes, whether its pod
+// was released or not. The row names no role: the merger is the one role it is ever for.
+//
+// The row is held as a merge-queue removal is held (MergeQueueRemoval): it wakes a released merger
+// and waits until the merger's session holds its role, and while the root's design gate is closed
+// it neither wakes nor tells a released merger. It ends undelivered when the issue has left
+// merging (its phase is not merging, it is out of the workflow, or its tree lingers), and when the
+// merger's claim is failed or retired.
+type MergeHoldsChanged struct {
+	Project string `json:"project"`
+}
+
+func (MergeHoldsChanged) OutboxKind() OutboxKind { return OutboxKindMergeHoldsChanged }
+
+// Message is what the runner publishes for issue to its merger: the issue key, as a phase-ended
+// message starts, and then the text every role is told of the change (MergeHoldsChangedReason).
+func (p MergeHoldsChanged) Message(issue string) string {
+	return issue + ": " + MergeHoldsChangedReason(p.Project)
+}
+
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if err := validateOutboxPayload(payload); err != nil {
@@ -1385,6 +1436,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindMergeQueueRemoval:
 		value := MergeQueueRemoval{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindMergeHoldsChanged:
+		value := MergeHoldsChanged{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -1647,6 +1704,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Number < 1 || value.Head == "" {
 			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
 		}
+	case MergeHoldsChanged:
+		if value.Project == "" {
+			return fmt.Errorf("a merge-holds change names the project whose merge holds document changed")
+		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
 	}
@@ -1687,13 +1748,21 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // workerBackgroundStalled). It is that worker's issue's architect's to read, and it is a telling
 // and not a repair: it names the kinds the session reported and how long the report has stood,
 // and says that nothing was sent and nothing will be sent for it.
+//
+// `merge-holds-changed` is an event of the project's merge holds document (MergeHoldsDocument):
+// the controller added, changed or deleted a hold. The daemon tells the architect of each issue in
+// accepting, because a line of the document can hold that architect's sign_off, and the architect
+// that a hold stopped waits with a WAITING line and subscribes to nothing (workflow's
+// mergeHoldsChanged). Its reason names the document and says to read it again
+// (MergeHoldsChangedReason). The merger of each issue in merging is told the same text by a row of
+// its own (MergeHoldsChanged), since a notice reaches only an architect.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted",
-	"session-lost", "session-store-fault",
+	"session-lost", "session-store-fault", "merge-holds-changed",
 }
 
 // validNoticeKind says whether kind is a notice an architect is told.
