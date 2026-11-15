@@ -873,8 +873,10 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A reply to the frame that carried a held text's findings names the held text's id: it is
-	// the writer's answer, kept with the held text, and no message (held_routes.go).
-	if s.answerHeldFrame(w, r, actor, input) {
+	// the writer's answer, kept with the held text, and no message (held_routes.go). A reply to a
+	// definition's side question names the definition's id: it is the asking session's answer,
+	// kept with the definition, and no message either (definitions.go).
+	if s.answerDefinitionFrame(w, r, actor, input) || s.answerHeldFrame(w, r, actor, input) {
 		return
 	}
 	// An agent's answer to a person is the reviewer's to read (Decision 9); an error report is

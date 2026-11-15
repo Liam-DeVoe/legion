@@ -2957,6 +2957,57 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/asks/{id}/rewrite": {
+      "post": {
+        "description": "Rewrite an open question for its reader (INFRA-3231's R7): answers 202 at once with {ask_id, started, rewrite} and rewrites in the background. rewrite is {state, by, at, original, reason?} as every ask read carries it: rewriting while the rewrite runs. One rewrite of an ask runs at a time: a request while one runs starts none (started false) and gets that run's result. The rewrite reads Dispatch's record and, where the session that asked it is running or unresponsive and its host advertises btw, its answer to one side question Dispatch sends it as a message on its own conversation, waited for at most 60 s. A rewrite that changes an option's id or label, their number or order, the choice, a short first line, a `Ref: ` line, a picture line, a link or a decision block's option line is not applied, nor one written over a wording the asking agent changed meanwhile; the ask then stays as it was, and ask.rewrite_failed carries why. An applied rewrite is a quiet ask.edited from Dispatch holding the old wording, who asked, and whether the agent's answer was read; ask.rewriting, ask.edited and ask.rewrite_failed reach no session as a card. Each request is recorded rewrite_requested. A question that is not open is 409 ASK_NOT_OPEN, an approval request 409 ASK_KIND_FIXED; it needs the person scope, and with no model group for Rewrite and Define (DISPATCH_REWRITE_DEFINE_MODEL_*) it is 503 REWRITE_NO_MODEL.",
+        "operationId": "postApiV1AsksByIdRewrite",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskRewriteAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/block-links": {
       "get": {
         "description": "Links from blocks of one document to blocks of another: ?from=\u003cdocument ref\u003e\u0026to=\u003cdocument ref\u003e; both block nodes, the edge kind, and when and in which version the source wrote each, newest first.",
@@ -4174,6 +4225,109 @@
           }
         },
         "x-auth": "any"
+      }
+    },
+    "/api/v1/definitions": {
+      "post": {
+        "description": "Define words a person selected (INFRA-3231's Decision 24) {ask_id?, document?, words}: the words are in the ask ask_id names, a decision block's included, or in the document document names, of an issue or a project, read at its latest version; name one of the two (400 DEFINITION_INPUT for neither, both, a file or an image or an agent conversation's upload, or words that name no words; at most 20 selections of 500 characters each). Answers 201 at once with the definition read from Dispatch's record: {id, person, ask_id, artifact_id, version, words, inputs, definitions, failure?, agent, calls, created_at}, definitions each {words, meaning, links} and failure why the model gave none. Words in an ask also send the session that asked it one side question, what it means by those words, when Envoy reads that session live and its host advertises btw: a frame from Dispatch whose message id is the definition's id, with no message row and no event; its answer comes within 60 s to POST /api/v1/messages/{id}/reply and GET /api/v1/definitions/{id} reads it in agent {state: none, waiting, answered or unanswered, session?, question?, answer?, answered_at?, until?}. The definition changes nothing in the record, appends no event, is kept for the caller alone, and is recorded as the caller's question about those words (GET /api/v1/readers/{login}/words). It needs the person scope; with no model group for Rewrite and Define (DISPATCH_REWRITE_DEFINE_MODEL_*) it is 503 DEFINE_NO_MODEL.",
+        "operationId": "postApiV1Definitions",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefineInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Definition"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/definitions/{id}": {
+      "get": {
+        "description": "One of the caller's own definitions (POST /api/v1/definitions), the asking session's answer with it once it came. Another person's, or none, is 404 DEFINITION_NOT_FOUND. It needs the person scope.",
+        "operationId": "getApiV1DefinitionsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Definition"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
       }
     },
     "/api/v1/delivery/measures": {
@@ -8391,6 +8545,51 @@
         "x-write-scope": "session"
       }
     },
+    "/api/v1/me/definitions": {
+      "get": {
+        "description": "The caller's own definitions (POST /api/v1/definitions), the newest first, at most 200; no other person's. It needs the person scope.",
+        "operationId": "getApiV1MeDefinitions",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Definition"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/me/documents/{id}/read": {
       "get": {
         "description": "The caller's last read version of a document {artifact_id, version, read_at}; version and read_at are null when they have read none.",
@@ -9169,7 +9368,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HeldRead"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/HeldRead"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DefinitionAnswerRead"
+                    }
+                  ]
                 }
               }
             }
@@ -12434,6 +12640,9 @@
               }
             ]
           },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
           "suggestion": {
             "anyOf": [
               {
@@ -14802,6 +15011,25 @@
         ],
         "type": "object"
       },
+      "AskRewriteAnswer": {
+        "properties": {
+          "ask_id": {
+            "type": "string"
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
+          "started": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ask_id",
+          "started",
+          "rewrite"
+        ],
+        "type": "object"
+      },
       "AskSnooze": {
         "properties": {
           "snoozed_until": {
@@ -15044,6 +15272,9 @@
           },
           "revision": {
             "type": "integer"
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "state": {
             "type": "string"
@@ -16288,6 +16519,9 @@
               }
             ]
           },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
           "suggestion": {
             "anyOf": [
               {
@@ -16614,6 +16848,9 @@
               }
             ]
           },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
           "suggestion": {
             "anyOf": [
               {
@@ -16783,6 +17020,9 @@
                 "type": "null"
               }
             ]
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "suggestion": {
             "anyOf": [
@@ -17866,6 +18106,185 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "DefineInput": {
+        "properties": {
+          "ask_id": {
+            "type": "string"
+          },
+          "document": {
+            "type": "string"
+          },
+          "words": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "words"
+        ],
+        "type": "object"
+      },
+      "Definition": {
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/DefinitionAgent"
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ask_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "calls": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewerCall"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/DefinitionMeaning"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "failure": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "inputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "person": {
+            "type": "string"
+          },
+          "version": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "words": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "person",
+          "ask_id",
+          "artifact_id",
+          "version",
+          "words",
+          "inputs",
+          "definitions",
+          "agent",
+          "calls",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "DefinitionAgent": {
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "answered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "until": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
+      "DefinitionAnswerRead": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state"
+        ],
+        "type": "object"
+      },
+      "DefinitionMeaning": {
+        "properties": {
+          "links": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "meaning": {
+            "type": "string"
+          },
+          "words": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "words",
+          "meaning",
+          "links"
+        ],
         "type": "object"
       },
       "DeliveryComponent": {
@@ -20666,7 +21085,7 @@
             "type": "string"
           },
           "original": {
-            "$ref": "#/components/schemas/HeldWording"
+            "$ref": "#/components/schemas/TextWording"
           },
           "outcome": {
             "type": "string"
@@ -20690,7 +21109,7 @@
           "rewrite": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/HeldWording"
+                "$ref": "#/components/schemas/TextWording"
               },
               {
                 "type": "null"
@@ -20707,7 +21126,7 @@
             "type": "string"
           },
           "wording": {
-            "$ref": "#/components/schemas/HeldWording"
+            "$ref": "#/components/schemas/TextWording"
           },
           "writer": {
             "type": "string"
@@ -20754,29 +21173,6 @@
         "required": [
           "state",
           "deadline"
-        ],
-        "type": "object"
-      },
-      "HeldWording": {
-        "properties": {
-          "body": {
-            "type": "string"
-          },
-          "multiple": {
-            "type": "boolean"
-          },
-          "options": {
-            "items": {
-              "$ref": "#/components/schemas/AskOption"
-            },
-            "type": "array"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "body"
         ],
         "type": "object"
       },
@@ -21136,6 +21532,9 @@
           },
           "revision": {
             "type": "integer"
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "snoozed_until": {
             "type": [
@@ -21527,6 +21926,9 @@
           },
           "revision": {
             "type": "integer"
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "state": {
             "type": "string"
@@ -22248,6 +22650,9 @@
               "string"
             ]
           },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
           "route": {
             "type": [
               "null",
@@ -22507,6 +22912,9 @@
           },
           "revision": {
             "type": "integer"
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "state": {
             "type": "string"
@@ -23382,6 +23790,9 @@
               }
             ]
           },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
+          },
           "target": {
             "type": [
               "null",
@@ -23467,6 +23878,9 @@
                 "type": "null"
               }
             ]
+          },
+          "rewrite": {
+            "$ref": "#/components/schemas/TextRewrite"
           },
           "target": {
             "type": [
@@ -25550,7 +25964,7 @@
           "rewrite": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/HeldWording"
+                "$ref": "#/components/schemas/TextWording"
               },
               {
                 "type": "null"
@@ -26428,6 +26842,56 @@
         },
         "required": [
           "ok"
+        ],
+        "type": "object"
+      },
+      "TextRewrite": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "original": {
+            "$ref": "#/components/schemas/TextWording"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "by",
+          "at",
+          "original"
+        ],
+        "type": "object"
+      },
+      "TextWording": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOption"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
         ],
         "type": "object"
       },

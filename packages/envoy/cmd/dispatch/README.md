@@ -3168,6 +3168,40 @@ The `dispatch` command's `held`, `held-edit` and `held-post` call them.
 `POST /api/v1/reviewer/draft {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, its rewrite and each model call's deployment and served model, and writes nothing.
 The leased sweep (lease `reviewer-sweep`, every 10 seconds, Background loops above) reviews again a text a stopped process left in review, and acts on a writer that did not act in time or has gone.
 
+### Rewrite and Define
+
+A person's Rewrite of an open question and Define of words they selected (INFRA-3231's R7, `internal/dispatch/api/ask_rewrite.go` and `definitions.go`) call the component's Rewrite and Define (`internal/dispatch/reviewer`) with the model group `DISPATCH_REWRITE_DEFINE_MODEL_*` and the rule sets of `DISPATCH_REVIEWER_RULES`.
+Both are on whenever that group is set, because a person chooses to use them; with it unset their routes answer `503` (`REWRITE_NO_MODEL`, `DEFINE_NO_MODEL`).
+Every route needs the `person` scope.
+
+- `POST /api/v1/asks/{id}/rewrite` answers `202 {ask_id, started, rewrite}` at once and rewrites in the background.
+  One rewrite of an ask runs at a time (`ask_rewrites`): a request while one runs starts none (`started: false`) and gets that run's result.
+  When a session opened the ask, and Envoy reads it running or unresponsive with a host that advertises `btw`, Dispatch first sends it one side question as its own system actor (`dispatch-reviewer`): a message to that session, on its own conversation and not on the issue, whose text names the ask by its address; the run waits at most 60 seconds for the reply, which stays in that message's thread.
+  A rewrite that breaks what a rewrite keeps (`reviewer.Preserve`: the options' ids, labels, number and order, the choice, a short first line, a `Ref: ` line, a picture line, a link, a decision block's option line) is not applied, and neither is one of a question its agent changed, answered or closed meanwhile.
+  An applied rewrite goes through the edit route's own path (a decision block's through `rewriteDecisionBlock`, which writes a new version of its document) as a quiet `ask.edited` from Dispatch, whose `rewrite` holds who asked, why, whether the agent's answer was read (`agent_answer`) and the side question's message (`question_message`), and whose `previous` holds the original wording.
+  The run emits `ask.rewriting` when it starts, then `ask.edited` or `ask.rewrite_failed` with its reason; all three are quiet, so no session gets them as a card, and the live socket carries them to an open page.
+  Each request is a `writing_check_events` row, `rewrite_requested`, with the person as its reader.
+  A run a stopped process left reads as failed after 6 minutes, and the next request starts a new one.
+- `POST /api/v1/definitions {ask_id? | document?, words}` answers `201` at once with the definition read from Dispatch's record: `{id, person, ask_id, artifact_id, version, words, inputs, definitions, failure?, agent, calls, created_at}`.
+  Words in an ask, a decision block's included, also send the session that asked it one side question when Envoy reads it live and its host advertises `btw`: a frame from Dispatch whose message id is the definition's id, with no message row and no event.
+  Its answer comes to `POST /api/v1/messages/{id}/reply` under that id within 60 seconds and is kept with the definition alone (`agent.state` none, waiting, answered or unanswered); a later answer is `409 DEFINITION_ANSWER_LATE`, and another session's `403 REPLY_FORBIDDEN`.
+  Words in a document of an issue or a project get the record's definition alone.
+  A definition changes nothing in the record and appends no event; each one is the person's question about those words in the word records (`store.RecordDefineUse`, source `define`).
+- `GET /api/v1/definitions/{id}` reads one of the caller's own definitions, and `GET /api/v1/me/definitions` lists them, the newest first, at most 200; another person's is `404 DEFINITION_NOT_FOUND`.
+
+Every read of an ask, a comment, a message and an issue (`GET /api/v1/issues/{key}`) carries `rewrite {state, by, at, original, reason?}` where a rewrite touched it: `rewriting`, `rewritten` or `failed`, `by` `person` or `reviewer`, and `original` the wording before it in the kind's fields.
+An ask's comes from its newest `ask.edited` that is a rewrite, from the reviewer's held rewrite it posted, or from a person's Rewrite that runs or failed after the wording was last written; a comment's, a message's and an issue's from the `held_texts` row of a text the reviewer held and posted rewritten.
+No event payload carries it.
+
+A day's Rewrite runs, with why the failed ones failed:
+
+```sql
+select ask_id, state, reason, asked_by->>'id' as person, started_at, finished_at
+from ask_rewrites
+where started_at >= '2026-11-15' and started_at < '2026-11-16'
+order by started_at;
+```
+
 ### The written rules' refusal
 
 With `DISPATCH_WRITING_RULES_REFUSAL=on`, the `dispatch` command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction of the session's context, and prints the written rules for the person who reads that write (`skills/plain-words`: ce-noslop's tests, its pattern catalog and its terminology, and the six phrases the owner asked to stop).

@@ -505,6 +505,13 @@ func main() {
 		slog.Error("dispatch: build the reviewer", "error", err)
 		os.Exit(1)
 	}
+	// Rewrite and Define (INFRA-3231's R7) are nil where their model group is unset, which
+	// newRewriteDefine logs, and on whenever it is set.
+	rewriteDefine, err := newRewriteDefine(boot.Writing, pacer)
+	if err != nil {
+		slog.Error("dispatch: build Rewrite and Define", "error", err)
+		os.Exit(1)
+	}
 
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
@@ -527,6 +534,7 @@ func main() {
 		Lifetime:       ctx,
 		WritingCheck:   writingCheck,
 		Reviewer:       textReviewer,
+		RewriteDefine:  rewriteDefine,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.

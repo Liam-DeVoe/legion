@@ -19,17 +19,11 @@ import (
 // again, and POST /api/v1/held/{id}/post posts it as written with the writer's reason. Any agent's
 // token reads a held text and no person does; only its writer session edits or posts it.
 
-// heldWording is a held text's wording as a held text's read gives it: an ask's question, its
-// options and its choice, an issue's title and spec, and a comment's or a message's body.
-type heldWording struct {
-	Title    string            `json:"title,omitempty"`
-	Body     string            `json:"body"`
-	Options  []model.AskOption `json:"options,omitempty"`
-	Multiple bool              `json:"multiple,omitempty"`
-}
-
-func wordingOf(text reviewer.Text) heldWording {
-	return heldWording{Title: text.Title, Body: text.Body, Options: text.Options, Multiple: text.Multiple}
+// wordingOf is text's wording as a read gives it (model.TextWording): an ask's question, its
+// options and its choice, an issue's title and spec, and a comment's or a message's body. A held
+// text's read, the draft route and a rewrite's original all give it so.
+func wordingOf(text reviewer.Text) model.TextWording {
+	return model.TextWording{Title: text.Title, Body: text.Body, Options: text.Options, Multiple: text.Multiple}
 }
 
 // reviewFinding is one finding of the reviewer: the rule set, the words, why they break it and
@@ -65,13 +59,13 @@ type heldRead struct {
 	IssueKey string `json:"issue_key,omitempty"`
 	// Wording is the text as it posts now, the writer's edits applied; Original is the text as the
 	// writer first wrote it.
-	Wording  heldWording `json:"wording"`
-	Original heldWording `json:"original"`
+	Wording  model.TextWording `json:"wording"`
+	Original model.TextWording `json:"original"`
 	// Findings are the last review's, Rewrite its rewrite (null for none) and NotApplied why the
 	// rewrite cannot post, "" where it can.
-	Findings   []reviewFinding `json:"findings"`
-	Rewrite    *heldWording    `json:"rewrite"`
-	NotApplied string          `json:"not_applied,omitempty"`
+	Findings   []reviewFinding    `json:"findings"`
+	Rewrite    *model.TextWording `json:"rewrite"`
+	NotApplied string             `json:"not_applied,omitempty"`
 	// Revision counts the writer's edits, from 1.
 	Revision int `json:"revision"`
 	// Deadline is when the writer's time to act ends, null while none runs.

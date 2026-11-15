@@ -133,7 +133,11 @@ type AppContextOptions struct {
 	WritingRules api.WritingRulesConfig
 	// Reviewer is the reviewer of agents' texts to people (cmd/dispatch: DISPATCH_REVIEWER_*);
 	// nil where no reviewer's model group is set. See api.Deps.Reviewer.
-	Reviewer      *api.Reviewer
+	Reviewer *api.Reviewer
+	// RewriteDefine is a person's Rewrite and Define (cmd/dispatch:
+	// DISPATCH_REWRITE_DEFINE_MODEL_*); nil where their model group is unset. See
+	// api.Deps.RewriteDefine.
+	RewriteDefine *api.RewriteDefine
 	Events        *events.Broker
 	App           *auth.AppConfig
 	GitHubAPIBase string
@@ -218,6 +222,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		WritingCheck:           opts.WritingCheck,
 		WritingRules:           opts.WritingRules,
 		Reviewer:               opts.Reviewer,
+		RewriteDefine:          opts.RewriteDefine,
 		Events:                 opts.Events,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,

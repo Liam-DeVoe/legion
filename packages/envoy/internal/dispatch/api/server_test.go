@@ -145,6 +145,9 @@ type testServerOptions struct {
 	// reviewer is the reviewer of agents' texts (Deps.Reviewer); nil is a deployment that sets no
 	// reviewer's model group.
 	reviewer *Reviewer
+	// rewriteDefine is a person's Rewrite and Define (Deps.RewriteDefine); nil is a deployment
+	// that sets no model group for them.
+	rewriteDefine *RewriteDefine
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
@@ -282,6 +285,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		WritingCheck:           writingCheck,
 		WritingRules:           options.writingRules,
 		Reviewer:               options.reviewer,
+		RewriteDefine:          options.rewriteDefine,
 		BuildCommit:            options.buildCommit,
 	})
 	if err != nil {

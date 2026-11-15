@@ -235,6 +235,9 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 	reflect.TypeFor[reviewerDraftInput](): {
 		"kind": markEnum, "text": markDraft, "title": markDraft, "issue": markIdentifier, "reader": markPerson,
 	},
+	// A person's Define (definitions.go): where the words are, and the words, which the ask or the
+	// document already holds.
+	reflect.TypeFor[defineInput](): {"ask_id": markIdentifier, "document": markIdentifier, "words": markQuote},
 
 	// Test hooks.
 	reflect.TypeFor[holdPersistenceInput](): {"duration": markTime},

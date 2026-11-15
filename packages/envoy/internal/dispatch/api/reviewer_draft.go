@@ -53,11 +53,11 @@ func callsOf(calls []reviewer.Call) []reviewerCall {
 // reviewerDraftAnswer is what the draft route answers: the reader the review read for, the
 // findings, the rewrite (null for none) and why it would not post, and each model call.
 type reviewerDraftAnswer struct {
-	Reader     string          `json:"reader"`
-	Findings   []reviewFinding `json:"findings"`
-	Rewrite    *heldWording    `json:"rewrite"`
-	NotApplied string          `json:"not_applied,omitempty"`
-	Calls      []reviewerCall  `json:"calls"`
+	Reader     string             `json:"reader"`
+	Findings   []reviewFinding    `json:"findings"`
+	Rewrite    *model.TextWording `json:"rewrite"`
+	NotApplied string             `json:"not_applied,omitempty"`
+	Calls      []reviewerCall     `json:"calls"`
 }
 
 // reviewerDraftKinds are the kinds a draft may be.

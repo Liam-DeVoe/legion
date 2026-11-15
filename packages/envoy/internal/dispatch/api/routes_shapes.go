@@ -715,11 +715,13 @@ var routeShapes = map[string]routeShape{
 		// An attempt already answered is answered the stored reply, 200, marked duplicate
 		// when nothing was posted; an error report answers the attempt itself. A reply to the
 		// frame that carried a held text's findings names the held text and answers it, 202
-		// (answerHeldFrame).
+		// (answerHeldFrame); a reply to a definition's side question names the definition and
+		// answers its id and the side question's state, 202 (answerDefinitionFrame).
 		Also: []routeAnswer{
 			{Status: http.StatusOK, Body: replyRead{}},
 			{Status: http.StatusOK, Body: model.MessageDelivery{}},
 			{Status: http.StatusAccepted, Body: heldRead{}},
+			{Status: http.StatusAccepted, Body: definitionAnswerRead{}},
 		},
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
@@ -840,6 +842,12 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/reviewer/draft": {
 		Status: http.StatusOK, Response: reviewerDraftAnswer{}, Request: reviewerDraftInput{},
 	},
+	"POST /api/v1/asks/{id}/rewrite": {Status: http.StatusAccepted, Response: askRewriteAnswer{}},
+	"POST /api/v1/definitions": {
+		Status: http.StatusCreated, Response: definitionRead{}, Request: defineInput{},
+	},
+	"GET /api/v1/definitions/{id}":                           {Status: http.StatusOK, Response: definitionRead{}},
+	"GET /api/v1/me/definitions":                             {Status: http.StatusOK, Response: []definitionRead{}},
 	"GET /api/v1/artifacts/{id}/events":                      {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
 	"GET /api/v1/artifacts/{id}/references":                  {Status: http.StatusOK, Response: model.ArtifactReferences{}},
 	"GET /api/v1/artifacts/{id}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},

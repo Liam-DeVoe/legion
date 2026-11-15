@@ -43,6 +43,8 @@ const knownEventTypes: Record<EventType, true> = {
   "ask.opened": true,
   "ask.anchor_refreshed": true,
   "ask.reviewed": true,
+  "ask.rewriting": true,
+  "ask.rewrite_failed": true,
   "ask.edited": true,
   "ask.handed_back": true,
   "ask.asked_of": true,

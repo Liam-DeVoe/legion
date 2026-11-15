@@ -521,102 +521,19 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		actor = *asThePerson
 	}
 
-	previous := model.NewAskEditPrevious(ask)
-	if input.Question != nil {
-		ask.Question = *input.Question
-	}
-	if input.Options != nil {
-		ask.Options = *input.Options
-	}
-	if input.Multiple != nil {
-		ask.Multiple = *input.Multiple
-	}
+	wording := askWording{Question: input.Question, Options: input.Options, Multiple: input.Multiple}
 	if input.Urgency != nil {
-		ask.Urgency = requestedUrgency
+		wording.Urgency = &requestedUrgency
 	}
 	// The bound is on the ask as it will be stored, not on the fields this request named: an
 	// edit that sends options alone is held against the question the row already holds.
-	if err := validateAskWording(ask.Question, ask.Options); err != nil {
+	edited := wording.applyTo(ask)
+	if err := validateAskWording(edited.Question, edited.Options); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The block is the text's source of truth. Write it first, then take the row's values from
-	// what the block parses back to, so trimming can never leave the two disagreeing and the
-	// next settlement has nothing to reconcile. Only the fields this request named are written:
-	// the row holds the question as plain text, so rebuilding the whole body from it would strip
-	// an untouched question's formatting and links and orphan the anchors inside it.
-	if ask.BlockID != nil {
-		blockArtifact, err := blockArtifactOf(ask)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		edit := docs.AskBlockEdit{Question: input.Question, Options: input.Options, Multiple: input.Multiple}
-		if input.Urgency != nil {
-			edit.Urgency = &requestedUrgency
-		}
-		stored, err := s.deps.Docs.SetAskBlockText(documentCtx, blockArtifact, *ask.BlockID, edit, actor)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		ask.Question = stored.Question
-		// The row keeps the options it held where the write left a block no parse reads as a
-		// decision, whose joined options a row must not take for the reason
-		// docs.AskBlockText.SeveralOptionLists holds. It keeps them whichever fields the
-		// request named: a request that sends the question and options together sends those
-		// joined options, since a block holding two lists is refused any others
-		// (docs.SetAskBlockText), so taking the request's own would write that same reading
-		// into the row. The next edit of a block that reads as a decision writes the options
-		// it sends.
-		if stored.SeveralOptionLists {
-			ask.Options = previous.Options
-		} else {
-			ask.Options = stored.Options
-		}
-		ask.Multiple = stored.Multiple
-		ask.Urgency = stored.Urgency
-	}
-	options, err := encodeJSON(ask.Options)
+	ask, previous, event, err := s.writeAskEdit(documentCtx, tx, ask, wording, actor, nil)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	var editedAt time.Time
-	if err := tx.QueryRow(documentCtx, `
-		update asks
-		set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = now()
-		where id = $1
-		returning edited_at
-	`, ask.ID, ask.Question, options, ask.Multiple, ask.Urgency).Scan(&editedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	ask.EditedAt = timestampPtr(&editedAt)
-	reader := refs.NewReader(documentCtx, tx, "ask", ask.ID, s.deps.ServerURL)
-	askChanges, err := refs.ReplaceCountedEdit(documentCtx, tx, reader, previous.Question, ask.Question)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// The edit writes the question and the options, so it is a revision of the ask's parts:
-	// index them, through the same reader, at the edited_at the row took, and name what they
-	// moved beside the rest.
-	askChanges, err = refs.IndexAskPartsCounted(documentCtx, tx, reader, ask, editedAt, askChanges)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	event, err := s.appendEvent(documentCtx, tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
-		"ask.edited",
-		actor,
-		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
-	))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := refs.Stamp(documentCtx, tx, "ask", ask.ID, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -648,6 +565,116 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.reviewAfterSave(r, actor, input, kind, ask.ID, text, subject)
 	}
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// askWording is a rewording of an ask: the fields an edit names, nil for each it leaves as it
+// is. Urgency is already normalized (normalizeAskUrgency).
+type askWording struct {
+	Question *string
+	Options  *[]model.AskOption
+	Multiple *bool
+	Urgency  *string
+}
+
+// applyTo is ask with the wording's named fields in place of its own.
+func (wording askWording) applyTo(ask model.Ask) model.Ask {
+	if wording.Question != nil {
+		ask.Question = *wording.Question
+	}
+	if wording.Options != nil {
+		ask.Options = *wording.Options
+	}
+	if wording.Multiple != nil {
+		ask.Multiple = *wording.Multiple
+	}
+	if wording.Urgency != nil {
+		ask.Urgency = *wording.Urgency
+	}
+	return ask
+}
+
+// writeAskEdit writes wording into the open ask as actor's edit, in tx, whose document context
+// is ctx (docs.API.Join): the edit route's one path, which a rewrite takes too (ask_rewrite.go,
+// rewriteDecisionBlock). The caller has locked the ask's owner and its row and checked the
+// wording's bounds. A block ask's `:::ask` block is written first and the row takes what the
+// block parses back to, so the document's next version holds the wording; the row, the ask's
+// references and its parts follow, and an ask.edited holding the previous wording is appended.
+// rewrite, where set, is the rewrite the edit is: the event carries it and is quiet, so it
+// reaches no session as a card (INFRA-3552's R3). It answers the ask as edited, its previous
+// wording and the event, which the caller publishes once tx commits.
+func (s *server) writeAskEdit(ctx context.Context, tx pgx.Tx, ask model.Ask, wording askWording, actor model.Actor, rewrite *model.AskRewriteEdit) (model.Ask, model.AskEditPrevious, model.Event, error) {
+	previous := model.NewAskEditPrevious(ask)
+	ask = wording.applyTo(ask)
+	// The block is the text's source of truth. Write it first, then take the row's values from
+	// what the block parses back to, so trimming can never leave the two disagreeing and the
+	// next settlement has nothing to reconcile. Only the fields this edit named are written:
+	// the row holds the question as plain text, so rebuilding the whole body from it would strip
+	// an untouched question's formatting and links and orphan the anchors inside it.
+	if ask.BlockID != nil {
+		blockArtifact, err := blockArtifactOf(ask)
+		if err != nil {
+			return model.Ask{}, previous, model.Event{}, err
+		}
+		edit := docs.AskBlockEdit{Question: wording.Question, Options: wording.Options, Multiple: wording.Multiple, Urgency: wording.Urgency}
+		stored, err := s.deps.Docs.SetAskBlockText(ctx, blockArtifact, *ask.BlockID, edit, actor)
+		if err != nil {
+			return model.Ask{}, previous, model.Event{}, err
+		}
+		ask.Question = stored.Question
+		// The row keeps the options it held where the write left a block no parse reads as a
+		// decision, whose joined options a row must not take for the reason
+		// docs.AskBlockText.SeveralOptionLists holds. It keeps them whichever fields the
+		// edit named: an edit that sends the question and options together sends those
+		// joined options, since a block holding two lists is refused any others
+		// (docs.SetAskBlockText), so taking the edit's own would write that same reading
+		// into the row. The next edit of a block that reads as a decision writes the options
+		// it sends.
+		if stored.SeveralOptionLists {
+			ask.Options = previous.Options
+		} else {
+			ask.Options = stored.Options
+		}
+		ask.Multiple = stored.Multiple
+		ask.Urgency = stored.Urgency
+	}
+	options, err := encodeJSON(ask.Options)
+	if err != nil {
+		return model.Ask{}, previous, model.Event{}, err
+	}
+	var editedAt time.Time
+	if err := tx.QueryRow(ctx, `
+		update asks
+		set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = now()
+		where id = $1
+		returning edited_at
+	`, ask.ID, ask.Question, options, ask.Multiple, ask.Urgency).Scan(&editedAt); err != nil {
+		return model.Ask{}, previous, model.Event{}, err
+	}
+	ask.EditedAt = timestampPtr(&editedAt)
+	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL)
+	askChanges, err := refs.ReplaceCountedEdit(ctx, tx, reader, previous.Question, ask.Question)
+	if err != nil {
+		return model.Ask{}, previous, model.Event{}, err
+	}
+	// The edit writes the question and the options, so it is a revision of the ask's parts:
+	// index them, through the same reader, at the edited_at the row took, and name what they
+	// moved beside the rest.
+	askChanges, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, editedAt, askChanges)
+	if err != nil {
+		return model.Ask{}, previous, model.Event{}, err
+	}
+	payload := model.NewAskEditEventPayload(ask, previous, actor, askChanges)
+	if rewrite != nil {
+		payload.Rewrite, payload.Quiet = rewrite, true
+	}
+	event, err := s.appendEvent(ctx, tx, ownerOf(ask.IssueKey, ask.ArtifactID).event("ask.edited", actor, payload))
+	if err != nil {
+		return model.Ask{}, previous, model.Event{}, err
+	}
+	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
+		return model.Ask{}, previous, model.Event{}, err
+	}
+	return ask, previous, event, nil
 }
 
 // blockArtifactOf is the document an indexed ask's block lives in. Every write that touches the
@@ -1156,7 +1183,8 @@ var (
 // queryOwnerAsks returns an owner's asks, oldest first, filtered by state ("all",
 // "open", "answered", or "waiting": the open asks less a decision block the reviewer holds from
 // people's Inboxes), each with its opening event id, its block document, the part ids of its
-// options and answer with its part revision (attachAskPartIDs), and WaitingOn when open. The
+// options and answer with its part revision (attachAskPartIDs), its rewrite (attachAskRewrites)
+// and WaitingOn when open. The
 // newest reply in each ask's thread is returned keyed by ask id; an ask nobody has replied to has
 // no entry. The issue detail's `open_asks` reads the waiting asks through it, and the issue's
 // own ask list the rest.
@@ -1197,7 +1225,7 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, sta
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := loadAskDetails(ctx, q, askReadPointers(asks)); err != nil {
+	if err := loadAskReadDetails(ctx, q, askReadPointers(asks)); err != nil {
 		return nil, nil, err
 	}
 	return asks, replies, nil

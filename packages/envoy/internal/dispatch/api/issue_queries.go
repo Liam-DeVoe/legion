@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
 // issueStatusOrderSQL derives the SQL ordering from Dispatch's canonical lifecycle.
@@ -893,6 +894,10 @@ type issueDetail struct {
 	// pays for it here, with the detail it already reads, instead of a graph request of
 	// its own; the edges themselves are read only when the reader opens the panel.
 	ReferencedByCount int `json:"referenced_by_count"`
+	// Rewrite is the reviewer's rewrite of the issue's title and spec where it held the new issue
+	// and posted it rewritten (model.TextRewrite, text_rewrites.go): Original holds the title and
+	// the spec as the agent wrote them.
+	Rewrite *model.TextRewrite `json:"rewrite,omitempty"`
 }
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
@@ -949,6 +954,8 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
 		return issueDetail{}, err
 	}
+	rewrites := map[string]model.TextRewrite{}
+	queueHeldRewrites(first, reviewer.KindIssue, []string{key}, rewrites)
 	if err := s.deps.Store.Pool.SendBatch(ctx, first).Close(); err != nil {
 		return issueDetail{}, err
 	}
@@ -957,6 +964,9 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	}
 	read.Issue.ExternalLinks = links
 	read.ReferencedByCount = issueCounts[read.Issue.Key]
+	if rewrite, held := rewrites[read.Issue.Key]; held {
+		read.Rewrite = &rewrite
+	}
 
 	if err := s.readIssueDetails(ctx, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
@@ -974,12 +984,12 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 
 // readIssueDetails is getIssue's second batch: what only the first batch's answers name, filled
 // into the artifacts and asks it read, by the one queue-and-apply each of them has
-// (queueArtifactDetails, queueAskDetails). An issue with no artifact and no open ask names
+// (queueArtifactDetails, queueAskReadDetails). An issue with no artifact and no open ask names
 // nothing, so it queues nothing and sends no batch.
 func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
 	applyArtifacts := queueArtifactDetails(batch, artifacts)
-	applyAsks := queueAskDetails(batch, asks)
+	applyAsks := queueAskReadDetails(batch, asks)
 	if batch.Len() == 0 {
 		return nil
 	}

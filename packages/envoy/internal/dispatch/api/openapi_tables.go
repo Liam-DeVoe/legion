@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
 // schemaNames overrides the schema name a Go type is declared under. It exists so a Go type whose
@@ -56,6 +57,10 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(replyRead{}):                "MessageReplyResult",
 	reflect.TypeOf(checkResultInput{}):         "RecordCheckResultInput",
 	reflect.TypeOf(relatedRequest{}):           "RelatedCheckInput",
+	// A person's definition is the route's whole answer, so it takes the plain name; the meaning of
+	// each selection the component answers is a part of it, named apart from it.
+	reflect.TypeOf(definitionRead{}):      "Definition",
+	reflect.TypeOf(reviewer.Definition{}): "DefinitionMeaning",
 
 	// The shaped reads: the body a route answers a caller who sent `Dispatch-Trees: 1`, which
 	// is the stored row with the display tree of every text it shows beside that text. Their Go

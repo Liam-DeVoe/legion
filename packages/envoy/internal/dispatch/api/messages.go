@@ -824,6 +824,9 @@ func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Messag
 	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, roots, replies); err != nil {
 		return nil, err
 	}
+	if err := attachMessageRewrites(ctx, s.deps.Store.Pool, roots, replies); err != nil {
+		return nil, err
+	}
 	reader := s.readDisplayTrees(ctx, trees)
 	reads := make([]messageRead, len(roots))
 	for index, root := range roots {

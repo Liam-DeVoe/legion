@@ -465,6 +465,11 @@ func Quiet(e model.Event) bool {
 		// The end of the reviewer's hold of a decision block (INFRA-3231's R5): an open page
 		// refetches its Inbox and counts on it, and no session is told of it as a card.
 		return true
+	case "ask.rewriting", "ask.rewrite_failed":
+		// A person's Rewrite of an ask that runs, and one that failed or was not applied
+		// (INFRA-3552's R3): an open page follows the rewrite on them, and no session is told
+		// of either as a card. Its ask.edited is quiet by its payload (quietAskEdit).
+		return true
 	case "project.created", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",

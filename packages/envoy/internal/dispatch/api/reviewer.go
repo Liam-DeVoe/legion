@@ -555,15 +555,33 @@ func (s *server) writerGone(ctx context.Context, writer string) (gone, known boo
 // row and no event, so no person's read or feed can show it. The writer's reply to it comes to
 // POST /api/v1/messages/{id}/reply under the same id (answerHeldFrame).
 func (s *server) sendFindingsFrame(ctx context.Context, frame reviewer.FindingsFrame, writer, key string) error {
-	if s.deps.Envoy == nil || writer == "" {
-		return errors.New("no listener reaches the writer session")
-	}
 	body, err := frame.Body()
 	if err != nil {
 		return err
 	}
-	target := "session:" + writer
-	message := model.Message{ID: frame.ID, Author: reviewerActor, Body: body, Target: &target, CreatedAt: time.Now().UTC()}
+	return s.sendSystemFrame(ctx, systemFrame{
+		id: frame.ID, body: body, writer: writer, key: key, mode: "steer", expects: contracts.ExpectsReplyOptional,
+	})
+}
+
+// systemFrame is a delivery frame Dispatch sends a session as its system actor with no stored
+// message: the id the frame's message carries (a held text's or a definition's), its body, the
+// session, the send's idempotency key, the delivery mode and what it wants back.
+type systemFrame struct {
+	id, body, writer, key, mode string
+	expects                     contracts.ExpectsReply
+}
+
+// sendSystemFrame sends frame through the listener: a message.created frame from Dispatch whose
+// message id is frame.id, with no message row and no event, so no person's read or feed can show
+// it. The session's reply comes to POST /api/v1/messages/{id}/reply under that id, which the
+// route takes as the frame's answer (answerHeldFrame, answerDefinitionFrame).
+func (s *server) sendSystemFrame(ctx context.Context, frame systemFrame) error {
+	if s.deps.Envoy == nil || frame.writer == "" {
+		return errors.New("no listener reaches the writer session")
+	}
+	target := "session:" + frame.writer
+	message := model.Message{ID: frame.id, Author: reviewerActor, Body: frame.body, Target: &target, CreatedAt: time.Now().UTC()}
 	encoded, err := json.Marshal(struct {
 		Event    model.Event `json:"event"`
 		Delivery any         `json:"delivery"`
@@ -572,15 +590,15 @@ func (s *server) sendFindingsFrame(ctx context.Context, frame reviewer.FindingsF
 			Type: "message.created", Actor: reviewerActor,
 			Payload: messageReplyThread{}.payload(message, model.ReferenceChanges{}),
 		},
-		Delivery: map[string]any{"attempt": 1, "mode": "steer"},
+		Delivery: map[string]any{"attempt": 1, "mode": frame.mode},
 	})
 	if err != nil {
-		return fmt.Errorf("encode the findings frame: %w", err)
+		return fmt.Errorf("encode the frame: %w", err)
 	}
-	carried, _ := model.EventBody(body)
+	carried, _ := model.EventBody(frame.body)
 	_, err = s.deps.Envoy.Send(ctx, dispatchenvoy.SendInput{
-		TargetSession: writer, Message: carried, Payload: encoded, IdempotencyKey: key,
-		ExpectsReply: contracts.ExpectsReplyOptional,
+		TargetSession: frame.writer, Message: carried, Payload: encoded, IdempotencyKey: frame.key,
+		ExpectsReply: frame.expects,
 	})
 	return err
 }

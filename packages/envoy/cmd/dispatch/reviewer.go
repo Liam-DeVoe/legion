@@ -49,3 +49,35 @@ func newReviewer(cfg writingSettings, pacer *modelpace.Pacer) (*api.Reviewer, er
 		Unedited:     cfg.ReviewerUnedited,
 	}), nil
 }
+
+// newRewriteDefine builds a person's Rewrite and Define (api.RewriteDefine, INFRA-3231's R7), or
+// nil where their model group (DISPATCH_REWRITE_DEFINE_MODEL_*) is unset, which it logs: their
+// routes then answer that no model is set. They are on whenever the group is set, because a
+// person chooses to use them. Their calls are charged to the group's share of its deployment on
+// pacer, the process's one pacer, read the reviewer's rule sets (DISPATCH_REVIEWER_RULES), and
+// point at the stand-in under DISPATCH_TEST_MODEL_URL. It calls nothing and reads no file.
+func newRewriteDefine(cfg writingSettings, pacer *modelpace.Pacer) (*api.RewriteDefine, error) {
+	group := cfg.RewriteDefineModel
+	if group.Kind == "" {
+		slog.Info("dispatch: Rewrite and Define are off: their model group is unset", "setting", modelGroups[1].prefix+"KIND")
+		return nil, nil
+	}
+	model, err := group.agentloopModel()
+	if err != nil {
+		return nil, fmt.Errorf("Rewrite and Define's model: %w", err)
+	}
+	pace, err := group.pace(pacer)
+	if err != nil {
+		return nil, fmt.Errorf("Rewrite and Define's model: %w", err)
+	}
+	rules := make([]reviewer.RuleSet, len(cfg.ReviewerRules))
+	for i, rule := range cfg.ReviewerRules {
+		rules[i] = reviewer.RuleSet(rule)
+	}
+	slog.Info("dispatch: Rewrite and Define are on", "kind", group.Kind, "deployment", group.Deployment,
+		"stand_in", group.StandIn, "rules", cfg.ReviewerRules)
+	return api.NewRewriteDefine(api.RewriteDefineConfig{
+		Model: reviewer.Model{Model: model, Pace: pace},
+		Rules: rules,
+	}), nil
+}

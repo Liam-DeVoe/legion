@@ -109,8 +109,12 @@ type Deps struct {
 	// deployment that sets no reviewer's model group (cmd/dispatch: DISPATCH_REVIEWER_MODEL_*),
 	// which reviews nothing and answers the draft route 503.
 	Reviewer *Reviewer
-	Envoy    *envoy.Client
-	Events   *events.Broker
+	// RewriteDefine is a person's Rewrite and Define (INFRA-3231's R7, rewrite_define.go); nil is
+	// a deployment that sets no model group for them (cmd/dispatch:
+	// DISPATCH_REWRITE_DEFINE_MODEL_*), whose Rewrite and Define routes answer 503.
+	RewriteDefine *RewriteDefine
+	Envoy         *envoy.Client
+	Events        *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
 	// GitHub reads; nil is the "no app credentials yet" state and answers ErrNoAppKey.
 	GitHub *githubapp.Client
@@ -228,7 +232,9 @@ type DepsInput struct {
 	WritingRules WritingRulesConfig
 	// Reviewer is the reviewer; nil is none. See Deps.Reviewer.
 	Reviewer *Reviewer
-	Events   *events.Broker
+	// RewriteDefine is Rewrite and Define; nil is none. See Deps.RewriteDefine.
+	RewriteDefine *RewriteDefine
+	Events        *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -338,6 +344,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		WritingCheck:           input.WritingCheck,
 		WritingRules:           input.WritingRules,
 		Reviewer:               input.Reviewer,
+		RewriteDefine:          input.RewriteDefine,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,

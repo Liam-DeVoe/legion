@@ -708,6 +708,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/asks/{id}/rewrite": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Rewrite an open question for its reader (INFRA-3231's R7): answers 202 at once with {ask_id, started, rewrite} and rewrites in the background. rewrite is {state, by, at, original, reason?} as every ask read carries it: rewriting while the rewrite runs. One rewrite of an ask runs at a time: a request while one runs starts none (started false) and gets that run's result. The rewrite reads Dispatch's record and, where the session that asked it is running or unresponsive and its host advertises btw, its answer to one side question Dispatch sends it as a message on its own conversation, waited for at most 60 s. A rewrite that changes an option's id or label, their number or order, the choice, a short first line, a `Ref: ` line, a picture line, a link or a decision block's option line is not applied, nor one written over a wording the asking agent changed meanwhile; the ask then stays as it was, and ask.rewrite_failed carries why. An applied rewrite is a quiet ask.edited from Dispatch holding the old wording, who asked, and whether the agent's answer was read; ask.rewriting, ask.edited and ask.rewrite_failed reach no session as a card. Each request is recorded rewrite_requested. A question that is not open is 409 ASK_NOT_OPEN, an approval request 409 ASK_KIND_FIXED; it needs the person scope, and with no model group for Rewrite and Define (DISPATCH_REWRITE_DEFINE_MODEL_*) it is 503 REWRITE_NO_MODEL. */
+    post: operations["postApiV1AsksByIdRewrite"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/block-links": {
     parameters: {
       query?: never;
@@ -1042,6 +1059,40 @@ export interface paths {
     };
     /** @description Which dashboard builds are served: {serving, live}, serving the entry chunk (/assets/index-*.js) of the build this process serves (empty when none), live the distinct entry chunks of the builds every live server process serves, sorted. A tab offers its reload notice only when live holds exactly one entry and it is not the tab's own. */
     get: operations["getApiV1DashboardBuilds"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/definitions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Define words a person selected (INFRA-3231's Decision 24) {ask_id?, document?, words}: the words are in the ask ask_id names, a decision block's included, or in the document document names, of an issue or a project, read at its latest version; name one of the two (400 DEFINITION_INPUT for neither, both, a file or an image or an agent conversation's upload, or words that name no words; at most 20 selections of 500 characters each). Answers 201 at once with the definition read from Dispatch's record: {id, person, ask_id, artifact_id, version, words, inputs, definitions, failure?, agent, calls, created_at}, definitions each {words, meaning, links} and failure why the model gave none. Words in an ask also send the session that asked it one side question, what it means by those words, when Envoy reads that session live and its host advertises btw: a frame from Dispatch whose message id is the definition's id, with no message row and no event; its answer comes within 60 s to POST /api/v1/messages/{id}/reply and GET /api/v1/definitions/{id} reads it in agent {state: none, waiting, answered or unanswered, session?, question?, answer?, answered_at?, until?}. The definition changes nothing in the record, appends no event, is kept for the caller alone, and is recorded as the caller's question about those words (GET /api/v1/readers/{login}/words). It needs the person scope; with no model group for Rewrite and Define (DISPATCH_REWRITE_DEFINE_MODEL_*) it is 503 DEFINE_NO_MODEL. */
+    post: operations["postApiV1Definitions"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/definitions/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One of the caller's own definitions (POST /api/v1/definitions), the asking session's answer with it once it came. Another person's, or none, is 404 DEFINITION_NOT_FOUND. It needs the person scope. */
+    get: operations["getApiV1DefinitionsById"];
     put?: never;
     post?: never;
     delete?: never;
@@ -2010,6 +2061,23 @@ export interface paths {
     post?: never;
     /** @description Un-snooze an inbox row for the caller. */
     delete: operations["deleteApiV1MeAsksByIdSnooze"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/me/definitions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The caller's own definitions (POST /api/v1/definitions), the newest first, at most 200; no other person's. It needs the person scope. */
+    get: operations["getApiV1MeDefinitions"];
+    put?: never;
+    post?: never;
+    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -3076,6 +3144,7 @@ export interface components {
       resolved: boolean;
       resolved_at: null | string;
       resolved_by: components["schemas"]["Actor"] | null;
+      rewrite?: components["schemas"]["TextRewrite"];
       suggestion: components["schemas"]["Suggestion"] | null;
       turn: null | string;
     };
@@ -3637,6 +3706,11 @@ export interface components {
         [key: string]: unknown;
       };
     };
+    AskRewriteAnswer: {
+      ask_id: string;
+      rewrite: components["schemas"]["TextRewrite"];
+      started: boolean;
+    };
     AskSnooze: {
       snoozed_until: string;
     };
@@ -3689,6 +3763,7 @@ export interface components {
       referenced_by_count?: number;
       resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
+      rewrite?: components["schemas"]["TextRewrite"];
       state: string;
       urgency: string;
       waiting_on?: string;
@@ -3985,6 +4060,7 @@ export interface components {
       resolved: boolean;
       resolved_at: null | string;
       resolved_by: components["schemas"]["Actor"] | null;
+      rewrite?: components["schemas"]["TextRewrite"];
       suggestion: components["schemas"]["Suggestion"] | null;
       turn: null | string;
     };
@@ -4047,6 +4123,7 @@ export interface components {
       resolved: boolean;
       resolved_at: null | string;
       resolved_by: components["schemas"]["Actor"] | null;
+      rewrite?: components["schemas"]["TextRewrite"];
       suggestion: components["schemas"]["Suggestion"] | null;
       turn: null | string;
     };
@@ -4078,6 +4155,7 @@ export interface components {
       resolved: boolean;
       resolved_at: null | string;
       resolved_by: components["schemas"]["Actor"] | null;
+      rewrite?: components["schemas"]["TextRewrite"];
       suggestion: components["schemas"]["Suggestion"] | null;
       turn: null | string;
     };
@@ -4297,6 +4375,45 @@ export interface components {
     DeclineAskInput: {
       actor?: components["schemas"]["Actor"] | null;
       note?: null | string;
+    };
+    DefineInput: {
+      ask_id?: string;
+      document?: string;
+      words: string[] | null;
+    };
+    Definition: {
+      agent: components["schemas"]["DefinitionAgent"];
+      artifact_id: null | string;
+      ask_id: null | string;
+      calls: components["schemas"]["ReviewerCall"][] | null;
+      /** Format: date-time */
+      created_at: string;
+      definitions: components["schemas"]["DefinitionMeaning"][] | null;
+      failure?: string;
+      id: string;
+      inputs: string[] | null;
+      person: string;
+      version: null | number;
+      words: string[] | null;
+    };
+    DefinitionAgent: {
+      answer?: string;
+      /** Format: date-time */
+      answered_at?: string;
+      question?: string;
+      session?: string;
+      state: string;
+      /** Format: date-time */
+      until?: string;
+    };
+    DefinitionAnswerRead: {
+      id: string;
+      state: string;
+    };
+    DefinitionMeaning: {
+      links: string[] | null;
+      meaning: string;
+      words: string;
     };
     DeliveryComponent: {
       parent: null | string;
@@ -4937,18 +5054,18 @@ export interface components {
       issue_key?: string;
       kind: string;
       not_applied?: string;
-      original: components["schemas"]["HeldWording"];
+      original: components["schemas"]["TextWording"];
       outcome?: string;
       /** Format: date-time */
       posted_at: null | string;
       reader: string;
       reason?: string;
       revision: number;
-      rewrite: components["schemas"]["HeldWording"] | null;
+      rewrite: components["schemas"]["TextWording"] | null;
       route: string;
       state: string;
       waits_on?: string;
-      wording: components["schemas"]["HeldWording"];
+      wording: components["schemas"]["TextWording"];
       writer: string;
       /** Format: date-time */
       written_at: string;
@@ -4958,12 +5075,6 @@ export interface components {
       deadline: null | string;
       state: string;
       waits_on?: string;
-    };
-    HeldWording: {
-      body: string;
-      multiple?: boolean;
-      options?: components["schemas"]["AskOption"][];
-      title?: string;
     };
     HoldPersistenceInput: {
       duration: string;
@@ -5046,6 +5157,7 @@ export interface components {
       referenced_by_count?: number;
       resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
+      rewrite?: components["schemas"]["TextRewrite"];
       snoozed_until: null | string;
       state: string;
       thread: components["schemas"]["AskThread"];
@@ -5127,6 +5239,7 @@ export interface components {
       referenced_by_count?: number;
       resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
+      rewrite?: components["schemas"]["TextRewrite"];
       state: string;
       thread?: components["schemas"]["AskThread"];
       urgency: string;
@@ -5261,6 +5374,7 @@ export interface components {
       referenced_by_count: number;
       repo: null | string;
       resolved_repo: null | string;
+      rewrite?: components["schemas"]["TextRewrite"];
       route: null | string;
       route_holder: null | string;
       route_status: null | string;
@@ -5314,6 +5428,7 @@ export interface components {
       referenced_by_count?: number;
       resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
+      rewrite?: components["schemas"]["TextRewrite"];
       state: string;
       urgency: string;
       waiting_on?: string;
@@ -5503,6 +5618,7 @@ export interface components {
       in_reply_to: null | string;
       issue_key: null | string;
       reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
+      rewrite?: components["schemas"]["TextRewrite"];
       target: null | string;
     };
     MessageWithTrees: {
@@ -5522,6 +5638,7 @@ export interface components {
       in_reply_to: null | string;
       issue_key: null | string;
       reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
+      rewrite?: components["schemas"]["TextRewrite"];
       target: null | string;
     };
     MovedApprovalDocument: {
@@ -6029,7 +6146,7 @@ export interface components {
       findings: components["schemas"]["ReviewFinding"][] | null;
       not_applied?: string;
       reader: string;
-      rewrite: components["schemas"]["HeldWording"] | null;
+      rewrite: components["schemas"]["TextWording"] | null;
     };
     ReviewerDraftInput: {
       issue?: string;
@@ -6250,6 +6367,20 @@ export interface components {
     };
     TestHookOK: {
       ok: boolean;
+    };
+    TextRewrite: {
+      /** Format: date-time */
+      at: string;
+      by: string;
+      original: components["schemas"]["TextWording"];
+      reason?: string;
+      state: string;
+    };
+    TextWording: {
+      body: string;
+      multiple?: boolean;
+      options?: components["schemas"]["AskOption"][];
+      title?: string;
     };
     ThreadReadInput: {
       read_through: null | string;
@@ -8412,6 +8543,40 @@ export interface operations {
       };
     };
   };
+  postApiV1AsksByIdRewrite: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AskRewriteAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1BlockLinks: {
     parameters: {
       query?: {
@@ -9229,6 +9394,76 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DashboardBuilds"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1Definitions: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DefineInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Definition"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1DefinitionsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Definition"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11881,6 +12116,38 @@ export interface operations {
       };
     };
   };
+  getApiV1MeDefinitions: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Definition"][];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1MeDocumentsByIdRead: {
     parameters: {
       query?: {
@@ -12369,7 +12636,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["HeldRead"];
+          "application/json":
+            | components["schemas"]["HeldRead"]
+            | components["schemas"]["DefinitionAnswerRead"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14446,6 +14715,7 @@ export type AskOptionWithTrees = components["schemas"]["AskOptionWithTrees"];
 export type AskRead = components["schemas"]["AskRead"];
 export type AskResolution = components["schemas"]["AskResolution"];
 export type AskResolutionWithTrees = components["schemas"]["AskResolutionWithTrees"];
+export type AskRewriteAnswer = components["schemas"]["AskRewriteAnswer"];
 export type AskSnooze = components["schemas"]["AskSnooze"];
 export type AskSnoozeInput = components["schemas"]["AskSnoozeInput"];
 export type AskThread = components["schemas"]["AskThread"];
@@ -14518,6 +14788,11 @@ export type DecisionKeep = components["schemas"]["DecisionKeep"];
 export type DecisionLink = components["schemas"]["DecisionLink"];
 export type DecisionResponse = components["schemas"]["DecisionResponse"];
 export type DeclineAskInput = components["schemas"]["DeclineAskInput"];
+export type DefineInput = components["schemas"]["DefineInput"];
+export type Definition = components["schemas"]["Definition"];
+export type DefinitionAgent = components["schemas"]["DefinitionAgent"];
+export type DefinitionAnswerRead = components["schemas"]["DefinitionAnswerRead"];
+export type DefinitionMeaning = components["schemas"]["DefinitionMeaning"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];
 export type DeliveryDailyPoint = components["schemas"]["DeliveryDailyPoint"];
 export type DeliveryDeployFlagCounts = components["schemas"]["DeliveryDeployFlagCounts"];
@@ -14594,7 +14869,6 @@ export type HeldOption = components["schemas"]["HeldOption"];
 export type HeldPostInput = components["schemas"]["HeldPostInput"];
 export type HeldRead = components["schemas"]["HeldRead"];
 export type HeldState = components["schemas"]["HeldState"];
-export type HeldWording = components["schemas"]["HeldWording"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
@@ -14741,6 +15015,8 @@ export type SupersededApprovalGate = components["schemas"]["SupersededApprovalGa
 export type TablePosition = components["schemas"]["TablePosition"];
 export type TargetCandidate = components["schemas"]["TargetCandidate"];
 export type TestHookOK = components["schemas"]["TestHookOK"];
+export type TextRewrite = components["schemas"]["TextRewrite"];
+export type TextWording = components["schemas"]["TextWording"];
 export type ThreadReadInput = components["schemas"]["ThreadReadInput"];
 export type TimeToRestore = components["schemas"]["TimeToRestore"];
 export type TmuxPlace = components["schemas"]["TmuxPlace"];

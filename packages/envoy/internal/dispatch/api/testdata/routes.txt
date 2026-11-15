@@ -39,6 +39,7 @@ GET /api/v1/asks/{id}/followers any
 DELETE /api/v1/asks/{id}/followers/{session_id} any
 PUT /api/v1/asks/{id}/followers/{session_id} any
 POST /api/v1/asks/{id}/resolve any
+POST /api/v1/asks/{id}/rewrite any
 GET /api/v1/block-links any
 GET /api/v1/broadcasts any
 POST /api/v1/broadcasts any
@@ -61,6 +62,8 @@ POST /api/v1/credential-requests/{id}/approve any
 POST /api/v1/credential-requests/{id}/deny any
 GET /api/v1/credentials/capabilities any
 GET /api/v1/dashboard/builds any
+POST /api/v1/definitions any
+GET /api/v1/definitions/{id} any
 GET /api/v1/delivery/measures any
 GET /api/v1/delivery/pipeline any
 GET /api/v1/delivery/runs/{id} any
@@ -128,6 +131,7 @@ PUT /api/v1/me/agents/{session_id}/state any
 GET /api/v1/me/answers any
 DELETE /api/v1/me/asks/{id}/snooze any
 PUT /api/v1/me/asks/{id}/snooze any
+GET /api/v1/me/definitions any
 GET /api/v1/me/documents/{id}/read any
 PUT /api/v1/me/documents/{id}/read any
 POST /api/v1/me/inbox/dismiss any

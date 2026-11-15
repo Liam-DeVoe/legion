@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
@@ -376,64 +376,37 @@ func findingsReason(findings []reviewer.Finding) string {
 }
 
 // rewriteDecisionBlock is the one path that applies a rewrite to a decision block (Decision 23 of
-// INFRA-3231's plan): rewrite's wording is written into the ask's `:::ask` block, which the
-// document's next version holds, and into its row, and the ask.edited it appends holds the
-// original wording (previous), who asked for the rewrite and why (record). The reviewer's rewrite
-// of a held decision block (releaseDecisionBlock) calls it, and a person's Rewrite of a decision
-// block calls it with record.By model.RewriteByPerson. ctx is the document context of tx's ledger
-// (docs.API.Join), and the caller has locked the ask's owner and its row; it publishes the
-// event once tx commits.
+// INFRA-3231's plan): rewrite's wording is written through the edit route's own path
+// (writeAskEdit) into the ask's `:::ask` block, which the document's next version holds, and into
+// its row, and the quiet ask.edited it appends holds the original wording (previous), who asked
+// for the rewrite and why (record). Dispatch itself writes it (reviewerActor), so the document's
+// version and the event name Dispatch, and its own rewrite starts no review
+// (AskBlockReworded); record.AskedBy names who asked. The reviewer's rewrite of a held decision
+// block (releaseDecisionBlock) calls it, and a person's Rewrite of a decision block calls it with
+// record.By model.RewriteByPerson (ask_rewrite.go). ctx is the document context of tx's ledger
+// (docs.API.Join), and the caller has locked the ask's owner and its row; it publishes the event
+// once tx commits.
 func (s *server) rewriteDecisionBlock(ctx context.Context, tx pgx.Tx, ask model.Ask, rewrite reviewer.Text, record model.AskRewriteEdit) (model.Ask, model.Event, error) {
-	blockArtifact, err := blockArtifactOf(ask)
-	if err != nil {
-		return model.Ask{}, model.Event{}, err
+	if ask.BlockID == nil {
+		return model.Ask{}, model.Event{}, fmt.Errorf("ask %q is no decision block", ask.ID)
 	}
-	previous := model.NewAskEditPrevious(ask)
-	question, multiple := rewrite.Body, rewrite.Multiple
-	edit := docs.AskBlockEdit{Question: &question, Multiple: &multiple}
+	rewritten, _, event, err := s.writeAskEdit(ctx, tx, ask, rewriteWording(rewrite), reviewerActor, &record)
+	return rewritten, event, err
+}
+
+// rewriteWording is a rewrite's wording as an edit of an ask writes it: its question, with the
+// line feeds a block's text reaches the parser with (pmdoc.LineFeeds), its choice, and, where it
+// names them, its options' labels and descriptions with no id, since a stored ask's option ids
+// are the index's to mint.
+func rewriteWording(rewrite reviewer.Text) askWording {
+	question, multiple := pmdoc.LineFeeds(rewrite.Body), rewrite.Multiple
+	wording := askWording{Question: &question, Multiple: &multiple}
 	if rewrite.Options != nil {
 		options := make([]model.AskOption, len(rewrite.Options))
 		for i, option := range rewrite.Options {
-			options[i] = model.AskOption{Label: option.Label, Description: option.Description}
+			options[i] = model.AskOption{Label: pmdoc.LineFeeds(option.Label), Description: pmdoc.LineFeeds(option.Description)}
 		}
-		edit.Options = &options
+		wording.Options = &options
 	}
-	stored, err := s.deps.Docs.SetAskBlockText(ctx, blockArtifact, *ask.BlockID, edit, record.AskedBy)
-	if err != nil {
-		return model.Ask{}, model.Event{}, err
-	}
-	ask.Question, ask.Multiple, ask.Urgency = stored.Question, stored.Multiple, stored.Urgency
-	if !stored.SeveralOptionLists {
-		ask.Options = stored.Options
-	}
-	options, err := encodeJSON(ask.Options)
-	if err != nil {
-		return model.Ask{}, model.Event{}, err
-	}
-	var editedAt time.Time
-	if err := tx.QueryRow(ctx, `
-		update asks set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = now()
-		where id = $1 returning edited_at`,
-		ask.ID, ask.Question, options, ask.Multiple, ask.Urgency).Scan(&editedAt); err != nil {
-		return model.Ask{}, model.Event{}, err
-	}
-	ask.EditedAt = timestampPtr(&editedAt)
-	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL)
-	changes, err := refs.ReplaceCountedEdit(ctx, tx, reader, previous.Question, ask.Question)
-	if err != nil {
-		return model.Ask{}, model.Event{}, err
-	}
-	if changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, editedAt, changes); err != nil {
-		return model.Ask{}, model.Event{}, err
-	}
-	payload := model.NewAskEditEventPayload(ask, previous, record.AskedBy, changes)
-	payload.Rewrite = &record
-	event, err := s.appendEvent(ctx, tx, ownerOf(ask.IssueKey, ask.ArtifactID).event("ask.edited", record.AskedBy, payload))
-	if err != nil {
-		return model.Ask{}, model.Event{}, err
-	}
-	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
-		return model.Ask{}, model.Event{}, err
-	}
-	return ask, event, nil
+	return wording
 }

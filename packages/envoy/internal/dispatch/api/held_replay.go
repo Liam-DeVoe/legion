@@ -328,11 +328,12 @@ var heldTargetSelf = map[string]string{
 	"POST /api/v1/issues/{key}/asks":                         "reviewWrite holds a new ask on a held issue beside it, under an id of the ask's own",
 	"POST /api/v1/issues/{key}/comments":                     "reviewWrite holds a new comment on a held issue beside it, under an id of the comment's own",
 	"POST /api/v1/issues/{key}/messages":                     "reviewWrite holds a new message on a held issue beside it, under an id of the message's own",
-	"POST /api/v1/messages/{id}/reply":                       "a reply to a delivered message: a held message was delivered to no session, and a held text's id here is the writer's answer to its findings (answerHeldFrame)",
+	"POST /api/v1/messages/{id}/reply":                       "a reply to a delivered message: a held message was delivered to no session, a held text's id here is the writer's answer to its findings (answerHeldFrame), and a definition's id the asking session's answer to its side question (answerDefinitionFrame)",
 	"POST /api/v1/comments/{id}/reply":                       "a reply to a delivered mention: a held comment was delivered to no session, so no attempt of it can be answered",
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": "accepts a delivery attempt: a held message has none",
 	"POST /api/v1/messages/{id}/deliveries":                  "sends a message again: a held message was never sent, and posts with its first attempt",
 	"POST /api/v1/comments/{id}/deliveries":                  "sends a comment's mention again: a held comment was never sent, and posts with its first attempts",
+	"POST /api/v1/asks/{id}/rewrite":                         "a person's Rewrite of a question they read: a held ask is in no person's read until it posts, and its id names no ask row, so the Rewrite answers 404",
 }
 
 // awaitHeldTarget holds route's write when the text its path names is a held text that has not
