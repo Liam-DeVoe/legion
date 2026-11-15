@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -597,5 +598,46 @@ func TestABootThroughASpentRateLimitComesUp(t *testing.T) {
 	}
 	if waits := loggedLines(t, logs.String(), waitLine); len(waits) != 1 || waits[0]["repo"] != "acme/widgets" {
 		t.Fatalf("wait lines = %v, want one naming acme/widgets", waits)
+	}
+}
+
+// An event's preparation whose read of a repository's default branch GitHub refuses for its rate
+// limit, the daemon holding no read of the repository, is delivered again after the wait GitHub
+// asked for (an intake.RetryLater), not a second later into the same limit, each delivery reading
+// GitHub again: a 429's Retry-After, and the minute a 403 naming the limit in its body alone waits.
+func TestARateLimitedDefaultBranchReadDeliversTheEventAgainAfterGitHubsWait(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		refuse func(w http.ResponseWriter)
+		want   time.Duration
+	}{
+		{name: "a 429 asking for 17 s", want: 17 * time.Second, refuse: func(w http.ResponseWriter) {
+			w.Header().Set("Retry-After", "17")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
+		}},
+		{name: "a 403 naming the limit in its body alone", want: time.Minute, refuse: func(w http.ResponseWriter) {
+			w.Header().Set("X-RateLimit-Remaining", "14671")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"message":"API rate limit exceeded for installation ID 7."}`)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, _ string, _ int) bool {
+				tc.refuse(w)
+				return true
+			})
+			w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
+				defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
+			w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("zeta/tools"), Default: true}}, nil)
+			_, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: "zeta/tools"}, false, 0)
+			var later *intake.RetryLater
+			if !errors.As(err, &later) || later.After != tc.want {
+				t.Fatalf("prepare = %v, want an intake.RetryLater after %s", err, tc.want)
+			}
+			if got := len(github.readsOf("zeta/tools")); got != 1 {
+				t.Fatalf("GitHub was read for zeta/tools %d times, want once", got)
+			}
+		})
 	}
 }

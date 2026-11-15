@@ -9,7 +9,8 @@ body: |-
   time it waits until, and is then read once more; if GitHub still does not answer, only that
   repository is left out for now and read again, as one whose installation read failed is. A later
   read of the mapping applies the same rule without waiting. A 404 still refuses the boot, and a
-  5xx is still retried.
+  5xx is still retried. An event whose preparation meets the limit on a repository the daemon holds
+  no read of is delivered again after GitHub's wait rather than every second.
 
   The read of a default branch reads a 403 whose body says `API rate limit exceeded` as GitHub's
   rate limit whatever its headers say, waited a minute; no other GitHub call changes its reading.

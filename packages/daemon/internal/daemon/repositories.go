@@ -1963,7 +1963,11 @@ func parentKey(parent *string) string {
 // nothing and keeps nothing (workflow.Resolution.Unread), and the issue is taken from Dispatch's
 // listing once GitHub answers for the repository (recoverRepositories). A served repository kept
 // on its last answer (repositories.kept) is read from GitHub no further: its default branch is the
-// last read of it, so an admission on it waits for no GitHub read that is failing.
+// last read of it, so an admission on it waits for no GitHub read that is failing. A read of the
+// default branch GitHub refuses for its rate limit, of a repository the daemon holds no read of
+// (defaultBranches.Named answers every other from what it holds), is an intake.RetryLater after
+// the wait GitHub asked for (defaultBranchLimit), so the event is delivered again once the limit
+// has passed, not every second into it, each delivery reading GitHub again.
 func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.DispatchIssue, await bool, held int64) (intake.DispatchIssue, error) {
 	if issue.ResolvedRepoMissing {
 		detail, err := w.dispatch.GetIssue(ctx, issue.Key)
@@ -1991,6 +1995,9 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 		}
 	}
 	_, err := w.defaultBranches.Named(ctx, mapped.Repo)
+	if _, wait, limited := defaultBranchLimit(err); limited {
+		return issue, &intake.RetryLater{After: wait, Err: fmt.Errorf("prepare %s on %s: GitHub's rate limit, retry in %s: %w", issue.Key, mapped.Repo, wait, err)}
+	}
 	return issue, err
 }
 
