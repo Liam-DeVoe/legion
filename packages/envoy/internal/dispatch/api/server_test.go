@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -148,6 +149,9 @@ type testServerOptions struct {
 	// rewriteDefine is a person's Rewrite and Define (Deps.RewriteDefine); nil is a deployment
 	// that sets no model group for them.
 	rewriteDefine *RewriteDefine
+	// testModels are the models a request may name in its Dispatch-Test-Model header
+	// (Deps.TestModels), which a server with testHooks reads.
+	testModels map[string]reviewer.Model
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
@@ -286,6 +290,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		WritingRules:           options.writingRules,
 		Reviewer:               options.reviewer,
 		RewriteDefine:          options.rewriteDefine,
+		TestModels:             options.testModels,
 		BuildCommit:            options.buildCommit,
 	})
 	if err != nil {

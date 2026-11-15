@@ -102,6 +102,18 @@ func (l Limit) acquire(ctx context.Context) error {
 
 func (l Limit) release() { <-l }
 
+// Hold takes one slot of the runner's bound for a call that does not go through Run, such as the
+// detector's own reader, and answers the function that gives it back.
+func (r *Runner) Hold(ctx context.Context) (func(), error) {
+	if r.Limit == nil {
+		return func() {}, nil
+	}
+	if err := r.Limit.acquire(ctx); err != nil {
+		return nil, err
+	}
+	return r.Limit.release, nil
+}
+
 // Runner makes calls on any model: within the shared Limit, again after a backoff on a failure a
 // retry can clear, and again at once on a reply its schema does not fit.
 type Runner struct {
@@ -334,6 +346,10 @@ func (f *Foundry) Name() string { return f.model.ID }
 
 // Family is FamilyFoundry.
 func (f *Foundry) Family() string { return FamilyFoundry }
+
+// Model is the deployment as agentloop calls it, for a component that makes its own call (the
+// reviewer's Rewrite and Define, the detector's reader).
+func (f *Foundry) Model() agentloop.Model { return f.model }
 
 // Call makes one call on the deployment.
 func (f *Foundry) Call(ctx context.Context, req Request) (Response, error) {

@@ -34,18 +34,29 @@ type reviewerDraftInput struct {
 }
 
 // reviewerCall is one model call a review made: what it was for, the deployment its request
-// named, the model id the provider served, and the fault it ended on, "" for none.
+// named, the model id the provider served, the tokens the provider reported (the prompt, the
+// reply, and the prompt tokens written to and read from its cache), and the fault it ended on, ""
+// for none.
 type reviewerCall struct {
-	Purpose    string `json:"purpose"`
-	Deployment string `json:"deployment"`
-	Served     string `json:"served"`
-	Fault      string `json:"fault,omitempty"`
+	Purpose          string `json:"purpose"`
+	Deployment       string `json:"deployment"`
+	Served           string `json:"served"`
+	InputTokens      int    `json:"input_tokens"`
+	OutputTokens     int    `json:"output_tokens"`
+	CacheWriteTokens int    `json:"cache_write_tokens"`
+	CacheReadTokens  int    `json:"cache_read_tokens"`
+	Fault            string `json:"fault,omitempty"`
 }
 
 func callsOf(calls []reviewer.Call) []reviewerCall {
 	read := make([]reviewerCall, len(calls))
 	for i, call := range calls {
-		read[i] = reviewerCall{Purpose: call.Purpose, Deployment: call.Deployment, Served: call.Served, Fault: string(call.Fault)}
+		read[i] = reviewerCall{
+			Purpose: call.Purpose, Deployment: call.Deployment, Served: call.Served,
+			InputTokens: call.Usage.Input, OutputTokens: call.Usage.Output,
+			CacheWriteTokens: call.Usage.CacheWrite, CacheReadTokens: call.Usage.CacheRead,
+			Fault: string(call.Fault),
+		}
 	}
 	return read
 }
@@ -80,6 +91,11 @@ func (s *server) reviewDraft(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "REVIEWER_NO_MODEL", http.StatusServiceUnavailable, "this deployment sets no reviewer's model group (DISPATCH_REVIEWER_MODEL_*)")
 		return
 	}
+	chosen, err := s.requestModel(r, s.deps.Reviewer.config.Model)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	kind := reviewer.Kind(strings.TrimSpace(input.Kind))
 	known := false
 	for _, draftKind := range reviewerDraftKinds {
@@ -103,13 +119,12 @@ func (s *server) reviewDraft(w http.ResponseWriter, r *http.Request) {
 	issueKey := strings.TrimSpace(input.Issue)
 	reader := model.CanonicalLogin(input.Reader)
 	if reader == "" && issueKey != "" {
-		var err error
 		if reader, err = issueReader(r.Context(), s.deps.Store.Pool, issueKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
-	reviewed, err := s.review(r.Context(), reviewer.Subject{Text: text, IssueKey: issueKey, Reader: reader})
+	reviewed, err := s.review(r.Context(), chosen, reviewer.Subject{Text: text, IssueKey: issueKey, Reader: reader})
 	var failed *reviewer.ModelError
 	switch {
 	case errors.As(err, &failed):

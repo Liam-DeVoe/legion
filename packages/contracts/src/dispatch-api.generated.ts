@@ -6136,8 +6136,12 @@ export interface components {
       why: string;
     };
     ReviewerCall: {
+      cache_read_tokens: number;
+      cache_write_tokens: number;
       deployment: string;
       fault?: string;
+      input_tokens: number;
+      output_tokens: number;
       purpose: string;
       served: string;
     };

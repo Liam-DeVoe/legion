@@ -42,8 +42,9 @@ type Applied struct {
 	WriterAnswer string
 	// WaitSeconds is the time from the write, or the press, to the text a person sees.
 	WaitSeconds float64
-	// Calls are the change's own model calls.
+	// Calls are the change's own model calls, and Trace what each of its steps did.
 	Calls []Call
+	Trace []TraceStep
 }
 
 // asSeen is change 1: the text as the person saw it. It calls no model and makes no person wait.
@@ -55,7 +56,8 @@ func (asSeen) Apply(_ context.Context, c *Case) (Applied, error) {
 	return Applied{Text: c.Agent.Text, Same: true}, nil
 }
 
-// changes are the changes the harness scores, by --change's value.
+// changes are the changes the harness scores with no model of their own, by --change's value; the
+// others are changeRun's (changes.go).
 var changes = map[string]Change{"1": asSeen{}}
 
 // CaseResult is one case's line of a run's cases.jsonl: what the change made of its text, the
@@ -77,9 +79,10 @@ type CaseResult struct {
 	TextSHA256 string `json:"text_sha256"`
 	Words      int    `json:"words"`
 	// Definition is Define's definition (change 6).
-	Definition  string  `json:"definition,omitempty"`
-	WaitSeconds float64 `json:"wait_seconds"`
-	ChangeCalls []Call  `json:"change_calls,omitempty"`
+	Definition  string      `json:"definition,omitempty"`
+	WaitSeconds float64     `json:"wait_seconds"`
+	ChangeCalls []Call      `json:"change_calls,omitempty"`
+	ChangeTrace []TraceStep `json:"change_trace,omitempty"`
 	// Reader is the fresh reader's answer, and FirstParagraphReader the answer of the one who
 	// read only the first paragraph of an answer case's text.
 	Reader               *Answer              `json:"reader,omitempty"`
@@ -149,7 +152,7 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 		res.SessionStatus = "no_place"
 	}
 	applied, err := s.change.Apply(ctx, c)
-	res.ChangeCalls, res.WaitSeconds = applied.Calls, applied.WaitSeconds
+	res.ChangeCalls, res.WaitSeconds, res.ChangeTrace = applied.Calls, applied.WaitSeconds, applied.Trace
 	if err != nil {
 		res.Error = "change " + s.change.Name() + ": " + err.Error()
 		res.Time = time.Now().UTC().Format(time.RFC3339)
@@ -273,9 +276,13 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 // RunParams are what a run's figures depend on. A run that continues in an output directory
 // must have the parameters the directory's run.json records.
 type RunParams struct {
-	Change string   `json:"change"`
-	Part   string   `json:"part"`
-	Groups []string `json:"groups"`
+	Change string `json:"change"`
+	// Changes are the changes a combination holds, and Model the candidate the change calls; each
+	// is absent for change 1.
+	Changes []string `json:"changes,omitempty"`
+	Model   string   `json:"model,omitempty"`
+	Part    string   `json:"part"`
+	Groups  []string `json:"groups"`
 	// Judgements are the judgements the run gives (--judgements), absent when it gives all.
 	Judgements []string `json:"judgements,omitempty"`
 	// Sample is the stratified sample the run scores, absent for the whole part.
@@ -286,9 +293,16 @@ type RunParams struct {
 	GraderInputs  string `json:"grader_inputs"`
 	ReadersFrom   string `json:"readers_from,omitempty"`
 	PromptsSHA256 string `json:"prompts_sha256"`
-	CasesSHA256   string `json:"cases_sha256"`
-	SessionsSHA   string `json:"sessions_counts_sha256"`
-	SessionChars  int    `json:"session_chars"`
+	// WriterSHA256 is the writer's prompts' digest, for a change that plays the writer.
+	WriterSHA256 string `json:"writer_sha256,omitempty"`
+	CasesSHA256  string `json:"cases_sha256"`
+	SessionsSHA  string `json:"sessions_counts_sha256"`
+	SessionChars int    `json:"session_chars"`
+	// Rounds and Unedited are change 3's bound on its reviews and what posts with no writer
+	// (--rounds, --unedited); Local the local Dispatch's settings the change reads.
+	Rounds   int               `json:"rounds,omitempty"`
+	Unedited string            `json:"unedited,omitempty"`
+	Local    map[string]string `json:"local,omitempty"`
 }
 
 // readResults reads the last line of each case in a run's cases.jsonl; a line a crash cut short
@@ -391,7 +405,12 @@ func checkParams(out string, params RunParams) error {
 func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("writing-check harness score", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	changeFlag := fs.String("change", "1", "the change to score (the harness scores change 1, the text as the person saw it)")
+	changeFlag := fs.String("change", "1", "the change to score: 1 to 6, 7a, or a combination of combinations.yaml")
+	modelFlag := fs.String("model", "", "the candidate of candidates.yaml the change calls (changes 3 to 7a, and a combination that holds one)")
+	localPath := fs.String("local", "", "the local.json of `harness local`: the local Dispatch the change calls (changes 2 to 6)")
+	loadedPath := fs.String("loaded", "", "the loaded.jsonl of `harness load` into that local Dispatch")
+	rounds := fs.Int("rounds", 2, "change 3: the reviews of one text, the first and those of the writer's edits; the last edit posts")
+	unedited := fs.String("unedited", uneditedRewrite, "change 3 with no writer session: what posts, as DISPATCH_REVIEWER_UNEDITED says: rewrite or as_written")
 	casesDir := fs.String("cases", "", "the dataset build directory: cases.jsonl.gz and documents.jsonl.gz (required)")
 	sessionsDir := fs.String("sessions", "", "the directory `writing-check dataset sessions` wrote: session-rows.jsonl.gz, places.jsonl, sessions-counts.json (required)")
 	out := fs.String("out", "", "the run's output directory; a run continues the cases it holds no result for (required; keep it under $TMPDIR)")
@@ -422,23 +441,39 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stderr, "writing-check harness score: %v\n", err)
 		return 1
 	}
-	change, ok := changes[*changeFlag]
+	change, plan, err := resolveChange(*changeFlag)
+	if err != nil {
+		return usage(err.Error())
+	}
 	groups := strings.Split(*groupsFlag, ",")
+	groupsSet := false
+	fs.Visit(func(f *flag.Flag) { groupsSet = groupsSet || f.Name == "groups" })
+	if plan != nil && plan.has(changeDefine) && !groupsSet {
+		groups = []string{GroupQuestion}
+	}
 	switch {
 	case *casesDir == "" || *sessionsDir == "" || *out == "" || fs.NArg() > 0:
 		return usage("--cases, --sessions and --out are required, and nothing else")
-	case !ok:
-		return usage(fmt.Sprintf("--change %q: the harness scores change 1; t11 adds changes 2 to 7", *changeFlag))
 	case *part != PartDevelopment && *part != PartHeldOut:
 		return usage("--part is development or held_out")
 	case slices.ContainsFunc(groups, func(g string) bool { return !slices.Contains(Groups, g) }):
 		return usage("--groups names a group that is not one of " + strings.Join(Groups, ", "))
+	case plan != nil && plan.has(changeDefine) && !slices.Equal(groups, []string{GroupQuestion}):
+		return usage("Define (change 6) defines the words of the person's question: it scores the question cases alone (--groups question)")
 	case *judgementsFlag != "" && slices.ContainsFunc(strings.Split(*judgementsFlag, ","), func(j string) bool { return !slices.Contains(Judgements, Judgement(j)) }):
 		return usage("--judgements names a judgement that is not one of the judgements of R2")
 	case *draws < 1 || *sessionChars < 1 || *sampleSize < 0:
 		return usage("--draws and --session-chars must be above 0, and --sample not below 0")
 	case *part != PartHeldOut && (*newRun != "" || *commit != ""):
 		return usage("--commit and --new-run are for a held-out run")
+	case plan == nil && (*modelFlag != "" || *localPath != "" || *loadedPath != ""):
+		return usage("change 1 calls no model and reads no local Dispatch: give no --model, --local or --loaded")
+	case plan != nil && plan.candidate() != (*modelFlag != ""):
+		return usage(fmt.Sprintf("change %s: --model names the candidate of the reviewer, Rewrite, Define and the detector's reader, which the change calls exactly when it holds 3, 4, 5, 6 or 7a", change.Name()))
+	case plan != nil && plan.local() && (*localPath == "" || *loadedPath == ""):
+		return usage(fmt.Sprintf("change %s calls the local Dispatch: give --local and --loaded", change.Name()))
+	case *rounds < 1 || (*unedited != uneditedRewrite && *unedited != uneditedAsWritten):
+		return usage("--rounds must be at least 1, and --unedited rewrite or as_written")
 	}
 	if err := outsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
@@ -480,6 +515,32 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fallbacks = append(fallbacks, f.ID)
 	}
 	models := map[string]string{RoleGrader: cfg.Models.Roles.Grader.ID, RoleGraderFallback: strings.Join(fallbacks, ","), RoleReader: cfg.Models.Roles.Reader.ID}
+	var run *changeRun
+	var inst LocalInstance
+	if plan != nil {
+		run = change.(*changeRun)
+		run.cfg, run.rounds, run.unedited, run.tries, run.backoff, run.poll = cfg, *rounds, *unedited, changeTries, changeBackoff, changePoll
+		if plan.writer() {
+			models[RoleWriter] = cfg.Models.Roles.Writer.ID
+		}
+		if *modelFlag != "" {
+			if !slices.ContainsFunc(cfg.Models.Candidates, func(m ModelEntry) bool { return m.ID == *modelFlag }) {
+				return usage(fmt.Sprintf("--model %q is no candidate of candidates.yaml", *modelFlag))
+			}
+			run.candidate, models[RoleCandidate] = *modelFlag, *modelFlag
+		}
+		if plan.local() {
+			if inst, err = readLocalInstance(*localPath); err != nil {
+				return usage(err.Error())
+			}
+			if run.loaded, err = readLoaded(*loadedPath); err != nil {
+				return usage(err.Error())
+			}
+			if run.rules, err = instanceRules(inst, *plan); err != nil {
+				return usage(err.Error())
+			}
+		}
+	}
 	// A held-out run is in the exposure log before it reads a case of the part, so a run that
 	// stops after this line, for any reason, still counts as one that read it.
 	if *part == PartHeldOut && !*figuresOnly {
@@ -489,7 +550,11 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 				return fail(fmt.Errorf("the commit of a held-out run: %w; give --commit", err))
 			}
 		}
-		e := Exposure{Commit: c, Time: started.UTC().Format(time.RFC3339), Changes: []string{change.Name()}, Models: models, Reason: *newRun, Out: *out}
+		changed := []string{change.Name()}
+		if plan != nil {
+			changed = plan.changes()
+		}
+		e := Exposure{Commit: c, Time: started.UTC().Format(time.RFC3339), Changes: changed, Models: models, Reason: *newRun, Out: *out}
 		if err := ClaimHeldOut(*exposureLog, e); err != nil {
 			return fail(err)
 		}
@@ -503,6 +568,21 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	params := RunParams{
 		Change: change.Name(), Part: *part, Groups: groups, Models: models, GraderInputs: inputs.String(), ReadersFrom: *readersFrom,
 		PromptsSHA256: PromptsDigest(), CasesSHA256: casesSHA, SessionsSHA: sessionsSHA, SessionChars: *sessionChars,
+	}
+	if plan != nil {
+		params.Model = run.candidate
+		if len(plan.changes()) > 1 || plan.name != plan.steps[0] {
+			params.Changes = plan.changes()
+		}
+		if plan.writer() {
+			params.WriterSHA256 = WriterDigest()
+		}
+		if plan.has(changeFindings) {
+			params.Rounds, params.Unedited = *rounds, *unedited
+		}
+		if plan.local() {
+			params.Local = inst.readSettings()
+		}
 	}
 	var only []Judgement
 	if *judgementsFlag != "" {
@@ -559,6 +639,11 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		readerModel, err := mf.claudeClient(cfg, cfg.Models.Roles.Reader, runner)
 		if err != nil {
 			return usage(err.Error())
+		}
+		if run != nil {
+			if err := run.connect(ctx, mf, inst, runner, sessions, ds, selected); err != nil {
+				return fail(err)
+			}
 		}
 		s := &scorer{ds: ds, change: change, reader: &Reader{Model: readerModel}, grader: grader,
 			sessions: sessions, places: places, readersFrom: priorReaders, only: only}

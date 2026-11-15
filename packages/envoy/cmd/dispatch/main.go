@@ -512,6 +512,12 @@ func main() {
 		slog.Error("dispatch: build Rewrite and Define", "error", err)
 		os.Exit(1)
 	}
+	// The models a test request may name (DISPATCH_TEST_MODELS, under the test hooks alone).
+	testModels, err := newTestModels(boot.Writing, pacer)
+	if err != nil {
+		slog.Error("dispatch: build the test models", "error", err)
+		os.Exit(1)
+	}
 
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
@@ -535,6 +541,7 @@ func main() {
 		WritingCheck:   writingCheck,
 		Reviewer:       textReviewer,
 		RewriteDefine:  rewriteDefine,
+		TestModels:     testModels,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.

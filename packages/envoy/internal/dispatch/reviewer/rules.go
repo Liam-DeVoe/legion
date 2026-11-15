@@ -178,7 +178,7 @@ func runChecks(ctx context.Context, m Model, text Text, structure, detector bool
 			Timeout:     cmp.Or(m.Timeout, DefaultTimeout),
 			Temperature: m.Temperature,
 			Observe: func(c reader.Call) {
-				paced.call.Served, paced.call.Fault = c.Model, c.Fault
+				paced.call.Served, paced.call.Usage, paced.call.Fault = c.Model, c.Usage, c.Fault
 			},
 		})
 		cfg.Detector, cfg.Reader = true, paced

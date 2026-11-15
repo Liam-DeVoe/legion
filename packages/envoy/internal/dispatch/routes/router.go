@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -138,6 +139,10 @@ type AppContextOptions struct {
 	// DISPATCH_REWRITE_DEFINE_MODEL_*); nil where their model group is unset. See
 	// api.Deps.RewriteDefine.
 	RewriteDefine *api.RewriteDefine
+	// TestModels are the models a test request may name in its Dispatch-Test-Model header
+	// (cmd/dispatch: DISPATCH_TEST_MODELS, under the test hooks); nil names none. See
+	// api.Deps.TestModels.
+	TestModels    map[string]reviewer.Model
 	Events        *events.Broker
 	App           *auth.AppConfig
 	GitHubAPIBase string
@@ -223,6 +228,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		WritingRules:           opts.WritingRules,
 		Reviewer:               opts.Reviewer,
 		RewriteDefine:          opts.RewriteDefine,
+		TestModels:             opts.TestModels,
 		Events:                 opts.Events,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,

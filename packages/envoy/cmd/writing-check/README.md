@@ -1079,8 +1079,8 @@ refuses it.
 dataset of R1, by the score of R2. For each case, the change gives the text a person sees. A
 fresh reader answers the person's question from that text alone. The grader then gives each
 judgement of R2, one prompt for each, against Dispatch's record as the dataset stored it and,
-where the case has one, the writer's session up to the text. The harness scores change 1, the
-text as the person saw it; t11 adds changes 2 to 7.
+where the case has one, the writer's session up to the text. It scores change 1, the text as the
+person saw it, changes 2 to 7 alone, and their combinations (see "The changes").
 
 Its inputs are in the package, and they are among the paths that decide a score:
 
@@ -1093,6 +1093,10 @@ Its inputs are in the package, and they are among the paths that decide a score:
 - `prompts/`: `reader.md`, and one `grade-*.md` for each judgement: `answered`,
   `first-paragraph`, `lost`, `added`, `phrases`, `undefined`, `answer-start`, `harder` and
   `define`.
+- `writer/writer.md`: the prompts of the writer the harness plays. They are apart from
+  `prompts/`, so change 1's prompt digest does not move with them; a run that plays the writer
+  records their digest as `writer_sha256`.
+- `combinations.yaml`: the combinations of changes `score --change` takes by name.
 
 Every file the harness writes holds Dispatch text or session text. Write them under `$TMPDIR`.
 Each subcommand refuses an `--out` inside a repository: a directory at or above it that holds a
@@ -1141,11 +1145,14 @@ writes the rows as JSON.
 
 | Flag | Meaning |
 | --- | --- |
-| `--change` | The change to score: `1`. |
+| `--change` | The change to score: `1` to `6`, `7a`, or a combination of `combinations.yaml` (see "The changes"). |
+| `--model` | The candidate the change calls: the reviewer's, Rewrite's and Define's model and the detector's reader, for a change that holds 3, 4, 5, 6 or 7a. |
+| `--local`, `--loaded` | The `local.json` of `harness local` and the `loaded.jsonl` of `harness load`, for a change that holds 2 to 6. |
+| `--rounds`, `--unedited` | Change 3: the reviews of one text (default 2), after which the writer's last edit posts; and what posts for a case with no session, as `DISPATCH_REVIEWER_UNEDITED` says (`rewrite`, the default, or `as_written`). |
 | `--cases`, `--sessions` | The build directory of `dataset build` and the directory of `dataset sessions`. |
 | `--out` | The run's directory. A run continues the cases that have no result in it, and refuses a directory whose `run.json` records other parameters. |
 | `--part` | `development` (the default), or `held_out`, which only this flag selects. |
-| `--groups` | The case groups to score (default all four). |
+| `--groups` | The case groups to score (default all four; `question` alone for a change that holds 6). |
 | `--sample`, `--sample-seed` | A stratified sample of about this many cases (see below), drawn by the seed. |
 | `--seed`, `--draws` | The bootstrap's seed (default 3231) and resamples (default 10,000). |
 | `--session-chars` | The bytes of a case's session that a grading call reads. |
@@ -1226,6 +1233,34 @@ commit, the time, the changes, the models and the output directory. It refuses t
 log holds a run at the same commit, unless `--new-run '<reason>'` gives the reason, which the
 line records.
 
+### The changes
+
+A change other than 1 is one or more steps a text meets in this order: the written rules (2) and
+the writing check alone (7a) when the agent writes, the reviewer (3 or 4) before the text posts, a
+person's Rewrite (5) and Define (6) when the person reads it. A combination of `combinations.yaml`
+runs its steps in that order, each from the text the one before made; 7b, the check's findings as
+the reviewer's inputs, needs 3 or 4. Every model call of the reviewer, Rewrite and Define goes
+through the local Dispatch with the candidate in the `Dispatch-Test-Model` header
+(`DISPATCH_TEST_MODELS`, `cmd/dispatch/README.md`), so the score is a score of the server's code;
+`harness local --test-models` sets that server up. The writer is the writer role's Claude model,
+given Dispatch's record of the case, its text, the message Dispatch sent it, and its session up to
+the text where the case has one (`writer/writer.md`). Each case's line of `cases.jsonl` holds the
+change's own calls, each priced at its model's price (a route's calls by the tokens it answers),
+its wait, and its `change_trace`: what each step did.
+
+| Change | What it does |
+| --- | --- |
+| `2` | The `dispatch` command refuses the write once with its refusal text (a Go copy of `writing-rules.ts`'s `refusalText`, held to it by `TestTheRefusalIsTheCommands`) and the rules the local Dispatch answers for the write's reader (`POST /api/v1/writing-rules`); the writer writes its text again. A document is no write the command refuses. |
+| `7a` | The writing check of pull request #3981 alone: its structure rules and its detector, whose reader is the candidate, read the text; their findings go to the writer as #3981's refusal did, and the writer writes its text again. A text with no finding posts as written. |
+| `3` | The draft route (`POST /api/v1/reviewer/draft`) reviews the text; the writer gets the findings' frame (`reviewer.FindingsFrame.Body`) and edits, or posts as written with a reason; an edit is reviewed again, up to `--rounds` reviews, after which the last edit posts. With no session the writer is not running (plan Decision 18): the reviewer's rewrite posts under `--unedited rewrite` where the review holds one that is applied, else the text as written. |
+| `4` | The draft route's rewrite posts where the review found something and the rewrite keeps what a rewrite keeps. |
+| `5` | An ask on an issue is opened in the local Dispatch as the writer's and rewritten by `POST /api/v1/asks/{id}/rewrite`, the case's reader pressing it; the server sends the writer, live in the fake Envoy where the case has a session, one side question, which the harness answers as the writer. The wait runs from the press to the rewrite's end, and the run's calls are read from `ask_rewrites.calls`. A comment, a message or a document is rewritten by the component (`reviewer.Rewrite`) after the same side question, from Dispatch's record as the dataset stored it. |
+| `6` | Define (`POST /api/v1/definitions`) of the words the person asked about (those he selected, else those the selection prompt found), for an ask on an issue and a document; the definition from the record, and the writer's answer to the side question beside it. Words in a comment or a message go to the component's Define, with the same side question. It scores the question cases alone. |
+
+A model failure the provider's retry may clear (a provider error, a failed call) is tried again,
+up to four times; any other failure of the reviewer posts the text as written, as the server does,
+and a failed Rewrite or Define leaves the text as it was, with the failure in the trace.
+
 ### grader-test
 
 `grader-test` gives the grader planted outputs, one JSON line each in `--planted`: `id`,
@@ -1297,6 +1332,14 @@ loaded, with no reset and no seed (`DISPATCH_E2E_KEEP_DATABASE=1`). Once the ins
 `local.json` in `--out` holds its URL, its fake Envoy, its database and the settings; the file
 goes when the instance stops.
 
+`--test-models` sets the server up for `score`: every candidate a test model at the gateway or
+the Foundry account the model flags name (with the Foundry sign-in), the reviewer's and Rewrite
+and Define's groups at the gateway so their routes answer, and the records job off; a `--setting`
+of the same name wins. A change that holds 3 or 4 needs the server's `DISPATCH_REVIEWER_RULES`
+to hold `structure` and `detector` exactly when it holds 7b, and refuses a server that does not;
+change 2 shows the rule sets of `DISPATCH_WRITING_RULES_EXTRA`. `local.json` keeps each
+setting's value, which `score` records in `run.json`.
+
 `load` re-creates each case's record in that instance: the project, an issue with its title,
 assigned to a reader of the case's own, each document at the version the record names (one local
 version holding that version's Markdown), and the thread as comments, oldest first, each by its
@@ -1308,4 +1351,5 @@ rows into the database that `local` made. A document the instance refuses (`INVA
 for a block that points at a text of production it does not hold) is left out and named in the
 case's line. `loaded.jsonl` holds where each record stands, and a load continues the cases it
 holds no line for. Write times and authors differ from production, so the grader reads the
-record from the dataset, never from the local instance.
+record from the dataset, never from the local instance. `load --sample N --sample-seed S --groups
+G` loads the cases `score --sample N --sample-seed S --groups G` scores.

@@ -3283,6 +3283,14 @@ Every set group's calls go to it with no credential, each still naming its group
 A group beside it takes only its `_KIND`, `_DEPLOYMENT`, `_TOKENS_PER_MINUTE` and, for `azure`, `_API_VERSION`; its `_ENDPOINT`, `_KEY_FILE` and `_SCOPE` refuse the boot, and it reads no sign-in.
 The browser suite starts `packages/dispatch/e2e/fake-model.ts` and hands its URL to the server; a Go test starts `internal/dispatch/modeltest`.
 
+### The test models
+
+`DISPATCH_TEST_MODELS`, read only under `DISPATCH_TEST_HOOKS=1`, lists the models a test request may name in its `Dispatch-Test-Model` header: `name=kind,…`, kind `azure` or `anthropic`.
+A draft review (`POST /api/v1/reviewer/draft`), a person's Rewrite of an ask and a person's Define that name one call it, the detector's reader included, in place of the reviewer's or Rewrite and Define's group, with that group's bounds.
+This is how `writing-check harness` measures each change with each candidate model against one server.
+The models of a kind are read as one model group of that kind, `DISPATCH_TEST_MODELS_AZURE_*` (`_ENDPOINT`, `_API_VERSION`, `_SCOPE`, `_TOKENS_PER_MINUTE`, with the shared Azure sign-in) or `DISPATCH_TEST_MODELS_ANTHROPIC_*` (`_ENDPOINT`, `_KEY_FILE`, `_TOKENS_PER_MINUTE`), each model's name being the deployment its requests name; beside `DISPATCH_TEST_MODEL_URL` they call the stand-in and take only `_TOKENS_PER_MINUTE`.
+A request that names a model the list does not hold is refused 400 `TEST_MODEL_REFUSED`, and so is any request with the header on a server without the test hooks, so a deployment's own model never answers a request that asked for another.
+
 ## Writing check
 
 The writing check reads the prose of an agent's write before the server stores it and records what it finds (`internal/dispatch/writingcheck`, `internal/dispatch/api/writing_check.go`); the write goes on whatever it finds.

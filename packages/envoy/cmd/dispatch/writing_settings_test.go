@@ -144,6 +144,60 @@ func TestTheStandInModelURLNeedsTheTestHooks(t *testing.T) {
 	}
 }
 
+// testModelsEnv is a test process's DISPATCH_TEST_MODELS with one model of each kind, each kind's
+// settings, and the shared Azure sign-in the azure model reads.
+func testModelsEnv(overrides map[string]string) map[string]string {
+	return withOverrides(withOverrides(map[string]string{
+		"DISPATCH_TEST_HOOKS":                              "1",
+		"DISPATCH_TEST_MODELS":                             " grok-4.7=azure , claude-haiku-5-5 = anthropic,",
+		"DISPATCH_TEST_MODELS_AZURE_ENDPOINT":              "https://models.example/models",
+		"DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE":     "60000",
+		"DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT":          "http://model-gateway.example:4000",
+		"DISPATCH_TEST_MODELS_ANTHROPIC_KEY_FILE":          "/var/run/model-gateway-key/key",
+		"DISPATCH_TEST_MODELS_ANTHROPIC_TOKENS_PER_MINUTE": "40000",
+	}, azureFederated), overrides)
+}
+
+// noAzureSignIn unsets the shared Azure sign-in, for a test process that lists no azure model, so
+// the refusal of a sign-in no one reads does not come first.
+var noAzureSignIn = map[string]string{"DISPATCH_AZURE_TENANT_ID": "", "DISPATCH_AZURE_CLIENT_ID": "", "DISPATCH_AZURE_FEDERATED_TOKEN_FILE": ""}
+
+// DISPATCH_TEST_MODELS is a test process's alone: without DISPATCH_TEST_HOOKS=1 it refuses the
+// boot. Under the hooks each listed model is its kind's group, named as its own deployment; beside
+// the stand-in model every one calls the stand-in with no credential. A kind's settings with no
+// model of the kind listed are refused, and so is a listed kind with none of its settings.
+func TestTheTestModels(t *testing.T) {
+	models := resolveWith(t, testModelsEnv(nil)).Writing.TestModels
+	want := map[string]modelGroup{
+		"grok-4.7": {Kind: "azure", Endpoint: "https://models.example/models", Deployment: "grok-4.7", Scope: embed.DefaultEntraScope,
+			TokensPerMinute: 60000, TenantID: "tenant-id", ClientID: "client-id", FederatedToken: "/var/run/secrets/azure-federation/token"},
+		"claude-haiku-5-5": {Kind: "anthropic", Endpoint: "http://model-gateway.example:4000", Deployment: "claude-haiku-5-5",
+			KeyFile: "/var/run/model-gateway-key/key", TokensPerMinute: 40000},
+	}
+	if !maps.Equal(models, want) {
+		t.Errorf("TestModels = %+v, want %+v", models, want)
+	}
+	if models := resolveWith(t, nil).Writing.TestModels; models != nil {
+		t.Errorf("unset: TestModels = %+v, want none", models)
+	}
+	refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_HOOKS": ""}), "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_MODELS")
+
+	standIn := resolveWith(t, map[string]string{
+		"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_MODEL_URL": "http://127.0.0.1:9040",
+		"DISPATCH_TEST_MODELS": "grok-4.7=azure", "DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE": "1000",
+	}).Writing.TestModels
+	if got, want := standIn["grok-4.7"], (modelGroup{Kind: "azure", Endpoint: "http://127.0.0.1:9040", Deployment: "grok-4.7", TokensPerMinute: 1000, StandIn: true}); got != want {
+		t.Errorf("a test model beside the stand-in = %+v, want %+v", got, want)
+	}
+	refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODEL_URL": "http://127.0.0.1:9040"}),
+		"set beside DISPATCH_TEST_MODEL_URL")
+
+	refusedWith(t, testModelsEnv(withOverrides(noAzureSignIn, map[string]string{"DISPATCH_TEST_MODELS": "claude-haiku-5-5=anthropic"})),
+		"DISPATCH_TEST_MODELS_AZURE_ENDPOINT, DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE set, but DISPATCH_TEST_MODELS names no azure model")
+	refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_MODELS": "grok-4.7=azure"},
+		"DISPATCH_TEST_MODELS names an azure model, but no DISPATCH_TEST_MODELS_AZURE_* setting is set")
+}
+
 // writingSettingCases are the cases TestEverySettingReachesItsReader runs for the rows of the work
 // on agents' texts: each hands its row to resolveWritingSettings through the table.
 func writingSettingCases() map[string]func(t *testing.T) {
@@ -219,6 +273,58 @@ func writingSettingCases() map[string]func(t *testing.T) {
 			for _, bad := range []string{"127.0.0.1:9040", "ftp://127.0.0.1:9040", "http://127.0.0.1:9040/?x=1", "http:///v1"} {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_MODEL_URL": bad}, "DISPATCH_TEST_MODEL_URL="+`"`+bad+`"`)
 			}
+		},
+		"DISPATCH_TEST_MODELS": func(t *testing.T) {
+			if got := slices.Sorted(maps.Keys(resolveWith(t, testModelsEnv(nil)).Writing.TestModels)); !slices.Equal(got, []string{"claude-haiku-5-5", "grok-4.7"}) {
+				t.Errorf("TestModels = %v", got)
+			}
+			refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_HOOKS": ""}), "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_MODELS")
+			for _, bad := range []string{"grok-4.7", "grok-4.7=openai", "=azure"} {
+				refusedWith(t, testModelsEnv(withOverrides(noAzureSignIn, map[string]string{"DISPATCH_TEST_MODELS": bad})), "DISPATCH_TEST_MODELS names "+`"`+bad+`"`)
+			}
+			refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS": "grok-4.7=azure,grok-4.7=azure"}), "DISPATCH_TEST_MODELS names grok-4.7 twice")
+		},
+		"DISPATCH_TEST_MODELS_AZURE_ENDPOINT": func(t *testing.T) {
+			if got := resolveWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_AZURE_ENDPOINT": " https://other.example/models "})).Writing.TestModels["grok-4.7"].Endpoint; got != "https://other.example/models" {
+				t.Errorf("Endpoint = %q", got)
+			}
+			refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_AZURE_ENDPOINT": ""}), "DISPATCH_TEST_MODELS_AZURE_ENDPOINT missing")
+			refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_AZURE_ENDPOINT": "http://models.example/models"}), `DISPATCH_TEST_MODELS_AZURE_ENDPOINT="http://models.example/models" (expected an absolute https URL`)
+		},
+		"DISPATCH_TEST_MODELS_AZURE_API_VERSION": func(t *testing.T) {
+			if got := resolveWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_AZURE_API_VERSION": " 2024-05-01-preview "})).Writing.TestModels["grok-4.7"].APIVersion; got != "2024-05-01-preview" {
+				t.Errorf("APIVersion = %q", got)
+			}
+		},
+		"DISPATCH_TEST_MODELS_AZURE_SCOPE": func(t *testing.T) {
+			if got := resolveWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_AZURE_SCOPE": " https://ai.azure.com/.default "})).Writing.TestModels["grok-4.7"].Scope; got != "https://ai.azure.com/.default" {
+				t.Errorf("Scope = %q", got)
+			}
+			refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_AZURE_TENANT_ID": "", "DISPATCH_AZURE_CLIENT_ID": "", "DISPATCH_AZURE_FEDERATED_TOKEN_FILE": ""}), "needs the keyless Azure sign-in")
+		},
+		"DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE": func(t *testing.T) {
+			if got := resolveWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE": " 90000 "})).Writing.TestModels["grok-4.7"].TokensPerMinute; got != 90000 {
+				t.Errorf("TokensPerMinute = %d, want 90000", got)
+			}
+			refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE": ""}), "DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE missing")
+		},
+		"DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT": func(t *testing.T) {
+			if got := resolveWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT": " https://gateway.example "})).Writing.TestModels["claude-haiku-5-5"].Endpoint; got != "https://gateway.example" {
+				t.Errorf("Endpoint = %q", got)
+			}
+			refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT": "http://gateway.example?x=1"}), `DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT="http://gateway.example?x=1" (expected an absolute http or https URL`)
+		},
+		"DISPATCH_TEST_MODELS_ANTHROPIC_KEY_FILE": func(t *testing.T) {
+			if got := resolveWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_ANTHROPIC_KEY_FILE": " /keys/gateway "})).Writing.TestModels["claude-haiku-5-5"].KeyFile; got != "/keys/gateway" {
+				t.Errorf("KeyFile = %q", got)
+			}
+			refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_ANTHROPIC_KEY_FILE": ""}), "DISPATCH_TEST_MODELS_ANTHROPIC_KEY_FILE missing")
+		},
+		"DISPATCH_TEST_MODELS_ANTHROPIC_TOKENS_PER_MINUTE": func(t *testing.T) {
+			if got := resolveWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_ANTHROPIC_TOKENS_PER_MINUTE": " 90000 "})).Writing.TestModels["claude-haiku-5-5"].TokensPerMinute; got != 90000 {
+				t.Errorf("TokensPerMinute = %d, want 90000", got)
+			}
+			refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_ANTHROPIC_TOKENS_PER_MINUTE": "0"}), `DISPATCH_TEST_MODELS_ANTHROPIC_TOKENS_PER_MINUTE="0" (expected a positive integer)`)
 		},
 	}
 	holdable := map[string]func(writingSettings) string{

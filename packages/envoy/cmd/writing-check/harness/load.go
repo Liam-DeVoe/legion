@@ -158,20 +158,36 @@ type actor struct {
 	session, person string
 }
 
-// send makes one write as a, and decodes the answer into out.
+// send makes one write as a, its actor in the body for a session, and decodes the answer into out.
 func (l *localClient) send(ctx context.Context, a actor, method, path string, body map[string]any, out any) error {
 	if a.session != "" {
 		body["actor"] = map[string]string{"kind": "session", "id": a.session}
 	}
-	data, err := json.Marshal(body)
+	return l.call(ctx, a, method, path, body, nil, out)
+}
+
+// call makes one request as a with body (none for nil) and the headers in header, and decodes the
+// answer into out. A session's request carries the instance's agent bearer and names the session
+// only where the body does; a person's carries that person's cookie.
+func (l *localClient) call(ctx context.Context, a actor, method, path string, body any, header http.Header, out any) error {
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, l.inst.BaseURL+path, reader)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, l.inst.BaseURL+path, bytes.NewReader(data))
-	if err != nil {
-		return err
+	for name, values := range header {
+		req.Header[name] = values
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if a.session != "" {
 		req.Header.Set("Authorization", "Bearer "+l.inst.AgentToken)
 	} else {
@@ -414,6 +430,8 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	limit := fs.Int("limit", 0, "load at most this many cases, drawn by the seed (0: all)")
 	seed := fs.Uint64("seed", DefaultSeed, "the seed of --limit's draw")
 	concurrency := fs.Int("concurrency", 4, "the cases loaded at once")
+	sampleSize := fs.Int("sample", 0, "load the stratified sample `harness score --sample` scores with the same --groups and --sample-seed (0: no sample)")
+	sampleSeed := fs.Uint64("sample-seed", DefaultSeed, "the seed of --sample's draw")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -425,8 +443,8 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check harness load: %v\n", err)
 		return 1
 	}
-	if *localPath == "" || *casesDir == "" || *verdicts == "" || *out == "" || fs.NArg() > 0 || *concurrency < 1 || *limit < 0 {
-		return usage("--local, --cases, --verdicts and --out are required, --concurrency must be above 0, and nothing else")
+	if *localPath == "" || *casesDir == "" || *verdicts == "" || *out == "" || fs.NArg() > 0 || *concurrency < 1 || *limit < 0 || *sampleSize < 0 || (*limit > 0 && *sampleSize > 0) {
+		return usage("--local, --cases, --verdicts and --out are required, --concurrency must be above 0, --limit and --sample not below 0 and not both set, and nothing else")
 	}
 	if *part != PartDevelopment && *part != PartHeldOut {
 		return usage("--part is development or held_out")
@@ -455,6 +473,9 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	cases := selectCases(ds.Cases, strings.Split(*groupsFlag, ","), *limit, *seed)
+	if *sampleSize > 0 {
+		cases, _ = drawSample(cases, *sampleSize, *sampleSeed)
+	}
 	db, err := pgx.Connect(ctx, inst.DatabaseURL)
 	if err != nil {
 		return fail(fmt.Errorf("the local instance's database: %w", err))

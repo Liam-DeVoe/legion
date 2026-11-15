@@ -234,8 +234,10 @@ func TestEachCallNamesItsDeploymentAndTheModelServed(t *testing.T) {
 					t.Errorf("call %d = %+v, want %+v", i, call, want[i])
 				}
 			}
-			if !reviewed.Calls[1].Usage.Metered {
-				t.Errorf("the review's call reports no usage: %+v", reviewed.Calls[1])
+			for _, call := range reviewed.Calls {
+				if !call.Usage.Metered {
+					t.Errorf("the %s call reports no usage: %+v", call.Purpose, call)
+				}
 			}
 			for _, request := range stand.Requests() {
 				if request.Protocol != protocol || request.Model != "reviewer" {

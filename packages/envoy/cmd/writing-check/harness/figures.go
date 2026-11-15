@@ -342,7 +342,14 @@ func methodMark(method string) string {
 func (f Figures) markdown() string {
 	var b strings.Builder
 	p := f.Run.Params
-	fmt.Fprintf(&b, "# Change %s on the %s part\n\n", p.Change, p.Part)
+	title := "Change " + p.Change
+	if len(p.Changes) > 0 {
+		title += " (" + strings.Join(p.Changes, ", ") + ")"
+	}
+	if p.Model != "" {
+		title += " with " + p.Model
+	}
+	fmt.Fprintf(&b, "# %s on the %s part\n\n", title, p.Part)
 	fmt.Fprintf(&b, "Cases selected: %d; with a result: %d. Grader %s (fallback %s), fresh reader %s. Prompts SHA-256 %s.\n",
 		f.Run.Selected, f.Run.Results, p.Models[RoleGrader], cmp.Or(p.Models[RoleGraderFallback], "none"), p.Models[RoleReader], p.PromptsSHA256)
 	fmt.Fprintf(&b, "Every interval is 95%%: a cluster bootstrap over the split groups (%d draws, seed %d), or the exact bound over the groups where no failure or no success is seen.\n",

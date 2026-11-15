@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -113,8 +114,13 @@ type Deps struct {
 	// a deployment that sets no model group for them (cmd/dispatch:
 	// DISPATCH_REWRITE_DEFINE_MODEL_*), whose Rewrite and Define routes answer 503.
 	RewriteDefine *RewriteDefine
-	Envoy         *envoy.Client
-	Events        *events.Broker
+	// TestModels are the models a request may name in its Dispatch-Test-Model header in place of
+	// the reviewer's, Rewrite's and Define's own model (test_model.go; cmd/dispatch:
+	// DISPATCH_TEST_MODELS), each with its share of its deployment's pacer. Only a server with
+	// TestHooksEnabled reads the header; nil names none.
+	TestModels map[string]reviewer.Model
+	Envoy      *envoy.Client
+	Events     *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
 	// GitHub reads; nil is the "no app credentials yet" state and answers ErrNoAppKey.
 	GitHub *githubapp.Client
@@ -234,7 +240,9 @@ type DepsInput struct {
 	Reviewer *Reviewer
 	// RewriteDefine is Rewrite and Define; nil is none. See Deps.RewriteDefine.
 	RewriteDefine *RewriteDefine
-	Events        *events.Broker
+	// TestModels are the models the Dispatch-Test-Model header may name; see Deps.TestModels.
+	TestModels map[string]reviewer.Model
+	Events     *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -345,6 +353,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		WritingRules:           input.WritingRules,
 		Reviewer:               input.Reviewer,
 		RewriteDefine:          input.RewriteDefine,
+		TestModels:             input.TestModels,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,

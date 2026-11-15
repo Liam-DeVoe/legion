@@ -81,3 +81,28 @@ func newRewriteDefine(cfg writingSettings, pacer *modelpace.Pacer) (*api.Rewrite
 		Rules: rules,
 	}), nil
 }
+
+// newTestModels builds the models a test request may name in its Dispatch-Test-Model header
+// (DISPATCH_TEST_MODELS, under the test hooks alone), by name: each one's model and its share of
+// its deployment on pacer, the process's one pacer, at its kind's endpoint or the stand-in under
+// DISPATCH_TEST_MODEL_URL. It is nil where the setting names none. Like the groups, it is built from
+// settings resolveWritingSettings has already checked; it calls nothing and reads no file.
+func newTestModels(cfg writingSettings, pacer *modelpace.Pacer) (map[string]reviewer.Model, error) {
+	if len(cfg.TestModels) == 0 {
+		return nil, nil
+	}
+	models := make(map[string]reviewer.Model, len(cfg.TestModels))
+	for name, group := range cfg.TestModels {
+		model, err := group.agentloopModel()
+		if err != nil {
+			return nil, fmt.Errorf("the test model %s: %w", name, err)
+		}
+		pace, err := group.pace(pacer)
+		if err != nil {
+			return nil, fmt.Errorf("the test model %s: %w", name, err)
+		}
+		models[name] = reviewer.Model{Model: model, Pace: pace}
+	}
+	slog.Info("dispatch: a test request may name a model of DISPATCH_TEST_MODELS", "models", len(models))
+	return models, nil
+}

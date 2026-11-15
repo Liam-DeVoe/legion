@@ -9,9 +9,12 @@
 -- person's actor, original the wording the run read ({body, options, multiple}), and
 -- question_message the message that holds the side question Dispatch sent the asking session
 -- (INFRA-3552's R3: kept as a message to that session, on its own conversation, and linked to the
--- ask), null where none was sent. The rewritten wording's own record is the ask.edited event,
--- whose previous wording is the original; a run a stopped process left rewriting reads as failed
--- once its time bound has passed, and the next request starts a new run.
+-- ask), null where none was sent. calls holds each model call the run made, in the shape a
+-- definition's calls have ({purpose, deployment, served, input_tokens, output_tokens,
+-- cache_write_tokens, cache_read_tokens, fault}), written once its model call ends; [] for a run
+-- that made none. The rewritten wording's own record is the ask.edited event, whose previous
+-- wording is the original; a run a stopped process left rewriting reads as failed once its time
+-- bound has passed, and the next request starts a new run.
 --
 -- definitions holds each definition a person asked for (api/definitions.go): the words they
 -- selected, where they were (an ask, or a document at a version), the parts of Dispatch's record
@@ -33,6 +36,7 @@ create table ask_rewrites (
   original jsonb not null,
   question_message uuid,
   reason text,
+  calls jsonb not null default '[]',
   started_at timestamptz not null default now(),
   finished_at timestamptz,
   constraint ask_rewrites_finished check ((state = 'rewriting') = (finished_at is null))

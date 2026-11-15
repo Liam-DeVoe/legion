@@ -349,7 +349,7 @@ func (s *server) reviewPosted(_ context.Context, review *postedReview, id string
 // as a frame that holds nothing, which a writer that does not act leaves as it is.
 func (s *server) runPostedReview(ctx context.Context, review postedReview, id string) {
 	rv := s.deps.Reviewer
-	reviewed, err := s.review(ctx, review.subject)
+	reviewed, err := s.review(ctx, rv.config.Model, review.subject)
 	if ctx.Err() != nil {
 		return
 	}
@@ -376,9 +376,10 @@ func (s *server) runPostedReview(ctx context.Context, review postedReview, id st
 	}
 }
 
-// review reads the record of subject's text and reviews it, the whole bounded by
+// review reads the record of subject's text and reviews it with chosen, the reviewer's model group
+// or the test model a draft's request names (requestModel), the whole bounded by
 // DISPATCH_REVIEWER_TIMEOUT. A record it could not read is an error as a model's failure is.
-func (s *server) review(ctx context.Context, subject reviewer.Subject) (reviewer.Reviewed, error) {
+func (s *server) review(ctx context.Context, chosen reviewer.Model, subject reviewer.Subject) (reviewer.Reviewed, error) {
 	rv := s.deps.Reviewer
 	bounded, cancel := context.WithTimeout(ctx, rv.config.Timeout)
 	defer cancel()
@@ -386,7 +387,7 @@ func (s *server) review(ctx context.Context, subject reviewer.Subject) (reviewer
 	if err != nil {
 		return reviewer.Reviewed{}, err
 	}
-	reviewed, err := reviewer.Review(bounded, rv.config.Model, rv.config.Rules, record)
+	reviewed, err := reviewer.Review(bounded, chosen, rv.config.Rules, record)
 	if err == nil && bounded.Err() != nil {
 		err = bounded.Err()
 	}
@@ -442,7 +443,7 @@ func (s *server) reviewHeld(ctx context.Context, id string) {
 			return
 		}
 	}
-	reviewed, err := s.review(ctx, subject)
+	reviewed, err := s.review(ctx, s.deps.Reviewer.config.Model, subject)
 	if ctx.Err() != nil {
 		return
 	}

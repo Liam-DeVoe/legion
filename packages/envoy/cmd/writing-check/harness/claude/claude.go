@@ -88,6 +88,11 @@ func (c *Client) Name() string { return c.model.ID }
 // Family is llm.FamilyClaude.
 func (c *Client) Family() string { return llm.FamilyClaude }
 
+// Model is the model as agentloop calls it, for a component that makes its own call (the
+// reviewer's Rewrite and Define, the detector's reader). It carries no session text: only
+// CallWithSession sends that.
+func (c *Client) Model() agentloop.Model { return c.model }
+
 // Call makes one call that reads no session text.
 func (c *Client) Call(ctx context.Context, req llm.Request) (llm.Response, error) {
 	return c.runner.Run(ctx, c.model, req)

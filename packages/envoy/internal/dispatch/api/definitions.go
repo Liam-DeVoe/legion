@@ -140,6 +140,12 @@ func (s *server) createDefinition(w http.ResponseWriter, r *http.Request) {
 			"this deployment sets no model group for Rewrite and Define (DISPATCH_REWRITE_DEFINE_MODEL_*)")
 		return
 	}
+	rd := s.deps.RewriteDefine
+	chosen, err := s.requestModel(r, rd.config.Model)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	words, err := defineWords(input.Words)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -156,8 +162,7 @@ func (s *server) createDefinition(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	rd := s.deps.RewriteDefine
-	defined, err := reviewer.Define(ctx, rd.config.Model, rd.config.Rules, record, words, reviewer.Answer{})
+	defined, err := reviewer.Define(ctx, chosen, rd.config.Rules, record, words, reviewer.Answer{})
 	failure := ""
 	var failed *reviewer.ModelError
 	switch {

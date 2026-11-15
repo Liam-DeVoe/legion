@@ -17,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 )
 
 // LocalInstance is local.json: where the local Dispatch that `harness local` started listens, and
@@ -28,9 +30,11 @@ type LocalInstance struct {
 	DatabaseURL string `json:"database_url"`
 	// AgentToken is the bearer the local instance admits for every agent (e2e/run-server.sh).
 	AgentToken string `json:"agent_token"`
-	// Settings are the DISPATCH_* settings passed through to the server, by name.
-	Settings []string `json:"settings"`
-	Started  string   `json:"started"`
+	// Settings are the DISPATCH_* settings passed through to the server, by name, and Values
+	// their values, which hold no secret: a key is read from the file a setting names.
+	Settings []string          `json:"settings"`
+	Values   map[string]string `json:"values,omitempty"`
+	Started  string            `json:"started"`
 }
 
 // localAgentToken is the agent bearer e2e/run-server.sh pins.
@@ -112,6 +116,8 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	var settings settingsFlag
 	fs.Var(&settings, "setting", "a DISPATCH_* setting the server gets, NAME=VALUE (repeatable)")
 	repo := fs.String("repo", "", "the repository root (default: the nearest above the working directory)")
+	testModels := fs.Bool("test-models", false, "set the server up for `harness score`: every candidate a test model (DISPATCH_TEST_MODELS) at the gateway or the Foundry account the model flags name, the reviewer's and Rewrite and Define's groups at the gateway, and the records job off; a --setting of the same name wins")
+	mf := addModelFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -150,6 +156,21 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		env[name] = value
 	}
+	if *testModels {
+		cfg, err := LoadConfig()
+		if err != nil {
+			return fail(err)
+		}
+		set, err := testModelSettings(cfg, mf)
+		if err != nil {
+			return usage(err.Error())
+		}
+		for name, value := range set {
+			if _, given := env[name]; !given {
+				env[name] = value
+			}
+		}
+	}
 	root := *repo
 	if root == "" {
 		wd, err := os.Getwd()
@@ -175,7 +196,7 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return usage(err.Error())
 	}
-	inst := LocalInstance{Database: name, DatabaseURL: dbURL, AgentToken: localAgentToken, Settings: slices.Sorted(maps.Keys(env)), Started: time.Now().UTC().Format(time.RFC3339)}
+	inst := LocalInstance{Database: name, DatabaseURL: dbURL, AgentToken: localAgentToken, Settings: slices.Sorted(maps.Keys(env)), Values: env, Started: time.Now().UTC().Format(time.RFC3339)}
 
 	cmd := exec.CommandContext(ctx, "bun", "run", "dispatch:local")
 	cmd.Dir = root
@@ -263,4 +284,60 @@ func localEnv(base []string, dbURL string, settings map[string]string, keep bool
 		env = append(env, "DISPATCH_E2E_KEEP_DATABASE=1")
 	}
 	return env
+}
+
+// testTokensPerMinute is each group's and each test model's ceiling in a local Dispatch that
+// `harness local --test-models` sets up: high enough that the providers' own limits, which the
+// harness's retries meet, pace the calls, and not the server.
+const testTokensPerMinute = "10000000"
+
+// testModelSettings are the settings `harness local --test-models` gives the server: each
+// candidate of candidates.yaml a test model (DISPATCH_TEST_MODELS), a Claude one at the gateway
+// and a Foundry one at the account the model flags name with their sign-in; the reviewer's and
+// Rewrite and Define's groups at the gateway, on the first Claude candidate, so the routes the
+// harness calls answer (each request names its model); and the records job off, so no model is
+// called in the background.
+func testModelSettings(cfg Config, m *modelFlags) (map[string]string, error) {
+	if m.gateway == "" || m.keyFile == "" {
+		return nil, errors.New("--test-models needs the gateway (--gateway or ANTHROPIC_BASE_URL) and its key file")
+	}
+	set := map[string]string{"DISPATCH_WORD_RECORDS": "off"}
+	var listed []string
+	firstClaude, azure := "", false
+	for _, c := range cfg.Models.Candidates {
+		kind := "anthropic"
+		if c.Family == llm.FamilyFoundry {
+			kind, azure = "azure", true
+		} else if firstClaude == "" {
+			firstClaude = c.ID
+		}
+		listed = append(listed, c.ID+"="+kind)
+	}
+	if firstClaude == "" {
+		return nil, errors.New("--test-models: candidates.yaml holds no Claude candidate for the groups")
+	}
+	set["DISPATCH_TEST_MODELS"] = strings.Join(listed, ",")
+	set["DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT"] = m.gateway
+	set["DISPATCH_TEST_MODELS_ANTHROPIC_KEY_FILE"] = m.keyFile
+	set["DISPATCH_TEST_MODELS_ANTHROPIC_TOKENS_PER_MINUTE"] = testTokensPerMinute
+	if azure {
+		if m.foundry == "" || m.tenant == "" || m.clientID == "" {
+			return nil, errors.New("--test-models: candidates.yaml holds Foundry candidates, so give --foundry-endpoint, --azure-tenant and --azure-client-id")
+		}
+		set["DISPATCH_TEST_MODELS_AZURE_ENDPOINT"] = m.foundry
+		set["DISPATCH_TEST_MODELS_AZURE_API_VERSION"] = m.apiVersion
+		set["DISPATCH_TEST_MODELS_AZURE_SCOPE"] = m.scope
+		set["DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE"] = testTokensPerMinute
+		set["DISPATCH_AZURE_TENANT_ID"] = m.tenant
+		set["DISPATCH_AZURE_CLIENT_ID"] = m.clientID
+		set["DISPATCH_AZURE_FEDERATED_TOKEN_FILE"] = m.tokenFile
+	}
+	for _, prefix := range []string{"DISPATCH_REVIEWER_MODEL_", "DISPATCH_REWRITE_DEFINE_MODEL_"} {
+		set[prefix+"KIND"] = "anthropic"
+		set[prefix+"ENDPOINT"] = m.gateway
+		set[prefix+"DEPLOYMENT"] = firstClaude
+		set[prefix+"KEY_FILE"] = m.keyFile
+		set[prefix+"TOKENS_PER_MINUTE"] = testTokensPerMinute
+	}
+	return set, nil
 }

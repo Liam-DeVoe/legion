@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -121,6 +122,10 @@ type writingSettings struct {
 	// TestModelURL is DISPATCH_TEST_MODEL_URL, read only under the test hooks: the stand-in
 	// model every set group's Endpoint is.
 	TestModelURL string
+	// TestModels are the models a test request may name in its Dispatch-Test-Model header
+	// (DISPATCH_TEST_MODELS), read only under the test hooks, by name: each is the group of its
+	// kind's DISPATCH_TEST_MODELS_<KIND>_* settings with the name as its Deployment.
+	TestModels map[string]modelGroup
 }
 
 // modelGroup is one model group as resolveModelGroup checked it. Kind is "" where the group is
@@ -154,10 +159,14 @@ type modelGroup struct {
 // setting, every value the work could not run on: a choice outside its values, a rule set no
 // reviewer applies, a duration or a time that does not parse, a malformed quota, a reviewer that
 // reviews with no model group, a model group set in part (resolveModelGroup), and
-// DISPATCH_TEST_MODEL_URL without the test hooks.
+// DISPATCH_TEST_MODEL_URL and DISPATCH_TEST_MODELS without the test hooks.
 func resolveWritingSettings(env settingValues, testHooksEnabled bool) (writingSettings, error) {
 	var cfg writingSettings
 	if err := testHookURL(env, "DISPATCH_TEST_MODEL_URL", testHooksEnabled, &cfg.TestModelURL); err != nil {
+		return writingSettings{}, err
+	}
+	var err error
+	if cfg.TestModels, err = resolveTestModels(env, testHooksEnabled, cfg.TestModelURL); err != nil {
 		return writingSettings{}, err
 	}
 	for i, group := range []*modelGroup{&cfg.ReviewerModel, &cfg.RewriteDefineModel, &cfg.WordRecordsModel} {
@@ -189,7 +198,6 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool) (writingSe
 		}
 		*row.target = choice
 	}
-	var err error
 	if cfg.ReviewerRules, err = listSetting(env, "DISPATCH_REVIEWER_RULES", reviewerRuleSets, defaultReviewerRules); err != nil {
 		return writingSettings{}, err
 	}
@@ -222,12 +230,18 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool) (writingSe
 }
 
 // modelGroupsReadSignIn reports whether a model group reads the shared Azure sign-in beside an
-// azure embedder and an azure answerer: a set group whose kind is not anthropic. An azure group
-// reads it, and a group whose kind is missing or unknown is counted too, so resolveModelGroup's
-// refusal of that kind is the one an operator reads, not a refusal of the sign-in beside it.
+// azure embedder and an azure answerer: a set group whose kind is not anthropic, or a test model
+// of DISPATCH_TEST_MODELS whose kind is not. An azure group reads it, and a group whose kind is
+// missing or unknown is counted too, so resolveModelGroup's refusal of that kind is the one an
+// operator reads, not a refusal of the sign-in beside it.
 func modelGroupsReadSignIn(env settingValues) bool {
 	for _, group := range modelGroups {
 		if len(settingsSet(env, group.prefix)) > 0 && strings.TrimSpace(env.get(group.prefix+"KIND")) != modelKindAnthropic {
+			return true
+		}
+	}
+	for _, entry := range strings.Split(env.get(testModelsSetting), ",") {
+		if _, kind, found := strings.Cut(entry, "="); found && strings.TrimSpace(kind) != modelKindAnthropic {
 			return true
 		}
 	}
@@ -325,6 +339,88 @@ func resolveModelGroup(env settingValues, prefix, whose, testModelURL string) (m
 		return modelGroup{}, signIn.refusePartial()
 	}
 	return group, nil
+}
+
+// testModelsSetting lists the models a test request may name in its Dispatch-Test-Model header.
+const testModelsSetting = "DISPATCH_TEST_MODELS"
+
+// testModelPrefixes are the prefixes of the settings of the test models of each kind
+// (DISPATCH_TEST_MODELS_<KIND>_*): where a test model of the kind is called, with what credential,
+// and the ceiling of its share of its deployment.
+var testModelPrefixes = map[string]string{
+	modelKindAzure:     "DISPATCH_TEST_MODELS_AZURE_",
+	modelKindAnthropic: "DISPATCH_TEST_MODELS_ANTHROPIC_",
+}
+
+// resolveTestModels reads DISPATCH_TEST_MODELS: a comma list of name=kind, each name once, kind
+// azure or anthropic, refused without the test hooks. The test models of one kind are that kind's
+// DISPATCH_TEST_MODELS_<KIND>_* settings read as a model group of the kind (resolveTestModelKind),
+// each with its own name as the deployment its requests name. The settings of a kind that no
+// listed model has are refused. Unset, it is nil.
+func resolveTestModels(env settingValues, testHooksEnabled bool, testModelURL string) (map[string]modelGroup, error) {
+	raw := strings.TrimSpace(env.get(testModelsSetting))
+	if raw != "" && !testHooksEnabled {
+		return nil, fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", testModelsSetting)
+	}
+	models := map[string]modelGroup{}
+	kinds := map[string]modelGroup{}
+	for _, entry := range strings.Split(raw, ",") {
+		if entry = strings.TrimSpace(entry); entry == "" {
+			continue
+		}
+		name, kind, found := strings.Cut(entry, "=")
+		name, kind = strings.TrimSpace(name), strings.TrimSpace(kind)
+		prefix, known := testModelPrefixes[kind]
+		if !found || name == "" || !known {
+			return nil, fmt.Errorf("%s names %q (expected a comma list of name=kind, each a model's name and its kind, azure or anthropic)", testModelsSetting, entry)
+		}
+		if _, twice := models[name]; twice {
+			return nil, fmt.Errorf("%s names %s twice", testModelsSetting, name)
+		}
+		group, resolved := kinds[kind]
+		if !resolved {
+			var err error
+			if group, err = resolveTestModelKind(env, prefix, kind, testModelURL); err != nil {
+				return nil, err
+			}
+			kinds[kind] = group
+		}
+		group.Deployment = name
+		models[name] = group
+	}
+	for kind, prefix := range testModelPrefixes {
+		if _, listed := kinds[kind]; !listed {
+			if set := settingsSet(env, prefix); len(set) > 0 {
+				return nil, fmt.Errorf("%s set, but %s names no %s model", strings.Join(set, ", "), testModelsSetting, kind)
+			}
+		}
+	}
+	if len(models) == 0 {
+		return nil, nil
+	}
+	return models, nil
+}
+
+// resolveTestModelKind reads the settings of the test models of kind under prefix as
+// resolveModelGroup reads a model group of that kind, so it refuses each shape a group is refused
+// for: its endpoint, an anthropic model's key file and the ceiling are needed, and beside the
+// stand-in model (testModelURL) the ceiling alone, every call then going to the stand-in. A kind
+// has no row for a field its group would not read (an azure key file, an anthropic api-version or
+// scope), so each such field reads as unset.
+func resolveTestModelKind(env settingValues, prefix, kind, testModelURL string) (modelGroup, error) {
+	whose := "the " + kind + " test models'"
+	if len(settingsSet(env, prefix)) == 0 {
+		return modelGroup{}, fmt.Errorf("%s names an %s model, but no %s* setting is set: %s group is set whole or not at all", testModelsSetting, kind, prefix, whose)
+	}
+	asGroup := maps.Clone(env)
+	for _, field := range []string{"ENDPOINT", "API_VERSION", "SCOPE", "KEY_FILE", "TOKENS_PER_MINUTE"} {
+		if _, listed := asGroup[prefix+field]; !listed {
+			asGroup[prefix+field] = settingValue{}
+		}
+	}
+	asGroup[prefix+"KIND"] = settingValue{value: kind, set: true}
+	asGroup[prefix+"DEPLOYMENT"] = settingValue{value: testModelsSetting, set: true}
+	return resolveModelGroup(asGroup, prefix, whose, testModelURL)
 }
 
 // deploymentQuotas reads DISPATCH_MODEL_DEPLOYMENT_QUOTAS: a comma list of name=tokens_per_minute,

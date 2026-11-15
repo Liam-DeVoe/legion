@@ -88,6 +88,8 @@ const (
 	RoleGraderFallback = "grader_fallback"
 	RoleWriter         = "writer"
 	RoleReader         = "reader"
+	// RoleCandidate is the role of a candidate: the model a change calls.
+	RoleCandidate = "candidate"
 )
 
 // LoadConfig reads the embedded candidates.yaml and prices.yaml.
@@ -184,12 +186,12 @@ func (c Config) AllModels() []ModelEntry {
 	return append(out, c.Models.Candidates...)
 }
 
-// RoleOf is the role a model plays, "candidate" for a candidate.
+// RoleOf is the role a model plays, RoleCandidate for a candidate.
 func (c Config) RoleOf(id string) string {
 	for _, r := range c.roles() {
 		if r.model.ID == id {
 			return r.name
 		}
 	}
-	return "candidate"
+	return RoleCandidate
 }

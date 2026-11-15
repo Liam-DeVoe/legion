@@ -114,10 +114,11 @@ type Reply struct {
 }
 
 // Call is what one model call answered, as Config.Observe is given it: the model id the
-// provider says served it ("" when no reply came), the run's fault and its detail, and the
-// error that ended the run, if any.
+// provider says served it ("" when no reply came), the tokens it used, the run's fault and its
+// detail, and the error that ended the run, if any.
 type Call struct {
 	Model  string
+	Usage  agentloop.Usage
 	Fault  agentloop.Fault
 	Detail string
 	Err    error
@@ -244,7 +245,7 @@ func (r *Reader) Read(ctx context.Context, cands []candidates.Candidate) ([]Verd
 		Temperature: r.cfg.Temperature,
 	})
 	if r.cfg.Observe != nil {
-		call := Call{Fault: result.Fault, Detail: result.Detail, Err: err}
+		call := Call{Usage: result.Usage, Fault: result.Fault, Detail: result.Detail, Err: err}
 		if n := len(result.Steps); n > 0 {
 			call.Model = result.Steps[n-1].Model
 		}

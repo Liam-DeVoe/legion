@@ -64,10 +64,13 @@ type askRewriteAnswer struct {
 }
 
 // askRewriteRun is one run of a person's Rewrite: the ask, the run's id, which the ask's
-// ask_rewrites row names while it is the run in progress, and the person who asked.
+// ask_rewrites row names while it is the run in progress, the person who asked, and the model the
+// run calls: Rewrite and Define's model group, or the test model the request named
+// (requestModel).
 type askRewriteRun struct {
 	askID, run string
 	person     model.Actor
+	model      reviewer.Model
 }
 
 // rewriteAsk is POST /api/v1/asks/{id}/rewrite. Every request for an ask that exists is recorded,
@@ -77,7 +80,16 @@ func (s *server) rewriteAsk(w http.ResponseWriter, r *http.Request) {
 	if !ok || !requireUUIDPath(w, r, "ask") {
 		return
 	}
-	answer, project, found, err := s.startAskRewrite(r.Context(), person, r.PathValue("id"))
+	var base reviewer.Model
+	if s.deps.RewriteDefine != nil {
+		base = s.deps.RewriteDefine.config.Model
+	}
+	chosen, err := s.requestModel(r, base)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	answer, project, found, err := s.startAskRewrite(r.Context(), person, r.PathValue("id"), chosen)
 	if found {
 		s.recordRewriteRequest(person, project)
 	}
@@ -88,11 +100,11 @@ func (s *server) rewriteAsk(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusAccepted, answer)
 }
 
-// startAskRewrite starts a run of person's Rewrite of the ask id, or answers the run that holds
-// it: an open question alone is rewritten, an approval request never, and none at all where no
-// model group for Rewrite and Define is set, which an ask that does not exist answers 404 before.
-// It answers the ask's project and whether the ask exists, for the request's record.
-func (s *server) startAskRewrite(ctx context.Context, person model.Actor, id string) (askRewriteAnswer, string, bool, error) {
+// startAskRewrite starts a run of person's Rewrite of the ask id with chosen, or answers the run
+// that holds it: an open question alone is rewritten, an approval request never, and none at all
+// where no model group for Rewrite and Define is set, which an ask that does not exist answers 404
+// before. It answers the ask's project and whether the ask exists, for the request's record.
+func (s *server) startAskRewrite(ctx context.Context, person model.Actor, id string, chosen reviewer.Model) (askRewriteAnswer, string, bool, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return askRewriteAnswer{}, "", false, err
@@ -127,7 +139,7 @@ func (s *server) startAskRewrite(ctx context.Context, person model.Actor, id str
 	if err != nil {
 		return askRewriteAnswer{}, project, true, err
 	}
-	run := askRewriteRun{askID: ask.ID, run: uuid.NewString(), person: person}
+	run := askRewriteRun{askID: ask.ID, run: uuid.NewString(), person: person, model: chosen}
 	// The run takes the row unless a fresh run holds it: a request while one runs is answered
 	// that run's state and starts nothing. A run older than the bound is one a stopped process
 	// left, which a new run replaces.
@@ -214,7 +226,8 @@ func askWordingRead(ask model.Ask) model.TextWording {
 
 // runAskRewrite is one run of a person's Rewrite, in the background: the side question, the
 // record, the component's Rewrite and Preserve, and the rewrite applied or the run failed with
-// why. Every way it ends writes the run's row and appends its quiet event.
+// why. Every way it ends writes the run's row and appends its quiet event; a run that called the
+// model also keeps its calls in the row.
 func (s *server) runAskRewrite(ctx context.Context, run askRewriteRun) {
 	rd := s.deps.RewriteDefine
 	subject, err := reviewer.AskSubject(ctx, s.deps.Store, run.askID)
@@ -231,7 +244,8 @@ func (s *server) runAskRewrite(ctx context.Context, run askRewriteRun) {
 		slog.Warn("dispatch: read the record of an ask to rewrite", "ask", run.askID, "error", err)
 		return
 	}
-	rewritten, err := reviewer.Rewrite(ctx, rd.config.Model, rd.config.Rules, record, answer)
+	rewritten, err := reviewer.Rewrite(ctx, run.model, rd.config.Rules, record, answer)
+	s.recordAskRewriteCalls(ctx, run, rewritten.Calls)
 	var failed *reviewer.ModelError
 	switch {
 	case errors.As(err, &failed):
@@ -261,6 +275,22 @@ func (s *server) runAskRewrite(ctx context.Context, run askRewriteRun) {
 		slog.Warn("dispatch: write an ask's rewrite", "ask", run.askID, "error", err)
 	} else if reason != "" {
 		s.failAskRewrite(ctx, run, reason)
+	}
+}
+
+// recordAskRewriteCalls keeps the model calls of the run in its ask_rewrites row, as a
+// definition keeps its own: what each was for, the deployment, the model the provider served and
+// the tokens it used. A row another run took keeps its own calls.
+func (s *server) recordAskRewriteCalls(ctx context.Context, run askRewriteRun, calls []reviewer.Call) {
+	if len(calls) == 0 {
+		return
+	}
+	encoded, err := encodeJSON(callsOf(calls))
+	if err == nil {
+		_, err = s.deps.Store.Pool.Exec(ctx, `update ask_rewrites set calls = $3 where ask_id = $1 and run = $2`, run.askID, run.run, encoded)
+	}
+	if err != nil {
+		slog.Warn("dispatch: record a rewrite's model calls", "ask", run.askID, "error", err)
 	}
 }
 
