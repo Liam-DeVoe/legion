@@ -81,7 +81,8 @@ export const SURFACE_CONTROLS: Record<SurfaceName, readonly ControlName[]> = {
     CONTROL.dataTable,
     CONTROL.viewPanel,
   ],
-  // The Board draws no display menu: its one section, Group by, groups nothing on the Board.
+  // The seed's project has no Legion daemon, so its Board draws no display menu: Group by would
+  // offer Status alone there.
   "project Board": [
     CONTROL.controlRow,
     CONTROL.searchBox,
@@ -293,11 +294,12 @@ export async function gapBoxes(root: Locator, top: number, bottom: number): Prom
 
 /** The surface's own display menu, opened unless it is open already: the trigger is found by
  *  its `data-control` inside this surface's row, so a drawer over a page that draws one of its
- *  own opens the drawer's. */
+ *  own opens the drawer's. The Inbox names its menu **View**; the issue table names its menu
+ *  **Group by**, after the one pick it holds. */
 export async function openDisplay(page: Page, within: Locator | Page): Promise<Locator> {
   const trigger = control(controlRow(within), CONTROL.displayMenu);
   if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
-  const menu = page.getByRole("dialog", { name: "View" });
+  const menu = page.getByRole("dialog", { name: /^(View|Group by)$/ });
   await expect(menu).toHaveCount(1);
   return menu;
 }

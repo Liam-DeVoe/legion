@@ -193,6 +193,7 @@ export type {
   IssueReferenceSummaryDocument,
   IssueReferences,
   IssueSummary,
+  IssueSummaryPage,
   ItemBlock,
   ItemBlocks,
   LauncherCredentialResp,

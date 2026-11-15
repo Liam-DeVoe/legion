@@ -4,6 +4,11 @@ import { borderDefault, card, surfaceMutedBg, textSecondaryOnCanvas } from "../t
 import { AnchoredPanel } from "./AnchoredPanel";
 import { CONTROL, type ControlName, type ControlSize, controlPadding } from "./control-names";
 
+/** A menu's panel: as tall as its choices, up to the window's height less its margins, so a
+ *  menu shows every choice it has and scrolls, as one panel, only in a window too short for
+ *  them. The display menu and the columns menu draw it. */
+export const MENU_PANEL_CLASS = `z-50 flex max-h-[calc(100dvh-16px)] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`;
+
 export interface PanelTriggerProps {
   readonly align?: "left" | "right";
   /** The panel's content, handed the one way to close it: a choice taken closes the panel and

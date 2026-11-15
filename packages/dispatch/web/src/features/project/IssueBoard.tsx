@@ -19,7 +19,7 @@ import { ApiError, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
-import { LabelPill, Pill } from "../../components/Pill";
+import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import {
   borderDefault,
   borderStrong,
@@ -47,10 +47,17 @@ import { buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { laneLabel, type PriorityLane, priorityLanes } from "./board-model";
+import {
+  type IssueStatus,
+  isIssueStatus,
+  issueStatuses,
+  laneLabel,
+  type PriorityLane,
+  priorityLanes,
+  statusLabel,
+} from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
-import { CARD_STAGES, type StageId, stageIds, stageLabel, stageStatus } from "./issues-stages";
-import { StageMark } from "./issues-table-columns";
+import { LEGION_PHASES, phaseLabel } from "./issues-legion";
 import type { Item } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
@@ -207,27 +214,49 @@ function BoardCard({
   );
 }
 
-/** One stage's column: its title is the stage's label, and the whole column is its drop
- *  target. */
-function StageColumn({
+/** What the Board's columns are: the issues' statuses, or their Legion phases. */
+export type BoardBy = "status" | "legion_phase";
+
+/** A column's id, which is a status or a Legion phase, and `none` for the rail of the rows the
+ *  daemon holds no card for. */
+const NONE = "none";
+
+/** The column a row is in on a Board of `by`. */
+const columnOf = (item: Item, by: BoardBy): string =>
+  by === "status" ? item.issue.status : (item.card?.column ?? NONE);
+
+/** A column's name: a status's own, or a phase's. */
+const columnName = (id: string, by: BoardBy) =>
+  by === "status"
+    ? isIssueStatus(id)
+      ? statusLabel(id)
+      : id
+    : id === NONE
+      ? "None"
+      : phaseLabel(id);
+
+/** One column: its title, its count, and its cards; the whole column is its drop target. */
+function BoardColumn({
+  by,
   dropId,
+  id,
   items,
   nowMs,
-  stage,
   userState,
 }: {
+  by: BoardBy;
   dropId: string;
+  id: string;
   items: readonly Item[];
   nowMs: number;
-  stage: StageId;
   userState: UserState | undefined;
 }): ReactNode {
   const { isOver, setNodeRef } = useDroppable({ id: dropId });
   return (
     <section
-      aria-label={stageLabel(stage)}
+      aria-label={columnName(id, by)}
       className={`w-72 shrink-0 snap-start ${boardFocusRing}`}
-      data-board-column={stage}
+      data-board-column={id}
       ref={setNodeRef}
       tabIndex={-1}
     >
@@ -240,7 +269,7 @@ function StageColumn({
         <div
           className={`flex items-center justify-between gap-2 text-sm font-semibold ${textPrimaryOnSurface}`}
         >
-          <StageMark stage={stage} />
+          {by === "status" ? <StatusPill>{columnName(id, by)}</StatusPill> : columnName(id, by)}
           <Pill>{items.length}</Pill>
         </div>
       </header>
@@ -268,24 +297,26 @@ function StageColumn({
   );
 }
 
-/** A collapsed rail: Icebox while the reader has not turned it on, and Done while the view
- *  lists no done issue. It is a drop target like a column: a card dropped on the Done rail
- *  closes the issue. */
+/** A collapsed rail: Icebox while the reader has not turned it on, Done while the view lists no
+ *  done issue, and None on a Board by Legion phase. It is a drop target like a column: a card
+ *  dropped on the Done rail closes the issue. */
 function Rail({
+  by,
   count,
   dropId,
-  stage,
+  id,
 }: {
+  by: BoardBy;
   count: number | undefined;
   dropId: string;
-  stage: StageId;
+  id: string;
 }): ReactNode {
   const { isOver, setNodeRef } = useDroppable({ id: dropId });
   return (
     <section
-      aria-label={`${stageLabel(stage)} (collapsed)`}
+      aria-label={`${columnName(id, by)} (collapsed)`}
       className={`w-10 shrink-0 snap-start ${boardFocusRing}`}
-      data-board-column={stage}
+      data-board-column={id}
       ref={setNodeRef}
       tabIndex={-1}
     >
@@ -300,7 +331,7 @@ function Rail({
           className={`text-sm font-semibold tracking-wide ${textPrimaryOnSurface}`}
           style={{ writingMode: "vertical-rl" }}
         >
-          {stageLabel(stage)}
+          {columnName(id, by)}
         </span>
       </div>
     </section>
@@ -308,81 +339,68 @@ function Rail({
 }
 
 /**
- * The Board's columns, in stage order: each stage the view's Stage filter names; where it names
- * none, the stage of each status its Status filter picks (Done is the rail); and every other
- * stage one of its rows is in. Icebox is a column only when the reader turns it on, and a rail
- * otherwise. An empty Legion stage is drawn only in a project with a Legion daemon.
+ * The status Board's columns, in the status order: each status the view's Status filter picks
+ * and every other status one of its rows is in, Done aside (it is the rail). Icebox is a column
+ * only when the reader turns it on, and a rail otherwise.
  */
-export function boardStages({
-  hasLegion,
+export function boardStatuses({
   rows,
   showIcebox,
-  stagePicks,
   statusPicks,
 }: {
-  hasLegion: boolean;
   rows: readonly Item[];
   showIcebox: boolean;
-  stagePicks: readonly string[] | undefined;
   statusPicks: readonly string[] | undefined;
-}): StageId[] {
-  const named = new Set<StageId>();
-  const picks = stagePicks ?? statusPicks ?? [];
-  for (const pick of picks) {
-    const stage = stageIds.find((id) => id === pick);
-    if (stage === undefined || stage === "done") continue;
-    if (!hasLegion && CARD_STAGES.includes(stage)) continue;
-    named.add(stage);
-  }
-  for (const row of rows) if (row.stage !== "done") named.add(row.stage);
-  return stageIds.filter(
-    (stage) => named.has(stage) && (stage !== "icebox" || showIcebox || stagePicks !== undefined)
+}): IssueStatus[] {
+  const named = new Set<string>(statusPicks ?? []);
+  for (const row of rows) named.add(row.issue.status);
+  return issueStatuses.filter(
+    (status) => named.has(status) && status !== "done" && (status !== "icebox" || showIcebox)
   );
 }
 
-/** A column's drop id: its stage, inside a lane where the board has lanes. */
-const dropIdOf = (stage: StageId, lane: string | undefined) =>
-  lane === undefined ? `stage:${stage}` : `lane:${lane}|stage:${stage}`;
+/** A column's drop id: its id, inside a lane where the board has lanes. */
+const dropIdOf = (column: string, lane: string | undefined) =>
+  lane === undefined ? `column:${column}` : `lane:${lane}|column:${column}`;
 
-/** Where a drop lands: a column by its stage (and lane), a card by its key, or nothing the board
+/** Where a drop lands: a column by its id (and lane), a card by its key, or nothing the board
  *  knows. */
 function readDrop(
   overId: string,
-  rows: readonly Item[]
-): { stage: StageId; key?: string; lane?: PriorityLane } | undefined {
+  rows: readonly Item[],
+  by: BoardBy
+): { column: string; key?: string; lane?: PriorityLane } | undefined {
   if (overId.startsWith("card:")) {
     const key = overId.slice("card:".length);
     const row = rows.find((item) => item.issue.key === key);
     return row === undefined
       ? undefined
-      : { stage: row.stage, key, lane: issuePriority(row.issue.priority) };
+      : { column: columnOf(row, by), key, lane: issuePriority(row.issue.priority) };
   }
-  const match = /^(?:lane:([^|]+)\|)?stage:(.+)$/.exec(overId);
-  const stage = stageIds.find((id) => id === match?.[2]);
-  if (match === null || stage === undefined) return undefined;
+  const match = /^(?:lane:([^|]+)\|)?column:(.+)$/.exec(overId);
+  if (match === null || match[2] === undefined) return undefined;
   const lane = priorityLanes.find((candidate) => String(candidate) === match[1]);
-  return { stage, ...(match[1] === undefined ? {} : { lane: lane ?? null }) };
+  return { column: match[2], ...(match[1] === undefined ? {} : { lane: lane ?? null }) };
 }
 
 /**
- * The Board: a layout of the current view. It draws every row the view lists, in columns by
- * stage, the cards in each column in the view's sort. A drop on a status column, or on the Done
- * rail, sets that status from any column; Testing, a status as well as a card stage, takes a
- * drop as a status column. A card dropped from a Legion stage column stays there until the
- * daemon's next read moves it. Any drop on a Legion stage column but Queue is refused, because
- * the daemon owns those stages, and so is a drop on Queue from another column.
+ * The Board: a layout of the current view. It draws every row the view lists, the cards in each
+ * column in the view's sort, in columns by status (main's status Board) or, in a project with a
+ * Legion daemon, by Legion phase, as the Group by menu picks.
  *
- * A sorted board takes no reorder within a column (GitHub Projects' rule), because the sort puts
- * the card back: a drop within a column writes the rank only where the rank decides where the
- * card lands, which is while the view sorts by Place, first first, and among cards that all have
- * a Place or all have none (the sort puts every card with a Place ahead of those without). In
- * Queue the card then takes its new place when the daemon's next read moves its Place. A drop on
- * a card of another column writes the rank beside the status under that sort. Under any other
- * sort a reorder is refused with `reorderRefusal`, and a drop into another column writes the
- * status alone, the card landing where the sort puts it. A drop into another lane of a Legion
- * stage column is refused, Queue's included.
+ * On the status Board a drop on a column, or on the Done rail, sets that status. A sorted board
+ * takes no reorder within a column (GitHub Projects' rule), because the sort puts the card back:
+ * a drop within a column writes the rank only where the rank decides where the card lands, which
+ * is while the view sorts by Queue, first first, and among cards that all have a Queue number or
+ * all have none (the sort puts every card with one ahead of those without). Under any other sort
+ * a reorder is refused with `reorderRefusal`, and a drop into another column writes the status
+ * alone, the card landing where the sort puts it.
+ *
+ * On the Legion phase Board the daemon owns every column: a move within Queue writes the rank
+ * under the same rule, and every other drop is refused.
  */
 export function IssueBoard({
+  by,
   hasLegion,
   lanes,
   listsDone,
@@ -390,31 +408,30 @@ export function IssueBoard({
   reorderRefusal,
   rows,
   showIcebox,
-  stagePicks,
   statusPicks,
   userState,
 }: {
+  by: BoardBy;
   hasLegion: boolean;
   lanes: boolean;
   /** The view lists done issues: the Done rail opens into a column with their cards. */
   listsDone: boolean;
   project: string;
   /** Why a card cannot be reordered within its column under the view's sort; undefined while
-   *  the view sorts by Place, first first. */
+   *  the view sorts by Queue, first first. */
   reorderRefusal: string | undefined;
   /** The view's rows, in the view's sort. */
   rows: readonly Item[];
   showIcebox: boolean;
-  stagePicks: readonly string[] | undefined;
   statusPicks: readonly string[] | undefined;
   userState: UserState | undefined;
 }): ReactNode {
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<string>();
   const nowMs = Date.now();
-  const stages = useMemo(
-    () => boardStages({ hasLegion, rows, showIcebox, stagePicks, statusPicks }),
-    [hasLegion, rows, showIcebox, stagePicks, statusPicks]
+  const statuses = useMemo(
+    () => boardStatuses({ rows, showIcebox, statusPicks }),
+    [rows, showIcebox, statusPicks]
   );
   const patch = useKeyedWrite({
     inline: true,
@@ -456,48 +473,48 @@ export function IssueBoard({
     if (over === null) return;
     const key = String(active.id);
     const row = rows.find((item) => item.issue.key === key);
-    const target = readDrop(String(over.id), rows);
+    const target = readDrop(String(over.id), rows, by);
     if (row === undefined || target === undefined || target.key === key) return;
+    const from = columnOf(row, by);
     // A drop into another lane takes that lane's priority, as today's lanes do.
     const lane = lanes ? target.lane : undefined;
     const priority =
       lane === undefined || lane === issuePriority(row.issue.priority) ? {} : { priority: lane };
-    const status = stageStatus(target.stage);
     // Within its own column, and its own lane, a drop can only reorder.
-    const reorders = target.stage === row.stage && Object.keys(priority).length === 0;
+    const reorders = target.column === from && Object.keys(priority).length === 0;
+    const sameLane = (item: Item) =>
+      !lanes || issuePriority(item.issue.priority) === issuePriority(row.issue.priority);
     // The card a reorder lands beside: the one it is dropped on, else the column's last.
     const beside =
       target.key !== undefined
         ? rows.find((item) => item.issue.key === target.key)
         : rows
             .filter(
-              (item) =>
-                item.stage === row.stage &&
-                item.issue.key !== key &&
-                (!lanes || issuePriority(item.issue.priority) === issuePriority(row.issue.priority))
+              (item) => columnOf(item, by) === from && item.issue.key !== key && sameLane(item)
             )
             .at(-1);
-    const placeRefusal = (): string | undefined => {
-      if (beside === undefined || (beside.place === undefined) === (row.place === undefined))
-        return undefined;
-      return hasLegion ? "Legion orders the waiting line." : "Cards with a Place stay first.";
-    };
-    if (target.stage === "queue") {
-      // Within the Queue column a drop writes the rank; from anywhere else it is refused.
-      if (row.stage !== "queue") {
+    const refusal = (): string | undefined =>
+      reorderRefusal ??
+      (beside === undefined || (beside.place === undefined) === (row.place === undefined)
+        ? undefined
+        : hasLegion
+          ? "Legion orders its queue."
+          : "Queued cards stay first.");
+    if (by === "legion_phase") {
+      if (target.column === "queue" && from !== "queue") {
         setNotice("Only Legion moves cards into Queue.");
         return;
       }
-      if (!reorders) {
-        setNotice("Only Legion moves cards within Queue.");
+      if (target.column !== "queue" || !reorders) {
+        setNotice("Only Legion moves cards between phases.");
         return;
       }
-      const refusal = reorderRefusal ?? placeRefusal();
-      if (refusal !== undefined) {
-        setNotice(refusal);
+      const why = refusal();
+      if (why !== undefined) {
+        setNotice(why);
         return;
       }
-      const column = rows.filter((item) => item.stage === "queue");
+      const column = rows.filter((item) => columnOf(item, by) === "queue" && sameLane(item));
       const neighbour = target.key ?? column.at(-1)?.issue.key;
       if (neighbour === undefined || neighbour === key) return;
       const movingUp =
@@ -507,20 +524,17 @@ export function IssueBoard({
       void move(key, { rank: movingUp ? { before: neighbour } : { after: neighbour } });
       return;
     }
-    if (status === undefined) {
-      setNotice(`Only Legion moves cards into ${stageLabel(target.stage)}.`);
-      return;
-    }
+    if (!isIssueStatus(target.column)) return;
     if (reorders) {
-      const refusal = reorderRefusal ?? placeRefusal();
-      if (refusal !== undefined) {
-        setNotice(refusal);
+      const why = refusal();
+      if (why !== undefined) {
+        setNotice(why);
         return;
       }
     }
     const input: UpdateIssueInput = {
       ...priority,
-      ...(row.issue.status === status ? {} : { status }),
+      ...(row.issue.status === target.column ? {} : { status: target.column }),
       ...(target.key === undefined || reorderRefusal !== undefined
         ? {}
         : { rank: { before: target.key } }),
@@ -555,61 +569,78 @@ export function IssueBoard({
     },
   ]);
 
-  const done = rows.filter((item) => item.stage === "done");
-  // Icebox, while the reader has not turned it on, is a rail in its own place in the stage order
-  // (after Triage, before Backlog), as the Board on main draws it: for a view that lists Icebox
-  // issues or picks the Icebox status. One rule for the whole board, so every lane draws it.
+  // Icebox, while the reader has not turned it on, is a rail in its own place in the status
+  // order (after Triage, before Backlog), as the Board on main draws it: for a view that lists
+  // Icebox issues or picks the Icebox status. One rule for the whole board, so every lane draws
+  // it.
   const iceboxRail =
-    !stages.includes("icebox") &&
-    (rows.some((item) => item.stage === "icebox") || (statusPicks ?? []).includes("icebox"));
-  const order: readonly StageId[] = iceboxRail
-    ? [...stages, "icebox" as const].sort((a, b) => stageIds.indexOf(a) - stageIds.indexOf(b))
-    : stages;
+    by === "status" &&
+    !statuses.includes("icebox") &&
+    (rows.some((item) => item.issue.status === "icebox") || (statusPicks ?? []).includes("icebox"));
+  const order: readonly string[] =
+    by === "legion_phase"
+      ? LEGION_PHASES.map((phase) => phase.id)
+      : iceboxRail
+        ? [...statuses, "icebox" as const].sort(
+            (a, b) => issueStatuses.indexOf(a) - issueStatuses.indexOf(b)
+          )
+        : statuses;
   const drawRow = (from: readonly Item[], lane: string | undefined) => {
-    const columns = new Map<StageId, Item[]>();
+    const columns = new Map<string, Item[]>();
     for (const item of from) {
-      const list = columns.get(item.stage) ?? [];
+      const id = columnOf(item, by);
+      const list = columns.get(id) ?? [];
       list.push(item);
-      columns.set(item.stage, list);
+      columns.set(id, list);
     }
     return (
       <div className="flex w-max items-stretch gap-4">
-        {order.map((stage) =>
-          stage === "icebox" && iceboxRail ? (
+        {order.map((id) =>
+          id === "icebox" && iceboxRail ? (
             <Rail
+              by={by}
               count={(columns.get("icebox") ?? []).length}
               dropId={dropIdOf("icebox", lane)}
-              key={stage}
-              stage="icebox"
+              id="icebox"
+              key={id}
             />
           ) : (
-            <StageColumn
-              dropId={dropIdOf(stage, lane)}
-              items={columns.get(stage) ?? []}
-              key={stage}
+            <BoardColumn
+              by={by}
+              dropId={dropIdOf(id, lane)}
+              id={id}
+              items={columns.get(id) ?? []}
+              key={id}
               nowMs={nowMs}
-              stage={stage}
               userState={userState}
             />
           )
         )}
-        {listsDone ? (
-          <StageColumn
+        {by === "legion_phase" ? (
+          <Rail
+            by={by}
+            count={(columns.get(NONE) ?? []).length}
+            dropId={dropIdOf(NONE, lane)}
+            id={NONE}
+          />
+        ) : listsDone ? (
+          <BoardColumn
+            by={by}
             dropId={dropIdOf("done", lane)}
+            id="done"
             items={columns.get("done") ?? []}
             nowMs={nowMs}
-            stage="done"
             userState={userState}
           />
         ) : (
-          <Rail count={undefined} dropId={dropIdOf("done", lane)} stage="done" />
+          <Rail by={by} count={undefined} dropId={dropIdOf("done", lane)} id="done" />
         )}
       </div>
     );
   };
 
   return (
-    <section aria-label="Project board" className="min-w-0" data-board-stages={stages.join(" ")}>
+    <section aria-label="Project board" className="min-w-0" data-board-by={by}>
       {notice === undefined ? null : (
         <div
           aria-live="assertive"
@@ -652,10 +683,6 @@ export function IssueBoard({
           </div>
         )}
       </DndContext>
-      <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>
-        {rows.length} {rows.length === 1 ? "issue" : "issues"}
-        {done.length > 0 ? `, ${done.length} done` : ""}
-      </p>
     </section>
   );
 }

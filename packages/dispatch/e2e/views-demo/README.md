@@ -149,12 +149,19 @@ drew the pictures' text in, with its glyph count, so two runs can be compared.
 
 Without `--before` it takes the design's pictures, each named by what it shows. At 1440 x 900:
 
-- the four built-in views: `view-open-1440`, `view-waiting-1440`, `view-in-flight-1440` and
+- the three built-in views: `view-open-1440`, `view-queue-1440` (the Legion queue) and
   `view-done-1440`;
+- `view-open-1024`: Open in a 1024 x 768 window, where the bar's legend wraps onto a second line;
+- `view-open-in-progress-1440`: Open with `status=in_progress`;
 - `done-closed-filter-1440`: Done with one week picked in the Closed column's date-range
   filter, from the 3rd of November to the 9th, and the filter opened again to show it;
 - `done-time-per-phase-hours-1440`: Done with Time per phase in Hours;
-- `board-in-flight-1440` and `board-open-1440`: those two views on the Board;
+- `done-time-per-phase-tooltip-1440`: Done with the pointer on the first row's Time per phase
+  cell and its tooltip open, the table not scrolled sideways;
+- `board-open-1440`, `board-open-legion-phase-1440` and `board-queue-1440`: Open on the Board by
+  Status, Open on the Board by Legion phase (`group=legion_phase`), and the Legion queue on the
+  Board;
+- `group-by-menu-1440`: Open with the Group by menu open;
 - `save-view-popover-1440` and `save-view-saved-tab-1440`: Open narrowed to the triage issues,
   the Save view panel with "Triage" typed, and then the saved tab it adds after Done;
 - `columns-menu-legion-columns-1440`: the Columns menu;
@@ -165,13 +172,13 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
   daemon's read failed (`demo=read-failed`) and with the Legion setting's read failed
   (`demo=settings-failed`);
 - `no-daemon-view-open-1440` and `no-daemon-board-open-1440`: the table and the Board of a
-  project with no Legion daemon (`--no-daemon-project`, GTM by default), which has neither
-  Waiting line nor In flight;
+  project with no Legion daemon (`--no-daemon-project`, GTM by default), which has Open and
+  Done alone;
 - `priorities-1440` and `priority-page-1440`: the whole of `/priorities` (the priorities and
   the two fault tables) and of the first priority's own page.
 
-At 390 x 844: `view-open-390`, `view-in-flight-390`, `board-in-flight-390`, `board-open-390`,
-`done-time-per-phase-hours-390` and `priorities-390`, the last one the whole page.
+At 390 x 844: `view-open-390`, `board-open-legion-phase-390`, `done-time-per-phase-hours-390`
+and `priorities-390`, the last one the whole page.
 
 A whole-page picture draws the banner at the page's foot, under everything the page drew.
 
@@ -191,9 +198,11 @@ does not draw them in 30 s fails its picture. The design's Issues page is also w
 view tabs (`[data-view-tab]`), which the page before the design has none of, so the design's
 pictures taken against that page fail at the first one. The run fails if a picture failed, the
 stub left a request unanswered, the page threw, the phone banner took more than two lines, or a
-check of what the page drew failed: the week the Closed filter writes, the count its Done tab
-reads, the saved tab standing open, or a failure flag left in the address. The report in the
-output lists all of it.
+check of what the page drew failed: the bar's legend drawing a scroll bar, the week the Closed
+filter writes, the count its Done tab reads, the tooltip naming no phase or standing over a
+table scrolled sideways, the Board not by Legion phase under `group=legion_phase`, the saved tab
+not standing open, or a failure flag left in the address. The report in the output lists all of
+it.
 
 ## Build the single file
 
@@ -213,8 +222,8 @@ the address's fragment, the one part of a `file:` address a page may change.
 
 The second command opens the file with the network off and checks that:
 
-- the file opens on the Issues tab, and a view tab opens its view;
-- the Board draws cards;
+- the file opens on the Issues tab, and the Legion queue's tab opens the Legion queue;
+- the Legion queue on the Board draws cards;
 - a drag on the Board sets a status;
 - Save view adds a tab, and its delete takes the tab away, also after a reload;
 - the Columns menu shows a column it ticks;

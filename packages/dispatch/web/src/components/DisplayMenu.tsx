@@ -8,7 +8,7 @@ import {
   textSecondaryOnSurface,
 } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
-import { PanelTrigger } from "./PanelTrigger";
+import { MENU_PANEL_CLASS, PanelTrigger } from "./PanelTrigger";
 
 /** One of a section's mutually exclusive choices, as the menu names it. */
 export interface DisplayMenuOption {
@@ -102,6 +102,7 @@ export function DisplayMenu({
       label={label}
       onOpenChange={onOpenChange}
       open={open}
+      panelClassName={MENU_PANEL_CLASS}
       size={size}
     >
       {() =>

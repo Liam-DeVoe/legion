@@ -1,17 +1,7 @@
-import type { Issue } from "../web/src/api/types";
-import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
 import { setLiveSessions } from "./agents";
-import {
-  createIssue,
-  createMessage,
-  createProject,
-  getIssue,
-  listIssueMessages,
-  listIssues,
-  patchIssue,
-} from "./api";
+import { createIssue, createMessage, createProject, getIssue, patchIssue } from "./api";
 import { chooseDisplay, controlRow, displayChoice, filterPicker, openDisplayMenu } from "./filters";
-import { dropFirstAnswer, watchWrites } from "./keyed-writes";
+import { watchWrites } from "./keyed-writes";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -19,13 +9,12 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Table epic" });
-  await patchIssue(epic.key, { labels: ["epic"] });
+  const parent = await createIssue({ project: "CORE", title: "Table parent" });
   const rows = [];
   for (let index = 0; index < 30; index++) {
     const row = await createIssue({
       project: "CORE",
-      parent: epic.key,
+      parent: parent.key,
       title: `Searchable table work ${String(index).padStart(2, "0")}`,
     });
     rows.push(
@@ -53,8 +42,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await expect(page.locator("[data-issue-row]").first()).toContainText("Backend unrelated");
     await titleHeader.getByRole("button", { name: /^Title/ }).click();
     await expect(titleHeader).toHaveAttribute("aria-sort", "descending");
-    // The epic is an ordinary row of the table, so it sorts with the rest.
-    await expect(page.locator("[data-issue-row]").first()).toContainText("Table epic");
+    // The parent is an ordinary row of the table, so it sorts with the rest.
+    await expect(page.locator("[data-issue-row]").first()).toContainText("Table parent");
 
     await filterPicker(page, "Labels").click();
     await page.getByRole("combobox", { name: "Search Labels" }).fill("front");
@@ -72,10 +61,12 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await search.fill("searchble impossible");
     await expect(page.getByText("No issues match these filters.")).toBeVisible();
     await search.fill("searchble work");
-    await chooseDisplay(page, "Group by", "epic");
+    await chooseDisplay(page, "Group by", "status", "Group by");
     await page.keyboard.press("Escape");
-    await expect(page.getByText(new RegExp(`${epic.key} · Table epic`)).first()).toBeVisible();
-    await expect(page.getByText(/next in queue #1/)).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /^Collapse .*, \d+ issues?$/ }).first()
+    ).toBeVisible();
+    await expect(page.getByText(/next in Legion queue #1/)).toBeVisible();
     await page.getByRole("combobox", { name: "Rows per page" }).selectOption("25");
     await page.getByRole("button", { name: "Next ›", exact: true }).click();
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
@@ -83,7 +74,9 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.reload();
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
     await expect(search).toHaveValue("searchble work");
-    await expect(displayChoice(await openDisplayMenu(page), "Group by", "epic")).toBeChecked();
+    await expect(
+      displayChoice(await openDisplayMenu(page, "Group by"), "Group by", "status")
+    ).toBeChecked();
     await page.keyboard.press("Escape");
 
     // A different browser page makes an ordinary issue edit. The first page is never navigated
@@ -125,7 +118,7 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.screenshot({ path: testInfo.outputPath("issues-table-live.png"), fullPage: true });
     await page.getByRole("button", { name: "Clear selection", exact: true }).click();
 
-    await chooseDisplay(page, "Group by", "");
+    await chooseDisplay(page, "Group by", "", "Group by");
     await page.keyboard.press("Escape");
     await page.getByRole("combobox", { name: "Rows per page" }).selectOption("50");
     const selected = rows[25];
@@ -166,127 +159,14 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
   }
 });
 
-test("merging an epic moves open descendants through closed intermediates and preserves closed history", async ({
-  browser,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const source = await createIssue({ project: "CORE", title: "Source epic" });
-  const target = await createIssue({ project: "CORE", title: "Target epic" });
-  await patchIssue(source.key, { labels: ["epic"] });
-  await patchIssue(target.key, { labels: ["epic"] });
-  const open = await createIssue({ project: "CORE", parent: source.key, title: "Open child" });
-  const closed = await createIssue({
-    project: "CORE",
-    parent: source.key,
-    title: "Completed child",
-  });
-  const grandchild = await createIssue({
-    project: "CORE",
-    parent: closed.key,
-    title: "Open below completed work",
-  });
-  await createMessage(closed.key, { body: "Completed this work." });
-  const closedBefore = await patchIssue(closed.key, { status: "done" });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.goto("/projects/CORE/issues?group=epic");
-    const group = page
-      .getByRole("row")
-      .filter({ has: page.getByRole("button", { name: /Source epic/ }) });
-    await group.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
-    await page.getByRole("button", { name: "Merge…" }).click();
-    await page
-      .getByRole("dialog", { name: "Merge this epic?" })
-      .getByRole("button", { name: "Merge", exact: true })
-      .click();
-    await expect.poll(() => getIssue(source.key).then((issue) => issue.status)).toBe("done");
-    expect((await getIssue(open.key)).parent).toBe(target.key);
-    expect((await getIssue(grandchild.key)).parent).toBe(target.key);
-    const closedAfter = await getIssue(closed.key);
-    expect(closedAfter.parent).toBe(source.key);
-    expect(closedAfter.closed_at).toBe(closedBefore.closed_at);
-    expect((await listIssueMessages(source.key)).map((read) => read.message.body)).toContain(
-      `Merged into ${target.key} (“${target.title}”) from the issues table.`
-    );
-  } finally {
-    await context.close();
-  }
-});
-
-test("selection actions move, remove and create an epic, whose name can then change", async ({
-  browser,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const target = await createIssue({ project: "CORE", title: "Existing container" });
-  await patchIssue(target.key, { labels: ["epic"] });
-  const first = await createIssue({ project: "CORE", title: "Fix authentication cookies" });
-  const second = await createIssue({ project: "CORE", title: "Audit CSS backgrounds" });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.goto("/projects/CORE/issues");
-    const select = async (key: string) =>
-      page.getByRole("checkbox", { name: `Select ${key}`, exact: true }).check();
-    await select(first.key);
-    await select(second.key);
-    await page
-      .getByRole("combobox", { name: "Move to epic", exact: true })
-      .selectOption(target.key);
-    await page.getByRole("button", { name: "Move", exact: true }).click();
-    await expect
-      .poll(async () => [(await getIssue(first.key)).parent, (await getIssue(second.key)).parent])
-      .toEqual([target.key, target.key]);
-    await expect(page.getByRole("toolbar")).toHaveCount(0);
-    await select(first.key);
-    await page.getByRole("button", { name: "Take out of epic" }).click();
-    await expect.poll(() => getIssue(first.key).then((issue) => issue.parent)).toBeNull();
-    await expect(page.getByRole("toolbar")).toHaveCount(0);
-    await select(first.key);
-    await select(second.key);
-    await page.getByRole("button", { name: "New epic from these" }).click();
-    await page
-      .getByRole("dialog", { name: "Name the new epic" })
-      .getByRole("textbox", { name: "Name" })
-      .fill("Coordinate onboarding release");
-    await page.getByRole("button", { name: "Create epic", exact: true }).click();
-    await expect.poll(() => getIssue(first.key).then((issue) => issue.parent)).not.toBeNull();
-    const epicKey = (await getIssue(first.key)).parent;
-    if (!epicKey) throw new Error("The new epic was not assigned");
-    await expect.poll(() => getIssue(second.key).then((issue) => issue.parent)).toBe(epicKey);
-    expect((await getIssue(epicKey)).labels).toContain("epic");
-    await chooseDisplay(page, "Group by", "epic");
-    await page.keyboard.press("Escape");
-    const group = page
-      .getByRole("row")
-      .filter({ has: page.getByRole("button", { name: /Coordinate onboarding release/ }) });
-    await group.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("button", { name: "Rename", exact: true }).click();
-    await page
-      .getByRole("dialog", { name: "Rename the epic" })
-      .getByRole("textbox", { name: "Name" })
-      .fill("Release coordination");
-    await page.getByRole("button", { name: "Rename epic", exact: true }).click();
-    await expect
-      .poll(() => getIssue(epicKey).then((issue) => issue.title))
-      .toBe("Release coordination");
-  } finally {
-    await context.close();
-  }
-});
-
 test("a live insertion above a vertically and horizontally scrolled reader keeps their row in place", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Live root epic" });
-  await patchIssue(epic.key, { labels: ["epic"] });
+  const root = await createIssue({ project: "CORE", title: "Live root" });
   const parent = await createIssue({
     project: "CORE",
-    parent: epic.key,
+    parent: root.key,
     title: "Closed intermediate",
   });
   await createMessage(parent.key, { body: "Closed intermediate work." });
@@ -298,7 +178,7 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     const page = await context.newPage();
     await page.setViewportSize({ width: 1000, height: 800 });
     await page.goto("/projects/CORE/issues?sort=title&size=250");
-    // 80 seeded rows and the epic, which is a row of the table like any other.
+    // 80 seeded rows and the root, which is a row of the table like any other.
     await expect(page.getByRole("tab", { name: "Open 81" })).toBeVisible();
     const scroller = page.getByTestId("issues-table-scroll");
     const original = await scroller.elementHandle();
@@ -343,80 +223,11 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
   }
 });
 
-test("a refused bulk write retries after reload while the other operations have already landed @phone", async ({
-  browser,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Bulk source" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  const rows: Issue[] = [];
-  for (const title of ["First move", "Second move", "Third move"])
-    rows.push(await createIssue({ project: "CORE", parent: epic.key, title }));
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await page.setViewportSize({ width: 390, height: 844 });
-    const second = rows[1];
-    const third = rows[2];
-    if (!second || !third) throw new Error("Missing bulk fixtures");
-    await page.route(`**/api/v1/issues/${second.key}`, async (route) => {
-      if (route.request().method() === "PATCH")
-        await route.fulfill({
-          status: 403,
-          json: { error: "Bulk probe refusal", code: "FORBIDDEN" },
-        });
-      else await route.continue();
-    });
-    await page.goto("/projects/CORE/issues");
-    for (const row of rows) {
-      await page.getByRole("checkbox", { name: `Select ${row.key}`, exact: true }).check();
-      // The bar is fixed to the window, so the geometry that matters is the page at its top,
-      // where the bar sits under the header and the table begins below it.
-      await page.evaluate(() => window.scrollTo(0, 0));
-      const bar = await page.getByRole("toolbar").boundingBox();
-      const box = await page.getByTestId("issues-table-scroll").boundingBox();
-      if (!bar || !box) throw new Error("The selection toolbar or table is missing");
-      expect(
-        bar.y + bar.height <= box.y || bar.y >= box.y + box.height,
-        "the phone selection toolbar never covers the working table"
-      ).toBe(true);
-    }
-    await page.getByRole("button", { name: "Take out of epic" }).click();
-    await expect.poll(() => getIssue(third.key).then((issue) => issue.parent)).toBeNull();
-    await expect(page.getByRole("region", { name: "Pending changes" })).toContainText(
-      `Update ${second.key}`
-    );
-    await expect(page.getByRole("region", { name: "Pending changes" })).not.toContainText(
-      `Update ${third.key}`
-    );
-    await page.reload();
-    await expect(page.getByRole("region", { name: "Pending changes" })).toContainText(
-      `Update ${second.key}`
-    );
-    expect((await getIssue(third.key)).parent).toBeNull();
-    await page.unroute(`**/api/v1/issues/${second.key}`);
-    await page
-      .getByRole("region", { name: "Pending changes" })
-      .getByRole("button", { name: "Retry", exact: true })
-      .click();
-    await expect
-      .poll(async () =>
-        Promise.all(rows.map((row) => getIssue(row.key).then((issue) => issue.parent)))
-      )
-      .toEqual([null, null, null]);
-    await expect(page.getByRole("region", { name: "Pending changes" })).toHaveCount(0);
-  } finally {
-    await context.close();
-  }
-});
-
 test("phone headers, saved widths, popover focus and short-window paging stay usable @phone", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Phone epic" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  await createIssue({ project: "CORE", parent: epic.key, title: "Phone member" });
+  await createIssue({ project: "CORE", title: "Phone member" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -507,15 +318,10 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     expect(await panel.evaluate((element) => element.contains(document.activeElement))).toBe(true);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Columns", exact: true })).toBeFocused();
-    // An epic is an ordinary row of the table, searchable and selectable like any other, and
-    // becomes a heading only in the grouping that makes it one.
-    await expect(page.locator(`[data-issue-row="${epic.key}"]`)).toHaveCount(1);
-    await chooseDisplay(page, "Group by", "epic");
+    // Grouping puts the row under a heading of its status.
+    await chooseDisplay(page, "Group by", "status", "Group by");
     await page.keyboard.press("Escape");
-    await expect(page.locator(`[data-issue-row="${epic.key}"]`)).toHaveCount(0);
-    await expect(
-      page.getByRole("link", { name: `${epic.key} · Phone epic`, exact: true }).first()
-    ).toHaveAttribute("href", `/issues/${epic.key}`);
+    await expect(page.getByRole("button", { name: /^Collapse .*, 1 issue$/ })).toBeVisible();
     // The pager draws no totals on the Issues tab: the open view's tab counts the listed rows.
     await expect(page.getByRole("tab", { name: "Open 1" })).toBeVisible();
     await expect(page.getByTestId("issues-table-pager")).not.toContainText("in 1 group");
@@ -815,137 +621,6 @@ test("a session creator renders its live name, state and conversation link @phon
   }
 });
 
-test("an unavailable ancestor uses one retry policy per attempt @phone", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const parent = await createIssue({ project: "CORE", title: "Unavailable ancestor" });
-  await createIssue({ project: "CORE", parent: parent.key, title: "Open child" });
-  await createMessage(parent.key, { body: "Closed ancestor." });
-  await patchIssue(parent.key, { status: "done" });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await page.setViewportSize({ width: 390, height: 844 });
-    let attempts = 0;
-    await page.route(`**/api/v1/issues/${parent.key}`, async (route) => {
-      attempts++;
-      await route.fulfill({ status: 503, json: { error: "Ancestor unavailable" } });
-    });
-    await page.goto("/projects/CORE/issues");
-    await expect(page.getByRole("alert")).toContainText("Could not load 1 ancestor");
-    expect(attempts).toBe(3);
-    await page.getByRole("button", { name: "Retry loading ancestors" }).click();
-    await expect.poll(() => attempts).toBe(6);
-    await expect(page.getByRole("alert")).toContainText("Unknown epic");
-    await expect(page.getByRole("table", { name: "Project issues table" })).toBeAttached();
-  } finally {
-    await context.close();
-  }
-});
-
-test("a refused merge move leaves the source open without a close reason", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const source = await createIssue({ project: "CORE", title: "Merge source" });
-  const target = await createIssue({ project: "CORE", title: "Merge destination" });
-  await patchIssue(source.key, { labels: ["epic"] });
-  await patchIssue(target.key, { labels: ["epic"] });
-  const bad = await createIssue({ project: "CORE", parent: source.key, title: "Refused move" });
-  const good = await createIssue({
-    project: "CORE",
-    parent: source.key,
-    title: "Independent move",
-  });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await page.route(`**/api/v1/issues/${bad.key}`, async (route) => {
-      if (route.request().method() === "PATCH")
-        await route.fulfill({ status: 403, json: { error: "Move refused" } });
-      else await route.continue();
-    });
-    await page.goto("/projects/CORE/issues?group=epic");
-    // The childless destination epic keeps a heading of its own, so the merge starts at the
-    // source's rather than at whichever heading comes first.
-    const heading = page.locator("tr", { has: page.getByRole("link", { name: /Merge source/ }) });
-    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
-    await page.getByRole("button", { name: "Merge…" }).click();
-    await page
-      .getByRole("dialog", { name: "Merge this epic?" })
-      .getByRole("button", { name: "Merge", exact: true })
-      .click();
-    await expect(page.getByRole("alert")).toContainText(bad.key);
-    await expect.poll(() => getIssue(good.key).then((issue) => issue.parent)).toBe(target.key);
-    expect((await getIssue(source.key)).status).not.toBe("done");
-    expect(await listIssueMessages(source.key)).toHaveLength(0);
-  } finally {
-    await context.close();
-  }
-});
-
-test("a stopped committed epic retries one key and reload finishes only its remaining adoption @phone", async ({
-  browser,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const first = await createIssue({ project: "CORE", title: "Preserve the caller identity" });
-  const closed = await createIssue({ project: "CORE", title: "Document release verification" });
-  const context = await asUser(browser, "alice");
-  const held = Promise.withResolvers<void>();
-  try {
-    const page = await context.newPage();
-    const posts = watchWrites(page, "POST", "/api/v1/issues");
-    const committed = dropFirstAnswer(page, "**/api/v1/issues", "POST", held.promise);
-    await page.clock.install();
-    await page.goto("/projects/CORE/issues");
-    await page.getByRole("checkbox", { name: `Select ${first.key}`, exact: true }).check();
-    await page.getByRole("checkbox", { name: `Select ${closed.key}`, exact: true }).check();
-    await page.getByRole("button", { name: "New epic from these", exact: true }).click();
-    await page
-      .getByRole("dialog", { name: "Name the new epic" })
-      .getByRole("textbox", { name: "Name" })
-      .fill("Recover one created epic");
-    await page.getByRole("button", { name: "Create epic", exact: true }).click();
-    expect(await committed).toBe(201);
-    await page.clock.fastForward(SEND_DEADLINE_MS + 1);
-    const pending = page.getByRole("region", { name: "Pending changes" });
-    await pending.getByRole("button", { name: "Stop trying", exact: true }).click();
-    await expect(pending).toContainText("Not saved");
-    held.resolve();
-    await page.reload();
-    await expect(pending).toContainText("Not saved");
-    await pending.getByRole("button", { name: "Retry", exact: true }).click();
-    const interrupted = page.getByRole("region", { name: "Interrupted table action" });
-    await expect(interrupted).toContainText("not yet adopted");
-    await expect.poll(() => posts.length).toBe(2);
-    expect(posts[0]?.key).toEqual(expect.any(String));
-    expect(posts[1]?.key).toBe(posts[0]?.key);
-    const epics = (await listIssues("CORE")).filter((issue) => issue.labels?.includes("epic"));
-    expect(epics).toHaveLength(1);
-    const epic = epics[0];
-    if (!epic) throw new Error("The committed epic is missing");
-    await expect(interrupted).toContainText(epic.key);
-    expect((await getIssue(first.key)).parent).toBeNull();
-    await createMessage(closed.key, { body: "Completed while the action was interrupted." });
-    await expect(
-      page.getByRole("region", { name: "Project issues" }).getByRole("alert")
-    ).toHaveCount(0);
-    await patchIssue(closed.key, { status: "done" });
-    await page.reload();
-    await expect(interrupted).toContainText(epic.key);
-    expect((await getIssue(first.key)).parent).toBeNull();
-    await interrupted.getByRole("button", { name: "Finish", exact: true }).click();
-    await expect.poll(() => getIssue(first.key).then((issue) => issue.parent)).toBe(epic.key);
-    expect((await getIssue(closed.key)).parent).toBeNull();
-    await expect(interrupted).toHaveCount(0);
-    expect(
-      (await listIssues("CORE")).filter((issue) => issue.labels?.includes("epic"))
-    ).toHaveLength(1);
-    expect(posts).toHaveLength(2);
-  } finally {
-    held.resolve();
-    await context.close();
-  }
-});
-
 test("reload mid Start next finishes the recorded order without repeating its completed rank @phone", async ({
   browser,
 }) => {
@@ -1008,86 +683,6 @@ test("reload mid Start next finishes the recorded order without repeating its co
   }
 });
 
-test("reload mid merge moves current open descendants then records one reason and closes @phone", async ({
-  browser,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const source = await createIssue({ project: "CORE", title: "Source workflow" });
-  const target = await createIssue({ project: "CORE", title: "Combined destination" });
-  await patchIssue(source.key, { labels: ["epic"] });
-  await patchIssue(target.key, { labels: ["epic"] });
-  const bridge = await createIssue({
-    project: "CORE",
-    parent: source.key,
-    title: "Archived intermediate",
-  });
-  const pendingChild = await createIssue({
-    project: "CORE",
-    parent: bridge.key,
-    title: "Retain the retry key",
-  });
-  const completedChild = await createIssue({
-    project: "CORE",
-    parent: source.key,
-    title: "Independent completed move",
-  });
-  await createMessage(bridge.key, { body: "Intermediate completed." });
-  await patchIssue(bridge.key, { status: "done" });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    const completed = watchWrites(page, "PATCH", `/api/v1/issues/${completedChild.key}`);
-    let mode: "hold" | "refuse" | "through" = "hold";
-    await page.route(`**/api/v1/issues/${pendingChild.key}`, async (route) => {
-      if (route.request().method() !== "PATCH" || mode === "through") return route.fallback();
-      if (mode === "hold") return;
-      await route.fulfill({ status: 403, json: { error: "Move refused during reload" } });
-    });
-    await page.goto("/projects/CORE/issues?group=epic");
-    // The childless destination epic keeps a heading of its own, so this names the source's.
-    const heading = page.locator("tr", {
-      has: page.getByRole("link", { name: /Source workflow/ }),
-    });
-    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
-    await page.getByRole("button", { name: "Merge…" }).click();
-    await page
-      .getByRole("dialog", { name: "Merge this epic?" })
-      .getByRole("button", { name: "Merge", exact: true })
-      .click();
-    await expect
-      .poll(() => getIssue(completedChild.key).then((issue) => issue.parent))
-      .toBe(target.key);
-    mode = "refuse";
-    await page.reload();
-    const interrupted = page.getByRole("region", { name: "Interrupted table action" });
-    await expect(interrupted).toContainText(`Merge ${source.key} into ${target.key}`);
-    expect((await getIssue(source.key)).status).not.toBe("done");
-    expect(await listIssueMessages(source.key)).toHaveLength(0);
-    const added = await createIssue({
-      project: "CORE",
-      parent: bridge.key,
-      title: "New descendant created during interruption",
-    });
-    mode = "through";
-    await interrupted.getByRole("button", { name: "Finish", exact: true }).click();
-    await expect.poll(() => getIssue(source.key).then((issue) => issue.status)).toBe("done");
-    for (const child of [pendingChild, completedChild, added])
-      expect((await getIssue(child.key)).parent).toBe(target.key);
-    expect((await getIssue(bridge.key)).parent).toBe(source.key);
-    expect((await listIssueMessages(source.key)).map(({ message }) => message.body)).toEqual([
-      expect.stringContaining(`Merged into ${target.key}`),
-    ]);
-    expect(completed).toHaveLength(1);
-    await expect(interrupted).toHaveCount(0);
-    await page.reload();
-    await expect(interrupted).toHaveCount(0);
-    expect(await listIssueMessages(source.key)).toHaveLength(1);
-  } finally {
-    await context.close();
-  }
-});
-
 // B1: a `?status=` this bundle does not know — a bookmark, a link from an older deploy — is a
 // filter that matches nothing. The page it opens is the table, never the error boundary.
 test("a status the bundle does not know leaves the whole page standing", async ({ browser }) => {
@@ -1107,72 +702,6 @@ test("a status the bundle does not know leaves the whole page standing", async (
       ).toBeVisible();
       await page.keyboard.press("Escape");
     }
-  } finally {
-    await context.close();
-  }
-});
-
-// B2: a closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
-// select stages a target instead, and the confirmation is what sends anything.
-test("an arrow key on the merge select closes no epic, and the confirmed merge does", async ({
-  browser,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const source = await createIssue({ project: "CORE", title: "Arrow source" });
-  const target = await createIssue({ project: "CORE", title: "Arrow target" });
-  await patchIssue(source.key, { labels: ["epic"] });
-  await patchIssue(target.key, { labels: ["epic"] });
-  const child = await createIssue({ project: "CORE", parent: source.key, title: "Arrow child" });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await page.goto("/projects/CORE/issues?group=epic");
-    const heading = page.locator("tr", { has: page.getByRole("link", { name: /Arrow source/ }) });
-    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    const select = page.getByRole("combobox", { name: "Merge into another epic" });
-    await select.focus();
-    await page.keyboard.press("ArrowDown");
-    // Nothing must follow the keystroke: a merge the arrow key had started would leave the page
-    // in that keypress's own task, so this window is where its write and its dialog would show.
-    await page.waitForTimeout(500);
-    expect((await getIssue(source.key)).status).not.toBe("done");
-    expect((await getIssue(child.key)).parent).toBe(source.key);
-    await expect(page.getByRole("dialog", { name: "Merge this epic?" })).toHaveCount(0);
-
-    // The confirmed path still merges, and says what it is about to do first.
-    await select.selectOption(target.key);
-    await page.getByRole("button", { name: "Merge…" }).click();
-    const asked = page.getByRole("dialog", { name: "Merge this epic?" });
-    await expect(asked).toContainText(source.key);
-    await expect(asked).toContainText(target.key);
-    await expect(asked).toContainText("closes as done");
-    await asked.getByRole("button", { name: "Merge", exact: true }).click();
-    await expect.poll(() => getIssue(source.key).then((issue) => issue.status)).toBe("done");
-    expect((await getIssue(child.key)).parent).toBe(target.key);
-  } finally {
-    await context.close();
-  }
-});
-
-// F2 (dispatch://INFRA-2542 item 1): a press on a panel's own prose focuses nothing, and the
-// panel must still be the Escape key's owner afterwards.
-test("Escape closes a panel after a click on its own text", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Hint text epic" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  await createIssue({ project: "CORE", parent: epic.key, title: "Hint text child" });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await page.goto("/projects/CORE/issues?group=epic");
-    const heading = page.locator("tr", { has: page.getByRole("link", { name: /Hint text epic/ }) });
-    await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    const hint = page.getByText("To split it, tick some of its issues");
-    await expect(hint).toBeVisible();
-    await hint.click();
-    await page.keyboard.press("Escape");
-    await expect(hint).toHaveCount(0);
-    await expect(heading.getByRole("button", { name: "Epic actions ▾" })).toBeFocused();
   } finally {
     await context.close();
   }

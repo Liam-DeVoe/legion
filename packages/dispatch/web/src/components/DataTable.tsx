@@ -122,6 +122,10 @@ export interface DataTableOptions<Row> {
   /** Where the group headings go. Read once, when the table is made, as TanStack reads its row
    *  models once; without it the headings keep TanStack's own order. */
   readonly groupOrder?: GroupOrder<Row>;
+  /** Every row there is, where `rows` hold only the page on screen because the server cut it:
+   *  the table pages by the state's page and size without slicing `rows`, and the pager counts
+   *  pages out of this. Without it the table holds every row and cuts its pages itself. */
+  readonly rowCount?: number;
 }
 
 /** One line the table draws: a row, or a group's heading. */
@@ -196,6 +200,7 @@ export function useDataTable<Row>({
   onGroupingChange,
   onPaginationChange,
   onSortingChange,
+  rowCount,
   rows,
   search,
   selection,
@@ -237,6 +242,10 @@ export function useDataTable<Row>({
     getColumnCanGlobalFilter: (column) => column.id === search?.column,
     enableRowSelection: selection === undefined ? false : (row) => !row.getIsGrouped(),
     autoResetPageIndex: false,
+    // Set every render, both ways: the adapter merges each render's options over the last, so a
+    // count left out would keep the last view's pages.
+    manualPagination: rowCount !== undefined,
+    rowCount,
     // A page holds leaf rows, so a big group spans pages instead of making one page huge.
     paginateExpandedRows: true,
     autoResetExpanded: false,

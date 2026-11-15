@@ -46,13 +46,19 @@ const TOGGLE_BOX = `inline-flex shrink-0 rounded-lg border p-0.5 ${borderDefault
 const toggleFace = (pressed: boolean) =>
   `min-h-9 rounded-md px-2 text-xs font-medium whitespace-nowrap md:min-h-7 ${pressed ? surfaceMutedStrongBg : ""} ${textSecondaryOnCanvas}`;
 
-/** The mark a tab whose view the reader changed shows. */
-function ChangedMark(): ReactNode {
+/** A tab's name, with the mark of a view the reader changed beside it on the same line: on a
+ *  phone the tab stacks its name over its count, and the mark keeps to the name's line. */
+function TabName({ changed, name }: { changed: boolean; name: string }): ReactNode {
   return (
-    <>
-      <span aria-hidden className={`size-1.5 rounded-full bg-current ${textPrimaryOnCanvas}`} />
-      <span className="sr-only">changed</span>
-    </>
+    <span className="inline-flex items-center gap-1">
+      {name}
+      {changed ? (
+        <>
+          <span aria-hidden className={`size-1.5 rounded-full bg-current ${textPrimaryOnCanvas}`} />
+          <span className="sr-only">changed</span>
+        </>
+      ) : null}
+    </span>
   );
 }
 
@@ -66,7 +72,7 @@ function DaemonHint({
 }): ReactNode {
   if (header === undefined)
     return <p>{pending ? "Reading the daemon" : "Dispatch has not read the daemon yet"}</p>;
-  const { queue_length, read_at, read_error, read_ok, slot_cap, slots_in_use, trees } = header;
+  const { read_at, read_error, read_ok, slot_cap, slots_in_use, trees } = header;
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5" data-legion-header>
       <dt className={textMutedOnCanvas}>Capacity</dt>
@@ -75,8 +81,6 @@ function DaemonHint({
       </dd>
       <dt className={textMutedOnCanvas}>Trees</dt>
       <dd data-legion-trees>{trees}</dd>
-      <dt className={textMutedOnCanvas}>Waiting line</dt>
-      <dd data-legion-queue-length>{queue_length}</dd>
       <dt className={textMutedOnCanvas}>Last read</dt>
       <dd data-legion-read-at>
         {read_at === null ? "Not read yet" : new Date(read_at).toLocaleString()}
@@ -275,9 +279,8 @@ export function IssueViewTabs({
               role="tab"
               type="button"
             >
-              {view.name}
+              <TabName changed={on && changed} name={view.name} />
               {shown === undefined ? null : <span className={countClass}>{shown}</span>}
-              {on && changed ? <ChangedMark /> : null}
             </button>
           );
         })}
@@ -295,9 +298,8 @@ export function IssueViewTabs({
                 role="tab"
                 type="button"
               >
-                {view.name}
+                <TabName changed={on && changed} name={view.name} />
                 {count === undefined ? null : <span className={countClass}>{count}</span>}
-                {on && changed ? <ChangedMark /> : null}
               </button>
               {on ? (
                 <button
@@ -315,8 +317,8 @@ export function IssueViewTabs({
         })}
       </div>
       {/* A failed read takes a line of its own under the row, its whole error wrapping as it
-        needs: beside seven tabs at 1440 px there is no room for it, and in that room it cut
-        the last tabs. */}
+        needs: beside the tabs and a reader's saved views there is no room for it, and in that
+        room it cut the last tabs. */}
       {readFailed || settingsFailure !== undefined ? (
         <div className={`flex flex-col gap-0.5 text-xs ${dangerText}`}>
           {settingsFailure === undefined ? null : (

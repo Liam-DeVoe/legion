@@ -328,6 +328,35 @@ export const projectDoneIssuesQuery = (
     },
   });
 
+/** One page of a project's done issues, in the order they closed (`sort`), with the count of
+ *  every done issue the window holds (`total`): what the Done view reads while it lists the
+ *  done issues in close order, narrowed by nothing but a Closed window. Under the same prefix,
+ *  so the events that refresh the listing refresh the page too. */
+export const projectDonePageQuery = (
+  project: string,
+  window: { readonly closed_since?: string; readonly closed_before?: string },
+  page: {
+    readonly sort: "closed_at" | "-closed_at";
+    readonly limit: number;
+    readonly offset: number;
+  }
+) =>
+  queryOptions({
+    queryKey: [
+      ...projectIssuesQueryKey(project, []),
+      "done-page",
+      window.closed_since ?? "",
+      window.closed_before ?? "",
+      page.sort,
+      page.limit,
+      page.offset,
+    ],
+    queryFn: async (context) => {
+      await boardMovesSettled(context, project);
+      return api.listIssuePage({ project, status: ["done"], ...window, ...page });
+    },
+  });
+
 /** Resolves once no board move on `project` is pending; rejects if the fetch is cancelled first. */
 function boardMovesSettled(context: QueryFunctionContext, project: string): Promise<void> {
   const { client } = context;

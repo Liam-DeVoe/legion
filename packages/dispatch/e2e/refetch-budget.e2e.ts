@@ -718,8 +718,8 @@ test("project issues table: 20 title writes 250 ms apart send at most 7 project 
     const first = issues[0];
     if (first === undefined) throw new Error("no issues seeded");
     await expect(page.getByRole("tab", { name: `Open ${issues.length}` })).toBeVisible();
-    // Every row knows its epic, so the closed parents have been read by now.
-    await expect(page.getByText("No epic").first()).toBeVisible();
+    // Every row is drawn once the listing has answered.
+    await expect(page.getByRole("row", { name: new RegExp(`^${first.key} `) })).toBeVisible();
     // The table's barrier: a row shows a title only an event can have brought.
     let barrier = 0;
     await expect

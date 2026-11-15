@@ -1086,7 +1086,6 @@ const LIST_COLUMN_FILTERS: Record<string, "picks" | "text"> = {
   "Claimed by": "picks",
   Created: "picks",
   "Created by": "picks",
-  Epic: "picks",
   Key: "text",
   Labels: "picks",
   "Open asks": "picks",
@@ -1781,15 +1780,17 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
   // The column resize, dragged on the header's own edge.
   const header = page
     .getByRole("columnheader")
-    .filter({ has: page.getByRole("button", { exact: true, name: /^Epic/ }) });
+    .filter({ has: page.getByRole("button", { exact: true, name: /^Assignee/ }) });
   const before = await header.boundingBox();
-  if (before === null) throw new Error("the Epic column has no box");
+  if (before === null) throw new Error("the Assignee column has no box");
   await page.mouse.move(before.x + before.width - 2, before.y + before.height / 2);
   await page.mouse.down();
   await page.mouse.move(before.x + before.width + 60, before.y + before.height / 2, { steps: 8 });
   await page.mouse.up();
   const after = await header.boundingBox();
-  expect(after?.width ?? 0, "the Epic column did not resize").toBeGreaterThan(before.width + 20);
+  expect(after?.width ?? 0, "the Assignee column did not resize").toBeGreaterThan(
+    before.width + 20
+  );
 
   // The column reorder. The header moves a column on HTML5 drag events - `dragstart` on its
   // sort button, `dragover` and `drop` on the header it lands in (`components/DataTable.tsx`) -
@@ -1810,10 +1811,10 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
       [...document.querySelectorAll<HTMLElement>("th")].find((cell) =>
         (cell.querySelector("button")?.textContent ?? "").startsWith(label)
       );
-    const handle = headerOf("Epic")?.querySelector("button");
+    const handle = headerOf("Assignee")?.querySelector("button");
     const to = headerOf("Labels");
     if (handle === null || handle === undefined || to === undefined) {
-      throw new Error("the Epic and Labels headers are not both drawn");
+      throw new Error("the Assignee and Labels headers are not both drawn");
     }
     const dataTransfer = new DataTransfer();
     handle.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer }));

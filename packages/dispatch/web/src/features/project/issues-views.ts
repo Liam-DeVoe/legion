@@ -1,6 +1,5 @@
 import { copyAddress } from "../../lib/page-address";
 import { openIssueStatuses } from "./board-model";
-import { IN_FLIGHT_STAGES } from "./issues-stages";
 import type { ColumnId } from "./issues-table-model";
 
 /**
@@ -11,23 +10,20 @@ import type { ColumnId } from "./issues-table-model";
  * the view further, so a link carries only what differs from its view.
  */
 
-export type BuiltInViewId = "open" | "waiting" | "in-flight" | "done";
+export type BuiltInViewId = "open" | "queue" | "done";
 
-/** What a view's bar counts its rows by. */
-export type BarBy = "stage" | "waiting_reason";
+/** What a view's bar counts its rows by: their statuses, or their waiting reasons. */
+export type BarBy = "status" | "waiting_reason";
 
 export interface BuiltInView {
   readonly id: BuiltInViewId;
   /** The tab's name: at most 14 characters. */
   readonly name: string;
   /** The view's own parameters, which an address's parameters replace one key at a time. */
-  readonly params: (hasLegion: boolean) => readonly (readonly [string, string])[];
+  readonly params: () => readonly (readonly [string, string])[];
   /** The columns the view opens with, after the pinned ones, in the order they draw. */
   readonly cols: readonly ColumnId[];
   readonly bar?: BarBy;
-  /** The bar writes the Not started count as a number at its left end, and the work stages
-   *  fill the rest of its width. */
-  readonly notStartedNumber?: boolean;
   /** The view shows only for a project with a Legion daemon. */
   readonly legionOnly?: boolean;
 }
@@ -40,37 +36,26 @@ const OPEN: BuiltInView = {
   id: "open",
   name: "Open",
   params: () => [...OPEN_STATUSES, ["sort", "queue"]],
-  // Created and Open asks are in the Columns menu, not the defaults (the Needs you flag covers
-  // the asks): the default columns fit 1440 px beside the sidebar.
-  cols: ["priority", "queue", "key", "title", "stage", "epic", "assignee", "claim"],
-  bar: "stage",
-  notStartedNumber: true,
+  // Created, Open asks and Claimed by are in the Columns menu, not the defaults (the Needs you
+  // flag covers the asks, and the claim chip needs 324 px): the default columns fit as near
+  // 1440 px beside the sidebar as their whole headers allow.
+  cols: ["priority", "queue", "key", "title", "status", "legion_phase", "assignee"],
+  bar: "status",
 };
 
-/** The built-in views, in their tabs' order. Any other list (Triage, what the reader created)
- *  is a filter a reader saves as a view of their own. */
+/** The built-in views, in their tabs' order. Any other list is a filter a reader saves as a
+ *  view of their own. */
 export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
   OPEN,
   {
-    id: "waiting",
-    name: "Waiting line",
+    id: "queue",
+    name: "Legion queue",
     params: () => [
       ["f.queue", "Queued"],
       ["sort", "queue"],
     ],
-    cols: ["queue", "priority", "key", "title", "waiting_reason", "waited", "epic"],
+    cols: ["queue", "priority", "key", "title", "waiting_reason", "waited"],
     bar: "waiting_reason",
-    legionOnly: true,
-  },
-  {
-    id: "in-flight",
-    name: "In flight",
-    params: () => [
-      ...IN_FLIGHT_STAGES.map((stage) => ["f.stage", stage] as const),
-      ["sort", "stage,-time_in_phase"],
-    ],
-    cols: ["priority", "key", "title", "stage", "roles", "time_in_phase", "phase_hours"],
-    bar: "stage",
     legionOnly: true,
   },
   {
@@ -85,26 +70,30 @@ export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
   },
 ];
 
-/** The views a project has: Waiting line and In flight only where a Legion daemon runs. */
+/** The views a project has: the Legion queue only where a Legion daemon runs. */
 export function viewsFor(hasLegion: boolean): readonly BuiltInView[] {
   return BUILT_IN_VIEWS.filter((view) => hasLegion || view.legionOnly !== true);
 }
 
+/** The ids an older link names a view by: the Legion queue was `waiting`. */
+const FORMER_IDS: Readonly<Record<string, BuiltInViewId>> = { waiting: "queue" };
+
 /** The view `id` names, or Open for an id the project does not have. */
 export function viewFor(id: string | null, hasLegion: boolean): BuiltInView {
-  return viewsFor(hasLegion).find((view) => view.id === id) ?? OPEN;
+  const known = id === null ? null : (FORMER_IDS[id] ?? id);
+  return viewsFor(hasLegion).find((view) => view.id === known) ?? OPEN;
 }
 
 /** The parameters that are no part of what a view lists: they mark no view as changed. */
 const DISPLAY_KEYS = ["view", "page", "size", "cols", "layout"];
 
 /** A view's own parameters as an address. */
-const ownParams = (view: BuiltInView, hasLegion: boolean) =>
-  copyAddress(view.params(hasLegion).map(([key, value]) => [key, value] as const));
+const ownParams = (view: BuiltInView) =>
+  copyAddress(view.params().map(([key, value]) => [key, value] as const));
 
 /**
  * `own` with `params` written over it: each of `own`'s keys replaced by the address's value of
- * that key where it has one. A key the address gives as one empty value (`f.stage=`) takes the
+ * that key where it has one. A key the address gives as one empty value (`f.queue=`) takes the
  * value of `own` away, and `nofilter=1` lifts its Status filter.
  */
 export function expandOver(own: URLSearchParams, params: URLSearchParams): URLSearchParams {
@@ -122,7 +111,7 @@ export function expandOver(own: URLSearchParams, params: URLSearchParams): URLSe
 
 /** The address with its view written out: the view's own parameters under the address's. */
 export function expandView(params: URLSearchParams, hasLegion: boolean): URLSearchParams {
-  return expandOver(ownParams(viewFor(params.get("view"), hasLegion), hasLegion), params);
+  return expandOver(ownParams(viewFor(params.get("view"), hasLegion)), params);
 }
 
 /** Two spellings of one key's values that say the same: the sort in its order, every other key
@@ -156,18 +145,17 @@ export function compressView(full: URLSearchParams, hasLegion: boolean): URLSear
   const view = viewFor(full.get("view"), hasLegion);
   const next = copyAddress();
   if (view.id !== OPEN.id) next.set("view", view.id);
-  for (const [key, value] of compressAgainst(ownParams(view, hasLegion), full))
-    next.append(key, value);
+  for (const [key, value] of compressAgainst(ownParams(view), full)) next.append(key, value);
   return next;
 }
 
 /**
  * What a table that draws no view opens with: Open's own parameters (the open statuses, sorted
- * by Place), which is what the project List opened with before the views, and what a table
+ * by Queue), which is what the project List opened with before the views, and what a table
  * embedded in another page still opens with. Such a table writes no `view=`.
  */
 export function embeddedDefaults(): URLSearchParams {
-  return ownParams(OPEN, false);
+  return ownParams(OPEN);
 }
 
 /** A built-in view is changed when any parameter but the page, its size, the columns and the

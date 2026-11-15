@@ -16,13 +16,11 @@ import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "
 import {
   ACTIVITIES,
   activityLabel,
-  type StageId,
-  stageIds,
-  stageLabel,
-  stageOf,
+  legionPhaseIds,
+  phaseLabel,
   WAITING_REASONS,
   waitingLabel,
-} from "./issues-stages";
+} from "./issues-legion";
 import { compressView, expandView, inWindow } from "./issues-views";
 
 /** An issue's card on the Legion board, with the column it sits in. */
@@ -33,27 +31,24 @@ export interface BoardCardRow {
 
 export interface Item {
   readonly issue: IssueSummary;
-  /** Its place in Start next's queue: the Todo issues labelled `legion`, epics left out, in rank
-   *  order. Start next keeps this rule of its own, apart from the Place column. */
+  /** Its place in Start next's queue: the Todo issues labelled `legion`, in rank order. Start
+   *  next keeps this rule of its own, apart from the Queue column's number. */
   readonly queue?: number;
-  readonly epic: string;
-  readonly epicKey?: string;
   readonly author: string;
   readonly claimedBy: string;
   /** Whether an agent could pick this issue up now: nobody holds it, or the server would hand
    *  its claim to the next agent that asks. The Claimed by filter's "Nobody or lapsed". */
   readonly claimFree: boolean;
   readonly search: string;
-  /** Where the issue stands (`issues-stages.ts`): its card's column, else its status. */
-  readonly stage: StageId;
-  /** Its card on the board route, where the daemon gives it one. */
+  /** Its card on the board route, where the daemon gives it one: the card's column is the
+   *  issue's Legion phase. */
   readonly card?: BoardCardRow;
   /** Its stored per-issue row of the board route (`issues[KEY]`), where it has Legion work. */
   readonly facts?: LegionBoardFacts;
-  /** The Place column: the board's `waiting_place` in a project with a Legion daemon, else the
-   *  Start next number. */
+  /** The Queue column's number: the board's `waiting_place` in a project with a Legion daemon,
+   *  else the Start next number. */
   readonly place?: number;
-  /** Queued: it has a Place, or its card is in the Queue column. */
+  /** In the Legion queue: it has a place, or its card is in the Queue column. */
   readonly queued: boolean;
   /** Whether the reader created it, or an agent session the reader owns did (`f.author=@me`). */
   readonly mine: boolean;
@@ -128,9 +123,8 @@ export type ColumnId =
   | "queue"
   | "key"
   | "title"
-  | "stage"
   | "status"
-  | "epic"
+  | "legion_phase"
   | "assignee"
   | "author"
   | "labels"
@@ -156,8 +150,15 @@ export interface ColumnSpec {
   readonly id: ColumnId;
   /** Its width before the reader drags it. */
   readonly size: number;
-  /** How narrow a drag may take it: label, sort mark, a 44 px filter target and padding. */
+  /** How narrow a drag or a narrow window may take it below 1280 px, where every button is a
+   *  44 px touch target: the whole header label, its sort mark and its 44 px filter button with
+   *  the cell's padding, about the label's width plus 78 px. From 1280 px the filter button is
+   *  32 px, and a filterable column's minimum is 12 px less (`columnMinimums`), unless its cell
+   *  sets it (`cellMin`). A table whose minimums do not fit scrolls sideways. */
   readonly min: number;
+  /** Its minimum is what its cell holds, not its header, so it is the same at any width: a
+   *  ten-character key with its unread dot, a title, a whole claim chip. */
+  readonly cellMin?: true;
   /** How narrow it may go on a phone, where the key and the title are the row. */
   readonly compactMin?: number;
   /** Stays in view while the table scrolls sideways. */
@@ -190,8 +191,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   { id: "select", size: 44, min: 44, pinned: true, sortable: false },
   {
     id: "priority",
-    size: 112,
-    min: 108,
+    size: 132,
+    min: 132,
     pinned: true,
     filter: one((item) => String(item.issue.priority ?? ""), {
       order: ["0", "1", "2", "3", ""],
@@ -200,21 +201,22 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "queue",
-    size: 104,
-    min: 104,
+    size: 124,
+    min: 124,
     // The address keeps the values `Queued` and `Not queued` (`f.queue=Queued`); the reader
-    // sees the set by the Waiting line tab's own name.
+    // sees the set by the Legion queue tab's own name.
     filter: one((item) => (item.queued ? "Queued" : "Not queued"), {
       order: ["Queued", "Not queued"],
-      show: (value) => (value === "Queued" ? "In waiting line" : "Not in waiting line"),
+      show: (value) => (value === "Queued" ? "In Legion queue" : "Not in Legion queue"),
       groups: false,
     }),
   },
   {
     id: "key",
-    size: 108,
-    min: 104,
+    size: 124,
+    min: 124,
     compactMin: 124,
+    cellMin: true,
     pinned: true,
     filter: { kind: "text", value: (item) => item.issue.key },
   },
@@ -223,25 +225,17 @@ export const COLUMNS: readonly ColumnSpec[] = [
     size: 380,
     min: 116,
     compactMin: 120,
+    cellMin: true,
     pinned: true,
     filter: { kind: "text", value: (item) => item.issue.title },
   },
   {
-    id: "stage",
-    size: 130,
-    min: 104,
-    filter: {
-      kind: "picks",
-      values: (item) => [item.stage],
-      group: (item) => item.stage,
-      order: stageIds,
-      show: stageLabel,
-    },
-  },
-  {
+    // The widest status chip whole ("NEEDS REVIEW", 134 px) with the cell's padding: the cell,
+    // not the header, sets this minimum.
     id: "status",
-    size: 128,
-    min: 132,
+    size: 150,
+    min: 150,
+    cellMin: true,
     filter: {
       kind: "picks",
       values: (item) => [item.issue.status],
@@ -255,17 +249,28 @@ export const COLUMNS: readonly ColumnSpec[] = [
       always: issueStatuses,
     },
   },
-  { id: "epic", size: 220, min: 96, filter: one((item) => item.epic) },
+  {
+    // The column of the board the issue's card is in: its Legion phase, beside its status and
+    // never merged with it. An issue the daemon holds no card for has none.
+    id: "legion_phase",
+    size: 168,
+    min: 168,
+    board: true,
+    filter: one((item) => item.card?.column ?? "", {
+      order: [...legionPhaseIds, ""],
+      show: (value) => (value === "" ? "None" : phaseLabel(value)),
+    }),
+  },
   {
     id: "assignee",
     size: 150,
-    min: 118,
+    min: 140,
     filter: one((item) => item.issue.assignee ?? "Unassigned"),
   },
   {
     id: "author",
     size: 180,
-    min: 128,
+    min: 156,
     filter: {
       kind: "picks",
       values: (item) => (item.mine ? [item.author, ME] : [item.author]),
@@ -276,7 +281,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
   {
     id: "labels",
     size: 180,
-    min: 100,
+    min: 124,
     filter: {
       kind: "picks",
       // The project's own spelling of each label, which is the Board's too: one `?label=` is
@@ -288,9 +293,12 @@ export const COLUMNS: readonly ColumnSpec[] = [
     },
   },
   {
+    // The claim chip whole: "Claimed by", the holder's name (which truncates, down to 48 px),
+    // the time and "not running" - 305 px for the widest INFRA and GTM chips - and the padding.
     id: "claim",
-    size: 200,
-    min: 132,
+    size: 324,
+    min: 324,
+    cellMin: true,
     filter: {
       kind: "picks",
       values: (item) => (item.claimFree ? [item.claimedBy, UNCLAIMED_FACET] : [item.claimedBy]),
@@ -299,59 +307,60 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "asks",
-    size: 104,
-    min: 112,
+    size: 152,
+    min: 152,
     filter: one((item) => String(item.issue.open_asks), { groups: false }),
   },
   {
     id: "created",
-    // The header, its sort mark and its filter: "Created ▼" and a 32 px target.
-    size: 128,
-    min: 128,
+    size: 132,
+    min: 132,
     filter: one((item) => ageOf(item.issue.created_at), { order: AGES }),
   },
   {
     id: "updated",
-    size: 128,
-    min: 128,
+    size: 136,
+    min: 136,
     filter: one((item) => ageOf(item.issue.updated_at), { order: AGES }),
   },
   {
     id: "closed",
-    size: 116,
-    min: 104,
+    size: 124,
+    min: 124,
     filter: { kind: "range", value: (item) => item.issue.closed_at },
   },
-  { id: "roles", size: 120, min: 64, board: true },
+  { id: "roles", size: 120, min: 68, board: true },
   {
     // What an issue the daemon holds capacity for is doing (the board's `slot_use`).
     id: "activity",
     size: 140,
-    min: 112,
+    min: 132,
     board: true,
     filter: one((item) => item.card?.card.slot_use ?? "", {
       order: [...ACTIVITIES, ""],
       show: (value) => (value === "" ? "None" : activityLabel(value)),
+      groups: false,
     }),
   },
   { id: "waited", size: 88, min: 80, board: true },
   {
     id: "waiting_reason",
     size: 140,
-    min: 104,
+    min: 132,
     board: true,
     filter: one((item) => item.card?.card.waiting?.reason ?? "", {
       order: [...WAITING_REASONS, ""],
       show: (value) => (value === "" ? "None" : waitingLabel(value)),
+      groups: false,
     }),
   },
   { id: "time_in_phase", size: 92, min: 88, board: true },
-  { id: "work_hours", size: 96, min: 88, board: true },
-  { id: "review_rounds", size: 80, min: 72, board: true },
+  { id: "work_hours", size: 100, min: 100, board: true },
+  { id: "review_rounds", size: 84, min: 84, board: true },
   {
     id: "legion",
     size: 120,
-    min: 88,
+    min: 108,
     board: true,
     filter: {
       kind: "picks",
@@ -366,8 +375,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "phase_hours",
-    size: 252,
-    min: 244,
+    size: 284,
+    min: 284,
     board: true,
     filter: {
       kind: "picks",
@@ -375,7 +384,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
         Object.entries(item.facts?.hours_by_phase ?? {})
           .filter(([, hours]) => hours > 0)
           .map(([phase]) => phase),
-      show: stageLabel,
+      order: legionPhaseIds,
+      show: phaseLabel,
     },
   },
 ];
@@ -392,18 +402,32 @@ const groupable: readonly string[] = COLUMNS.filter(
   (column) => column.filter?.kind === "picks" && column.filter.group !== undefined
 ).map((column) => column.id);
 export const canGroupBy = (id: string) => groupable.includes(id);
-/** Each registry column's minimum and its phone minimum, by id. Looked up by a column id, so a
- *  lookup can miss: a column the registry gives no such width. */
-export const COLUMN_MIN: Readonly<Partial<Record<string, number>>> = Object.fromEntries(
-  COLUMNS.map((column) => [column.id, column.min])
-);
+/** How much wider a button is below 1280 px, where every button is a 44 px touch target
+ *  (`styles.css`), than a filter button's 32 px from 1280 px. */
+const TOUCH_TARGET_GAIN = 44 - 32;
+const minimumsFor = (touch: boolean): Readonly<Partial<Record<string, number>>> =>
+  Object.fromEntries(
+    COLUMNS.map((column) => [
+      column.id,
+      touch || column.filter === undefined || column.cellMin
+        ? column.min
+        : column.min - TOUCH_TARGET_GAIN,
+    ])
+  );
+const TOUCH_MINIMUMS = minimumsFor(true);
+const WIDE_MINIMUMS = minimumsFor(false);
+/** Each registry column's minimum by id, with the buttons in use: 44 px touch targets below
+ *  1280 px (`touch`), 32 px filter buttons from 1280 px. Looked up by a column id, so a lookup
+ *  can miss: a column the registry gives no such width. */
+export const columnMinimums = (touch: boolean) => (touch ? TOUCH_MINIMUMS : WIDE_MINIMUMS);
 export const COMPACT_COLUMN_MIN: Readonly<Partial<Record<string, number>>> = Object.fromEntries(
   COLUMNS.flatMap((column) =>
     column.compactMin === undefined ? [] : [[column.id, column.compactMin]]
   )
 );
-/** A column's narrowest on a phone: its phone minimum where the registry gives one. */
-const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? COLUMN_MIN[id] ?? 0;
+/** A column's narrowest on a phone, which has touch targets: its phone minimum where the
+ *  registry gives one. */
+const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? TOUCH_MINIMUMS[id] ?? 0;
 
 /** The layout rules every view's table shares, for `useTableLayout`: every registry column, at
  *  the registry's starting width and never below its minimum. Select, Priority, Key and Title
@@ -412,7 +436,7 @@ const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? COLUMN_MIN[
  *  the first column after them, takes the rest of the box down to its phone minimum: a row at
  *  rest reads its key and its title whole, with no column cut at the right edge, and the
  *  columns after Title scroll in under the key. */
-function layoutColumns(shown: readonly ColumnId[] | undefined): LayoutColumns {
+function layoutColumns(shown: readonly ColumnId[] | undefined, touch: boolean): LayoutColumns {
   const visible = shown === undefined ? undefined : new Set<ColumnId>(["select", ...shown]);
   const pinned = COLUMNS.filter(
     (column) => column.pinned && (visible === undefined || visible.has(column.id))
@@ -425,7 +449,7 @@ function layoutColumns(shown: readonly ColumnId[] | undefined): LayoutColumns {
         ? { updated: false }
         : Object.fromEntries(COLUMNS.flatMap(({ id }) => (visible.has(id) ? [] : [[id, false]]))),
     sizes: Object.fromEntries(COLUMNS.map((column) => [column.id, column.size])),
-    minimums: COLUMN_MIN,
+    minimums: columnMinimums(touch),
     pins: {
       wide: { columns: pinned, share: 0.6 },
       phone: {
@@ -443,18 +467,19 @@ function layoutColumns(shown: readonly ColumnId[] | undefined): LayoutColumns {
 }
 
 /** The table's columns with Updated hidden until a reader shows it: the layout every saved
- *  `dispatch.project-table.<project>` record was written for. */
-export const ISSUE_TABLE_COLUMNS: LayoutColumns = layoutColumns(undefined);
+ *  `dispatch.project-table.<project>` record was written for, at the touch minimums. */
+export const ISSUE_TABLE_COLUMNS: LayoutColumns = layoutColumns(undefined, true);
 
 const viewLayouts = new Map<string, LayoutColumns>();
 /** One view's layout rules: the view's default columns shown, every other column hidden until
- *  the reader shows it, and the pinned columns the view shows. Held per set of columns, since
- *  the stored layout is read again whenever the rules' identity changes. */
-export function viewLayoutColumns(shown: readonly ColumnId[]): LayoutColumns {
-  const key = shown.join(",");
+ *  the reader shows it, the pinned columns the view shows, and the minimums of the buttons in
+ *  use (`touch`). Held per set of columns and button size, since the stored layout is read
+ *  again whenever the rules' identity changes. */
+export function viewLayoutColumns(shown: readonly ColumnId[], touch: boolean): LayoutColumns {
+  const key = `${shown.join(",")}|${touch}`;
   const known = viewLayouts.get(key);
   if (known !== undefined) return known;
-  const made = layoutColumns(shown);
+  const made = layoutColumns(shown, touch);
   viewLayouts.set(key, made);
   return made;
 }
@@ -465,7 +490,7 @@ export const isBoardColumn = (id: string) => columnSpec.get(id)?.board === true;
 /** What this table holds in the address, in the shape every table holds it
  *  (`lib/page-address.ts`); `readUrl` and `writeUrl` below are this table's own spelling of it. */
 export type View = TableAddressView;
-/** The All open view, which is what an address that names no view opens. */
+/** The Open view, which is what an address that names no view opens. */
 export const defaultView: View = {
   sorting: [{ id: "queue", desc: false }],
   grouping: [],
@@ -474,15 +499,10 @@ export const defaultView: View = {
   page: 0,
   pageSize: 50,
 };
-const hasLabel = (issue: Pick<IssueSummary, "labels">, label: string) =>
-  (issue.labels ?? []).some((value) => value.toLowerCase() === label);
-/** The server matches a label on `lower(label)`, so the table does too: an issue labelled
- *  `Legion` is in Legion's queue, and one labelled `Epic` is an epic. */
+/** The server matches a label on `lower(label)`, so the table does too: a Todo issue labelled
+ *  `Legion` is in Legion's queue. */
 export const isQueued = (issue: Pick<IssueSummary, "status" | "labels">) =>
-  issue.status === "todo" && hasLabel(issue, "legion");
-export const isEpic = (issue: Pick<IssueSummary, "parent" | "labels" | "status">) =>
-  issue.parent === null && hasLabel(issue, "epic") && issue.status !== "done";
-export type EpicAncestor = Pick<IssueSummary, "key" | "parent" | "status" | "labels" | "title">;
+  issue.status === "todo" && (issue.labels ?? []).some((value) => value.toLowerCase() === "legion");
 
 /** What the rows read beyond the listing: the board route's answer, whether the project has a
  *  Legion daemon at all, and who the reader is. */
@@ -504,16 +524,12 @@ export function cardsByKey(board: LegionBoardResponse | undefined): Map<string, 
 export function buildItems(
   issues: readonly IssueSummary[],
   label: (actor: Actor) => string,
-  ancestors: readonly EpicAncestor[] = [],
   isFree: (issue: IssueSummary) => boolean = (issue) => issue.claim === null,
   { board, hasLegion = false, viewer }: ItemContext = {}
 ): Item[] {
-  const byKey = new Map<string, EpicAncestor>(
-    [...ancestors, ...issues].map((issue) => [issue.key, issue])
-  );
   // Rank's alphabet is byte-ordered, not locale-ordered.
   const queue = issues
-    .filter((issue) => !isEpic(issue) && isQueued(issue))
+    .filter(isQueued)
     .sort((a, b) =>
       a.rank < b.rank
         ? -1
@@ -527,69 +543,32 @@ export function buildItems(
   const isMine = (actor: Actor | null) =>
     viewer !== undefined && actor !== null && (actor.id === viewer || actor.owner === viewer);
   return issues.map((issue) => {
-    let root: EpicAncestor | undefined = issue;
-    const seen = new Set<string>();
-    while (root?.parent && !seen.has(root.key)) {
-      seen.add(root.key);
-      root = byKey.get(root.parent);
-    }
-    const epic = root && isEpic(root) ? root : undefined;
     const author = issue.created_by ? label(issue.created_by) : "Unknown";
     const claimedBy = issue.claim ? label(issue.claim.actor) : "Nobody";
-    const epicName = epic
-      ? `${epic.key} · ${epic.title}`
-      : root === undefined || root.parent !== null
-        ? "Unknown epic"
-        : "No epic";
-    const card = cards.get(issue.key);
-    // A done issue keeps no card's place in a line: the daemon gives cards to open issues.
-    const live = issue.status === "done" ? undefined : card;
-    const place = hasLegion ? (live?.card.waiting_place ?? undefined) : positions.get(issue.key);
+    // A done issue keeps no card: the daemon gives cards to open issues.
+    const card = issue.status === "done" ? undefined : cards.get(issue.key);
+    const place = hasLegion ? (card?.card.waiting_place ?? undefined) : positions.get(issue.key);
     return {
       issue,
       queue: positions.get(issue.key),
-      epic: epicName,
-      epicKey: epic?.key,
       author,
       claimedBy,
       claimFree: isFree(issue),
       search: [
         issue.key,
         issue.title,
-        epicName,
         issue.assignee ?? "",
         author,
         claimedBy,
         ...(issue.labels ?? []),
       ].join(" "),
-      stage: stageOf(issue.status, live?.column),
-      ...(live === undefined ? {} : { card: live }),
+      ...(card === undefined ? {} : { card }),
       ...(facts[issue.key] === undefined ? {} : { facts: facts[issue.key] }),
       place,
-      queued: place !== undefined || live?.column === "queue",
+      queued: place !== undefined || card?.column === "queue",
       mine: isMine(issue.created_by),
     };
   });
-}
-
-/** Move the first open issue on each path out of the source. Its open or closed descendants
- *  travel with it; only a path made entirely of closed intermediates needs another parent write. */
-export function mergeMembers(issues: readonly IssueSummary[], source: string): string[] {
-  const byKey = new Map(issues.map((issue) => [issue.key, issue]));
-  return issues
-    .filter((issue) => {
-      if (issue.status === "done" || issue.key === source) return false;
-      let parent = issue.parent;
-      const seen = new Set<string>();
-      while (parent !== null && parent !== source && !seen.has(parent)) {
-        seen.add(parent);
-        const intermediate = byKey.get(parent);
-        if (!intermediate || intermediate.status !== "done") return false;
-        parent = intermediate.parent;
-      }
-      return parent === source;
-    })
-    .map((issue) => issue.key);
 }
 function withinOneEdit(a: string, b: string): boolean {
   if (Math.abs(a.length - b.length) > 1) return false;
@@ -613,8 +592,8 @@ function withinOneEdit(a: string, b: string): boolean {
   return edits + a.length - i + b.length - j <= 1;
 }
 export function matchesSearch(item: Item, query: string): boolean {
-  // Nothing typed matches everything, and the two hot callers — the epic fold-in and the
-  // facet counts — ask on every render, so this answers before any work is done.
+  // Nothing typed matches everything, and the hot caller — the facet counts — asks on every
+  // render, so this answers before any work is done.
   if (query.trim() === "") return true;
   let words: string[] | undefined;
   const searchWords = () => {
@@ -657,7 +636,7 @@ export function matchesFilters(
 }
 /** The headings that stand for "none of them", wherever a column has one: they read last, after
  *  every named group. */
-const EMPTY_GROUPS: readonly string[] = ["No epic", "Unknown epic", "Nobody", "Unassigned"];
+const EMPTY_GROUPS: readonly string[] = ["Nobody", "Unassigned"];
 /** Which of two of column `id`'s groups comes first: the order its filter lists its values in,
  *  and by name where the registry gives none — numbers inside a name counted as numbers, so
  *  `CORE-2` reads before `CORE-10`, and the empty group last. A group's place is its column's,
@@ -782,7 +761,7 @@ export function writeTableAddress(params: URLSearchParams, state: View): URLSear
   return next;
 }
 
-/** The table's view as the address names it: the view `view=` names (All open where it names
+/** The table's view as the address names it: the view `view=` names (Open where it names
  *  none), with every parameter of the address over the view's own. */
 export function readUrl(params: URLSearchParams, hasLegion = false): View {
   return readTableAddress(expandView(params, hasLegion));

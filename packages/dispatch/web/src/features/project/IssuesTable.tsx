@@ -5,7 +5,7 @@ import { apiErrorMessage } from "../../api/client";
 import {
   legionBoardQuery,
   legionSettingsQuery,
-  projectDoneIssuesQuery,
+  projectDonePageQuery,
   userStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
@@ -13,7 +13,7 @@ import { ColumnFilter } from "../../components/ColumnFilter";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import { DataTable, type DataTableNames, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import type { PagerOptions } from "../../components/Pager";
+import { Pager, type PagerOptions } from "../../components/Pager";
 import { QueryError } from "../../components/QueryError";
 import { useTableLayout } from "../../components/table-layout";
 import { readStore, writeStore } from "../../components/table-storage";
@@ -25,15 +25,13 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { useAgentText } from "../refs/AgentName";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
 import { useKeymap } from "../shell/keymap";
+import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useUserPreference } from "../shell/userPreference";
-import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { EpicNameDialog } from "./EpicNameDialog";
-import { IssueBoard } from "./IssueBoard";
+import { type BoardBy, IssueBoard } from "./IssueBoard";
 import {
   type ActiveView,
   IssueViewTabs,
@@ -68,11 +66,11 @@ import {
 } from "./issues-table-data";
 import {
   ALL_ROWS,
-  buildItems,
-  COLUMN_MIN,
   COLUMNS,
   type ColumnId,
+  columnMinimums,
   compareGroups,
+  defaultView,
   facetCounts,
   groupValue,
   ISSUE_GROUP_ATTRIBUTE,
@@ -80,7 +78,6 @@ import {
   ISSUE_ROW_ATTRIBUTE,
   type Item,
   isBoardColumn,
-  isEpic,
   matchesFilters,
   matchesSearch,
   PAGE_SIZES,
@@ -92,6 +89,7 @@ import {
 } from "./issues-table-model";
 import {
   type ExtraChip,
+  type GroupByChoice,
   IssueTableSelection,
   IssueTableStatus,
   IssueTableToolbar,
@@ -174,21 +172,16 @@ const viewStorageKey = (project: string, view: BuiltInViewId) =>
 
 /** The column a bar counts by, and the parameter its press narrows. */
 const BAR_COLUMN = {
-  stage: "stage",
+  status: "status",
   waiting_reason: "waiting_reason",
 } as const;
 
-/** Whether a view lists closed issues: its Status filter picks Done, its Stage filter picks
- *  Done, or the Status filter is lifted (`lifted`, `nofilter=1`). A view with no Status filter
- *  of its own (Waiting line, In flight) lists the open issues its Legion filters select. */
+/** Whether a view lists closed issues: its Status filter picks Done, or the Status filter is
+ *  lifted (`lifted`, `nofilter=1`). A view with no Status filter of its own (the Legion queue)
+ *  lists the open issues its Legion filters select. */
 function filtersListClosed(filters: View["filters"], lifted: boolean): boolean {
-  const picks = (id: string) => {
-    const value = filters.find((filter) => filter.id === id)?.value;
-    return Array.isArray(value) ? value.map(String) : undefined;
-  };
-  const status = picks("status");
-  if (status !== undefined) return status.includes("done");
-  return lifted || (picks("stage")?.includes("done") ?? false);
+  const status = filters.find((filter) => filter.id === "status")?.value;
+  return Array.isArray(status) ? status.map(String).includes("done") : lifted;
 }
 
 /** Whether an address of the Issues tab lists closed issues (`filtersListClosed`). */
@@ -212,9 +205,8 @@ const SCOPED_LAYOUT_KEY = "priority-work";
 /**
  * Where the table stands. On a project's Issues tab it is the project's one list of issues, in
  * views, in the table or the Board. Another page (the priority pages) draws it embedded, over a
- * listing of its own: the design reaches it there in its stage bar, its palette and its Place
- * column, and no further - no view tabs, no saved views, no Board, no Legion columns, and every
- * parameter of its own under `stateKey`.
+ * listing of its own, as main draws it - no view tabs, no saved views, no Board, no Legion
+ * columns, and every parameter of its own under `stateKey`.
  */
 type TablePlace =
   | {
@@ -313,8 +305,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
   const views = embedded ? NO_VIEWS : viewsFor(hasLegion);
-  // An embedded table draws no view: it opens as All open does, its bar by stage across its
-  // whole width.
+  // An embedded table draws no view: it opens as Open does.
   const builtIn = viewFor(embedded ? null : params.get("view"), hasLegion);
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const board = useQuery({
@@ -370,8 +361,8 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     : narrowingsKey(params) !== narrowingsKey(ownAddress);
 
   // The layout: the address's for this load, else the one kept for the view, else today's
-  // `project.issue-view` choice (All open's, its `legion` value In flight's Board). An embedded
-  // table keeps its layout under its own key, as one table wherever it is drawn, and has no Board.
+  // `project.issue-view` choice (Open's). An embedded table keeps its layout under its own key,
+  // as one table wherever it is drawn, and has no Board.
   const storeKey =
     place.kind === "embedded"
       ? tableStorageKey(place.layout?.key ?? SCOPED_LAYOUT_KEY)
@@ -394,11 +385,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     ? "table"
     : urlLayout === "board" || urlLayout === "table"
       ? urlLayout
-      : (keptLayout ??
-        ((builtIn.id === "open" && legacyView === "board") ||
-        (builtIn.id === "in-flight" && legacyView === "legion")
-          ? "board"
-          : "table"));
+      : (keptLayout ?? (builtIn.id === "open" && legacyView === "board" ? "board" : "table"));
   const setLayout = (next: ViewLayout) => {
     if (params.has("layout"))
       update((current) => {
@@ -450,16 +437,19 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     () => (listingColsText === "" ? [] : (listingColsText.split(",") as ListingColumnId[])),
     [listingColsText]
   );
+  // Below 1280 px every button is a 44 px touch target, and each column's minimum holds its
+  // header with that filter button; from 1280 px with the 32 px one.
+  const touch = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const storedLayout = useTableLayout(
     storeKey,
     place.kind === "embedded"
       ? issueTableLayout(listingCols, place.layout?.shown)
-      : viewLayoutColumns(viewCols)
+      : viewLayoutColumns(viewCols, touch)
   );
   const colsParam = embedded ? null : params.get("cols");
   // Start next is offered only on the views that list Todo issues; elsewhere its column is not
   // drawn, so the view's own columns get its width. An embedded table offers it as the List did.
-  const trailingWidth = embedded || ["open", "waiting"].includes(builtIn.id) ? ACTION_WIDTH : 0;
+  const trailingWidth = embedded || ["open", "queue"].includes(builtIn.id) ? ACTION_WIDTH : 0;
   const layout = useMemo(() => {
     // An embedded table is laid out by main's rules alone (`issueTableLayout`): its columns at
     // main's widths, scrolling sideways where they do not fit, in the order the reader left them.
@@ -506,8 +496,9 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
             ...hidden,
           };
     // Until the reader drags a width, a view's columns are fitted to the box: Title gives first,
-    // down to 180 px, then every other column toward its minimum, then Title again down to
-    // 156 px, so the view's own columns are on screen rather than past its right edge.
+    // down to 180 px, then every other column toward its minimum, then Title again down to its
+    // own minimum, so the view's own columns are on screen rather than past its right edge.
+    const minimums = columnMinimums(touch);
     const responsive = (() => {
       const { boxWidth: box, responsive: drawn, sizing } = storedLayout;
       if (Object.keys(sizing).length > 0 || box < 640) return drawn;
@@ -523,18 +514,19 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       }
       const slack = ids
         .filter((id) => id !== "select" && id !== "title")
-        .map((id) => [id, Math.max(0, (widths[id] ?? 0) - (COLUMN_MIN[id] ?? 0))] as const);
+        .map((id) => [id, Math.max(0, (widths[id] ?? 0) - (minimums[id] ?? 0))] as const);
       const total = slack.reduce((sum, [, room]) => sum + room, 0);
       if (over > 0 && total > 0) {
         const given = Math.min(over, total);
         for (const [id, room] of slack) widths[id] = (widths[id] ?? 0) - (given * room) / total;
         over -= given;
       }
-      // The last of it, where every other column is at its minimum: All open's eight columns
+      // The last of it, where every other column is at its minimum: Open's eight columns
       // and Start next beside the sidebar at 1440 px.
       const narrowed = widths.title;
+      const floor = minimums.title ?? 0;
       if (over > 0 && narrowed !== undefined && ids.includes("title"))
-        widths.title = narrowed - Math.min(over, Math.max(0, narrowed - 156));
+        widths.title = narrowed - Math.min(over, Math.max(0, narrowed - floor));
       return { ...drawn, sizing: widths };
     })();
     if (shown === undefined) return { ...storedLayout, order, responsive, setOrder, visibility };
@@ -556,34 +548,63 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
         });
       },
     };
-  }, [colsParam, embedded, hasLegion, storedLayout, trailingWidth, update, viewCols]);
+  }, [colsParam, embedded, hasLegion, storedLayout, touch, trailingWidth, update, viewCols]);
   const { attachAbove, boxWidth } = layout;
 
   // The reads: the open listing, the done issues the view lists, and the board.
   const nowMs = Date.now();
-  const done = whole
+  // A view whose Status filter picks Done alone holds only the done rows it read, so its footer
+  // counts its rows against those rather than against the open listing beside them.
+  const statusValue = filters.find((filter) => filter.id === "status")?.value;
+  const doneOnly =
+    Array.isArray(statusValue) && statusValue.length === 1 && statusValue[0] === "done";
+  // Done reads only the page on screen from the server while it lists every done issue (in its
+  // Closed window, where it has one) in the order they closed: sorted by Closed alone, with no
+  // search, flag, chip, grouping or other column filter, and a page size the server serves.
+  // Anything else asks every row the window holds, and the table does the rest.
+  const closeSort =
+    sorting.length === 1 && sorting[0]?.id === "closed"
+      ? sorting[0].desc
+        ? ("-closed_at" as const)
+        : ("closed_at" as const)
+      : undefined;
+  const pagedByServer =
+    place.kind === "project" &&
+    doneOnly &&
+    closeSort !== undefined &&
+    search === "" &&
+    grouping.length === 0 &&
+    pagination.pageSize !== ALL_ROWS &&
+    !flags.needsYou &&
+    !flags.unread &&
+    filters.every((filter) => filter.id === "status" || filter.id === "closed") &&
+    !params.has("exclude_tree") &&
+    !params.has("only");
+  const doneWindow = whole
     ? undefined
     : doneRead(filters, params.get(ownParam("nofilter")) === "1", nowMs);
+  const done: DoneRead =
+    doneWindow === undefined || !pagedByServer || closeSort === undefined
+      ? doneWindow
+      : {
+          ...doneWindow,
+          page: {
+            sort: closeSort,
+            limit: pagination.pageSize,
+            offset: pagination.pageIndex * pagination.pageSize,
+          },
+        };
   const claimPicked = (filters.find((filter) => filter.id === "claim")?.value ?? []) as string[];
   const wantsFree = claimPicked.includes(UNCLAIMED_FACET);
   const registry = useAgentRegistry(wantsFree || openFilter === "claim");
-  const {
-    all,
-    allItems,
-    ancestry,
-    doneIssues,
-    doneLoaded,
-    epics,
-    issues,
-    listingError,
-    missingParents,
-  } = useIssueTableItems(listing, {
-    done,
-    registry,
-    board: board.data,
-    hasLegion,
-    viewer,
-  });
+  const { all, allItems, doneIssues, doneLoaded, doneTotal, issues, listingError } =
+    useIssueTableItems(listing, {
+      done,
+      registry,
+      board: board.data,
+      hasLegion,
+      viewer,
+    });
 
   // The narrowings that are no column: the flags, `exclude_tree` and `only`.
   const excludedText = params.getAll("exclude_tree").join(",");
@@ -596,42 +617,19 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     () => (onlyParam === null ? undefined : new Set(onlyParam.split(",").filter(Boolean))),
     [onlyParam]
   );
-  // A view whose Status filter picks Done alone holds only the done rows it read, so its footer
-  // counts its rows against those rather than against the open listing beside them.
-  const statusValue = filters.find((filter) => filter.id === "status")?.value;
-  const doneOnly =
-    Array.isArray(statusValue) && statusValue.length === 1 && statusValue[0] === "done";
-  const items = useMemo(() => {
-    const shown = allItems.filter(
-      ({ issue, facts }) =>
-        (!doneOnly || issue.status === "done") &&
-        (!flags.needsYou || issue.open_asks > 0) &&
-        (!flags.unread || issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0)) &&
-        !excluded.some((tree) => tree === issue.key || tree === facts?.root_key) &&
-        (only === undefined || only.has(issue.key))
-    );
-    if (grouping[0] !== "epic") return shown;
-    const headings = new Set(
-      shown
-        .filter(
-          (item) =>
-            !isEpic(item.issue) && matchesFilters(item, filters) && matchesSearch(item, search)
-        )
-        .map(({ epicKey }) => epicKey)
-    );
-    return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
-  }, [
-    allItems,
-    doneOnly,
-    filters,
-    flags.needsYou,
-    flags.unread,
-    grouping,
-    search,
-    userState.data,
-    only,
-    excluded,
-  ]);
+  const items = useMemo(
+    () =>
+      allItems.filter(
+        ({ issue, facts }) =>
+          (!doneOnly || issue.status === "done") &&
+          (!flags.needsYou || issue.open_asks > 0) &&
+          (!flags.unread ||
+            issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0)) &&
+          !excluded.some((tree) => tree === issue.key || tree === facts?.root_key) &&
+          (only === undefined || only.has(issue.key))
+      ),
+    [allItems, doneOnly, flags.needsYou, flags.unread, userState.data, only, excluded]
+  );
 
   const columns = useIssueTableColumns(
     userState.data,
@@ -639,11 +637,13 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     recordMark,
     listingCols,
     place.kind === "embedded" ? place.priorityTitles : undefined,
-    embedded
+    embedded,
+    touch
   );
 
   const model = useDataTable<Item>({
     rows: items,
+    rowCount: doneTotal,
     columns,
     getRowId: (item) => item.issue.key,
     layout,
@@ -693,17 +693,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     busy,
     notice,
     moved,
-    duplicateEpic,
-    setDuplicateEpic,
-    unansweredEpic,
-    dismissUnansweredEpic,
-    moveTo,
     startNext,
-    newEpic,
-    renameEpic,
-    mergeEpic,
-    naming,
-    cancelNaming,
     confirming,
     cancelConfirming,
     confirmed,
@@ -718,12 +708,6 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     clearSelection: () => setSelection({}),
   });
 
-  const unreadableAncestors =
-    missingParents.length === 0
-      ? 0
-      : ancestry.isError
-        ? missingParents.length
-        : (ancestry.data?.unreadable.length ?? 0);
   const pageCount = table.getPageCount();
   useEffect(() => {
     if (
@@ -739,41 +723,36 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   );
 
   // Each tab's count, from the data the page holds: the open listing (and the board) for every
-  // view but Done, whose read of every done issue counts once the view has been opened in the
-  // page (the same read the view itself makes while no Closed window narrows it).
+  // view but Done, whose count is the server's total of its first page, read once the view has
+  // been opened in the page (the same read Done itself makes as it opens).
   const [doneOpened, setDoneOpened] = useState(builtIn.id === "done");
   if (builtIn.id === "done" && !doneOpened) setDoneOpened(true);
-  const everyDone = useQuery({
-    ...projectDoneIssuesQuery(project ?? "", {}),
+  const doneCount = useQuery({
+    ...projectDonePageQuery(
+      project ?? "",
+      {},
+      { sort: "-closed_at", limit: defaultView.pageSize, offset: 0 }
+    ),
     enabled: doneOpened && project !== undefined,
   });
-  const text = useAgentText();
   const counts = useMemo(() => {
     const result = new Map<string, number | undefined>();
     for (const entry of views) {
-      const own = readUrl(copyAddress(`view=${entry.id}`), hasLegion).filters;
       if (entry.id === "done") {
-        const rows = everyDone.data;
-        result.set(
-          entry.id,
-          rows === undefined
-            ? undefined
-            : buildItems(rows, text.label, [], undefined, { board: board.data, hasLegion }).filter(
-                (item) => matchesFilters(item, own)
-              ).length
-        );
+        result.set(entry.id, doneCount.data?.total);
         continue;
       }
       // A view whose rows come from data the page does not hold yet says no count, not 0.
-      const needsBoard = hasLegion && (entry.legionOnly === true || entry.id === "in-flight");
+      const needsBoard = hasLegion && entry.legionOnly === true;
       if (issues.data === undefined || (needsBoard && board.data === undefined)) {
         result.set(entry.id, undefined);
         continue;
       }
+      const own = readUrl(copyAddress(`view=${entry.id}`), hasLegion).filters;
       result.set(entry.id, allItems.filter((item) => matchesFilters(item, own)).length);
     }
     return result;
-  }, [views, hasLegion, allItems, everyDone.data, board.data, text, issues.data]);
+  }, [views, hasLegion, allItems, doneCount.data, board.data, issues.data]);
   // A saved view that lists closed issues counts only while it is open (`tabSavedCounts`): the
   // page holds its closed rows then alone.
   const savedCounts = useMemo(() => {
@@ -850,18 +829,22 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   // The bar: the listed rows by the view's Bar by column. An embedded table draws main's strip
   // instead (`IssueTableStatus`).
   const barBy = builtIn.bar;
-  const notStartedNumber = builtIn.notStartedNumber === true;
   const barColumn = barBy === undefined ? undefined : BAR_COLUMN[barBy];
+  const barParam =
+    barColumn === undefined
+      ? undefined
+      : ownParam(barColumn === "status" ? "status" : `f.${barColumn}`);
   const barPicks = (() => {
-    if (barColumn === undefined || !params.has(ownParam(`f.${barColumn}`))) return undefined;
+    if (barColumn === undefined || barParam === undefined || !params.has(barParam))
+      return undefined;
     const value = filters.find((filter) => filter.id === barColumn)?.value;
     return Array.isArray(value) ? value.map(String) : undefined;
   })();
   const narrowTo = (values: readonly string[] | undefined) => {
-    if (barColumn === undefined) return;
+    if (barColumn === undefined || barParam === undefined) return;
     if (values === undefined)
       update((current) => {
-        current.delete(ownParam(`f.${barColumn}`));
+        current.delete(barParam);
         current.delete(ownParam("page"));
         return current;
       });
@@ -894,11 +877,10 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
           },
         ]),
   ];
-  // The Columns menu lists the Legion columns and the stage first, where a reader looks for
-  // them, then the issue's own columns. An embedded table lists its columns as main does, in
-  // their order.
+  // The Columns menu lists the Legion columns first, where a reader looks for them, then the
+  // issue's own columns. An embedded table lists its columns as main does, in their order.
   const legionFirst = (id: string) =>
-    isBoardColumn(id) || id === "stage" || id === "queue" || id === "closed" ? 0 : 1;
+    isBoardColumn(id) || id === "queue" || id === "closed" ? 0 : 1;
   const offeredColumns: Column<Item>[] = embedded
     ? table.getAllLeafColumns()
     : table
@@ -906,30 +888,55 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
         .filter((column) => hasLegion || !isBoardColumn(column.id))
         .sort((a, b) => legionFirst(a.id) - legionFirst(b.id));
 
+  // The Group by menu. In the table it bands the rows by one of the columns that group, in the
+  // registry's order (main's columns, and the Legion phase where a daemon runs); on the Board it
+  // picks the Board's columns, Status or the Legion phase, kept in the same `group=` the table
+  // bands by. A Board with no Legion daemon has nothing to pick and draws no menu.
+  const boardBy: BoardBy = hasLegion && grouping[0] === "legion_phase" ? "legion_phase" : "status";
+  const registryPlace = (id: string) => COLUMNS.findIndex((column) => column.id === id);
+  const groupBy: GroupByChoice | undefined =
+    layoutChoice === "board" && !embedded
+      ? hasLegion
+        ? {
+            value: boardBy,
+            options: [
+              { label: "Status", value: "status" },
+              { label: "Legion phase", value: "legion_phase" },
+            ],
+            onChange: (next) => table.setGrouping(next === "legion_phase" ? [next] : []),
+          }
+        : undefined
+      : {
+          value: grouping[0] ?? "",
+          options: [
+            { label: "Nothing", value: "" },
+            ...offeredColumns
+              .filter((column) => column.getCanGroup())
+              .sort((a, b) => registryPlace(a.id) - registryPlace(b.id))
+              .map((column) => ({ label: String(column.columnDef.header), value: column.id })),
+          ],
+          onChange: (next) => {
+            table.setGrouping(next ? [next] : []);
+            table.setExpanded(true);
+          },
+        };
+
   // A view with a Legion filter waits for the board: it never lists unfiltered rows under the
   // view's name.
   const legionFiltered =
-    hasLegion &&
-    filters.some(
-      (filter) => isBoardColumn(filter.id) || filter.id === "stage" || filter.id === "queue"
-    );
+    hasLegion && filters.some((filter) => isBoardColumn(filter.id) || filter.id === "queue");
   const pageRows = table.getRowModel().rows;
   const pageMax = Math.max(0, ...pageRows.map((row) => phaseHours(row.original.facts).total));
-  const statusPicks = (() => {
-    const value = filters.find((filter) => filter.id === "status")?.value;
-    return Array.isArray(value) ? value.map(String) : undefined;
-  })();
-  const stagePicks = (() => {
-    const value = filters.find((filter) => filter.id === "stage")?.value;
-    return Array.isArray(value) ? value.map(String) : undefined;
-  })();
   // TanStack hands back the same sorted model until the rows, the filters or the sort change.
+  // Where the server pages the view, the rows it lists are the page on screen alone.
   const sortedModel = table.getSortedRowModel();
   const boardRows = useMemo(
     () => sortedModel.flatRows.filter((row) => !row.getIsGrouped()).map((row) => row.original),
     [sortedModel]
   );
-  // The Board reorders a column only while the view shows it in Place order, first first, which
+  // The statuses the view's Status filter picks, which the status Board draws as columns.
+  const statusPicks = Array.isArray(statusValue) ? statusValue.map(String) : undefined;
+  // The Board reorders a column only while the view shows it in Queue order, first first, which
   // is the order a rank write moves (GitHub Projects' rule: a sorted board takes no reorder
   // within a column). Under any other sort a drop into another column writes the status alone.
   const firstSort = sorting[0];
@@ -937,10 +944,10 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     firstSort?.id === "queue" && !firstSort.desc
       ? undefined
       : firstSort === undefined
-        ? "Not sorted by Place: sort by Place to reorder"
+        ? "Not sorted by Queue: sort by Queue to reorder"
         : `Sorted by ${String(table.getColumn(firstSort.id)?.columnDef.header ?? firstSort.id)}${
             firstSort.id === "queue" ? ", last first" : ""
-          }: sort by Place to reorder`;
+          }: sort by Queue to reorder`;
   // The labels the Board's Labels picker offers: every label of the project's loaded issues.
   const labelOptions = useMemo(
     () =>
@@ -956,9 +963,9 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     (done !== undefined && doneIssues.isPending) ||
     (legionFiltered && board.isPending);
   // The active tab counts the rows the table lists now, the reader's own changes (filters,
-  // search, flags, chips) included, as a search narrows GitHub's Open count. Every other tab
-  // keeps its own view's count.
-  const listedCount = loading ? undefined : listedRows.length;
+  // search, flags, chips) included, as a search narrows GitHub's Open count; a view the server
+  // pages counts by the server's total. Every other tab keeps its own view's count.
+  const listedCount = loading ? undefined : (doneTotal ?? listedRows.length);
   const tabCounts =
     active.kind === "built-in" ? new Map(counts).set(active.id, listedCount) : counts;
   const tabSavedCounts =
@@ -990,9 +997,11 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       <LayoutSwitch layout={layoutChoice} onLayout={setLayout} />
       {layoutChoice === "board" ? (
         <>
-          <ToggleButton onChange={setShowIcebox} pressed={showIcebox}>
-            Show Icebox
-          </ToggleButton>
+          {boardBy === "status" ? (
+            <ToggleButton onChange={setShowIcebox} pressed={showIcebox}>
+              Show Icebox
+            </ToggleButton>
+          ) : null}
           <ToggleButton onChange={setLanes} pressed={lanes}>
             Lanes
           </ToggleButton>
@@ -1029,14 +1038,13 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
             by={barBy}
             items={loading ? [] : listedRows.map((row) => row.original)}
             narrowTo={narrowTo}
-            notStartedNumber={notStartedNumber}
             picked={barPicks}
           />
         )}
         <IssueTableToolbar
-          columns={offeredColumns}
           embedded={embedded}
           extraChips={extraChips}
+          groupBy={groupBy}
           labelOptions={labelOptions}
           layout={layoutChoice}
           // Only while a filter, the search, a flag or a chip differs from the view's own; the
@@ -1064,15 +1072,6 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
               type="button"
             >
               Retry
-            </button>
-          </p>
-        ) : null}
-        {unreadableAncestors > 0 ? (
-          <p className={dangerText} role="alert">
-            Could not load {unreadableAncestors}{" "}
-            {unreadableAncestors === 1 ? "ancestor" : "ancestors"}; affected rows show Unknown epic.{" "}
-            <button onClick={() => void ancestry.refetch()} type="button">
-              Retry loading ancestors
             </button>
           </p>
         ) : null}
@@ -1104,30 +1103,6 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
             </button>
           </section>
         ) : null}
-        {unansweredEpic ? (
-          <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
-            The selected issues have not been moved. Find the epic in the project before moving
-            them.{" "}
-            <button onClick={dismissUnansweredEpic} type="button">
-              Dismiss
-            </button>
-          </LandedWithoutAnswer>
-        ) : null}
-        {duplicateEpic && newEpic ? (
-          <div className={textSecondaryOnCanvas} role="alert">
-            <p>{duplicateEpic.message}</p>
-            <button
-              disabled={busy}
-              onClick={() => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)}
-              type="button"
-            >
-              Create anyway
-            </button>
-            <button onClick={() => setDuplicateEpic(undefined)} type="button">
-              Cancel new epic
-            </button>
-          </div>
-        ) : null}
       </div>
 
       {failed ? (
@@ -1137,7 +1112,6 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
             onClick={() => {
               void issues.refetch();
               void userState.refetch();
-              if (missingParents.length) void ancestry.refetch();
             }}
             type="button"
           >
@@ -1153,18 +1127,23 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       ) : loading ? (
         <LoadingSkeleton label="Loading issues" />
       ) : layoutChoice === "board" && project !== undefined ? (
-        <IssueBoard
-          hasLegion={hasLegion}
-          lanes={lanes}
-          listsDone={done !== undefined}
-          project={project}
-          reorderRefusal={reorderRefusal}
-          rows={boardRows}
-          showIcebox={showIcebox}
-          stagePicks={stagePicks}
-          statusPicks={statusPicks}
-          userState={userState.data}
-        />
+        <>
+          <IssueBoard
+            by={boardBy}
+            hasLegion={hasLegion}
+            lanes={lanes}
+            listsDone={done !== undefined}
+            project={project}
+            reorderRefusal={reorderRefusal}
+            rows={boardRows}
+            showIcebox={showIcebox}
+            statusPicks={statusPicks}
+            userState={userState.data}
+          />
+          {/* The Board of a view the server pages draws the page on screen, and the steps to
+              the others. */}
+          {doneTotal === undefined ? null : <Pager {...ISSUE_TABLE_PAGER} table={table} />}
+        </>
       ) : (
         <PhaseHoursContext value={{ mode: phaseMode, pageMax }}>
           <DataTable
@@ -1209,19 +1188,10 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
               <GroupRow
                 columns={table.getVisibleLeafColumns().length + 1}
                 continued={entry.continued}
-                epics={epics}
                 grouping={grouping[0] ?? ""}
                 index={index}
+                legionQueue={!embedded}
                 measure={measure}
-                byStatus={embedded}
-                notStartedNumber={notStartedNumber}
-                onMerge={mergeEpic}
-                onRename={renameEpic}
-                onStartAll={(key) =>
-                  startNext(
-                    allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
-                  )
-                }
                 row={entry.row}
                 shown={entry.shown}
                 viewportWidth={boxWidth}
@@ -1248,13 +1218,9 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
 
       <IssueTableSelection
         busy={busy}
-        epics={epics}
-        moveTo={moveTo}
-        newEpic={newEpic}
         returnFocus={returnFocus}
         startNext={startNext}
         table={table}
-        unansweredEpic={unansweredEpic}
       />
       {confirming === undefined ? null : (
         <ConfirmDialog
@@ -1264,26 +1230,6 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
           onCancel={cancelConfirming}
           onConfirm={confirmed}
           title={confirming.title}
-        />
-      )}
-      {naming === undefined ? null : naming.kind === "new" ? (
-        newEpic === undefined ? null : (
-          <EpicNameDialog
-            key="new-epic"
-            onCancel={cancelNaming}
-            onSubmit={(name) => void newEpic(naming.keys, name)}
-            submitLabel="Create epic"
-            title="Name the new epic"
-          />
-        )
-      ) : (
-        <EpicNameDialog
-          initial={naming.title}
-          key={`rename-${naming.key}`}
-          onCancel={cancelNaming}
-          onSubmit={(name) => renameEpic(naming.key, name)}
-          submitLabel="Rename epic"
-          title="Rename the epic"
         />
       )}
     </section>

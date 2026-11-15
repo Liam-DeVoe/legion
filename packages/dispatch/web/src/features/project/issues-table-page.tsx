@@ -1,6 +1,5 @@
-import type { Column, Table } from "@tanstack/react-table";
+import type { Table } from "@tanstack/react-table";
 import { type ReactNode, type RefObject, useEffect, useState } from "react";
-import type { IssueSummary } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
 import { DisplayMenu } from "../../components/DisplayMenu";
@@ -12,7 +11,6 @@ import {
   borderDefault,
   card,
   issueStatusScale,
-  surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
 } from "../../theme/classes";
@@ -176,18 +174,26 @@ function BoardFiltersTrigger({
   );
 }
 
+/** The Group by menu's one pick: in the table, how the rows are banded; on the Board, what its
+ *  columns are. */
+export interface GroupByChoice {
+  readonly value: string;
+  readonly options: readonly { readonly label: string; readonly value: string }[];
+  readonly onChange: (value: string) => void;
+}
+
 /**
  * The one row the view's controls sit in, for the table and the Board alike: the search box, the
  * trigger over the three flags that narrow no column (on the Board, the labels too), the chips
  * of those narrowings and of the ones an address carries (`exclude_tree`, `only`), **Clear
  * filters** (which the row draws, in room it keeps while there is nothing to clear), the page's
- * own controls, and the display menu carrying the grouping (INFRA-3135, R1 and R3). Every
- * narrowing that is a column's own stays on that column's header in the table.
+ * own controls, and the display menu, named **Group by** after the one pick it holds (INFRA-3135,
+ * R1 and R3). Every narrowing that is a column's own stays on that column's header in the table.
  */
 export function IssueTableToolbar({
-  columns,
   embedded,
   extraChips,
+  groupBy,
   labelOptions,
   layout,
   onClear,
@@ -196,16 +202,16 @@ export function IssueTableToolbar({
   trailing,
   unclaimedUnchecked,
 }: {
-  /** The columns the Columns menu offers: those the project has. */
-  columns: Column<Item>[];
   /**
    * A table another page draws (the priority pages'): the row as INFRA-3135 draws it for main's
-   * List, with main's words - "View" for the display menu and main's search placeholder - and
-   * the List's two flags, its Unclaimed on the Claimed by column; Clear filters shows only while
-   * it has something to clear, and the row wraps slot by slot on a phone.
+   * List, with main's search placeholder and the List's two flags, its Unclaimed on the Claimed
+   * by column; Clear filters shows only while it has something to clear, and the row wraps slot
+   * by slot on a phone.
    */
   embedded: boolean;
   extraChips: readonly ExtraChip[];
+  /** The Group by menu's pick; absent where there is nothing to pick (a Board with no daemon). */
+  groupBy: GroupByChoice | undefined;
   /** The labels the Board's Labels picker offers. */
   labelOptions: readonly string[];
   /** On the Board the Filters trigger holds the labels too, and keeps its open state for the
@@ -225,7 +231,7 @@ export function IssueTableToolbar({
 }): ReactNode {
   const flags = useIssueFilters();
   const [openPanel, setOpenPanel] = useState<ToolbarPanel | undefined>(undefined);
-  const { globalFilter: search, grouping } = table.getState();
+  const { globalFilter: search } = table.getState();
   const board = layout === "board";
   // The three narrowings that are no column of this table, and so the ones the row's own
   // trigger holds. Unclaimed is the Claimed by column's "Nobody or lapsed" as `?unclaimed=1`
@@ -308,33 +314,19 @@ export function IssueTableToolbar({
     <>
       <ControlRow
         chips={chips}
-        // The Board draws no display menu: its one section, Group by, groups nothing there.
         display={
-          board ? undefined : (
+          groupBy === undefined ? undefined : (
             <DisplayMenu
-              // "View" names the views in the tab row on the Issues tab, so the menu that holds
-              // the grouping takes another word there; a table another page draws keeps "View".
-              label={embedded ? "View" : "Display"}
+              label="Group by"
               onOpenChange={(open) => setOpenPanel(open ? "display" : undefined)}
               open={openPanel === "display"}
               sections={[
                 {
                   id: "group",
                   label: "Group by",
-                  onChange: (next) => {
-                    table.setGrouping(next ? [next] : []);
-                    table.setExpanded(true);
-                  },
-                  options: [
-                    { label: "Nothing", value: "" },
-                    ...columns
-                      .filter((column) => column.getCanGroup())
-                      .map((column) => ({
-                        label: String(column.columnDef.header),
-                        value: column.id,
-                      })),
-                  ],
-                  value: grouping[0] ?? "",
+                  onChange: groupBy.onChange,
+                  options: groupBy.options,
+                  value: groupBy.value,
                 },
               ]}
               size="compact"
@@ -351,8 +343,8 @@ export function IssueTableToolbar({
             onChange={(value) => table.setGlobalFilter(value)}
             placeholder={
               embedded
-                ? "Search issues: key, title, epic, assignee, author, labels"
-                : "Search: key, title, epic, people, labels"
+                ? "Search issues: key, title, assignee, author, labels"
+                : "Search: key, title, people, labels"
             }
             ref={searchRef}
             size="compact"
@@ -391,30 +383,18 @@ export function IssueTableToolbar({
 export function IssueTableSelection({
   returnFocus,
   table,
-  epics,
   busy,
-  unansweredEpic,
   startNext,
-  moveTo,
-  newEpic,
 }: {
   /** Where the focus goes when the bar goes with it (`SelectionBar`), which the List names. */
   returnFocus: () => HTMLElement | null;
   table: Table<Item>;
-  epics: readonly IssueSummary[];
   busy: boolean;
-  unansweredEpic: string | undefined;
   startNext: (keys: readonly string[], selection?: { readonly offPage: boolean }) => void;
-  moveTo: (keys: readonly string[], epic: string | null) => void;
-  /** How an epic is made of the selected issues; absent on a table that stands on no project,
-   *  since an epic is created in one and a cross-project selection names none. */
-  newEpic?: (keys: readonly string[]) => void;
 }): ReactNode {
   const selectedKeys = table.getSelectedRowModel().flatRows.map((row) => row.original.issue.key);
   const leafCount = table.getFilteredRowModel().rows.length;
   const setSelection = table.setRowSelection;
-  /** The epic the reader has picked to move the selection into; no write has been sent yet. */
-  const [epic, setEpic] = useState("");
   return (
     // Over the list, not in it: selecting a row moves no row (INFRA-3135, R4).
     <SelectionBar count={selectedKeys.length} label="Selected issues" returnFocus={returnFocus}>
@@ -436,44 +416,6 @@ export function IssueTableSelection({
       >
         Start next
       </Action>
-      {/* Two steps: the select stages an epic and Move commits it. A closed `<select>`
-          commits on an arrow key in Chrome on Linux and Windows, and this one reparents
-          every selected issue. */}
-      <select
-        aria-label="Move to epic"
-        className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
-        disabled={busy}
-        onChange={(event) => setEpic(event.target.value)}
-        value={epic}
-      >
-        <option value="">Move to epic…</option>
-        {epics.map((option) => (
-          <option key={option.key} value={option.key}>
-            {option.title}
-          </option>
-        ))}
-      </select>
-      <Action
-        disabled={busy || epic === ""}
-        onClick={() => {
-          const into = epic;
-          setEpic("");
-          void moveTo(selectedKeys, into);
-        }}
-      >
-        Move
-      </Action>
-      <Action disabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
-        Take out of epic
-      </Action>
-      {newEpic === undefined ? null : (
-        <Action
-          disabled={busy || unansweredEpic !== undefined}
-          onClick={() => void newEpic(selectedKeys)}
-        >
-          New epic from these
-        </Action>
-      )}
       <Action disabled={busy} onClick={() => setSelection({})}>
         Clear selection
       </Action>

@@ -87,7 +87,9 @@ export function Pager<TData>({
 }: PagerProps<TData>): ReactNode {
   const { pageIndex, pageSize } = table.getState().pagination;
   const { grouping } = table.getState();
-  const rowsOnPages = table.getPrePaginationRowModel().rows.length;
+  // The rows every page holds together: the table's own count, which is the server's total
+  // where the server cut the page (`useDataTable`'s `rowCount`).
+  const rowsOnPages = table.getRowCount();
   const leafCount = table.getFilteredRowModel().rows.length;
   const groupCount = table.getGroupedRowModel().rows.length;
   const total = table.options.data.length;

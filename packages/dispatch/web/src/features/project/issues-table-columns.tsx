@@ -1,5 +1,5 @@
 import type { ColumnDef, FilterFn, Row, RowData } from "@tanstack/react-table";
-import { type ReactNode, useMemo } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
@@ -11,7 +11,6 @@ import {
   checkboxAccent,
   linkHoverText,
   linkText,
-  stageFill,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
@@ -29,21 +28,21 @@ import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
-import { PhaseHoursCell, phaseHours } from "./issues-phase-hours";
 import {
   ACTIVITIES,
   activityLabel,
-  stageIds,
-  stageLabel,
+  legionPhaseIds,
+  phaseLabel,
   WAITING_REASONS,
   waitingLabel,
-} from "./issues-stages";
+} from "./issues-legion";
+import { PhaseHoursCell, phaseHours } from "./issues-phase-hours";
 import type { IssueListing } from "./issues-table-data";
 import {
-  COLUMN_MIN,
   COLUMNS,
   COMPACT_COLUMN_MIN,
   type ColumnId,
+  columnMinimums,
   ISSUE_ROW_ATTRIBUTE,
   type Item,
   matchesFilters,
@@ -51,7 +50,7 @@ import {
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 /** Rows with no value of their own sort after every row with one, whichever way the column is
- *  sorted: an empty Place or Activity is not "first". TanStack reverses a sorting function for a
+ *  sorted: an empty Queue or Activity is not "first". TanStack reverses a sorting function for a
  *  descending sort, so the empty side is turned with it. */
 function emptyLast<T>(
   value: (item: Item) => T | undefined,
@@ -74,22 +73,6 @@ function ageMs(since: string | null | undefined): number | undefined {
   if (since === null || since === undefined) return undefined;
   const at = Date.parse(since);
   return Number.isNaN(at) ? undefined : Date.now() - at;
-}
-
-/** Every stage's fill, read by a stage id the caller holds as a string. */
-const STAGE_FILLS: Readonly<Record<string, string>> = stageFill;
-
-/** A stage's swatch and its label: the mark the Stage cell, a card and a column head draw. */
-export function StageMark({ stage }: { stage: string }): ReactNode {
-  return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-      <span
-        aria-hidden
-        className={`size-2.5 shrink-0 rounded-sm ${STAGE_FILLS[stage] ?? stageFill.held}`}
-      />
-      {stageLabel(stage)}
-    </span>
-  );
 }
 
 declare module "@tanstack/react-table" {
@@ -158,10 +141,11 @@ const renderings = (
     ),
   },
   queue: {
-    header: "Place",
+    header: "Queue",
     accessorFn: (item) => item.place,
     sortDescFirst: false,
-    // By Place, then the rows with no Place by rank, which is the order Legion starts them in.
+    // By the number, then the rows with no number by rank, which is the order Legion starts
+    // them in.
     sortingFn: (a, b) => {
       const left = a.original.place;
       const right = b.original.place;
@@ -180,9 +164,10 @@ const renderings = (
             #{place}
           </span>
         );
-      // In the waiting line with no place of its own: a Queue card the line does not name.
+      // In the Legion queue with no number of its own: a Queue card the daemon's order does
+      // not name.
       return queued ? (
-        <span className={`text-xs ${textMutedOnCanvas}`}>In waiting line</span>
+        <span className={`text-xs ${textMutedOnCanvas}`}>In Legion queue</span>
       ) : null;
     },
   },
@@ -244,16 +229,6 @@ const renderings = (
       </div>
     ),
   },
-  stage: {
-    header: "Stage",
-    accessorFn: (item) => item.stage,
-    sortingFn: (a, b) => stageIds.indexOf(a.original.stage) - stageIds.indexOf(b.original.stage),
-    cell: ({ row }) => (
-      <span className={`text-xs ${textSecondaryOnCanvas}`} data-stage={row.original.stage}>
-        <StageMark stage={row.original.stage} />
-      </span>
-    ),
-  },
   status: {
     header: "Status",
     accessorFn: (item) => item.issue.status,
@@ -262,12 +237,19 @@ const renderings = (
       issueStatuses.indexOf(b.original.issue.status as IssueStatus),
     cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
   },
-  epic: {
-    header: "Epic",
-    accessorFn: (item) => item.epic,
-    cell: ({ getValue }) => (
-      <span className={`line-clamp-2 ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
-    ),
+  legion_phase: {
+    header: "Legion phase",
+    accessorFn: (item) => item.card?.column ?? "",
+    sortingFn: emptyLast((item) => {
+      const column = item.card?.column;
+      return column === undefined ? undefined : legionPhaseIds.indexOf(column);
+    }, byNumber),
+    cell: ({ getValue }) =>
+      getValue<string>() === "" ? null : (
+        <span className={`text-xs whitespace-nowrap ${textSecondaryOnCanvas}`}>
+          {phaseLabel(getValue<string>())}
+        </span>
+      ),
   },
   assignee: {
     header: "Assignee",
@@ -580,11 +562,11 @@ export type ShownColumnId = ListingColumnId | "updated";
 /**
  * The registry columns an issue table another page draws has (the priority pages'), at the
  * widths main's registry gives them: those tables keep main's columns and look, which the pages'
- * approved pictures show. They also offer Closed, with its date-range filter, hidden until the
- * reader shows it, since the reader keeps every column the project's table has that needs no
- * project (INFRA-2947, R14); Stage, Place and the Legion columns read a project's daemon board,
- * so they are the Issues tab's alone. `phone` is a column's narrowest on a phone where it
- * differs.
+ * approved pictures show, with no Epic column (Dispatch has no epics). They also offer Closed,
+ * with its date-range filter, hidden until the reader shows it, since the reader keeps every
+ * column the project's table has that needs no project (INFRA-2947, R14); the Legion columns
+ * read a project's daemon board, so they are the Issues tab's alone. `phone` is a column's
+ * narrowest on a phone where it differs.
  */
 const EMBEDDED_WIDTHS: Readonly<
   Partial<
@@ -594,15 +576,17 @@ const EMBEDDED_WIDTHS: Readonly<
   select: { size: 44, min: 44 },
   priority: { size: 140, min: 140 },
   queue: { size: 96, min: 124 },
-  key: { size: 104, min: 108, phone: 88 },
+  // A ten-character key and its unread dot, whole, on a phone as on a desktop.
+  key: { size: 124, min: 124 },
   title: { size: 380, min: 116, phone: 120 },
-  status: { size: 128, min: 132 },
-  epic: { size: 220, min: 116 },
+  // The widest status chip whole, as on the Issues tab.
+  status: { size: 150, min: 150 },
   assignee: { size: 180, min: 148 },
   author: { size: 200, min: 164 },
   labels: { size: 200, min: 132 },
-  claim: { size: 220, min: 164 },
-  asks: { size: 96, min: 148 },
+  // The claim chip whole, its holder's name truncated to no less than 48 px.
+  claim: { size: 324, min: 324 },
+  asks: { size: 96, min: 152 },
   created: { size: 120, min: 148 },
   updated: { size: 120, min: 148 },
   closed: { size: 120, min: 148 },
@@ -618,7 +602,7 @@ const embeddedPhoneMin = (id: ColumnId): number =>
 /**
  * The cells such a table draws as main draws them, where the Issues tab's differ: Queue, the
  * number Start next reads, with the rows that have none after the rest in the listing's order
- * (where the Issues tab's Place is the daemon's waiting line), and Assignee, whole on one line.
+ * (where the Issues tab's Queue is the daemon's own number), and Assignee, whole on one line.
  */
 const EMBEDDED_RENDERINGS: Readonly<Partial<Record<ColumnId, Partial<ColumnDef<Item>>>>> = {
   queue: {
@@ -705,7 +689,8 @@ const NO_LISTING_COLUMNS: readonly ListingColumnId[] = [];
 /** The List's columns, and the listing columns `listing` names after Title. `onMark` is told
  *  the row a row's own checkbox marks; it is a dependency of the columns, so a caller hands a
  *  stable one, as it does `listing` and `priorityTitles`. A table another page draws
- *  (`embedded`) has main's registry columns at main's widths, drawn as main draws them. */
+ *  (`embedded`) has main's registry columns at main's widths, drawn as main draws them. `touch`
+ *  says the buttons are 44 px touch targets (below 1280 px), which the minimums hold. */
 export function useIssueTableColumns(
   userState: UserState | undefined,
   compact: boolean,
@@ -714,11 +699,13 @@ export function useIssueTableColumns(
   /** Each priority's title by its id, which the Advances column names a priority by; one this
    *  map does not hold, a priority deleted since it was read, is named by its id. */
   priorityTitles?: ReadonlyMap<string, string>,
-  embedded = false
+  embedded = false,
+  touch = true
 ): ColumnDef<Item>[] {
   return useMemo<ColumnDef<Item>[]>(() => {
     const rendering = renderings(userState, onMark);
     const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
+    const minimums = columnMinimums(touch);
     const registered = COLUMNS.filter(
       (column) => !embedded || EMBEDDED_WIDTHS[column.id] !== undefined
     ).map((column): ColumnDef<Item> => {
@@ -727,7 +714,7 @@ export function useIssueTableColumns(
         ? compact
           ? embeddedPhoneMin(column.id)
           : embeddedMin(column.id)
-        : ((compact ? COMPACT_COLUMN_MIN[column.id] : undefined) ?? COLUMN_MIN[column.id]);
+        : ((compact ? COMPACT_COLUMN_MIN[column.id] : undefined) ?? minimums[column.id]);
       // Main's Queue filter names its values as they are, Queued and Not queued.
       const show = embedded && column.id === "queue" ? undefined : picks?.show;
       return {
@@ -768,5 +755,5 @@ export function useIssueTableColumns(
     // Beside the title, which is what a reader reads a row of every project's issues by.
     const after = registered.findIndex(({ id }) => id === "title") + 1;
     return [...registered.slice(0, after), ...extra, ...registered.slice(after)];
-  }, [userState, compact, onMark, listing, priorityTitles, embedded]);
+  }, [userState, compact, onMark, listing, priorityTitles, embedded, touch]);
 }

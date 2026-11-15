@@ -38,6 +38,7 @@ const issuesPath = `/projects/${project}/issues`;
 const mode = flags.before ? "before" : flags.file ? "file" : "after";
 
 const DESKTOP = { width: 1440, height: 900 };
+const LAPTOP = { width: 1024, height: 768 };
 const PHONE = { width: 390, height: 844 };
 /** The page's time zone and language, the same on every machine, so a time of day and a date
  *  read the same in every run (the README runs it with TZ=UTC as well). */
@@ -207,19 +208,50 @@ async function openDoneInHours(page: Page): Promise<void> {
     .click();
 }
 
+/** Whether the bar's legend draws a scroll bar: a box of the bar, or one around it short of the
+ *  box that also holds the table, holding more than it shows and scrolling to it. The legend
+ *  should wrap onto as many lines as it needs instead. */
+async function legendScrolls(page: Page): Promise<boolean> {
+  return page.locator("[data-view-bar]").evaluate((bar) => {
+    const boxes: Element[] = [bar, ...bar.querySelectorAll("*")];
+    for (let up = bar.parentElement; up !== null; up = up.parentElement) {
+      if (up.querySelector("table, [data-board-by]") !== null) break;
+      boxes.push(up);
+    }
+    return boxes.some((box) => {
+      const style = getComputedStyle(box);
+      return (
+        (/auto|scroll/.test(style.overflowX) && box.scrollWidth > box.clientWidth) ||
+        (/auto|scroll/.test(style.overflowY) && box.scrollHeight > box.clientHeight)
+      );
+    });
+  });
+}
+
 const afterShots: Shot[] = [
-  { name: "view-open-1440", viewport: DESKTOP, take: (page) => open(page, view("open")) },
-  { name: "view-waiting-1440", viewport: DESKTOP, take: (page) => open(page, view("waiting")) },
   {
-    name: "view-in-flight-1440",
+    name: "view-open-1440",
     viewport: DESKTOP,
-    take: (page) => open(page, view("in-flight")),
+    take: async (page) => {
+      await open(page, view("open"));
+      check(!(await legendScrolls(page)), "view-open-1440: the legend draws no scroll bar");
+    },
+  },
+  // Open at a narrower window, where the legend wraps onto a second line.
+  {
+    name: "view-open-1024",
+    viewport: LAPTOP,
+    take: async (page) => {
+      await open(page, view("open"));
+      check(!(await legendScrolls(page)), "view-open-1024: the legend draws no scroll bar");
+    },
   },
   {
-    name: "board-in-flight-1440",
+    name: "view-open-in-progress-1440",
     viewport: DESKTOP,
-    take: (page) => open(page, view("in-flight", "&layout=board")),
+    take: (page) => open(page, view("open", "&status=in_progress")),
   },
+  { name: "view-queue-1440", viewport: DESKTOP, take: (page) => open(page, view("queue")) },
   { name: "view-done-1440", viewport: DESKTOP, take: (page) => open(page, view("done")) },
   // Done with one week picked in the Closed column's date-range filter, the 3rd of November to
   // the 9th, and the filter opened again to show it.
@@ -252,10 +284,53 @@ const afterShots: Shot[] = [
       await page.waitForTimeout(500);
     },
   },
+  // The pointer on the first row's Time per phase cell, its tooltip open. The pointer moves to
+  // the cell's centre as a person's would, rather than through `hover()`, which first scrolls
+  // the cell into view and so would draw the table scrolled sideways.
+  {
+    name: "done-time-per-phase-tooltip-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("done"));
+      const cell = page.locator("[data-issue-row]").first().locator("[data-phase-hours]");
+      const box = await cell.boundingBox();
+      if (box === null) throw new Error("the first row's Time per phase cell is not drawn");
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.waitForTimeout(500);
+      const lines = await page.locator("[data-phase-hours-line]").count();
+      check(lines > 0, `the Time per phase tooltip names ${lines} phases`);
+      const scrolled = await page
+        .getByTestId("issues-table-scroll")
+        .evaluate((table) => table.scrollLeft);
+      check(
+        scrolled === 0,
+        `the table stands unscrolled under the tooltip (scrollLeft ${scrolled})`
+      );
+    },
+  },
   {
     name: "board-open-1440",
     viewport: DESKTOP,
     take: (page) => open(page, view("open", "&layout=board")),
+  },
+  {
+    name: "board-open-legion-phase-1440",
+    viewport: DESKTOP,
+    take: (page) => openBoardByLegionPhase(page),
+  },
+  {
+    name: "board-queue-1440",
+    viewport: DESKTOP,
+    take: (page) => open(page, view("queue", "&layout=board")),
+  },
+  {
+    name: "group-by-menu-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("open"));
+      await page.getByRole("button", { name: "Group by", exact: true }).click();
+      await page.waitForTimeout(500);
+    },
   },
   { name: "save-view-popover-1440", viewport: DESKTOP, take: openSaveView },
   {
@@ -320,8 +395,8 @@ const afterShots: Shot[] = [
       check(!page.url().includes("demo="), "the settings-failed flag leaves the address");
     },
   },
-  // A project with no Legion daemon (GTM by default): Open and Done alone, no board-fed column,
-  // no daemon hint.
+  // A project with no Legion daemon (GTM by default): Open and Done alone, no Legion column, no
+  // daemon hint.
   {
     name: "no-daemon-view-open-1440",
     viewport: DESKTOP,
@@ -336,17 +411,7 @@ const afterShots: Shot[] = [
   { name: "priorities-1440", viewport: DESKTOP, fullPage: true, take: openPriorities },
   { name: "priority-page-1440", viewport: DESKTOP, fullPage: true, take: openPriority },
   { name: "view-open-390", viewport: PHONE, take: (page) => open(page, view("open")) },
-  { name: "view-in-flight-390", viewport: PHONE, take: (page) => open(page, view("in-flight")) },
-  {
-    name: "board-in-flight-390",
-    viewport: PHONE,
-    take: (page) => open(page, view("in-flight", "&layout=board")),
-  },
-  {
-    name: "board-open-390",
-    viewport: PHONE,
-    take: (page) => open(page, view("open", "&layout=board")),
-  },
+  { name: "board-open-legion-phase-390", viewport: PHONE, take: openBoardByLegionPhase },
   {
     name: "done-time-per-phase-hours-390",
     viewport: PHONE,
@@ -366,6 +431,15 @@ const afterShots: Shot[] = [
   { name: "priorities-390", viewport: PHONE, fullPage: true, take: openPriorities },
 ];
 
+/** Open on the Board with its columns by Legion phase (Group by's other pick). */
+async function openBoardByLegionPhase(page: Page): Promise<void> {
+  await open(page, view("open", "&layout=board&group=legion_phase"));
+  check(
+    (await page.locator('[data-board-by="legion_phase"]').count()) === 1,
+    "group=legion_phase puts the Board's columns by Legion phase"
+  );
+}
+
 /** The single file, clicked through with the network off. */
 const fileShots: Shot[] = [
   {
@@ -379,23 +453,23 @@ const fileShots: Shot[] = [
     },
   },
   {
-    name: "file-switched-to-in-flight-1440",
+    name: "file-switched-to-queue-1440",
     viewport: DESKTOP,
     take: async (page) => {
       await open(page, issuesPath);
-      await tab(page, "in-flight").click();
+      await tab(page, "queue").click();
       await settle(page);
       check(
-        (await tab(page, "in-flight").getAttribute("aria-selected")) === "true",
-        "a press on the In flight tab opens In flight"
+        (await tab(page, "queue").getAttribute("aria-selected")) === "true",
+        "a press on the Legion queue tab opens the Legion queue"
       );
     },
   },
   {
-    name: "file-in-flight-board-1440",
+    name: "file-queue-board-1440",
     viewport: DESKTOP,
     take: async (page) => {
-      await open(page, view("in-flight"));
+      await open(page, view("queue"));
       await page.getByRole("button", { name: "Board", exact: true }).click();
       await settle(page, page.locator("[data-board-card]").first());
       check((await page.locator("[data-board-card]").count()) > 0, "the Board layout draws cards");

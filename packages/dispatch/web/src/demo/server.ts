@@ -349,10 +349,21 @@ export class DemoServer {
       if (advances !== undefined && !advances(issue.key)) return false;
       return true;
     });
-    rows.sort(
-      (a, b) =>
-        ISSUE_STATUSES.indexOf(a.status) - ISSUE_STATUSES.indexOf(b.status) || rankOrder(a, b)
-    );
+    // `sort=closed_at` or `sort=-closed_at` orders by close time, an open issue last either way,
+    // ties by key; without it the listing keeps its status and rank order.
+    const sort = q.get("sort") ?? "";
+    const closedAt = (issue: IssueSummary) =>
+      issue.closed_at === null ? Number.NaN : time(issue.closed_at);
+    rows.sort((a, b) => {
+      if (sort === "closed_at" || sort === "-closed_at") {
+        const left = closedAt(a);
+        const right = closedAt(b);
+        if (Number.isNaN(left) !== Number.isNaN(right)) return Number.isNaN(left) ? 1 : -1;
+        const by = (sort === "closed_at" ? 1 : -1) * ((left || 0) - (right || 0));
+        return by !== 0 && !Number.isNaN(by) ? by : a.key.localeCompare(b.key);
+      }
+      return ISSUE_STATUSES.indexOf(a.status) - ISSUE_STATUSES.indexOf(b.status) || rankOrder(a, b);
+    });
     const answered = rows.map((issue) => ({
       ...issue,
       ...this.priorities.columnsOf(issue.key),

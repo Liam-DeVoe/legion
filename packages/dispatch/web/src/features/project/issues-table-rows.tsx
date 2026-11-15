@@ -1,26 +1,16 @@
 import type { Row } from "@tanstack/react-table";
-import { type ReactNode, useState } from "react";
-import { Link } from "react-router-dom";
-import type { IssueSummary } from "../../api/types";
+import type { ReactNode } from "react";
 import { DataTableCells, DataTableGroupRow } from "../../components/DataTable";
-import { PanelTrigger } from "../../components/PanelTrigger";
 import {
   borderDefault,
   focusVisibleRing,
   issueStatusScale,
-  linkHoverText,
-  linkText,
   selectedCardBg,
   surfaceBg,
   surfaceMutedBg,
-  surfaceMutedHoverBg,
-  textMutedOnCanvas,
   textMutedOnSurfaceMuted,
-  textPrimaryOnCanvas,
 } from "../../theme/classes";
-import { buildIssuePath } from "../refs/routes";
 import { issueStatuses, statusLabel } from "./board-model";
-import { BarTrack, barSegments, cutNotStarted } from "./issues-table-bar";
 import { columnFilterSpec, type Item } from "./issues-table-model";
 
 /** One issue's row: its cells, and the Start next the reader reaches by hovering it. */
@@ -75,18 +65,13 @@ export function IssueRow({
   );
 }
 
-/** A group's header row: its value, how many issues, its issues by stage, and for an epic its
- *  actions. */
+/** A group's header row: its value, how many issues, and its issues by status in the status
+ *  scale. */
 export function GroupRow({
   row,
   grouping,
-  byStatus,
   columns,
-  epics,
-  notStartedNumber,
-  onRename,
-  onMerge,
-  onStartAll,
+  legionQueue,
   continued,
   index,
   measure,
@@ -103,17 +88,9 @@ export function GroupRow({
   grouping: string;
   columns: number;
   viewportWidth: number;
-  epics: readonly IssueSummary[];
-  /** The view's bar writes the Not started count as a number: the heading's bar takes the same
-   *  cut. */
-  notStartedNumber: boolean;
-  /** A table another page draws: the heading counts its rows by status in the status scale. */
-  byStatus: boolean;
-  onRename: (key: string) => void;
-  /** How an epic is merged into another; absent on a table that stands on no project, where
-   *  the issues of a group come from several and no epic can take them all. */
-  onMerge?: (from: string, into: string) => void;
-  onStartAll: (epic: string) => void;
+  /** The Issues tab names the next place in the Legion queue by its Queue number; a table
+   *  another page draws keeps main's words and the number Start next reads. */
+  legionQueue: boolean;
 }): ReactNode {
   const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped());
   const value = String(row.groupingValue ?? "");
@@ -127,43 +104,31 @@ export function GroupRow({
     here === leaves.length
       ? `${leaves.length} ${leaves.length === 1 ? "issue" : "issues"}`
       : `${here} of ${leaves.length} issues`;
-  const epicKey = grouping === "epic" ? leaves[0]?.original.epicKey : undefined;
-  // The Issues tab's heading counts by stage and names the next place in the waiting line; a
-  // table another page draws keeps main's heading: its rows by status in the status scale, and
-  // the next number of the queue Start next reads.
   let next = Number.POSITIVE_INFINITY;
   const leafCounts = new Map<string, number>();
   for (const leaf of leaves) {
     const { issue, place, queue } = leaf.original;
     leafCounts.set(issue.status, (leafCounts.get(issue.status) ?? 0) + 1);
-    const number = byStatus ? queue : place;
+    const number = legionQueue ? place : queue;
     if (number !== undefined && number < next) next = number;
   }
   const statusCounts = issueStatuses
     .map((status) => [status, leafCounts.get(status) ?? 0] as const)
     .filter(([, count]) => count > 0);
-  const segments = barSegments(
-    leaves.map((leaf) => leaf.original),
-    "stage"
-  );
-  const { notStarted, work } = notStartedNumber
-    ? cutNotStarted(segments)
-    : { notStarted: [], work: segments };
-  const notStartedCount = notStarted.reduce((sum, segment) => sum + segment.count, 0);
   return (
     <DataTableGroupRow
       columns={columns}
       expanded={row.getIsExpanded()}
       heading={
         <>
-          {epicKey === undefined ? heading : null}
+          {heading}
           {continued ? (
             <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
           ) : null}
           <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
             {count}
             {Number.isFinite(next)
-              ? ` · next in ${byStatus ? "queue" : "waiting line"} #${next}`
+              ? ` · next in ${legionQueue ? "Legion queue" : "queue"} #${next}`
               : ""}
           </span>
         </>
@@ -173,157 +138,23 @@ export function GroupRow({
       measure={measure}
       onToggle={row.getToggleExpandedHandler()}
       slot={
-        <>
-          {epicKey === undefined ? null : (
-            <Link
-              className={`font-semibold ${linkText} ${linkHoverText}`}
-              to={buildIssuePath({ key: epicKey, kind: "issue" })}
-            >
-              {heading}
-            </Link>
-          )}
-          {byStatus ? (
-            <span className="flex items-center gap-2">
-              <span
-                aria-hidden
-                className={`flex h-2 w-32 overflow-hidden rounded-full ${surfaceMutedBg}`}
-              >
-                {statusCounts.map(([status, count]) => (
-                  <span className={issueStatusScale[status]} key={status} style={{ flex: count }} />
-                ))}
-              </span>
-              <span className={`text-xs ${textMutedOnSurfaceMuted}`}>
-                {statusCounts
-                  .map(([status, count]) => `${count} ${statusLabel(status).toLowerCase()}`)
-                  .join(" · ")}
-              </span>
-            </span>
-          ) : (
-            <span className="flex items-center gap-2" data-group-bar>
-              {notStartedNumber ? (
-                <span
-                  className={`text-xs tabular-nums ${textMutedOnSurfaceMuted}`}
-                  title={notStarted
-                    .map((segment) => `${segment.label} ${segment.count}`)
-                    .join(", ")}
-                >
-                  {notStartedCount} not started
-                </span>
-              ) : null}
-              {work.length === 0 ? null : <BarTrack className="h-2 w-32" segments={work} />}
-              <span className={`text-xs ${textMutedOnSurfaceMuted}`}>
-                {work
-                  .map((segment) => `${segment.count} ${segment.label.toLowerCase()}`)
-                  .join(" · ")}
-              </span>
-            </span>
-          )}
-          {epicKey === undefined ? null : (
-            <EpicActions
-              epicKey={epicKey}
-              epics={epics}
-              onMerge={onMerge === undefined ? undefined : (into) => onMerge(epicKey, into)}
-              onRename={() => onRename(epicKey)}
-              onStartAll={() => onStartAll(epicKey)}
-            />
-          )}
-        </>
+        <span className="flex items-center gap-2">
+          <span
+            aria-hidden
+            className={`flex h-2 w-32 overflow-hidden rounded-full ${surfaceMutedBg}`}
+          >
+            {statusCounts.map(([status, count]) => (
+              <span className={issueStatusScale[status]} key={status} style={{ flex: count }} />
+            ))}
+          </span>
+          <span className={`text-xs ${textMutedOnSurfaceMuted}`}>
+            {statusCounts
+              .map(([status, count]) => `${count} ${statusLabel(status).toLowerCase()}`)
+              .join(" · ")}
+          </span>
+        </span>
       }
       width={Math.max(180, viewportWidth - 20)}
     />
-  );
-}
-
-function EpicActions({
-  epicKey,
-  epics,
-  onRename,
-  onMerge,
-  onStartAll,
-}: {
-  epicKey: string;
-  epics: readonly IssueSummary[];
-  onRename: () => void;
-  /** How an epic is merged into another; absent on a table that stands on no project. */
-  onMerge?: (into: string) => void;
-  onStartAll: () => void;
-}): ReactNode {
-  /** The epic the reader has picked to merge into, which no write has been sent for yet. */
-  const [target, setTarget] = useState("");
-  const [open, setOpen] = useState(false);
-  return (
-    <span className="ml-auto">
-      <PanelTrigger
-        align="right"
-        label="Epic actions ▾"
-        onOpenChange={setOpen}
-        open={open}
-        size="compact"
-      >
-        {(close) => (
-          <>
-            <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                close();
-                onRename();
-              }}
-              type="button"
-            >
-              Rename
-            </button>
-            <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                close();
-                onStartAll();
-              }}
-              type="button"
-            >
-              Start its Todo issues labelled legion next
-            </button>
-            {onMerge === undefined ? null : (
-              <>
-                {/* Two steps, because a merge closes an issue: the select stages a target, and
-                    Merge… asks before anything is written. A closed `<select>` commits on an
-                    arrow key in Chrome on Linux and Windows, which is one keystroke from a
-                    closed epic. */}
-                <label className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-                  Merge into another epic
-                  <select
-                    className={`mt-1 block w-full rounded-md border px-1 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-                    onChange={(event) => setTarget(event.target.value)}
-                    value={target}
-                  >
-                    <option value="">Choose an epic…</option>
-                    {epics
-                      .filter((epic) => epic.key !== epicKey)
-                      .map((epic) => (
-                        <option key={epic.key} value={epic.key}>
-                          {epic.title}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <button
-                  className={`mx-2 my-1 rounded border px-2 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
-                  disabled={target === ""}
-                  onClick={() => {
-                    close();
-                    onMerge(target);
-                  }}
-                  type="button"
-                >
-                  Merge…
-                </button>
-                <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-                  To split it, tick some of its issues and choose “New epic from these”.
-                </span>
-              </>
-            )}
-          </>
-        )}
-      </PanelTrigger>
-    </span>
   );
 }

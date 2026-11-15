@@ -2,7 +2,7 @@ import type { Column } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
 import { checkboxAccent, surfaceMutedHoverBg } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
-import { PanelTrigger } from "./PanelTrigger";
+import { MENU_PANEL_CLASS, PanelTrigger } from "./PanelTrigger";
 
 export interface ColumnsMenuProps<TData> {
   /** The table's leaf columns, in the order the menu lists them; the ones the reader may not
@@ -25,6 +25,7 @@ export function ColumnsMenu<TData>({ columns, size }: ColumnsMenuProps<TData>): 
       label="Columns"
       onOpenChange={setOpen}
       open={open}
+      panelClassName={MENU_PANEL_CLASS}
       size={size}
     >
       {() =>

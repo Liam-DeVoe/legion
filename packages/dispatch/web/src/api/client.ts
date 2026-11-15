@@ -39,6 +39,7 @@ import type {
   DuplicateCandidate,
   IDCandidate,
   IssueAskThreadRow,
+  IssueSummaryPage,
   LegionSettingsChangeResponse,
   LegionSettingsChangeResult,
   LegionSettingVerdict,
@@ -1080,6 +1081,23 @@ export class DispatchApiClient {
   async listIssues(query: Query<"/api/v1/issues", "get"> = {}) {
     const answer = await this.read("/api/v1/issues", {}, query);
     return Array.isArray(answer) ? answer : (answer.issues ?? []);
+  }
+  /** One page of the issue list, with the count of every issue its narrowings match (`total`).
+   *  `sort` orders the list by when each issue closed (`closed_at`, or `-closed_at` newest
+   *  first) before the page is cut, which is what the Done view pages by; the route's contract
+   *  gains it with INFRA-3221's server change. A server that answers the plain list is read as
+   *  one page of everything. */
+  async listIssuePage(
+    query: Query<"/api/v1/issues", "get"> & {
+      readonly limit: number;
+      readonly offset: number;
+      readonly sort?: "closed_at" | "-closed_at";
+    }
+  ): Promise<IssueSummaryPage> {
+    const answer = await this.read("/api/v1/issues", {}, query);
+    return Array.isArray(answer)
+      ? { issues: answer, limit: answer.length, offset: 0, total: answer.length }
+      : answer;
   }
   /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`
    *  keeps there: the same search either way, from the same handler. `project`, `status`,

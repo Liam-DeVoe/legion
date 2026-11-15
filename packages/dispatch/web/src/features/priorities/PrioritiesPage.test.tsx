@@ -582,9 +582,9 @@ test("a grouped table counts each group in the plural its rows are called by", a
     await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
   ).toBeDefined();
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  // An embedded table's Group by is in its display menu (INFRA-3135's control row).
+  // An embedded table's grouping is in its Group by menu (INFRA-3135's control row).
   const unplaced = screen.getByRole("region", { name: "In flight under no priority" });
-  await user.click(within(unplaced).getByRole("button", { name: "View" }));
+  await user.click(within(unplaced).getByRole("button", { name: "Group by" }));
   await user.click(screen.getByRole("radio", { name: "Status" }));
   expect(
     await screen.findByRole("button", { name: "Collapse In progress, 2 issues" })

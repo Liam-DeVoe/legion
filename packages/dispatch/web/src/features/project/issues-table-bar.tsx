@@ -1,16 +1,14 @@
 import { type ReactNode, useRef } from "react";
 import {
-  borderDefault,
-  stageFill,
+  issueStatusScale,
   surfaceMutedBg,
   surfaceMutedHoverBg,
   tableFilterActive,
-  textMutedOnCanvas,
-  textPrimaryOnCanvas,
   textSecondaryOnCanvas,
   waitingFill,
 } from "../../theme/classes";
-import { NOT_STARTED_STAGES, STAGES, WAITING_REASONS, waitingLabel } from "./issues-stages";
+import { issueStatuses, statusText } from "./board-model";
+import { WAITING_REASONS, waitingLabel } from "./issues-legion";
 import type { Item } from "./issues-table-model";
 import type { BarBy } from "./issues-views";
 
@@ -22,24 +20,24 @@ export interface BarSegment {
   readonly count: number;
 }
 
-const STAGE_FILLS: Readonly<Record<string, string>> = stageFill;
+const STATUS_FILLS: Readonly<Record<string, string>> = issueStatusScale;
 const WAITING_FILLS: Readonly<Record<string, string>> = waitingFill;
 
-/** What a bar counts `items` by: their stages in the stage order, or their waiting reasons in
- *  the order of those values, each value with no row left out. A row with no value of a Legion
- *  column counts under None, last. */
+/** What a bar counts `items` by: their statuses in the status order, in the status scale, or
+ *  their waiting reasons in the order of those values, each value with no row left out. A row
+ *  with no waiting reason counts under None, last. */
 export function barSegments(items: readonly Item[], by: BarBy): BarSegment[] {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const value = by === "stage" ? item.stage : (item.card?.card.waiting?.reason ?? "");
+    const value = by === "status" ? item.issue.status : (item.card?.card.waiting?.reason ?? "");
     counts.set(value, (counts.get(value) ?? 0) + 1);
   }
   const ordered: readonly { value: string; label: string; fill: string }[] =
-    by === "stage"
-      ? STAGES.map((stage) => ({
-          value: stage.id,
-          label: stage.label,
-          fill: STAGE_FILLS[stage.id] ?? "",
+    by === "status"
+      ? issueStatuses.map((status) => ({
+          value: status,
+          label: statusText(status),
+          fill: STATUS_FILLS[status] ?? "",
         }))
       : WAITING_REASONS.map((reason) => ({
           value: reason,
@@ -52,8 +50,8 @@ export function barSegments(items: readonly Item[], by: BarBy): BarSegment[] {
     ...ordered,
     ...others.map((value) => ({
       value,
-      label: value === "" ? "None" : value,
-      fill: stageFill.icebox,
+      label: value === "" ? "None" : statusText(value),
+      fill: surfaceMutedBg,
     })),
   ].flatMap((entry) => {
     const count = counts.get(entry.value) ?? 0;
@@ -61,57 +59,17 @@ export function barSegments(items: readonly Item[], by: BarBy): BarSegment[] {
   });
 }
 
-/** A bar's segments, with the Not started count taken out of them where the bar writes it as a
- *  number: the five counts it names, and the rest. */
-export function cutNotStarted(segments: readonly BarSegment[]): {
-  readonly notStarted: readonly BarSegment[];
-  readonly work: readonly BarSegment[];
-} {
-  const notStarted: ReadonlySet<string> = new Set(NOT_STARTED_STAGES);
-  return {
-    notStarted: segments.filter((segment) => notStarted.has(segment.value)),
-    work: segments.filter((segment) => !notStarted.has(segment.value)),
-  };
-}
-
-/** The segments drawn from the bar's left edge, each as wide as its count's share. */
-export function BarTrack({
-  className,
-  segments,
-}: {
-  className: string;
-  segments: readonly BarSegment[];
-}): ReactNode {
-  return (
-    <span aria-hidden className={`flex overflow-hidden rounded-sm ${surfaceMutedBg} ${className}`}>
-      {segments.map((segment) => (
-        <span
-          className={`${segment.fill} min-w-px`}
-          data-bar-segment={segment.value}
-          key={segment.value}
-          style={{ flexGrow: segment.count, flexBasis: 0 }}
-        />
-      ))}
-    </span>
-  );
-}
-
-const notStartedText = (notStarted: readonly BarSegment[]) =>
-  notStarted.map((segment) => `${segment.label} ${segment.count}`).join(", ");
-
 /**
  * The bar under the view tabs: the listed rows counted by the view's Bar by column, from the
- * left edge. On All open and Created by me the Not started count stands at the left end as a
- * number naming its five counts, and the stages from Design on fill the rest of the width. Each
- * segment's legend entry is its press target: a press narrows the view to that value, a second
- * press restores the view. A view with no bar keeps the bar's height, so a change of view moves
- * no row of the table.
+ * left edge, each segment as wide as its count's share. Each segment's legend entry is its press
+ * target: a press narrows the view to that value, a second press restores the view. The legend
+ * wraps onto as many lines as it needs. A view with no bar (Done) draws nothing in its place, so
+ * its table starts right under the tabs and the control row.
  */
 export function ViewBar({
   by,
   items,
   narrowTo,
-  notStartedNumber,
   picked,
 }: {
   by: BarBy | undefined;
@@ -119,73 +77,52 @@ export function ViewBar({
   items: readonly Item[];
   /** Narrows the view to `values` of the bar's column, or restores the view with `undefined`. */
   narrowTo: (values: readonly string[] | undefined) => void;
-  notStartedNumber: boolean;
   /** The values of the bar's column the view is narrowed to by a press, if it is. */
   picked: readonly string[] | undefined;
 }): ReactNode {
   // The pick a press made, so the second press restores exactly the view before it.
   const pressed = useRef<string | undefined>(undefined);
-  if (by === undefined) return <div aria-hidden className="h-[4.75rem] md:h-12" />;
+  if (by === undefined) return null;
   const segments = barSegments(items, by);
-  const { notStarted, work } = notStartedNumber
-    ? cutNotStarted(segments)
-    : { notStarted: [], work: segments };
-  const notStartedCount = notStarted.reduce((sum, segment) => sum + segment.count, 0);
-  const isPicked = (values: readonly string[]) =>
-    picked !== undefined &&
-    picked.length === values.length &&
-    values.every((value) => picked.includes(value));
-  const press = (key: string, values: readonly string[]) => {
-    if (pressed.current === key && isPicked(values)) {
+  const isPicked = (value: string) =>
+    picked !== undefined && picked.length === 1 && picked[0] === value;
+  const press = (value: string) => {
+    if (pressed.current === value && isPicked(value)) {
       pressed.current = undefined;
       narrowTo(undefined);
       return;
     }
-    pressed.current = key;
-    narrowTo(values);
+    pressed.current = value;
+    narrowTo([value]);
   };
-  const legendClass = (on: boolean) =>
-    `inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md px-1 text-xs whitespace-nowrap md:min-h-7 ${
-      on ? tableFilterActive : `${textSecondaryOnCanvas} ${surfaceMutedHoverBg}`
-    }`;
   return (
     <section
-      aria-label={`Listed issues by ${by === "stage" ? "stage" : "waiting reason"}`}
-      className="flex h-[4.75rem] flex-col justify-center gap-1 md:h-12"
+      aria-label={`Listed issues by ${by === "status" ? "status" : "waiting reason"}`}
+      className="flex min-h-[4.25rem] flex-col justify-center gap-1 md:min-h-12"
       data-view-bar={by}
     >
-      <div className="flex items-center gap-2">
-        {notStartedNumber ? (
+      <span aria-hidden className={`flex h-3 overflow-hidden rounded-sm ${surfaceMutedBg}`}>
+        {segments.map((segment) => (
+          <span
+            className={`${segment.fill} min-w-px`}
+            data-bar-segment={segment.value}
+            key={segment.value}
+            style={{ flexGrow: segment.count, flexBasis: 0 }}
+          />
+        ))}
+      </span>
+      <div className="flex min-w-0 flex-wrap gap-x-0.5">
+        {segments.map((segment) => (
           <button
-            aria-pressed={isPicked(NOT_STARTED_STAGES)}
-            className={`min-h-9 shrink-0 rounded-md border px-1.5 text-xs tabular-nums md:min-h-6 ${borderDefault} ${
-              isPicked(NOT_STARTED_STAGES) ? tableFilterActive : surfaceMutedHoverBg
+            aria-pressed={isPicked(segment.value)}
+            className={`inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md px-1 text-xs whitespace-nowrap md:min-h-7 ${
+              isPicked(segment.value)
+                ? tableFilterActive
+                : `${textSecondaryOnCanvas} ${surfaceMutedHoverBg}`
             }`}
-            data-not-started={notStartedCount}
-            onClick={() => press("not-started", NOT_STARTED_STAGES)}
-            title={notStarted.length === 0 ? "No issue not started" : notStartedText(notStarted)}
-            type="button"
-          >
-            <b className={textPrimaryOnCanvas}>{notStartedCount}</b>
-            <span className={`ml-1 ${textMutedOnCanvas}`}>not started</span>
-          </button>
-        ) : null}
-        {work.length === 0 ? (
-          <span className={`h-3 flex-1 rounded-sm ${surfaceMutedBg}`} />
-        ) : (
-          <BarTrack className="h-3 flex-1" segments={work} />
-        )}
-      </div>
-      {/* On a phone the legend scrolls sideways; its right end fades so a cut entry reads as
-          one that scrolls into view. */}
-      <div className="flex min-w-0 gap-0.5 overflow-x-auto [mask-image:linear-gradient(to_right,#000_85%,transparent)] [scrollbar-width:thin] md:[mask-image:none]">
-        {work.map((segment) => (
-          <button
-            aria-pressed={isPicked([segment.value])}
-            className={legendClass(isPicked([segment.value]))}
             data-bar-legend={segment.value}
             key={segment.value}
-            onClick={() => press(segment.value, [segment.value])}
+            onClick={() => press(segment.value)}
             type="button"
           >
             <span aria-hidden className={`size-2.5 rounded-sm ${segment.fill}`} />

@@ -1,9 +1,9 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import {
   advancesIssuesQuery,
-  issueQuery,
   projectDoneIssuesQuery,
+  projectDonePageQuery,
   projectIssuesQuery,
 } from "../../api/queries";
 import type { IssueSummary, LegionBoardResponse } from "../../api/types";
@@ -11,11 +11,7 @@ import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
 import { openIssueStatuses } from "./board-model";
-import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
-
-/** How many parent reads the ancestry walk keeps in flight. A project that has been running a
- *  while has many closed parents, and one table load must not be a burst of detail reads. */
-const PARENT_READS_IN_FLIGHT = 8;
+import { buildItems } from "./issues-table-model";
 
 const NO_ISSUES: readonly IssueSummary[] = [];
 
@@ -57,34 +53,41 @@ export function answeredWhole(listing: IssueListing): boolean {
   );
 }
 
-/** The name what a table keeps of its listing is held under: the ancestry it walked and the
- *  action a reload interrupted. Two listings of different rows never share one. */
+/** The name what a table keeps of its listing is held under: the action a reload interrupted.
+ *  Two listings of different rows never share one. */
 export const listingName = (listing: IssueListing): string =>
   "project" in listing
     ? listing.project
     : [`advances:${listing.advances}`, ...(listing.statuses ?? [])].join(":");
 
-/** Which done issues a view reads: those closed in a window, every done issue (`{}`), or none
- *  (`undefined`), for a view that lists no closed issue. */
+/** One page of the done issues, in the order they closed: what the Done view reads while
+ *  nothing narrows it but a Closed window. */
+export interface DonePage {
+  readonly sort: "closed_at" | "-closed_at";
+  readonly limit: number;
+  readonly offset: number;
+}
+
+/** Which done issues a view reads: those closed in a window, every done issue (`{}`), one page
+ *  of either (`page`), or none (`undefined`), for a view that lists no closed issue. */
 export type DoneRead =
-  | { readonly closed_since?: string; readonly closed_before?: string }
+  | {
+      readonly closed_since?: string;
+      readonly closed_before?: string;
+      readonly page?: DonePage;
+    }
   | undefined;
 
 /**
- * One listing's issues as the table shows them: the open listing, the done issues a view that
- * lists closed issues reads (only those closed in its window where it has one), and the parents
- * neither read carries, so every row knows which epic it belongs to. No view of a project reads
- * the project's full listing. A scoped listing (`advances`) is narrowed by the server already,
- * so its done issues come from the listing read whole, and a listing its open read answers
- * whole (`answeredWhole`) reads no done issue at all.
+ * One listing's issues as the table shows them: the open listing, and the done issues a view
+ * that lists closed issues reads - only those closed in its window where it has one, and only
+ * the page on screen where it reads a page (`total` then counts every done issue the window
+ * holds). No view of a project reads the project's full listing. A scoped listing (`advances`)
+ * is narrowed by the server already, so its done issues come from the listing read whole, and
+ * a listing its open read answers whole (`answeredWhole`) reads no done issue at all.
  *
  * A done read whose rows carry no `closed_at` (an older server during a rolling deploy, which
  * ignores `closed_since`) lists no row for a window, rather than every done issue.
- *
- * The ancestry walk has a key of its own, outside the listing's, and reads each parent with no
- * staleness of its own. Nothing observes `["issue", key]`, so an event on a parent only marks it
- * stale: this query runs again when the set of missing parents changes, and on the whole-cache
- * refresh after a reconnect.
  */
 export function useIssueTableItems(
   listing: IssueListing,
@@ -102,7 +105,6 @@ export function useIssueTableItems(
     viewer: string | undefined;
   }
 ) {
-  const queryClient = useQueryClient();
   const text = useAgentText();
   const issues = useQuery(
     "project" in listing
@@ -110,16 +112,34 @@ export function useIssueTableItems(
       : advancesIssuesQuery(listing, true)
   );
   const reads = done !== undefined && !answeredWhole(listing);
+  const closedWindow = {
+    ...(done?.closed_since === undefined ? {} : { closed_since: done.closed_since }),
+    ...(done?.closed_before === undefined ? {} : { closed_before: done.closed_before }),
+  };
+  const page = "project" in listing ? done?.page : undefined;
   const doneIssues = useQuery({
     ...("project" in listing
-      ? projectDoneIssuesQuery(listing.project, done ?? {})
+      ? projectDoneIssuesQuery(listing.project, closedWindow)
       : advancesIssuesQuery(listing)),
-    enabled: reads,
+    enabled: reads && page === undefined,
   });
+  const donePage = useQuery({
+    ...projectDonePageQuery(
+      "project" in listing ? listing.project : "",
+      closedWindow,
+      page ?? { sort: "-closed_at", limit: 1, offset: 0 }
+    ),
+    enabled: reads && page !== undefined,
+  });
+  const doneRead = page === undefined ? doneIssues : donePage;
   const windowed = reads && done?.closed_since !== undefined;
-  const doneRows = reads ? (doneIssues.data ?? NO_ISSUES) : NO_ISSUES;
-  const doneLoaded = reads && doneIssues.data !== undefined;
-  const listingError = issues.isError ? issues : doneIssues.isError ? doneIssues : undefined;
+  const doneRows = !reads
+    ? NO_ISSUES
+    : page === undefined
+      ? (doneIssues.data ?? NO_ISSUES)
+      : (donePage.data?.issues ?? NO_ISSUES);
+  const doneLoaded = reads && doneRead.data !== undefined;
+  const listingError = issues.isError ? issues : doneRead.isError ? doneRead : undefined;
   const all = useMemo(() => {
     const open = issues.data ?? NO_ISSUES;
     if (doneRows.length === 0) return open;
@@ -129,73 +149,24 @@ export function useIssueTableItems(
     );
     return [...open, ...closed];
   }, [issues.data, doneRows, windowed]);
-  const missingParents = useMemo(() => {
-    const keys = new Set(all.map((issue) => issue.key));
-    return [
-      ...new Set(
-        all.flatMap((issue) => (issue.parent && !keys.has(issue.parent) ? [issue.parent] : []))
-      ),
-    ];
-  }, [all]);
-  const ancestry = useQuery({
-    queryKey: ["issue-ancestors", listingName(listing), ...missingParents],
-    enabled: missingParents.length > 0,
-    retry: false,
-    queryFn: async () => {
-      const known = new Map<string, EpicAncestor>(all.map((issue) => [issue.key, issue]));
-      const ancestors: EpicAncestor[] = [];
-      // A parent this reader cannot read — deleted, or in a project they are not in — costs
-      // its own rows their epic and nothing else: the walk keeps every ancestor it did read,
-      // and stops asking for the one that failed.
-      const unreadable = new Set<string>();
-      for (;;) {
-        const missing = [
-          ...new Set(
-            [...known.values()].flatMap((issue) =>
-              issue.parent && !known.has(issue.parent) && !unreadable.has(issue.parent)
-                ? [issue.parent]
-                : []
-            )
-          ),
-        ];
-        if (missing.length === 0) return { ancestors, unreadable: [...unreadable] };
-        for (let from = 0; from < missing.length; from += PARENT_READS_IN_FLIGHT) {
-          const slice = missing.slice(from, from + PARENT_READS_IN_FLIGHT);
-          const answers = await Promise.allSettled(
-            slice.map((key) => queryClient.fetchQuery({ ...issueQuery(key), staleTime: Infinity }))
-          );
-          answers.forEach((answer, index) => {
-            const key = slice[index];
-            if (answer.status === "fulfilled") {
-              known.set(answer.value.key, answer.value);
-              ancestors.push(answer.value);
-            } else if (key !== undefined) unreadable.add(key);
-          });
-        }
-      }
-    },
-  });
-  const epics = useMemo(() => all.filter(isEpic), [all]);
   const allItems = useMemo(
     () =>
       buildItems(
         all,
         text.label,
-        ancestry.data?.ancestors,
         (issue) => issue.claim === null || claimIsTakeable(issue.claim, registry),
         { board, hasLegion, viewer }
       ),
-    [all, text, ancestry.data, registry, board, hasLegion, viewer]
+    [all, text, registry, board, hasLegion, viewer]
   );
   return {
     all,
     allItems,
-    ancestry,
-    doneIssues,
+    doneIssues: doneRead,
     doneLoaded,
-    epics,
+    /** Every done issue the paged read's window holds, where the view reads a page. */
+    doneTotal: page === undefined ? undefined : donePage.data?.total,
     issues,
     listingError,
-    missingParents,
   };
 }

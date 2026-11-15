@@ -89,14 +89,15 @@ export function matchesPrioritySearch(item: PriorityItem, search: string): boole
 export const ownerOf = (item: PriorityItem): string =>
   item.priority.owner.trim() === "" ? "No owner" : item.priority.owner.trim();
 
-/** The four count columns are alike: a number, filtered by picking the numbers the rows hold,
- *  which is how a reader asks for the priorities with nothing in flight. */
+/** The count columns are alike: a number, filtered by picking the numbers the rows hold, which
+ *  is how a reader asks for the priorities with nothing in flight. Each is as wide as its whole
+ *  header with its sort mark and filter, which a 44 px target below 1280 px makes the widest. */
 const COUNT_WIDTH = { size: 132, min: 132 };
 
 /** Every column of the priorities table, left to right: the order and the title stay pinned at
  *  the left edge while the counts scroll. */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
-  { id: "order", header: "Order", size: 88, min: 88, pinned: true, text: (item) => item.order },
+  { id: "order", header: "Order", size: 120, min: 120, pinned: true, text: (item) => item.order },
   {
     id: "title",
     header: "Priority",
@@ -115,13 +116,25 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   },
   { id: "in-flight", header: "In flight", ...COUNT_WIDTH, values: (i) => [String(i.inFlight)] },
   { id: "waiting", header: "Waiting", ...COUNT_WIDTH, values: (i) => [String(i.waiting)] },
-  { id: "parked", header: "Backlog, icebox", ...COUNT_WIDTH, values: (i) => [String(i.parked)] },
-  { id: "closed", header: "Closed, 7 days", ...COUNT_WIDTH, values: (i) => [String(i.closed)] },
+  {
+    id: "parked",
+    header: "Backlog, icebox",
+    size: 184,
+    min: 184,
+    values: (i) => [String(i.parked)],
+  },
+  {
+    id: "closed",
+    header: "Closed, 7 days",
+    size: 176,
+    min: 176,
+    values: (i) => [String(i.closed)],
+  },
   {
     id: "newest",
     header: "Newest event",
-    size: 160,
-    min: 160,
+    size: 172,
+    min: 172,
     values: (item) => [newestBucket(item.newest)],
     group: (item) => newestBucket(item.newest),
     order: AGES,

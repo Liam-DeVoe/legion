@@ -206,8 +206,7 @@ registerText("success text on canvas", SUCCESS_TEXT, CANVAS);
  * foreground swatches the contrast check registers. The class string stays a static literal
  * (Tailwind's scanner reads this file as text), so the row is what ties `bg-sky-700` to
  * `P.SKY_700`: changing a shade means editing one row, and a status with no row of its own is
- * a type error rather than an unstyled chip. The project's Issues tab draws the stage palette
- * below; the issue tables other pages draw (the priority pages') keep this one.
+ * a type error rather than an unstyled chip.
  */
 const ISSUE_STATUS_SCALE: Record<IssueStatus, readonly [string, Swatch, Swatch]> = {
   triage: ["bg-sky-100 text-sky-950 dark:bg-sky-100 dark:text-sky-950", P.SKY_100, P.SKY_950],
@@ -242,44 +241,32 @@ for (const [status, [, background, foreground]] of Object.entries(ISSUE_STATUS_S
   );
 
 /**
- * The one muted palette keyed by stage (`features/project/issues-stages.ts`), which the bar under
- * the view tabs, the group heading's bar, the Stage cell's mark and the Board's column heads all
- * draw from: one neutral gray for the five stages of work not started, one hue ramp from light
- * to dark for the stages from Design to Merging, ochre for Waiting on a person, a darker gray
- * for Held, a hatch over the same ramp for the status stages of work Legion does not run, and a
- * muted green for Done. No text is drawn on these fills - every label sits beside its swatch -
- * so no contrast pair is registered for them. Each value is a static literal, as Tailwind's
- * scanner needs.
+ * One colour per Legion phase (`features/project/issues-legion.ts`), for Time per phase: the
+ * Okabe-Ito palette, built to stay apart for readers with each common colour-vision deficiency,
+ * in an order where every two neighbouring phases differ in hue and in lightness (CIEDE2000 28
+ * or more between neighbours for normal, deutan and protan vision). Waiting on a person is black
+ * on a light page and white on a dark one. No text is drawn on these fills - every label sits
+ * beside its swatch - so no contrast pair is registered for them.
  */
-export const stageFill = {
-  triage: "bg-[oklch(0.86_0.004_255)]",
-  icebox: "bg-[oklch(0.86_0.004_255)]",
-  backlog: "bg-[oklch(0.86_0.004_255)]",
-  todo: "bg-[oklch(0.86_0.004_255)]",
-  queue: "bg-[oklch(0.86_0.004_255)]",
-  design: "bg-[oklch(0.89_0.035_250)]",
-  planning: "bg-[oklch(0.83_0.05_250)]",
-  implementing: "bg-[oklch(0.77_0.065_250)]",
-  in_progress:
-    "bg-[oklch(0.72_0.07_250)] bg-[repeating-linear-gradient(135deg,rgba(255,255,255,0.5)_0_3px,transparent_3px_7px)]",
-  testing: "bg-[oklch(0.67_0.075_250)]",
-  reviewing: "bg-[oklch(0.61_0.075_250)]",
-  needs_review:
-    "bg-[oklch(0.56_0.07_250)] bg-[repeating-linear-gradient(135deg,rgba(255,255,255,0.4)_0_3px,transparent_3px_7px)]",
-  accepting: "bg-[oklch(0.51_0.065_250)]",
-  retro:
-    "bg-[oklch(0.46_0.06_250)] bg-[repeating-linear-gradient(135deg,rgba(255,255,255,0.35)_0_3px,transparent_3px_7px)]",
-  merging: "bg-[oklch(0.41_0.055_250)]",
-  awaiting_person: "bg-[oklch(0.75_0.1_80)]",
-  held: "bg-[oklch(0.56_0.004_255)]",
-  done: "bg-[oklch(0.73_0.08_155)]",
+export const legionPhaseFill = {
+  queue: "bg-[#D9D9D9]",
+  design: "bg-[#E69F00]",
+  planning: "bg-[#56B4E9]",
+  implementing: "bg-[#009E73]",
+  testing: "bg-[#F0E442]",
+  reviewing: "bg-[#0072B2]",
+  accepting: "bg-[#D55E00]",
+  merging: "bg-[#CC79A7]",
+  awaiting_person: "bg-[#000000] dark:bg-[#FFFFFF]",
+  held: "bg-[#999999]",
 } as const;
-/** The Waiting bar's fills: steps of the stage palette, in the order of the reasons. */
+/** The Legion queue's bar: its waiting reasons in steps of the status scale's hue, in the
+ *  order of the reasons. */
 export const waitingFill = {
-  ready: stageFill.planning,
-  slot: stageFill.reviewing,
-  blocked: stageFill.held,
-  person: stageFill.awaiting_person,
+  ready: "bg-sky-300",
+  slot: "bg-sky-500",
+  blocked: "bg-sky-700",
+  person: "bg-sky-900",
 } as const;
 export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300";
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));
