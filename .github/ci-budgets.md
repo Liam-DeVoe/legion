@@ -38,7 +38,8 @@ docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 ## Caches
 
 Caches: no step of this workflow saves an Actions cache entry itself;
-two actions its jobs call can, setup-bun on a push to main alone and architecture-check in a dispatched run alone (both at this section's end).
+one action its jobs call can, architecture-check, and in a dispatched run alone;
+setup-bun saves only on a push to main, which is no event of this workflow (both at this section's end).
 setup-go caches nothing here (`cache: false` on every step, the architecture-check action's included).
 The jobs that cache Go restore, in steps of their own, one of six Go families with actions/cache/restore:
 go-daemon (typecheck, test and pi-legion), go-docs (docs, and the build job of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which build the same listener and natsd, listener-server-change and envoy-go-checks, which build the listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which builds the test binary of every package of the envoy module, and the binaries, multiprocess and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real broker's commands out of that same set), go-envoy-infra (envoy-infra-go) and go-notices (lint's notices step).

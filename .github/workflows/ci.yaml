@@ -2529,7 +2529,10 @@ jobs:
 
     # The rule every other budget of this file is written to (ci-budgets.md's Budgets note) — a
     # job carries its measured duration plus the arithmetic of its single slowest retried step
-    # — sits inside this job's own 114 rather than being added to it. The slowest retried step
+    # — is not what this key holds: this job's 28.7-minute run, job 129478173535, is 1722 s, and
+    # 1722 s and the staging step's 5124 s come to 6846 s, 6 s over the 6840 s of 114 minutes. The
+    # key is the construction written below, and what keeps this job's retried steps diagnosable
+    # is their position, which the paragraph after this one gives. The slowest retried step
     # here is
     # the staging step, whose twelve `ci_tools_curl` ladders its own comment derives as 5124 s
     # under the 86 minutes that step carries, above install-jj's 2562 + 450 = 3012 s, either
@@ -6795,9 +6798,10 @@ jobs:
   # 221 came from 11310 + 1932 = 13242 s - the measured term before the stall arm's budget grew
   # by 20 s, and install-jj's two ladders before each `ci_tools_fetch` went from 741 s to
   # 1281 s. The lane is the one job whose cancellation this whole issue exists to prevent, and
-  # its derivation is written above this job's id rather than above its key, which is one of
-  # the shapes rule 8's job clause passes over; the `-> 291 min` above is what its pricing rule
-  # reads, and that rule refuses any job holding a retried step whose comments price none.
+  # its derivation is written above this job's id rather than above its key. Rule 8 reads it
+  # there since round 35, from the block that prices this key, and refuses a key that does not
+  # strictly exceed the sum above; it also refuses any job holding a retried step whose comments
+  # price none.
   #
   # Each site's budget above carries 20 s more than it did before the probe: `report` measures a
   # site from the moment its proxy started, and the probe's two requests are made between the
@@ -6846,8 +6850,14 @@ jobs:
 
       # A recover site's budget is the ladder its own retry guarantees, the same figure its stall
       # twin below carries: every attempt at its bound, the sleeps between them, the probe and a
-      # minute. THIS ARM CHECKS THE RETRY'S GUARANTEE - the step succeeds and every attempt holds
-      # its bound - AND NOT HOW FAST A SITE RECOVERS.
+      # minute. THIS ARM CHECKS THAT THE RETRY RECOVERS - the step succeeds through the fault - AND
+      # NOT HOW FAST A SITE RECOVERS, nor that each attempt holds its bound, which the stall arms
+      # check. Its report also holds the step's time to this budget, and in six of the seven arms
+      # that can never fire: the faulted step's own `timeout-minutes` and the 20 s probe come to
+      # no more than the budget (install-omp 500 s against 530 s; install-claude-code, the
+      # workspace install and the Go download 1100 s against 1130 s; Playwright 1700 s against
+      # 1730 s; the gh read 380 s against 380 s), so the step's own key ends it first. Only
+      # install-changie's 22 minutes, 1340 s with the probe, can run past its 710 s.
       # The rule these budgets were written to until round 30 of dispatch://INFRA-1545 was that an
       # attempt in flight when the window closes runs to its bound and the next one succeeds, so
       # each carried two bounds. Two readings of the workspace install broke it: 250 s at round
