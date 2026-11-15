@@ -1020,8 +1020,15 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 // reason is not posted again: the undo resumes at the close. A close refused after the reason
 // landed is answered naming the reason that stands (goingRefusal.after), as a write's refused line
 // names what of it landed. It is the one undo that sends more than one request; every other kind
-// sends one, so a retry of it has nothing landed to skip.
+// sends one, so a retry of it has nothing landed to skip. A create its route answered made nothing
+// (goingRunWrite.Unchanged: it named an external issue Dispatch already held, which the route
+// answered as it stands) is undone by nothing: that issue is no issue of the turn's, and is neither
+// read, posted on nor closed.
 func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, landed []goingWriteRequest) (any, goingWriteOutcome, []goingWriteRequest) {
+	if write.Unchanged {
+		return nil, goingWriteOutcome{OK: true, Status: http.StatusOK, Message: fmt.Sprintf(
+			"this create made no issue: Dispatch already held %s for the external issue it named, so nothing was closed", write.Target)}, nil
+	}
 	var issue struct {
 		Status   string  `json:"status"`
 		ClosedAt *string `json:"closed_at"`

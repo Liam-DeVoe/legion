@@ -360,7 +360,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	observer := goingObserver{read: performer.reader(), s: s, landed: func(ctx context.Context) (bool, error) {
 		return performer.landings.landed(ctx, len(specs)-1, specs[len(specs)-1])
 	}}
-	before, err := observer.observe(ctx, prepared, nil, goingObservation{})
+	before, err := observer.observe(ctx, prepared, nil, 0, goingObservation{})
 	if err != nil {
 		claim.refuse(before, err)
 		return
@@ -438,7 +438,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 			response.StatusCode, goingRefusalOf(response, answer).Code)
 		claim.write.AfterUnread = true
 	default:
-		observed, err := observer.observe(ctx, prepared, answer, before)
+		observed, err := observer.observe(ctx, prepared, answer, response.StatusCode, before)
 		claim.write.BeforeUnread = observed.beforeUnread
 		if err != nil {
 			// The write landed; only the read back of it failed, which the record says rather than
@@ -449,6 +449,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		after = observed
+		claim.write.Outcome.Message = cmp.Or(claim.write.Outcome.Message, after.note)
 	}
 	claim.write.Target, claim.write.Fields = cmp.Or(after.target, before.target), after.fields
 	if len(claim.write.Fields) == 0 {

@@ -54,7 +54,8 @@ const DISPLAY_KEYS = allOf<keyof Display>()(["choice", "confidence", "chart"]);
 const CONTEXTS = allOf<GoingDecidedContext>()(["page", "named", "none"]);
 const DISPLAY_CHOICES = allOf<Display["choice"]>()(["chart", "prose"]);
 const PROPOSAL_KEYS = allOf<keyof GoingProposalEvent["data"]>()(["offers"]);
-const OFFER_KEYS = allOf<keyof GoingOffer>()(["action", "invocations", "offered"]);
+const OFFER_KEYS = allOf<keyof GoingOffer>()(["action", "invocations", "offered", "withheld"]);
+const OFFER_OPTIONAL = ["withheld"] as const;
 const INVOCATION_KEYS = allOf<keyof GoingInvocation>()([
   "arguments",
   "missing",
@@ -141,11 +142,19 @@ test("a decision frame carries its two best actions, whether it acts, what the w
 test("a proposal frame carries each offer's invocations, each with its arguments, what it still needs, whether it runs at once and the argument naming its item", () => {
   expect(keysOf(proposal)).toEqual(sorted(PROPOSAL_KEYS));
   const kinds = new Set<string>();
-  for (const offer of proposal.offers) {
-    expect(keysOf(offer)).toEqual(sorted(OFFER_KEYS));
+  let withheld = 0;
+  for (const offer of proposal.offers as readonly Readonly<Record<string, unknown>>[]) {
+    expectKeys(offer, OFFER_KEYS, OFFER_OPTIONAL);
+    const invocations = offer.invocations as readonly Readonly<Record<string, unknown>>[];
     // An offer nothing survived for offers no invocation.
-    expect(offer.offered).toBe(offer.invocations.length > 0);
-    for (const invocation of offer.invocations as readonly Readonly<Record<string, unknown>>[]) {
+    expect(offer.offered).toBe(invocations.length > 0);
+    // A withheld invocation is said in words, one reason each.
+    if (offer.withheld !== undefined) {
+      for (const reason of offer.withheld as readonly unknown[])
+        expect(typeof reason).toBe("string");
+      withheld += (offer.withheld as readonly unknown[]).length;
+    }
+    for (const invocation of invocations) {
       expect(keysOf(invocation)).toEqual(sorted(INVOCATION_KEYS));
       expect(typeof invocation.automatic).toBe("boolean");
       expect(typeof invocation.target_argument).toBe("string");
@@ -156,8 +165,9 @@ test("a proposal frame carries each offer's invocations, each with its arguments
       kinds.add(missing.kind as string);
     }
   }
-  // The fixture asks for an enumeration's value and for an item, the two kinds with a key of
-  // their own.
+  // The fixture withholds an upload, and asks for an enumeration's value and for an item, the two
+  // kinds with a key of their own.
+  expect(withheld).toBe(1);
   expect(sorted([...kinds])).toEqual(["enum", "item"]);
 });
 

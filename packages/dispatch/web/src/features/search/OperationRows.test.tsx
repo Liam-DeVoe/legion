@@ -290,6 +290,39 @@ test("a submit before the proposal says it is preparing and runs once the propos
   }
 });
 
+test("an upload the proposal withheld runs nothing, and the bar says why in Dispatch's words", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  const reason =
+    'dispatch_artifact under "notes" is not offered: issue LEGION-3 already holds a document of that name.';
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_artifact"]));
+    await screen.findByRole("option", { name: /^Run artifact/ });
+
+    await submit(user);
+    stream(
+      {
+        data: {
+          offers: [
+            { action: "dispatch_artifact", invocations: [], offered: false, withheld: [reason] },
+          ],
+        },
+        event: "proposal",
+      },
+      ended
+    );
+
+    expect(await screen.findByTestId("going-operation-unoffered")).toHaveTextContent(
+      `Nothing to run: ${reason}`
+    );
+    expect(written).not.toHaveBeenCalled();
+    expect(screen.queryByRole("option", { name: /^Run artifact/ })).not.toBeInTheDocument();
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("below the threshold the two best are offered, a submit runs neither, and a pick runs that one as the person's", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();

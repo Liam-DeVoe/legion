@@ -226,3 +226,34 @@ func TestGoingUndoComparesOnlyWhatTheWritesOwnTransactionFoundAndLeft(t *testing
 		}
 	})
 }
+
+// TestGoingUndoOfACreateThatNamedAHeldExternalIssueClosesNothing (review round 6, finding 1;
+// principle 2): a create that names a GitHub issue Dispatch already holds makes nothing - its
+// route answers that issue, 200 rather than the 201 of a create - so the bar records the write as
+// one that changed nothing, its line saying the issue already existed, and its undo closes nothing:
+// bob's issue, linked to owner/repo#12 before alice's turn, stays open with no message posted.
+func TestGoingUndoOfACreateThatNamedAHeldExternalIssueClosesNothing(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	rig.fixture(t, "alice", http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{"project": "DEMO"})
+	bobs := decodeBody[model.Issue](t, rig.fixture(t, "bob", http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "DEMO", "title": "Bob's imported issue", "external": "owner/repo#12",
+	})).Key
+	run, line := rig.runOne(t, "dispatch_issue", map[string]any{
+		"project": "DEMO", "title": "Alice's words for it", "external": "owner/repo#12", "force": true,
+	}, nil)
+	undone := oneLine(t, rig.undo(t, "alice", run, nil), true)
+	if read := rig.issueRead(t, bobs); read.ClosedAt != nil || read.Status == "done" {
+		t.Fatalf("the undo answered %+v and left bob's %s %s, want it open as bob left it", undone.Outcome, bobs, read.Status)
+	}
+	var messages int
+	if err := rig.database.Pool.QueryRow(t.Context(), `select count(*) from messages where issue_key = $1`, bobs).Scan(&messages); err != nil {
+		t.Fatalf("count %s's messages: %v", bobs, err)
+	}
+	if messages != 0 {
+		t.Fatalf("the undo answered %+v and posted %d messages on bob's %s, want none", undone.Outcome, messages, bobs)
+	}
+	if !line.Outcome.OK || line.Item != bobs || !strings.Contains(line.Outcome.Message, "already holds") {
+		t.Fatalf("the create answered %+v, want it gone through on %s, saying Dispatch already holds it", line, bobs)
+	}
+}

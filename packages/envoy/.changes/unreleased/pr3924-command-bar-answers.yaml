@@ -13,17 +13,39 @@ body: |-
   `POST /api/v1/going/runs/{id}/writes` runs one offered write as the caller and records the
   value before and after it, and `POST /api/v1/going/runs/{id}/undo` undoes a turn.
   An offered write runs at once only where every item it names is the page's or named in the
-  person's own words, and an upload over a document its owner already holds only where the words
-  write its name; any other is an offer the person picks (`409 GOING_NOT_AUTOMATIC` for `auto`),
-  and each write is claimed on the run once, so a second request while it runs answers
+  person's own words; any other is an offer the person picks (`409 GOING_NOT_AUTOMATIC` for
+  `auto`). An upload under the name of a document its owner already holds is offered only with
+  `force` under a name the person's own words write: every other is withheld, and the proposal's
+  offer says why in `withheld`. A write of an upload without `force` under a name
+  the store holds when it runs is refused, however it came to run: `400 GOING_ARGUMENTS` in the
+  `dispatch artifact` command's words where its read before finds the document, and the route's
+  `409 DOCUMENT_EXISTS` for one made after that read. Each write is
+  claimed on the run once, so a second request while it runs answers
   `429 GOING_WRITE_IN_PROGRESS`.
   A write that sends a request before its own (a close with a reason posts the reason first)
   records how each request went; the next write of that invocation, a retry under its
   `Idempotency-Key` after a `5xx`, `408` or `429` or a new press under another key, resumes
-  after the requests that landed, and a refusal names what landed before it.
-  `POST` and `DELETE /api/v1/issues/{key}/claim` now answer `claim_changed`, and
-  `POST /api/v1/artifacts/{id}/approval-requests` answers `opened`: whether the request changed
-  the claim, or opened the ask it answers, which a turn's undo reads.
+  after the requests that landed, and a refusal names what landed before it. A request landed
+  when its route's transaction committed, which it records there; a route's bookkeeping before it
+  refuses (an architecture sync's failure record) is no landing.
+  A turn's undo compares and puts back only what each write's own route answered its transaction
+  found and left, and has the route it writes through decide that the item still holds what the
+  turn left. The routes answer those values beside what they answered before:
+  `PATCH /api/v1/issues/{key}` answers `previous` (each field it names as it found it,
+  `advances_revision` beside `advances`, and a rank's place) and, for a rank, `rank_place`;
+  `PATCH /api/v1/asks/{id}` and `POST /api/v1/comments/{id}/resolve` answer `previous`;
+  `POST` and `DELETE /api/v1/issues/{key}/claim` answer `claim_changed` and `previous_claim`;
+  `POST /api/v1/artifacts/{id}/approval-requests` answers `opened`; the document edit routes
+  answer `previous_token` beside `token`; and the upload routes answer `previous_version`. A
+  create naming an external issue Dispatch already holds answers that issue `200`, not the `201`
+  of a create it made, as it did before: the bar records it as a write that made nothing, and its
+  undo closes nothing. The conditions the undo writes back with are `expect` on
+  `PATCH /api/v1/issues/{key}` (`409 ISSUE_CHANGED`) and `PATCH /api/v1/asks/{id}`
+  (`409 ASK_CHANGED`), `expect_holder` on the release and `expect_unclaimed` on the claim
+  (`409 CLAIM_HOLDER_CHANGED`), `expect_resolved_at` on the reopen (`409 COMMENT_CHANGED`) and
+  `expect_sha256` on an upload (`409 DOCUMENT_CHANGED`). An upload also takes `expect_new`, a
+  create alone (`409 DOCUMENT_EXISTS` where the owner holds the name when the upload takes its
+  lock), which the bar sends on every upload without `force`.
   `GET` and `PUT /api/v1/me/going/settings` hold a person's `confirm_writes`,
   `GET /api/v1/me/going-runs` lists the person's runs of the last 30 days,
   `POST /api/v1/going/requests/{id}/cancel` stops a run, and

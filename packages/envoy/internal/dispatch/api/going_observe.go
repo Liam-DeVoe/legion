@@ -161,6 +161,9 @@ type goingObservation struct {
 	// before saw: another writer changed the item between the two, and the route answers no value
 	// of what it replaced (goingRunWrite.BeforeUnread).
 	beforeUnread bool
+	// note is what the write's line says of a write its route answered changed nothing, where the
+	// line has nothing else to say: a create that named an issue Dispatch already holds.
+	note string
 }
 
 // goingFields is the one field a write changes as an observation lists it, none for "".
@@ -241,8 +244,8 @@ var goingAskFields = []string{"question", "options", "multiple", "urgency"}
 // side of the edit read the document it found and the one it left. A write that makes an item
 // reads nothing before it and reads the made item off its answer, but for an upload, which reads
 // before it the document its name writes the next version of, where there is one, and takes the
-// version it wrote over from its answer.
-func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answer []byte, before goingObservation) (goingObservation, error) {
+// version it wrote over from its answer. status is the status the route answered, 0 before.
+func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answer []byte, status int, before goingObservation) (goingObservation, error) {
 	path, arguments := prepared.call.path, prepared.arguments
 	fields := goingFields(goingWriteFields[prepared.action])
 	issue := goingText(arguments, "issue")
@@ -329,8 +332,17 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 		if err := json.Unmarshal(answer, &created); err != nil {
 			return goingObservation{}, fmt.Errorf("read the issue made: %w", err)
 		}
-		return goingObservation{target: created.Key, fields: fields, issue: created.Key,
-			value: map[string]any{"key": created.Key, "title": created.Title, "status": created.Status}}, nil
+		observed := goingObservation{target: created.Key, fields: fields, issue: created.Key,
+			value: map[string]any{"key": created.Key, "title": created.Title, "status": created.Status}}
+		// The create route answers 201 for an issue it made and 200 for one Dispatch already holds
+		// for the external reference the create names (respondWithExistingExternalIssue), the
+		// create's own verdict: that issue is no issue of the turn's, so the write changed nothing
+		// and its undo closes nothing (goingUndoer.closeCreated).
+		if status != http.StatusCreated {
+			observed.unchanged = true
+			observed.note = fmt.Sprintf("Dispatch already holds %s for the external issue this create named, so nothing was created", created.Key)
+		}
+		return observed, nil
 	case "dispatch_ask":
 		var created struct {
 			ID       string  `json:"id"`

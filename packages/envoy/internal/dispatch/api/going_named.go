@@ -439,14 +439,7 @@ func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) er
 	}
 	owner := "the owner this upload writes to"
 	if target, named := goingRouteUploadOwner(prepared.route, prepared.call.path); named {
-		switch {
-		case target.IssueKey != nil:
-			owner = "issue " + *target.IssueKey
-		case target.Project != "":
-			owner = "project " + target.Project
-		default:
-			owner = "session " + target.Session
-		}
+		owner = artifactOwnerText(target)
 	}
 	var reason string
 	switch held := before.held; {
@@ -471,6 +464,36 @@ func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) er
 		return nil
 	}
 	return GoingArgumentError{Action: prepared.action, Reason: reason + " " + contracts.ArtifactNameExistsRule}
+}
+
+// goingUploadWithheld is why an upload the answer wrote is not offered, "" where it is: one under
+// the name of a document its owner already holds, as the proposal reads the store now (holds),
+// which would write that document's next version over the text it holds. Without force every
+// write of it is refused (goingUploadForceRefusal), and the bar has no control that sets force;
+// with force, a pick would replace the document whole, which nothing the bar shows says before the
+// person picks it, unless the person's own words write the document's name - they asked for that
+// document themselves. So it is offered only with force and a name the words write, and otherwise
+// withheld, the person changing the document with an edit or uploading with the dispatch command.
+// An owner the proposal could not read is offered, and held to the write's own checks when it runs
+// (goingSendRefusal, expect_new).
+func goingUploadWithheld(action string, arguments map[string]any, session string, words string, document goingDocumentHeld) string {
+	argument, uploads := goingUploadNames[action]
+	if !uploads || document == nil {
+		return ""
+	}
+	owner, known := goingUploadOwner(arguments, session)
+	if !known {
+		return ""
+	}
+	name := strings.TrimSpace(goingText(arguments, argument))
+	if held, read := document(owner, name); !read || !held {
+		return ""
+	}
+	if arguments["force"] == true && goingWordsName(words, name) {
+		return ""
+	}
+	return fmt.Sprintf("%s under %q is not offered: %s already holds a document of that name, and an upload would write its next version over the text it holds, which the bar offers only with force under a name your own words write. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force.",
+		action, name, artifactOwnerText(owner))
 }
 
 // goingActorText names an actor as the dispatch command names a document's author: its kind and

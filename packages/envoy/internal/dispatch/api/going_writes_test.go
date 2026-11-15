@@ -894,7 +894,7 @@ func TestGoingWriteOfASendToAgentRecordsItsLastDeliverysState(t *testing.T) {
 		{"attempt":1,"state":"sent","error":null},
 		{"attempt":2,"state":"failed","error":"no live session s1"}
 	]}`)
-	after, err := (goingObserver{}).observe(t.Context(), prepared, answer, goingObservation{})
+	after, err := (goingObserver{}).observe(t.Context(), prepared, answer, http.StatusCreated, goingObservation{})
 	if err != nil {
 		t.Fatalf("observe the send: %v", err)
 	}
@@ -1215,64 +1215,58 @@ func (rig goingWritesRig) goingDocumentVersions(t *testing.T, issue, slug string
 	return versions
 }
 
-// TestGoingWriteOfAnUploadOverADocumentOnlyStoredTextNamedIsOffered (review round 2, finding A):
-// on the page's issue, which holds a document named notes, an upload the answer named notes -
-// a name the words never write - would write that document's next version, so the proposal marks
-// it an offer and a write of it sent at once is refused, 409 GOING_NOT_AUTOMATIC, writing no
-// version; an upload under a name the issue holds no document of runs at once; and the person
-// picking the upload over notes runs it, its line reading the version it wrote over as the value
-// before.
-func TestGoingWriteOfAnUploadOverADocumentOnlyStoredTextNamedIsOffered(t *testing.T) {
+// TestGoingWriteOfAnUploadOverADocumentOnlyStoredTextNamedIsWithheld (review round 2, finding A;
+// round 6, finding 2): on the page's issue, which holds a document named notes, an upload the
+// answer named notes - a name the words never write - would write that document's next version
+// over the text it holds. Without force every write of it is refused and the bar has no control
+// that sets force; with force a pick of it would replace the document, which nothing the bar shows
+// says, the person never having named it. So the proposal offers it neither way: the offer
+// withholds it and says why, naming the issue and the document, and the person's pick of it, sent
+// as the bar sends one - the invocation alone, approved person, no argument the bar never sends -
+// is refused, 409 GOING_NOT_PROPOSED, writing no version. An upload under a name the issue holds no
+// document of is offered, and runs at once.
+func TestGoingWriteOfAnUploadOverADocumentOnlyStoredTextNamedIsWithheld(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Kept notes", "The spec.\n").Key
 	rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": "notes", "content": "# Notes\n\nKept.\n"})
-	var notes string
-	if err := rig.database.Pool.QueryRow(context.Background(),
-		`select id::text from artifacts where issue_key = $1 and slug = 'notes'`, issue).Scan(&notes); err != nil {
-		t.Fatalf("read the notes' id: %v", err)
-	}
-	propose := func(t *testing.T, name string) (string, goingInvocation) {
+	propose := func(t *testing.T, arguments map[string]any) (string, goingOffer) {
 		t.Helper()
 		start := goingBrowserStart(t)
 		start.words = "save this as a doc"
 		start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
-		written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {{"issue": issue, "name": name, "content": "# Notes\n\nWritten by the model.\n"}}})
+		written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {arguments}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
 			&going.Final{Answer: "Saved.", Arguments: string(written)}, start, rig.served.goingHoldsBy(context.Background()))
-		if len(proposal.Offers) != 1 || len(proposal.Offers[0].Invocations) != 1 {
-			t.Fatalf("the run proposed %+v, want the one upload", proposal)
+		if len(proposal.Offers) != 1 {
+			t.Fatalf("the run proposed %+v, want the one offer of an upload", proposal)
 		}
-		return rig.recorded(t, "alice", true, "dispatch_artifact", start.words, proposal), proposal.Offers[0].Invocations[0]
+		return rig.recorded(t, "alice", true, "dispatch_artifact", start.words, proposal), proposal.Offers[0]
+	}
+	upload := map[string]any{"issue": issue, "name": "notes", "content": "# Notes\n\nWritten by the model.\n"}
+
+	for _, arguments := range []map[string]any{upload, goingWith(upload, "force", true)} {
+		run, offer := propose(t, arguments)
+		if offer.Offered || len(offer.Invocations) != 0 || len(offer.Withheld) != 1 ||
+			!strings.Contains(offer.Withheld[0], `"notes"`) || !strings.Contains(offer.Withheld[0], "issue "+issue) {
+			t.Fatalf("the run proposed %+v for an upload over the issue's notes (force %v), want it withheld, saying it would replace %s's notes", offer, arguments["force"], issue)
+		}
+		picked := rig.write(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson})
+		if picked.Code != http.StatusConflict || decodeBody[errorBody](t, picked).Code != codeGoingNotProposed {
+			t.Fatalf("a pick of the withheld upload answered %d %s, want 409 %s", picked.Code, picked.Body.String(), codeGoingNotProposed)
+		}
+		if versions := rig.goingDocumentVersions(t, issue, "notes"); versions != 1 {
+			t.Fatalf("the notes hold %d versions after the pick of the withheld upload, want 1", versions)
+		}
 	}
 
-	over, invocation := propose(t, "notes")
-	if invocation.Automatic {
-		t.Fatal("an upload over the issue's notes, a name the words never write, is automatic")
-	}
-	rig.goingWriteRefusedNotAutomatic(t, over, "dispatch_artifact", nil)
-	if versions := rig.goingDocumentVersions(t, issue, "notes"); versions != 1 {
-		t.Fatalf("the notes hold %d versions after the refused upload, want 1", versions)
-	}
-
-	fresh, invocation := propose(t, "summary")
-	if !invocation.Automatic {
-		t.Fatal("an upload under a name the issue holds no document of is not automatic")
+	fresh, offer := propose(t, goingWith(upload, "name", "summary"))
+	if !offer.Offered || len(offer.Invocations) != 1 || !offer.Invocations[0].Automatic || len(offer.Withheld) != 0 {
+		t.Fatalf("the run proposed %+v for an upload under a name the issue holds no document of, want it offered and automatic", offer)
 	}
 	rig.wrote(t, "alice", fresh, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedAuto})
-
-	// The person's pick of an upload over the notes still needs force, as the tool states it
-	// (TestGoingWriteOfAnUploadOverAHeldNameIsRefusedWithoutForceHoweverApproved).
-	line := rig.wrote(t, "alice", over, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson,
-		"arguments": map[string]any{"force": true}})
-	if !jsonEqual(t, line.Before, `{"id":"`+notes+`","name":"notes","version":1}`) || line.Item != notes {
-		t.Fatalf("the person's upload over the notes answered %+v, want the notes at version 1 before it", line)
-	}
-	if versions := rig.goingDocumentVersions(t, issue, "notes"); versions != 2 {
-		t.Fatalf("the notes hold %d versions after the person's upload, want 2", versions)
-	}
 }
 
 // TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns (review round 3, finding 3):
@@ -1304,6 +1298,33 @@ func TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns(t *test
 	rig.goingWriteRefusedNotAutomatic(t, run, "dispatch_artifact", nil)
 	if versions := rig.goingDocumentVersions(t, issue, "notes"); versions != 1 {
 		t.Fatalf("the notes hold %d versions after the upload sent at once, want bob's one alone", versions)
+	}
+}
+
+// TestGoingWriteOfAnUploadWithoutForceNeverWritesOverADocumentMadeAsItRuns (review round 6,
+// finding 3): an upload without force is sent as a create alone (expect_new), decided by its route
+// under the owner's lock, so a document of its name another writer makes between the bar's read
+// before the upload and the upload is never written over: the route refuses it, 409
+// DOCUMENT_EXISTS, the bar answers that refusal, and bob's document keeps its one version.
+func TestGoingWriteOfAnUploadWithoutForceNeverWritesOverADocumentMadeAsItRuns(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Made as the bar uploaded", "The spec.\n").Key
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	run := rig.proposed(t, "alice", false, "dispatch_artifact", map[string]any{
+		"issue": issue, "name": "meanwhile.md", "content": "# Meanwhile\n\nAlice's words.\n",
+	})
+	var bobs uploadedArtifact
+	rig.served.inProcess = goingBefore(inner, http.MethodPost+" /api/v1/issues/"+issue+"/artifacts", func() {
+		bobs = uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "meanwhile.md", "# Meanwhile\n\nBob's words.\n")
+	})
+	refused := rig.write(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson})
+	rig.served.inProcess = inner
+	if refused.Code != http.StatusConflict || decodeBody[errorBody](t, refused).Code != "DOCUMENT_EXISTS" {
+		t.Fatalf("the upload over a document made as it ran answered %d %s, want the route's 409 DOCUMENT_EXISTS", refused.Code, refused.Body.String())
+	}
+	if versions := rig.goingDocumentVersions(t, issue, bobs.Artifact.Slug); versions != 1 {
+		t.Fatalf("bob's %s holds %d versions after the bar's upload, want his one", bobs.Artifact.Slug, versions)
 	}
 }
 

@@ -82,6 +82,8 @@ type artifactUploadInput struct {
 	// expectSHA256 is a JSON upload's expect_sha256 (jsonArtifactUpload.ExpectSHA256), "" for
 	// none.
 	expectSHA256 string
+	// expectNew is an upload's expect_new (jsonArtifactUpload.ExpectNew), JSON or multipart.
+	expectNew bool
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -103,6 +105,18 @@ func (target artifactTarget) refPrefix() string {
 		return *target.IssueKey
 	}
 	return target.Project
+}
+
+// artifactOwnerText names the owner of target as a refusal names it: issue DEMO-1, project DEMO,
+// or session <id>.
+func artifactOwnerText(target artifactTarget) string {
+	switch {
+	case target.Session != "":
+		return "session " + target.Session
+	case target.IssueKey != nil:
+		return "issue " + *target.IssueKey
+	}
+	return "project " + target.Project
 }
 
 type jsonArtifactUpload struct {
@@ -128,8 +142,14 @@ type jsonArtifactUpload struct {
 	// with nothing written; an upload that would make a new document is refused the same, since
 	// there is no document holding it. A write back undoing an edit puts the content back so
 	// only while the document still holds what that edit left.
-	ExpectSHA256 string       `json:"expect_sha256"`
-	Actor        *model.Actor `json:"actor"`
+	ExpectSHA256 string `json:"expect_sha256"`
+	// ExpectNew makes the upload a create alone: where the owner already holds an artifact of the
+	// name (or whose slug the name is) when the upload takes the owner's lock, it is refused, 409
+	// DOCUMENT_EXISTS, with nothing written. It is the mirror of ExpectSHA256, and the two together
+	// are 400 ARTIFACT_INPUT. A caller that means to make a new document, never write the next
+	// version of one another writer made meanwhile, sends it.
+	ExpectNew bool         `json:"expect_new"`
+	Actor     *model.Actor `json:"actor"`
 }
 
 func (s *server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
@@ -302,6 +322,12 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
 		return artifactUploadInput{}, false
 	}
+	expectSHA256 := strings.TrimSpace(body.ExpectSHA256)
+	if body.ExpectNew && expectSHA256 != "" {
+		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest,
+			"expect_new asks for a document the owner does not hold and expect_sha256 for one it does: send one of them")
+		return artifactUploadInput{}, false
+	}
 	blank := body.Content == nil || strings.TrimSpace(*body.Content) == ""
 	var content []byte
 	if body.Content != nil {
@@ -314,7 +340,8 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		summary:      strings.TrimSpace(body.Summary),
 		supplied:     body.Actor,
 		blank:        blank,
-		expectSHA256: strings.TrimSpace(body.ExpectSHA256),
+		expectSHA256: expectSHA256,
+		expectNew:    body.ExpectNew,
 	}, true
 }
 
@@ -371,6 +398,17 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		return artifactUploadInput{}, false
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
+	// expect_new is a field of its own in a multipart body, "true" or "false" as strconv reads a
+	// boolean; anything else is no condition a caller could have meant.
+	var expectNew bool
+	if raw, sent := r.MultipartForm.Value["expect_new"]; sent {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(raw[0]))
+		if err != nil || len(raw) != 1 {
+			writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "expect_new must be true or false, once")
+			return artifactUploadInput{}, false
+		}
+		expectNew = parsed
+	}
 	file, header, err := r.FormFile("file")
 	if len(r.MultipartForm.Value["content"]) > 0 {
 		if err == nil {
@@ -402,6 +440,7 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		contentType: contentType,
 		summary:     strings.TrimSpace(r.FormValue("summary")),
 		supplied:    supplied,
+		expectNew:   expectNew,
 	}, true
 }
 
@@ -544,6 +583,13 @@ func (s *server) storeArtifact(
 		}
 	} else if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	} else if input.expectNew {
+		// Decided after the owner's lock above, as expect_sha256 is: an artifact of the name made
+		// by another writer before this upload took that lock is never written over.
+		s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_EXISTS",
+			"%s already holds %s (slug %s), which expect_new asks this upload not to write the next version of, so nothing was written",
+			artifactOwnerText(target), artifact.Name, artifact.Slug))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))

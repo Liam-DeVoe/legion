@@ -122,8 +122,11 @@ type goingRunWrite struct {
 	// (codeGoingUndoBeforeUnread).
 	BeforeUnread bool `json:"before_unread,omitempty"`
 	// Unchanged is a write its route answered changed nothing: a claim of an issue its caller
-	// already held, or a release of one nobody held. Its undo puts nothing back, whatever the
-	// reads before and after it saw, since another writer may have moved the claim between them.
+	// already held, a release of one nobody held, or a create naming an external issue Dispatch
+	// already held, which its route answered 200 with that issue rather than 201 with one it made.
+	// Its undo puts nothing back, whatever the reads before and after it saw, since another writer
+	// may have moved the item between them, and the issue an unchanged create answered is no issue
+	// of the turn's to close.
 	Unchanged bool `json:"unchanged,omitempty"`
 }
 

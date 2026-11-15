@@ -111,6 +111,14 @@ function offerOf(proposal: Proposal | undefined, action: string): GoingOffer | u
   return proposal?.offers.find((offer) => offer.action === action && offer.offered);
 }
 
+/** Why the proposal withheld every invocation of `action` it would otherwise have offered - an
+ *  upload under the name of a document its owner holds, which would replace that document's text
+ *  - in Dispatch's own words, one sentence each; undefined where it withheld none. */
+function withheldOf(proposal: Proposal | undefined, action: string): string | undefined {
+  const withheld = proposal?.offers.find((offer) => offer.action === action)?.withheld ?? [];
+  return withheld.length === 0 ? undefined : `Nothing to run: ${withheld.join(" ")}`;
+}
+
 /** The invocations of `offer` a write of the bar runs, by their index in it: those a row the
  *  person picked names (`picked`); every one where the person picked the action itself; and
  *  otherwise - a submit, and its confirmation - only those the proposal marked automatic. An
@@ -506,7 +514,8 @@ export function useGoingOperations({
         ) : null}
         {stage?.kind === "unoffered" ? (
           <p className={barNoteClassName} data-testid="going-operation-unoffered" role="status">
-            Nothing to run: the answer gave {actionName(stage.action)} nothing it can run with.
+            {withheldOf(proposal, stage.action) ??
+              `Nothing to run: the answer gave ${actionName(stage.action)} nothing it can run with.`}
           </p>
         ) : null}
         {stage?.kind === "picks" ? (

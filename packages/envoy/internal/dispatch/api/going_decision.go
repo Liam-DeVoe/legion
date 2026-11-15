@@ -304,11 +304,14 @@ type goingProposal struct {
 }
 
 // goingOffer is one offered action: one invocation for each item it changes, and Offered false
-// where none survived the checks.
+// where none survived the checks. Withheld says why each invocation the answer wrote that a person
+// would otherwise have been offered was not: one that could never run as the bar sends it, or
+// whose pick would do what no control of the bar says (goingUploadWithheld).
 type goingOffer struct {
 	Action      string            `json:"action"`
 	Invocations []goingInvocation `json:"invocations"`
 	Offered     bool              `json:"offered"`
+	Withheld    []string          `json:"withheld,omitempty"`
 }
 
 // goingInvocation is one run of an action: the arguments the answer and the page filled, each
@@ -342,7 +345,9 @@ type goingMissingArgument struct {
 // action, the action is offered on what the page and one prompted argument fill. Each invocation
 // is marked automatic by what the words name and what holds reads of the store now
 // (goingAutomatic); a holds that reads nothing leaves a hand-over and an upload's name to run at
-// once only where the words name it.
+// once only where the words name it. An upload under the name of a document its owner holds, as
+// holds reads it, is withheld and the offer says why, unless it carries force under a name the
+// person's own words write (goingUploadWithheld).
 func goingPropose(decision goingDecision, final *going.Final, start goingRunStart, holds goingHolds) goingProposal {
 	written := map[string]json.RawMessage{}
 	if final != nil && final.Arguments != "" {
@@ -382,10 +387,16 @@ func goingPropose(decision goingDecision, final *going.Final, start goingRunStar
 		}
 		offer := goingOffer{Action: name, Invocations: []goingInvocation{}}
 		for _, arguments := range calls {
-			if invocation, kept := goingInvocationOf(action, arguments, chip, start.session); kept {
-				invocation.Automatic = goingAutomatic(name, invocation.Arguments, chip, start.session, named, holds)
-				offer.Invocations = append(offer.Invocations, invocation)
+			invocation, kept := goingInvocationOf(action, arguments, chip, start.session)
+			if !kept {
+				continue
 			}
+			if withheld := goingUploadWithheld(name, invocation.Arguments, start.session, start.words, holds.document); withheld != "" {
+				offer.Withheld = append(offer.Withheld, withheld)
+				continue
+			}
+			invocation.Automatic = goingAutomatic(name, invocation.Arguments, chip, start.session, named, holds)
+			offer.Invocations = append(offer.Invocations, invocation)
 		}
 		offer.Offered = len(offer.Invocations) > 0
 		proposal.Offers = append(proposal.Offers, offer)

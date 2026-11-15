@@ -243,11 +243,16 @@ export interface GoingInvocation {
 }
 
 /** One action the decision offered: one invocation per item it changes, and `offered` false
- *  where no invocation survived the checks, which leaves `invocations` empty. */
+ *  where no invocation survived the checks, which leaves `invocations` empty. `withheld`, where
+ *  present, says why each invocation the answer wrote that the person would otherwise have been
+ *  offered was not: an upload under the name of a document its owner already holds, which would
+ *  write that document's next version, and which the bar offers only where it carries `force`
+ *  and the person's own words write the name. */
 export interface GoingOffer {
   readonly action: string;
   readonly invocations: readonly GoingInvocation[];
   readonly offered: boolean;
+  readonly withheld?: readonly string[];
 }
 
 /** The arguments of each action the decision offered, in the decision's order. */

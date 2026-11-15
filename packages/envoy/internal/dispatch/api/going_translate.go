@@ -778,9 +778,13 @@ func goingUploadContent(arguments map[string]any) (string, error) {
 }
 
 // goingTranslateUpload uploads the content as a document of the issue or the project, as the
-// JSON form of the route takes it. `force` is no field of the route's: the writes route reads it
-// before it sends the upload, and refuses an upload over a name the owner holds without it,
-// however the write came to run (goingUploadForceRefusal), as the dispatch command does.
+// JSON form of the route takes it. `force` is no field of the route's: an upload without it is
+// sent as a create alone (expect_new), so a document of its name the owner holds by the time the
+// upload takes the owner's lock - one another writer made after the write's read before - is the
+// route's to refuse, 409 DOCUMENT_EXISTS, and the writes route refuses such an upload before it is
+// sent where its read before found one, however the write came to run (goingUploadForceRefusal),
+// as the dispatch command does. An upload with force sends no condition, and writes that
+// document's next version.
 func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	content, err := goingUploadContent(call.arguments)
 	if err != nil {
@@ -788,12 +792,16 @@ func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput)
 	}
 	body := goingPick(call.arguments, "name", "summary")
 	body["content"] = content
+	if call.arguments["force"] != true {
+		body["expect_new"] = true
+	}
 	return goingCall{path: call.path, body: body}, nil
 }
 
 // goingTranslateAgentUpload uploads the content as a file of the session's conversation, which
 // takes a multipart upload alone: the file part named as the call names it, typed by its
-// extension, and plain text where the extension says nothing.
+// extension, and plain text where the extension says nothing. An upload without force is sent as
+// a create alone, as goingTranslateUpload sends one (expect_new, a field of the form).
 func goingTranslateAgentUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	content, err := goingUploadContent(call.arguments)
 	if err != nil {
@@ -807,6 +815,9 @@ func goingTranslateAgentUpload(_ context.Context, _ goingReader, call goingCallI
 	fields := map[string]string{"name": name}
 	if summary := goingText(call.arguments, "summary"); summary != "" {
 		fields["summary"] = summary
+	}
+	if call.arguments["force"] != true {
+		fields["expect_new"] = "true"
 	}
 	return goingCall{path: call.path, form: &goingUpload{
 		fields: fields, filename: name, contentType: contentType, content: []byte(content),

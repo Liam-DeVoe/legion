@@ -252,6 +252,10 @@ var openAPIMultipartSchema = map[string]any{
 			"type":        "string",
 			"description": "what this version changed, trimmed",
 		},
+		"expect_new": map[string]any{
+			"type": "string", "enum": []any{"true", "false"},
+			"description": "true makes the upload a create alone, as the JSON body's expect_new does: a name the owner already holds when the upload takes its lock is 409 DOCUMENT_EXISTS, nothing written",
+		},
 		"actor": map[string]any{
 			"type":        "string",
 			"description": "the acting session as one JSON object, as the JSON body's `actor` field",

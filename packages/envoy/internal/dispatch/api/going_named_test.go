@@ -182,30 +182,55 @@ func TestGoingAutomaticHoldsTheAdvancesRelationToTheWordsToo(t *testing.T) {
 }
 
 // TestGoingAutomaticHoldsAnUploadsNameToTheWordsWhereItsOwnerHoldsThatDocument (review round 2,
-// finding A): an upload whose name is a document the page's issue already holds would write that
-// document's next version, so it runs at once only where the words write the name; an upload
-// under a name the issue holds no document of makes one and runs at once, and one whose owner
-// could not be read is an offer.
+// finding A; round 6, finding 2): an upload whose name is a document the page's issue already
+// holds would write that document's next version, so it is offered only where it carries force -
+// without it every write of it is refused - and the person's own words write the name, and then
+// runs at once; any other such upload is withheld, the offer saying why. An upload under a name
+// the issue holds no document of makes one and runs at once, and one whose owner could not be read
+// is an offer.
 func TestGoingAutomaticHoldsAnUploadsNameToTheWordsWhereItsOwnerHoldsThatDocument(t *testing.T) {
-	upload := func(name string) map[string]any {
-		return map[string]any{"issue": "DEMO-12", "name": name, "content": "# Notes\n\nModel-written text.\n"}
+	upload := func(name string, force bool) map[string]any {
+		arguments := map[string]any{"issue": "DEMO-12", "name": name, "content": "# Notes\n\nModel-written text.\n"}
+		if force {
+			arguments["force"] = true
+		}
+		return arguments
 	}
 	unread := func(artifactTarget, string) (bool, bool) { return false, false }
 	for _, tc := range []struct {
 		name, words, document string
+		force                 bool
 		holds                 goingDocumentHeld
-		automatic             bool
+		withheld, automatic   bool
 	}{
-		{"a name the issue holds a document of that only stored text wrote", "save this as a doc", "spec", goingDocumentsHeld("DEMO-12/spec"), false},
-		{"a name the issue holds a document of that the words write", "save this over the spec", "spec", goingDocumentsHeld("DEMO-12/spec"), true},
-		{"a name the issue holds no document of", "save this as a doc", "summary", goingDocumentsHeld("DEMO-12/spec"), true},
-		{"a name another owner holds a document of", "save this as a doc", "spec", goingDocumentsHeld("DEMO-7/spec"), true},
-		{"a name whose owner could not be read", "save this as a doc", "summary", unread, false},
-		{"a name with no read of the store", "save this as a doc", "summary", nil, false},
+		{"a name the issue holds a document of that only stored text wrote", "save this as a doc", "spec", false, goingDocumentsHeld("DEMO-12/spec"), true, false},
+		{"a name the issue holds a document of that only stored text wrote, with force", "save this as a doc", "spec", true, goingDocumentsHeld("DEMO-12/spec"), true, false},
+		{"a name the issue holds a document of that the words write, without force", "save this over the spec", "spec", false, goingDocumentsHeld("DEMO-12/spec"), true, false},
+		{"a name the issue holds a document of that the words write, with force", "save this over the spec", "spec", true, goingDocumentsHeld("DEMO-12/spec"), false, true},
+		{"a name the issue holds no document of", "save this as a doc", "summary", false, goingDocumentsHeld("DEMO-12/spec"), false, true},
+		{"a name another owner holds a document of", "save this as a doc", "spec", false, goingDocumentsHeld("DEMO-7/spec"), false, true},
+		{"a name whose owner could not be read", "save this as a doc", "summary", false, unread, false, false},
+		{"a name with no read of the store", "save this as a doc", "summary", false, nil, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := goingAutomaticOf(t, tc.words, true, "dispatch_artifact", upload(tc.document), goingHolds{document: tc.holds}); got != tc.automatic {
-				t.Fatalf("%q uploading as %q is automatic=%v, want %v", tc.words, tc.document, got, tc.automatic)
+			holds := goingHolds{document: tc.holds}
+			if tc.withheld {
+				written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {upload(tc.document, tc.force)}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				start := goingBrowserStart(t)
+				start.words = tc.words
+				start.chip = &goingContext{Path: "/issues/DEMO-12", Project: "DEMO", Issue: "DEMO-12"}
+				proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
+					&going.Final{Answer: "Done.", Arguments: string(written)}, start, holds)
+				if len(proposal.Offers) != 1 || proposal.Offers[0].Offered || len(proposal.Offers[0].Withheld) != 1 {
+					t.Fatalf("%q uploading as %q (force %v) proposed %+v, want the upload withheld, saying why", tc.words, tc.document, tc.force, proposal)
+				}
+				return
+			}
+			if got := goingAutomaticOf(t, tc.words, true, "dispatch_artifact", upload(tc.document, tc.force), holds); got != tc.automatic {
+				t.Fatalf("%q uploading as %q (force %v) is automatic=%v, want %v", tc.words, tc.document, tc.force, got, tc.automatic)
 			}
 		})
 	}
