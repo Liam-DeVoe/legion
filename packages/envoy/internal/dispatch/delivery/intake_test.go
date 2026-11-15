@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -155,15 +155,26 @@ func TestTheHarnessMakesAgainATableADeadRunLeftDropped(t *testing.T) {
 	}
 }
 
-// deliveryTestLeases is the lease pool an intake reconciles its durable under (duty.Exclusive on
-// consumerLease(durable)), taken from the test's own pool. Each lease is held on a connection of
-// its own, so a test can hold the lease from one caller while an intake tries for it from
-// another.
-func deliveryTestLeases(t *testing.T, pool *store.Pool) duty.Leases {
+// deliveryTestLeases is the lease pool an intake takes its durable's hold and consumer lease on
+// (intakeHoldName, consumerLease), taken from the test's own pool. Each lease is held on a
+// connection of its own, so a test can hold the lease from one caller while an intake tries for it
+// from another.
+func deliveryTestLeases(t *testing.T, pool *store.Pool) *pgxpool.Pool {
 	t.Helper()
-	leases, err := pool.Leases()
+	return storetest.Leases(t, pool)
+}
+
+// deliveryTestIntakeLeases is the reservation StartIntakes takes in the server, made here on the
+// test's own pool (ReserveIntakeLeases).
+func deliveryTestIntakeLeases(t *testing.T, pool *store.Pool) IntakeLeases {
+	t.Helper()
+	callers, err := pool.Leases()
 	if err != nil {
 		t.Fatalf("open the leases pool: %v", err)
+	}
+	leases, err := ReserveIntakeLeases(callers)
+	if err != nil {
+		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
 	}
 	return leases
 }

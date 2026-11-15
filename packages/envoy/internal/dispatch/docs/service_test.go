@@ -41,6 +41,33 @@ func headerIdentity(database *store.Store) identity.HeaderIdentity {
 	return identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
 }
 
+// testServiceDeps are the dependencies every document service of this package's tests is built
+// with, on database. A caller that builds a service with them owns its shutdown:
+// newTestServiceOn registers one, and a caller that shuts its service down by hand (a seeding
+// service a test ends before it swaps the manifest, newAdmissionServer) builds New with these
+// directly.
+func testServiceDeps(database *store.Store) Deps {
+	return Deps{
+		Store:     database,
+		Events:    events.NewBroker(),
+		Identity:  headerIdentity(database),
+		ServerURL: "https://dispatch.example",
+		Settle:    20 * time.Millisecond,
+	}
+}
+
+// newTestServiceOn builds a document service on database and shuts it down when the test ends.
+// Where that shutdown runs among the test's other cleanups matters to a test that swaps the
+// schema manifest: pmdoc's readers do not lock it, so the swap's restore must run after this
+// shutdown has stopped the service's room, settlement and flush goroutines, which read it.
+// Cleanups run last in first out, so such a test registers its restore before it calls this.
+func newTestServiceOn(t *testing.T, database *store.Store) *Service {
+	t.Helper()
+	service := New(testServiceDeps(database))
+	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
+	return service
+}
+
 // newTestService is a document service that settles a live write in milliseconds, for a test
 // that waits for what settlement writes rather than reading the document before it.
 func newTestService(t *testing.T) (*Service, string) {
@@ -56,13 +83,9 @@ func newTestServiceSettlingAfter(t *testing.T, settle time.Duration) (*Service, 
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    settle,
-	})
+	deps := testServiceDeps(database)
+	deps.Settle = settle
+	service := New(deps)
 	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	return service, artifactID
 }

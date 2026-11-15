@@ -104,6 +104,7 @@ func observeError(err error) *observedError {
 		name string
 		err  error
 	}{
+		{"ErrDocNewerContent", ErrDocNewerContent},
 		{"ErrDocOutsideSchema", ErrDocOutsideSchema},
 		{"ErrDocSchema", ErrDocSchema},
 		{"ErrDocumentTooLarge", ErrDocumentTooLarge},

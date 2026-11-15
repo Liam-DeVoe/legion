@@ -5,7 +5,7 @@
 # service starts on the lane's disposable settings - the test job, envoy-go (one step for each of
 # its five services), envoy-go-race, envoy-go-race-api, envoy-go-race-docs,
 # envoy-go-docs-finalizers, dispatch-memory, dispatch-multiprocess, broker-multiprocess and
-# envoy-session-stall: fourteen steps of one body. dispatch-browser-postgres.sh's head records
+# envoy-session-stall and dispatch-two-builds: fifteen steps of one body. dispatch-browser-postgres.sh's head records
 # this repository's rule for a step body repeated across jobs, and this follows it: the five
 # settings are written once, here, and each step is one line calling this.
 #
@@ -24,7 +24,7 @@
 # synchronous_commit make cheap, with nothing saying so. max_prepared_transactions is the fifth:
 # envoy-go-race-api's event log floor test prepares a transaction, and in CI it fails on a server
 # that can prepare none. No test of the other jobs prepares one. Every service carries the setting
-# all the same, because this one list of five is what each of the fourteen steps reads back. A
+# all the same, because this one list of five is what each of the fifteen steps reads back. A
 # setting the server itself refuses never reaches this script: postgres exits, and the service's
 # health check fails the job before its first step.
 # ci.yaml's envoy-go service says what each setting buys.

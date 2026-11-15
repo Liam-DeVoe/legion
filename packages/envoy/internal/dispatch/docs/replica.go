@@ -919,9 +919,12 @@ func (r *renderedReplica) updateChangesMarkdown(room string) (bool, func() map[s
 	r.recordVerdict(err)
 	if err != nil {
 		r.rendering = nil
-		if errors.Is(err, ErrDocOutsideSchema) {
+		switch {
+		case errors.Is(err, ErrDocOutsideSchema):
 			r.logger().Warn("dispatch: updated document outside Proof schema", "room", room, "error", err)
-		} else {
+		case errors.Is(err, ErrDocNewerContent):
+			r.logger().Warn("dispatch: updated document holds an element this build cannot read", "room", room, "error", err)
+		default:
 			r.logger().Error("dispatch: read updated document", "room", room, "error", err)
 		}
 		return true, nil

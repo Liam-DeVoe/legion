@@ -109,8 +109,10 @@ type approvedVersion struct {
 // to a decision block is the whole change since the version he approved, or when version's text is
 // the text of the version the document's newest review approved (the rules above). It returns the
 // events it appended - the open approval request's ask.answered, when one is open, then
-// artifact.approved - and nothing when the version carries no approval. It reads rendered.tree and
-// never changes it: the tree is the live document's.
+// artifact.approved - and nothing when the version carries no approval. A version he approved that
+// holds an element this build does not know is a NewerContentError, which fails the version write
+// (skipUnreadableVersion). It reads rendered.tree and never changes it: the tree is the live
+// document's.
 func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version, rendered renderedTree) ([]model.Event, error) {
 	// Every version write runs this: anything past the newest review is read only once a carry is
 	// possible at all, which needs an approval still standing. A newer request for changes than
@@ -125,7 +127,7 @@ func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID strin
 		return nil, err
 	}
 	if review == nil {
-		return restoreApproval(ctx, tx, s.events, artifactID, version.Number, rendered.markdown, rendered.tree, *newest, s.serverURL)
+		return restoreApproval(ctx, s.log(), tx, s.events, artifactID, version.Number, rendered.markdown, rendered.tree, *newest, s.serverURL)
 	}
 	return writeCarriedReview(ctx, tx, s.events, artifactID, version.Number, *review, fmt.Sprintf(carryReason, review.Version), s.serverURL)
 }
@@ -143,7 +145,7 @@ func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 	if err != nil || newest == nil || newest.State != "approved" {
 		return nil, err
 	}
-	return restoreApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL)
+	return restoreApproval(ctx, slog.Default(), tx, broker, artifactID, number, markdown, tree, *newest, serverURL)
 }
 
 // restoreApproval carries newest, the document's newest review and an approval, to version number
@@ -154,14 +156,14 @@ func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 // which settlement then writes into the next version. So the blocks are read as the answer carry
 // reads N's (askNodes, rowBackedBlocks), from tree, the version's own, or from markdown parsed
 // when tree is nil; that read is made only once the bytes match.
-func restoreApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string) ([]model.Event, error) {
+func restoreApproval(ctx context.Context, log *slog.Logger, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string) ([]model.Event, error) {
 	restored, err := restoresApprovedText(ctx, tx, artifactID, newest.Version, markdown)
 	if err != nil || !restored {
 		return nil, err
 	}
 	if tree == nil {
 		if tree, err = pmdoc.ParseRendering(markdown); err != nil {
-			return nil, skipUnreadableVersion(artifactID, number, err)
+			return nil, skipUnreadableVersion(log, artifactID, number, err)
 		}
 	}
 	nodes, readable := askNodes(tree)
@@ -295,7 +297,7 @@ func (s *Service) carriedReview(ctx context.Context, tx pgx.Tx, artifactID strin
 		}
 		cut, err := cutOnce()
 		if err != nil {
-			return nil, skipUnreadableVersion(artifactID, number, err)
+			return nil, skipUnreadableVersion(s.log(), artifactID, number, err)
 		}
 		if !carryVerdict(carryInput{login: login, approvedAt: review.CreatedAt, blocks: blocks, approved: heldAsItsRow(approved.nodes, blocks), approvedCut: approved.cut, cut: cut}) {
 			continue
@@ -346,19 +348,27 @@ func (s *Service) readApprovedVersion(ctx context.Context, tx pgx.Tx, artifactID
 	}
 	cut, err := renderWithoutAskBlocks(tree)
 	if err != nil {
-		return approvedVersion{}, false, skipUnreadableVersion(artifactID, number, err)
+		return approvedVersion{}, false, skipUnreadableVersion(s.log(), artifactID, number, err)
 	}
 	return approvedVersion{nodes: nodes, cut: cut}, true, nil
 }
 
-// skipUnreadableVersion is carryApproval's answer to a version this parser or renderer refuses: a
-// version an earlier release stored is not this write's to fail for, so the approval is not
-// carried and the refusal is logged; any other error is the write's.
-func skipUnreadableVersion(artifactID string, number int, err error) error {
+// skipUnreadableVersion is carryApproval's answer to a version this parser or renderer refuses. A
+// version holding an element this build does not know (pmdoc.ErrUnknownElement) is one a newer
+// build wrote while two builds serve one database: this build cannot tell whether the approval
+// carries, so the refusal is a NewerContentError naming the version and the element, and the
+// version write fails with it - settlement writes no version and leaves the document owed, for a
+// build that reads the element (skipUnreadableSettlement). Any other schema refusal is a version
+// an earlier release stored, which is not this write's to fail for: the approval is not carried
+// and the refusal is logged. Any other error is the write's.
+func skipUnreadableVersion(log *slog.Logger, artifactID string, number int, err error) error {
+	if errors.Is(err, pmdoc.ErrUnknownElement) {
+		return newerContent(fmt.Errorf("version %d: %w", number, err))
+	}
 	if !errors.Is(err, pmdoc.ErrSchema) {
 		return err
 	}
-	slog.Warn("dispatch: skip carrying an approval over a document version outside the Proof schema",
+	log.Warn("dispatch: skip carrying an approval over a document version outside the Proof schema",
 		"room", artifactID, "version", number, "error", err)
 	return nil
 }
@@ -539,8 +549,9 @@ func carryVerdict(input carryInput) bool {
 }
 
 // storedVersionTree is the tree of the stored version number of artifactID, and whether that
-// version could be read: a version outside the Proof schema is logged and not readable, and a
-// number below 1, before the document's first version, is no version and not readable either.
+// version could be read: a version outside the Proof schema is logged and not readable, a number
+// below 1, before the document's first version, is no version and not readable either, and a
+// version holding an element this build does not know is an error (skipUnreadableVersion).
 func (s *Service) storedVersionTree(ctx context.Context, tx pgx.Tx, artifactID string, number int) (tree *pmdoc.Node, readable bool, err error) {
 	if number < 1 {
 		return nil, false, nil
@@ -551,7 +562,7 @@ func (s *Service) storedVersionTree(ctx context.Context, tx pgx.Tx, artifactID s
 	}
 	tree, err = pmdoc.ParseRendering(markdown)
 	if err != nil {
-		return nil, false, skipUnreadableVersion(artifactID, number, err)
+		return nil, false, skipUnreadableVersion(s.log(), artifactID, number, err)
 	}
 	return tree, true, nil
 }

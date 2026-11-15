@@ -50,7 +50,7 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 			clients = append(clients, client)
 		}
 		return client, err
-	}, pool, fake.newTestClient(), events.NewBroker(), nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -133,11 +133,15 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 }
 
 // TestAMessageInItsHandlerAtShutdownIsAcknowledged: a merged pull request whose GitHub fetch is
-// still running when ctx is cancelled is acknowledged once the fetch returns, because the intake's
-// client stays open until stop. deliver runs on the subscription's delivery goroutine under a
-// deadline of its own, so it outlives Run; a client closed as Run returned took the acknowledgement
+// still running when ctx is cancelled is acknowledged once the fetch returns, because the intake
+// stops delivering by draining its subscription and waits for the message in its handler before
+// Run returns and stop closes the client. A client closed as Run returned took the acknowledgement
 // down with it, and the message stayed outstanding until the ack wait handed it to the next
 // process.
+//
+// Serial: it swaps process-wide state. captureLogs replaces the default logger, which is where
+// deliver logs an acknowledgement that failed, so a parallel test beside it would have its own
+// lines read here and its own logger taken away.
 func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
@@ -161,7 +165,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, github, events.NewBroker(), nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -189,7 +193,8 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 		t.Fatalf("the intake never fetched the merged pull request: %s", consumer())
 	}
 	cancel()
-	// Run has returned once the durable loses its subscriber: Run unsubscribes as it ends.
+	// The intake stops delivering as ctx ends: the durable loses its subscriber at once, while the
+	// message in its handler is still running.
 	waitFor(t, 20*time.Second, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && !info.PushBound
@@ -224,6 +229,9 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 // bounds how long the intakes' stop waits on a handler GitHub holds, and the message of the handler
 // it gives up is handed back rather than acknowledged, so the next process to bind the durable
 // redoes it within seconds instead of after the ack wait.
+//
+// Serial: it swaps process-wide state. It assigns the package variable intakeStopBudget, which
+// the stop of every intake in the process reads its deadline from.
 func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	budget := intakeStopBudget
 	intakeStopBudget = time.Second
@@ -240,7 +248,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, github, events.NewBroker(), nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -282,7 +290,7 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 	stop, err := StartIntakes(t.Context(), func(string) (*bus.Client, error) {
 		t.Error("connected a client for intakes that have no GitHub App")
 		return nil, errors.New("no connection here")
-	}, nil, nil, nil, nil)
+	}, nil, IntakeLeases{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -302,8 +310,8 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 // error with neither intake started and the intake's client closed, so no durable is bound.
 func TestIntakesWhoseSecondConnectFailsStartNeither(t *testing.T) {
 	t.Parallel()
-	// A real pool rather than none: StartIntakes opens the lease pool its intakes reconcile
-	// their durables under before it connects anything.
+	// A real pool rather than none: the intakes' settings cache reads delivery_settings through
+	// it, and their reservations of its lease pool are what they take their holds on.
 	pool, _ := deliveryTestPool(t)
 	publisher := intakeTestClient(t)
 	natsURL := deliveryTestNATS(t)
@@ -316,7 +324,7 @@ func TestIntakesWhoseSecondConnectFailsStartNeither(t *testing.T) {
 		var err error
 		first, err = bus.Connect([]string{natsURL})
 		return first, err
-	}, pool, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), nil)
 	if !errors.Is(err, refused) {
 		t.Fatalf("start the intakes = %v, want the job intake's connect error", err)
 	}

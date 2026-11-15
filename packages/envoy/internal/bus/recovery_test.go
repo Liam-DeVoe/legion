@@ -60,8 +60,8 @@ func TestSubOK_NoSubscription(t *testing.T) {
 
 func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
 	// Serial: its assertion is a time (the publish returns within 6 s, its bounded reconnect).
-	// Publish routes each topic to its transport (bus.UsesCoreTransport), so both cases are the
-	// one call a caller makes.
+	// Publish routes each topic to its transport (bus.Client.UsesCoreTransport), so both cases are
+	// the one call a caller makes.
 	cases := []struct {
 		name  string
 		topic string
