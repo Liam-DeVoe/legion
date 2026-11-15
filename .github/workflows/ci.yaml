@@ -5059,7 +5059,7 @@ jobs:
     #   call              slowest package       limit  fills    read in
     #   the package list  pmdoc 513.5 s          18m   47.5 %   run 42993788046, job 130432829161
     #   race-impossible   docs 292.1 s           10m   48.7 %   run 43519308059
-    #   pgmigrate         pgmigrate 304.5 s      11m   46.1 %   run 43138709383
+    #   pgmigrate         pgmigrate 306.7 s      11m   46.5 %   run 43675841985
     #   shutdown          cmd/dispatch 68.7 s     3m   38.2 %   run 43208315370
     #   routes            routes 54.5 s           2m   45.4 %   run 43519308059
     #   events            events 158.2 s          6m   43.9 %   run 43519308059
@@ -5796,9 +5796,9 @@ jobs:
     # package takes at most half of it: internal/bus, 452.963 s (run 42863916685, job
     # 129997210948), 452.963 / 30 = 15.10, so 16m, which it fills to 47.2 per cent (15m, the
     # limit it ran under, it would fill to 50.3). The job's own bound follows its largest
-    # measured time of a green run, 615 s in run 43507133544 (job 132167720910), 10.25 minutes,
-    # plus that largest -timeout plus 6: 10.25 + 16 + 6 = 32.25, so 33. The red one of run
-    # 43640601453, 633 s (job 132587189318), would ask the same 33. A job of this lane varies
+    # measured time of a green run, 634 s in run 43675841985 (job 132695730267), 10.57 minutes,
+    # plus that largest -timeout plus 6: 10.57 + 16 + 6 = 32.57, so 33. The red one of run
+    # 43640601453, 633 s (job 132587189318), asks the same 33. A job of this lane varies
     # by a minute between two attempts of one commit, so a bound follows the largest reading
     # rather than the newest. The limit must fire before the runner cancels the job, so a hung
     # test prints the dump that names it.
