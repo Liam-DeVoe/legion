@@ -255,7 +255,16 @@ GNU tar 1.35 and git 2.47.3, tar replaced a repeated name and did not write thro
 `git add -A` staged an absolute link as mode 120000, and git did not read a symlinked
 `.gitignore`.
 
-Proved: <PROOF>
+**Proved** on 2026-11-15 on cybermonklabs/legion's `legion/INFRA-2709`, from that issue's own pod
+on its own workspace, so step 1 ran with `sh -c` in place of `kubectl exec`. Step 1 wrote a git
+archive of 525,516,800 bytes and a tree archive of 1,590,466,560 bytes, holding 3,884 links,
+between 15:40:38Z and 15:42:47Z. Step 2's `carry-out.sh` exited 0 at 15:48:37Z with a bundle of
+25,895 bytes, no edit left out of a commit and no other branch's commit. Step 3 fetched, logged
+the two commits `1e4bff5d` and `b6ba8a07`, and pushed
+`c0bdcc984..b6ba8a07d  rescue/INFRA-2709 -> legion/INFRA-2709` at 15:51:03Z. GitHub's
+`legion/INFRA-2709` then named `b6ba8a07`, the bundle's tip. The first run of step 2 at 15:02Z
+had refused the same workspace on its Bun links, under an earlier symlink rule that this
+section no longer has. Step 1 through `kubectl exec` from a controller's own pod is check k27's.
 
 ## A re-run of a CI run
 
