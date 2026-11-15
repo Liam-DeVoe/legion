@@ -23,6 +23,7 @@ import {
   marginReplySendKey,
   useMargin,
 } from "./margin-context";
+import { useMarginDrawer } from "./margin-slot";
 import {
   composerOwner,
   type MarginItem,
@@ -97,6 +98,7 @@ export function useMarginSheet(): MarginSheetModel {
   const projectRoute = parseProjectPath(pathname, search);
   const documentRoute = projectRoute?.kind === "document" ? projectRoute : undefined;
   const owner = useMarginOwner();
+  const drawer = useMarginDrawer();
   const issueKey = owner?.kind === "issue" ? owner.key : undefined;
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   const documentArtifact = useProjectArtifact(documentRoute);
@@ -581,6 +583,16 @@ export function useMarginSheet(): MarginSheetModel {
     selectItem,
     selectMarginItem,
   ]);
+  // The address's landing on a card beside its document, one per navigation, once the margin
+  // holds that card: the card is what a reader who followed the link asked to see, so a closed
+  // Details opens for it (`Margin.tsx`), as it does for a compose and a picked card. An item that
+  // is a node of the outline lands on that node instead and opens nothing.
+  const landedCard =
+    routeItemBesideDocument &&
+    routeItemKey !== undefined &&
+    marginItems.some((candidate) => marginItemId(candidate) === routeItemId)
+      ? routeItemKey
+      : undefined;
 
   useMarginListeners({
     composer: shownComposer,
@@ -597,7 +609,10 @@ export function useMarginSheet(): MarginSheetModel {
     routeItemKey,
     setHoveredItemId,
     setTab,
-    sheetExpanded,
+    // Below `xl` the margin's scrollport is laid out only while the compact sheet is expanded;
+    // in Details it is laid out while the drawer is open, at every width, so a linked card and
+    // an opened composer are held in view there once the drawer opens (dispatch://INFRA-1196 R14).
+    sheetExpanded: drawer === undefined ? sheetExpanded : drawer.open,
     tab,
     visibleArtifact,
   });
@@ -659,6 +674,7 @@ export function useMarginSheet(): MarginSheetModel {
       savingCommentEditId,
       hoveredItemId,
       hoveredMarkId,
+      landedCard,
       selectedItemId: displayedSelectedItemId,
       showResolved,
     },

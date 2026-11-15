@@ -27,11 +27,33 @@ const MarginFillRegistry = createContext<(fill: MarginFill | undefined) => void>
  *  handing it to a margin that is not there (dispatch://INFRA-1196 R11, R12). */
 const MarginDrawsSlotContext = createContext(false);
 
+/**
+ * The margin as a drawer: on the issue page the panel opens over the right of the page, the
+ * Details drawer, instead of keeping a column of its own, so the page's own column is the window
+ * less the navigation rail (dispatch://INFRA-1196 R14). The shell holds whether it is open, as
+ * it holds every other preference of the margin's, and a page reads it to draw the control that
+ * opens it. Undefined wherever the margin is a column, which is every other page.
+ */
+export interface MarginDrawer {
+  readonly open: boolean;
+  readonly setOpen: (open: boolean) => void;
+}
+
+const MarginDrawerContext = createContext<MarginDrawer | undefined>(undefined);
+
+/** The attribute the Details drawer and the control that opens it carry, so the outline can tell
+ *  the focus moving to Details - where the facts of the node it leaves are read - from the focus
+ *  leaving for the rest of the page (`IssueTree.tsx`'s `releaseFocus`). */
+export const DETAILS_ATTRIBUTE = "data-details";
+
 export function MarginSlotProvider({
   children,
+  drawer,
   drawsSlot = false,
 }: {
   children: ReactNode;
+  /** The drawer the margin is on this page, where it is one. */
+  drawer?: MarginDrawer;
   /** Whether the margin is keeping a column for the page's panel right now. The shell answers
    *  it, because the shell holds the reader's collapse preference and the width. */
   drawsSlot?: boolean;
@@ -42,11 +64,18 @@ export function MarginSlotProvider({
   const register = useCallback((next: MarginFill | undefined) => setFill(() => next), []);
   return (
     <MarginFillRegistry.Provider value={register}>
-      <MarginDrawsSlotContext.Provider value={drawsSlot}>
-        <MarginFillContext.Provider value={fill}>{children}</MarginFillContext.Provider>
-      </MarginDrawsSlotContext.Provider>
+      <MarginDrawerContext.Provider value={drawer}>
+        <MarginDrawsSlotContext.Provider value={drawsSlot}>
+          <MarginFillContext.Provider value={fill}>{children}</MarginFillContext.Provider>
+        </MarginDrawsSlotContext.Provider>
+      </MarginDrawerContext.Provider>
     </MarginFillRegistry.Provider>
   );
+}
+
+/** The Details drawer the margin is on this page, or `undefined` where it is a column. */
+export function useMarginDrawer(): MarginDrawer | undefined {
+  return useContext(MarginDrawerContext);
 }
 
 /**

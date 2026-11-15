@@ -57,6 +57,7 @@ export function IssuePresets({
   nodeMenu,
   onFilterChange,
   onLeave,
+  outline,
   toolbar,
 }: {
   active: Preset;
@@ -75,6 +76,9 @@ export function IssuePresets({
   onFilterChange: (next: string) => void;
   /** Called before this row leaves the address, so the page records where the reader was. */
   onLeave: () => void;
+  /** The Outline control, beside the presets below 1024 px, where the Contents pane is not
+   *  drawn (R14). It sits outside the presets' own box, as the node menu does. */
+  outline?: ReactNode;
   /** The open document's toolbar, where the preset has one. */
   toolbar?: ReactNode;
 }): ReactNode {
@@ -245,6 +249,9 @@ export function IssuePresets({
         onToggle={() => setOpen((shown) => (shown === "nodes" ? undefined : "nodes"))}
         open={open === "nodes"}
       />
+      {/* After the node menu, whose menu opens from where its control stands: before it, the
+          Outline control pushed that menu 13 px past a 390 px screen. */}
+      {outline}
       <input
         aria-label={CONTROL_LABELS.filter}
         className={`min-h-11 w-32 min-w-0 flex-1 rounded border px-2 py-1 text-sm md:min-h-9 ${inputClasses(false)}`}

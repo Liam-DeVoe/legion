@@ -10,9 +10,9 @@ import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
 import { jump, onFakeClock } from "./fake-clock";
 import { answerAgentStates } from "./send-answers";
-// The issue page is a lazy route of the app. Its module's first compile is not what a wait is
-// for, so the module is loaded here, with the test file, and no wait measures that load.
-import "../features/issue/IssuePage";
+// The project document page is a lazy route of the app. Its module's first compile is not what a
+// wait is for, so the module is loaded here, with the test file, and no wait measures that load.
+import "../features/document/DocumentPage";
 
 const issue: IssueDetails = {
   route_status: null,
@@ -177,29 +177,13 @@ function renderShellAt(
   api.listComments = async () => [];
   api.listIssueMessages = async () => [];
   api.listAgents = async () => listedAgents;
-  // The issue page under the shell reads these of its own; no test here asserts them.
-  api.getIssueSubscribers = async () => [];
-  api.listRepoProjects = async () => [];
-  api.listProjectArchitectureSources = async () => [];
-  // The one tree the issue page's body is draws on every address (dispatch://INFRA-1196 R1),
-  // and reads these for it.
-  api.getIssueCoverage = async (key) => ({
-    gaps: [],
-    has_plan: false,
-    issue: key,
-    requirements: [],
-    spec_artifact_id: "",
-  });
-  api.getIssueDecisions = async () => ({ decisions: [], document: null, open_questions: [] });
-  api.getIssueResults = async (key) => ({
-    checks: [],
-    issue: key,
-    verification_artifact_id: "",
-  });
-  api.getIssueReferences = async () => ({ members: [], truncated: false });
-  api.getReferenceTargets = async () => ({ targets: [] });
-  api.getArtifactBlocks = async () => [];
-  api.getArtifactText = async () => ({ markdown: "", token: "", version: null });
+  // The page under the shell is a project document, whose read answers with a failure the page
+  // draws: nothing here is about the document. The issue page draws its own frame - an icon rail
+  // and a Details drawer - in place of the sidebar, the compact header and the review margin
+  // (dispatch://INFRA-1196 R14), so a project document is where the shell these rows read is.
+  api.getProjectArtifact = async () => {
+    throw new Error("the document is no part of these rows");
+  };
   // Each ask card refreshes its own thread; the row the Inbox listed carries the one Dispatch
   // would answer with.
   api.getAsk = async (id) => {
@@ -216,7 +200,7 @@ function renderShellAt(
   });
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/issues/CORE-1/children"]}>
+      <MemoryRouter initialEntries={["/projects/CORE/documents/notes-md"]}>
         <AuthGate />
       </MemoryRouter>
     </QueryClientProvider>

@@ -2834,7 +2834,23 @@
     "region \"Waiting for your review\"": "region \"Decisions\"",
     "region \"Your decisions\"": "region \"Decisions\"",
     "region \"Replaced\"": "region \"Decisions\"",
-    "link \"session:e2e-seed…\"": "link \"Recorder (issue layout)\""
+    "link \"session:e2e-seed…\"": "link \"Recorder (issue layout)\"",
+    "button \"Hide margin\"": "button \"Close\"",
+    "button \"Hide sidebar\"": "button \"Open navigation\"",
+    "complementary \"Navigation\"": "navigation \"App\"",
+    "banner \"\"": "navigation \"Navigation\"",
+    "button \"Open review panel (1 open ask)\"": "button \"Details\"",
+    "button \"Open review panel (0 open asks)\"": "button \"Details\"",
+    "complementary \"Review panel\"": "complementary \"Review margin\""
+  },
+  "renameReasons": {
+    "button \"Hide margin\"": "The margin's collapse is Details' Close now: the panel opens over the right of the page as a drawer and closing it is its collapse (R14), the same control under the drawer's word.",
+    "button \"Hide sidebar\"": "On the issue page the sidebar is the 56 px icon rail (R14), already collapsed; its one control over the navigation is the rail's foot, Open navigation, which opens the whole list over the page, or the header's on a phone.",
+    "complementary \"Navigation\"": "The sidebar's landmark on the issue page is the icon rail's (R14), a navigation landmark named App so it is not taken for the whole navigation the rail's foot opens.",
+    "banner \"\"": "On a phone the shell's bar was the issue page's banner, holding Dispatch, the inbox count and Menu; on the issue page the header's `☰` opens the navigation that holds them (R14), so the bar is that navigation now.",
+    "button \"Open review panel (1 open ask)\"": "The phone's control that opened the panel is the header's Details control (R14); the panel it opens is the same.",
+    "button \"Open review panel (0 open asks)\"": "As above, on the closed issue, which waits on no ask.",
+    "complementary \"Review panel\"": "The phone's review sheet is the margin inside Details, which on the issue page is one box at every width and named as the margin is (R14); Details opens it over the whole screen."
   },
   "parentRows": {
     "link \"The ask it answers\"": {

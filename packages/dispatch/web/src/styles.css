@@ -130,6 +130,98 @@
 @theme {
   --font-sans:
     Inter, "Inter fallback", "Inter fallback DejaVu", ui-sans-serif, system-ui, sans-serif;
+
+  /* The issue page's palette (dispatch://INFRA-1196), the approved prototype's own colours
+     (`theme/palette.ts`'s `PAGE_*` and `ICON_RAIL*`), each named for what it is on that page:
+     the paper, the ink and its two lighter greys, the rules, the left pane and its marked row,
+     and for each kind of node the colour of its bullet and tag and the tint behind it. Each
+     makes the utilities its name says (`bg-page-paper`, `text-page-question`), which
+     `theme/classes.ts` composes; the dark scheme below swaps the value behind each name, so no
+     component writes a `dark:` of its own for them. */
+  --color-page-paper: #ffffff; /* page-paper */
+  --color-page-ink: #1c1917; /* page-ink */
+  --color-page-muted: #57534e; /* page-muted */
+  --color-page-quiet: #78716c; /* page-quiet */
+  --color-page-line: #eceae7; /* page-line */
+  --color-page-hair: #ddd8cf; /* page-hair */
+  --color-page-pane: #fafaf9; /* page-pane */
+  --color-page-mark: #efedea; /* page-mark */
+  --color-page-guide: #e7e5e4; /* page-guide */
+  --color-page-question: #2563eb; /* page-question */
+  --color-page-question-tint: #eff6ff; /* page-question-tint */
+  --color-page-person: #1c1917; /* page-ink */
+  --color-page-person-tint: #f6eedf; /* page-person-tint */
+  --color-page-decision: #7c3aed; /* page-decision */
+  --color-page-decision-tint: #f5f3ff; /* page-decision-tint */
+  --color-page-statement: #0f766e; /* page-statement */
+  --color-page-statement-tint: #f0fdfa; /* page-statement-tint */
+  --color-page-check: #4338ca; /* page-check */
+  --color-page-check-tint: #eef2ff; /* page-check-tint */
+  --color-page-step: #b45309; /* page-step */
+  --color-page-step-tint: #fffbeb; /* page-step-tint */
+  --color-page-child: #db2777; /* page-child */
+  --color-page-child-tint: #fdf2f8; /* page-child-tint */
+  --color-page-lens: #a21caf; /* page-lens */
+  --color-page-lens-tint: #fdf4ff; /* page-lens-tint */
+  --color-page-agent: #64748b; /* page-agent */
+  --color-page-issue: #44403c; /* page-issue */
+  --color-page-waiting: #ea580c; /* page-waiting */
+  --color-page-waiting-tint: #fff7ed; /* page-waiting-tint */
+  --color-page-waiting-text: #c2410c; /* page-waiting-text */
+  --color-page-passed: #15803d; /* page-passed */
+  --color-page-failed: #b91c1c; /* page-failed */
+  --color-page-not-run: #6b7280; /* page-not-run */
+  --color-page-in-progress: #1d4ed8; /* page-in-progress */
+
+  /* The icon rail the issue page draws in place of the navigation column, dark in both
+     schemes as the shell's own rail is. */
+  --color-icon-rail: #0b1324; /* icon-rail */
+  --color-icon-rail-text: #cbd5e1; /* icon-rail-text */
+  --color-icon-rail-accent: #38bdf8; /* icon-rail-accent */
+  --color-icon-rail-active: #1f2636; /* icon-rail-active */
+}
+
+/* The issue page's palette in the dark scheme: the app's own dark greys for the paper, the ink
+   and the rules, and for each kind a Tailwind shade of the same hue, light on the dark paper, its
+   tint the deepest shade of that hue. Each pairing clears the contrast `theme/classes.ts`
+   registers for it in both schemes (`palette.test.ts`). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-page-paper: #020618; /* slate-950 */
+    --color-page-ink: #f1f5f9; /* slate-100 */
+    --color-page-muted: #cad5e2; /* slate-300 */
+    --color-page-quiet: #90a1b9; /* slate-400 */
+    --color-page-line: #1d293d; /* slate-800 */
+    --color-page-hair: #314158; /* slate-700 */
+    --color-page-pane: #0f172b; /* slate-900 */
+    --color-page-mark: #1d293d; /* slate-800 */
+    --color-page-guide: #1d293d; /* slate-800 */
+    --color-page-question: #51a2ff; /* blue-400 */
+    --color-page-question-tint: #162456; /* blue-950 */
+    --color-page-person: #f1f5f9; /* slate-100 */
+    --color-page-person-tint: #292524; /* stone-800 */
+    --color-page-decision: #a684ff; /* violet-400 */
+    --color-page-decision-tint: #2f0d68; /* violet-950 */
+    --color-page-statement: #00d5be; /* teal-400 */
+    --color-page-statement-tint: #022f2e; /* teal-950 */
+    --color-page-check: #7c86ff; /* indigo-400 */
+    --color-page-check-tint: #1e1a4d; /* indigo-950 */
+    --color-page-step: #ffb900; /* amber-400 */
+    --color-page-step-tint: #461901; /* amber-950 */
+    --color-page-child: #fb64b6; /* pink-400 */
+    --color-page-child-tint: #510424; /* pink-950 */
+    --color-page-lens: #ed6aff; /* fuchsia-400 */
+    --color-page-lens-tint: #4b004f; /* fuchsia-950 */
+    --color-page-agent: #90a1b9; /* slate-400 */
+    --color-page-issue: #d6d3d1; /* stone-300 */
+    --color-page-waiting: #ff8904; /* orange-400 */
+    --color-page-waiting-tint: #441306; /* orange-950 */
+    --color-page-waiting-text: #ffb86a; /* orange-300 */
+    --color-page-passed: #05df72; /* green-400 */
+    --color-page-failed: #ff6467; /* red-400 */
+    --color-page-not-run: #99a1af; /* gray-400 */
+    --color-page-in-progress: #51a2ff; /* blue-400 */
+  }
 }
 
 /* A screen too narrow or too short for a wide sticky panel: a phone in either orientation, or a
@@ -201,6 +293,13 @@ a {
   html {
     scroll-padding-bottom: 5rem;
   }
+  /* The padding keeps what a scroll brings into view clear of the review sheet at the foot of
+     the screen. The issue page has no such sheet: its panel is Details, which opens over the
+     whole page from the header (dispatch://INFRA-1196 R14), so nothing covers the foot there,
+     and a landing centred on a passage is centred on the screen rather than 40 px above it. */
+  html:has([data-issue-page]) {
+    scroll-padding-bottom: 0;
+  }
   /* `:not(.sr-only:not(:focus))`: a control the page hides from sight and keeps for the
      keyboard - the shell's "Skip to content" - is no touch target while nothing can touch it.
      The floor would give it a 44 px box one pixel off the top-left corner of the page, which
@@ -234,40 +333,32 @@ a {
 
      A markdown link's padding is sized from its own line pitch, since a `.dispatch-markdown`
      inherits its text size and line height from its call site. `1lh` is the link's computed
-     line height and `1.2em` stands for the height of its font's text box (ascent plus
+     line height and `1.25em` stands for the height of its font's text box (ascent plus
      descent): half of what that leaves of the line goes above and below the link, and its
      padded box then stops at least as far short of the text of the line above as the padding
-     itself, for any font whose text box is at most 1.2em. A pitch tighter than 1.2em (a large
-     heading) gets no padding, since `calc()` clamps a negative padding to 0: its lines leave
-     no gap to fill.
+     itself, for any font whose text box is at most 1.25em, so two links on consecutive lines
+     keep a gap between their tap targets. A pitch tighter than 1.25em (a large heading) gets
+     no padding, since `calc()` clamps a negative padding to 0: its lines leave no gap to fill.
 
-     Measured in Chromium at 390px with DejaVu Sans, whose text box is 19px at 16px, 18px at
-     15px and 14px at 12px (padding / clearance from the lower link's padded box to the upper
-     link's text): a message turn, 16px on 24px lines, 2.4px / 2.6px; an Inbox ask card
-     (`AskCard.tsx`), 15px on 24.375px, 3.2px / 3.2px; an agent-view message body (`text-sm`),
-     14px on 20px, 1.6px / 2.4px; a document in the editor (`.milkdown p` in proof-editor's
-     `lib.css`, line height 1.6), 16px on 25.6px, 3.2px / 3.4px; an agent turn's reasoning
-     (`AgentThread.tsx`, `text-xs`), 12px on 16px, 0.8px / 1.2px. A fixed 3px there measured
-     -1px, reaching into the letters of the line above, and a fixed 4px on a message turn
-     measured a clearance of 1px (INFRA-95).
+     The app draws in Inter (the `@font-face` rules at the top of this file), whose text box
+     Chromium measures at 20px at 16px: 1.25em, where its ascent and descent of 1984 and 494 of
+     2048 units per em would give 1.21em, since each is rounded up to a whole pixel. Measured
+     in Chromium at 390px on a message turn in Details, 16px on 24px lines (padding /
+     clearance from the lower link's padded box to the upper link's text): with 1.2em, 2.4px /
+     1.6px in Inter and 2.4px / 2.6px in DejaVu Sans, whose box is 19px; so the constant is
+     Inter's own box, which leaves 2px / 2px. A font whose text box is r em tall leaves a
+     clearance of (line-height - (2r - 1.25) * font-size) / 2: an Inbox ask card
+     (`AskCard.tsx`), 15px on 24.375px, 2.8px; an agent-view message body (`text-sm`), 14px on
+     20px, 1.25px; an agent turn's reasoning (`AgentThread.tsx`, `text-xs`), 12px on 16px,
+     0.5px; a document in the editor (`.milkdown p` in proof-editor's `lib.css`, line height
+     1.6), 16px on 25.6px, 2.8px; each computed for Inter rather than measured. A fixed 3px
+     measured -1px on the reasoning, reaching into the letters of the line above, and a fixed
+     4px on a message turn measured a clearance of 1px (INFRA-95).
 
      No fallback declaration: Tailwind v4's browser floor supports `lh`, and a browser
-     without it drops the declaration and gives the link no padding, which never overlaps.
-     A font whose text box is r em tall leaves a clearance of
-     (line-height - (2r - 1.2) * font-size) / 2, so it reaches into the line above wherever
-     (2r - 1.2) * font-size > line-height. Segoe UI (`system-ui` on Windows, in a window
-     narrower than 1280px) has r = 1.33 by its published metrics, ascent 2210 plus descent 514
-     of 2048 units per em, not measured here; at each pitch above that gives: reasoning,
-     12px on 16px, -0.76px (overlaps); an agent-view message body, 14px on 20px, -0.22px
-     (overlaps); a message turn, 16px on 24px, 0.32px; a document, 16px on 25.6px, 1.12px; an
-     Inbox ask card, 15px on 24.375px, 1.24px. The app ships Inter now (the `@font-face` rules at
-     the top of this file), so these pitches are drawn in Inter or in a fallback face given its
-     ascent and descent, r = 1.21 (1984 plus 494 of 2048 units per em), computed rather than
-     measured: reasoning 0.68px, an agent-view message body 1.46px, a message turn 2.24px, a
-     document 3.04px and an Inbox ask card 3.04px. Segoe UI draws only a character none of those
-     faces holds. */
+     without it drops the declaration and gives the link no padding, which never overlaps. */
   .prose a {
-    padding-block: calc((1lh - 1.2em) / 2);
+    padding-block: calc((1lh - 1.25em) / 2);
   }
 
   .dispatch-inline-link {

@@ -537,6 +537,9 @@ export const CONTROL_LABELS = freeze({
   children_done: "Children done",
   /** The priority picker's first choice, which picks nothing. */
   choose_priority: "Choose a priority",
+  /** Closes the Details panel and the Outline sheet, each in its own head (R14); Escape does
+   *  the same. */
+  close: "Close",
   /** Closes the document opened in place of the outline and draws the outline again (R3); the
    *  key that does the same is Escape. */
   close_document: "Back to the conversation",
@@ -553,6 +556,9 @@ export const CONTROL_LABELS = freeze({
   components_retired: "retired",
   /** The control that attaches an issue with no components of its own to some. */
   components_set: "Set components",
+  /** The Contents pane's list: each question and each of the reader's own threads, which go to
+   *  their node in the outline (R14). */
+  contents: "Contents",
   /** The heading of the conversation inside the one right-hand panel (R12). */
   conversation: "Conversation",
   /** The word that control carries, beside the command it copies. */
@@ -563,6 +569,9 @@ export const CONTROL_LABELS = freeze({
   copy_link: "Copy link",
   /** Draws a pinned version of the open document against the document as it stands (R16). */
   diff_vs_current: "Diff vs current",
+  /** The one panel of the issue's properties, which opens over the right of the page, and the
+   *  control at the right of the header's first row that opens it (R14). */
+  details: "Details",
   /** The one row a branch below the three drawn levels folds to, which opens it in place: the
    *  count before it is the branch's own and carries `AUTHOR_TEXT_ATTRIBUTE` (R1), and the
    *  words agree with it: "1 more row below", "3 more rows below". A node is a row to the
@@ -591,10 +600,15 @@ export const CONTROL_LABELS = freeze({
    *  `deeper_row` does. */
   folded_row: "row hidden inside",
   folded_rows: "rows hidden inside",
+  /** Draws one branch of the outline at a time, the Contents pane's current one, by zooming the
+   *  outline to it; pressed again, the whole outline (R14). */
+  focus_branch: "Focus branch",
   /** How many checks a pull request has, before the count GitHub gives. */
   github_checks: "checks",
   /** The head's first row: where the plan says how the issue gets done (R5). */
   how_it_gets_done: "How it gets done",
+  /** The heading over the issue's three sentences in the Contents pane (R8). */
+  in_short: "In short",
   /** The one control row one keeps the actions behind: close, reopen and setting the parent.
    *  It names actions, never a property (R11 bans "more"). */
   issue_actions: "Issue actions",
@@ -630,6 +644,8 @@ export const CONTROL_LABELS = freeze({
   /** The node menu beside the presets, holding every document and artifact of the issue and
    *  the upload (R3). */
   other_nodes: "Files and documents",
+  /** Opens the Contents pane's list below 1024 px, where the pane is not drawn (R14). */
+  outline: "Outline",
   /** The row of five queries over the one tree, as a reader of it hears it named (R3). */
   presets: "Issue presets",
   /** The priority picker, named by what the issue will do with the one picked. */

@@ -1,5 +1,6 @@
 import { createComment, createIssue, createProject, resolveComment } from "./api";
 import { documentEditor, marginCard, openSpec, specAddress } from "./editor";
+import { closeDetails, marginShell, openDetails } from "./issue-page";
 import {
   answeredPost,
   navigateInApp,
@@ -38,8 +39,10 @@ function refusal(page: Page, issueKey: string) {
   return answeredPost(page, `/api/v1/issues/${issueKey}/comments`, WRITE_REFUSED.status);
 }
 
-/** Opens a margin thread, expanded beside the document. */
+/** Opens a margin thread, expanded beside the document, in Details, which is the issue page's
+ *  margin and which a reader opens from the header first (dispatch://INFRA-1196 R14). */
 async function openThread(page: Page, rootId: string): Promise<Locator> {
+  await openDetails(page);
   const card = marginCard(page, rootId);
   await card.getByRole("button", { expanded: false }).click();
   await expect(card).toHaveAttribute("aria-expanded", "true");
@@ -201,13 +204,15 @@ test("collapsing the margin to its rail while a thread's reply is out keeps the 
     const refuse = await refusePosts(page, comments);
     const { field, form } = await sendReply(card, "Reply under the rail");
 
-    await page.getByRole("button", { name: "Hide margin" }).click();
-    await expect(page.getByTestId("margin-rail")).toBeVisible();
+    // Closing Details is the issue page's collapse of its margin (dispatch://INFRA-1196 R14),
+    // which keeps the margin mounted in it, hidden.
+    await closeDetails(page);
+    await expect(marginShell(page)).toBeHidden();
     await expect(card).toBeHidden();
     const answered = refusal(page, issueKey);
     refuse();
     await answered;
-    await page.getByRole("button", { name: "Show margin" }).click();
+    await openDetails(page);
 
     await expect(card).toHaveAttribute("aria-expanded", "true");
     await expect(form.getByText(refused)).toBeVisible();
@@ -245,6 +250,9 @@ test("leaving the document while a margin thread's reply is out keeps the reply'
     // The thread the reader left is open again on their return, with its reply.
     await navigateInApp(page, await specAddress(issueKey));
     await expect(documentEditor(page)).toContainText(spec);
+    // Details is closed on the arrival, as on every move to another page (R14); the reader opens
+    // it to find their thread.
+    await openDetails(page);
     const card = marginCard(page, first.id);
     await expect(card).toHaveAttribute("aria-expanded", "true");
     const form = card.getByRole("form", { name: "Comment composer" });
@@ -275,6 +283,7 @@ test("a margin thread expanded a second time from the keyboard has its reply fie
   try {
     const page = await alice.newPage();
     await openSpec(page, issueKey, spec);
+    await openDetails(page);
     const card = marginCard(page, first.id);
     const field = card.getByRole("textbox", { name: "Reply" });
     for (const expansion of ["first", "second"]) {

@@ -260,9 +260,26 @@ export function openedThreadCard(page: Page, project: string, rootId: string): L
 }
 
 // On the phone layout the margin is a bottom sheet over the document. Acting on a selection
-// opens it; close it again before selecting another range, as a person would.
+// opens it; close it again before selecting another range, as a person would. On the issue page
+// the margin is the Details drawer instead, at every width, which its header control opens and
+// its Close closes (dispatch://INFRA-1196 R14): it is opened wherever a caller reads the margin,
+// and closed again only on a phone, where it is the whole-screen sheet over the document.
 export async function setSheet(page: Page, project: string, open: boolean): Promise<void> {
-  if (project !== "iphone") {
+  const issuePage = (await page.locator("[data-issue-page]").count()) > 0;
+  if (project !== "iphone" && !(issuePage && open)) {
+    return;
+  }
+  if (issuePage) {
+    const drawer = page.getByTestId("desktop-margin-shell");
+    if ((await drawer.isVisible()) !== open) {
+      await (open
+        ? page
+            .locator("header[data-issue-header]")
+            .getByRole("button", { exact: true, name: "Details" })
+        : drawer.getByRole("button", { exact: true, name: "Close" })
+      ).click();
+    }
+    await (open ? expect(drawer).toBeVisible() : expect(drawer).toBeHidden());
     return;
   }
   const sheet = page.getByTestId("margin-sheet");

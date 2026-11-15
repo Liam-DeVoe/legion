@@ -48,8 +48,8 @@ These work on every page.
 | `g s` | Go to Settings |
 | `g d` | Go to the current project's Documents (on a project or issue page) |
 | `g p` | Go to project… |
-| `Shift+S` | Toggle the sidebar (wide screens) |
-| `Shift+M` | Toggle the margin (wide screens, on a page with a document) |
+| `Shift+S` | Toggle the sidebar (wide screens; the issue page has its icon column instead) |
+| `Shift+M` | Toggle the margin (wide screens, on a page with a document); on an issue, open or close **Details** |
 
 ## Inbox
 
@@ -141,6 +141,7 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `Escape` | Back out of the focused status or priority |
 | `Enter` on a file in **Files and documents** | Open it in place of the tree |
 | `Escape` in a document opened in place of the tree | Leave its text, then close it and go back to the tree |
+| `Escape` while **Details** is open | Close **Details** first; in a text field or a select, leave the field first |
 
 `0` – `3` and `Shift+P` do nothing while focus is in an ask's card or on a checkbox or option,
 where the key belongs to that control.

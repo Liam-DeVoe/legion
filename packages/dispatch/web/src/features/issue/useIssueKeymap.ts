@@ -66,7 +66,9 @@ const PARTS = {
   filter: `input[aria-label="${CONTROL_LABELS.filter}"]`,
   margin: '[data-testid="issue-margin"]',
   menu: '[role="menu"]',
-  tree: '[role="tree"]',
+  // The outline, by its name: the Contents pane's list is a tree too (`IssueContents.tsx`), and
+  // it stands before the outline in the page.
+  tree: `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`,
 } as const;
 
 /** What takes the focus inside each part, where the part itself does not: the tree's one tab
@@ -110,11 +112,14 @@ function showPart(found: HTMLElement, takes: HTMLElement): HTMLElement {
 /**
  * Brings the part of the page `part` names on screen and puts the focus in it, once the page
  * has drawn it: a chord navigates, and what it opens is on the page a frame or two later (R9,
- * c-keyboard, which reads both the box and the focus).
+ * c-keyboard, which reads both the box and the focus). A part that is mounted inside a hidden
+ * element is not drawn yet either: the panel is in Details, which the conversation's address
+ * opens a commit after the address lands (dispatch://INFRA-1196 R14), and a hidden control takes
+ * no focus.
  */
 function reachPart(part: keyof typeof PARTS, left = DRAWING_FRAMES): void {
   const found = document.querySelector<HTMLElement>(PARTS[part]);
-  if (found === null) {
+  if (found === null || found.closest("[hidden]") !== null) {
     if (left > 0) requestAnimationFrame(() => reachPart(part, left - 1));
     return;
   }

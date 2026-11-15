@@ -32,6 +32,7 @@ import {
 } from "./inbox-filter";
 import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
+import { openDetails } from "./issue-page";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, test } from "./test";
@@ -494,10 +495,9 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
   await alicePage.screenshot({ path: testInfo.outputPath("inbox-three-asks.png"), fullPage: true });
 
   await navigateInApp(alicePage, `/issues/${firstIssue.key}`);
-  // Inside the issue page's own panel. The page fills the margin's slot in an effect, so the
-  // margin draws once plain and again inside that panel, and a card taken from the first draw
-  // is thrown away with it mid-press (dispatch://INFRA-1196 R12, as `e2e/polish.e2e.ts` reads
-  // the same card).
+  // Inside the issue page's own panel, Details, which a reader opens from the header
+  // (dispatch://INFRA-1196 R14). Its content is drawn once per load, inside the page's panel.
+  await openDetails(alicePage);
   const needsYou = needsYouCards(alicePage.getByTestId("issue-margin"));
   const newestAskCard = needsYou.getByTestId(`ask-${newestAsk.id}`);
   const shipOption = newestAskCard.getByRole("radio", { name: "Ship" });

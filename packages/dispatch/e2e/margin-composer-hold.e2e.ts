@@ -9,7 +9,7 @@ import {
   setSheet,
   specAddress,
 } from "./editor";
-import { expectIssueClosed } from "./issue-page";
+import { closeDetails, expectIssueClosed, marginShell, openDetails } from "./issue-page";
 import {
   answeredPost,
   holdPosts,
@@ -214,7 +214,8 @@ test("the Pinned tab while a margin send is out keeps the composer, its draft an
   }
 });
 
-// Collapsing the desktop margin to its rail keeps the margin mounted under it, the composer in it.
+// Closing Details, the issue page's collapse of its margin (dispatch://INFRA-1196 R14), keeps the
+// margin mounted in it, hidden, the composer in it.
 test("collapsing the margin while its send is out keeps the composer, its draft and its refusal", async ({
   browser,
 }) => {
@@ -229,12 +230,12 @@ test("collapsing the margin while its send is out keeps the composer, its draft 
     const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await sendFromBar(page, "brown", "Through the rail");
 
-    await page.getByRole("button", { name: "Hide margin" }).click();
-    await expect(page.getByTestId("margin-rail")).toBeVisible();
+    await closeDetails(page);
+    await expect(marginShell(page)).toBeHidden();
     const refused = refusal(page, issue.key, WRITE_REFUSED.status);
     refuse();
     await refused;
-    await page.getByRole("button", { name: "Show margin" }).click();
+    await openDetails(page);
 
     const form = composer(page);
     await expect(form.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
@@ -244,8 +245,8 @@ test("collapsing the margin while its send is out keeps the composer, its draft 
   }
 });
 
-// A bar Comment while the collapsed margin's send is out brings the margin back from its rail, with
-// the open composer saying why the new selection waits.
+// A bar Comment while a closed Details' send is out opens Details again, with the open composer
+// saying why the new selection waits.
 test("a bar Comment while the collapsed margin's send is out shows the margin and why", async ({
   browser,
 }) => {
@@ -260,11 +261,11 @@ test("a bar Comment while the collapsed margin's send is out shows the margin an
     const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await sendFromBar(page, "brown", "Through the rail");
 
-    await page.getByRole("button", { name: "Hide margin" }).click();
-    await expect(page.getByTestId("margin-rail")).toBeVisible();
+    await closeDetails(page);
+    await expect(marginShell(page)).toBeHidden();
     await selectEditorText(page, "fox");
     await barAction(page, "Comment");
-    await expect(page.getByTestId("margin-rail")).toHaveCount(0);
+    await expect(marginShell(page)).toBeVisible();
     const form = composer(page);
     await expect(form.locator("blockquote")).toHaveText("brown");
     await expect(page.getByText(stillSending)).toBeVisible();

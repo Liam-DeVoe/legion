@@ -23,7 +23,14 @@ import {
   specAddress,
 } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
-import { expectActivePreset, openedArtifact, openIssueAddress } from "./issue-page";
+import {
+  closeDetails,
+  expectActivePreset,
+  marginShell,
+  openDetails,
+  openedArtifact,
+  openIssueAddress,
+} from "./issue-page";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
@@ -121,9 +128,9 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     // The issue's own address is the Tree preset's now (dispatch://INFRA-1196 R19).
     await expectActivePreset(page, "Tree");
     if (isPhone) {
-      const reviewToggle = page.getByRole("button", { name: "Open review panel (1 open ask)" });
-      await expect(reviewToggle).toBeVisible();
-      await reviewToggle.click();
+      // The open ask's card is in Details, the phone's sheet the header's control opens
+      // (dispatch://INFRA-1196 R14).
+      await openDetails(page);
       const askCard = needsYouCards(page).getByTestId(`ask-${openAsk.id}`);
       await askCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
       await askCard.getByLabel("Your answer").fill("Yes.");
@@ -136,7 +143,7 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
       ).toBe(true);
-      await page.getByRole("button", { name: /Close review panel/ }).click();
+      await closeDetails(page);
     }
     // The issue's own address draws no document (dispatch://INFRA-1196 R3): the spec opens at its
     // own address, in place of the outline, and is read there.
@@ -163,9 +170,10 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     const commentBody = commentComposer.getByLabel("Comment");
     await expect(commentBody).toBeFocused();
 
-    // D43: on phone the sheet the composer opened in also traps Tab.
+    // D43: on phone the sheet the composer opened in also traps Tab: the issue page's Details,
+    // which the compose opened.
     if (isPhone) {
-      await assertTabTrapped(page, '[data-testid="margin-sheet"]');
+      await assertTabTrapped(page, '[data-testid="desktop-margin-shell"]');
       await commentBody.focus();
     }
 
@@ -189,18 +197,17 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     await commentBody.press("Escape");
     await expect(commentComposer).toHaveCount(0);
     if (isPhone) {
-      await expect(page.getByRole("button", { name: /Close review panel/ })).toBeVisible();
-      await page.getByRole("button", { name: /Close review panel/ }).click();
+      await expect(marginShell(page)).toBeVisible();
+      await closeDetails(page);
     }
 
     // D25: a pinned Conversation turn renders its own description, never the literal "Event <seq>".
+    // The conversation and its Pinned tab are in Details.
     await openIssueAddress(page, "conversation");
+    await openDetails(page);
     const pinnedTurn = turn(page, pinnedMessage);
     await pinnedTurn.hover();
     await pinnedTurn.getByRole("button", { name: "Pin" }).click();
-    if (isPhone) {
-      await page.getByRole("button", { name: /Open review panel/ }).click();
-    }
     await page.getByRole("tab", { name: "Pinned" }).click();
     // The margin's sheet holds the issue's whole conversation as well as its own cards, so the
     // pinned message is drawn twice inside it: the reading here is the Pinned panel's own.
@@ -212,27 +219,29 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
   }
 });
 
+// On a project document, whose margin is the phone's bottom sheet: the issue page's margin is its
+// Details drawer now, which holds the page's own panel after the composer (dispatch://INFRA-1196
+// R14), so a held composer's controls are no longer the sheet's last there.
 test("a phone thread trap skips a held composer's disabled controls @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: initialMarkdown,
-    title: "Held composer focus trap",
+  const created = await createProjectDocument("CORE", {
+    content: initialMarkdown,
+    name: "Held composer focus trap",
   });
   const alice = await asUser(browser, "alice");
 
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 844, width: 390 });
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/projects/CORE/documents/${created.artifact.slug}`);
     await selectEditorText(page, "brown");
     await barAction(page, "Comment");
     const sheet = page.getByTestId("margin-sheet");
     const form = sheet.getByRole("form", { name: "Comment composer" });
     const body = form.getByLabel("Comment");
-    const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
+    const refuse = await refusePosts(page, "**/api/v1/artifacts/*/comments");
     await body.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(body).toBeDisabled();
@@ -277,23 +286,23 @@ test("a phone sheet trap wraps Shift+Tab from its first control past a held comp
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: initialMarkdown,
-    title: "Held composer reverse focus trap",
+  // A project document, for the row above's reason.
+  const created = await createProjectDocument("CORE", {
+    content: initialMarkdown,
+    name: "Held composer reverse focus trap",
   });
   const alice = await asUser(browser, "alice");
 
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 844, width: 390 });
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/projects/CORE/documents/${created.artifact.slug}`);
     await selectEditorText(page, "brown");
     await barAction(page, "Comment");
     const sheet = page.getByTestId("margin-sheet");
     const form = sheet.getByRole("form", { name: "Comment composer" });
     const body = form.getByLabel("Comment");
-    const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
+    const refuse = await refusePosts(page, "**/api/v1/artifacts/*/comments");
     await body.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(body).toBeDisabled();
@@ -545,8 +554,10 @@ test("an inline link keeps its line and grows its hit box without covering its n
       };
     });
 
+    // The conversation is in Details, which its address opens over the page
+    // (dispatch://INFRA-1196 R14, R20), so its links are read there.
     await navigateInApp(page, `/issues/${issue.key}/conversation`);
-    await expect(page.getByRole("link", { name: "Lower line" }).first()).toBeVisible();
+    await expect(marginShell(page).getByRole("link", { name: "Lower line" }).first()).toBeVisible();
     // The jump to the newest turn, and the unread "New" marks clearing after it, both move the
     // turn after `toBeVisible()`: put the upper link in the middle of the viewport and hold
     // there until its rect has not moved for 300 ms, so the measurement is taken at a position
@@ -554,7 +565,7 @@ test("an inline link keeps its line and grows its hit box without covering its n
     await page.evaluate(async () => {
       // The same link the measurement below takes: outside the ask cards, where a decision
       // block renders the same body in its own card.
-      const upper = [...document.querySelectorAll("main a")]
+      const upper = [...document.querySelectorAll('[data-testid="desktop-margin-shell"] a')]
         .filter((link) => link.closest('[data-testid^="ask-"]') === null)
         .find((link) => (link.textContent ?? "") === "Upper line");
       if (upper === undefined) {
@@ -580,7 +591,7 @@ test("an inline link keeps its line and grows its hit box without covering its n
     });
     const line = await page.evaluate(() => {
       // Outside the ask cards: a decision block renders the same body in its own card.
-      const links = [...document.querySelectorAll("main a")].filter(
+      const links = [...document.querySelectorAll('[data-testid="desktop-margin-shell"] a')].filter(
         (link) => link.closest('[data-testid^="ask-"]') === null
       );
       const upper = links.find((link) => (link.textContent ?? "") === "Upper line");
@@ -644,7 +655,7 @@ test("an inline link keeps its line and grows its hit box without covering its n
     // trial click waits and retries until the link is attached, visible, stable and is what
     // the action point hits, and then performs no click - bounded so a refusal is prompt.
     const upperLink = page
-      .locator('main a:not([data-testid^="ask-"] a)')
+      .locator('[data-testid="desktop-margin-shell"] a:not([data-testid^="ask-"] a)')
       .filter({ hasText: /^Upper line$/ });
     await expect(upperLink).toHaveCount(1);
     // On consecutive lines of one message turn - 16px prose on 24px lines - a tap at the bottom
@@ -952,27 +963,31 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     // alone can reach is a fact a reader on a phone does not have). So neither the external
     // link nor the route control is cut here and neither has a tooltip to read. What this row
     // guards of them is the thing that still holds: a long name never widens the page. Each
-    // stays inside the screen, and the page scrolls in one dimension only.
+    // stays inside the screen, and the page scrolls in one dimension only. The external link is
+    // a property in Details, which a reader opens from the header (R14); the route control is
+    // still the header's own.
     const insideScreen = (locator: Locator) =>
       locator.first().evaluate((element) => {
         const rect = element.getBoundingClientRect();
         return rect.left >= -1 && rect.right <= window.innerWidth + 1;
       });
-    const longLink = page.getByRole("link", { name: longUrl });
+    const routeControl = page.getByRole("button", { name: longRoute });
+    await expect(routeControl.first()).toBeVisible();
+    expect.soft(await insideScreen(routeControl), "the route reaches past the screen").toBe(true);
+    await openDetails(page);
+    const longLink = marginShell(page).getByRole("link", { name: longUrl });
     await expect(longLink).toBeVisible();
     expect
       .soft(await insideScreen(longLink), "the whole address reaches past the screen")
       .toBe(true);
-    const routeControl = page.getByRole("button", { name: longRoute });
-    await expect(routeControl.first()).toBeVisible();
-    expect.soft(await insideScreen(routeControl), "the route reaches past the screen").toBe(true);
+    await assertPageFits(page);
+    await closeDetails(page);
     await assertPageFits(page);
     await expectEllipsis(
       page
         .getByRole("navigation", { name: "Open decisions" })
         .getByRole("link", { name: longQuestion })
     );
-
     // The @ picker's detail line: a role's detail names the live session that holds it.
     await navigateInApp(page, `/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });

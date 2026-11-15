@@ -18,11 +18,13 @@ import {
   gotoIssue,
   identityBlockBottom,
   issuePage,
+  marginShell,
   marginSlot,
   nodeBodies,
   nodeMenuButton,
   nodeRow,
   onScreen,
+  openDetails,
   openedArtifact,
   openMenu,
   pickPreset,
@@ -199,12 +201,14 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
         .filter({ hasText: `Open the ${PRESET_NAMES.plan} preset` })
         .locator("kbd")
     ).toHaveText(["t", "p"]);
-    // The activity takes `t v`, since `t a` opens the node menu and `l` the labels.
-    await expect(issueSection).toContainText("Open the activity in the panel");
+    // The activity takes `t v`, since `t a` opens the node menu and `l` the labels. Its words
+    // are the page's own (`useIssueKeymap.ts`): `/activity` draws the issue's whole history
+    // under the tree, as the user docs' address table has it.
+    await expect(issueSection).toContainText("Open the issue's history under the tree");
     await expect(
       issueSection
         .getByRole("listitem")
-        .filter({ hasText: "Open the activity in the panel" })
+        .filter({ hasText: "Open the issue's history under the tree" })
         .locator("kbd")
     ).toHaveText(["t", "v"]);
     // The collaborators have no chord: the spec's table names two chords into the panel, `t c`
@@ -360,7 +364,9 @@ test.describe("issue page", () => {
         return route.fallback();
       });
 
-      // Focus an option radio, as a reader answering the ask would, and press a digit.
+      // Focus an option radio, as a reader answering the ask would, and press a digit. The ask's
+      // card is in Details, which a reader opens from the header (dispatch://INFRA-1196 R14).
+      await openDetails(page);
       const hold = page.getByRole("radio", { name: "Hold" });
       await hold.click();
       await expect(hold).toBeFocused();
@@ -796,6 +802,11 @@ test("every chord the page bound before the redesign brings a target on screen w
         `t ${second} does not put the focus in the panel`
       ).toBe(true);
     }
+    // Both open the conversation in Details (dispatch://INFRA-1196 R14), the layer over the
+    // page, which Escape closes before the page's own Escape does anything else; the chords
+    // below are read on the page under it.
+    await page.keyboard.press("Escape");
+    await expect(marginShell(page), "Escape does not close Details").toBeHidden();
 
     // The children section: `t h`.
     await focusThePage(page);

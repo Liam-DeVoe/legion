@@ -27,7 +27,13 @@ import {
   setSheet,
   specAddress,
 } from "./editor";
-import { conversationStateControl, focusedNodeId, pickPreset } from "./issue-page";
+import {
+  conversationStateControl,
+  focusedNodeId,
+  marginShell,
+  openDetails,
+  pickPreset,
+} from "./issue-page";
 import { commentWithBody } from "./margin-helpers";
 import { setCommentAuthorService } from "./seed";
 import { navigateInApp } from "./sends";
@@ -170,10 +176,10 @@ test("the selection bar comments, suggests, and asks on marks that both users se
   }
 });
 
-// A bar Comment mounts its composer before the margin has come back from its rail or its Pinned
-// tab, out of sight, where a field takes no focus; the composer takes focus once it is on screen.
-// On a phone the sheet opens for it, which `phone.e2e.ts` checks.
-test("a bar Comment focuses its composer from the margin's rail and from its Pinned tab", async ({
+// A bar Comment mounts its composer before Details has opened or the margin has come back from
+// its Pinned tab, out of sight, where a field takes no focus; the composer takes focus once it is
+// on screen. On a phone the sheet opens for it, which `phone.e2e.ts` checks.
+test("a bar Comment focuses its composer from a closed Details and from its Pinned tab", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -186,11 +192,12 @@ test("a bar Comment focuses its composer from the margin's rail and from its Pin
     await expect(connectedDot(page)).toHaveText("connected");
     const form = page.getByRole("form", { name: "Comment composer" });
 
-    await page.getByRole("button", { name: "Hide margin" }).click();
-    await expect(page.getByTestId("margin-rail")).toBeVisible();
+    // On the issue page the margin is Details, closed on the load, and a compose opens it with
+    // the composer focused (dispatch://INFRA-1196 R14).
+    await expect(marginShell(page)).toBeHidden();
     await selectEditorText(page, "brown");
     await barAction(page, "Comment");
-    await expect(page.getByTestId("margin-rail")).toHaveCount(0);
+    await expect(marginShell(page)).toBeVisible();
     await expect(form.getByLabel("Comment")).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(form).toHaveCount(0);
@@ -724,6 +731,9 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     const alicePage = await alice.newPage();
     await alicePage.goto(`/issues/${issue.key}`);
     await pickPreset(alicePage, "Spec");
+    // The margin's cards are in Details, which a reader opens from the header
+    // (dispatch://INFRA-1196 R14).
+    await openDetails(alicePage);
     const aliceCard = marginCard(alicePage, ask.id);
     await expect(aliceCard).toContainText("brown");
     await aliceCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
@@ -736,6 +746,7 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     const bobPage = await bob.newPage();
     await bobPage.goto(`/issues/${issue.key}`);
     await pickPreset(bobPage, "Spec");
+    await openDetails(bobPage);
     const bobCard = marginCard(bobPage, ask.id);
     await expect(bobCard).toBeVisible();
     await expect(bobCard).toContainText("brown");
@@ -875,6 +886,9 @@ test("a comment a verified service token wrote names its service account in the 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/spec`);
+    // The margin's cards are in Details, which a reader opens from the header
+    // (dispatch://INFRA-1196 R14).
+    await openDetails(page);
     const thread = marginCard(page, comment.id);
     // Only an expanded thread carries the author line under each comment.
     await thread.locator('button[aria-expanded="false"]').click();

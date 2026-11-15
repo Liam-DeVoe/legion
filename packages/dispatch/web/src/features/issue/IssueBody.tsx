@@ -6,9 +6,10 @@ import type { Artifact, IssueDetails } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { IssueChildren } from "./IssueChildren";
+import { ContentsList, IssueContentsPane, OutlineSheet } from "./IssueContents";
 import { IssuePresets } from "./IssuePresets";
 import { IssueThreeThings, nodesOfType, specSummary } from "./IssueThreeThings";
-import { IssueTree } from "./IssueTree";
+import { IssueTree, type OutlineRequest } from "./IssueTree";
 import type { AddressTarget, IssueAddress } from "./issue-address";
 import { pathToTarget } from "./issue-address";
 import { artifactsBySlug } from "./issue-artifacts";
@@ -17,6 +18,14 @@ import { pageChrome } from "./page-structure";
 import { EMPTY_STATE_LINES, PRESET_ORDER, type Preset } from "./page-words";
 import { presetCounts, presetView } from "./presets";
 import { useIssueTree } from "./useIssueTree";
+
+/** The width the Contents pane stands beside the outline from (R8, R14): 1024 px, in `rem` so
+ *  it switches with Tailwind's `lg:` at any default font size. */
+export const CONTENTS_PANE_QUERY = "(min-width: 64rem)";
+
+/** The page's inset from the edges of its column, the prototype's: 28 px from the phone's width
+ *  up, 14 px below it. The Contents pane takes none, and stands against the rail. */
+export const PAGE_INSET = "px-3.5 md:px-7";
 
 /**
  * The issue's body on every address: its three sentences, the preset row, the children section
@@ -28,9 +37,16 @@ import { useIssueTree } from "./useIssueTree";
  * draws what the open preset left. Building that tree is this page's one model read
  * (`useIssueTree.ts`), so it happens here, once, below the guards `IssuePage` draws for an
  * issue it could not load.
+ *
+ * Under the preset row the body is two columns from 1024 px up: the Contents pane against the
+ * rail, with the three sentences and the list of questions and the reader's own threads, and
+ * the reading column with the outline (R8, R14). Below 1024 px the pane is not drawn: the three
+ * sentences head the reading column, above the outline, and the list is behind the Outline
+ * control beside the presets.
  */
 export function IssueBody({
   address,
+  below,
   openedDocument,
   isClosed,
   issue,
@@ -40,6 +56,8 @@ export function IssueBody({
   toolbar,
 }: {
   address: IssueAddress;
+  /** What the page draws under the outline, in the reading column (`IssuePresetPanels`). */
+  below?: ReactNode;
   /** The document the address opens, drawn in place of the children section and the tree
    *  (R3), with its version control beside the filters; undefined where the outline is drawn. */
   openedDocument?: { readonly panel: ReactNode; readonly toolbar: ReactNode };
@@ -126,6 +144,41 @@ export function IssueBody({
     isPhoneViewport && shownToolbar !== undefined ? (
       <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">{shownToolbar}</div>
     ) : null;
+  // Where the three sentences and the list are drawn: in the Contents pane from 1024 px up, and
+  // below that the sentences over the outline and the list behind the Outline control (R8).
+  const paned = useMediaQuery(CONTENTS_PANE_QUERY);
+  // What the list last asked of the outline, and whether the outline draws one branch at a
+  // time: the pane and the sheet share them, so a width that swaps one for the other keeps both.
+  const [request, setRequest] = useState<OutlineRequest | undefined>(undefined);
+  const [focusBranch, setFocusBranch] = useState(false);
+  const ask = (id: string | undefined, branch: boolean) =>
+    setRequest((held) => ({ focusBranch: branch, id, seq: (held?.seq ?? 0) + 1 }));
+  const list = (close?: () => void) =>
+    drawsDocument ? null : (
+      <ContentsList
+        focusBranch={focusBranch}
+        onFocusBranch={(current) => {
+          setFocusBranch(!focusBranch);
+          ask(current, !focusBranch);
+        }}
+        onGo={(id) => {
+          close?.();
+          ask(id, focusBranch);
+        }}
+        root={view.root}
+      />
+    );
+  const head = (
+    <IssueThreeThings
+      checks={nodesOfType(root, "check")}
+      inPane={paned}
+      issueKey={issue.key}
+      plan={plan}
+      planTasks={nodesOfType(root, "plan_task").length}
+      reading={!blocksRead}
+      summary={specSummary(root, specSlug)}
+    />
+  );
 
   return (
     <>
@@ -133,59 +186,62 @@ export function IssueBody({
           is empty while every key the reader pressed went somewhere (R9, R21). It is drawn
           here, above everything, so the page's own report is the first status a reader meets -
           ahead of the live-connection status a document's toolbar carries. */}
-      <p className={`text-xs ${textMutedOnCanvas}`} role="status" {...pageChrome}>
+      <p className={`text-xs ${PAGE_INSET} ${textMutedOnCanvas}`} role="status" {...pageChrome}>
         {report}
       </p>
-      <IssueThreeThings
-        checks={nodesOfType(root, "check")}
-        issueKey={issue.key}
-        plan={plan}
-        planTasks={nodesOfType(root, "plan_task").length}
-        reading={!blocksRead}
-        summary={specSummary(root, specSlug)}
-      />
-      <IssuePresets
-        active={address.preset}
-        artifacts={issue.artifacts ?? []}
-        counts={counts}
-        filter={address.filter}
-        isClosed={isClosed}
-        issueKey={issue.key}
-        nodeMenu={address.nodeMenu}
-        onLeave={onLeave}
-        onFilterChange={(next) => {
-          const query = new URLSearchParams(search);
-          if (next === "") query.delete("q");
-          else query.set("q", next);
-          const rest = query.toString();
-          navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, { replace: true });
-        }}
-        toolbar={isPhoneViewport ? undefined : shownToolbar}
-      />
-      {drawsDocument ? (
-        <>
-          {phoneToolbar}
-          {openedDocument?.panel}
-        </>
-      ) : (
-        <>
-          <IssueChildren issue={issue} />
-          <IssueTree
-            artifacts={artifacts}
-            context={view.context}
-            emptyLine={EMPTY_STATE_LINES[address.preset]}
-            filtering={view.filtering}
-            focusReveal={followed || address.preset !== "spec" || targetKind === "item"}
-            isClosed={isClosed}
-            onEditing={onEditing}
-            onReport={setReport}
-            openBody={opened}
-            reveal={reveal}
-            root={view.root}
-          />
-          {phoneToolbar}
-        </>
-      )}
+      <div className={PAGE_INSET}>
+        <IssuePresets
+          active={address.preset}
+          artifacts={issue.artifacts ?? []}
+          counts={counts}
+          filter={address.filter}
+          isClosed={isClosed}
+          issueKey={issue.key}
+          nodeMenu={address.nodeMenu}
+          onLeave={onLeave}
+          onFilterChange={(next) => {
+            const query = new URLSearchParams(search);
+            if (next === "") query.delete("q");
+            else query.set("q", next);
+            const rest = query.toString();
+            navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, { replace: true });
+          }}
+          outline={paned || drawsDocument ? undefined : <OutlineSheet list={list} />}
+          toolbar={isPhoneViewport ? undefined : shownToolbar}
+        />
+      </div>
+      <div className="flex min-w-0 items-start">
+        {paned ? <IssueContentsPane brief={head} list={list()} /> : null}
+        <div className={`flex min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}>
+          {paned ? null : head}
+          {drawsDocument ? (
+            <>
+              {phoneToolbar}
+              {openedDocument?.panel}
+            </>
+          ) : (
+            <>
+              <IssueChildren issue={issue} />
+              <IssueTree
+                artifacts={artifacts}
+                context={view.context}
+                emptyLine={EMPTY_STATE_LINES[address.preset]}
+                filtering={view.filtering}
+                focusReveal={followed || address.preset !== "spec" || targetKind === "item"}
+                isClosed={isClosed}
+                onEditing={onEditing}
+                onReport={setReport}
+                openBody={opened}
+                request={request}
+                reveal={reveal}
+                root={view.root}
+              />
+              {phoneToolbar}
+            </>
+          )}
+          {below}
+        </div>
+      </div>
     </>
   );
 }

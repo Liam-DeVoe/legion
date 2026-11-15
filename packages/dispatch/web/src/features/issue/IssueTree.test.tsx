@@ -605,6 +605,7 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
     <MemoryRouter>
       <IssueThreeThings
         checks={[]}
+        inPane={false}
         issueKey={KEY}
         plan={undefined}
         planTasks={0}

@@ -733,6 +733,147 @@ registerText(
   railFixed(RAIL_ACTIVE_BG_SWATCH)
 );
 
+// ---------------------------------------------------------------------------------------------
+// The issue page's palette (dispatch://INFRA-1196): the approved prototype's colours, as
+// `styles.css` declares them in `@theme` under names that say what each is on that page. A
+// token's utility (`text-page-ink`) carries both schemes itself, because `styles.css` swaps the
+// value behind the name in the dark scheme, so a composite here writes no `dark:` for it.
+// `PAGE_COLORS` says which swatch each name renders in each scheme: the contrast checks below are
+// registered against it, and `text-on-background.test.ts` reads a composite's token through it.
+// ---------------------------------------------------------------------------------------------
+
+export const PAGE_COLORS: Readonly<Record<string, ColorPair>> = {
+  "icon-rail": pair(P.ICON_RAIL, P.ICON_RAIL),
+  "icon-rail-accent": pair(P.ICON_RAIL_ACCENT, P.ICON_RAIL_ACCENT),
+  "icon-rail-active": pair(P.ICON_RAIL_ACTIVE, P.ICON_RAIL_ACTIVE),
+  "icon-rail-text": pair(P.ICON_RAIL_TEXT, P.ICON_RAIL_TEXT),
+  "page-agent": pair(P.PAGE_AGENT, P.SLATE_400),
+  "page-check": pair(P.PAGE_CHECK, P.INDIGO_400),
+  "page-check-tint": pair(P.PAGE_CHECK_TINT, P.INDIGO_950),
+  "page-child": pair(P.PAGE_CHILD, P.PINK_400),
+  "page-child-tint": pair(P.PAGE_CHILD_TINT, P.PINK_950),
+  "page-decision": pair(P.PAGE_DECISION, P.VIOLET_400),
+  "page-decision-tint": pair(P.PAGE_DECISION_TINT, P.VIOLET_950),
+  "page-failed": pair(P.PAGE_FAILED, P.RED_400),
+  "page-guide": pair(P.PAGE_GUIDE, P.SLATE_800),
+  "page-hair": pair(P.PAGE_HAIR, P.SLATE_700),
+  "page-in-progress": pair(P.PAGE_IN_PROGRESS, P.BLUE_400),
+  "page-ink": pair(P.PAGE_INK, P.SLATE_100),
+  "page-issue": pair(P.PAGE_ISSUE, P.STONE_300),
+  "page-lens": pair(P.PAGE_LENS, P.FUCHSIA_400),
+  "page-lens-tint": pair(P.PAGE_LENS_TINT, P.FUCHSIA_950),
+  "page-line": pair(P.PAGE_LINE, P.SLATE_800),
+  "page-mark": pair(P.PAGE_MARK, P.SLATE_800),
+  "page-muted": pair(P.PAGE_MUTED, P.SLATE_300),
+  "page-not-run": pair(P.PAGE_NOT_RUN, P.GRAY_400),
+  "page-pane": pair(P.PAGE_PANE, P.SLATE_900),
+  "page-paper": pair(P.PAGE_PAPER, P.SLATE_950),
+  "page-passed": pair(P.PAGE_PASSED, P.GREEN_400),
+  "page-person": pair(P.PAGE_INK, P.SLATE_100),
+  "page-person-tint": pair(P.PAGE_PERSON_TINT, P.STONE_800),
+  "page-question": pair(P.PAGE_QUESTION, P.BLUE_400),
+  "page-question-tint": pair(P.PAGE_QUESTION_TINT, P.BLUE_950),
+  "page-quiet": pair(P.PAGE_QUIET, P.SLATE_400),
+  "page-statement": pair(P.PAGE_STATEMENT, P.TEAL_400),
+  "page-statement-tint": pair(P.PAGE_STATEMENT_TINT, P.TEAL_950),
+  "page-step": pair(P.PAGE_STEP, P.AMBER_400),
+  "page-step-tint": pair(P.PAGE_STEP_TINT, P.AMBER_950),
+  "page-waiting": pair(P.PAGE_WAITING, P.ORANGE_400),
+  "page-waiting-text": pair(P.PAGE_WAITING_TEXT, P.ORANGE_300),
+  "page-waiting-tint": pair(P.PAGE_WAITING_TINT, P.ORANGE_950),
+  white: pair(P.WHITE, P.WHITE),
+};
+
+/** The colour pair a page token renders, by its name in `PAGE_COLORS`. */
+function pageColor(name: string): ColorPair {
+  const found = PAGE_COLORS[name];
+  if (found === undefined) throw new Error(`classes.ts names no page colour "${name}"`);
+  return found;
+}
+
+/** The page itself: its white paper, its ink and the two greys under it, and its rules. */
+export const pagePaperBg = "bg-page-paper";
+export const pageInkText = "text-page-ink";
+export const pageMutedText = "text-page-muted";
+export const pageQuietText = "text-page-quiet";
+export const pageLineBorder = "border-page-line";
+export const pageHairBorder = "border-page-hair";
+/** The Contents pane at the page's left, its marked row, and the guide a nested row hangs from. */
+export const pagePaneBg = "bg-page-pane";
+export const pageMarkBg = "bg-page-mark";
+export const pageGuideBg = "bg-page-guide";
+/** The ink as a fill: a switch's track while it is on, and the rule that marks the current row;
+ *  the hairline grey as the track while it is off. A switch's own words say its state
+ *  (`aria-pressed`), so its track is decoration. */
+export const pageInkBg = "bg-page-ink";
+export const pageInkBorder = "border-page-ink";
+export const pageHairBg = "bg-page-hair";
+/** The bullet of a node by its kind: an ask, a person's words, the issue itself; and the dot of
+ *  something that waits on the reader. A bullet sits beside its words, which say the kind. */
+export const pageQuestionBg = "bg-page-question";
+export const pagePersonBg = "bg-page-person";
+export const pageIssueBg = "bg-page-issue";
+export const pageWaitingBg = "bg-page-waiting";
+
+for (const ground of ["page-paper", "page-pane"]) {
+  for (const ink of ["page-ink", "page-muted", "page-quiet"]) {
+    registerText(`${ink} text on ${ground}`, pageColor(ink), pageColor(ground));
+  }
+}
+registerText("page-ink text on page-mark", pageColor("page-ink"), pageColor("page-mark"));
+// A row's twisty is a control's shape on the marked row's ground (WCAG 1.4.11).
+registerText("page-quiet twisty on page-mark", pageColor("page-quiet"), pageColor("page-mark"), 3);
+// Each kind's colour as the words of its tag on the paper, and on the tint drawn behind it.
+for (const kind of [
+  "page-agent",
+  "page-check",
+  "page-child",
+  "page-decision",
+  "page-failed",
+  "page-in-progress",
+  "page-issue",
+  "page-lens",
+  "page-not-run",
+  "page-passed",
+  "page-question",
+  "page-statement",
+  "page-step",
+]) {
+  registerText(`${kind} text on page-paper`, pageColor(kind), pageColor("page-paper"));
+}
+for (const [kind, tint] of [
+  ["page-check", "page-check-tint"],
+  ["page-decision", "page-decision-tint"],
+  ["page-lens", "page-lens-tint"],
+  ["page-person", "page-person-tint"],
+  ["page-question", "page-question-tint"],
+  ["page-statement", "page-statement-tint"],
+  ["page-step", "page-step-tint"],
+  ["page-waiting-text", "page-waiting-tint"],
+] as const) {
+  registerText(`${kind} text on ${tint}`, pageColor(kind), pageColor(tint));
+}
+// A bullet and a waiting dot are shapes beside the words that name them (WCAG 1.4.11).
+for (const ground of ["page-paper", "page-pane"]) {
+  for (const bullet of ["page-question", "page-person", "page-issue", "page-waiting"]) {
+    registerText(`${bullet} bullet on ${ground}`, pageColor(bullet), pageColor(ground), 3);
+  }
+}
+
+/** The icon rail the issue page draws in place of the navigation column (R14): the prototype's
+ *  `#rail`, dark in both schemes, its current entry white on a lighter ground with an accent
+ *  rule at its leading edge. */
+export const iconRailBg = "bg-icon-rail";
+export const iconRailText = "text-icon-rail-text";
+export const iconRailHoverBg = "hover:bg-icon-rail-active";
+export const iconRailActive =
+  "bg-icon-rail-active text-white shadow-[inset_3px_0_0_var(--color-icon-rail-accent)]";
+export const iconRailAccentBg = "bg-icon-rail-accent";
+registerText("icon rail text", pageColor("icon-rail-text"), pageColor("icon-rail"));
+registerText("icon rail current entry", pageColor("white"), pageColor("icon-rail-active"));
+registerText("icon rail text on hover", pageColor("icon-rail-text"), pageColor("icon-rail-active"));
+registerText("icon rail accent", pageColor("icon-rail-accent"), pageColor("icon-rail"), 3);
+
 /** A modal/drawer/sheet backdrop: a fixed translucent black, unchanged between schemes (a
  * backdrop is never itself read as text or a surface color — no contrast check applies). */
 export const backdrop40 = "bg-slate-950/40";

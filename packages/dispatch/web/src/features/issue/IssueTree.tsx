@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
+import { DETAILS_ATTRIBUTE } from "../margin/margin-slot";
 import { useMediaQuery } from "../shell/useDialog";
 import { useSetFocusedNode } from "./focused-node";
 import { bringOnScreen } from "./identity-block";
@@ -52,6 +53,7 @@ export function IssueTree({
   onEditing,
   onReport,
   openBody,
+  request,
   reveal,
   root,
 }: {
@@ -87,6 +89,10 @@ export function IssueTree({
    *  there, such as a decision waiting for their review (R7). It opens that body and takes no
    *  focus, which stays the reader's. */
   openBody?: string;
+  /** What the Contents pane last asked of the outline (`IssueContents.tsx`): go to a node, and
+   *  draw that node's branch alone while the pane's Focus branch is on, or the whole outline
+   *  again once it is turned off (R14). Each ask is acted on once. */
+  request?: OutlineRequest;
   /** The chain down to the node the address names, the issue first: the tree unfolds it and
    *  puts the focus on its last node, once per address (R19). */
   reveal: readonly TreeNode[] | undefined;
@@ -188,13 +194,16 @@ export function IssueTree({
   // The focus leaving the tree closes the body it opened: nothing is open while the reader is
   // somewhere else, and the panel goes back to the issue's own facts (R2, R12). A row the
   // reader is editing in keeps its body: the document's editor moves into it, which drops the
-  // focus for a frame as it leaves the page, and that is no reader leaving the tree.
+  // focus for a frame as it leaves the page, and that is no reader leaving the tree. The focus
+  // moving to Details, or to the control that opens it, keeps the node's facts in the panel,
+  // since Details is where a reader reads them (R14); the next row focused replaces them.
   const releaseFocus = useCallback(
     (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
       const to = event.relatedTarget;
       if (editing !== undefined) return;
       if (to instanceof Node && event.currentTarget.contains(to)) return;
       setFocused(undefined);
+      if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
       setFocusedNode(undefined);
     },
     [editing, setFocusedNode]
@@ -274,6 +283,22 @@ export function IssueTree({
       ?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(wanted)}"]`)
       ?.focus();
   }, [wanted]);
+
+  // The Contents pane's asks, each acted on once. With Focus branch on, the outline is zoomed to
+  // the node, which is then the tree's first row and takes the focus; turned off, the zoom is
+  // left and the reader is taken to the node in the whole outline, as any other move takes them.
+  const handledRequest = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (request === undefined || request.seq === handledRequest.current) return;
+    handledRequest.current = request.seq;
+    if (request.focusBranch && request.id !== undefined) {
+      setZoom(request.id);
+      setWanted(request.id);
+      return;
+    }
+    setZoom(undefined);
+    if (request.id !== undefined) goToNode(request.id);
+  }, [goToNode, request]);
 
   useTreeKeymap({
     container: body,
@@ -413,3 +438,11 @@ export function IssueTree({
  *  width - a zoomed browser, a fractional device-pixel ratio - matching neither, with the presets
  *  a menu while the tree draws full indents (`shell/useDialog.ts`, `MD_VIEWPORT_QUERY`). */
 export const ZOOMED_TREE_QUERY = "(max-width: 1024px)";
+
+/** One ask the Contents pane makes of the outline: the node to go to, where there is one, and
+ *  whether Focus branch is on as it asks. `seq` tells two asks for the same node apart. */
+export interface OutlineRequest {
+  readonly focusBranch: boolean;
+  readonly id: string | undefined;
+  readonly seq: number;
+}

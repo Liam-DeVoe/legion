@@ -123,7 +123,7 @@ export function IssueHeader({
   return (
     <>
       <header
-        className={`sticky top-0 z-20 mb-0.5 flex min-w-0 flex-col gap-0.5 rounded-xl border p-2 ${card}`}
+        className={`sticky top-0 z-20 mx-3.5 mt-2 mb-0.5 flex min-w-0 flex-col gap-0.5 rounded-xl border p-2 md:mx-7 ${card}`}
         data-condensed={condensed ? "true" : "false"}
         data-issue-header=""
         data-testid="issue-header"
@@ -215,7 +215,7 @@ export function IssueHeader({
         ) : null}
       </header>
       {isPhoneViewport ? (
-        <div className="order-last mb-3 min-w-0">
+        <div className="order-last mx-3.5 mb-3 min-w-0">
           <IssueWorkRow {...workRow} />
         </div>
       ) : null}

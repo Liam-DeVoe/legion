@@ -240,7 +240,9 @@ above the rows. On a screen narrower than 768 px the fourth row is at the end of
 
 A list that still clamps a title shows the whole of it on hover.
 
-Under the header, up to three sentences say what the issue is. They are the sentences of the
+Up to three sentences say what the issue is, under **In short**. On a screen 1024 px wide or
+more they head the **Contents** pane at the left of the page; on a narrower screen they are above
+the outline. They are the sentences of the
 spec's first `callout` block, and an unfinished last sentence is left out. Nothing is drawn there
 until the spec has loaded. A spec with no such block reads **This spec has no summary.** A
 summary cut inside its first sentence reads **The summary is too long to show here.**, and one
@@ -401,11 +403,28 @@ Beside the presets:
   identity block. On a screen narrower than 768 px the version control is under the tree, or
   above the document you opened.
 
+### The navigation and the Contents pane
+
+On the issue page the navigation is a column of icons at the left, one for each entry of the
+sidebar; the arrow at its foot opens the whole navigation over the page. On a screen narrower
+than 768 px the `☰` at the start of the header opens it.
+
+On a screen 1024 px wide or more, the **Contents** pane stands at the left of the outline: the
+three sentences, then each question and each thread you began, one line each. Choose one, or
+press Enter on it, to go to it in the outline; the one you are in is marked. **Focus branch**
+draws that branch of the outline alone, and pressing it again draws the whole outline. On a
+narrower screen **Outline**, beside the presets, opens the same list.
+
 ### The panel
 
-On a wide screen the panel is in the margin, under the margin's own comment cards. Where the
-margin is a sheet, or you hid it with `Shift+M`, the panel is under the header. Moving between
-the two keeps what you typed in it.
+The panel is **Details**, which opens over the right of the page from the **Details** control at
+the right of the header's first row, or with `Shift+M`; **Close** or Escape closes it. It shows
+the facts of the node you stand on in the outline, and opening it keeps them. Every page load
+opens it closed. The issue's `/conversation`, `/activity` and `/collaborators` addresses open it,
+and so does a link to a comment beside the document it quotes. Commenting on a document's words
+or choosing a highlighted passage opens it too, since the comment is drawn there. Drag its left
+edge to change its width, which this browser keeps. On a phone it covers the screen. The
+margin's own comment cards are at its top, and the issue's conversation is in it.
 
 Three sections hold the rest of the issue's properties. Choose a section's name to close or open
 it. This browser keeps your choice for the next issue you open.

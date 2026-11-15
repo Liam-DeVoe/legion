@@ -3,11 +3,11 @@ import { Link } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
 import {
-  borderDefault,
-  linkHoverText,
-  linkText,
-  textMutedOnCanvas,
-  textSecondaryOnCanvas,
+  pageInkBg,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
 } from "../../theme/classes";
 import { presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
@@ -24,11 +24,14 @@ import {
 } from "./page-words";
 
 /**
- * The head of the page: the issue's three sentences, and the two rows under them
- * (dispatch://INFRA-1196 R5, `dispatch://INFRA-1196/artifact/plan-md#b-t10`).
+ * The head of the page: the issue's three sentences under "In short", and the two rows under
+ * them (dispatch://INFRA-1196 R8, `dispatch://INFRA-1196/artifact/plan-md#b-t10`).
  *
- * It is drawn above the presets and on all five, because what the issue is does not change
- * with the query a reader is running over it.
+ * It is drawn with every preset, because what the issue is does not change with the query a
+ * reader is running over it: from 1024 px up it heads the Contents pane at the left of the
+ * page, as the prototype's `.brief` does, and below that it heads the reading column, above the
+ * outline, since a reader of a phone must not press a control to read what the issue is
+ * (`IssueBody.tsx`).
  *
  * The sentences are the spec's summary, as the spec stores them: the summary node's own text,
  * read as the sentences it holds, and at most the three the requirement names - what this is,
@@ -59,6 +62,7 @@ import {
  */
 export function IssueThreeThings({
   checks,
+  inPane,
   issueKey,
   plan,
   planTasks,
@@ -67,6 +71,9 @@ export function IssueThreeThings({
 }: {
   /** Every check of the issue, as the tree holds them: each one's state is its latest result. */
   checks: readonly TreeNode[];
+  /** Whether it heads the Contents pane, from 1024 px up, rather than the reading column above
+   *  the outline below that width (R8). */
+  inPane: boolean;
   issueKey: string;
   /** The issue's plan document, where it has one. */
   plan: Artifact | undefined;
@@ -89,26 +96,37 @@ export function IssueThreeThings({
   const approval = plan?.approval?.state;
   return (
     <section
-      className={`mb-0.5 flex min-w-0 flex-col gap-1 border-b pb-0.5 ${borderDefault}`}
+      className={`flex min-w-0 shrink-0 flex-col border-b ${pageLineBorder} ${
+        inPane ? "px-3.5 pt-3 pb-2.5" : "mb-2 pb-2.5"
+      }`}
       data-testid="issue-three-things"
     >
+      <h2
+        className={`text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`}
+        {...pageChrome}
+      >
+        {CONTROL_LABELS.in_short}
+      </h2>
       {sentences.length > 0 ? (
-        <ul className="flex min-w-0 flex-col">
+        <ul className="mt-1.5 mb-1 flex min-w-0 flex-col">
           {sentences.map((sentence, index) => (
             <li
-              className={`text-sm leading-tight break-words ${textSecondaryOnCanvas}`}
+              className={`relative mb-1 pl-3 text-sm leading-5 break-words ${pageInkText}`}
               // biome-ignore lint/suspicious/noArrayIndexKey: a summary may say one sentence twice, and its place is what tells the two apart.
               key={`${index}:${sentence}`}
-              {...authorText}
             >
-              {sentence}
+              <span
+                aria-hidden="true"
+                className={`absolute top-2 left-px size-1 rounded-full ${pageInkBg}`}
+              />
+              <span {...authorText}>{sentence}</span>
             </li>
           ))}
         </ul>
       ) : known ? (
         // A summary whose words hold no whole sentence is a summary all the same, so the line
         // says why none is drawn rather than that the spec has none.
-        <p className={`text-sm ${textMutedOnCanvas}`} {...pageChrome}>
+        <p className={`mt-1.5 mb-1 text-sm leading-5 ${pageMutedText}`} {...pageChrome}>
           {left === "cut"
             ? EMPTY_STATE_LINES.spec_summary_cut
             : left === "unended"
@@ -116,21 +134,22 @@ export function IssueThreeThings({
               : EMPTY_STATE_LINES.spec_summary}
         </p>
       ) : null}
-      {/* The two rows share one wrapping line. Each keeps its own box, because each names one
-          source and no second (R5), but a line apiece cost the head 60 px before the tree and
-          R6 puts the first open question on the first screen. */}
-      <div className="flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-0.5">
-        <p
-          className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm ${textMutedOnCanvas}`}
-          data-testid="issue-plan-row"
-        >
+      {/* The two rows, in the pane's small type. Each keeps its own box, because each names one
+          source and no second (R5); below 1024 px they share one wrapping line, which the first
+          open question needs on a phone's first screen (R7). */}
+      <div
+        className={`flex min-w-0 gap-x-4 gap-y-0.5 text-xs leading-[18px] ${pageQuietText} ${
+          inPane ? "flex-col" : "flex-wrap items-baseline"
+        }`}
+      >
+        <p className="flex min-w-0 flex-wrap items-baseline gap-x-2" data-testid="issue-plan-row">
           <span {...pageChrome}>{CONTROL_LABELS.how_it_gets_done}</span>
           {/* `dispatch-inline-link`: below 1280 px every other link is a 44 px control box
               (`styles.css`), and two of them here cost the head two lines the first open
               question needs (R6). A link inside a line of text keeps its line box and grows
               its hit area by padding instead. */}
           <Link
-            className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+            className={`dispatch-inline-link underline ${pageInkText}`}
             to={presetPath(issueKey, "plan")}
           >
             <span {...pageChrome}>{PRESET_NAMES.plan}</span>
@@ -141,13 +160,10 @@ export function IssueThreeThings({
             <span {...pageChrome}>{approvalStateWord(approval)}</span>
           )}
         </p>
-        <p
-          className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm ${textMutedOnCanvas}`}
-          data-testid="issue-checks-row"
-        >
+        <p className="flex min-w-0 flex-wrap items-baseline gap-x-2" data-testid="issue-checks-row">
           <span {...pageChrome}>{CONTROL_LABELS.what_you_will_be_shown}</span>
           <Link
-            className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+            className={`dispatch-inline-link underline ${pageInkText}`}
             to={presetPath(issueKey, "checks")}
           >
             <span {...pageChrome}>{PRESET_NAMES.checks}</span>

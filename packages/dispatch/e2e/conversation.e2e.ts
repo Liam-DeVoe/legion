@@ -32,6 +32,7 @@ import {
 } from "./api";
 import { scrollAwayFromLatest } from "./conversation-scroll";
 import { conversationFilter } from "./editor";
+import { openDetails } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -683,6 +684,9 @@ test("the iPhone Conversation fits controls and keeps the composer above the rev
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
+    // The conversation is in Details, the phone's sheet the header's control opens
+    // (dispatch://INFRA-1196 R14); its composer stays on screen as the sheet scrolls.
+    await openDetails(page);
     await expect(turn(page, "Phone turn 9")).toBeVisible();
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
@@ -716,24 +720,19 @@ test("the iPhone Conversation fits controls and keeps the composer above the rev
     const message = page.getByRole("textbox", { name: "Comment" });
     await message.focus();
     const composer = page.getByRole("form", { name: "Comment composer" });
-    const reviewPanelButton = page.getByRole("button", { name: /Open review panel/ });
-    const positions = [0, await page.evaluate(() => document.documentElement.scrollHeight)];
+    const scroller = page.getByTestId("margin-sheet");
+    const positions = [0, await scroller.evaluate((element) => element.scrollHeight)];
     for (const position of positions) {
-      await page.evaluate((top) => window.scrollTo(0, top), position);
-      // Three measurements of one layout: they are read together rather than one after another.
-      const [composerBox, reviewBox, viewportHeight] = await Promise.all([
+      await scroller.evaluate((element, top) => element.scrollTo(0, top), position);
+      // Two measurements of one layout: they are read together rather than one after another.
+      const [composerBox, viewportHeight] = await Promise.all([
         composer.boundingBox(),
-        reviewPanelButton.boundingBox(),
         page.evaluate(() => window.innerHeight),
       ]);
       expect(composerBox).not.toBeNull();
       expect(composerBox?.y ?? -1).toBeGreaterThanOrEqual(0);
       expect((composerBox?.y ?? 0) + (composerBox?.height ?? 0)).toBeLessThanOrEqual(
         viewportHeight
-      );
-      expect(reviewBox).not.toBeNull();
-      expect((composerBox?.y ?? 0) + (composerBox?.height ?? 0)).toBeLessThanOrEqual(
-        reviewBox?.y ?? 0
       );
     }
 

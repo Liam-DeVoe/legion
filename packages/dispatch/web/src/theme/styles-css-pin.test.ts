@@ -6,9 +6,12 @@ import { oklchToSrgb8 } from "./contrast";
 import * as P from "./palette";
 
 /**
- * `styles.css` only uses hand-written color literals for the pre-hydration `:root` fallback,
- * outside components' `dark:`-className mechanism. Each literal is annotated with the matching
- * palette swatch so a manual fallback change cannot silently drift from the rendered theme.
+ * `styles.css` writes hand-written color literals in two places outside components'
+ * `dark:`-className mechanism: the pre-hydration `:root` fallback, and the issue page's palette
+ * tokens in `@theme` with their dark-scheme values. Each literal is annotated with the matching
+ * palette swatch - a Tailwind shade (`slate-950`) or one of the page's own (`page-ink`) - so a
+ * manual change cannot silently drift from the rendered theme or from the contrast checks
+ * `classes.ts` registers against those swatches.
  */
 
 const STYLES_CSS_PATH = join(import.meta.dir, "..", "styles.css");
@@ -24,7 +27,7 @@ for (const value of Object.values(P)) {
 /** A hex or `rgb()`/`rgb(... / N%)` color literal immediately followed by `;` and an annotation
  * comment naming the swatch it's meant to equal. */
 const ANNOTATED_COLOR_PATTERN =
-  /(#[0-9a-fA-F]{6}|rgb\([^)]+\));\s*\/\*\s*([a-z]+-\d{2,3})(?:\s+at\s+[\d.]+%\s+alpha)?\s*\*\//g;
+  /(#[0-9a-fA-F]{6}|rgb\([^)]+\));\s*\/\*\s*([a-z]+(?:-[a-z0-9]+)+)(?:\s+at\s+[\d.]+%\s+alpha)?\s*\*\//g;
 
 function hexToRgb(hex: string): readonly [number, number, number] {
   const value = Number.parseInt(hex.slice(1), 16);

@@ -20,8 +20,9 @@ export interface OneLineBox {
   readonly rem: number;
   /** The tree's own width, in CSS pixels. */
   readonly width: number;
-  /** How wide `text` is drawn at `size` rem in the tree's face, in CSS pixels. */
-  readonly widthOf: (text: string, size: number) => number;
+  /** How wide `text` is drawn at `size` rem in the tree's face, at `weight` where it is not the
+   *  face's regular one, in CSS pixels. */
+  readonly widthOf: (text: string, size: number, weight?: number) => number;
 }
 
 /**
@@ -54,8 +55,8 @@ export function useOneLineBox(
           family,
           rem,
           width,
-          widthOf: (text, size) => {
-            const font = `${size * rem}px ${family}`;
+          widthOf: (text, size, weight) => {
+            const font = `${weight === undefined ? "" : `${weight} `}${size * rem}px ${family}`;
             if (font !== set) {
               context.font = font;
               set = font;

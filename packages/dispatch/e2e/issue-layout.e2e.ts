@@ -100,27 +100,31 @@ import {
   childrenSection,
   childrenSubtreeCount,
   chromeTexts,
+  closeDetails,
+  contentsEntries,
+  contentsPane,
   conversationStateControl,
   copyCommandControls,
   type DrawnRow,
+  detailsControl,
   drawnRows,
   filterBox,
+  focusBranchControl,
   focusedNodeFacts,
   focusedNodeId,
   focusThePage,
   gapKinds,
   gotoIssue,
   headerReading,
+  iconRail,
   identityBlock,
   identityBlockBottom,
   identityBlockFamilies,
   issuePage,
-  marginHideControl,
   marginResizeHandle,
   marginSection,
   marginSectionDisclosure,
   marginShell,
-  marginShowControl,
   marginSlot,
   nodeBodies,
   nodeCommands,
@@ -128,8 +132,10 @@ import {
   nodeMenuItems,
   nodeRow,
   nodeRows,
+  type Overlap,
   offered,
   onScreen,
+  openDetails,
   openEveryDeeperBranch,
   openedArtifact,
   openedEditor,
@@ -137,9 +143,10 @@ import {
   openMenu,
   openPreset,
   optionsOf,
+  outlineControl,
+  outlineSheet,
   overlappingTexts,
   pageStatus,
-  panelsRightOfMain,
   parentOfRow,
   pinnedBodies,
   planRow,
@@ -243,6 +250,19 @@ async function expectIssuePageDrawn(page: Page): Promise<void> {
   ).toHaveCount(1);
 }
 
+/** Details' overlapping texts, read once two frames after it opened: the frames are the
+ *  margin's own measuring of what it drew while hidden, and nothing after them - no later
+ *  render that would correct a stale placement - is waited for, since the reader sees the
+ *  drawer from the frame it opens. */
+async function overlapsOnceOpened(page: Page): Promise<Overlap[]> {
+  await page.evaluate(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    return promise;
+  });
+  return overlappingTexts(page, "details");
+}
+
 /** The slug of the issue's own spec, which is how its blocks are addressed. */
 async function primarySlug(key: string): Promise<string> {
   const primary = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
@@ -252,30 +272,6 @@ async function primarySlug(key: string): Promise<string> {
 
 function rowOf(rows: readonly DrawnRow[], id: string): DrawnRow | undefined {
   return rows.find((row) => row.id === id);
-}
-
-/**
- * Where the page's one right-hand panel is drawn, having first failed unless there is exactly
- * one of it. The shell's margin draws it while it keeps a column for it; wherever it keeps none
- * - at the width it is a sheet, and while the reader has collapsed it to its rail - the page
- * draws the same panel in its own column instead, so a collapse moves the panel rather than
- * taking the properties off the page (dispatch://INFRA-1196 R11, R12,
- * `web/src/features/margin/margin-slot.tsx`'s `useMarginDrawsSlot`). Two panels at once, or
- * none, fails here whichever state the margin is in.
- */
-async function panelPlacement(page: Page, where: string): Promise<"column" | "margin"> {
-  expect(await marginSlot(page).count(), `${where}: the page draws no one panel`).toBe(1);
-  expect(
-    await panelsRightOfMain(page),
-    `${where}: the panel's sections are drawn in more than one place`
-  ).toHaveLength(1);
-  const inTheMargin = await marginShell(page).getByTestId("issue-margin").count();
-  const inTheColumn = await page.locator("main").getByTestId("issue-margin").count();
-  expect(
-    inTheMargin + inTheColumn,
-    `${where}: the panel is drawn neither in the shell's margin nor in the page's own column`
-  ).toBe(1);
-  return inTheMargin === 1 ? "margin" : "column";
 }
 
 /**
@@ -1231,8 +1227,10 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
 
 // c-three-things. Partial on today's data: the node that holds the bullets, its author and
 // `last_read_back_at` are dispatch://INFRA-1278, so the head draws neither and this test never
-// asserts that an author is drawn.
-test("the three things are at the head of every preset @phone", async ({ browser }) => {
+// asserts that an author is drawn. Its placement is R8's and R14's: at 1440 px in the Contents
+// pane at the left of the outline, and at 390 px above the outline's first row, with no filter on
+// and with each of the four.
+test("the three things are at the head with every filter @phone", async ({ browser }) => {
   // Ten loads of the page - the five presets at each of two widths - each read for its head,
   // its boxes and the page's own draw. Measured on an issue pod's two CPUs across four whole
   // runs: 25.3 s to 29.1 s, against a default deadline of 30 s, so the row failed the run it
@@ -1249,15 +1247,37 @@ test("the three things are at the head of every preset @phone", async ({ browser
           `the ${PRESET_NAMES[preset]} preset draws no three things at ${size.width} px`
         ).toBe(1);
         await expectIssuePageDrawn(page);
+        await expect
+          .poll(() => nodeRows(page).count(), {
+            message: `the ${PRESET_NAMES[preset]} preset draws no outline at ${size.width} px`,
+          })
+          .toBeGreaterThan(0);
 
         const head = await threeThings(page).boundingBox();
-        const presets = await presetRow(page).boundingBox();
+        const outline = await tree(page).boundingBox();
         expect(head, "the three things have no box").not.toBeNull();
-        expect(presets, "the preset row has no box").not.toBeNull();
-        expect(
-          (head?.y ?? 0) + (head?.height ?? 0),
-          `the three things are not above the presets at ${size.width} px`
-        ).toBeLessThanOrEqual((presets?.y ?? 0) + 1);
+        expect(outline, "the outline has no box").not.toBeNull();
+        if (size.width >= 1024) {
+          expect(
+            await contentsPane(page).getByTestId("issue-three-things").count(),
+            `the three things are not in the Contents pane with the ${PRESET_NAMES[preset]} preset at ${size.width} px`
+          ).toBe(1);
+          const pane = await contentsPane(page).boundingBox();
+          expect(
+            (pane?.x ?? 0) + (pane?.width ?? 0),
+            `the Contents pane is not at the left of the outline at ${size.width} px`
+          ).toBeLessThanOrEqual((outline?.x ?? 0) + 1);
+        } else {
+          expect(
+            await contentsPane(page).count(),
+            `a Contents pane is drawn at ${size.width} px`
+          ).toBe(0);
+          const firstRow = await nodeRows(page).first().boundingBox();
+          expect(
+            head?.y ?? Number.POSITIVE_INFINITY,
+            `the three things are not above the outline's first row with the ${PRESET_NAMES[preset]} preset at ${size.width} px`
+          ).toBeLessThan(firstRow?.y ?? 0);
+        }
 
         // The sentences are the summary node's words, which the batched reference read names
         // last of the page's reads, so the reading waits for them rather than racing that read.
@@ -1610,6 +1630,10 @@ test("the children are a section above the outline with the bar and both counts 
 
 // c-properties.
 test("every property with a value is visible at every width @phone", async ({ browser }) => {
+  // Six loads of the page, four of them read with Details opened and closed again (R14):
+  // measured at 60 s in the desktop project on an issue pod's two CPUs, where the default
+  // deadline is 60 s. Two and a half times that leaves room for a loaded box.
+  test.setTimeout(150_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const issue = await getIssue(seeded.key);
     // Every property the seed set, named one by one and read at the element that draws its
@@ -1677,17 +1701,18 @@ test("every property with a value is visible at every width @phone", async ({ br
         ).toBeInViewport();
         await assertWhole(at);
       }
+      // Every other property is in Details, which opens over the right of the page and is
+      // closed on every load (R14): each is read there one by one, with Details open.
+      await openDetails(page);
       for (const [name, at, words] of inThePanel) {
-        await expect(
-          at,
-          `${name} is not drawn at ${width} px with no control opened`
-        ).toBeVisible();
+        await expect(at, `${name} is not drawn in Details at ${width} px`).toBeVisible();
         if (words !== undefined) {
           await expect(at, `${name} does not read "${words}" at ${width} px`).toHaveText(words);
         }
         await expectInsideTheViewportSideways(page, at, `${name} at ${width} px`);
         await assertWholeAcross(at);
       }
+      await closeDetails(page);
       // The claim is the holder's own link, which `AgentName` draws the title in: a reading
       // by that text would find the link and the span around it both. It is read for being
       // drawn alone, because the chip shortens a long title with an ellipsis of its own
@@ -1745,6 +1770,7 @@ test("every property with a value is visible at every width @phone", async ({ br
     await page.keyboard.press("Escape");
 
     // A section opens expanded on a first load, and a collapsed one keeps that state.
+    await openDetails(page);
     expect(
       await marginSectionDisclosure(page, "development").getAttribute("aria-expanded"),
       "the Development section is collapsed on a first load"
@@ -1756,6 +1782,7 @@ test("every property with a value is visible at every width @phone", async ({ br
     ).not.toContain(issue.repo ?? "");
     await gotoIssue(page, `/issues/${seeded.parentKey}`);
     await expectIssuePageDrawn(page);
+    await openDetails(page);
     expect(
       await marginSectionDisclosure(page, "development").getAttribute("aria-expanded"),
       "the next issue opens the section this reader collapsed"
@@ -1763,38 +1790,172 @@ test("every property with a value is visible at every width @phone", async ({ br
   });
 });
 
-// c-one-panel.
-test("one right-hand panel, and the document page keeps its margin", async ({ browser }) => {
+// c-one-panel, with R14's rail. At 1440 px the shell's navigation is an icon rail of 56 px and
+// Details is a drawer over the right of the page, closed on every load, so the header and the
+// outline keep the window less the rail and its 28 px insets: 1328 px. The panel holds the
+// properties and the focused node's facts and the Contents pane holds none; its content is
+// drawn once per load; its handle, its collapse and its kept width work; at 390 px it is the
+// phone's sheet. That the panel holds no conversation list is pass E's to assert, in the commit
+// that moves the composer and the reply controls into the outline and takes the list out.
+test("one panel of properties holds no conversation list @phone", async ({ browser }, testInfo) => {
+  // Four loads of the issue page and one of a project document, each read for its frame.
+  test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const traffic = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
-
-    expect(await marginSlot(page).count(), "the issue page draws no panel of its own").toBe(1);
     await expectIssuePageDrawn(page);
-    expect(await marginShell(page).count(), "the shell's margin is not the panel it sits in").toBe(
-      1
-    );
-    expect(
-      await panelsRightOfMain(page),
-      "the properties and the focused node's facts are not in one panel right of the main column"
-    ).toHaveLength(1);
-    for (const section of ["development", "people", "references"] as const) {
+    await expect.poll(() => nodeRows(page).count()).toBeGreaterThan(0);
+    await expectLoadSettled(traffic);
+    // The panel's content is drawn once per load: its reads of the asks that wait on the reader
+    // and of the reader's read state are one each, where a panel drawn plain and again inside
+    // the page's slot reads them again (INFRA-2004).
+    for (const route of ["/api/v1/inbox", "/api/v1/me/state"]) {
       expect(
-        await marginSection(page, section).count(),
-        `the panel holds no ${section} section`
+        traffic.requests.filter((request) => request.route === route).length,
+        `the first load reads ${route} other than once`
       ).toBe(1);
     }
+
+    // The rail: 56 px at the left edge, the whole height, an icon with its accessible name for
+    // each of the sidebar's own entries, none carrying a tooltip, and the sidebar drawn nowhere.
+    await expect(iconRail(page), "the issue page draws no icon rail").toHaveCount(1);
+    const rail = await iconRail(page).boundingBox();
+    expect(rail, "the issue page draws no icon rail").not.toBeNull();
+    expect(rail?.x, "the rail is not at the left edge").toBe(0);
+    expect(rail?.width, "the rail is not 56 px wide").toBe(56);
+    expect(rail?.height, "the rail is not the window's height").toBe(DESKTOP.height);
+    for (const name of ["Inbox", "Agents", "Priorities", "Delivery", "Pipeline", "Settings"]) {
+      await expect(
+        iconRail(page).getByRole("link", { name: new RegExp(`^${name}\\b`) }),
+        `the rail offers no ${name}`
+      ).toHaveCount(1);
+    }
+    expect(await iconRail(page).locator("[title]").count(), "a rail entry carries a tooltip").toBe(
+      0
+    );
+    await expect(
+      page.getByRole("complementary", { exact: true, name: "Navigation" }),
+      "the issue page draws the sidebar beside its rail"
+    ).toHaveCount(0);
+    // Its foot opens the whole navigation over the page, which holds every entry the sidebar
+    // does, the ones the rail draws no icon for among them.
+    await iconRail(page).getByRole("button", { exact: true, name: "Open navigation" }).click();
+    const sheet = page.getByRole("dialog", { exact: true, name: "Navigation" });
+    await expect(sheet, "the rail's foot opens no navigation").toBeVisible();
+    for (const name of [/^Search/, /^New issue/]) {
+      await expect(
+        sheet.getByRole("button", { name }),
+        `the navigation holds no ${name}`
+      ).toBeVisible();
+    }
+    await expect(sheet.getByRole("button", { exact: true, name: "Sign out" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+
+    // The header and the outline have the window less the rail: 1328 px between the insets.
+    const header = await identityBlock(page).boundingBox();
+    expect(Math.round(header?.width ?? 0), "the header is not 1328 px wide at 1440 px").toBe(1328);
+    expect(Math.round(header?.x ?? 0), "the header does not start 28 px right of the rail").toBe(
+      84
+    );
+
+    // The frame as a reader first sees it, beside page-v3-conversation-top-1440.
+    await page.screenshot({ path: testInfo.outputPath("issue-1440-details-closed.png") });
+
+    // The Contents pane's list (R14): each question and each of the reader's own threads, a
+    // press or Enter going to its node in the outline, the entry the reader is in marked, and
+    // Focus branch drawing that branch alone, then the whole outline again.
+    const question = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
+    const entry = contentsPane(page).locator(`[data-contents-entry="${question}"]`);
+    await expect(entry, "the Contents pane does not list the open question").toHaveCount(1);
+    await nodeRows(page).first().focus();
+    await entry.focus();
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => focusedNodeId(page), { message: "Enter on an entry went to no node" })
+      .toBe(question);
+    await expect(entry, "the entry the reader is in is not marked").toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await nodeRows(page).first().focus();
+    await entry.click();
+    await expect
+      .poll(() => focusedNodeId(page), { message: "a press on an entry went to no node" })
+      .toBe(question);
+    const focusBranch = focusBranchControl(contentsPane(page));
+    await focusBranch.click();
+    await expect(focusBranch).toHaveAttribute("aria-pressed", "true");
+    await expect
+      .poll(async () => (await drawnRows(page)).find((row) => row.visible)?.id, {
+        message: "Focus branch did not draw the entry's branch alone",
+      })
+      .toBe(question);
+    await focusBranch.click();
+    await expect
+      .poll(async () => (await drawnRows(page)).find((row) => row.visible)?.id, {
+        message: "Focus branch turned off did not draw the whole outline again",
+      })
+      .toBe(seeded.key);
+
+    // Details: closed on the load, opened by the control at the right of the header's first
+    // row, over the right of the page, which keeps its own width under it.
+    await expect(marginShell(page), "Details is open on a fresh load").toBeHidden();
+    const control = await detailsControl(page).boundingBox();
     expect(
-      await focusedNodeFacts(page).count(),
-      "the panel holds no facts of the focused node"
-    ).toBe(1);
+      (control?.x ?? 0) + (control?.width ?? 0),
+      "the Details control is not at the right of the header's first row"
+    ).toBeGreaterThan((header?.x ?? 0) + (header?.width ?? 0) - 120);
+    expect(control?.y ?? 0, "the Details control is not in the header's first row").toBeLessThan(
+      (header?.y ?? 0) + 60
+    );
+    await openDetails(page);
+    // Its cards and its sections each keep a place of their own from the frame it opens: the
+    // margin's anchored cards are measured again once the drawer is shown, so none lies over the
+    // sections under them. Read once, two frames after it opens: a card placed by a height read
+    // while the drawer was hidden lay over them until some later render happened to correct it.
     expect(
-      await conversationStateControl(page, "words").count(),
-      "the panel holds no conversation"
-    ).toBe(1);
+      await overlapsOnceOpened(page),
+      "Details draws one text over another at 1440 px"
+    ).toEqual([]);
+    // Details open, beside page-v3-details-1440.
+    await page.screenshot({ path: testInfo.outputPath("issue-1440-details-open.png") });
+    const drawer = await marginShell(page).boundingBox();
+    expect(
+      Math.round((drawer?.x ?? 0) + (drawer?.width ?? 0)),
+      "Details is not against the right edge"
+    ).toBe(DESKTOP.width);
+    expect(Math.round(drawer?.width ?? 0), "Details does not open at its width").toBe(384);
+    expect(
+      Math.round((await identityBlock(page).boundingBox())?.width ?? 0),
+      "opening Details took a column from the page rather than opening over it"
+    ).toBe(1328);
+
+    // One panel: the slot, its three sections and the focused node's facts, each drawn once and
+    // each inside Details; the Contents pane at the left holds none of them.
+    for (const [name, holder] of [
+      ["the panel", '[data-testid="issue-margin"]'],
+      ["the development section", '[data-margin-section="development"]'],
+      ["the people section", '[data-margin-section="people"]'],
+      ["the references section", '[data-margin-section="references"]'],
+      ["the focused node's facts", '[data-testid="focused-node-facts"]'],
+    ] as const) {
+      expect(await page.locator(holder).count(), `the page draws ${name} other than once`).toBe(1);
+      expect(await marginShell(page).locator(holder).count(), `${name} is not in Details`).toBe(1);
+    }
+    await expect(contentsPane(page), "the page draws no Contents pane").toHaveCount(1);
+    expect(
+      await contentsPane(page)
+        .locator(
+          '[data-margin-section], [data-testid="focused-node-facts"], [data-testid="issue-margin"], [data-issue-header]'
+        )
+        .count(),
+      "the Contents pane holds a property"
+    ).toBe(0);
 
     // The facts follow the focus.
-    await focusThePage(page);
-    await page.keyboard.press("Tab");
+    await nodeRows(page).first().focus();
     const first = await focusedNodeFacts(page).innerText();
     const firstNode = await focusedNodeId(page);
     await page.keyboard.press("j");
@@ -1804,60 +1965,84 @@ test("one right-hand panel, and the document page keeps its margin", async ({ br
       "the panel's facts did not follow the focus to the next node"
     ).not.toBe(first);
 
-    // The handle, the collapse and the width the reader gave it.
-    expect(await marginResizeHandle(page).count(), "the panel has no resize handle").toBe(1);
+    // Its collapse: Escape and Close close it, and its one key opens it.
+    await page.keyboard.press("Escape");
+    await expect(marginShell(page), "Escape did not close Details").toBeHidden();
+    await focusThePage(page);
+    await page.keyboard.press("Shift+M");
+    await expect(marginShell(page), "Shift+M did not open Details").toBeVisible();
+    await closeDetails(page);
+    // It opens on the node the reader stood on, from its control as from its key: the press
+    // moves the focus off the outline, and the facts stay that node's.
+    await nodeRows(page).first().focus();
+    await openDetails(page);
+    expect(
+      await focusedNodeFacts(page).innerText(),
+      "Details opened from its control holds none of the facts of the row the reader stood on"
+    ).toBe(first);
+    await closeDetails(page);
+
+    // Its handle and the width the reader gave it, kept across a load.
+    await openDetails(page);
     const handle = await marginResizeHandle(page).boundingBox();
-    expect(handle, "the resize handle has no box").not.toBeNull();
+    expect(handle, "Details has no resize handle").not.toBeNull();
     const before = (await marginShell(page).boundingBox())?.width ?? 0;
     await page.mouse.move((handle?.x ?? 0) + 2, (handle?.y ?? 0) + 2);
     await page.mouse.down();
     await page.mouse.move((handle?.x ?? 0) - 120, (handle?.y ?? 0) + 2);
     await page.mouse.up();
     const resized = (await marginShell(page).boundingBox())?.width ?? 0;
-    expect(resized, "dragging the handle did not widen the panel").toBeGreaterThan(before + 50);
+    expect(resized, "dragging the handle did not widen Details").toBeGreaterThan(before + 50);
     await page.reload();
     await expectIssuePageDrawn(page);
+    await expect(marginShell(page), "a load opened Details").toBeHidden();
+    await openDetails(page);
     expect(
       (await marginShell(page).boundingBox())?.width ?? 0,
-      "the panel did not keep the width the reader gave it"
+      "Details did not keep the width the reader gave it"
     ).toBeCloseTo(resized, 0);
-    // The collapse moves the panel, it does not take it away: the margin draws no column for
-    // it, so the page draws it in its own, and the reader keeps every property under either
-    // preference and at every width (R11). One panel in either state, never two.
-    expect(await panelPlacement(page, "the margin open"), "the margin draws no panel").toBe(
-      "margin"
-    );
-    await marginHideControl(page).click();
-    expect(
-      await panelPlacement(page, "the margin collapsed to its rail"),
-      "the collapse left the panel in the margin instead of the page's column"
-    ).toBe("column");
-    await marginShowControl(page).click();
-    expect(
-      await panelPlacement(page, "the margin opened again"),
-      "the panel did not come back to the margin"
-    ).toBe("margin");
-    for (const width of [1280, 1024, PHONE.width]) {
-      await page.setViewportSize({ height: DESKTOP.height, width });
-      await expectIssuePageDrawn(page);
-      // From 1280 px the margin keeps a column; below it the margin is a sheet, so the page's
-      // own column draws the panel.
-      expect(
-        await panelPlacement(page, `${width} px`),
-        `the panel is drawn in the wrong place at ${width} px`
-      ).toBe(width >= 1280 ? "margin" : "column");
-    }
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await expectIssuePageDrawn(page);
 
-    // A project document page draws its margin as before.
+    // At 390 px: no rail, the header's own control for the navigation, and the panel's content
+    // in the phone's sheet, the whole width, which Escape closes.
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect(iconRail(page), "the phone draws the rail").toHaveCount(0);
+    await expect.poll(() => nodeRows(page).count()).toBeGreaterThan(0);
+    // The phone's frame, beside page-v3-conversation-top-390.
+    await page.screenshot({ path: testInfo.outputPath("issue-390.png") });
+    await expect(
+      identityBlock(page).getByRole("button", { exact: true, name: "Open navigation" }),
+      "the phone's header carries no control for the navigation"
+    ).toBeVisible();
+    await openDetails(page);
+    expect(
+      await overlapsOnceOpened(page),
+      "Details draws one text over another on the phone"
+    ).toEqual([]);
+    const phoneSheet = page.getByRole("dialog", { exact: true, name: CONTROL_LABELS.details });
+    await expect(phoneSheet, "Details is no sheet on the phone").toBeVisible();
+    expect(Math.round((await phoneSheet.boundingBox())?.width ?? 0)).toBe(PHONE.width);
+    for (const section of ["development", "people", "references"] as const) {
+      await expect(phoneSheet.locator(`[data-margin-section="${section}"]`)).toHaveCount(1);
+    }
+    await page.keyboard.press("Escape");
+    await expect(phoneSheet, "Escape did not close the phone's sheet").toBeHidden();
+
+    // Every other page keeps the sidebar and the margin: a project document page.
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const document = await createProjectDocument("LAY", {
       content: "# A project document\n\nIts margin is unchanged.\n",
       name: "project-notes.md",
     });
     await page.goto(`/projects/LAY/documents/${document.artifact.slug}`);
     await expect(page.getByRole("heading", { level: 1, name: "A project document" })).toBeVisible();
-    expect(await marginShell(page).count(), "the project document page lost its margin").toBe(1);
+    await expect(marginShell(page), "the project document page lost its margin").toBeVisible();
+    await expect(
+      page.getByRole("complementary", { exact: true, name: "Navigation" }),
+      "the project document page lost its sidebar"
+    ).toBeVisible();
+    await expect(iconRail(page), "the project document page draws the rail").toHaveCount(0);
   });
 });
 
@@ -2914,10 +3099,48 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
       // rows below this one wait for their own words for the same reason).
       await assertPageFits(page);
       await assertWhole(presetRow(page));
+      // The frame (R14): the icon rail from 768 px up, 56 px of the width, and none below it.
+      if (width >= 768) {
+        await expect(
+          iconRail(page),
+          `the issue page draws no icon rail at ${width} px`
+        ).toHaveCount(1);
+        expect((await iconRail(page).boundingBox())?.width, `the rail at ${width} px`).toBe(56);
+      } else {
+        await expect(iconRail(page), `a rail is drawn at ${width} px`).toHaveCount(0);
+      }
+      // From 1024 px the Contents pane stands at the outline's left: its list scrolls down by
+      // design and is read for a sideways clip, and each of its one-line rows for a box that
+      // reaches past its own. Below 1024 px the Outline control opens the same list in a sheet
+      // over the page, which leaves the page fitting its viewport.
+      if (width >= 1024) {
+        await assertWholeAcross(contentsPane(page));
+        const entries = await contentsEntries(contentsPane(page)).all();
+        expect(entries.length, `the Contents pane lists nothing at ${width} px`).toBeGreaterThan(0);
+        for (const entry of entries) await assertFitsItsBox(entry);
+      } else {
+        await expect(
+          outlineControl(page),
+          `the page draws no Outline control at ${width} px`
+        ).toHaveCount(1);
+        await outlineControl(page).click();
+        await expect(
+          outlineSheet(page),
+          `the Outline control opens no list at ${width} px`
+        ).toBeVisible();
+        await assertPageFits(page);
+        await assertWholeAcross(outlineSheet(page));
+        await page.keyboard.press("Escape");
+        await expect(outlineSheet(page)).toHaveCount(0);
+      }
       // The panel holds the properties, the focused node's facts and the whole conversation, so
-      // it is taller than the screen and scrolls down by design; R17 bans two dimensions, not
-      // one, so the panel is read for a sideways clip and a clamped line (`e2e/unclipped.ts`).
-      if ((await marginSlot(page).count()) === 1) await assertWholeAcross(marginSlot(page));
+      // it is taller than the screen and scrolls down by design; R18 bans two dimensions, not
+      // one, so Details, open over the page, is read for a sideways clip and a clamped line
+      // (`e2e/unclipped.ts`), with the page under it still fitting its viewport.
+      await openDetails(page);
+      await assertPageFits(page);
+      await assertWholeAcross(marginSlot(page));
+      await closeDetails(page);
       // R17's reading of a row, which is of its box and not of its words: a row is one line at
       // 1024 px and below and cuts its own first line, at a word, to the pixels its own box
       // leaves it beside its other words, putting it under them where they leave it none
@@ -3161,6 +3384,9 @@ test("the header holds its rule when the typeface does not load @phone", async (
 interface PageInventoryFixture {
   readonly commit: string;
   readonly renames: Readonly<Record<string, string>>;
+  /** Why a rename is the same control under a new name, keyed as `renames` is, for a rename
+   *  that no tab-to-preset or block-to-words rule above explains on its own. */
+  readonly renameReasons?: Readonly<Record<string, string>>;
   /** Links of the old page carried by a parent row of the outline (`page-inventory.ts`). */
   readonly parentRows: Readonly<Record<string, ParentRowMapping>>;
   readonly "open-1440": readonly InventoryEntry[];
@@ -3179,7 +3405,7 @@ function priorityRow(page: Page): Locator {
  *  dismissed: a press outside an open menu, or outside the identity block's actions group,
  *  closes it instead of reaching the control under it, and Escape closes each of them
  *  (`IssueActionsMenu.tsx`). The priority row's picker closes by its own Cancel, as a reader
- *  closes it. */
+ *  closes it, and Details by its own Close, since on a phone it covers the page. */
 async function closeOpenControls(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
   await expect(openMenu(page)).toHaveCount(0);
@@ -3197,6 +3423,7 @@ async function closeOpenControls(page: Page): Promise<void> {
       .click();
     await expect(picker).toHaveCount(0);
   }
+  await closeDetails(page);
 }
 
 // c-nothing-lost.
@@ -3271,8 +3498,20 @@ test("the new page carries every element of the old one @phone", async ({ browse
         await gotoIssue(page, presetPath(seeded.key, preset));
         return true;
       }),
+      // The conversation's address mounts the panel's list (`IssuePage.tsx`'s
+      // `activatedTabs`), which is in Details, so the view opens it as a reader does (R14).
       async () => {
         await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+        await openDetails(page);
+        return true;
+      },
+      // The shell's navigation: on the issue page the rail's foot control, or the header's
+      // `☰` on a phone, opens the whole of it over the page, which holds every entry the old
+      // page's sidebar offered (R14).
+      async () => {
+        await gotoIssue(page, `/issues/${seeded.key}`);
+        await page.getByRole("button", { exact: true, name: "Open navigation" }).click();
+        await expect(page.getByRole("dialog", { exact: true, name: "Navigation" })).toBeVisible();
         return true;
       },
       async () => {
@@ -3317,6 +3556,9 @@ test("the new page carries every element of the old one @phone", async ({ browse
         await expect(
           versionControl(page).getByRole("button", { name: "Copy link to block" })
         ).toHaveCount(1);
+        // The margin's cards beside the opened spec - its decisions, its comments - are in
+        // Details, which a reader opens to read them beside the document (R14).
+        await openDetails(page);
         return true;
       },
       // The five views a control opens are all of the issue's own address, so they are one
@@ -3363,11 +3605,13 @@ test("the new page carries every element of the old one @phone", async ({ browse
       // The priority row's picker (dispatch://INFRA-2947 R3), which the row's add control opens
       // and no address does: the old page drew that row in its header's rail and its recording
       // opened the picker there (`record-page-inventory.e2e.ts`), and this page draws it in the
-      // Details panel's Development section (R13). A closed issue's add control is refused, so
-      // there the view is the page with the menus closed, as the three views below are where
-      // what they open is already open; the next view closes the picker by its Cancel.
+      // Details panel's Development section (R13), which a reader opens first (R14). A closed
+      // issue's add control is refused, so there the view is Details with the menus closed, as
+      // the three views below are where what they open is already open; the next view closes
+      // the picker by its Cancel.
       async () => {
         await closeOpenControls(page);
+        await openDetails(page);
         const add = priorityRow(page).getByRole("button", {
           exact: true,
           name: `${CONTROL_LABELS.add_priority} to ${seeded.key}`,
@@ -3388,10 +3632,10 @@ test("the new page carries every element of the old one @phone", async ({ browse
         return true;
       },
       // The preset row below 1280 px is one chooser rather than a row of tabs, the children
-      // section opens closed below `md` (`useChildrenSection.ts`), and the panel is a sheet a
-      // reader opens below the width the margin keeps a column at (R12): each is a view of the
-      // page at that width, and at a width where it is already open the view is the page with
-      // the menus closed, which is the page a reader is left on there.
+      // section opens closed below `md` (`useChildrenSection.ts`), and the panel is Details, which
+      // a reader opens from the header at every width (R14): each is a view of the page, and at
+      // a width where it is already open the view is the page with the menus closed, which is
+      // the page a reader is left on there.
       async () => {
         await closeOpenControls(page);
         if ((await presetChooser(page).count()) === 1) await presetChooser(page).click();
@@ -3405,8 +3649,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
       },
       async () => {
         await closeOpenControls(page);
-        const sheet = page.getByRole("button", { name: /review panel/i });
-        if ((await sheet.count()) > 0) await sheet.first().click();
+        await openDetails(page);
         return true;
       },
       // One view per row of the tree, because a tree opens one body at a time and a node's own
@@ -3596,6 +3839,8 @@ test("the new page carries every element of the old one @phone", async ({ browse
     await offered(page, "button", CONTROL_LABELS.save_route).click();
     await expect.poll(async () => (await getIssue(seeded.key)).route).toBe("role:reviewer");
 
+    // The repository and every property under it are in Details (R13, R14).
+    await openDetails(page);
     const repository = offered(page, "combobox", `Repository of ${seeded.key}`);
     await repository.focus();
     const repoBefore = (await getIssue(seeded.key)).repo;
@@ -3612,6 +3857,8 @@ test("the new page carries every element of the old one @phone", async ({ browse
     await expect
       .poll(async () => (await getIssue(seeded.key)).components.ids)
       .not.toContain("panel");
+    // The header's own controls are written with Details closed, which on a phone covers them.
+    await closeDetails(page);
 
     await offered(page, "button", "Unpin issue").click();
     await expect.poll(async () => (await getMyState("alice"))[seeded.key]?.pinned).toBe(false);
@@ -3630,6 +3877,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
     await offered(page, "button", CONTROL_LABELS.reopen_into_backlog).click();
     await expect.poll(async () => (await getIssue(seeded.key)).status).not.toBe("done");
 
+    await openDetails(page);
     await offered(page, "button", "Subscribers: 3").click();
     await page
       .getByRole("button", { name: /Unsubscribe/ })
@@ -3730,6 +3978,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
     // own address has been opened (`IssuePage.tsx`'s `activatedTabs`), so the composer is
     // written in where a reader writes in it.
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+    await openDetails(page);
     await marginSlot(page).getByRole("textbox", { name: "Comment" }).fill("The composer writes.");
     await marginSlot(page).getByRole("button", { name: "Send" }).click();
     await expect
@@ -3739,14 +3988,17 @@ test("the new page carries every element of the old one @phone", async ({ browse
     // Back to the issue's own address, where the tree opens on the spec's nodes.
     await gotoIssue(page, `/issues/${seeded.key}`);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-    // The ask is drawn as a row of the tree and again as a card in the panel (R1, R12), so the
-    // answer is written on the row the reader focused.
+    // The ask is drawn as a row of the tree and again as a card in the panel (R1, R12), which is
+    // Details (R14): the answer is written on the card, with Details open, and Details closed
+    // again for the outline, which on a phone it covers.
+    await openDetails(page);
     const question = marginSlot(page).getByTestId(`ask-${seeded.openQuestion.askId}`);
     await question.getByRole("radio").first().check();
     await question.getByRole("button", { name: /^Answer/ }).click();
     await expect
       .poll(async () => (await getAsk(seeded.openQuestion.askId)).ask.state)
       .toBe("answered");
+    await closeDetails(page);
 
     await nodeRow(page, blockNodeId(specSlug, requirementBlockId(3)))
       .first()

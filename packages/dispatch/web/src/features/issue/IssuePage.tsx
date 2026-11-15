@@ -28,7 +28,7 @@ import {
 import { useSelectedItem } from "../artifacts/ArtifactDocument";
 import { ConversationTab } from "../conversation/ConversationTab";
 import { conversationScrollport } from "../conversation/use-follow-latest";
-import { useFillMarginSlot, useMarginDrawsSlot } from "../margin/margin-slot";
+import { useFillMarginSlot, useMarginDrawer, useMarginDrawsSlot } from "../margin/margin-slot";
 import { statusText } from "../project/board-model";
 import { buildIssuePath, type IssueRoute, type IssueTab, parseIssuePath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
@@ -38,7 +38,7 @@ import { useUserPreference } from "../shell/userPreference";
 import { narrowConversation } from "./conversation-states";
 import { DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
-import { IssueBody } from "./IssueBody";
+import { IssueBody, PAGE_INSET } from "./IssueBody";
 import { IssueHeader } from "./IssueHeader";
 import { IssueMarginCards, IssueMarginPanel } from "./IssueMargin";
 import { IssuePresetPanels } from "./IssuePresetPanels";
@@ -295,11 +295,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // beside it: the identity block, the body and the panel's properties are one page, however the
   // shell mounts them (`features/shell/page-frame.tsx`, `e2e/issue-page.ts`).
   usePageFrame(ISSUE_FRAME);
-  // Where the panel goes: the shell's margin wherever it keeps a column for it, and the page's
-  // own column under the identity block wherever it does not - at the width the margin is a
-  // sheet, and while the reader has collapsed it to its rail. The margin answers that itself
-  // (`features/margin/margin-slot.tsx`), so the panel is drawn exactly once and the properties
-  // are read at every width and under either preference (R11, R12).
+  // Where the panel goes: the shell's Details drawer, which opens over the right of the page at
+  // every width (R14, `features/margin/Margin.tsx`), and the page's own column only where no
+  // shell draws a margin at all. The margin answers that itself (`features/margin/margin-slot.tsx`),
+  // so the panel is drawn exactly once.
   const marginDrawsPanel = useMarginDrawsSlot();
   // The panel's one stage: an element held for the life of the page, which this page draws the
   // panel into and which is *appended* into whichever host is on the screen - the margin's
@@ -469,17 +468,40 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // panel - the host that panel is moved into under them (`IssueMargin.tsx`'s
   // `IssueMarginCards`). The panel itself is drawn once, below, and never a second time here:
   // it is one element moved between the two hosts, so the margin opening and closing throws
-  // away neither an unsent comment nor anything else a reader has started in it.
+  // away neither an unsent comment nor anything else a reader has started in it. The fill is
+  // the same from the page's first render, before the issue has loaded, so the margin draws its
+  // content once per load and never plain first and wrapped after (R14, INFRA-2004).
   const panel = useCallback(
-    (conversation: ReactNode) =>
-      details === undefined ? (
-        conversation
-      ) : (
-        <IssueMarginCards conversation={conversation} panelHost={holdPanel} />
-      ),
-    [details, holdPanel]
+    (conversation: ReactNode) => (
+      <IssueMarginCards conversation={conversation} panelHost={holdPanel} />
+    ),
+    [holdPanel]
   );
   useFillMarginSlot(panel);
+  // The addresses whose content is the panel's open Details, once per arrival at one of them:
+  // the collaborators, the history, a comment or message of the history (R14, R20), and the
+  // conversation's own address, whose list is the panel's until the outline carries the
+  // composer and a reply on every node. The reader's own Close is the later word for as long as
+  // they stay on that address.
+  const drawer = useMarginDrawer();
+  const openDetails = drawer?.setOpen;
+  const panelAddress =
+    route.kind === "collaborators" ||
+    route.kind === "activity" ||
+    route.kind === "conversation" ||
+    historyItem !== undefined
+      ? `${pathname}${search}`
+      : undefined;
+  const openedFor = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (panelAddress === undefined || openDetails === undefined) {
+      openedFor.current = panelAddress;
+      return;
+    }
+    if (openedFor.current === panelAddress) return;
+    openedFor.current = panelAddress;
+    openDetails(true);
+  }, [openDetails, panelAddress]);
 
   // Every key the issue page binds, in its own scope (`useIssueKeymap.ts`). The priority write
   // is the page's one, shared with the identity block and the palette, so a refusal of any of
@@ -549,7 +571,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   if (issue.isError || state.isError) {
     const notFound = issue.error instanceof ApiError && issue.error.status === 404;
     return (
-      <section>
+      <section className={`pt-2 ${PAGE_INSET}`}>
         <h1 className={`text-xl font-semibold ${textPrimaryOnCanvas}`}>
           {notFound ? "Issue not found" : "Couldn't load this issue"}
         </h1>
@@ -578,10 +600,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     );
   }
   if (issue.isPending || state.isPending || landing?.kind === "pending") {
-    return <p className={textMutedOnCanvas}>Loading issue…</p>;
+    return <p className={`pt-2 ${PAGE_INSET} ${textMutedOnCanvas}`}>Loading issue…</p>;
   }
   if (issue.data === undefined) {
-    return <p className={dangerText}>Could not load this issue.</p>;
+    return <p className={`pt-2 ${PAGE_INSET} ${dangerText}`}>Could not load this issue.</p>;
   }
   // The rewrite replaces the address with the whole id rather than adding to the reader's
   // history, so Back still leaves the page they came from.
@@ -591,23 +613,39 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   if (queryLanding.rewrite !== undefined) {
     return <Navigate replace to={queryLanding.rewrite} />;
   }
+  // The page's column has no padding of its own (`app.tsx`), so what the page draws in place of
+  // itself takes the inset its header would.
   if (isItemRoute(route) && landing?.kind === "ambiguous") {
-    return <ItemMatchList candidates={landing.candidates} route={route} />;
+    return (
+      <div className={`pt-2 ${PAGE_INSET}`}>
+        <ItemMatchList candidates={landing.candidates} route={route} />
+      </div>
+    );
   }
   if (queryItem !== undefined && queryLanding.candidates !== undefined) {
     return (
-      <ItemMatchList
-        candidates={queryLanding.candidates}
-        route={{ id: queryItem.id, key: route.key, kind: queryItem.kind }}
-      />
+      <div className={`pt-2 ${PAGE_INSET}`}>
+        <ItemMatchList
+          candidates={queryLanding.candidates}
+          route={{ id: queryItem.id, key: route.key, kind: queryItem.kind }}
+        />
+      </div>
     );
   }
   if (isItemRoute(route) && (landing?.kind === "missing" || landing?.kind === "unavailable")) {
-    return <ItemLandingFailure landing={landing} route={route} />;
+    return (
+      <div className={`pt-2 ${PAGE_INSET}`}>
+        <ItemLandingFailure landing={landing} route={route} />
+      </div>
+    );
   }
 
   if (primaryArtifact === undefined) {
-    return <p className={dangerText}>Could not load this issue&apos;s primary document.</p>;
+    return (
+      <p className={`pt-2 ${PAGE_INSET} ${dangerText}`}>
+        Could not load this issue&apos;s primary document.
+      </p>
+    );
   }
 
   const issueState = stateForIssue(state.data, issue.data.key);
@@ -726,12 +764,29 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           restoringTo={restoringTo}
           state={issueState}
         />
-        {/* The head of the page, the preset row, and the children section with the one folded
-          tree the presets are queries over (R1, R3, R5, R10) - or the document the address
-          opens, in their place. A row being edited takes its own document's editor onto its
-          stage (`document-stage.tsx`). */}
+        {/* The preset row, then the Contents pane and the reading column: the three sentences,
+          the children section and the one folded tree the presets are queries over (R1, R3, R5,
+          R8, R10, R14) - or the document the address opens, in their place. A row being edited
+          takes its own document's editor onto its stage (`document-stage.tsx`), and what the
+          page draws under the outline is in that column too. */}
         <IssueBody
           address={address}
+          below={
+            <IssuePresetPanels
+              activatedTabs={activatedTabs}
+              activeTab={activeTab}
+              conversationState={conversationState}
+              editedDocument={edited}
+              history={historyItem !== undefined}
+              isClosed={isClosed}
+              issueKey={issueKey}
+              onToolbarSink={toolbarSink}
+              onVersionChange={(artifact, version) =>
+                openDocumentAt(artifact, version ?? undefined)
+              }
+              state={state.data}
+            />
+          }
           isClosed={isClosed}
           issue={issue.data}
           onEditing={setEditing}
@@ -740,14 +795,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           plan={planArtifact}
           toolbar={outlineToolbar}
         />
-        {/* Wherever the shell's margin draws no panel of its own - at the width it is a sheet,
-          and while the reader has collapsed it to its rail - the panel's stage is held here,
-          under the identity block: the properties, the facts of the focused node and the
-          conversation are read at every width and under either preference with nothing
-          opened (R11, R12). */}
+        {/* Wherever the shell's margin draws no panel of its own - outside the shell, where no
+          drawer holds it - the panel's stage is held here, under the body. */}
         {marginDrawsPanel ? null : (
           <div
-            className="mb-3 flex min-w-0 flex-col gap-3"
+            className={`mb-3 flex min-w-0 flex-col gap-3 ${PAGE_INSET}`}
             data-testid="issue-margin"
             ref={holdPanel}
           />
@@ -768,18 +820,6 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           />,
           panelStage
         )}
-        <IssuePresetPanels
-          activatedTabs={activatedTabs}
-          activeTab={activeTab}
-          conversationState={conversationState}
-          editedDocument={edited}
-          history={historyItem !== undefined}
-          isClosed={isClosed}
-          issueKey={issueKey}
-          onToolbarSink={toolbarSink}
-          onVersionChange={(artifact, version) => openDocumentAt(artifact, version ?? undefined)}
-          state={state.data}
-        />
       </section>
     </NoTooltips>
   );

@@ -23,7 +23,13 @@ import {
   specAddress,
   typeAtEnd,
 } from "./editor";
-import { openIssueAddress, presetChooser, presetTablist, presetTabs } from "./issue-page";
+import {
+  closeDetails,
+  openIssueAddress,
+  presetChooser,
+  presetTablist,
+  presetTabs,
+} from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
 
@@ -45,13 +51,10 @@ async function notesFile(testInfo: TestInfo): Promise<string> {
   return path;
 }
 
+/** Opens the issue's `/artifacts`, closing Details first where it covers a phone's page
+ *  (dispatch://INFRA-1196 R14). */
 async function openArtifacts(page: Page, isPhone: boolean) {
-  if (isPhone) {
-    const reviewPanel = page.getByRole("button", { name: /review panel/i });
-    if ((await reviewPanel.getAttribute("aria-expanded")) === "true") {
-      await reviewPanel.click();
-    }
-  }
+  if (isPhone) await closeDetails(page);
   await openIssueAddress(page, "artifacts");
 }
 
@@ -200,10 +203,11 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
     await page.getByRole("button", { name: "Close navigation" }).click();
     await navigateInApp(page, `/issues/${issue.key}`);
-    const openMargin = page.getByRole("button", { name: /review panel/i });
-    if ((await openMargin.getAttribute("aria-expanded")) === "true") {
-      await openMargin.click();
-    }
+    // On the issue page the panel is Details, which the header's control opens over the page,
+    // the phone's sheet the whole width (dispatch://INFRA-1196 R14).
+    const openMargin = page
+      .locator("header[data-issue-header]")
+      .getByRole("button", { exact: true, name: "Details" });
     const [navigationBox, marginBox] = await Promise.all([
       openNavigation.boundingBox(),
       openMargin.boundingBox(),
@@ -213,8 +217,8 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     expect(marginBox?.width).toBeGreaterThanOrEqual(44);
     expect(marginBox?.height).toBeGreaterThanOrEqual(44);
     await openMargin.click();
-    await expect(page.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
-    await page.screenshot({ path: testInfo.outputPath("iphone-margin-sheet.png"), fullPage: true });
+    await expect(page.getByRole("dialog", { exact: true, name: "Details" })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("iphone-details.png"), fullPage: true });
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true);
@@ -422,6 +426,9 @@ test("an uploaded document is linked from the Activity list and the presets fit 
   // target is read: the one control a reader presses there carries it, and the row fails if it
   // ever loses it.
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
+  // The Activity list is in Details, which its address opens (dispatch://INFRA-1196 R14) and
+  // which on a phone is a sheet over the whole page, so a reader closes it to reach the presets.
+  await closeDetails(page);
   await expect(tabs).toHaveCount(0);
   const chooser = presetChooser(page);
   await expect(chooser).toBeVisible();

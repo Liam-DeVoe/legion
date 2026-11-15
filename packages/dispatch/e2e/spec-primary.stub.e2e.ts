@@ -7,7 +7,7 @@ import { expect } from "@playwright/test";
 
 import { createAsk, createIssue, createProject } from "./api";
 import { needsYouCards } from "./editor";
-import { expectActivePreset } from "./issue-page";
+import { detailsControl, expectActivePreset, openDetails } from "./issue-page";
 import { stubbed } from "./stub/stub-test";
 
 const session = {
@@ -44,6 +44,8 @@ test("issue landing keeps Spec primary and puts open asks in Needs you @pr", asy
   // The issue's own address is the Tree preset's now (dispatch://INFRA-1196 R19); at a phone
   // width the row of five is one control naming it.
   await expectActivePreset(page, "Tree");
+  // Needs you is the margin's own cards, in Details, which the header's control opens (R14).
+  await openDetails(page);
 
   await expect(
     needsYouCards(page).filter({ hasText: "Approve the document-first layout?" })
@@ -57,16 +59,16 @@ test("issue landing keeps Spec primary and puts open asks in Needs you @pr", asy
   });
 });
 
-// Below 768 px the review panel is not beside the document at all: it sits behind a toggle the
-// phone layout alone renders, and opening it has to bring the open asks up without pushing the
-// page sideways. The screen is the project's own, so the claim is read at the width a phone
-// actually gives it.
+// Below 768 px the panel is not beside the document at all: it is Details, a sheet over the whole
+// screen behind the header's control (dispatch://INFRA-1196 R14), and opening it has to bring the
+// open asks up without pushing the page sideways. The screen is the project's own, so the claim
+// is read at the width a phone actually gives it.
 test("on a phone the issue's open asks come up behind the review panel toggle @phone @phone-only @pr", async ({
   page,
   scene,
 }, testInfo) => {
   await page.goto(`/issues/${scene.issue}`);
-  const toggle = page.getByRole("button", { name: "Open review panel (2 open asks)" });
+  const toggle = detailsControl(page);
   await expect(toggle).toBeVisible();
   const toggleScreenshot = testInfo.outputPath("spec-primary-phone-toggle.png");
   await page.screenshot({ path: toggleScreenshot, fullPage: true });
@@ -74,7 +76,7 @@ test("on a phone the issue's open asks come up behind the review panel toggle @p
     contentType: "image/png",
     path: toggleScreenshot,
   });
-  await toggle.click();
+  await openDetails(page);
   await expect(
     needsYouCards(page).filter({ hasText: "Approve the document-first layout?" })
   ).toBeVisible();

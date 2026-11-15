@@ -22,7 +22,16 @@ import {
   markSpan,
   selectEditorText,
 } from "./editor";
-import { conversationStateControl, focusedNodeId, onScreen, tree } from "./issue-page";
+import {
+  closeDetails,
+  conversationStateControl,
+  focusedNodeId,
+  marginShell,
+  nodeRow,
+  onScreen,
+  openDetails,
+  tree,
+} from "./issue-page";
 import { navigateInApp } from "./sends";
 import { serveWithoutDisplayTrees } from "./strip-trees";
 import { expect, type Locator, type Page, test } from "./test";
@@ -447,7 +456,7 @@ test("a desktop document item link shows its far-away card and its quote", async
 // them it would run only where its defect was never seen.
 test("a composer opened from the document is in the margin's view after a comment link @phone @webkit @firefox", async ({
   browser,
-}, testInfo) => {
+}) => {
   const { comment, issue, markId } = await seedLongDocument();
   const context = await asUser(browser, "alice");
 
@@ -457,10 +466,9 @@ test("a composer opened from the document is in the margin's view after a commen
 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
-    if (testInfo.project.name === "iphone") {
-      await sheet.getByRole("button", { name: "Open review panel" }).click();
-      await expect(sheet).toHaveAttribute("data-expanded", "true");
-    }
+    // On the issue page the margin is Details, which opens for the card a link names
+    // (dispatch://INFRA-1196 R14); on a phone it is the whole-screen sheet.
+    await openDetails(page);
     // The margin lands held on the linked card, far down its own scroll, and the composer
     // renders at the top of that scroll: opening one from the document has to end the hold
     // and bring the form back. Both halves of the landing come first: the card, and the quote
@@ -469,10 +477,12 @@ test("a composer opened from the document is in the margin's view after a commen
     // and so is the fixed action bar placed beside the selection - and the quote is in the
     // viewport both while that scroll is still to come and once it has run, so the mark's
     // arrival at the place `block: 'center'` promises is what says the document is done moving.
+    // On a phone Details covers the document, so the reader closes it to read the passage.
     await expect(card).toBeInViewport();
+    await landingSettled(sheet);
+    if ((page.viewportSize()?.width ?? 0) < 768) await closeDetails(page);
     await expect(markSpan(page, markId)).toBeInViewport();
     await markLanded(page, markId);
-    await landingSettled(sheet);
 
     // The landing leaves this paragraph 921 px above the viewport, and the action bar is
     // `position: fixed` beside the selection, so a selection made from there puts the bar above
@@ -619,16 +629,21 @@ for (const state of crossDocumentLandingStates) {
       const sheet = page.getByTestId("margin-sheet");
       const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
       const placement = card.locator("xpath=..");
-      await card.waitFor();
-      expect(await placement.evaluate((element) => (element as HTMLElement).style.top)).toBe("0px");
       // A press on the page outside the margin. With the issue page drawn, the spec opens in
       // place of the outline, and the point the press used to take, (400, 400), is the opened
       // document's Back to the conversation button above its header, which would close the
-      // document; so the press is made on the document's own heading. With the page's code held
-      // nothing of it is drawn yet, and the press lands where it always did.
+      // document; so the press is made on the document's own heading, once the card is drawn
+      // and not yet placed. With the page's code held nothing of the page is drawn yet, and
+      // neither is the card: Details draws the margin's content only once the page has filled
+      // its slot, so it is drawn once per load (dispatch://INFRA-1196 R14), and the press lands
+      // where it always did while the landing has not begun.
       if (state.holdIssuePageCode) {
         await page.mouse.click(400, 400);
       } else {
+        await card.waitFor();
+        expect(await placement.evaluate((element) => (element as HTMLElement).style.top)).toBe(
+          "0px"
+        );
         await page.getByTestId("artifact-header").getByRole("heading", { level: 2 }).click();
       }
 
@@ -1002,7 +1017,7 @@ test("a linked card's placement ignores the margin's own scroll @webkit @firefox
   }
 });
 
-test("an iPhone document item link brings its far-away mark above the closed review sheet @phone @phone-only", async ({
+test("an iPhone document item link opens Details on its card and brings its far-away mark into view @phone @phone-only", async ({
   browser,
 }) => {
   const { comment, issue, markId } = await seedLongDocument();
@@ -1012,21 +1027,18 @@ test("an iPhone document item link brings its far-away mark above the closed rev
     const page = await context.newPage();
     await page.goto(markPath(issue.key, "spec", comment.id));
 
-    const sheet = page.getByTestId("margin-sheet");
+    // On the issue page the review sheet is Details, which opens over the whole screen for the
+    // card the link names (dispatch://INFRA-1196 R14); the document under it has its mark
+    // active and brought into view, so closing Details shows the passage the card quotes.
     const mark = markSpan(page, markId);
     await expect(mark.locator(".dispatch-mark-active")).toHaveCount(1);
+    await expect(marginShell(page), "the link did not open Details on its card").toBeVisible();
+    await expect(marginShell(page).locator(`[data-margin-item="${comment.id}"]`)).toHaveAttribute(
+      "aria-current",
+      "true"
+    );
+    await closeDetails(page);
     await expect(mark).toBeInViewport();
-    await expect(sheet).toHaveAttribute("data-expanded", "false");
-
-    await expect
-      .poll(async () => {
-        const [markBottom, sheetTop] = await Promise.all([
-          mark.evaluate((element) => element.getBoundingClientRect().bottom),
-          sheet.evaluate((element) => element.getBoundingClientRect().top),
-        ]);
-        return markBottom <= sheetTop;
-      })
-      .toBe(true);
   } finally {
     await context.close();
   }
@@ -1070,9 +1082,8 @@ test("an iPhone secondary-document link scrolls its selected card after opening 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
     await expect(card).toHaveAttribute("aria-current", "true");
-    await expect(sheet).toHaveAttribute("data-expanded", "false");
-    await sheet.getByRole("button", { name: "Open review panel" }).click();
-    await expect(sheet).toHaveAttribute("data-expanded", "true");
+    // The linked card is in Details, which opens for it (dispatch://INFRA-1196 R14).
+    await openDetails(page);
     await expect(card).toBeInViewport();
 
     await expectSettledInside(card, sheet);
@@ -1118,9 +1129,18 @@ test("an unanchored comment deep link still focuses its Conversation turn", asyn
     const page = await context.newPage();
     await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
     await expect(page).toHaveURL(`/issues/${issue.key}/comments/${comment.id}`);
-    const turn = page.locator(`li[data-turn="comment:${comment.id}"][aria-current="true"]`);
+    // A person's comment is a node of the outline, and its own address opens that node,
+    // focused, there (dispatch://INFRA-1196 R20); the conversation in Details marks the same
+    // turn, which a reader reads by opening Details, closed on the load (R14).
+    await expect.poll(() => focusedNodeId(page)).toBe(comment.id);
+    await expect.poll(() => onScreen(nodeRow(page, comment.id).first())).toBe(true);
+    await expect(nodeRow(page, comment.id).first()).toContainText("No quote, just a note.");
+    await openDetails(page);
+    const turn = marginShell(page).locator(
+      `li[data-turn="comment:${comment.id}"][aria-current="true"]`
+    );
     await expect(turn).toContainText("No quote, just a note.");
-    await expect(turn).toBeInViewport();
+    await expect(turn).toBeVisible();
   } finally {
     await context.close();
   }

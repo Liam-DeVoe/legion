@@ -7,6 +7,7 @@ import {
   createIssue,
   createMessage,
   createProject,
+  createProjectDocument,
   disconnectLiveSockets,
   getIssue,
   patchIssue,
@@ -17,7 +18,7 @@ import {
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
 import { conversationStateControl } from "./issue-page";
-import { expect, type Locator, test, type WebSocket } from "./test";
+import { expect, type Locator, type Page, test, type WebSocket } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { asUser } from "./users";
 
@@ -57,6 +58,13 @@ async function renameUntilShown(
   throw new Error(`no rename of ${key} reached the page in 10 writes 2 s apart`);
 }
 
+/** Opens the whole navigation over the issue page from the icon rail's foot control, which is
+ *  where the sidebar's badges and pinned list are on that page (dispatch://INFRA-1196 R14). */
+async function openFullNavigation(page: Page): Promise<void> {
+  await page.getByTestId("icon-rail").getByRole("button", { name: "Open navigation" }).click();
+  await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();
+}
+
 // @pr: A two-context race over the live stream: bob's ask has to move alice's Inbox and project badges with no reload.
 test("live: bob's ask updates alice's Inbox and project badges without reload @pr", async ({
   browser,
@@ -75,8 +83,10 @@ test("live: bob's ask updates alice's Inbox and project badges without reload @p
   const issuePage = await alice.newPage();
   await issuePage.clock.install();
   await issuePage.goto(`/issues/${readingIssue.key}`);
-  // The sidebar now provides project navigation; an open ask updates its Inbox and
+  // On the issue page the navigation is the icon rail, whose foot control opens the full list
+  // over the page (dispatch://INFRA-1196 R14); an open ask updates that list's Inbox and
   // project badges without changing the issue route in the other tab.
+  await openFullNavigation(issuePage);
   const navigation = issuePage.getByRole("navigation", { name: "Navigation" });
   await expect(navigation.locator('a[href="/projects/CORE"]')).toBeVisible();
 
@@ -128,6 +138,8 @@ test("live: answering an ask updates the Inbox and project badges immediately", 
   const issuePage = await alice.newPage();
   await issuePage.clock.install();
   await issuePage.goto(`/issues/${readingIssue.key}`);
+  // The badges are the full navigation's, which the rail's foot control opens (R14).
+  await openFullNavigation(issuePage);
   const navigation = issuePage.getByRole("navigation", { name: "Navigation" });
   await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("1");
   await expect(navigation.locator('a[href="/projects/CORE"]')).toContainText("1");
@@ -180,6 +192,9 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
   try {
     await page.clock.install();
     await page.goto(`/issues/${viewedIssue.key}`);
+    // The pinned list is the full navigation's, which the rail's foot control opens
+    // (dispatch://INFRA-1196 R14); opened, it is mounted and could be read again.
+    await openFullNavigation(page);
     await expect(
       page.getByRole("navigation", { name: "Navigation" }).locator('a[href="/projects/CORE"]')
     ).toBeVisible();
@@ -660,9 +675,10 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
     // fetching again.
     "/api/v1/inbox",
-    // The project sidebar's Pinned and Projects queries. This row runs on chromium alone, so
-    // there is no drawer-closed phone case to leave them out for.
-    "/api/v1/issues?pinned=true",
+    // The Projects query. The sidebar's Pinned list and its Priorities badge
+    // (`/api/v1/issues?pinned=true`, `/api/v1/priorities?summary=true`) are not read here: on
+    // the issue page the navigation is the icon rail, which draws neither, and the full list
+    // that does is read once the rail's foot control opens it (dispatch://INFRA-1196 R14).
     "/api/v1/projects",
     "/api/v1/me/state",
     // The issue's detail.
@@ -704,9 +720,6 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
     // number (the sidebar's on desktop, the compact header's on phone).
     "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
-    // The navigation rail's Priorities entry, whose badge is the two fault counts added
-    // (`?summary=true` answers those two numbers and neither fault list).
-    "/api/v1/priorities?summary=true",
     // The Conversation's list of the issue's phase handoffs, which it shows beside the
     // messages.
     `/api/v1/issues/${issue.key}/handoffs`,
@@ -718,11 +731,12 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // three sentences were read out of the spec's own text at the summary block's span, and
     // R20 replaced both reads with the summary node the tree already carries
     // (`features/issue/IssueThreeThings.tsx`); the editor that reads a document's text is
-    // mounted only where a document preset is open, which this address is not.
+    // mounted only where a document preset is open, which this address is not. The issue's
+    // own reference closure (`references?own=1`) is no read either: it placed a document under
+    // the block citing it, and a document is no row of the outline (R1, be70b3383a).
     `/api/v1/issues/${issue.key}/coverage`,
     `/api/v1/issues/${issue.key}/decisions`,
     `/api/v1/issues/${issue.key}/results`,
-    `/api/v1/issues/${issue.key}/references?own=1`,
     `/api/v1/artifacts/${issue.primary_artifact_id}/blocks`,
     // The one batched read of every `dispatch://` address the tree holds. Its query is that
     // list, which is what the issue's own text holds rather than a fact about the budget, so
@@ -763,13 +777,18 @@ test("live: the Reconnecting pill never covers the phone margin sheet toggle @ph
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
-  // #844 hides the margin sheet's `<aside>` (and its toggle) entirely when no
-  // issue is open, so the toggle only exists on an issue page.
-  const issue = await createIssue({ project: "CORE", title: "Margin toggle target" });
+  // #844 hides the margin sheet's `<aside>` (and its toggle) entirely when no document is open,
+  // so the toggle only exists on a page with one; the issue page's margin is its Details drawer
+  // now, opened from the header (dispatch://INFRA-1196 R14), so the row reads a project
+  // document, whose margin is still the phone's sheet.
+  const created = await createProjectDocument("CORE", {
+    content: "# Margin toggle target\n\nThe sheet's toggle sits at the foot of the screen.\n",
+    name: "Margin toggle target",
+  });
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  await page.goto(`/issues/${issue.key}`);
+  await page.goto(`/projects/CORE/documents/${created.artifact.slug}`);
 
   const toggle = page.getByRole("button", { name: /Open review panel/ });
   await expect(toggle).toBeVisible();

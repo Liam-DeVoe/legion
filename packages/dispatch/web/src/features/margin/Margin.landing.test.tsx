@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the reader's wheel and the margin's own scroll events, which user-event has no form for
 import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { type ReactNode, useMemo, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -21,6 +22,7 @@ import {
   SelectedItemLabel,
   stubMatchMedia,
 } from "./margin-fixture";
+import { MarginSlotProvider } from "./margin-slot";
 import { RELAYOUT_SETTLES_FRAMES } from "./useCardHold";
 
 const secondComment: Comment = {
@@ -198,6 +200,64 @@ test("a desktop link to a comment's node marks its card without expanding its th
           `${path} expands the comment's thread`
         ).toBe("false");
         expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    restoreMatchMedia();
+    scrollTo.mockRestore();
+  }
+});
+
+/** The shell's Details drawer as `app.tsx` holds it, closed on the load. */
+function ClosedDetails({ children }: { children: ReactNode }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const drawer = useMemo(() => ({ open, setOpen }), [open]);
+  return <MarginSlotProvider drawer={drawer}>{children}</MarginSlotProvider>;
+}
+
+// dispatch://INFRA-1196 R14: Details is closed on every load, but a reader who follows a link to
+// a comment beside its document asked to see that comment's card, so the drawer opens for it -
+// once, so their Close keeps it closed. A link to a comment's node lands on the outline and
+// leaves Details closed.
+test("a link to a card beside its document opens Details on it, and a link to a node does not", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubMatchMedia(false);
+  const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
+  try {
+    for (const [path, opens] of [
+      [markedCommentPath(comment.id), true],
+      [buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" }), false],
+      [`${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=${comment.id}`, false],
+    ] as const) {
+      const view = render(
+        <MemoryRouter initialEntries={[path]}>
+          <QueryClientProvider client={landingClient([comment])}>
+            <MarginProvider>
+              <ClosedDetails>
+                <SelectedItemLabel />
+                <Margin />
+              </ClosedDetails>
+            </MarginProvider>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await waitFor(() =>
+          expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
+        );
+        await settled();
+        const details = screen.getByTestId("desktop-margin-shell");
+        expect(
+          details.hasAttribute("hidden"),
+          `${path} ${opens ? "left Details closed" : "opened Details"}`
+        ).toBe(!opens);
+        if (opens) {
+          await user.click(screen.getByRole("button", { name: "Close" }));
+          await settled();
+          expect(details.hasAttribute("hidden"), "Details opened again after its Close").toBe(true);
+        }
       } finally {
         view.unmount();
       }

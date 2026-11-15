@@ -74,10 +74,22 @@ import { navigateInApp } from "./sends";
  * - **A node's body** `[data-node-body]`, drawn for the focused row and for a row pinned open
  *   (`[data-node-body][data-pinned]`) and for no other row. c-tree, c-focus-opens, c-keyboard.
  * - **A gap the page names** `[data-gap]` with `data-gap-kind`. c-spine.
- * - **The right-hand panel**: the shell's existing margin, with the issue page's own slot
- *   `[data-testid="issue-margin"]`, its sections
+ * - **The panel, Details**: the shell's margin as a drawer over the right of the page,
+ *   `[data-testid="desktop-margin-shell"]`, `hidden` while closed, which is how every load opens
+ *   it; the identity block's first row carries the `button` named `CONTROL_LABELS.details` that
+ *   opens it, and its head the `button` named `CONTROL_LABELS.close`. Inside it, the issue page's
+ *   own slot `[data-testid="issue-margin"]`, its sections
  *   `[data-margin-section="development" | "people" | "references"]`, and the focused node's facts
- *   `[data-testid="focused-node-facts"]`. c-one-panel, c-properties.
+ *   `[data-testid="focused-node-facts"]`. c-one-panel, c-properties, c-reflow.
+ * - **The icon rail** `nav[data-testid="icon-rail"]`, the shell's navigation on the issue page
+ *   from 768 px up, each entry a link named by its label, and its foot control the `button`
+ *   named "Open navigation". Below 768 px that button is in the identity block's first row.
+ *   c-one-panel.
+ * - **The Contents pane** `aside[data-testid="issue-contents"]` from 1024 px up, holding the head
+ *   of the page and the list `[role="tree"]` whose rows are `[data-contents-entry]`, and the
+ *   Focus branch `button`; below 1024 px the `button` named `CONTROL_LABELS.outline` beside the
+ *   presets opens the same list in `[data-testid="issue-outline-sheet"]`. c-three-things,
+ *   c-one-panel, c-reflow.
  * - **The page's own words** carry `data-page-chrome`; text from a person or an agent carries
  *   `data-author-text` (`PAGE_CHROME_ATTRIBUTE`, `AUTHOR_TEXT_ATTRIBUTE`). c-plain-words.
  *
@@ -149,6 +161,7 @@ const SELECTORS = {
   answerText: "[data-answer-text]",
   authorText: "[data-author-text]",
   branchMore: "[data-branch-more]",
+  details: '[data-testid="desktop-margin-shell"]',
   childRow: "[data-child-row]",
   gap: "[data-gap]",
   identityBlock: "header[data-issue-header]",
@@ -410,8 +423,9 @@ export function focusedNodeFacts(page: Page): Locator {
   return page.getByTestId("focused-node-facts");
 }
 
-/** The shell's own margin, which the issue page's slot sits inside and which every other page of
- *  Dispatch keeps as it is (`web/src/features/margin/Margin.tsx`). */
+/** The shell's own margin, which on the issue page is the Details drawer over the right of the
+ *  page and on every other page of Dispatch the column it always was
+ *  (`web/src/features/margin/Margin.tsx`). */
 export function marginShell(page: Page): Locator {
   return page.getByTestId("desktop-margin-shell");
 }
@@ -420,12 +434,78 @@ export function marginResizeHandle(page: Page): Locator {
   return page.getByLabel("Resize margin");
 }
 
-export function marginHideControl(page: Page): Locator {
-  return page.getByRole("button", { exact: true, name: "Hide margin" });
+/** The control at the right of the identity block's first row that opens and closes Details. */
+export function detailsControl(page: Page): Locator {
+  return identityBlock(page).getByRole("button", { exact: true, name: CONTROL_LABELS.details });
 }
 
-export function marginShowControl(page: Page): Locator {
-  return page.getByRole("button", { exact: true, name: "Show margin" });
+/** Details' own Close, in its head. */
+export function detailsClose(page: Page): Locator {
+  // The drawer's own Close, in its head: a composer or a card inside it can carry a control of
+  // the same name.
+  return marginShell(page)
+    .getByTestId("details-close")
+    .and(page.getByRole("button", { exact: true, name: CONTROL_LABELS.close }));
+}
+
+/** Opens Details with its control, as a reader does, unless it is open already. The control is
+ *  asserted first, so a page drawing none fails on that rather than on a press that never lands. */
+export async function openDetails(page: Page): Promise<void> {
+  await expect(detailsControl(page), "the page draws no Details control").toHaveCount(1);
+  if (await marginShell(page).isVisible()) return;
+  await detailsControl(page).click();
+  await expect(marginShell(page), "Details did not open from its control").toBeVisible();
+}
+
+/** Closes Details with its own Close, unless it is closed already, and waits out the frames in
+ *  which the drawer hands the focus back - on a phone the sheet does so after the frame it closes
+ *  in - so a key pressed next reaches what the caller focuses, not the drawer's opener. */
+export async function closeDetails(page: Page): Promise<void> {
+  if (!(await marginShell(page).isVisible())) return;
+  await expect(detailsClose(page), "Details draws no Close").toHaveCount(1);
+  await detailsClose(page).click();
+  await expect(marginShell(page), "Details did not close from its Close").toBeHidden();
+  await page.evaluate(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    return promise;
+  });
+  expect(
+    await page.evaluate(
+      (drawer) => document.querySelector(drawer)?.contains(document.activeElement) === true,
+      SELECTORS.details
+    ),
+    "closing Details left the focus inside it"
+  ).toBe(false);
+}
+
+/** The icon rail the shell draws on the issue page in place of its sidebar. */
+export function iconRail(page: Page): Locator {
+  return page.getByTestId("icon-rail");
+}
+
+/** The Contents pane at the page's left, from 1024 px up. */
+export function contentsPane(page: Page): Locator {
+  return page.getByTestId("issue-contents");
+}
+
+/** The rows of the Contents list, wherever it is drawn: the pane, or the Outline sheet. */
+export function contentsEntries(scope: Locator): Locator {
+  return scope.locator("[data-contents-entry]");
+}
+
+/** The Outline control beside the presets, below 1024 px, and the sheet it opens. */
+export function outlineControl(page: Page): Locator {
+  return page.getByRole("button", { exact: true, name: CONTROL_LABELS.outline });
+}
+
+export function outlineSheet(page: Page): Locator {
+  return page.getByTestId("issue-outline-sheet");
+}
+
+/** The Focus branch toggle in the head of the Contents list. */
+export function focusBranchControl(scope: Locator): Locator {
+  return scope.getByRole("button", { exact: true, name: CONTROL_LABELS.focus_branch });
 }
 
 /** One of the conversation's four state controls, inside the panel. */
@@ -1025,23 +1105,32 @@ export interface Overlap {
 }
 
 /**
- * Every pair of the page's own text boxes that share a point on screen, inside `scope`. Only a
- * leaf that carries text of its own is measured, so a box that holds another is not read as
- * overlapping it.
+ * Every pair of the page's own text boxes that share a point on screen, inside `scope`: a node's
+ * rows, the bodies they open, or the Details drawer (its cards and its sections). Only a leaf
+ * that carries text of its own is measured, so a box that holds another is not read as
+ * overlapping it. Text kept for a screen reader alone (inside `.sr-only`, whose box clips it to
+ * a pixel while its own spans keep their laid-out width) and a closed `select`'s options are no
+ * box the page draws, and are left out.
  */
-export function overlappingTexts(page: Page, cards: CardScope): Promise<Overlap[]> {
+export function overlappingTexts(page: Page, cards: CardScope | "details"): Promise<Overlap[]> {
   return page.evaluate(
     ({ cards, selectors }) => {
-      const scope = cards === "rows" ? selectors.nodeRow : selectors.nodeBody;
+      const scope =
+        cards === "rows"
+          ? selectors.nodeRow
+          : cards === "bodies"
+            ? selectors.nodeBody
+            : selectors.details;
       const boxes: { label: string; rect: DOMRect }[] = [];
       for (const root of document.querySelectorAll(`${selectors.issuePage} ${scope}`)) {
         for (const element of root.querySelectorAll("*")) {
-          if (element.children.length > 0) continue;
+          if (element.children.length > 0 || element.tagName === "OPTION") continue;
+          if (element.closest(".sr-only") !== null) continue;
           const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
           if (text === "") continue;
           const rect = element.getBoundingClientRect();
           if (rect.width === 0 || rect.height === 0) continue;
-          boxes.push({ label: `"${text.slice(0, 40)}"`, rect });
+          boxes.push({ label: `${element.tagName.toLowerCase()} "${text.slice(0, 40)}"`, rect });
         }
       }
       const found: { first: string; second: string }[] = [];
@@ -1126,33 +1215,6 @@ export async function rowsWithoutAuthorScrollers(page: Page): Promise<Locator[]>
     walked.push(nodeRows(page).nth(index));
   });
   return walked;
-}
-
-/** How many panels the page draws right of its main column: every element that holds a margin
- *  section or the focused node's facts, counted by the box it sits in, so properties drawn in a
- *  second column are a second panel. */
-export function panelsRightOfMain(page: Page): Promise<string[]> {
-  return page.evaluate((selectors) => {
-    const main = document.querySelector("main");
-    const tree = document.querySelector(`${selectors.issuePage} ${selectors.tree}`);
-    const left = tree?.getBoundingClientRect() ?? main?.getBoundingClientRect() ?? null;
-    if (left === null) return [];
-    const panels = new Set<string>();
-    // The margin's own ask cards carry `data-margin-section` as well, with values of their own
-    // (`packages/dispatch/AGENTS.md`), so only the three sections the issue page names count.
-    const holders = document.querySelectorAll(
-      '[data-margin-section="development"], [data-margin-section="people"], [data-margin-section="references"], [data-testid="focused-node-facts"]'
-    );
-    for (const holder of holders) {
-      const rect = holder.getBoundingClientRect();
-      if (rect.width === 0) continue;
-      const column = Math.round(rect.left);
-      panels.add(
-        rect.left >= left.right - 1 ? `column at ${column}` : `inside the main column at ${column}`
-      );
-    }
-    return [...panels];
-  }, SELECTORS);
 }
 
 // ---------------------------------------------------------------------------------------------

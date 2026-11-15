@@ -47,6 +47,7 @@ function bullets(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <IssueThreeThings
         checks={[]}
+        inPane={false}
         issueKey="CORE-1"
         plan={undefined}
         planTasks={0}
