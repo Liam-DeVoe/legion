@@ -440,3 +440,158 @@ test("a loss in a dialog that stays open hands the focus inside it, never to the
     expect(pageSearch).not.toHaveFocus();
   });
 });
+
+/** A button labelled `label`, appended to `parent`. */
+function buttonIn(parent: Element, label: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  parent.append(button);
+  return button;
+}
+
+/** The page's own search box, at the end of `main`, where a fallback behind a dialog would land. */
+function pageSearchIn(main: HTMLElement): HTMLInputElement {
+  const search = document.createElement("input");
+  search.setAttribute("aria-label", "Search issues");
+  search.setAttribute("data-control", CONTROL.searchBox);
+  main.append(search);
+  return search;
+}
+
+// (t) A panel that is no modal - a menu's, drawn outside the main content - whose last two
+// controls go with the press keeps the focus inside it: its own first control, never the page's
+// search box.
+test("a panel that is no modal, losing its last controls, keeps the focus inside it", async () => {
+  await withRescue(async () => {
+    const pageSearch = pageSearchIn(mainOf("Before").main);
+    const panel = document.createElement("div");
+    panel.setAttribute("role", "dialog");
+    document.body.append(panel);
+    const [first, second, third] = ["Todo", "Done", "Clear"].map((label) => buttonIn(panel, label));
+    third?.focus();
+    lose(third as HTMLElement, () => {
+      third?.remove();
+      second?.remove();
+    });
+    await settled();
+    expect(first).toHaveFocus();
+    expect(pageSearch).not.toHaveFocus();
+  });
+});
+
+// (u) So does the Inbox drawer, a modal dialog of rows: its last two rows answered together, the
+// focus stays in the drawer, on its first row's control.
+test("the Inbox drawer, losing its last rows, keeps the focus inside it", async () => {
+  await withRescue(async () => {
+    const pageSearch = pageSearchIn(mainOf("Before").main);
+    const drawer = document.createElement("div");
+    drawer.setAttribute("role", "dialog");
+    drawer.setAttribute("aria-modal", "true");
+    const list = document.createElement("ul");
+    drawer.append(list);
+    document.body.append(drawer);
+    const rows = ["First", "Second", "Third"].map((label) => {
+      const row = document.createElement("li");
+      list.append(row);
+      return buttonIn(row, `Answer ${label}`);
+    });
+    rows[2]?.focus();
+    lose(rows[2] as HTMLElement, () => {
+      rows[2]?.closest("li")?.remove();
+      rows[1]?.closest("li")?.remove();
+    });
+    await settled();
+    expect(rows[0]).toHaveFocus();
+    expect(pageSearch).not.toHaveFocus();
+  });
+});
+
+// (v) The main content with no control left at the place or before it hands the focus to its
+// search box, else its filter trigger, else its own first control, else to itself - and never to
+// a control outside it, the sidebar's here.
+test("the main content with nothing left at the place goes to its search box, its trigger, its first control, then itself", async () => {
+  const aside = document.createElement("aside");
+  const sidebar = buttonIn(aside, "Sidebar");
+  document.body.prepend(aside);
+  try {
+    await withRescue(async () => {
+      const [first] = mainOf("First").buttons;
+      const main = mainRef.current as HTMLElement;
+      const search = pageSearchIn(main);
+      const trigger = buttonIn(main, "Filters");
+      trigger.setAttribute("data-control", CONTROL.panelTrigger);
+      /** Three controls at the end of the main content, the last focused and all three taken. */
+      const loseThree = async () => {
+        const three = ["One", "Two", "Three"].map((label) => buttonIn(main, label));
+        three[2]?.focus();
+        lose(three[2] as HTMLElement, () => {
+          for (const each of three) each.remove();
+        });
+        await settled();
+      };
+      await loseThree();
+      expect(search).toHaveFocus();
+      search.remove();
+      await loseThree();
+      expect(trigger).toHaveFocus();
+      trigger.remove();
+      await loseThree();
+      expect(first).toHaveFocus();
+      first?.remove();
+      const last = buttonIn(main, "Last");
+      last.focus();
+      lose(last);
+      await settled();
+      expect(main).toHaveFocus();
+      expect(sidebar).not.toHaveFocus();
+    });
+  } finally {
+    aside.remove();
+  }
+});
+
+// (w) A control outside the main content - the sidebar's - whose place has gone hands the focus
+// to the sidebar's control before it, else its first, and never into the main content or onto
+// the body.
+test("a control outside the main content whose place has gone stays outside it, on the control before it", async () => {
+  const aside = document.createElement("aside");
+  const [kept, middle, last] = ["Inbox", "Projects", "Agents"].map((label) =>
+    buttonIn(aside, label)
+  );
+  document.body.prepend(aside);
+  try {
+    await withRescue(async () => {
+      const [inMain] = mainOf("In the main content").buttons;
+      last?.focus();
+      lose(last as HTMLElement, () => {
+        last?.remove();
+        middle?.remove();
+      });
+      await settled();
+      expect(kept).toHaveFocus();
+      expect(inMain).not.toHaveFocus();
+    });
+  } finally {
+    aside.remove();
+  }
+});
+
+// (x) A modal dialog that loses every control takes the focus itself, given a Tab stop of none
+// for it when it has none of its own.
+test("a modal dialog that loses every control takes the focus itself", async () => {
+  await withRescue(async () => {
+    const pageSearch = pageSearchIn(mainOf("Before").main);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.append(dialog);
+    const only = buttonIn(dialog, "Retry");
+    only.focus();
+    lose(only);
+    await settled();
+    expect(dialog).toHaveFocus();
+    expect(dialog).toHaveAttribute("tabindex", "-1");
+    expect(pageSearch).not.toHaveFocus();
+  });
+});

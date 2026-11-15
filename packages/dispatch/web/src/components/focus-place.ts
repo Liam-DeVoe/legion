@@ -131,11 +131,21 @@ function rendered(element: Element): boolean {
   return element.closest("[hidden]") === null && element.getClientRects().length > 0;
 }
 
-/** The controls the focus can reach in `region` that the page draws. The rescue counts places
- *  among these and lands only on these, so a control drawn at one width alone - `md:hidden`, say
- *  - neither holds a place nor is handed a focus it cannot show. */
-function drawnIn(region: Element): HTMLElement[] {
-  return focusableIn(region).filter(rendered);
+/** The region a control is counted in: the dialog holding it, modal or not, else the shell's main
+ *  content (`main`), else the document. */
+function regionOf(element: Element, main: HTMLElement | null): Element {
+  return element.closest(DIALOG) ?? (main?.contains(element) ? main : document.body);
+}
+
+/** The controls the focus can reach in `region` that the page draws and that are the region's
+ *  own - none of a dialog inside it, and, for the document, none of the main content's either -
+ *  since a loss is answered inside the region it was lost in. The rescue counts places among
+ *  these and lands only on these, so a control drawn at one width alone - `md:hidden`, say -
+ *  neither holds a place nor is handed a focus it cannot show. */
+function drawnIn(region: Element, main: HTMLElement | null): HTMLElement[] {
+  return focusableIn(region).filter(
+    (control) => rendered(control) && regionOf(control, main) === region
+  );
 }
 
 /** How many of `controls` come before `node` in the page. */
@@ -236,11 +246,11 @@ function removalOf(
  *  `region` draws: how many of them come before the point it was taken from - before the sibling
  *  after it while that is still in the page, else up to and through the sibling before it, else
  *  through the parent it was taken from. */
-function placeOfRemoval(region: Element, record: MutationRecord): number {
+function placeOfRemoval(region: Element, record: MutationRecord, main: HTMLElement | null): number {
   const next = record.nextSibling?.isConnected ? record.nextSibling : null;
   const through = record.previousSibling?.isConnected ? record.previousSibling : record.target;
   let index = 0;
-  for (const control of drawnIn(region)) {
+  for (const control of drawnIn(region, main)) {
     const before =
       next === null
         ? through.contains(control) ||
@@ -252,26 +262,34 @@ function placeOfRemoval(region: Element, record: MutationRecord): number {
   return index;
 }
 
-/** Hands on the focus `loss`'s element took with it when it went. In a region still in the page:
- *  to the control now at its place there, else the one before it, else the page's search box,
- *  else its filter trigger. From a region that went with it - a dialog that closed - only back
- *  to the place the dialog was opened from (its `opener`, or that dialog's own opener where it
- *  closed too): that element, the control that opened it, if it can still take the focus, else
- *  the control now at its place, else the one before it. A dialog opened from the body hands the
- *  focus nowhere: the body is where the reader was. */
+/** Hands on the focus `loss`'s element took with it when it went, inside the region it was lost
+ *  in while that region is still in the page: to the control the region now draws at its place,
+ *  else the one before it, else - in the main content alone - the page's search box, then its
+ *  filter trigger, else the region's first control, else the region itself, which is every
+ *  region but the document (the body holding the focus is the loss itself). A dialog that has no
+ *  Tab stop of its own is given `tabindex="-1"` as the focus lands on it, so that it can take
+ *  it. The page behind a modal dialog is never reached. From a region that went with it - a
+ *  dialog that closed - only back to the place the dialog was opened from (its `opener`, or that
+ *  dialog's own opener where it closed too): that element, the control that opened it, if it can
+ *  still take the focus, else the control now at its place, else the one before it. A dialog
+ *  opened from the body hands the focus nowhere: the body is where the reader was. */
 function handOn(loss: Loss, main: HTMLElement | null): void {
+  const { region } = loss;
   let candidates: (HTMLElement | null | undefined)[] = [];
-  if (loss.region.isConnected) {
+  if (region.isConnected) {
+    const own = drawnIn(region, main);
     candidates = [
-      controlAt(drawnIn(loss.region), loss.index),
-      main === null ? null : controlIn(main, CONTROL.searchBox),
-      main === null ? null : controlIn(main, CONTROL.panelTrigger),
+      controlAt(own, loss.index),
+      ...(region === main
+        ? [controlIn(region, CONTROL.searchBox), controlIn(region, CONTROL.panelTrigger)]
+        : []),
+      own[0],
     ];
   } else {
     let opener = loss.opener;
     while (opener !== null && !opener.region.isConnected) opener = opener.opener;
     if (opener !== null && opener.path === loss.path) {
-      candidates = [opener.element, controlAt(drawnIn(opener.region), opener.index)];
+      candidates = [opener.element, controlAt(drawnIn(opener.region, main), opener.index)];
     }
   }
   for (const candidate of candidates) {
@@ -279,6 +297,9 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     if (!candidate.isConnected || !rendered(candidate)) continue;
     if (land(candidate)) return;
   }
+  if (!region.isConnected || region === document.body || !(region instanceof HTMLElement)) return;
+  if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
+  land(region);
 }
 
 /**
@@ -314,9 +335,11 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * Inbox's and the Board's Escape. A taken element that is back by then gets the focus back.
  *
  * An element that went - taken away, hidden, no longer drawn, or replaced under a new key - hands
- * the focus on (`handOn`): to the control now at its place in its region, else the one before it,
- * then to the page's search box or filter trigger, and never to an arbitrary first control of the
- * page. From a dialog that closed it goes only back to the place the dialog was opened from; a
+ * the focus on (`handOn`) inside the region it was lost in: to the control the region now draws at
+ * its place, else the one before it, else - in the main content alone - the page's search box or
+ * filter trigger, else the region's first control, else the region itself, so the page behind a
+ * modal dialog is never reached. Only a region that has gone hands the focus out of it: from a
+ * dialog that closed it goes only back to the place the dialog was opened from; a
  * dialog opened from the body - a single-key shortcut with nothing focused - leaves the focus on
  * the body, where the reader was, and never puts it in a text box whose next key would be typed.
  * An element the press disabled, itself or through the fieldset around it, gets the focus back
@@ -345,11 +368,6 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     let moving: { from: Loss | null; to: Element } | null = null;
     /** Cancels the check or the wait still out for the latest loss. */
     let pending: (() => void) | null = null;
-
-    const regionOf = (element: Element): Element => {
-      const content = main.current;
-      return element.closest(DIALOG) ?? (content?.contains(element) ? content : document.body);
-    };
 
     /** Waits for `loss`'s element, which the press disabled, to be enabled again or to go. */
     const wait = (loss: Loss): (() => void) => {
@@ -410,7 +428,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     const noteFocus = (event: globalThis.FocusEvent) => {
       const element = event.target;
       if (!(element instanceof HTMLElement)) return;
-      const region = regionOf(element);
+      const region = regionOf(element, main.current);
       if (region.matches(DIALOG) && !openedFrom.has(region)) {
         for (const dialog of openedFrom.keys()) {
           if (!dialog.isConnected) openedFrom.delete(dialog);
@@ -428,18 +446,18 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       focused = null;
       pending?.();
       pending = null;
-      const region = regionOf(element);
+      const region = regionOf(element, main.current);
       const next = event.relatedTarget;
       if (leaving && !(next instanceof Element)) return;
       // A move from one control to another in the same region - j and k, the arrows - is no
       // loss, and counts nothing.
-      if (next instanceof Element && regionOf(next) === region) {
+      if (next instanceof Element && regionOf(next, main.current) === region) {
         moving = { from: null, to: next };
         return;
       }
       const loss: Loss = {
         element,
-        index: countBefore(drawnIn(region), element),
+        index: countBefore(drawnIn(region, main.current), element),
         opener: openedFrom.get(region) ?? null,
         path,
         region,
@@ -462,8 +480,8 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       const removal = removalOf(records, held.element);
       const index =
         removal === undefined || !held.region.isConnected
-          ? drawnIn(held.region).length
-          : placeOfRemoval(held.region, removal);
+          ? drawnIn(held.region, main.current).length
+          : placeOfRemoval(held.region, removal, main.current);
       pending?.();
       const loss: Loss = {
         ...held,
