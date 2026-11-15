@@ -315,9 +315,9 @@ Each item below names a task and where its code is, then notes on it.
 
 - **Where Legion's time goes**: `internal/dispatch/legion/`, `api/settings_legion.go`, `api/legion_board.go`, `api/legion_metrics.go`
 
-  A per-project setting names the Legion daemon whose `GET /legion/v1/state` Dispatch reads (`store.go`, `GET /api/v1/settings/legion` and `PUT`/`DELETE /api/v1/settings/legion/{project}`), and `PUT /api/v1/legion/{project}/settings` relays an operator's `legion.yaml` change back to it, as the ServiceAccount token `DISPATCH_LEGION_DAEMON_TOKEN_FILE` names (`client.go`; `docs/kubernetes.md`, "The settings route").
+  A project's Legion daemon is the one whose `GET /legion/v1/state` Dispatch reads (`store.go`, `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon`, with no route listing every project's), and `PUT /api/v1/projects/{key}/legion/settings` relays an operator's `legion.yaml` change back to it, as the ServiceAccount token `DISPATCH_LEGION_DAEMON_TOKEN_FILE` names (`client.go`; `docs/kubernetes.md`, "The settings route").
   `sampler.go` reads each configured daemon's state every minute, one replica at a time under the `legion-state` lease, and records what moved (`state.go`, migration `20261103170923_legion_state`);
-  `metrics/` computes from those records what `GET /api/v1/legion/metrics` serves the Delivery page's Legion section, and `api/legion_board.go` what `GET /api/v1/legion/board` serves the Issues page's Legion view
+  `metrics/` computes from those records what `GET /api/v1/projects/{key}/legion/metrics` serves the Delivery page's Legion section, and `api/legion_board.go` what `GET /api/v1/legion/board` serves the Issues page's Legion view
 
 - **`issue.deployed`: a merged pull request reached production**: `internal/dispatch/delivery/deployed.go`
 

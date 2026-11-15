@@ -61,22 +61,18 @@ func seedLegionMetricsCorpus(t *testing.T, database *store.Store, project string
 	}
 }
 
-// TestLegionMetricsAnswersTheLastSevenDaysWithNoWindow: a bare call, with no query string at all,
-// answers 200 over the last seven days of the first project that names a Legion daemon, as
+// TestLegionMetricsAnswersTheLastSevenDaysWithNoWindow: a call with no query string at all
+// answers 200 over the last seven days of the project its path names, as
 // GET /api/v1/delivery/measures answers its own default window.
 func TestLegionMetricsAnswersTheLastSevenDaysWithNoWindow(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
-	if written := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/INFRA",
-		map[string]any{"state_url": "http://legion-infra.internal:13370"}, "alice"); written.Code != http.StatusOK {
-		t.Fatalf("name INFRA's daemon: status=%d body=%s", written.Code, written.Body.String())
-	}
 	now := time.Now().UTC()
 	seedLegionMetricsCorpus(t, database, "INFRA", now)
 
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/metrics", nil, "alice")
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/INFRA/legion/metrics", nil, "alice")
 	if response.Code != http.StatusOK {
-		t.Fatalf("a bare call: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("a call with no query: status=%d body=%s", response.Code, response.Body.String())
 	}
 	report := decodeBody[metrics.Report](t, response)
 	if report.Project != "INFRA" || report.Scope != metrics.ScopeAll {
@@ -107,7 +103,7 @@ func TestLegionMetricsAnswersWhatTheComputeFunctionAnswers(t *testing.T) {
 	seedLegionMetricsCorpus(t, database, "INFRA", now)
 	from, to := now.Add(-7*24*time.Hour), now
 
-	query := fmt.Sprintf("/api/v1/legion/metrics?project=INFRA&from=%s&to=%s&scope=children",
+	query := fmt.Sprintf("/api/v1/projects/INFRA/legion/metrics?from=%s&to=%s&scope=children",
 		from.Format(time.RFC3339), to.Format(time.RFC3339))
 	response := dispatchRequest(t, handler, http.MethodGet, query, nil, "alice")
 	if response.Code != http.StatusOK {
@@ -132,23 +128,23 @@ func TestLegionMetricsAnswersWhatTheComputeFunctionAnswers(t *testing.T) {
 	}
 }
 
-// TestLegionMetricsRefusesAMalformedWindowScopeOrProject: the three refusals the row names.
+// TestLegionMetricsRefusesAMalformedWindowScopeOrProject: the refusals the row names.
 func TestLegionMetricsRefusesAMalformedWindowScopeOrProject(t *testing.T) {
 	handler := newTestHandler(t)
 	seedLegionProjects(t, handler, "INFRA")
 	for _, one := range []struct {
-		name, query string
-		status      int
+		name, target string
+		status       int
 	}{
-		{"a malformed from", "?project=INFRA&from=yesterday", http.StatusBadRequest},
-		{"an inverted window", "?project=INFRA&from=2026-11-02T00:00:00Z&to=2026-11-01T00:00:00Z", http.StatusBadRequest},
-		{"a window over 84 days", "?project=INFRA&from=2026-01-01T00:00:00Z&to=2026-11-01T00:00:00Z", http.StatusBadRequest},
-		{"an unknown scope", "?project=INFRA&scope=everything", http.StatusBadRequest},
-		{"a project that is no key", "?project=not%20a%20key", http.StatusBadRequest},
-		{"a project that does not exist", "?project=NOPE", http.StatusNotFound},
+		{"a malformed from", "/api/v1/projects/INFRA/legion/metrics?from=yesterday", http.StatusBadRequest},
+		{"an inverted window", "/api/v1/projects/INFRA/legion/metrics?from=2026-11-02T00:00:00Z&to=2026-11-01T00:00:00Z", http.StatusBadRequest},
+		{"a window over 84 days", "/api/v1/projects/INFRA/legion/metrics?from=2026-01-01T00:00:00Z&to=2026-11-01T00:00:00Z", http.StatusBadRequest},
+		{"an unknown scope", "/api/v1/projects/INFRA/legion/metrics?scope=everything", http.StatusBadRequest},
+		{"a project that is no key", "/api/v1/projects/not%20a%20key/legion/metrics", http.StatusBadRequest},
+		{"a project that does not exist", "/api/v1/projects/NOPE/legion/metrics", http.StatusNotFound},
 	} {
 		t.Run(one.name, func(t *testing.T) {
-			response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/metrics"+one.query, nil, "alice")
+			response := dispatchRequest(t, handler, http.MethodGet, one.target, nil, "alice")
 			if response.Code != one.status {
 				t.Fatalf("%s: status=%d body=%s, want %d", one.name, response.Code, response.Body.String(), one.status)
 			}
@@ -156,18 +152,19 @@ func TestLegionMetricsRefusesAMalformedWindowScopeOrProject(t *testing.T) {
 	}
 }
 
-// TestLegionMetricsAnswersADeploymentWithNoLegionProject: a deployment where no project names a
-// daemon has nothing to measure, and answers an empty report rather than a refusal, so a bare
-// call answers 200 wherever it is made.
-func TestLegionMetricsAnswersADeploymentWithNoLegionProject(t *testing.T) {
+// TestLegionMetricsAnswersAProjectWithNothingMeasured: a project that names no daemon and has no
+// Legion work has nothing to measure, and answers an empty report naming it rather than a
+// refusal.
+func TestLegionMetricsAnswersAProjectWithNothingMeasured(t *testing.T) {
 	handler := newTestHandler(t)
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/metrics", nil, "alice")
+	seedLegionProjects(t, handler, "INFRA")
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/INFRA/legion/metrics", nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
 	report := decodeBody[metrics.Report](t, response)
-	if report.Project != "" || report.Finished != 0 || len(report.PhaseTime.Bars) != 7 {
-		t.Fatalf("the report is %+v, want an empty one with its seven bars", report)
+	if report.Project != "INFRA" || report.Finished != 0 || len(report.PhaseTime.Bars) != 7 {
+		t.Fatalf("the report is %+v, want an empty one for INFRA with its seven bars", report)
 	}
 }
 

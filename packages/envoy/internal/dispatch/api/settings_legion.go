@@ -1,11 +1,16 @@
-// settings_legion.go serves the Legion view's own settings and the one call Dispatch relays to a
-// Legion daemon (dispatch://INFRA-1077).
+// settings_legion.go serves a project's Legion daemon and the one call Dispatch relays to it
+// (dispatch://INFRA-1077), each a named sub-resource of the project it serves:
+// GET, PUT and DELETE /api/v1/projects/{key}/legion/daemon and
+// PUT /api/v1/projects/{key}/legion/settings. No route lists every project's daemon: R26 of
+// dispatch://INFRA-979's spec permits one cross-project read, and this is not it, so a page that
+// shows every daemon reads each project's.
 //
-// A project's setting names the daemon Dispatch reads that project's state from
-// (internal/dispatch/legion). Writing one belongs to the deployment rather than to the project it
-// names — it points Dispatch at a host, which a credential that may write one project's issues
-// has no business doing — so the PUT and the DELETE are classed scopeDeployment beside the
-// repository-mapping rows, not scopeProject (routes_table.go, writeClasses).
+// A project's daemon is the one Dispatch reads that project's state from
+// (internal/dispatch/legion). The path names the project, but writing one belongs to the
+// deployment rather than to that project — it points Dispatch at a host, which a credential that
+// may write one project's issues has no business doing — so the PUT and the DELETE are classed
+// scopeDeployment beside the repository-mapping rows, not scopeProject (routes_table.go,
+// writeClasses).
 //
 // Unlike putRepoProject, and like putDeliverySettings, these write no event. The write belongs to
 // the deployment, so there is no project whose event it would be, and events/broker.go's
@@ -26,32 +31,41 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// listLegionSettings answers GET /api/v1/settings/legion with every project's Legion setting, by
-// project key; a deployment with none answers an empty list.
-func (s *server) listLegionSettings(w http.ResponseWriter, r *http.Request) {
+// getLegionSetting answers GET /api/v1/projects/{key}/legion/daemon with the project's daemon,
+// or null when it names none, as GET /api/v1/settings/delivery answers a setting nobody wrote. An
+// unknown project is 404 NOT_FOUND.
+func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	settings, err := legion.ListSettings(r.Context(), s.deps.Store.Pool)
+	project, ok := s.legionProject(w, r)
+	if !ok {
+		return
+	}
+	settings, err := legion.GetSettings(r.Context(), s.deps.Store.Pool, project)
 	if err != nil {
+		if errors.Is(err, legion.ErrNoSettings) {
+			WriteJSON(w, http.StatusOK, nil)
+			return
+		}
 		s.writeHandlerError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)
 }
 
-// putLegionSettingInput is PUT /api/v1/settings/legion/{project}'s body: the daemon base URL the
-// project's state is read from, and the acting session where the caller's credential proved none.
-// The handler refuses a body with no state_url (400 LEGION_SETTING_INPUT, legionStateURL), which
-// is what makes the field required.
+// putLegionSettingInput is PUT /api/v1/projects/{key}/legion/daemon's body: the daemon base URL
+// the project's state is read from, and the acting session where the caller's credential proved
+// none. The handler refuses a body with no state_url (400 LEGION_SETTING_INPUT, legionStateURL),
+// which is what makes the field required.
 type putLegionSettingInput struct {
 	StateURL string       `json:"state_url" required:"true"`
 	Actor    *model.Actor `json:"actor"`
 }
 
-// putLegionSetting answers PUT /api/v1/settings/legion/{project}: name the daemon that project's
-// state is read from. An unknown project is 404 NOT_FOUND, and a state_url that is not an
-// absolute http(s) URL with a host and no path is 400 LEGION_SETTING_INPUT.
+// putLegionSetting answers PUT /api/v1/projects/{key}/legion/daemon: name the daemon that
+// project's state is read from. An unknown project is 404 NOT_FOUND, and a state_url that is not
+// an absolute http(s) URL with a host and no path is 400 LEGION_SETTING_INPUT.
 func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 	var input putLegionSettingInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -85,7 +99,7 @@ func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, settings)
 }
 
-// deleteLegionSetting answers DELETE /api/v1/settings/legion/{project}: stop reading that
+// deleteLegionSetting answers DELETE /api/v1/projects/{key}/legion/daemon: stop reading that
 // project's daemon. What was already read stays; nothing re-reads it. A project with no setting
 // is 404 NOT_FOUND, as an unknown one is.
 func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +125,7 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// legionSettingsRelayInput is PUT /api/v1/legion/{project}/settings's body: the operator's
+// legionSettingsRelayInput is PUT /api/v1/projects/{key}/legion/settings's body: the operator's
 // legion.yaml change by dotted path, whose values Dispatch models not at all and relays as the
 // bytes they arrived in, and the acting session where the caller's credential proved none. The
 // handler refuses a change naming no key (400 LEGION_SETTINGS_INPUT), which is what makes the
@@ -121,8 +135,8 @@ type legionSettingsRelayInput struct {
 	Actor   *model.Actor               `json:"actor"`
 }
 
-// putLegionProjectSettings answers PUT /api/v1/legion/{project}/settings: relay an operator's
-// legion.yaml change to that project's daemon and answer what the daemon said.
+// putLegionProjectSettings answers PUT /api/v1/projects/{key}/legion/settings: relay an
+// operator's legion.yaml change to that project's daemon and answer what the daemon said.
 //
 // The body is {changes: {<dotted legion.yaml path>: <value>}}. Dispatch sends those changes and
 // the caller's own login to PUT {state_url}/legion/v1/operator/settings, presenting the projected
@@ -181,17 +195,17 @@ func (s *server) putLegionProjectSettings(w http.ResponseWriter, r *http.Request
 	_, _ = w.Write(answer.Body)
 }
 
-// legionProject is the {project} of the path, once it is a project key and a project of that key
+// legionProject is the {key} of the path, once it is a project key and a project of that key
 // exists; an unknown one is the 404 NOT_FOUND every unknown row is.
 func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return s.legionProjectNamed(w, r, strings.TrimSpace(r.PathValue("project")), "LEGION_SETTING_INPUT")
+	return s.legionProjectNamed(w, r, strings.TrimSpace(r.PathValue("key")), "LEGION_SETTING_INPUT")
 }
 
 // legionProjectNamed is project once it is a project key and a project of that key exists. code
-// is the refusal a badly spelled key carries, which the two routes that ask differ on: the
-// metrics route's `INVALID_QUERY` for a query parameter, and the settings route's
-// `LEGION_SETTING_INPUT` for a path segment. An unknown project is the 404 NOT_FOUND every
-// unknown row is.
+// is the refusal a badly spelled key carries, which the routes that ask differ on: the metrics and
+// board routes' `INVALID_QUERY`, the code of every refusal of a malformed request they make, and
+// the daemon and relay routes' `LEGION_SETTING_INPUT`. An unknown project is the 404 NOT_FOUND
+// every unknown row is.
 func (s *server) legionProjectNamed(w http.ResponseWriter, r *http.Request, project, code string) (string, bool) {
 	if !projectKeyPattern.MatchString(project) {
 		writeError(w, code, http.StatusBadRequest, projectKeyProblem("project", project))

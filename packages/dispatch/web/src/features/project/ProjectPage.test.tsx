@@ -73,8 +73,9 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
 /** `sources` is what `GET /projects/CORE/architecture-sources` answers: the project's sources (a
  *  non-empty list opens it on Architecture; `[]`, the default, on Issues, as every render here
  *  expects unless it says otherwise), an `ApiError` for a failure, or `"pending"` for a lookup
- *  that never settles. `legionProjects` names the projects `GET /api/v1/settings/legion` lists:
- *  only those have a Legion view. */
+ *  that never settles. `legionProjects` names the projects whose
+ *  `GET /api/v1/projects/{key}/legion/daemon` names a daemon: only those have a Legion view, and
+ *  every other project's answers `null`. */
 function renderPage(
   path: string,
   projects = [
@@ -120,13 +121,17 @@ function renderPage(
   const getArchitecture = spyOn(api, "getArchitecture").mockImplementation(
     () => Promise.withResolvers<never>().promise
   );
-  const listLegionSettings = spyOn(api, "listLegionSettings").mockResolvedValue(
-    legionProjects.map((project) => ({
-      created_by: { id: "alice", kind: "user" as const },
-      project,
-      state_url: "http://legion-daemon.example:13370",
-      updated_at: "2026-11-01T00:00:00Z",
-    }))
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockImplementation((project) =>
+    Promise.resolve(
+      legionProjects.includes(project)
+        ? {
+            created_by: { id: "alice", kind: "user" as const },
+            project,
+            state_url: "http://legion-daemon.example:13370",
+            updated_at: "2026-11-01T00:00:00Z",
+          }
+        : null
+    )
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -146,7 +151,7 @@ function renderPage(
     getInbox.mockRestore();
     getMyState.mockRestore();
     listIssues.mockRestore();
-    listLegionSettings.mockRestore();
+    getLegionDaemon.mockRestore();
     listProjectArtifacts.mockRestore();
     listProjects.mockRestore();
     whoAmI.mockRestore();
@@ -156,7 +161,7 @@ function renderPage(
     getInbox,
     getMyState,
     listIssues,
-    listLegionSettings,
+    getLegionDaemon,
     listProjectArtifacts,
     listProjects,
     restore,
@@ -550,8 +555,8 @@ test("a project that names no Legion daemon is offered no Legion view", async ()
   const page = renderPage("/projects/CORE");
   try {
     await screen.findByRole("heading", { name: "Core" });
-    // The read has answered - with another project's setting, and none of this project's.
-    await waitFor(() => expect(page.listLegionSettings).toHaveBeenCalled());
+    // This project's own daemon read has answered, with `null`.
+    await waitFor(() => expect(page.getLegionDaemon).toHaveBeenCalledWith("CORE"));
     expect(screen.getByRole("button", { name: "List" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Board" })).toBeDefined();
     expect(screen.queryByRole("button", { name: "Legion" })).toBeNull();
@@ -615,7 +620,7 @@ test("a stored Legion preference on a project that names no daemon falls back to
   const page = renderPage("/projects/CORE");
   try {
     await screen.findByRole("heading", { name: "Core" });
-    await waitFor(() => expect(page.listLegionSettings).toHaveBeenCalled());
+    await waitFor(() => expect(page.getLegionDaemon).toHaveBeenCalledWith("CORE"));
     expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.queryByRole("button", { name: "Legion" })).toBeNull();
   } finally {

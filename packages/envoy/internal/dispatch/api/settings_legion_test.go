@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
-// legionSettingResponse is one row of GET /api/v1/settings/legion.
+// legionSettingResponse is what GET and PUT /api/v1/projects/{key}/legion/daemon answer.
 type legionSettingResponse struct {
 	Project   string `json:"project"`
 	StateURL  string `json:"state_url"`
@@ -35,18 +35,26 @@ func seedLegionProjects(t *testing.T, handler http.Handler, keys ...string) {
 	}
 }
 
-// TestALegionSettingRoundTripsAndIsRemoved: a PUT names a project's daemon, the GET lists it with
-// the actor that set it, a second PUT moves the URL and keeps that actor, and the DELETE removes
-// it.
+// TestALegionSettingRoundTripsAndIsRemoved: a project that names no daemon reads null, a PUT names
+// its daemon, the GET reads it with the actor that set it, a second PUT moves the URL and keeps
+// that actor, and the DELETE removes it, leaving every other project's alone.
 func TestALegionSettingRoundTripsAndIsRemoved(t *testing.T) {
 	handler := newTestHandler(t)
 	seedLegionProjects(t, handler, "INFRA", "CORE")
 
-	if listed := decodeBody[[]legionSettingResponse](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/legion", nil, "alice")); len(listed) != 0 {
-		t.Fatalf("a deployment with no setting listed %v, want []", listed)
+	read := func(project string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/"+project+"/legion/daemon", nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s's daemon: status=%d body=%s", project, response.Code, response.Body.String())
+		}
+		return response
+	}
+	if none := strings.TrimSpace(read("INFRA").Body.String()); none != "null" {
+		t.Fatalf("a project with no daemon read %s, want null", none)
 	}
 
-	written := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/INFRA",
+	written := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/INFRA/legion/daemon",
 		map[string]any{"state_url": "http://legion-infra.internal:8080/"}, "alice")
 	if written.Code != http.StatusOK {
 		t.Fatalf("set INFRA's daemon: status=%d body=%s", written.Code, written.Body.String())
@@ -59,35 +67,87 @@ func TestALegionSettingRoundTripsAndIsRemoved(t *testing.T) {
 		t.Errorf("created_by = %+v, want the person who set it", setting.CreatedBy)
 	}
 
-	if moved := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/INFRA",
+	if moved := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/INFRA/legion/daemon",
 		map[string]any{"state_url": "https://legion-infra.internal"}, "bob"); moved.Code != http.StatusOK {
 		t.Fatalf("move INFRA's daemon: status=%d body=%s", moved.Code, moved.Body.String())
 	}
-	if again := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/CORE",
+	if again := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/CORE/legion/daemon",
 		map[string]any{"state_url": "https://legion-core.internal"}, "alice"); again.Code != http.StatusOK {
 		t.Fatalf("set CORE's daemon: status=%d body=%s", again.Code, again.Body.String())
 	}
 
-	listed := decodeBody[[]legionSettingResponse](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/legion", nil, "alice"))
-	if len(listed) != 2 || listed[0].Project != "CORE" || listed[1].Project != "INFRA" {
-		t.Fatalf("listed %+v, want both settings by project key", listed)
+	infra := decodeBody[legionSettingResponse](t, read("INFRA"))
+	if infra.Project != "INFRA" || infra.StateURL != "https://legion-infra.internal" {
+		t.Errorf("INFRA reads %+v, want its moved URL", infra)
 	}
-	if listed[1].StateURL != "https://legion-infra.internal" {
-		t.Errorf("INFRA's state_url = %q, want the moved one", listed[1].StateURL)
+	if infra.CreatedBy.ID != "alice" {
+		t.Errorf("INFRA's created_by = %q, want the actor that first set it", infra.CreatedBy.ID)
 	}
-	if listed[1].CreatedBy.ID != "alice" {
-		t.Errorf("INFRA's created_by = %q, want the actor that first set it", listed[1].CreatedBy.ID)
+	if core := decodeBody[legionSettingResponse](t, read("CORE")); core.StateURL != "https://legion-core.internal" {
+		t.Errorf("CORE reads %+v, want its own URL", core)
 	}
 
-	removed := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/legion/INFRA", nil, "alice")
+	removed := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/projects/INFRA/legion/daemon", nil, "alice")
 	if removed.Code != http.StatusNoContent {
 		t.Fatalf("remove INFRA's daemon: status=%d body=%s", removed.Code, removed.Body.String())
 	}
-	if again := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/legion/INFRA", nil, "alice"); again.Code != http.StatusNotFound {
+	if again := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/projects/INFRA/legion/daemon", nil, "alice"); again.Code != http.StatusNotFound {
 		t.Errorf("removing it twice: status=%d body=%s, want 404", again.Code, again.Body.String())
 	}
-	if listed := decodeBody[[]legionSettingResponse](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/legion", nil, "alice")); len(listed) != 1 {
-		t.Fatalf("listed %+v after the delete, want CORE alone", listed)
+	if none := strings.TrimSpace(read("INFRA").Body.String()); none != "null" {
+		t.Errorf("INFRA read %s after the delete, want null", none)
+	}
+	if core := decodeBody[legionSettingResponse](t, read("CORE")); core.Project != "CORE" {
+		t.Errorf("CORE reads %+v after INFRA's delete, want its daemon untouched", core)
+	}
+}
+
+// TestTheLegionRoutesAnswerUnderTheProjectAndNothingAnswersTheOldPaths: the five routes R26 of
+// dispatch://INFRA-979's spec moved under the project answer at /api/v1/projects/{key}/legion/,
+// and the paths they had answer no route at all — the mux's own 404, not a handler's — whether
+// or not the project names a daemon.
+func TestTheLegionRoutesAnswerUnderTheProjectAndNothingAnswersTheOldPaths(t *testing.T) {
+	daemon := newFakeLegionDaemon(t, http.StatusOK, `{"settings":{"concurrency":{"applied":"at-once"}}}`)
+	handler := newTestHandler(t)
+	seedLegionProjects(t, handler, "INFRA")
+	type call struct {
+		method, target string
+		body           any
+	}
+	old := []call{
+		{http.MethodGet, "/api/v1/settings/legion", nil},
+		{http.MethodPut, "/api/v1/settings/legion/INFRA", map[string]any{"state_url": daemon.URL}},
+		{http.MethodDelete, "/api/v1/settings/legion/INFRA", nil},
+		{http.MethodPut, "/api/v1/legion/INFRA/settings", map[string]any{"changes": map[string]any{"concurrency": 4}}},
+		{http.MethodGet, "/api/v1/legion/metrics?project=INFRA", nil},
+	}
+	answersNothing := func(when string) {
+		t.Helper()
+		for _, gone := range old {
+			response := dispatchRequest(t, handler, gone.method, gone.target, gone.body, "alice")
+			if response.Code != http.StatusNotFound || response.Body.String() != "404 page not found\n" {
+				t.Errorf("%s, %s %s answered %d %q, want no route", when, gone.method, gone.target, response.Code, response.Body.String())
+			}
+		}
+	}
+
+	answersNothing("before INFRA names a daemon")
+	for _, moved := range []struct {
+		call
+		status int
+	}{
+		{call{http.MethodGet, "/api/v1/projects/INFRA/legion/daemon", nil}, http.StatusOK},
+		{call{http.MethodPut, "/api/v1/projects/INFRA/legion/daemon", map[string]any{"state_url": daemon.URL}}, http.StatusOK},
+		{call{http.MethodPut, "/api/v1/projects/INFRA/legion/settings", map[string]any{"changes": map[string]any{"concurrency": 4}}}, http.StatusOK},
+		{call{http.MethodGet, "/api/v1/projects/INFRA/legion/metrics", nil}, http.StatusOK},
+	} {
+		if response := dispatchRequest(t, handler, moved.method, moved.target, moved.body, "alice"); response.Code != moved.status {
+			t.Errorf("%s %s: status=%d body=%s, want %d", moved.method, moved.target, response.Code, response.Body.String(), moved.status)
+		}
+	}
+	answersNothing("while INFRA names a daemon")
+	if removed := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/projects/INFRA/legion/daemon", nil, "alice"); removed.Code != http.StatusNoContent {
+		t.Errorf("DELETE /api/v1/projects/INFRA/legion/daemon: status=%d body=%s, want 204", removed.Code, removed.Body.String())
 	}
 }
 
@@ -97,12 +157,12 @@ func TestAnUnknownProjectAndABadStateURLAreRefused(t *testing.T) {
 	handler := newTestHandler(t)
 	seedLegionProjects(t, handler, "INFRA")
 
-	unknown := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/NOPE",
+	unknown := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/NOPE/legion/daemon",
 		map[string]any{"state_url": "https://legion.internal"}, "alice")
 	if unknown.Code != http.StatusNotFound {
 		t.Errorf("a PUT naming an unknown project: status=%d body=%s, want 404", unknown.Code, unknown.Body.String())
 	}
-	if removed := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/legion/NOPE", nil, "alice"); removed.Code != http.StatusNotFound {
+	if removed := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/projects/NOPE/legion/daemon", nil, "alice"); removed.Code != http.StatusNotFound {
 		t.Errorf("a DELETE naming an unknown project: status=%d body=%s, want 404", removed.Code, removed.Body.String())
 	}
 
@@ -113,7 +173,7 @@ func TestAnUnknownProjectAndABadStateURLAreRefused(t *testing.T) {
 		"a query":      "https://legion.internal?token=secret",
 		"a credential": "https://user:pass@legion.internal",
 	} {
-		refused := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/INFRA",
+		refused := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/INFRA/legion/daemon",
 			map[string]any{"state_url": value}, "alice")
 		if refused.Code != http.StatusBadRequest {
 			t.Errorf("a state_url with %s: status=%d body=%s, want 400", name, refused.Code, refused.Body.String())
@@ -137,9 +197,9 @@ func TestALegionSettingIsRefusedToAProjectScopedToken(t *testing.T) {
 		path   string
 		body   any
 	}{
-		{http.MethodPut, "/api/v1/settings/legion/" + brokerTestProject, map[string]any{"state_url": "https://legion.internal"}},
-		{http.MethodDelete, "/api/v1/settings/legion/" + brokerTestProject, nil},
-		{http.MethodPut, "/api/v1/legion/" + brokerTestProject + "/settings", map[string]any{"changes": map[string]any{"concurrency": 4}}},
+		{http.MethodPut, "/api/v1/projects/" + brokerTestProject + "/legion/daemon", map[string]any{"state_url": "https://legion.internal"}},
+		{http.MethodDelete, "/api/v1/projects/" + brokerTestProject + "/legion/daemon", nil},
+		{http.MethodPut, "/api/v1/projects/" + brokerTestProject + "/legion/settings", map[string]any{"changes": map[string]any{"concurrency": 4}}},
 	} {
 		refused := rig.serve(caller.presenting(t, write.method, write.path, token, write.body))
 		if refused.Code != http.StatusForbidden {
@@ -199,12 +259,12 @@ func TestTheLegionSettingsRelayAnswersTheDaemonsResult(t *testing.T) {
 	}
 	handler, _, _ := newTestServer(t, testServerOptions{legionDaemonTokenFile: tokenFile})
 	seedLegionProjects(t, handler, "INFRA")
-	if set := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/INFRA",
+	if set := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/INFRA/legion/daemon",
 		map[string]any{"state_url": daemon.URL}, "alice"); set.Code != http.StatusOK {
 		t.Fatalf("set INFRA's daemon: status=%d body=%s", set.Code, set.Body.String())
 	}
 
-	relayed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/legion/INFRA/settings", map[string]any{
+	relayed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/INFRA/legion/settings", map[string]any{
 		"changes": map[string]any{"concurrency": 4, "runtime.tmux.window": "legion"},
 	}, "alice")
 	if relayed.Code != http.StatusOK {
@@ -239,12 +299,12 @@ func TestTheLegionSettingsRelayPassesARefusalThroughAndSendsNoBearerWithoutAFile
 	daemon := newFakeLegionDaemon(t, http.StatusConflict, refusal)
 	handler := newTestHandler(t)
 	seedLegionProjects(t, handler, "INFRA")
-	if set := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/INFRA",
+	if set := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/INFRA/legion/daemon",
 		map[string]any{"state_url": daemon.URL}, "alice"); set.Code != http.StatusOK {
 		t.Fatalf("set INFRA's daemon: status=%d body=%s", set.Code, set.Body.String())
 	}
 
-	relayed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/legion/INFRA/settings", map[string]any{
+	relayed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/INFRA/legion/settings", map[string]any{
 		"changes": map[string]any{"concurrency": 1},
 	}, "alice")
 	if relayed.Code != http.StatusConflict || strings.TrimSpace(relayed.Body.String()) != refusal {
@@ -262,7 +322,7 @@ func TestTheLegionSettingsRelayRefusesWhatItCannotSend(t *testing.T) {
 	handler := newTestHandler(t)
 	seedLegionProjects(t, handler, "INFRA", "CORE")
 
-	unconfigured := dispatchRequest(t, handler, http.MethodPut, "/api/v1/legion/CORE/settings",
+	unconfigured := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/CORE/legion/settings",
 		map[string]any{"changes": map[string]any{"concurrency": 4}}, "alice")
 	if unconfigured.Code != http.StatusNotFound {
 		t.Errorf("a project with no daemon: status=%d body=%s, want 404", unconfigured.Code, unconfigured.Body.String())
@@ -275,15 +335,15 @@ func TestTheLegionSettingsRelayRefusesWhatItCannotSend(t *testing.T) {
 	gone := newFakeLegionDaemon(t, http.StatusOK, `{}`)
 	goneURL := gone.URL
 	gone.Close()
-	if set := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/INFRA",
+	if set := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/INFRA/legion/daemon",
 		map[string]any{"state_url": goneURL}, "alice"); set.Code != http.StatusOK {
 		t.Fatalf("set INFRA's daemon: status=%d body=%s", set.Code, set.Body.String())
 	}
-	if empty := dispatchRequest(t, handler, http.MethodPut, "/api/v1/legion/INFRA/settings",
+	if empty := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/INFRA/legion/settings",
 		map[string]any{"changes": map[string]any{}}, "alice"); empty.Code != http.StatusBadRequest {
 		t.Errorf("an empty change set: status=%d body=%s, want 400", empty.Code, empty.Body.String())
 	}
-	unreachable := dispatchRequest(t, handler, http.MethodPut, "/api/v1/legion/INFRA/settings",
+	unreachable := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/INFRA/legion/settings",
 		map[string]any{"changes": map[string]any{"concurrency": 4}}, "alice")
 	if unreachable.Code != http.StatusServiceUnavailable {
 		t.Errorf("an unreachable daemon: status=%d body=%s, want 503", unreachable.Code, unreachable.Body.String())

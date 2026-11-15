@@ -186,8 +186,8 @@ type bootConfig struct {
 	AgentSecretsTokenFile string
 	// LegionDaemonTokenFile is DISPATCH_LEGION_DAEMON_TOKEN_FILE, the file holding Dispatch's own
 	// projected Kubernetes ServiceAccount token minted for a Legion daemon's audience, which the
-	// operator relay PUT /api/v1/legion/{project}/settings presents. Read by that relay on each
-	// call, never here: a projected token rotates. Empty sends no bearer, and whatever the
+	// operator relay PUT /api/v1/projects/{key}/legion/settings presents. Read by that relay on
+	// each call, never here: a projected token rotates. Empty sends no bearer, and whatever the
 	// daemon answers is what the caller sees; the minute's state read presents none either way.
 	LegionDaemonTokenFile string
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,

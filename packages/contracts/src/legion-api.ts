@@ -1163,7 +1163,7 @@ export type LegionSettingVerdict = z.output<typeof legionSettingResult>;
 
 /** `api.SettingsChangeResponse`, the body of `PUT /legion/v1/operator/settings`: one result per
  * dotted `legion.yaml` path the request named, keyed as the request keyed it, under `settings`.
- * Dispatch relays this body unchanged (`PUT /api/v1/legion/{project}/settings`,
+ * Dispatch relays this body unchanged (`PUT /api/v1/projects/{key}/legion/settings`,
  * packages/envoy/internal/dispatch/api/settings_legion.go), so a reader of either route reads
  * this one shape: a verdict is `answer.settings[path]`, never `answer[path]`. */
 export const LegionSettingsChangeResponse = z.object({

@@ -5,7 +5,7 @@ import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import {
-  legionSettingsQuery,
+  legionDaemonQuery,
   projectArchitectureSourcesQuery,
   projectsQuery,
   whoAmIQuery,
@@ -45,8 +45,8 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
 ];
 
 /** Which view of a project's issues is on screen. `legion` is offered only for a project that
- *  names a Legion daemon (`GET /api/v1/settings/legion`); a stored preference naming it on a
- *  project without one falls back to the list rather than showing an empty view. */
+ *  names a Legion daemon (`GET /api/v1/projects/{key}/legion/daemon`); a stored preference naming
+ *  it on a project without one falls back to the list rather than showing an empty view. */
 type IssueView = "list" | "board" | "legion";
 
 /** The order `v` cycles the views in, which is the order the selector draws them. */
@@ -95,13 +95,14 @@ export function ProjectPage(): ReactNode {
     enabled: projectKey !== undefined,
   });
   const hasSource = (sources.data?.length ?? 0) > 0;
-  // Which projects name a Legion daemon: one deployment-wide read, shared with the Delivery
-  // page's Legion section. A project that names none has no Legion view at all, so a stored
-  // preference naming it falls back to the list.
-  const legionSettings = useQuery(legionSettingsQuery());
-  const hasLegion =
-    projectKey !== undefined &&
-    (legionSettings.data ?? []).some((setting) => setting.project === projectKey);
+  // Whether this project names a Legion daemon: one read of its own, the entry the Settings page
+  // and the Delivery page's Legion section read for it too. A project that names none answers
+  // `null` and has no Legion view at all, so a stored preference naming it falls back to the list.
+  const legionDaemon = useQuery({
+    ...legionDaemonQuery(projectKey ?? ""),
+    enabled: projectKey !== undefined,
+  });
+  const hasLegion = projectKey !== undefined && legionDaemon.data != null;
   const views: readonly IssueView[] = hasLegion
     ? issueViews
     : issueViews.filter((view) => view !== "legion");

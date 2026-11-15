@@ -3,12 +3,12 @@
 // and when. Dispatch models none of the values: they ride from the daemon as JSON and go back as
 // JSON (`GET /api/v1/legion/board`'s `settings` and `setting_sources`).
 //
-// A change goes to `PUT /api/v1/legion/{project}/settings`, which relays it to the daemon with the
-// pod's projected ServiceAccount token and the caller's login, and answers the daemon's own
-// verdict for each key: applied at once, by rebuilding the client or listener that held it, or at
-// the next worker launch — refused, with the daemon's reason, or failed, the daemon running on the
-// new value with the holder of it keeping the old one. Dispatch re-reads none of that, so neither
-// does this panel: it shows the verdict it was given, and shows a refusal and a failure as
+// A change goes to `PUT /api/v1/projects/{key}/legion/settings`, which relays it to the daemon
+// with the pod's projected ServiceAccount token and the caller's login, and answers the daemon's
+// own verdict for each key: applied at once, by rebuilding the client or listener that held it, or
+// at the next worker launch — refused, with the daemon's reason, or failed, the daemon running on
+// the new value with the holder of it keeping the old one. Dispatch re-reads none of that, so
+// neither does this panel: it shows the verdict it was given, and shows a refusal and a failure as
 // failures (`describeVerdict`).
 //
 // Who may change one: `scopeDeployment` refuses a caller whose credential names one project, which

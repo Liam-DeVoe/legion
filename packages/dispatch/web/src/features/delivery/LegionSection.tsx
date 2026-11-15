@@ -2,13 +2,13 @@
 // page", section 1): Legion, issue to merge — the four metrics of the issues that finished in the
 // page's window, with a project picker and a toggle for all issues, roots or children.
 //
-// Every number comes from `GET /api/v1/legion/metrics` and nothing is computed here: the server
-// holds the rules (the work time less parked and queued hours, the seven bars and their five
-// segments in their one precedence, the review rounds and send-backs, the four classes of filing),
-// and this draws what it answers. Each metric goes through `Chart` (`Chart.tsx`), so each has the
-// graph-or-table toggle and the compare range every chart of a measure over a range has; the
-// comparison is the page's own, read as a second call of the same route, the way `PipelineSection`
-// reads its own route twice.
+// Every number comes from `GET /api/v1/projects/{key}/legion/metrics` and nothing is computed
+// here: the server holds the rules (the work time less parked and queued hours, the seven bars and
+// their five segments in their one precedence, the review rounds and send-backs, the four classes
+// of filing), and this draws what it answers. Each metric goes through `Chart` (`Chart.tsx`), so
+// each has the graph-or-table toggle and the compare range every chart of a measure over a range
+// has; the comparison is the page's own, read as a second call of the same route, the way
+// `PipelineSection` reads its own route twice.
 //
 // The page gives the section the window and the comparison it gives the Pipeline section and the
 // delivery timeline (`DeliverySectionProps`), so every chart on the page follows one window
@@ -17,7 +17,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 
-import { legionMetricsQuery, legionSettingsQuery } from "../../api/queries";
+import { legionMetricsQuery } from "../../api/queries";
 import type {
   LegionBarRole,
   LegionFilingClass,
@@ -36,6 +36,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { useLegionDaemons } from "../legion/useLegionDaemons";
 import {
   Chart,
   type ChartCompareSource,
@@ -236,19 +237,19 @@ export function splittingSeries(report: LegionMetricsResponse): ChartSeries[] {
 
 /** The Delivery page's `#legion` section: the four Legion metrics of one project over the page's
  *  window, each through `Chart`. A deployment where no project names a Legion daemon says so and
- *  reads nothing. */
+ *  reads no metrics. Which projects name one is read project by project (`useLegionDaemons`),
+ *  since no route lists them. */
 export function LegionSection({
   compare,
   onCompare,
   window: chosen,
 }: DeliverySectionProps): ReactNode {
-  const settings = useQuery(legionSettingsQuery());
+  const legion = useLegionDaemons();
   const projects = useMemo(
-    () => (settings.data ?? []).map((setting) => setting.project),
-    [settings.data]
+    () => (legion.daemons ?? []).map((setting) => setting.project),
+    [legion.daemons]
   );
-  // The project the reader picked, while it still names a daemon; otherwise the first that does,
-  // which is the project the route itself answers with no `project` of its own.
+  // The project the reader picked, while it still names a daemon; otherwise the first that does.
   const [picked, setPicked] = useState<string | null>(null);
   const project = (picked !== null && projects.includes(picked) ? picked : projects[0]) ?? "";
   const [scope, setScope] = useState<LegionMetricsScope>("all");
@@ -306,8 +307,15 @@ export function LegionSection({
           </div>
         )}
       </header>
-      {settings.isPending ? <p className={textMutedOnCanvas}>Loading Legion projects…</p> : null}
-      {projects.length === 0 && !settings.isPending ? (
+      {legion.isPending ? <p className={textMutedOnCanvas}>Loading Legion projects…</p> : null}
+      {legion.isError ? (
+        <QueryError
+          message="Couldn't load which projects name a Legion daemon."
+          onRetry={legion.retry}
+          retrying={legion.isFetching}
+        />
+      ) : null}
+      {legion.daemons !== undefined && projects.length === 0 ? (
         <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-metrics-unconfigured>
           No project names a Legion daemon, so there is nothing to measure here. The Settings page
           names one.

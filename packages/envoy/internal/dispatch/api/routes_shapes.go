@@ -173,12 +173,9 @@ type legionBoardQuery struct {
 	Project string `query:"project"`
 }
 
-// legionMetricsQuery is GET /api/v1/legion/metrics's query: the project, the window every
-// delivery route reads the same way, and which of the project's issues the answer counts.
+// legionMetricsQuery is GET /api/v1/projects/{key}/legion/metrics's query: the window every
+// delivery route reads the same way, and which of the path's project's issues the answer counts.
 type legionMetricsQuery struct {
-	// Project is the project whose issues are counted; absent, it is the first project that
-	// names a daemon, and a key no project holds is 400 INVALID_QUERY.
-	Project string `query:"project"`
 	// From is the window's start, RFC3339; absent it is seven days before To.
 	From string `query:"from"`
 	// To is the window's end, RFC3339, exclusive; absent it is now.
@@ -594,12 +591,17 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/settings/new-issue/_test": {
 		Status: http.StatusOK, Response: newIssueSettings{}, Request: newIssueSettingsInput{},
 	},
-	"GET /api/v1/settings/legion": {Status: http.StatusOK, Response: []legion.Settings{}},
-	"PUT /api/v1/settings/legion/{project}": {
+	"GET /api/v1/projects/{key}/legion/daemon": {
+		Status: http.StatusOK, Response: legion.Settings{},
+		// A project that names no daemon answers 200 and the JSON literal `null`
+		// (settings_legion.go).
+		Nullable: true,
+	},
+	"PUT /api/v1/projects/{key}/legion/daemon": {
 		Status: http.StatusOK, Response: legion.Settings{}, Request: putLegionSettingInput{},
 	},
-	"DELETE /api/v1/settings/legion/{project}": {Status: http.StatusNoContent},
-	"PUT /api/v1/legion/{project}/settings": {
+	"DELETE /api/v1/projects/{key}/legion/daemon": {Status: http.StatusNoContent},
+	"PUT /api/v1/projects/{key}/legion/settings": {
 		Status: http.StatusOK, Request: legionSettingsRelayInput{},
 		// Dispatch relays the daemon's status and body unchanged (settings_legion.go), so the
 		// answer is the daemon's own shape and not one this server models.
@@ -607,7 +609,7 @@ var routeShapes = map[string]routeShape{
 			"per-key verdicts of its operator settings route, which Dispatch does not model",
 		OpaqueContentType: "application/json",
 	},
-	"GET /api/v1/legion/metrics": {
+	"GET /api/v1/projects/{key}/legion/metrics": {
 		Status: http.StatusOK, Response: metrics.Report{}, Params: legionMetricsQuery{},
 	},
 	"GET /api/v1/legion/board": {

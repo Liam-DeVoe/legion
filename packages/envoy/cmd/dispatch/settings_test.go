@@ -590,10 +590,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			router.ServeHTTP(response, request)
 			return response
 		}
-		if set := send(http.MethodPut, "/api/v1/settings/legion/LGN", map[string]any{"state_url": daemon.URL}); set.Code != http.StatusOK {
+		if set := send(http.MethodPut, "/api/v1/projects/LGN/legion/daemon", map[string]any{"state_url": daemon.URL}); set.Code != http.StatusOK {
 			t.Fatalf("set the project's Legion daemon: %d %s", set.Code, set.Body.String())
 		}
-		if relayed := send(http.MethodPut, "/api/v1/legion/LGN/settings", map[string]any{"changes": map[string]any{"concurrency": 4}}); relayed.Code != http.StatusOK {
+		if relayed := send(http.MethodPut, "/api/v1/projects/LGN/legion/settings", map[string]any{"changes": map[string]any{"concurrency": 4}}); relayed.Code != http.StatusOK {
 			t.Fatalf("relay a settings change: %d %s", relayed.Code, relayed.Body.String())
 		}
 		select {

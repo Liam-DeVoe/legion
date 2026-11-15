@@ -1682,11 +1682,14 @@ export class DispatchApiClient {
     return this.put("/api/v1/settings/delivery", {}, input, bounds);
   }
 
-  /** Every project's Legion setting, by project key; `[]` when no project names a daemon. The
-   *  Issues page's view selector reads it to decide whether this project has a Legion view at
-   *  all, so having none is an ordinary answer rather than a failure. */
-  listLegionSettings() {
-    return this.read("/api/v1/settings/legion", {});
+  /** One project's Legion daemon: the base URL its state is read from, the actor that first named
+   *  it and when it last changed, or `null` for a project that names none. There is no list of
+   *  every project's daemon, so the Settings page and the Delivery page's Legion section read this
+   *  once per project (`useLegionDaemons`), and the Issues page's view selector reads its own
+   *  project's: `null` is an ordinary answer rather than a failure. An unknown project is
+   *  `404 NOT_FOUND`. */
+  getLegionDaemon(project: string) {
+    return this.read("/api/v1/projects/{key}/legion/daemon", { key: project });
   }
 
   /** Names the daemon a project's state is read from, and answers the row as it was stored.
@@ -1695,19 +1698,19 @@ export class DispatchApiClient {
    *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
    *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
    *  unknown project is `404 NOT_FOUND`. */
-  putLegionSetting(project: string, stateUrl: string, bounds: WriteBounds) {
+  putLegionDaemon(project: string, stateUrl: string, bounds: WriteBounds) {
     return this.put(
-      "/api/v1/settings/legion/{project}",
-      { project },
+      "/api/v1/projects/{key}/legion/daemon",
+      { key: project },
       { state_url: stateUrl },
       bounds
     );
   }
 
   /** Stops reading a project's daemon: what was read stays, and nothing re-reads it. Scoped as
-   *  the PUT is; a project with no setting is `404 NOT_FOUND`. */
-  async deleteLegionSetting(project: string, bounds: WriteBounds): Promise<void> {
-    await this.remove("/api/v1/settings/legion/{project}", { project }, bounds);
+   *  the PUT is; a project with no daemon is `404 NOT_FOUND`. */
+  async deleteLegionDaemon(project: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/projects/{key}/legion/daemon", { key: project }, bounds);
   }
 
   /** Relays an operator's `legion.yaml` change to the project's daemon, by dotted path, and
@@ -1734,8 +1737,8 @@ export class DispatchApiClient {
   ): Promise<LegionSettingsChangeResult> {
     try {
       const answer = (await this.put(
-        "/api/v1/legion/{project}/settings",
-        { project },
+        "/api/v1/projects/{key}/legion/settings",
+        { key: project },
         { changes },
         bounds
       )) as LegionSettingsChangeResponse;
@@ -1750,10 +1753,10 @@ export class DispatchApiClient {
 
   /** The Delivery page's Legion section: the four metrics over the issues of `project` that
    *  closed in `[from, to)` with Legion phase work, counted over all of them, its roots or its
-   *  children. A deployment where no project names a daemon answers an empty report rather than
-   *  a refusal, and an unknown project is `400 INVALID_QUERY`. */
-  getLegionMetrics(query: Query<"/api/v1/legion/metrics", "get">) {
-    return this.read("/api/v1/legion/metrics", {}, query);
+   *  children. A project with nothing measured answers an empty report rather than a refusal; a
+   *  key that is no project key is `400 INVALID_QUERY`, and an unknown project `404 NOT_FOUND`. */
+  getLegionMetrics(project: string, query: Query<"/api/v1/projects/{key}/legion/metrics", "get">) {
+    return this.read("/api/v1/projects/{key}/legion/metrics", { key: project }, query);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.

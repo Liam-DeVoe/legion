@@ -67,8 +67,8 @@ const (
 var classes = []string{ClassInTreeAtDesign, ClassInTreeLater, ClassOutOfTree, ClassByTheController}
 
 // Report is one answer of the Legion section: the window, the issues that finished in it, and the
-// four metrics. It is the body of GET /api/v1/legion/metrics, which the OpenAPI document declares
-// as LegionMetricsResponse (api/openapi_tables.go's schemaNames).
+// four metrics. It is the body of GET /api/v1/projects/{key}/legion/metrics, which the OpenAPI
+// document declares as LegionMetricsResponse (api/openapi_tables.go's schemaNames).
 type Report struct {
 	Project    string    `json:"project"`
 	From       time.Time `json:"from"`

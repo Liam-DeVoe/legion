@@ -1,20 +1,22 @@
 // The Settings page's Legion section (dispatch://INFRA-1077): which project's state Dispatch
-// reads from which daemon. A project's setting is what brings its Legion view at all - the
-// Issues page's selector reads this same list (`legionSettingsQuery`, `features/project/
+// reads from which daemon. A project's daemon is what brings its Legion view at all - the Issues
+// page's selector reads that project's own (`legionDaemonQuery`, `features/project/
 // ProjectPage.tsx`) - so naming a daemon here is how a project gets one, and removing one stops
 // Dispatch reading it while everything already read stays.
 //
-// The two writes are `PUT` and `DELETE /api/v1/settings/legion/{project}`, classed
-// `scopeDeployment` beside the repository mappings and the Delivery settings: pointing Dispatch
-// at a host is the deployment's business, not one project's. A credential naming one project is
-// refused by the server, which is the only role Dispatch has, so the controls are offered to any
-// signed-in person (`useIsHuman`) and the server refuses the rest; its refusal is shown under the
-// form as it wrote it.
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+// No route lists every project's daemon, so the section reads each project's
+// `GET /api/v1/projects/{key}/legion/daemon` (`useLegionDaemons`), and a write changes the one
+// entry of the project it names. The two writes are `PUT` and
+// `DELETE /api/v1/projects/{key}/legion/daemon`, classed `scopeDeployment` beside the repository
+// mappings and the Delivery settings: pointing Dispatch at a host is the deployment's business,
+// not one project's. A credential naming one project is refused by the server, which is the only
+// role Dispatch has, so the controls are offered to any signed-in person (`useIsHuman`) and the
+// server refuses the rest; its refusal is shown under the form as it wrote it.
+import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { legionSettingsQuery, projectsQuery } from "../../api/queries";
+import { legionDaemonQuery } from "../../api/queries";
 import type { LegionSetting } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
@@ -29,6 +31,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { useLegionDaemons } from "../legion/useLegionDaemons";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
@@ -55,13 +58,9 @@ type FailedAction =
   | { readonly kind: "remove"; readonly message: string; readonly project: string }
   | { readonly kind: "input"; readonly message: string };
 
-/** The settings with `setting` in place of its project's row, in the order the route lists them
- *  (`ListSettings`, `order by project`), so an optimistic row sits where the next read puts it. */
-function withSetting(current: readonly LegionSetting[], setting: LegionSetting): LegionSetting[] {
-  return [...current.filter((row) => row.project !== setting.project), setting].sort((a, b) =>
-    a.project < b.project ? -1 : a.project > b.project ? 1 : 0
-  );
-}
+/** What a project's entry held before a write changed it: its daemon, `null` for none, or
+ *  `undefined` where the entry was never read. */
+type PreviousDaemon = { previous: LegionSetting | null | undefined };
 
 /** The daemon base URL a setting may hold, trimmed, or the refusal that names what is wrong with
  *  it - the server's rule and the server's own words, so the field refuses what it would refuse
@@ -104,28 +103,23 @@ export function legionStateUrl(raw: string): { readonly url: string; readonly re
   return { refusal: "", url: trimmed };
 }
 
-/** Each project's Legion daemon, one row per setting, and - for a signed-in person - the field
- *  that names one and the Remove that stops reading it. */
+/** Each project's Legion daemon, one row per project that names one, and - for a signed-in
+ *  person - the field that names one and the Remove that stops reading it. */
 export function LegionDaemonsSection(): ReactNode {
   const queryClient = useQueryClient();
   const human = useIsHuman();
   const [project, setProject] = useState("");
   const [stateUrl, setStateUrl] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>();
-  const settingsKey = legionSettingsQuery().queryKey;
-  const settings = useQuery(legionSettingsQuery());
-  const projects = useQuery(projectsQuery());
+  const legion = useLegionDaemons();
+  const daemonKey = (named: string) => legionDaemonQuery(named).queryKey;
   // Both writes show their refusal under the form, with the row they changed put back.
-  const saveDaemon = useKeyedWrite<
-    LegionSetting,
-    DaemonInput,
-    { previous: LegionSetting[] | undefined }
-  >({
-    write: ({ project: named, state_url: url }, bounds) => api.putLegionSetting(named, url, bounds),
+  const saveDaemon = useKeyedWrite<LegionSetting, DaemonInput, PreviousDaemon>({
+    write: ({ project: named, state_url: url }, bounds) => api.putLegionDaemon(named, url, bounds),
     inline: true,
     label: ({ project: named }) => `${named}'s Legion daemon`,
     onError: (error, variables, context) => {
-      queryClient.setQueryData(settingsKey, context?.previous);
+      queryClient.setQueryData(daemonKey(variables.project), context?.previous);
       setFailedAction({
         kind: "save",
         message: apiErrorMessage(error, `Couldn't save ${variables.project}'s Legion daemon.`),
@@ -133,43 +127,39 @@ export function LegionDaemonsSection(): ReactNode {
       });
     },
     onMutate: async (variables) => {
-      await queryClient.cancelQueries({ queryKey: settingsKey });
-      const previous = queryClient.getQueryData<LegionSetting[]>(settingsKey);
-      const existing = previous?.find((row) => row.project === variables.project);
-      queryClient.setQueryData<LegionSetting[]>(settingsKey, (current = []) =>
-        withSetting(current, {
-          // As the server keeps it: whoever first named this project's daemon, else this person.
-          created_by: existing?.created_by ?? { id: "you", kind: "user" },
-          project: variables.project,
-          state_url: variables.state_url,
-          updated_at: new Date().toISOString(),
-        })
-      );
+      const key = daemonKey(variables.project);
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData(key);
+      const optimistic: LegionSetting = {
+        // As the server keeps it: whoever first named this project's daemon, else this person.
+        created_by: previous?.created_by ?? { id: "you", kind: "user" },
+        project: variables.project,
+        state_url: variables.state_url,
+        updated_at: new Date().toISOString(),
+      };
+      queryClient.setQueryData(key, optimistic);
       return { previous };
     },
-    // A landing with no answer keeps the optimistic row; `onSettled` reads them all again.
+    // A landing with no answer keeps the optimistic row; `onSettled` reads the project again.
     onSuccess: (setting) => {
       if (setting !== null) {
-        queryClient.setQueryData<LegionSetting[]>(settingsKey, (current = []) =>
-          withSetting(current, setting)
-        );
+        queryClient.setQueryData(daemonKey(setting.project), setting);
       }
       setFailedAction(undefined);
       setProject("");
       setStateUrl("");
     },
-    // The answer is one row as the server saved it, not the deployment's settings when it
-    // arrives: another browser may have named another project's daemon meanwhile. Reading them
-    // again once the write settles leaves the page on the server's state, as the repository
-    // mappings do.
-    onSettled: () => queryClient.invalidateQueries({ queryKey: settingsKey }),
+    // The answer is the row as the server saved it when it answered; reading the project again
+    // once the write settles leaves the page on the server's state, as the repository mappings do.
+    onSettled: (_setting, _error, variables) =>
+      queryClient.invalidateQueries({ queryKey: daemonKey(variables.project) }),
   });
-  const removeDaemon = useKeyedWrite<void, string, { previous: LegionSetting[] | undefined }>({
-    write: (named: string, bounds) => api.deleteLegionSetting(named, bounds),
+  const removeDaemon = useKeyedWrite<void, string, PreviousDaemon>({
+    write: (named: string, bounds) => api.deleteLegionDaemon(named, bounds),
     inline: true,
     label: (named) => `${named}'s Legion daemon removed`,
     onError: (error, named, context) => {
-      queryClient.setQueryData(settingsKey, context?.previous);
+      queryClient.setQueryData(daemonKey(named), context?.previous);
       setFailedAction({
         kind: "remove",
         message: apiErrorMessage(error, `Couldn't remove ${named}'s Legion daemon.`),
@@ -177,15 +167,15 @@ export function LegionDaemonsSection(): ReactNode {
       });
     },
     onMutate: async (named) => {
-      await queryClient.cancelQueries({ queryKey: settingsKey });
-      const previous = queryClient.getQueryData<LegionSetting[]>(settingsKey);
-      queryClient.setQueryData<LegionSetting[]>(settingsKey, (current = []) =>
-        current.filter((row) => row.project !== named)
-      );
+      const key = daemonKey(named);
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData(key);
+      queryClient.setQueryData(key, null);
       return { previous };
     },
     onSuccess: () => setFailedAction(undefined),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: settingsKey }),
+    onSettled: (_answer, _error, named) =>
+      queryClient.invalidateQueries({ queryKey: daemonKey(named) }),
   });
 
   const retry = () => {
@@ -222,19 +212,19 @@ export function LegionDaemonsSection(): ReactNode {
         {human ? "" : " Sign in to name one."}
       </p>
 
-      {settings.isPending || projects.isPending ? (
+      {legion.isPending ? (
         <p className={`mt-6 ${textMutedOnCanvas}`}>Loading Legion daemons…</p>
       ) : null}
-      {settings.isError ? (
+      {legion.isError ? (
         <div className="mt-6">
           <QueryError
             message="Couldn't load the Legion daemons."
-            onRetry={() => void settings.refetch()}
-            retrying={settings.isFetching}
+            onRetry={legion.retry}
+            retrying={legion.isFetching}
           />
         </div>
       ) : null}
-      {settings.isSuccess && projects.isSuccess ? (
+      {legion.daemons !== undefined && legion.projects !== undefined ? (
         <>
           <div className={settingsTableWrapper}>
             <table className="w-full text-left text-sm">
@@ -257,7 +247,7 @@ export function LegionDaemonsSection(): ReactNode {
                 </tr>
               </thead>
               <tbody>
-                {settings.data.length === 0 ? (
+                {legion.daemons.length === 0 ? (
                   <tr>
                     <td
                       className={`px-4 py-5 ${textMutedOnSurface}`}
@@ -268,7 +258,7 @@ export function LegionDaemonsSection(): ReactNode {
                     </td>
                   </tr>
                 ) : (
-                  settings.data.map((setting) => (
+                  legion.daemons.map((setting) => (
                     <tr
                       className={settingsTableRow}
                       data-legion-daemon={setting.project}
@@ -317,7 +307,7 @@ export function LegionDaemonsSection(): ReactNode {
                   disabled={writing}
                   id="legion-project"
                   onChange={setProject}
-                  projects={projects.data}
+                  projects={legion.projects}
                   value={project}
                 />
               </label>

@@ -216,7 +216,7 @@ test("a project with no Legion setting has no Legion view until the Settings pag
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        response.url().endsWith(`/api/v1/settings/legion/${LEGION_PROJECT}`)
+        response.url().endsWith(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`)
     );
     await page.getByRole("button", { name: "Save Legion daemon" }).click();
     expect((await saved).status()).toBe(200);
@@ -250,11 +250,14 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
 
   try {
     // What the server says about this URL, so the page can be held to its wording.
-    const refusal = await fetch(new URL(`/api/v1/settings/legion/${LEGION_PROJECT}`, baseUrl), {
-      body: JSON.stringify({ state_url: bad }),
-      headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
-      method: "PUT",
-    });
+    const refusal = await fetch(
+      new URL(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`, baseUrl),
+      {
+        body: JSON.stringify({ state_url: bad }),
+        headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
+        method: "PUT",
+      }
+    );
     expect(refusal.status).toBe(400);
     const refused = (await refusal.json()) as { code: string; error: string };
     expect(refused.code).toBe("LEGION_SETTING_INPUT");
@@ -268,7 +271,7 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
     page.on("request", (request) => {
       if (
         request.method() === "PUT" &&
-        request.url().endsWith(`/api/v1/settings/legion/${LEGION_PROJECT}`)
+        request.url().endsWith(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`)
       ) {
         wrote = true;
       }
@@ -287,7 +290,7 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
     const removed = page.waitForResponse(
       (response) =>
         response.request().method() === "DELETE" &&
-        response.url().endsWith(`/api/v1/settings/legion/${LEGION_PROJECT}`)
+        response.url().endsWith(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`)
     );
     await page
       .getByRole("button", { name: `Remove the Legion daemon of ${LEGION_PROJECT}` })

@@ -125,10 +125,10 @@ type Deps struct {
 	AgentSecrets *agentsecrets.Client
 	// LegionDaemonTokenFile is the file holding Dispatch's own projected Kubernetes
 	// ServiceAccount token, minted for a Legion daemon's audience
-	// (DISPATCH_LEGION_DAEMON_TOKEN_FILE); the operator relay PUT /api/v1/legion/{project}/settings
-	// presents it, read at call time so a rotation is picked up. Empty sends no bearer, and
-	// whatever the daemon answers is what the caller sees. The minute's state read presents it
-	// never: GET /legion/v1/state authenticates nobody.
+	// (DISPATCH_LEGION_DAEMON_TOKEN_FILE); the operator relay
+	// PUT /api/v1/projects/{key}/legion/settings presents it, read at call time so a rotation is
+	// picked up. Empty sends no bearer, and whatever the daemon answers is what the caller sees.
+	// The minute's state read presents it never: GET /legion/v1/state authenticates nobody.
 	LegionDaemonTokenFile string
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the

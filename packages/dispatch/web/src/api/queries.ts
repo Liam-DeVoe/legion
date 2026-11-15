@@ -496,22 +496,26 @@ export const legionBoardQuery = (view: DeliveryLiveView & { kind: "legion" }) =>
  *  daemon says now, and the page reads it a second time for its compare range, as the Pipeline
  *  section reads its own route twice. The key holds every parameter, so a project, a range or a
  *  scope the reader picks is its own entry and the one before it stays cached. */
-export const legionMetricsQuery = (query: {
+export const legionMetricsQuery = ({
+  project,
+  ...query
+}: {
   project: string;
   from: string;
   to: string;
   scope: LegionMetricsScope;
 }) =>
   queryOptions({
-    queryKey: ["legion", "metrics", query],
-    queryFn: () => api.getLegionMetrics(query),
+    queryKey: ["legion", "metrics", { project, ...query }],
+    queryFn: () => api.getLegionMetrics(project, query),
   });
 
-/** Every project's Legion setting, by project key, read once for the whole app: the Issues page's
- *  view selector asks it whether this project has a Legion view. `[]` is a deployment where no
- *  project names a daemon, not a failure. */
-export const legionSettingsQuery = () =>
+/** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
+ *  project is its own entry: the Issues page's view selector reads its own project's to decide
+ *  whether it has a Legion view at all, and the pages that list every daemon read one entry per
+ *  project (`useLegionDaemons`), since no route lists them. */
+export const legionDaemonQuery = (project: string) =>
   queryOptions({
-    queryKey: ["legion-settings"],
-    queryFn: () => api.listLegionSettings(),
+    queryKey: ["legion-daemon", project],
+    queryFn: () => api.getLegionDaemon(project),
   });

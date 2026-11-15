@@ -7,11 +7,12 @@ import type {
 
 /**
  * The delivery timeline's facets and the Legion section's names. Every body `GET
- * /api/v1/delivery/*` and `GET /api/v1/legion/*` answers is generated from the Go route table, so
- * what stays here is the two closed sets a page selects and colours by, which the table carries as
- * query parameter names rather than as a schema, so no generated type spells them; what one map's
- * values hold where the server keeps them unparsed, so the document can only say they are bytes
- * (`LegionSettingSource`); and the names a Legion page reads off a generated shape.
+ * /api/v1/delivery/*`, `GET /api/v1/projects/{key}/legion/*` and `GET /api/v1/legion/board`
+ * answers is generated from the Go route table, so what stays here is the two closed sets a page
+ * selects and colours by, which the table carries as query parameter names rather than as a
+ * schema, so no generated type spells them; what one map's values hold where the server keeps them
+ * unparsed, so the document can only say they are bytes (`LegionSettingSource`); and the names a
+ * Legion page reads off a generated shape.
  *
  * A name read off a generated shape is none of those: `LegionMetricsScope` and its kind are
  * `LegionMetricsResponse["scope"]` and so on, so the set a field carries is stated once, by the

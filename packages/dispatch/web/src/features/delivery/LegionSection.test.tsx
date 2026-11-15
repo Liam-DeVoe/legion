@@ -25,7 +25,8 @@ function setting(project: string): LegionSetting {
   };
 }
 
-/** One answer of `GET /api/v1/legion/metrics`, as the server writes it (`metrics.Report`). */
+/** One answer of `GET /api/v1/projects/{key}/legion/metrics`, as the server writes it
+ *  (`metrics.Report`). */
 function report(overrides: Partial<LegionMetricsResponse> = {}): LegionMetricsResponse {
   return {
     computed_at: "2026-11-03T05:04:00Z",
@@ -143,18 +144,32 @@ function report(overrides: Partial<LegionMetricsResponse> = {}): LegionMetricsRe
   };
 }
 
-/** The section over a window the page already resolved, so the range it reads is this one. */
+/** The section over a window the page already resolved, so the range it reads is this one. The
+ *  deployment holds the project of each of `settings` and CORE, which names no daemon, so every
+ *  case reads a project whose daemon read answers `null` beside the ones that name one. */
 async function renderSection(
   settings: LegionSetting[],
   answer: (query: { project: string; scope: string }) => LegionMetricsResponse
 ) {
-  const list = spyOn(api, "listLegionSettings").mockResolvedValue(settings);
-  // The route's query marks every key optional (each has a server-side default); the section
-  // always names the project and the scope, which is what each case here answers by.
-  const metrics = spyOn(api, "getLegionMetrics").mockImplementation((query) =>
-    Promise.resolve(answer({ project: query.project ?? "", scope: query.scope ?? "all" }))
+  const keys = [...settings.map((one) => one.project), "CORE"];
+  const projects = spyOn(api, "listProjects").mockResolvedValue(
+    keys.map((key) => ({
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key,
+      name: key,
+      open_asks: 0,
+    }))
   );
-  spies.push(list, metrics);
+  const daemons = spyOn(api, "getLegionDaemon").mockImplementation((project) =>
+    Promise.resolve(settings.find((one) => one.project === project) ?? null)
+  );
+  // The route's query marks every key optional (each has a server-side default); the section
+  // always names the scope, which is what each case here answers by beside the project.
+  const metrics = spyOn(api, "getLegionMetrics").mockImplementation((project, query) =>
+    Promise.resolve(answer({ project, scope: query.scope ?? "all" }))
+  );
+  spies.push(projects, daemons, metrics);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
@@ -294,9 +309,8 @@ test("the scope toggle reads the metrics again for the roots alone", async () =>
   await user.click(screen.getByRole("button", { name: "Roots" }));
 
   await waitFor(() => expect(figure("work_time", "Issues finished")).toBe("1"));
-  expect(metrics).toHaveBeenCalledWith({
+  expect(metrics).toHaveBeenCalledWith("ACME", {
     from: WINDOW.from,
-    project: "ACME",
     scope: "roots",
     to: WINDOW.to,
   });
@@ -309,9 +323,8 @@ test("the project picker reads the project it names, and the first that has a da
   );
 
   await screen.findByText("Work time to merge");
-  expect(metrics).toHaveBeenCalledWith({
+  expect(metrics).toHaveBeenCalledWith("ACME", {
     from: WINDOW.from,
-    project: "ACME",
     scope: "all",
     to: WINDOW.to,
   });
@@ -319,9 +332,8 @@ test("the project picker reads the project it names, and the first that has a da
   await user.selectOptions(screen.getByLabelText("Legion project"), "LINUX");
 
   await waitFor(() =>
-    expect(metrics).toHaveBeenCalledWith({
+    expect(metrics).toHaveBeenCalledWith("LINUX", {
       from: WINDOW.from,
-      project: "LINUX",
       scope: "all",
       to: WINDOW.to,
     })

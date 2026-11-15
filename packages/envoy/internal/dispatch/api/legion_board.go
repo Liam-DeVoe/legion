@@ -96,7 +96,7 @@ var legionPhaseColumns = func() map[string]string {
 // putLegionProjectSettings, the live hub's worker).
 const (
 	legionNotConfiguredCode    = "LEGION_NOT_CONFIGURED"
-	legionNotConfiguredMessage = "this project has no Legion daemon; set one through PUT /api/v1/settings/legion/{project}"
+	legionNotConfiguredMessage = "this project has no Legion daemon; set one through PUT /api/v1/projects/{key}/legion/daemon"
 )
 
 // legionBoardResponse is GET /api/v1/legion/board: the project the board shows, its header, its
@@ -173,15 +173,14 @@ type legionBoardWait struct {
 }
 
 // getLegionBoard answers GET /api/v1/legion/board. Its one parameter is `project`; with none it
-// reads the first project that names a Legion daemon, as GET /api/v1/legion/metrics does. A
-// project that names no daemon is 404 LEGION_NOT_CONFIGURED, which is what shows no view; a
-// project whose daemon has never answered is answered the board with empty columns and the read's
-// failure in its header.
+// reads the first project that names a Legion daemon (legionBoardProject). A project that names
+// no daemon is 404 LEGION_NOT_CONFIGURED, which is what shows no view; a project whose daemon has
+// never answered is answered the board with empty columns and the read's failure in its header.
 func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	project, ok := s.legionMetricsProject(w, r)
+	project, ok := s.legionBoardProject(w, r)
 	if !ok {
 		return
 	}
@@ -195,6 +194,26 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, legionBoardCompute(population, time.Now().UTC()))
+}
+
+// legionBoardProject is the project a board call draws: the `project` parameter where it names
+// one, which must be a project key of a project that exists, and otherwise the first project with
+// a Legion setting — empty where the deployment has none. dispatch://INFRA-2915 moves the board
+// under /api/v1/projects/{key}/, where the path names the project and this goes.
+func (s *server) legionBoardProject(w http.ResponseWriter, r *http.Request) (string, bool) {
+	project := strings.TrimSpace(r.URL.Query().Get("project"))
+	if project == "" {
+		settings, err := legion.ListSettings(r.Context(), s.deps.Store.Pool)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return "", false
+		}
+		if len(settings) == 0 {
+			return "", true
+		}
+		return settings[0].Project, true
+	}
+	return s.legionProjectNamed(w, r, project, "INVALID_QUERY")
 }
 
 // legionBoardPopulation is every read one board answer makes: the project's Legion setting, the

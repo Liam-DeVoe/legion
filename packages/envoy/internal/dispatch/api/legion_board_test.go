@@ -17,7 +17,7 @@ import (
 // nameLegionDaemon names project's daemon, which is what brings the board.
 func nameLegionDaemon(t *testing.T, handler http.Handler, project, stateURL string) {
 	t.Helper()
-	written := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/legion/"+project,
+	written := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/"+project+"/legion/daemon",
 		map[string]any{"state_url": stateURL}, "alice")
 	if written.Code != http.StatusOK {
 		t.Fatalf("name %s's daemon: status=%d body=%s", project, written.Code, written.Body.String())

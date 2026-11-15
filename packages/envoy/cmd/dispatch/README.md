@@ -3664,30 +3664,26 @@ Each item below names a path with its method and identity, then its purpose.
   A mapping an issue names as its `repo` is neither deleted nor moved: `409 REPO_PROJECT_IN_USE`.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
 
-- `/api/v1/settings/legion` (GET; cookie, trusted header, or bearer)
+- `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
 
-  Every project's Legion setting, by project key: the daemon Dispatch reads that project's `GET /legion/v1/state` from once a minute, with the actor that first set it and when it was last written.
-  `[]` when no project names one.
-
-- `/api/v1/settings/legion/{project}` (PUT, DELETE; cookie, trusted header, or bearer)
-
-  Name the Legion daemon a project's state is read from, `{state_url}`, or stop reading that project's daemon, what the sampler already recorded staying.
-  A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, and a DELETE for a project that names no daemon `404 NOT_FOUND`.
-  The setting points Dispatch at a host, so it belongs to the deployment rather than to the project it names, and a project-scoped credential is refused it as it is a repository mapping.
+  The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`; DELETE stops reading it, what the sampler already recorded staying.
+  No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page and the Delivery page's Legion section read each project's.
+  A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, and a project that does not exist `404 NOT_FOUND`.
+  The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.
   `AGENTS.md` gives the rest, including why neither write emits an event.
 
-- `/api/v1/legion/{project}/settings` (PUT; cookie, trusted header, or bearer)
+- `/api/v1/projects/{key}/legion/settings` (PUT; cookie, trusted header, or bearer)
 
   Relay an operator's `legion.yaml` change `{changes: {<dotted path>: <value>}}` to that project's Legion daemon, with the caller's login as the change's author, and answer the daemon's status and its per-key result unchanged: applied `at-once`, `rebuilt` or `next-launch`, `failed` with the error of the holder the daemon took the value and could not carry it into, or refused with the reason.
   The bearer is Dispatch's own projected Kubernetes service-account token, minted for the daemon's audience, which `DISPATCH_LEGION_DAEMON_TOKEN_FILE` names and the relay reads at call time, so a rotation needs no restart; unset, it sends no bearer and whatever the daemon answers is what the caller sees.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `503 LEGION_DAEMON_UNAVAILABLE` when it could not be reached.
 
-- `/api/v1/legion/metrics?project=&from=&to=&scope=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/projects/{key}/legion/metrics?from=&to=&scope=` (GET; cookie, trusted header, or bearer)
 
-  The Delivery page's Legion section for one project, the first naming a daemon when `project` is left out, over `[from, to)` (default the last 7 days) and `scope=all|roots|children`.
+  The Delivery page's Legion section for this project over `[from, to)` (default the last 7 days) and `scope=all|roots|children`; a project with nothing measured answers an empty report.
   Over the issues that closed in the window with Legion phase work: the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle, the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week.
   CI wait is not measured, since the Legion daemon's state carries no CI verdict and no required-check mark: it is 0 on every bar, and its hours go to waiting on children or idle.
-  `400 INVALID_QUERY` for a malformed window or scope, `404 NOT_FOUND` for a project that does not exist.
+  `400 INVALID_QUERY` for a malformed window, scope or project key, `404 NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/legion/board?project=` (GET; cookie, trusted header, or bearer)
 
