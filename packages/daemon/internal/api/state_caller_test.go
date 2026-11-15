@@ -403,9 +403,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// declared constant, which is why these rows name the contracts rather than the
 		// declaration. Such a pod stands below whyAndLineFieldsContract, leakCheckCauseContract,
 		// phaseEntriesContract, heldContract, quietTimeContract and supervise.TaskTakeContract,
-		// the six bands above it, so the issues it is served carry no answer, no entry number and
-		// no tree quiet time, its claim views no leak check's cause, its admission block no held
-		// list and the body no `unseenTaskValues`.
+		// the six key-carrying bands above it, so the issues it is served carry no answer, no
+		// entry number and no tree quiet time, its claim views no leak check's cause, its
+		// admission block no held list and the body no `unseenTaskValues`.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true},
 		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
 		// too, and the leak check's cause, the entry numbers, the held list, the tree quiet time
@@ -420,11 +420,16 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// three bands left above it.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true},
 		// The band from heldContract to below quietTimeContract: the held list is served too,
-		// and the tree quiet time and `unseenTaskValues` are the two bands left above it.
+		// and the tree quiet time and `unseenTaskValues` are the two key-carrying bands left
+		// above it.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true},
 		// The band from quietTimeContract to below supervise.TaskTakeContract: the tree quiet
-		// time is served too, and `unseenTaskValues` is the one band left above it.
+		// time is served too, and `unseenTaskValues` is the one key-carrying band left above it.
+		// waitingOnIssueContract stands between the two, and its strip takes a word of the
+		// line's `kind` and no key, so the row at quietTimeContract and the row at
+		// waitingOnIssueContract read alike here; waiting_on_issue_test.go reads that word.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
+		{name: "a pod at waitingOnIssueContract", remote: statePodAddr + ":41000", claims: podClaims(waitingOnIssueContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		// The newest contract the route narrows by, which is this daemon's own. What the caller
 		// is served is decided by its own recorded claim contract (podContract), which is why
 		// this row names supervise.TaskTakeContract rather than the declaration.
