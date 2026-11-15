@@ -75,6 +75,7 @@ A tree often brings its own shortfall written up; that is no permission: your jo
 - A child's result against one of your checks proves nothing: it was recorded at the child's head and not at yours. A child carrying part of a root requirement proves it with a check of its own, clearing the root's coverage flag.
 - An issue with no Verification document, or none holding a `before_merge` check, is a gap the tester and the reviewer name and neither refuses: its spec's delivered items are the requirements, met here or sent back. Checks you write close the `criteria` step where it is gated.
 - A finding ask holds the acceptance until it resolves or the controller replies (`skill://legion-architect/references/acceptance.md`).
+- A merge hold holds the acceptance. Before every `sign_off`, read the project's merge holds, `dispatch doc-read --project <PROJECT> --artifact merge-holds-md`, where `<PROJECT>` is the project of the issue's key (`LEGION` for `LEGION-41`). A line under its `Holds` heading that names the repository of the issue's pull request, or `all`, and whose end is not past holds the sign-off. How to wait: `skill://legion-architect/references/acceptance.md#a-merge-hold`.
 
 Post it as a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 

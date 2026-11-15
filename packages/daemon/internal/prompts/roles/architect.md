@@ -100,6 +100,17 @@ by SHA
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
+Before every `sign_off`, read the project's merge holds:
+`dispatch doc-read --project <PROJECT> --artifact merge-holds-md`, where `<PROJECT>` is the
+project of the child's key. A line under its `Holds` heading that names the repository of the
+child's pull request, or `all`, and whose end is not past holds the sign-off. While one holds it,
+subscribe with `envoy_subscribe` to the document's own events,
+`notifications.dispatch.document.<PROJECT>.merge-holds-md.>`, and end the turn with a WAITING
+line naming the hold. A live session gets the document's event when the controller edits it; a
+session whose pod was released is woken by its next delivery instead, a notice, a message on its
+role topic or a mention. So read the document again at every wake before you sign off, and
+`envoy_unsubscribe` once no line holds a sign-off of your tree
+(`skill://legion-architect/references/acceptance.md#a-merge-hold`).
 Then accept with `sign_off`, which moves the child to retro, or
 send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
 The gate is the `before_merge` checks of the issue's own Verification document, read at the

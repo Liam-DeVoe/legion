@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  Each project's merge holds are one Dispatch document of the project, `merge-holds.md`, which only
+  the controller writes: one line per hold, naming the repositories, the reason and the end. The
+  architect reads it before every `sign_off` and the merger at its first step, and a held role
+  subscribes to the document's own events and ends its turn with a WAITING line naming the hold.
+  The controller sends a merge hold to no tree.

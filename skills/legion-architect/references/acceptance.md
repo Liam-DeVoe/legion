@@ -60,6 +60,42 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   controller topic. Accept only once each is resolved or carries the controller's
   `Filed dispatch://` or `Not filed:` reply, because a closed issue hides
   its asks from the controller.
+- A merge hold on the repository of the issue's pull request holds the acceptance: read the
+  project's merge holds before every `sign_off` ([A merge hold](#a-merge-hold)).
+
+## A merge hold
+
+The controller writes each merge hold of the project as one line of the project's document
+`merge-holds-md`, and sends a hold to no tree. Before every `sign_off`, read it:
+
+```bash
+dispatch doc-read --project <PROJECT> --artifact merge-holds-md
+```
+
+`<PROJECT>` is the project of the issue's key (`LEGION` for `LEGION-41`). A line under the
+document's `Holds` heading reads `- <repositories> | <reason> | <end>`. It holds the sign-off when
+it names the repository of the issue's pull request (`owner/name`), or `all`, and its end is not
+past: its end is `until the controller lifts it`, or an RFC 3339 time later than
+`date -u +%Y-%m-%dT%H:%M:%SZ` prints. No line means no hold. A read that answers
+`document "merge-holds-md" not found by slug` means the project has no such document, and no hold.
+Any other failed read decides nothing: sign off nothing on it.
+
+While a line holds the sign-off:
+
+1. Subscribe to the document's own events with `envoy_subscribe`:
+   `notifications.dispatch.document.<PROJECT>.merge-holds-md.>`. Dispatch publishes each event of
+   a project document on `notifications.dispatch.document.<PROJECT>.<slug>.<type>`, and a new
+   version of it, the controller's edit included, has the type `artifact.version`.
+2. End the turn with a line that starts with WAITING and names the hold: its repositories, its
+   reason and its end.
+3. A live session gets the document's event when the controller edits it. A session whose pod the
+   daemon released hears no document event: its next delivery wakes it, a notice or a task from
+   the daemon, a message on its role topic, or a mention. So read the document again at every
+   wake, whatever woke you, before you sign off.
+4. Once no line holds a sign-off of your tree, `envoy_unsubscribe` that topic, and accept as
+   [Accepting](#accepting) says.
+
+The document is the whole hold, so send the controller no message about it.
 
 ## The last round
 

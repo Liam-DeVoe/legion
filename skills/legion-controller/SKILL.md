@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, a merge hold, an architect's escalation, or a person's message or mention.
 ---
 
 # Legion Controller
@@ -25,7 +25,7 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
 - Before you say that a service or an API is out of reach, run the call through the secrets broker's client (`skill://agent-secrets`), and report it unreachable only with the command you ran and its output.
 - Write every Dispatch comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
-- A message that must reach more than 4 role topics is yours to send and nobody else's (`skill://envoy`). Send it to no more than 4 topics a minute, and send none while a daemon restart or a pod roll is under way, because each publish wakes a session that reads its whole context again, which the provider charges as uncached input: a mean of 576,083 tokens a wake, a median of 493,636 and a ninetieth percentile of 1,327,888. Spread the rest over later turns, and name in your summary the topics you have not sent to yet.
+- A message that must reach more than 4 role topics is yours to send and nobody else's (`skill://envoy`). Send it to no more than 4 topics a minute, and send none while a daemon restart or a pod roll is under way, because each publish wakes a session that reads its whole context again, which the provider charges as uncached input: a mean of 576,083 tokens a wake, a median of 493,636 and a ninetieth percentile of 1,327,888. Spread the rest over later turns, and name in your summary the topics you have not sent to yet. A merge hold is never such a message: it is a line of the project's merge holds document ([Merge holds](#merge-holds)).
 
 Launch, `gh`, pull requests, takeover: `skill://legion-controller/references/session.md`.
 
@@ -71,7 +71,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 |---|---|
 | `triage on <KEY>` | `skill://legion-controller/references/triage.md` |
 | `slot-free on <KEY>`, `todo on <KEY>` | Name the free slots; take nothing |
-| `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`) |
+| `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`), then the merge holds whose end is past ([Merge holds](#merge-holds)) |
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `tree-stalled on <KEY>` | Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree only as [Rules](#rules) allows |
@@ -197,6 +197,59 @@ it runs, and the issues that hold it. Read it beside `admission.blocked`, which 
 links and children-first waits alone. The daemon starts none of the issues in `admission.held` by
 itself, so a row ends when a person acts or when the tree that owns the work moves;
 `skill://legion-controller/references/admission.md` gives the word for each row and what ends it.
+
+## Merge holds
+
+A merge hold stops the merges of one or more repositories of your project, for a deploy that must
+apply first or for another reason a person or your deployment instructions give. Each project's
+merge holds are one Dispatch document of the project, `merge-holds.md` (slug `merge-holds-md`),
+and only you write it. Each hold is one line under its `Holds` heading: the repositories it holds,
+its reason and its end. No line means no hold, and a project with no such document has none. The
+architect reads the document before every `sign_off`, and the merger before it merges, so the
+document is the whole hold. Send a hold to no tree, no architect and no role topic.
+
+Write a hold once, as one line, when a person or your deployment instructions ask for it:
+
+1. Read the document: `dispatch doc-read --project <PROJECT> --artifact merge-holds-md`. When the
+   read answers `document "merge-holds-md" not found by slug`, the project has no such document:
+   write the header below to a file and create the document from it with
+   `dispatch artifact --project <PROJECT> --name merge-holds.md --content-file <file>`.
+2. Add the line:
+
+   ```bash
+   dispatch doc-edit --project <PROJECT> --artifact merge-holds-md \
+     --ops-json '[{"op":"insert","after":"end","markdown":"- <repositories> | <reason> | <end>"}]' \
+     --summary 'Hold <repositories>: <reason>'
+   ```
+
+Lift a hold by deleting its line:
+
+```bash
+dispatch doc-edit --project <PROJECT> --artifact merge-holds-md \
+  --ops-json '[{"op":"delete","find":"- <the line as the document reads it>"}]' \
+  --summary 'Lift the hold on <repositories>'
+```
+
+On each `tick`, read the document and delete each line whose end is past. A held role waits on
+the document's own events, and the passing of a time publishes no event.
+
+The document's header, with no line under `Holds`:
+
+```markdown
+# Merge holds
+
+The controller writes this document, and nobody else edits it. Each line under Holds is one
+merge hold. An architect reads this document before every sign-off, and a merger before it
+merges. A line that names your repository, or `all`, and whose end is not past holds your
+sign-off or your merge. No line means no hold.
+
+A line reads `- <repositories> | <reason> | <end>`. `<repositories>` is `all`, or one or more
+`owner/name` separated by commas. `<reason>` holds no `|`. `<end>` is an RFC 3339 time in UTC,
+such as `2026-11-16T09:00:00Z`, or `until the controller lifts it`. The controller lifts a hold
+by deleting its line.
+
+## Holds
+```
 
 ## Findings, and the issues you file
 
