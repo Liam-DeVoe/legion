@@ -5146,13 +5146,13 @@ jobs:
     #
     #   call              slowest package       limit  fills    read in
     #   the package list  cmd/dispatch 525.9 s   18m   48.7 %   run 43691345741
-    #   race-impossible   docs 292.1 s           10m   48.7 %   run 43519308059
+    #   race-impossible   docs 310.3 s           11m   47.0 %   run 43733795306
     #   pgmigrate         pgmigrate 317.7 s      11m   48.1 %   run 43691345741
     #   shutdown          cmd/dispatch 76.1 s     3m   42.3 %   run 43723760337
     #   routes            routes 54.5 s           2m   45.4 %   run 43519308059
     #   events            events 158.2 s          6m   43.9 %   run 43519308059
     #   natslive (rig)    testnats 9.1 s          1m   15.1 %   run 42863916685
-    #   natslive (cap)    bus 12.7 s              1m   21.2 %   run 42526966412
+    #   natslive (cap)    bus 14.2 s              1m   23.7 %   run 43733795306
     #   integration       integration 9.7 s       1m   16.1 %   run 42893130638
     #
     # Each row is its package's time divided by 30 and rounded up, which is the smallest whole
@@ -5163,7 +5163,7 @@ jobs:
     #
     # Three calls run tests that read a margin off the binary's own deadline, and each clears it:
     # 18m leaves 554.1 s over cmd/dispatch's own time in the package list, against the 60 s of
-    # pmdoc's perCallReportMargin; 10m leaves 448.6 s over the documents package's time in the
+    # pmdoc's perCallReportMargin; 11m leaves 349.7 s over the documents package's time in the
     # race-impossible call, against its 30 s of roomWaitMargin; and 3m leaves 103.9 s over
     # cmd/dispatch's time in the shutdown call, against the 30 s of eventsStartDrain
     # (cmd/dispatch/live_events_wait_test.go:76), which waitEventsStart leaves of the deadline so
@@ -5587,9 +5587,9 @@ jobs:
           # envoy-go-race-api now. The one -run list is derived in
           # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
           # //go:build !race and raceEnabled, so a test added to either and missing here fails
-          # the ci-filters job naming this step. -timeout 10m: this call's slowest package is
+          # the ci-filters job naming this step. -timeout 11m: this call's slowest package is
           # internal/dispatch/docs, whose largest reading and the run it came from are in the
-          # table on this job, and the limit leaves 307.9 s above that reading, over the 30 s of
+          # table on this job, and the limit leaves 349.7 s above that reading, over the 30 s of
           # the documents package's roomWaitMargin.
           #
           # One go test over the three packages rather than one per package: go builds the three
@@ -5599,7 +5599,7 @@ jobs:
           # API package's build, with nothing running beside it (run 42307926510,
           # dispatch://INFRA-1075). Each package measures its own process's heap or allocations,
           # so running them at the same time changes no number any of them asserts on.
-          go test -json -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+          go test -json -count=1 -timeout 11m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
           impossible=$!
           # internal/pgmigrate, on a Postgres service of its own: its redaction oracle holds
           # scanl.go's transcription of PostgreSQL's scan.l to a real PostgreSQL, which is
@@ -5903,8 +5903,8 @@ jobs:
     runs-on: ubuntu-24.04
     # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
-    # package takes at most half of it: internal/bus, 452.963 s (run 42863916685, job
-    # 129997210948), 452.963 / 30 = 15.10, so 16m, which it fills to 47.2 per cent (15m, the
+    # package takes at most half of it: internal/bus, 463.2 s (run 43733795306, job
+    # 132871904364), 463.2 / 30 = 15.44, so 16m, which it fills to 48.3 per cent (15m, the
     # limit it ran under, it would fill to 50.3). The job's own bound follows its largest
     # measured time of a green run, 634 s in run 43675841985 (job 132695730267), 10.57 minutes,
     # plus that largest -timeout plus 6: 10.57 + 16 + 6 = 32.57, so 33. The red one of run
@@ -6083,8 +6083,8 @@ jobs:
     # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
     # package takes at most half of it: internal/dispatch/docs, this job's one package,
-    # 1740.3 s (run 43720554541, job 132831440633, its envoy-go-race-docs-test-json artifact),
-    # 1740.3 / 30 = 58.01, so 59m, which it fills to 49.2 per cent (57m, the limit it ran
+    # 1746.1 s (run 43737129665, job 132882140098, its envoy-go-race-docs-test-json artifact),
+    # 1746.1 / 30 = 58.21, so 59m, which it fills to 49.3 per cent (57m, the limit it ran
     # under, it would fill to 50.9, which is what moved this number). The readings before it:
     # 1695.219 s (run 43640601453, job 132587189297), and 1523.812 s and 1675.755 s in the pair
     # at fae4eab5 (runs 43654965125 and 43657875798). The job's own

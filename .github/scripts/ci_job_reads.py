@@ -689,10 +689,10 @@ class RaceJob(NamedTuple):
 # reading of the branch rather than of one pair is the same rule applied to every measurement
 # taken, and it is what makes the number settle, since a later pair moves it only by reading
 # higher than every pair before it. Each -timeout is the smallest whole minute at which that
-# call's slowest package takes at most half of it: internal/bus 452.963 s -> 16m (run
-# 42863916685, job 129997210948), internal/dispatch/api 955.794 s -> 32m (run 43657875798, job
-# 132640445932), and internal/dispatch/docs 1740.3 s -> 59m (run 43720554541,
-# job 132831440633), where every earlier reading was less, 1695.219 s at most (run 43640601453,
+# call's slowest package takes at most half of it: internal/bus 463.2 s -> 16m (run
+# 43733795306, job 132871904364), internal/dispatch/api 955.794 s -> 32m (run 43657875798, job
+# 132640445932), and internal/dispatch/docs 1746.1 s -> 59m (run 43737129665,
+# job 132882140098), where every earlier reading was less, 1695.219 s at most (run 43640601453,
 # job 132587189297). Each figure is read from that job's own `go test -json` artifact, the
 # largest of every workflow_dispatch run of ci.yaml on this branch (dispatch://INFRA-1075, check
 # 6224bb0e).
@@ -972,12 +972,12 @@ def race_impossible_script(packages) -> str:
     the call is not held to a guard that would cost a parse of every test file of every package
     it names.
 
-    -timeout 10m; the reading it is sized from, and every other call's, is the table in the
+    -timeout 11m; the reading it is sized from, and every other call's, is the table in the
     comment on the envoy-go job (dispatch://INFRA-1075)."""
     if not packages:
         return ""
     names = sorted(set().union(*packages.values()))
-    return (f"go test -json -count=1 -timeout 10m -run '^({'|'.join(names)})$' "
+    return (f"go test -json -count=1 -timeout 11m -run '^({'|'.join(names)})$' "
             + " ".join(f"./{under}" for under in packages))
 
 
@@ -1048,9 +1048,9 @@ unit=$!
 # envoy-go-race-api now. The one -run list is derived in
 # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
 # //go:build !race and raceEnabled, so a test added to either and missing here fails
-# the ci-filters job naming this step. -timeout 10m: this call's slowest package is
+# the ci-filters job naming this step. -timeout 11m: this call's slowest package is
 # internal/dispatch/docs, whose largest reading and the run it came from are in the
-# table on this job, and the limit leaves 307.9 s above that reading, over the 30 s of
+# table on this job, and the limit leaves 349.7 s above that reading, over the 30 s of
 # the documents package's roomWaitMargin.
 #
 # One go test over the three packages rather than one per package: go builds the three

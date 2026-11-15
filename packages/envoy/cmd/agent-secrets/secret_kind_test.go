@@ -1107,9 +1107,11 @@ func (s gcpKindStore) readPermissions() []string { return []string{"secretmanage
 // after the article it takes ("an azure-login secret's"), and none prints the value. Set checks
 // the value under the kind tag the secret holds, since it names none.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv, through onEachStore), and the
-// package-level seams the secret forms are reached through (awsClients or the gcp* ones,
-// secretStdin, readHidden).
+// reads the broker's address from (startSecretBroker's t.Setenv, through onEachStore), and, in
+// its gcp store, CLOUDSDK_AUTH_ACCESS_TOKEN; and the package-level seams the secret forms are
+// reached through, which it sets: awsClients in the aws store, gcpClientDial, gcpCredentials and
+// gcpUserinfo in the gcp one, secretStdin for the value it types, and stdinTerminal, which it
+// reads.
 func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store kindStore, broker *secretBroker) {
 		for _, row := range refusedKindValues(t) {
@@ -1167,9 +1169,11 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 // retag write its tags, with one line on stderr saying the value was not checked, naming the
 // permissions the read needs and saying the broker reports such a secret unservable.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv, through onEachStore), and the
-// package-level seams the secret forms are reached through (awsClients or the gcp* ones,
-// secretStdin, readHidden).
+// reads the broker's address from (startSecretBroker's t.Setenv, through onEachStore), and, in
+// its gcp store, CLOUDSDK_AUTH_ACCESS_TOKEN; and the package-level seams retag is reached
+// through, which it sets: awsClients in the aws store and gcpClientDial, gcpCredentials and
+// gcpUserinfo in the gcp one. It types no value, since only create and set read one
+// (readSecretValue, secret.go:934 and :982).
 func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape(t *testing.T) {
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
 	says := mintRefusal(t, policy.KindGitHubApp, noAppID)
@@ -1253,7 +1257,8 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape(t *testing.T) {
 // exiting 2 and naming that reason, before it reads the value.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
 // reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin, readHidden).
+// set is reached through, which it sets: awsClients and secretStdin. The value itself is never
+// read here: set refuses the kind tag first (secret.go:979-981, before the read at :982).
 func TestSecretSetRefusesASecretWhoseKindTagNamesNoKind(t *testing.T) {
 	local := secrets.NewLocal(policytest.KindSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
 	broker := startSecretBroker(t, servedBy(local))
