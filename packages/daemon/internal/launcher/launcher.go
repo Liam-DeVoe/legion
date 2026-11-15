@@ -356,6 +356,9 @@ func (c Config) validate() error {
 // an account and no instance, and every generation would fail. Naming none of the four is the
 // other stores, which need no proxy.
 func (c Config) validateSessionDatabase() error {
+	if c.SessionDatabase == (ompsessions.Database{}) {
+		return nil
+	}
 	var missing []string
 	for _, named := range []struct{ flag, value string }{
 		{"--session-instance", c.SessionDatabase.Instance},
@@ -366,7 +369,7 @@ func (c Config) validateSessionDatabase() error {
 			missing = append(missing, named.flag)
 		}
 	}
-	if len(missing) == 0 || (len(missing) == 3 && c.SessionDatabase.ImpersonateServiceAccount == "") {
+	if len(missing) == 0 {
 		return nil
 	}
 	return fmt.Errorf("launcher: the session database is named in part: no %s", strings.Join(missing, ", no "))

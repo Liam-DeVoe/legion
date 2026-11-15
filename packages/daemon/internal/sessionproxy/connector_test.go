@@ -55,7 +55,7 @@ const (
 
 // The connector signs in as the account the proxy impersonates. One impersonated source signs the
 // Admin API calls, and the other gives the login token in the ephemeral-certificate exchange. With
-// no account, both are the pod's own credentials, as before. The real connector and the real
+// no account, both are the pod's own credentials. The real connector and the real
 // impersonation library run against fakes of the pod's credentials, of the IAM Service Account
 // Credentials API and of the Cloud SQL Admin API, so the test sees which token reaches which call.
 // The instance has no private address, so each dial ends with the connector's refusal, which shows
