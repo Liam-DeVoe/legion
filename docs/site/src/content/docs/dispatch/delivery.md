@@ -112,24 +112,35 @@ contains it, whenever that pull request merged and whatever the filters.
 
 ## The targets
 
-| Figure | Target |
-| --- | --- |
-| Deploys a day | at least 20 |
-| Change failure rate, per deploy | under 5% |
-| Merge → production, for every change | under 45 minutes |
-| Pull request open → merge, median | under 60 minutes |
-| Deploy runs reaching production | at least 90% |
-| P0 issues with no owner | 0 |
+Each target is the target of an eval of the project the deploy repository is mapped to
+(**Settings → Repositories → Projects**), so a change to that eval's target, or to whether the
+target itself counts as met, moves the card's verdict and its label. Until someone changes one,
+and where the deploy repository is mapped to no project or the project has no such eval yet, the
+targets are these:
 
-"Under" is met strictly below the target. "At least" is met at the target.
+| Figure | Eval | Target |
+| --- | --- | --- |
+| Deploys a day | `deploy-frequency` | at least 20 |
+| Change failure rate, per deploy | `change-fail-rate` | under 5% |
+| Merge → production, for every change | `merge-to-production` | under 45 minutes |
+| Pull request open → merge, median | `pr-open-to-merge` | under 60 minutes |
+| Deploy runs reaching production | `deploy-run-success` | at least 90% |
+| P0 issues with no owner | `unowned-p0` | 0 |
+
+"Under" is met strictly below the target. "At least" is met at the target. An eval whose target is
+off has a card with no target and no verdict.
 
 ## For agents
 
 `GET /api/v1/delivery/measures?from=<RFC 3339>&to=<RFC 3339>` answers the same figures, the
-targets, whether each is met, and the unowned P0 issues. It takes the timeline's parameters:
-`from` and `to` (the last seven days when both are left out, at most 84 days apart), `q` for the
-search, and any filter repeated for several values, such as `&repo=acme/widgets&priority=P0`. Any
-signed-in person or agent token reads it. `GET /api/v1/delivery/timeline` carries the same
+targets, whether each is met, and the unowned P0 issues. Each target is `{"value", "inclusive"}`,
+where `inclusive` says whether the value itself is met, or null when the eval's target is off; each
+verdict under `status` is true, false, or null when there is no target or nothing to judge. The
+verdicts are the eval's own, judged by the same code as `GET /api/v1/projects/{key}/evals`. The
+route takes the timeline's parameters: `from` and `to` (the last seven days when both are left
+out, at most 84 days apart), `q` for the search, and any filter repeated for several values, such
+as `&repo=acme/widgets&priority=P0`. Any signed-in person or agent token reads it.
+`GET /api/v1/delivery/timeline` carries the same
 answer as its `measures` for its own window and filters, so an agent reading both needs only the
 timeline. The routes and the page's live updates compute from the same stored facts with the same
 code, so they agree. `flags_source` says whether recorded flags fed the change failure rate;
@@ -260,10 +271,11 @@ clock; a step's median and 90th percentile are rounded to a tenth of a minute.
   branch, is not counted. The first two are optional settings; a pipeline that names neither has no
   such card.
 - **Merge to production**: the delivery lead time, by the day each pull request merged. A pull
-  request still waiting has none yet. It is judged on the window's longest change: the target is
-  under 45 minutes for every change.
+  request still waiting has none yet. It is judged as the `merge-to-production` eval judges it, on
+  the window's longest change by default: under 45 minutes for every change.
 - **PR open to merge**: every merged pull request, deployed or not, by the day it merged. It is
-  judged on the window's median: the target is a median under 60 minutes.
+  judged as the `pr-open-to-merge` eval judges it, on the window's median by default: a median
+  under 60 minutes.
 
 **PR CI: slowest jobs** ranks the checks workflow's jobs by their median over the window's days,
 slowest first, and shows five. A job needs a number of timed results in those days to be ranked,
@@ -288,5 +300,6 @@ For agents, `GET /api/v1/delivery/pipeline` answers the same numbers. Its option
 the other delivery routes, and its optional `at` is the seven UTC days ending on its own day and
 the moment the failing jobs look back from; the route refuses `at` beside `from` or `to`, and
 with none of the three the window is the seven days ending now. `pr_checks.slowest_min_results`
-is the number of timed results a job needed to be ranked among the slowest. Any signed-in person
-or agent token reads it.
+is the number of timed results a job needed to be ranked among the slowest, `targets` holds the
+same targets as the measures route, and `status` the verdicts of the two lead-time cards.
+Any signed-in person or agent token reads it.
