@@ -19,8 +19,8 @@ printf '%s\n' "our tree: $ROOT, read at 9542c6fbbecd184ccee73523ab3defa39d6cf23a
 # that wrote concord-run.txt, so that a rerun fetches no unpinned hatchling; that
 # transcript's heading and uv's lines for this install predate it. This install of a local
 # source is the one form written with UV_REQUIRE_HASHES=0, with the lock of the
-# environment it installs into and --require-build-hashes, as check.sh's install-pinned
-# header states it. ioc-concord depends on no package.
+# environment it installs into and --require-build-hashes, as the header above reader_py
+# in check.sh states it. ioc-concord depends on no package.
 sec '$ UV_REQUIRE_HASHES=0 uv pip install --python venv/bin/python -c $IOC_EVID/ioc-venv.lock -b $IOC_EVID/build-constraints.txt --require-build-hashes $IOC_CLONES/cognition-protocols/packages/ioc-concord'
 UV_REQUIRE_HASHES=0 uv pip install --python venv/bin/python -c "$HERE/ioc-venv.lock" -b "$HERE/build-constraints.txt" --require-build-hashes "$CP/packages/ioc-concord" 2>&1
 

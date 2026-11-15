@@ -947,12 +947,12 @@ install_passes editable-joined-lock "uv pip install -b \"\$IOC_EVID/build-constr
 # and PIP_REQUIRE_HASHES=1 into every row's environment, and the three are reserved, so no
 # row assigns, unsets or re-points them. uv refuses every local source path under
 # UV_REQUIRE_HASHES=1, so one form clears it, visibly, as UV_REQUIRE_HASHES=0, in the one
-# install check.sh's install-pinned header states. Each of its conditions broken, one at
-# a time, is refused by name, and so are another value, a statement of its own, and an
-# assignment to the other two names; the four real rows' form passes. Since the ninth
+# install the header above reader_py in check.sh states. Each of its conditions broken,
+# one at a time, is refused by name, and so are another value, a statement of its own,
+# and an assignment to the other two names; the four real rows' form passes. Since the ninth
 # review (case 67) the form also names the target environment's own lock with -c and
 # passes --require-build-hashes, so the forms here that reach those conditions carry them.
-EXEMPT='UV_REQUIRE_HASHES=0, which clears uv.s hash check, admitted only before the one install check.sh.s install-pinned header states: '
+EXEMPT='UV_REQUIRE_HASHES=0, which clears uv.s hash check, admitted only before the one install the header above reader_py states: '
 refused_read exempt-registry "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local requests==2.32.3; printf 'ran once\\n'" "${EXEMPT}a package it installs is no local source path"
 refused_read exempt-no-build "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" ./local; printf 'ran once\\n'" "${EXEMPT}it names no -b .IOC_EVID/build-constraints.txt"
 refused_read exempt-no-lock "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c c.txt -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" "${EXEMPT}it names -c c.txt, which is not .IOC_EVID/ioc-venv.lock, the lock of IOC_TC_WORK"
@@ -1109,6 +1109,71 @@ grep -q 'exit 3; \[ "$bad" -eq 0 \] && pass order-of-work' "$dir/repo/docs/resea
     exit 1
 }
 case_result "an assertion whose code exits before its verdict fails, named" 'order-of-work: it reported no verdict' "$(fixture_run "$dir" --shape)"
+
+# 69-71 come from the tenth review of the pull request and the tester's note of round 23.
+#
+# 69. An assertion prints PASS only after all its parts have run. At 987017b05f
+# admitted-reserved printed PASS after its first part, so an exit or an unbound variable
+# in its second part left that PASS standing and the run ended all 4 assertions passed.
+# A scratch copy of check.sh plants each before the second part, and --admitted fails
+# admitted-reserved by name.
+plant_gate reserved-second-exit 's/^    local name prefix stray=""$/    exit 0 # planted by check.test.sh\n&/' 'exit 0 # planted by check.test.sh' holds
+case_result "an exit before the second part of admitted-reserved fails it, named" 'admitted-reserved: it reported no verdict' "$(bash "$GATE" --admitted 2>&1)"
+plant_gate reserved-second-unbound 's/^    local name prefix stray=""$/&\n    : "$NO_SUCH_VARIABLE"/' ': "$NO_SUCH_VARIABLE"' holds
+case_result "an unbound variable in the second part of admitted-reserved fails it, named" 'admitted-reserved: it reported no verdict' "$(bash "$GATE" --admitted 2>&1)"
+
+# 70. Three endings, kept apart to the end. At 987017b05f a mode that could not run ended
+# as every declared assertion failing, exit 1, so a spent GitHub budget read as the
+# deliverable failing. A mode that cannot run now ends exit 2 with its reason as the last
+# line and no assertion counted; one that ran and failed ends exit 1 with the count; one
+# that passed ends exit 0. ending_result <name> <status> <last line, an extended regular
+# expression> <status read> <gate output> passes when both match.
+ending_result() {
+    local name="$1" want="$2" last="$3" got="$4" out="$5"
+    if [ "$got" = "$want" ] && printf '%s\n' "$out" | tail -1 | grep -qE -- "$last"; then
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS %s\n' "$name"
+    else
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL %s: exit %s, last line: %s\n' "$name" "$got" "$(printf '%s\n' "$out" | tail -1)"
+    fi
+}
+dir="$(fresh ending-no-env)"
+rm "$dir/repo/docs/research/internet-of-cognition/env.sh"
+out="$(fixture_run "$dir" --replay)"
+ending_result "a mode whose env.sh is missing cannot run: exit 2, the reason last" 2 '^check\.sh cannot run: env\.sh' "$?" "$out"
+dir="$(fresh ending-budget-spent)"
+sed -i '/^github_budget() {$/,/^}$/{/IOC_NO_ENV/d;s#curl -sS https://api.github.com/rate_limit#cat "$IOC_FAKE_RATE_LIMIT"#}' "$dir/repo/docs/research/internet-of-cognition/check.sh"
+grep -qF 'cat "$IOC_FAKE_RATE_LIMIT"' "$dir/repo/docs/research/internet-of-cognition/check.sh" || {
+    printf 'FAIL the budget read could not be faked in the fixture copy of check.sh\n'
+    exit 1
+}
+printf '{"resources":{"core":{"limit":60,"remaining":3,"reset":1794700800}}}\n' >"$dir/budget.json"
+out="$(IOC_FAKE_RATE_LIMIT="$dir/budget.json" fixture_run "$dir" --replay)"
+ending_result "a spent GitHub budget cannot run: exit 2, naming the reset" 2 '^check\.sh cannot run --replay now: .* The budget resets at 2026-11-15T[0-9:]+Z\.$' "$?" "$out"
+dir="$(fresh ending-failed)"
+sed -i 's/"expect":{"contains":"ran once"}/"expect":{"contains":"ran twice"}/' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(fixture_run "$dir" --replay)"
+ending_result "an ordinary failed assertion still ends exit 1 with the count" 1 '^1 of 16 assertions failed: replay-command$' "$?" "$out"
+dir="$(fresh ending-passed)"
+out="$(fixture_run "$dir" --replay)"
+ending_result "a mode whose assertions all pass ends exit 0" 0 '^all 16 assertions passed$' "$?" "$out"
+
+# 71. The exemption reads every spelling of its files (the tester's note of round 23). At
+# 987017b05f the exemption read -c, --constraint, -r and --requirement alone, and held
+# only one -b to the build lock, so --constraints of another lock, --requirements, and a
+# second --build-constraints that is not the build lock passed beside the honest form.
+# Each is refused by name; the same install without it passes, and so does the target's
+# own lock written --constraints=, a spelling the exemption now reads.
+refused_read exempt-constraints-other "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" --constraints \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" "${EXEMPT}it names --constraints .IOC_EVID/tm-constraints.txt, which is not .IOC_EVID/ioc-venv.lock, the lock of IOC_TC_WORK"
+refused_read exempt-constraints-equals "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" --constraints=\"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" "${EXEMPT}it names --constraints .IOC_EVID/tm-constraints.txt, which is not .IOC_EVID/ioc-venv.lock, the lock of IOC_TC_WORK"
+refused_read exempt-requirements "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" --requirements \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" "${EXEMPT}it names --requirements .IOC_EVID/ioc-venv.lock, and the lock of IOC_TC_WORK is read with -c alone"
+refused_read exempt-second-build "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" --build-constraints \"\$IOC_EVID/tm-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" "${EXEMPT}it names --build-constraints .IOC_EVID/tm-constraints.txt, which is not the hashed build lock"
+if freeze_world; then
+    admitted_read exempt-constraints-own "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" --constraints=\"\$IOC_EVID/ioc-venv.lock\" --build-constraints \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" tcwork
+else
+    printf 'SKIP the exemption with --constraints= and --build-constraints: uv, or an environment it builds here offline, is missing\n'
+fi
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
