@@ -274,8 +274,8 @@ func TestARefusedCredentialIsTradedAgain(t *testing.T) {
 // on to its own answer. Refused, which an enrolment calls on the same context, waits the same
 // way.
 //
-// The named revert: put a sync.Mutex back under lock and unlock, and each wait runs until the
-// trade is let go, which this test does only once it has failed.
+// The named revert: put a sync.Mutex back as mu, and each wait runs until the trade is let go,
+// which this test does only once it has failed.
 func TestAWaitBehindATradeEndsWithTheWaitersContext(t *testing.T) {
 	trading, release := make(chan struct{}), make(chan struct{})
 	rig := newSignInRig(t, func(n int, _ url.Values) (int, map[string]any) {

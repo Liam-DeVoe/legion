@@ -443,6 +443,7 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -638,6 +639,7 @@ jobs:
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -1655,6 +1657,7 @@ jobs:
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/testdata/**'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -1765,6 +1768,7 @@ jobs:
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'

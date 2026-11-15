@@ -551,8 +551,8 @@ func unwritable(t *testing.T, path string) (restore func()) {
 // fileHoldsTheHeldLogin reports whether b holds a credential other than the one whose refresh
 // token is old, and its machine file names that credential's refresh token.
 func fileHoldsTheHeldLogin(b *Broker, old string) bool {
-	b.lockCred()
-	defer b.unlockCred()
+	b.credMu.Lock()
+	defer b.credMu.Unlock()
 	held := b.cred.Load()
 	now, err := LoadMachineFile(b.MachineFile)
 	return err == nil && held != nil && now.RefreshToken == held.refreshToken && now.RefreshToken != old

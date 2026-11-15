@@ -170,9 +170,9 @@ func machineIdentityBroker(t *testing.T, f *enrolBroker) (*Broker, *ecdsa.Privat
 	}
 	t.Cleanup(b.Close)
 	credential := f.mint("credential-of-this-machine", key)
-	b.lockCred()
+	b.credMu.Lock()
 	b.installCredential(&machineCredential{key: key, id: credential, expiresAt: time.Now().Add(24 * time.Hour), gone: make(chan struct{})}, &loginState{State: "issued"})
-	b.unlockCred()
+	b.credMu.Unlock()
 	return b, key, credential
 }
 
@@ -255,9 +255,9 @@ func TestAMachineLoginsSessionStillStatesItsApprover(t *testing.T) {
 	}
 	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
-	b.lockCred()
+	b.credMu.Lock()
 	b.installCredential(&machineCredential{key: key, id: f.mint("credential-of-the-machine-login", key), expiresAt: time.Now().Add(24 * time.Hour), gone: make(chan struct{})}, &loginState{State: "issued"})
-	b.unlockCred()
+	b.credMu.Unlock()
 
 	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil); err != nil {
 		t.Fatal(err)

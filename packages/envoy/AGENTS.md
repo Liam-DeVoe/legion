@@ -5910,7 +5910,8 @@ nothing is saved, and the refresh is retried.
 A lost answer keeps the login only while a retry lands inside the broker's five-minute rotation grace:
 retrying every 15 s lands one there whenever the outage is shorter, and an outage longer than the grace right after a lost answer makes the next retry a reuse, which revokes the machine and ends its sessions.
 The cost is one request every 15 s per machine during an outage.
-A 401 `LAUNCHER_INVALID` on a launcher call drops the credential and wakes the loop, which refreshes the dropped login at once:
+A 401 `LAUNCHER_INVALID` on a launcher call drops the credential and wakes the loop, unless the call's bound ends while a refresh holds `credMu`, when it drops nothing and leaves that refresh to settle the login (`dropOutsideRefresh`, below);
+the loop refreshes a dropped login at once:
 `invalid_grant` deletes the file; an answer keeps the rotated login in it, since that 401 can also be a proof the broker could not verify;
 an answer whose save fails is installed, so the helper keeps working, and the file removed, as a refresh's is;
 while a login is unsaved, the settlement retries only its save before any refresh.
@@ -6054,6 +6055,7 @@ The bound sits under the 30 s this client gives one pass-through call (`passThro
 The bound holds against the helper's own work too: no lock the helper holds for that work outlives a caller's bound.
 A call that finds the box's sign-in trading (`brokerclient.SignInAuthority`, whose trade for a registered session's `enrollLoop` runs on a context with no deadline) waits for it only while its own context lives, and so does the drop a 401 `LAUNCHER_INVALID` makes behind a machine-login refresh that holds `credMu` (`dropOutsideRefresh`);
 that drop then drops nothing and the refresh settles the credential.
+Both locks are `internal/ctxlock` mutexes, whose `LockContext` takes a free lock at once, as `sync.Mutex` does, and otherwise waits only while its context lives.
 `TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading` and `TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin` hold one of each and read the timed-out answer inside the bound.
 A call that does run out of the bound ends the command: `machine login` against a broker slower than the bound exits 1 saying the call timed out, and since the bound cut the device authorization POST, `Broker.Login` records no pending login and starts no poll, so the next `machine login` starts a login of its own.
 

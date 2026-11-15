@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/ctxlock"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
@@ -155,14 +156,12 @@ type Broker struct {
 	login   atomic.Pointer[loginState] // most recent login: code, state
 	// credMu is held by whatever changes the held login and its machine file together: a login's
 	// save and install, a start's install, and a refresh from its request to its save and swap, so
-	// a refresh never races a login's install. Every save of the machine file runs under it. It is
-	// a one-slot channel, made at its first use (credOnce). Every holder takes it with lockCred and
-	// waits as long as it must, except a drop (dropOutsideRefresh), which takes it with
-	// lockCredWithin and gives up when its caller's context ends: clearOnInvalid's caller is a call
-	// a client waits on, and a refresh holds credMu for the whole of its token request, on the
-	// refresh loop's context, which has no deadline.
-	credOnce sync.Once
-	credMu   chan struct{}
+	// a refresh never races a login's install. Every save of the machine file runs under it. Every
+	// holder waits for it as long as it must, except a drop (dropOutsideRefresh), which gives up
+	// when its caller's context ends (LockContext): clearOnInvalid's caller is a call a client
+	// waits on, and a refresh holds credMu for the whole of its token request, on the refresh
+	// loop's context, which has no deadline.
+	credMu ctxlock.Mutex
 	// closed, set by Close under credMu, makes every later save of the machine file write nothing.
 	closed bool
 	// stateMu is held by every write of cred, login and dropped, and by LoginStatus while it reads
@@ -536,7 +535,7 @@ func (b *Broker) keepLogin(key *ecdsa.PrivateKey, tok *oauth2.Token, code, opera
 	f, err := machineFileFrom(key, tok)
 	var replaced *machineCredential
 	if err == nil {
-		b.lockCred()
+		b.credMu.Lock()
 		if err = b.saveFile(f); err == nil {
 			b.stateMu.Lock()
 			refused := b.refusedCred
@@ -546,7 +545,7 @@ func (b *Broker) keepLogin(key *ecdsa.PrivateKey, tok *oauth2.Token, code, opera
 				replaced = refused
 			}
 		}
-		b.unlockCred()
+		b.credMu.Unlock()
 	}
 	if err != nil {
 		b.logger().Error("machine login approved, but the helper could not keep it; run: agent-secrets machine login again", "error", err)
@@ -617,7 +616,7 @@ func (b *Broker) Start(ctx context.Context) error {
 		return err
 	}
 	kept := f.credential()
-	b.lockCred()
+	b.credMu.Lock()
 	bounded, cancel := context.WithTimeout(ctx, b.startRefreshBoundOrDefault())
 	next, refusal, err := b.redeem(bounded, kept)
 	cancel()
@@ -642,7 +641,7 @@ func (b *Broker) Start(ctx context.Context) error {
 			b.unsaveFile(installed, saveErr)
 		}
 	}
-	b.unlockCred()
+	b.credMu.Unlock()
 	if refusal == "" {
 		b.logger().Info("the helper resumed the machine login it kept", "credential_id", f.CredentialID,
 			"expires_at", f.ExpiresAt.Format(time.RFC3339), "machine_file", b.MachineFile)
@@ -676,9 +675,9 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 				return fmt.Errorf("the broker's token answer lacks a %s or an RFC 3339 %s, so this machine has no launcher credential to enrol sessions with", oauthwire.ExtraCredentialID, oauthwire.ExtraCredentialExpiresAt)
 			}
 			cred := &machineCredential{key: b.Identity.Key(), id: token.CredentialID, expiresAt: token.CredentialExpiresAt.UTC(), gone: make(chan struct{})}
-			b.lockCred()
+			b.credMu.Lock()
 			b.installCredential(cred, &loginState{State: "issued"})
-			b.unlockCred()
+			b.credMu.Unlock()
 			b.logger().Info("the helper traded this machine's identity for its launcher credential",
 				"credential_id", cred.id, "expires_at", cred.expiresAt.Format(time.RFC3339))
 			once.Do(func() { close(first) })
@@ -775,38 +774,9 @@ func (b *Broker) saveFile(f *MachineFile) error {
 // still finishing. A test's cleanup calls it; the helper never does, since a refresh answered
 // while the helper stops spends the old token, and the new one must reach the file.
 func (b *Broker) Close() {
-	b.lockCred()
-	defer b.unlockCred()
+	b.credMu.Lock()
+	defer b.credMu.Unlock()
 	b.closed = true
-}
-
-// lockCred takes credMu, waiting for as long as whatever holds it does.
-func (b *Broker) lockCred() { b.credLock() <- struct{}{} }
-
-// lockCredWithin takes credMu at once when it is free, and otherwise once its holder lets it go,
-// unless ctx ends first: then it reports false, holding nothing.
-func (b *Broker) lockCredWithin(ctx context.Context) bool {
-	lock := b.credLock()
-	select {
-	case lock <- struct{}{}:
-		return true
-	default:
-	}
-	select {
-	case lock <- struct{}{}:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-// unlockCred releases credMu, which lockCred or lockCredWithin took.
-func (b *Broker) unlockCred() { <-b.credMu }
-
-// credLock is credMu, made at its first use.
-func (b *Broker) credLock() chan struct{} {
-	b.credOnce.Do(func() { b.credMu = make(chan struct{}, 1) })
-	return b.credMu
 }
 
 // Logged when a rotated login's save fails: the file was removed (unsavedRemovedMsg), or the
@@ -1032,8 +1002,8 @@ func (b *Broker) removeRefusedFile() {
 // request. Holding no credential (a launcher refusal may have dropped it meanwhile), it does
 // nothing and returns errNoOutcome, which the loop must not read as a settled refresh.
 func (b *Broker) refresh(ctx context.Context) error {
-	b.lockCred()
-	defer b.unlockCred()
+	b.credMu.Lock()
+	defer b.credMu.Unlock()
 	cred := b.cred.Load()
 	if cred == nil {
 		return errNoOutcome
@@ -1077,8 +1047,8 @@ func (b *Broker) refresh(ctx context.Context) error {
 // learn, for the loop to retry. While cred is the unsaved login, it first retries only its save
 // and makes no token request until that save lands.
 func (b *Broker) settleRefused(ctx context.Context, cred *machineCredential) error {
-	b.lockCred()
-	defer b.unlockCred()
+	b.credMu.Lock()
+	defer b.credMu.Unlock()
 	if b.cred.Load() != nil {
 		return nil
 	}
@@ -1184,10 +1154,10 @@ func (b *Broker) dropOutsideRefresh(ctx context.Context, cred *machineCredential
 	if b.testBeforeDrop != nil {
 		b.testBeforeDrop()
 	}
-	if !b.lockCredWithin(ctx) {
+	if b.credMu.LockContext(ctx) != nil {
 		return false, b.HasCredential()
 	}
-	defer b.unlockCred()
+	defer b.credMu.Unlock()
 	return b.drop(cred, why, attrs...), b.HasCredential()
 }
 
@@ -1425,7 +1395,8 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 	b.logger().Warn("the broker refused the sign-in's launcher credential; enrolling under whatever authority this box has now",
 		"operator", authority.Operator, "credential_id", authority.CredentialID)
 	if err := b.SignIns.Refused(ctx, authority.CredentialID); err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, fmt.Errorf("wait for %s's sign-in on this machine, which another call holds while it trades, to drop the credential the broker refused (%s): %w",
+			authority.Operator, authority.CredentialID, err)
 	}
 	if authority, cred, err = b.enrolAuthority(ctx); err != nil {
 		return "", time.Time{}, err

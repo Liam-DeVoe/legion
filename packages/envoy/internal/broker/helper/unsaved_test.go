@@ -186,9 +186,9 @@ func TestContractASaveFailingThroughTwoRestartsRevokesNothing(t *testing.T) {
 		t.Fatalf("enroll-session-key: %+v", box)
 	}
 	ctx := context.Background()
-	cr.srv.Broker.lockCred()
+	cr.srv.Broker.credMu.Lock()
 	fullDisk(cr.srv.Broker)
-	cr.srv.Broker.unlockCred()
+	cr.srv.Broker.credMu.Unlock()
 	if err := cr.srv.Broker.refresh(ctx); err == nil {
 		t.Fatal("the refresh's save must fail on the full disk")
 	}
