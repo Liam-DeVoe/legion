@@ -1034,6 +1034,27 @@ describe("capture-spec", () => {
     expect(existsSync(path.join(dir, "plan.md"))).toBe(false);
     expect(JSON.parse(readFileSync(path.join(dir, "agent-texts.json"), "utf8"))).toEqual([]);
   });
+
+  // Catches: a capture that removes the plan.md or documents/ already in the run directory (it
+  // started from `rm`), or writes over an earlier capture's spec.md.
+  test("refuses a run directory that already holds what it writes, reads nothing, and keeps it", async () => {
+    const spec = dispatch.issue("LWEVAL-2");
+    const dir = runDir();
+    const given = fixture(dir, spec);
+    writeFileSync(path.join(dir, "plan.md"), "an earlier capture's plan\n");
+    mkdirSync(path.join(dir, "documents"));
+    writeFileSync(path.join(dir, "documents", "notes-md.md"), "an earlier capture's notes\n");
+    const calls = dispatch.calls.length;
+    await expect(seed.captureSpec(given, dir)).rejects.toThrow(
+      `capture-spec: ${path.join(dir, "documents")}, ${path.join(dir, "plan.md")} already in the run directory; the capture removes and replaces none of it`
+    );
+    expect(dispatch.calls.length).toBe(calls);
+    expect(readFileSync(path.join(dir, "plan.md"), "utf8")).toBe("an earlier capture's plan\n");
+    expect(readFileSync(path.join(dir, "documents", "notes-md.md"), "utf8")).toBe(
+      "an earlier capture's notes\n"
+    );
+    expect(existsSync(path.join(dir, "spec.md"))).toBe(false);
+  });
 });
 
 describe("tester-proof", () => {

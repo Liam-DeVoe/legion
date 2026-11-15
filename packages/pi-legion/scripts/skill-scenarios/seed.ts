@@ -97,7 +97,7 @@
 //                                          the asks and documents on the issue <file> names, as
 //                                          score.ts's askgateReview reads them (asks.json,
 //                                          artifacts.json in <run dir>)
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Actor, ArtifactBlock, Ask, AskOption } from "@legion/contracts";
 import { z } from "zod";
@@ -473,10 +473,27 @@ interface AgentText {
   created_at: string;
 }
 
-/** `capture-spec <file> <run dir>`: what the run left on its issue, for judge.ts and score.ts. */
+/** `capture-spec <file> <run dir>`: what the run left on its issue, for judge.ts and score.ts.
+ * Each path it writes in the run directory that is already there (an earlier capture's, or a file
+ * the run's agent wrote there) is refused before any read, naming each, and never removed or
+ * replaced. */
 export async function captureSpec(file: string, runDir: string): Promise<void> {
   const fixture = loadSpecFixture(file);
   const reader = { as: "agent" } as const;
+  const writes = [
+    "spec.md",
+    "spec-versions",
+    "spec-versions.json",
+    "agent-asks.json",
+    "agent-texts.json",
+    "documents",
+    "plan.md",
+  ].map((name) => path.join(runDir, name));
+  const taken = writes.filter((one) => lstatSync(one, { throwIfNoEntry: false }) !== undefined);
+  if (taken.length > 0)
+    throw new Error(
+      `capture-spec: ${taken.join(", ")} already in the run directory; the capture removes and replaces none of it`
+    );
   const out = (name: string, text: string) => writeFileSync(path.join(runDir, name), text);
   const json = (name: string, value: unknown) => out(name, `${JSON.stringify(value)}\n`);
 
@@ -552,8 +569,6 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
   );
 
   // Every other markdown document: plan.md on its own, the rest under documents/.
-  rmSync(path.join(runDir, "documents"), { recursive: true, force: true });
-  rmSync(path.join(runDir, "plan.md"), { force: true });
   mkdirSync(path.join(runDir, "documents"));
   const documents = ((await getIssue(fixture.issue, reader)).artifacts ?? []).filter(
     (artifact) => artifact.kind === "doc" && artifact.id !== fixture.spec_artifact

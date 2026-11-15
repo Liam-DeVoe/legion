@@ -545,27 +545,28 @@ test("every judge output reaches the run directory", () => {
 });
 
 test("a judge that writes no answer, or one that does not parse, fails the run naming the file", async () => {
-  const dir = runDir("spec-writing-head-2");
   const silent = fakeRunner([], (judge) =>
     path.basename(judge) === "decisions" ? ["other.json", {}] : answerFor(judge)
   );
-  await expect(judgeRun(dir, { runner: silent })).rejects.toThrow(
+  await expect(judgeRun(runDir("spec-writing-head-2"), { runner: silent })).rejects.toThrow(
     path.join(work, "judging", "spec-writing-head-2", "decisions", "decisions.json")
   );
+  // A run of its own: the judging above left its judge directories, which a judging refuses.
   const wrong = fakeRunner([], (judge) =>
     path.basename(judge) === "numbers"
       ? ["numbers.json", { rows: [{ id: "msg-1" }] }]
       : answerFor(judge)
   );
-  await expect(judgeRun(dir, { runner: wrong })).rejects.toThrow(
-    `${path.join(work, "judging", "spec-writing-head-2", "numbers", "numbers.json")} does not parse`
+  await expect(judgeRun(runDir("spec-writing-head-20"), { runner: wrong })).rejects.toThrow(
+    `${path.join(work, "judging", "spec-writing-head-20", "numbers", "numbers.json")} does not parse`
   );
 });
 
 // Each judge's answer must cover exactly what judge.ts gave it: a judge that leaves out, repeats or
 // invents an id fails the run, naming its file, as a judge that writes no answer does.
 test("a judge whose answer does not cover its input fails the run naming the file", async () => {
-  const dir = runDir("spec-writing-head-8");
+  // Each faulty judge is given a run of its own, since a judging refuses the judge directories an
+  // earlier one left.
   const faulty: Record<string, [string, unknown]> = {
     // The approved spec, v3, holds R1 and R2.
     checkable: [
@@ -600,12 +601,13 @@ test("a judge whose answer does not cover its input fails the run naming the fil
     preamble: ["rows for source it was not given: documents/other.md"],
     findings: ["rows for check it was not given: 3"],
   };
-  for (const [name, answer] of Object.entries(faulty)) {
+  for (const [index, [name, answer]] of Object.entries(faulty).entries()) {
+    const run = `spec-writing-head-8${index}`;
     const runner = fakeRunner([], (judge) =>
       path.basename(judge) === name ? answer : answerFor(judge)
     );
-    const file = path.join(work, "judging", "spec-writing-head-8", name, answer[0]);
-    const failed = await judgeRun(dir, { runner }).then(
+    const file = path.join(work, "judging", run, name, answer[0]);
+    const failed = await judgeRun(runDir(run), { runner }).then(
       () => "",
       (error: Error) => error.message
     );
@@ -730,4 +732,77 @@ test("each prompt that reads messages.md says only an anchored comment's leading
     expect(prompt).not.toContain("A line that starts with `>` quotes the spec");
     expect(prompt).not.toContain("directly after a `<!-- comment <time> -->` line");
   }
+});
+
+// judge.ts removes and replaces nothing an earlier judging left: a second judging of a run, or of
+// a turn, is refused before any judge starts, naming what is there, and each of it is kept as it
+// was. `rig.sh judge` run twice on one run had its first judging's directories removed and its
+// answers written over.
+test("a second judging of a run is refused before any judge starts, and the first judging is kept", async () => {
+  const dir = runDir("spec-writing-head-41");
+  await judgeRun(dir, { runner: fakeRunner([]) });
+  const faults = path.join(dir, "faults.json");
+  const judge = path.join(work, "judging", "spec-writing-head-41", "faults");
+  const [kept, keptJudge] = [readFileSync(faults, "utf8"), readdirSync(judge).sort()];
+  writeFileSync(path.join(judge, "notes.md"), "read before judging again\n");
+  const again: Seen[] = [];
+  const refused = await judgeRun(dir, { runner: fakeRunner(again) }).then(
+    () => "",
+    (error: Error) => error.message
+  );
+  expect(refused).toStartWith(`judge.ts: ${faults}, `);
+  expect(refused).toContain(`, ${judge}, `);
+  expect(refused).toEndWith(
+    " from an earlier judging; judge.ts removes and replaces none of it: move it aside to judge again"
+  );
+  expect(again).toEqual([]);
+  expect(readFileSync(faults, "utf8")).toBe(kept);
+  expect(readdirSync(judge).sort()).toEqual([...keptJudge, "notes.md"].sort());
+});
+
+test("a second answer of a turn is refused before any judge starts, and the first answers are kept", async () => {
+  const dir = runDir("spec-writing-head-42");
+  await answerTurn(dir, 1, { runner: fakeRunner([]) });
+  const answers = path.join(dir, "answers-1.jsonl");
+  const kept = readFileSync(answers, "utf8");
+  const again: Seen[] = [];
+  await expect(answerTurn(dir, 1, { runner: fakeRunner(again) })).rejects.toThrow(
+    `judge.ts: ${answers}, ${path.join(work, "judging", "spec-writing-head-42", "answer-1-1")}, `
+  );
+  expect(again).toEqual([]);
+  expect(readFileSync(answers, "utf8")).toBe(kept);
+});
+
+// A judge directory that appears after the check, while an earlier judge of the judging runs, is
+// neither entered nor replaced: the judging fails on it, and it keeps what it held.
+test("a judge directory that appears while the judging runs is kept, and the judging fails", async () => {
+  const dir = runDir("spec-writing-head-43");
+  const later = path.join(work, "judging", "spec-writing-head-43", "answer-1-2");
+  const runner = fakeRunner([], (judge) => {
+    if (path.basename(judge) === "answer-1-1") {
+      mkdirSync(later);
+      writeFileSync(path.join(later, "notes.md"), "not this judging's\n");
+    }
+    return answerFor(judge);
+  });
+  await expect(answerTurn(dir, 1, { runner, parallel: 1 })).rejects.toThrow(later);
+  expect(readdirSync(later)).toEqual(["notes.md"]);
+  expect(existsSync(path.join(dir, "answers-1.jsonl"))).toBe(false);
+});
+
+// An answer file that appears in the run directory while the judges run is not written over.
+test("an answer file that appears while the judges run is kept, and the judging fails naming it", async () => {
+  const turn = runDir("spec-writing-head-44");
+  const answers = path.join(turn, "answers-1.jsonl");
+  const planting = (file: string) =>
+    fakeRunner([], (judge) => {
+      if (!existsSync(file)) writeFileSync(file, "not this judging's\n");
+      return answerFor(judge);
+    });
+  await expect(answerTurn(turn, 1, { runner: planting(answers) })).rejects.toThrow(answers);
+  expect(readFileSync(answers, "utf8")).toBe("not this judging's\n");
+  const run = runDir("spec-writing-head-45");
+  const shared = path.join(run, "shared-runs.json");
+  await expect(judgeRun(run, { runner: planting(shared) })).rejects.toThrow(shared);
+  expect(readFileSync(shared, "utf8")).toBe("not this judging's\n");
 });

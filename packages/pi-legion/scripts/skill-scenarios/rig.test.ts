@@ -2,9 +2,11 @@ import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -438,6 +440,33 @@ describe("a setup that fails after install_model_route", () => {
     expect(existsSync(path.join(dir, "bare/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "ready"))).toBe(false);
   });
+
+  // Catches: a judge-profile build that removes the unready build an earlier call left (its
+  // install.log says why that call failed) and builds over it.
+  test("judge_profiles refuses an unready build an earlier call left, and keeps it", () => {
+    const work = freshDir("judge-route-unready");
+    const co = checkout();
+    const script = [
+      "set -euo pipefail",
+      ...["fail", "on_exit", "drop_unready_keys", "install_model_route", "judge_profiles"].map(fn),
+      "checkout_commit() { printf 'fixture parents=base\\n'; }",
+      "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
+    ].join("\n");
+    writeFileSync(
+      path.join(co, "scripts/e2e/lib/omp-home.sh"),
+      'make_omp_home() { [ "$(basename "$(dirname "$1")")" != bare ] || { echo "no home for bare" >&2; return 1; }; mkdir -p "$1/.omp"; }\n'
+    );
+    expect(bash(script, [co, work], routeEnv()).code).toBe(1);
+    const dir = path.join(work, "judge-profiles");
+    writeFileSync(path.join(dir, "ste", "operator-notes"), "read before the rebuild\n");
+    const before = treeDigest(dir);
+    const again = bash(script, [co, work], routeEnv());
+    expect(again.code).toBe(1);
+    expect(again.stderr).toContain(
+      `judge-omp: ${dir} holds a judge-profile build an earlier call left unready (no ${dir}/ready)`
+    );
+    expect(treeDigest(dir)).toBe(before);
+  });
 });
 
 /** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., in an
@@ -458,6 +487,23 @@ function freshDir(name: string): string {
   const dir = path.join(work, `${name}-${++dirs}`);
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+/** A digest of the tree at DIR: each entry's path below DIR, its kind and mode, and a file's bytes
+ * or a link's target, walked in byte order, so a tree one entry, byte or mode apart digests apart. */
+function treeDigest(dir: string): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  const walk = (below: string) => {
+    const entry = path.join(dir, below);
+    const stat = lstatSync(entry);
+    hasher.update(`${below}\0${stat.mode}\0`);
+    if (stat.isSymbolicLink()) hasher.update(readlinkSync(entry));
+    else if (stat.isFile()) hasher.update(readFileSync(entry));
+    else if (stat.isDirectory())
+      for (const name of readdirSync(entry).sort()) walk(path.join(below, name));
+    hasher.update("\0");
+  };
+  walk(".");
+  return hasher.digest("hex");
 }
 
 // cmd_profile records the label's commit in built-from with checkout_commit. A git worktree holds
@@ -604,8 +650,8 @@ describe("omp_ancestor", () => {
   });
 });
 
-// A spec-writing or spec-rewrite batch takes one run, numbered one above the highest run of its
-// scenario and label, so a later batch never removes an earlier run (cmd_run starts from rm -rf).
+// Every batch numbers each label's runs from one above the label's highest run, live or archived,
+// so a later batch never takes an earlier run's name (cmd_run refuses one, archive_run keeps one).
 describe("next_run", () => {
   const next = (work: string, scenario: string, label: string) =>
     bash(`${fn("next_run")}\nwork=$1\nnext_run "$2" "$3"`, [work, scenario, label]);
@@ -643,10 +689,114 @@ describe("next_run", () => {
   });
 });
 
-// Each serial run's exit removes what the run made at the top of the machine's shared scratch,
-// by the record scratch_before took when it started, and records it for health.ts; anything that
-// was there before the run, a previous batch's file included, stays. Each row stands a directory
-// of its own in for /tmp (shared_scratch).
+// Two batches of one scenario in a row, each `rig.sh batch <scenario> 1 head`, with the batch's
+// services stubbed as the services rows below stub them (both URLs given, so no container) and a
+// rig.sh of the row's own standing in for `rig.sh run`: it logs the run's name and leaves the
+// run's directory in the archive, as a real run that ended does. Before every batch was numbered,
+// a batch of any scenario but spec-writing and spec-rewrite started at 1 every time, so the second
+// batch's run 1 took the first batch's name, and archive_run replaced the healthy archived run 1.
+describe("cmd_batch numbering", () => {
+  /** One batch of `scenario`, one run of label head, in the work directory `work`. */
+  function batch(work: string, scenario: string, env: Record<string, string> = {}) {
+    const here = path.join(work, "rig");
+    mkdirSync(here, { recursive: true });
+    writeFileSync(
+      path.join(here, "rig.sh"),
+      [
+        "# rig.sh run <scenario> <label> <n> <index> <start>, as cmd_batch's xargs starts it.",
+        "set -euo pipefail",
+        '[ "$1" = run ]',
+        `name=$2\${SKILL_SCENARIOS_ASKGATE_CASE:+-$SKILL_SCENARIOS_ASKGATE_CASE}-$3-$4`,
+        'mkdir -p "$WORK/archive/runs"',
+        'mkdir "$WORK/archive/runs/$name"',
+        'printf \'%s\\n\' "$name" >>"$WORK/runs.log"',
+        "",
+      ].join("\n")
+    );
+    return bash(
+      [
+        "set -euo pipefail",
+        ...[
+          "fail",
+          "note",
+          "on_exit",
+          "given_services",
+          "safe_url",
+          "services_files",
+          "lock_services",
+          "services_up",
+          "services_down",
+          "next_run",
+          "scenario_case",
+          "askgate_case",
+          "reviewer_case",
+          "threads_case",
+          "cmd_batch",
+        ].map(fn),
+        "load_label() { :; }",
+        "push_guard() { :; }",
+        "require_namespace() { :; }",
+        "stop_batch() { services_down; }",
+        "stop_tree() { :; }",
+        'until_true() { shift 2; "$@"; }',
+        "pg_sql() { printf '%s\\n' 100; }",
+        "nats_ready() { :; }",
+        'start_listener() { envoy_port=4100; : >"$work/listener.port"; }',
+        'go() { : >"$3"; }',
+        "work=$1 here=$2 root=$3 tag=rig-test containers=()",
+        "services_env=$work/services/env",
+        "services_postgres=$work/services/postgres-url",
+        'cmd_batch "$4" 1 head',
+      ].join("\n"),
+      [work, here, root, scenario],
+      {
+        WORK: work,
+        SKILL_SCENARIOS_PARALLEL: "1",
+        SKILL_SCENARIOS_POSTGRES_URL: "postgres://rig@127.0.0.1:5432/postgres",
+        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+        ...env,
+      }
+    );
+  }
+
+  // Catches: a batch of a scenario other than spec-writing and spec-rewrite numbered from 1, which
+  // gave the second batch's run the first batch's name, and a batch whose teardown leaves a file
+  // of its services that refuses the next batch (lock_services).
+  test("two batches of a scenario in a row number their runs 1 and 2", () => {
+    const work = freshDir("batch-numbering");
+    for (const _ of [1, 2])
+      expect(batch(work, "ask-on-message")).toMatchObject({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(work, "runs.log"), "utf8")).toBe(
+      "ask-on-message-head-1\nask-on-message-head-2\n"
+    );
+    expect(readdirSync(path.join(work, "archive", "runs")).sort()).toEqual([
+      "ask-on-message-head-1",
+      "ask-on-message-head-2",
+    ]);
+  });
+
+  // Catches: numbering that reads the scenario's runs without the case every run name of a cased
+  // scenario carries, which finds none and starts at 1 again, and numbering that counts another
+  // case's runs as this case's.
+  test("a cased scenario's batches are numbered within their case", () => {
+    const work = freshDir("batch-numbering-case");
+    mkdirSync(path.join(work, "archive", "runs", "askgate-facts-head-4"), { recursive: true });
+    for (const _ of [1, 2])
+      expect(batch(work, "askgate", { SKILL_SCENARIOS_ASKGATE_CASE: "link" })).toMatchObject({
+        code: 0,
+        stderr: "",
+      });
+    expect(readFileSync(path.join(work, "runs.log"), "utf8")).toBe(
+      "askgate-link-head-1\naskgate-link-head-2\n"
+    );
+  });
+});
+
+// Each serial run's exit records what appeared at the top of the machine's shared scratch while
+// it ran, by the record scratch_before took when it started, for health.ts, and deletes nothing
+// there: what appeared may be anything else this user ran meanwhile, and the run's agent writes
+// its own /tmp under the run (launch). Each row stands a directory of its own in for /tmp
+// (shared_scratch).
 describe("scratch_clean", () => {
   function cleaned(parallel: string) {
     const shared = freshDir("shared-scratch");
@@ -669,12 +819,13 @@ describe("scratch_clean", () => {
     return { shared, R, result };
   }
 
-  // Catches: a file one run leaves in /tmp still there when the next starts, and an entry from
-  // before the run deleted with the run's own.
-  test("a serial run's files leave the shared scratch, and what was there before it stays", () => {
+  // Catches: a record that misses what the run's time added, or that names what was there before
+  // it, and a cleanup that deletes what appeared, which may be another process's of this user.
+  test("a serial run records what appeared in the shared scratch, and removes nothing there", () => {
     const { shared, R, result } = cleaned("1");
     expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
-    expect(readdirSync(shared)).toEqual(["pre-batch.json"]);
+    expect(readdirSync(shared).sort()).toEqual(["LWEVAL-1-review.json", "a-dir", "pre-batch.json"]);
+    expect(readFileSync(path.join(shared, "a-dir", "inside"), "utf8")).toBe("run\n");
     expect(
       readFileSync(path.join(R, "scratch-created.txt"), "utf8")
         .split("\n")
@@ -684,12 +835,14 @@ describe("scratch_clean", () => {
     ).toEqual([path.join(shared, "LWEVAL-1-review.json"), path.join(shared, "a-dir")]);
   });
 
-  // Catches: a cleanup at a parallelism above 1, which would delete files a concurrent run is
-  // still using and record them as this run's.
-  test("runs side by side leave the shared scratch as it is, and say so", () => {
+  // Catches: a record at a parallelism above 1, which would name a concurrent run's files as this
+  // run's.
+  test("runs side by side leave the shared scratch as it is, record nothing, and say so", () => {
     const { shared, R, result } = cleaned("2");
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("only serial runs (SKILL_SCENARIOS_PARALLEL=1) clean");
+    expect(result.stdout).toContain(
+      "only serial runs (SKILL_SCENARIOS_PARALLEL=1) record what a run made there"
+    );
     expect(readdirSync(shared).sort()).toEqual(["LWEVAL-1-review.json", "a-dir", "pre-batch.json"]);
     expect(existsSync(path.join(R, "scratch-created.txt"))).toBe(false);
   });
@@ -700,22 +853,64 @@ describe("scratch_clean", () => {
 // push refused, read the pointer files of runs that had ended).
 describe("archive_run", () => {
   const archive = (work: string, R: string) =>
-    bash(`${fn("archive_run")}\nwork=$1 R=$2\narchive_run`, [work, R]);
+    bash(`${fn("fail")}\n${fn("archive_run")}\nwork=$1 R=$2\narchive_run`, [work, R]);
 
-  // Catches: a run left in runs/ when it ends, and a rerun's archive nested inside the archived
-  // run of its name rather than replacing it, as cmd_run replaces a run in runs/.
-  test("a run that ended leaves runs/ for the archive, replacing the archived run of its name", () => {
+  // Catches: a run left in runs/ when it ends, and a sibling moved with it.
+  test("a run that ended leaves runs/ for the archive", () => {
     const work = freshDir("archive");
     const R = path.join(work, "runs", "threads-closed-text-fixes-head-1");
     mkdirSync(path.join(R, "sessions"), { recursive: true });
     writeFileSync(path.join(R, "out.txt"), "exit=0\n");
     mkdirSync(path.join(work, "runs", "threads-closed-text-fixes-head-2"));
-    const archived = path.join(work, "archive", "runs", "threads-closed-text-fixes-head-1");
-    mkdirSync(archived, { recursive: true });
-    writeFileSync(path.join(archived, "earlier"), "");
+    const before = treeDigest(R);
     expect(archive(work, R)).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(readdirSync(path.join(work, "runs"))).toEqual(["threads-closed-text-fixes-head-2"]);
-    expect(readdirSync(archived).sort()).toEqual(["out.txt", "sessions"]);
+    expect(treeDigest(path.join(work, "archive", "runs", "threads-closed-text-fixes-head-1"))).toBe(
+      before
+    );
+  });
+
+  // Catches: an archive that removes the archived run of the run's name and moves the new run
+  // there (a second batch of one scenario deleted the first batch's healthy run 1 so, and put its
+  // own failed run 1 in its place, with exit 0), or nests the new run inside it.
+  test("an archived run of the run's name is refused, named, and kept byte for byte, and the run stays in runs/", () => {
+    const work = freshDir("archive-taken");
+    const R = path.join(work, "runs", "ask-on-message-head-1");
+    mkdirSync(path.join(R, "sessions"), { recursive: true });
+    writeFileSync(path.join(R, "out.txt"), "a failed run\nexit=1\n");
+    const archived = path.join(work, "archive", "runs", "ask-on-message-head-1");
+    mkdirSync(path.join(archived, "sessions"), { recursive: true });
+    writeFileSync(path.join(archived, "out.txt"), "a healthy run\nexit=0\n");
+    writeFileSync(path.join(archived, "sessions", "s.jsonl"), '{"type":"session"}\n');
+    const [archivedBefore, runBefore] = [treeDigest(archived), treeDigest(R)];
+    const result = archive(work, R);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe(
+      `skill-scenarios: archive_run: run ask-on-message-head-1 is already archived at ${archived}; neither is removed or replaced, and this run stays at ${R}\n`
+    );
+    expect(treeDigest(archived)).toBe(archivedBefore);
+    expect(treeDigest(R)).toBe(runBefore);
+  });
+
+  // Catches: a move onto an archived run that appeared after the check above, which `mv` would
+  // nest the run inside (or, for an empty one, replace). The `mv` here makes that run first.
+  test("an archived run that appears after the check is neither entered nor replaced, and the run stays", () => {
+    const work = freshDir("archive-race");
+    const R = path.join(work, "runs", "ask-on-message-head-1");
+    mkdirSync(R, { recursive: true });
+    writeFileSync(path.join(R, "out.txt"), "exit=1\n");
+    const archived = path.join(work, "archive", "runs", "ask-on-message-head-1");
+    const result = bash(
+      `${fn("fail")}\n${fn("archive_run")}\nmv() { mkdir -p "\${@: -1}" && echo earlier >"\${@: -1}/out.txt" && command mv "$@"; }\nwork=$1 R=$2\narchive_run`,
+      [work, R]
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `skill-scenarios: archive_run: run ask-on-message-head-1 could not move to ${archived}; nothing there is removed or replaced, and this run stays at ${R}`
+    );
+    expect(readdirSync(archived)).toEqual(["out.txt"]);
+    expect(readFileSync(path.join(archived, "out.txt"), "utf8")).toBe("earlier\n");
+    expect(readFileSync(path.join(R, "out.txt"), "utf8")).toBe("exit=1\n");
   });
 
   // Catches: a live read's directory, which is no run of runs/, moved with the runs.
@@ -726,6 +921,97 @@ describe("archive_run", () => {
     expect(archive(work, R).code).toBe(0);
     expect(existsSync(R)).toBe(true);
     expect(existsSync(path.join(work, "archive"))).toBe(false);
+  });
+});
+
+// A run or a live read never replaces an earlier one of its name: each is refused before its exit
+// handler is set (that handler stops the processes of its directory and archives it), naming the
+// directory, which stays byte for byte as it was.
+describe("a run or live read of a name already taken", () => {
+  /** A work directory holding, at `taken` below it, an earlier run with a transcript of its own. */
+  function takenWork(taken: string) {
+    const work = freshDir("taken");
+    const dir = path.join(work, taken);
+    mkdirSync(path.join(dir, "sessions"), { recursive: true });
+    writeFileSync(path.join(dir, "out.txt"), "an earlier run\nexit=0\n");
+    writeFileSync(path.join(dir, "sessions", "s.jsonl"), '{"type":"session"}\n');
+    mkdirSync(path.join(work, "services"));
+    writeFileSync(path.join(work, "services", "env"), "");
+    mkdirSync(path.join(work, "profiles", "head"), { recursive: true });
+    return { work, dir, digest: treeDigest(dir) };
+  }
+  const stubs = [
+    "load_label() { P=$work/profiles/$1; co=$work/checkout; }",
+    "push_guard() { :; }",
+    "require_namespace() { :; }",
+    "scratch_before() { :; }",
+    'stop_run() { echo stop_run >>"$work/stopped"; }',
+  ];
+  const run = (work: string) =>
+    bash(
+      [
+        ...[
+          "fail",
+          "on_exit",
+          "scenario_case",
+          "askgate_case",
+          "reviewer_case",
+          "threads_case",
+          "cmd_run",
+        ].map(fn),
+        ...stubs,
+        "work=$1 services_env=$1/services/env",
+        "cmd_run ask-on-message head 3 1 100",
+      ].join("\n"),
+      [work]
+    );
+
+  // Catches: a run that removes the live run of its name (cmd_run started from `rm -rf`), or sets
+  // the exit handler that would stop and archive that run's directory.
+  test("a run whose name a live run holds is refused, and the live run is kept", () => {
+    const { work, dir, digest } = takenWork("runs/ask-on-message-head-3");
+    const result = run(work);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `skill-scenarios: run ask-on-message-head-3 could not be made at ${dir} (mkdir says why above); a run never replaces another`
+    );
+    expect(treeDigest(dir)).toBe(digest);
+    expect(existsSync(path.join(work, "stopped"))).toBe(false);
+  });
+
+  // Catches: a run whose archived name it takes, which runs and then cannot be archived, or
+  // replaces the archived run when it ends.
+  test("a run whose name an archived run holds is refused before it makes its directory", () => {
+    const { work, dir, digest } = takenWork("archive/runs/ask-on-message-head-3");
+    const result = run(work);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe(
+      `skill-scenarios: run ask-on-message-head-3 is already archived at ${dir}; a run never replaces another (a batch numbers its runs above each label's highest)\n`
+    );
+    expect(treeDigest(dir)).toBe(digest);
+    expect(existsSync(path.join(work, "runs", "ask-on-message-head-3"))).toBe(false);
+    expect(existsSync(path.join(work, "stopped"))).toBe(false);
+  });
+
+  // Catches: a live read that removes the earlier live read of its label (it started from
+  // `rm -rf`).
+  test("a live read of a label whose earlier live read is there is refused, and the earlier one is kept", () => {
+    const { work, dir, digest } = takenWork("live-read/head");
+    const result = bash(
+      [
+        ...["fail", "on_exit", "cmd_live_read"].map(fn),
+        ...stubs,
+        "work=$1",
+        "cmd_live_read head dispatch",
+      ].join("\n"),
+      [work]
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `skill-scenarios: live-read: ${dir} could not be made (mkdir says why above); an earlier live read of label head is never replaced`
+    );
+    expect(treeDigest(dir)).toBe(digest);
+    expect(existsSync(path.join(work, "stopped"))).toBe(false);
   });
 });
 
@@ -4902,6 +5188,25 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     }
   });
 
+  // Catches: a judge that truncates an earlier judge's out.txt or judge-model.txt in its
+  // directory, or removes the key directory beside it that a judge killed outright left. Each is
+  // refused before anything else of the judge runs (so these rows need no Docker), and kept.
+  test("refuses a directory an earlier judge left its output, model record or key directory in, and keeps each", () => {
+    for (const leftover of ["out.txt", "judge-model.txt", ".key"]) {
+      const dir = judgeDir();
+      const file =
+        leftover === ".key" ? path.join(`${dir}.key`, "token") : path.join(dir, leftover);
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, "an earlier judge's\n");
+      const result = judge("ste", dir);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr.toString()).toContain(
+        `judge-omp: ${leftover === ".key" ? `${dir}.key` : file} is there from an earlier judge of ${dir}; nothing of it is removed or replaced`
+      );
+      expect(readFileSync(file, "utf8")).toBe("an earlier judge's\n");
+    }
+  });
+
   // The gateway route with the real installer and key command, and a stand-in hawk-token first on
   // PATH that mints a JWT and counts each mint. The key command needs the operator's home and
   // session bus, so it runs on the host; the container gets only the token it printed.
@@ -5775,35 +6080,80 @@ docker() {
     }
   });
 
-  function down(env: Record<string, string>) {
-    const S = freshDir("services-down");
-    for (const file of ["env", "postgres-url", "up"]) writeFileSync(path.join(S, file), "");
+  /** The files a batch's services make (rig.sh's services_files), under S and the work directory. */
+  const SERVICES_FILES = ["env", "postgres-url", "envoy-token", "dispatch-token", "envoy-listener"];
+  /** services_up and the stubs its rows run it on, for a row that tears down after it. */
+  const upStubs = `${fn("note")}\n${fn("fail")}\n${fn("safe_url")}\n${fn("services_up")}\n${stubs}\nroot=${root}`;
+  /** A work directory whose services directory holds every file a batch made (SERVICES_FILES,
+   * the listener's port file and the lock), then services_down, with `prelude` run first. */
+  function down(env: Record<string, string>, prelude = "") {
+    const work = freshDir("services-down");
+    const S = path.join(work, "services");
+    mkdirSync(S);
+    for (const file of [...SERVICES_FILES, "up"]) writeFileSync(path.join(S, file), "");
+    writeFileSync(path.join(work, "listener.port"), "4100\n");
     const result = bash(
-      `${fn("given_services")}\n${fn("services_down")}\nstop_tree() { printf 'stop_tree %s\\n' "$*" >>"$S/stopped"; }\ndocker() { printf 'docker %s\\n' "$*" >>"$S/docker-calls"; }\nS=$1 tag=rig-test\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nlistener_pid=4242\nservices_down`,
-      [S],
+      `${fn("given_services")}\n${fn("services_files")}\n${fn("services_down")}\nstop_tree() { printf 'stop_tree %s\\n' "$*" >>"$S/stopped"; }\ndocker() { printf 'docker %s\\n' "$*" >>"$S/docker-calls"; }\nwork=$1 S=$1/services tag=rig-test containers=()\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nlistener_pid=4242\n${prelude}\nservices_down`,
+      [work],
       env
     );
-    return { S, ...result };
+    return { S, work, ...result };
   }
 
-  // Catches: a teardown that removes a server it was given, or the databases on it.
+  // Catches: a teardown that removes a server it was given, or the databases on it, and one that
+  // leaves a file of the batch's services there, which the next batch's lock would then refuse.
   test("both URLs set: the listener stops, the batch's own files go, and no docker runs", () => {
-    const { S, code } = down(given);
+    const { S, work, code } = down(given);
     expect(code).toBe(0);
     expect(existsSync(path.join(S, "docker-calls"))).toBe(false);
     expect(readFileSync(path.join(S, "stopped"), "utf8")).toBe("stop_tree 4242\n");
-    for (const file of ["env", "postgres-url", "up"]) {
-      expect(existsSync(path.join(S, file))).toBe(false);
-    }
+    expect(readdirSync(S)).toEqual(["stopped"]);
+    expect(existsSync(path.join(work, "listener.port"))).toBe(false);
   });
 
   // Catches: a teardown that leaves the batch's own containers running.
-  test("neither URL: the batch's two containers are removed", () => {
-    const { S, code } = down({});
+  test("neither URL: the two containers services_up started are the two services_down removes", () => {
+    const { S, code } = down({}, `${upStubs}\nservices_up >/dev/null`);
     expect(code).toBe(0);
-    expect(readFileSync(path.join(S, "docker-calls"), "utf8")).toBe(
-      "docker rm -fv rig-test-nats rig-test-pg\n"
+    expect(
+      readFileSync(path.join(S, "docker-calls"), "utf8")
+        .split("\n")
+        .filter((line) => line.startsWith("docker rm"))
+    ).toEqual(["docker rm -fv rig-test-pg rig-test-nats"]);
+  });
+
+  // Catches: a teardown that removes containers by their names alone, which removed an earlier
+  // batch's container whose name the batch's own `docker run` could not take.
+  test("a container docker refused to start under the batch's name is not removed", () => {
+    const { S, code } = down(
+      {},
+      `${upStubs}\ndocker() { printf 'docker %s\\n' "$*" >>"$S/docker-calls"; case "$1 $*" in run*rig-test-pg*) echo 'Conflict. The container name "/rig-test-pg" is already in use' >&2; return 125 ;; esac; }\nset -e\ntrap services_down EXIT\nservices_up`
     );
+    expect(code).toBe(125);
+    const calls = readFileSync(path.join(S, "docker-calls"), "utf8").split("\n");
+    expect(calls.filter((line) => line.startsWith("docker run")).length).toBe(1);
+    expect(calls.filter((line) => line.startsWith("docker rm"))).toEqual([]);
+  });
+
+  // Catches: a batch that takes the lock over the files a batch killed outright left, and then
+  // overwrites or removes them (services_up writes each, services_down removes each).
+  test("a file an earlier batch left is refused, named, and kept, and the lock is not held", () => {
+    const work = freshDir("services-lock");
+    const S = path.join(work, "services");
+    mkdirSync(S);
+    writeFileSync(path.join(S, "envoy-token"), "an earlier batch's token\n");
+    writeFileSync(path.join(work, "listener.port"), "4100\n");
+    const result = bash(
+      `${fn("fail")}\n${fn("services_files")}\n${fn("lock_services")}\nwork=$1 tag=rig-test\nservices_env=$work/services/env\nservices_postgres=$work/services/postgres-url\nlock_services`,
+      [work]
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `an earlier batch left ${S}/envoy-token ${work}/listener.port; a batch replaces no earlier batch's file`
+    );
+    expect(readFileSync(path.join(S, "envoy-token"), "utf8")).toBe("an earlier batch's token\n");
+    expect(readFileSync(path.join(work, "listener.port"), "utf8")).toBe("4100\n");
+    expect(readdirSync(S).sort()).toEqual(["envoy-token", "logs"]);
   });
 });
 

@@ -331,7 +331,8 @@ Replays skill scenarios on real agents, to compare two versions of a skill. Each
 checkout's packed plugin in an isolated Oh My Pi home (`rig.sh profile <label> <checkout>`); each
 run is one fresh `omp -p` agent given one task a skill rule governs, scored afterwards from what the
 stand-ins and the scratch Dispatch recorded (`rig.sh score`). `rig.sh live-read <label> <skill>...`
-has one session read every file of a skill and reports whether each arrived whole.
+has one session read every file of a skill and reports whether each arrived whole; it writes
+`$SKILL_SCENARIOS_WORK/live-read/<label>` and refuses a label whose earlier live read is still there.
 
 ```bash
 cd packages/pi-legion/scripts/skill-scenarios
@@ -344,13 +345,17 @@ LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic ./rig.sh profile head <checkout
 ./rig.sh score
 ```
 
+A batch numbers each label's runs from one above that label's highest run of the scenario (and
+case), live or archived, so `rig.sh batch ask-on-message 1 head` twice gives
+`ask-on-message-head-1` and then `ask-on-message-head-2`.
+
 The spec-writing and spec-rewrite scenarios measure how an agent writes a Dispatch spec:
 
 ```bash
 bun fetch-spec-sources.ts --out "$SKILL_SCENARIOS_WORK/sources" <issue key | dispatch://PROJECT/artifact/slug>
 SKILL_SCENARIOS_SUPERPOWERS=<superpowers plugin> ./rig.sh profile main <checkout>
 SKILL_SCENARIOS_SOURCE=<directory under sources/> ./rig.sh batch spec-writing 1 main
-./rig.sh judge "$SKILL_SCENARIOS_WORK"/archive/runs/spec-writing-main-1
+./rig.sh judge "$SKILL_SCENARIOS_WORK"/archive/runs/spec-writing-main-<n>
 ./rig.sh score spec-writing
 ```
 
@@ -394,9 +399,23 @@ nothing: `rig.sh run`, `batch` and `live-read` probe it first and exit 1 naming 
 the rig's namespace tests skip there with that text. When a run ends, the rig moves its directory
 from `$SKILL_SCENARIOS_WORK/runs/<run>` to `$SKILL_SCENARIOS_WORK/archive/runs/<run>`;
 `rig.sh score` reads both directories, and `rig.sh judge` and `rig.sh health` take a run in
-either. At `SKILL_SCENARIOS_PARALLEL=1` a run's exit also deletes what the run left at the top of
-the machine's `/tmp`, by the entries it recorded there when it started, and never anything that was
-there before. A run's pushes meet the push guard a Legion pod's do: where the `git` on the
+either. No run removes or replaces another: a run whose name a live or archived run holds is
+refused before it starts, and a run whose name the archive took while it ran is refused at its
+end, naming both paths, and stays in `runs/`. The rig deletes only what the same run or command
+made, and refuses a file an earlier one left where it would write: a batch refuses the services
+files a batch killed outright left (`services/env`, its tokens, the built listener and
+`listener.port`) and removes only the containers it started; `judge-omp` refuses a directory
+holding an earlier judge's `out.txt` or `judge-model.txt`, or the key directory beside it; a
+judge-profile build an earlier call left unready is refused until removed; `rig.sh judge`
+(`judge.ts`) refuses, before any judge starts, a run whose judge directories under
+`$SKILL_SCENARIOS_WORK/judging/<run>/` or whose answer files (`answers-<turn>.jsonl`, and
+`faults.json` to `shared-runs.json`) an earlier judging left, naming each, so a run is judged
+again once those are moved aside; and `seed.ts capture-spec` refuses a run directory that already
+holds what it writes (`spec.md`, `plan.md`, `documents/` and the rest). The one exception is the
+gateway key command's cached token, which a judge drops to mint one that outlives it. At
+`SKILL_SCENARIOS_PARALLEL=1` a run's exit also records what appeared at the top of the machine's
+`/tmp` while it ran, by the entries it recorded there when it started, and deletes none of it. A
+run's pushes meet the push guard a Legion pod's do: where the `git` on the
 caller's PATH is Legion's leak-check wrapper, the rig passes the caller's `PUBLIC_LEAK_CHECK` into
 each run's pane and refuses to start a run when it names no readable check.
 
@@ -446,3 +465,6 @@ envoy.json, or `DISPATCH_URL` with a token): `fetch-spec-sources.ts`, which writ
 into the work directory for the spec scenarios, and `label-comments.ts`, which labels the comments
 people wrote in a window and prints the share that complain about writing. Neither writes inside a
 checkout. Text either one reads from production stays in the work directory and is never committed.
+Neither removes or replaces what an earlier run wrote: `fetch-spec-sources.ts` exits 2 before any
+read when a source directory it would write, or `agent-texts.json`, is already under `--out`, and
+`label-comments.ts` exits 2 when `labels.jsonl` is; each names the path, to be moved aside.

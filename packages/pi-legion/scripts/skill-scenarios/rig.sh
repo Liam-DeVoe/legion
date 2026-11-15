@@ -8,9 +8,10 @@
 #                                                  <file>, a JSON object, is merged into the envoy.json
 #                                                  the label's sessions read
 #   rig.sh live-read <label> <skill>...            one session reads every file of each skill
-#   rig.sh batch     <scenario> <runs> <label>...  starts the scratch services, runs 1..<runs> per
-#                                                  label (SKILL_SCENARIOS_PARALLEL at once), and
-#                                                  stops the services
+#   rig.sh batch     <scenario> <runs> <label>...  starts the scratch services, runs <runs> per
+#                                                  label (SKILL_SCENARIOS_PARALLEL at once), each
+#                                                  label's numbered from one above its highest
+#                                                  run, live or archived, and stops the services
 #   rig.sh score     [<scenario>]                  one row per run, then counts per label: the runs
 #                                                  of <work>/runs and <work>/archive/runs
 #   rig.sh health    [--tmp-snapshot <file>] <run dir>...
@@ -318,9 +319,15 @@
 #     world, or reads a path another run of the batch wrote or /tmp scratch from before the run:
 #     the second line behind the namespace.
 #   - An exit stops what its command started (on_exit, stop_run, stop_batch); a serial run's exit
-#     then removes what the run left at the top of the machine's /tmp (scratch_clean), and moves
-#     the run's directory to <work>/archive/runs/<run> (archive_run), out of the runs/ a later run
-#     lists.
+#     then records what appeared at the top of the machine's /tmp during the run (scratch_clean),
+#     and moves the run's directory to <work>/archive/runs/<run> (archive_run), out of the runs/ a
+#     later run lists.
+#   - It never removes or replaces another run: a run whose name a live or archived run holds is
+#     refused before it starts (cmd_run), and an archived run of its name is refused, never
+#     replaced, when it ends (archive_run). The rig deletes only what the same run or command
+#     made, and refuses a file an earlier one left where it would write (lock_services,
+#     judge_profiles, cmd_judge_omp, cmd_live_read). The one exception is the gateway key
+#     command's cached token, which a judge drops to mint one that outlives it (judge_keys).
 #
 # A spec run (run_spec) is a conversation of at most 8 turns. Turn 1 is the prompt. After each turn,
 # `seed.ts state` writes the issue's open asks (none a seed opened) and the spec's open approval
@@ -1128,52 +1135,57 @@ scratch_before() {
   done >"$R/scratch-before.txt"
 }
 
-# scratch_clean, at a run's end, deletes each entry this user owns at the top of a shared_scratch
-# directory that was not there when the run started (scratch_before), and records it with its
-# modification time to $R/scratch-created.txt (`<epoch seconds> <path>`, one a line), which
-# health.ts reads as a write of the run. So a file one run leaves in /tmp is gone before the next
-# run starts and no later run can read it. This holds for serial runs alone
-# (SKILL_SCENARIOS_PARALLEL=1): with runs side by side, what appeared during one run is every
-# concurrent run's too, so the cleanup would delete files a run still working depends on and
-# record another run's files as this one's, and a run could still read what a concurrent one
-# wrote before either ended. At any other parallelism this records and deletes nothing and says
-# so. Anything else this user runs on the machine during a serial run, outside the rig, loses
-# what it made at the top of /tmp the same way.
+# scratch_clean, at a run's end, records each entry this user owns at the top of a shared_scratch
+# directory that was not there when the run started (scratch_before), with its modification time,
+# to $R/scratch-created.txt (`<epoch seconds> <path>`, one a line), which health.ts reads as a
+# write of the run. It deletes nothing: an entry that appeared during the run may be anything else
+# this user ran on the machine meanwhile, not the run's, and the run's agent never writes the
+# machine's /tmp, whose place its namespace gives $R/tmp (launch, private_world). This holds for
+# serial runs alone (SKILL_SCENARIOS_PARALLEL=1): with runs side by side, what appeared during one
+# run is every concurrent run's too, so the record would name another run's files as this one's.
+# At any other parallelism this records nothing and says so.
 # shellcheck disable=SC2329 # stop_run, an exit trap, runs it
 scratch_clean() {
   [ -n "${R:-}" ] && [ -f "$R/scratch-before.txt" ] || return 0
   if [ "${SKILL_SCENARIOS_PARALLEL:-5}" != 1 ]; then
-    note "${R##*/}: left ${shared_scratch[*]} as it is: only serial runs (SKILL_SCENARIOS_PARALLEL=1) clean what a run made there"
+    note "${R##*/}: recorded nothing of ${shared_scratch[*]}: only serial runs (SKILL_SCENARIOS_PARALLEL=1) record what a run made there"
     return 0
   fi
-  local dir line entry
+  local dir line
   : >"$R/scratch-created.txt"
   for dir in "${shared_scratch[@]}"; do
     find "$dir" -mindepth 1 -maxdepth 1 -user "$(id -u)" -printf '%T@ %p\n' 2>/dev/null || true
   done | while IFS= read -r line; do
-    entry=${line#* }
-    ! grep -qxF -- "$entry" "$R/scratch-before.txt" || continue
+    ! grep -qxF -- "${line#* }" "$R/scratch-before.txt" || continue
     printf '%s\n' "$line" >>"$R/scratch-created.txt"
-    rm -rf -- "$entry"
   done
 }
 
 # archive_run moves the directory of a run that has ended, and whose processes are stopped, out
-# of $work/runs, where every run of a batch is made, to $work/archive/runs/<run>, replacing an
-# earlier run of the same name there as cmd_run replaces one in $work/runs. An agent sees neither
-# directory but its own run (launch's private_world); outside that namespace the same Unix user
-# reaches both, so a run's directory keeps out of the runs/ every later run is made in, and
-# health.ts's rule against naming another run's directory, the archive's included, stays the
-# check behind them. `rig.sh score` reads the archive, and score.ts and judge.ts read an archived
-# run's work directory as this one (score.ts's `workOfRuns`). A run directory outside $work/runs
-# (a live read's) stays where it is.
+# of $work/runs, where every run of a batch is made, to $work/archive/runs/<run>. An archived run
+# of that name is an earlier run's evidence: archive_run refuses it, naming the run and the path,
+# and exits 1, removing and replacing nothing, so the archived run stays as it was and this run
+# stays in $work/runs. cmd_run refuses such a name before the run starts and every batch numbers
+# above it (next_run), so this is the last line behind those two. An agent sees neither directory
+# but its own run (launch's private_world); outside that namespace the same Unix user reaches
+# both, so a run's directory keeps out of the runs/ every later run is made in, and health.ts's
+# rule against naming another run's directory, the archive's included, stays the check behind
+# them. `rig.sh score` reads the archive, and score.ts and judge.ts read an archived run's work
+# directory as this one (score.ts's `workOfRuns`). A run directory outside $work/runs (a live
+# read's) stays where it is.
 # shellcheck disable=SC2329 # stop_run, an exit trap, runs it
 archive_run() {
   case ${R:-} in "$work/runs/"?*) ;; *) return 0 ;; esac
   [ -d "$R" ] || return 0
+  local to=$work/archive/runs/${R##*/}
   mkdir -p "$work/archive/runs"
-  rm -rf -- "$work/archive/runs/${R##*/}"
-  mv -- "$R" "$work/archive/runs/${R##*/}"
+  [ ! -e "$to" ] && [ ! -L "$to" ] ||
+    fail "archive_run: run ${R##*/} is already archived at $to; neither is removed or replaced, and this run stays at $R"
+  # -n and the check after it: a directory that appeared at $to since the check above is skipped,
+  # never replaced, and the run that could not move is refused as above.
+  mv -nT -- "$R" "$to" || true
+  [ ! -e "$R" ] ||
+    fail "archive_run: run ${R##*/} could not move to $to; nothing there is removed or replaced, and this run stays at $R"
 }
 
 # on_exit HANDLER runs HANDLER at the command's exit, INT, TERM and HUP included.
@@ -1204,8 +1216,12 @@ cmd_live_read() {
   shift
   local paths=() skill list
   R=$work/live-read/${P##*/}
+  # An earlier live read of the label is that read's record: refused, naming it, never replaced,
+  # before the exit handler (stop_run) is set on a directory this read did not make.
+  mkdir -p "$work/live-read"
+  mkdir -- "$R" ||
+    fail "live-read: $R could not be made (mkdir says why above); an earlier live read of label ${P##*/} is never replaced: move it aside to read again"
   on_exit stop_run
-  rm -rf "$R"
   mkdir -p "$R/cwd" "$R/sessions"
   for skill in "$@"; do
     list=$(skill_reads "$co" "$skill") || exit 1
@@ -1256,13 +1272,33 @@ start_dispatch() {
     curl -fsS -o /dev/null -H 'Authorization: Bearer e2e-token' "http://127.0.0.1:$dispatch_port/api/v1/whoami"
 }
 
+# services_files prints each file a batch's services make, one a line: the services env and the
+# given Postgres's URL every run reads, the listener's token, the Dispatch token, the built
+# listener and the port file lib/rig.sh's start_held writes for it (and removes before it starts
+# the listener). lock_services refuses a batch while one of them is there and services_down
+# removes them, so each is a file this batch made, never an earlier batch's.
+services_files() {
+  printf '%s\n' "$services_env" "$services_postgres" "$S/envoy-token" "$S/dispatch-token" "$S/envoy-listener" "$work/listener.port"
+}
+
 # One batch at a time per work directory: $work/services/up is its lock, taken before the batch
-# starts or stops anything. A batch killed outright leaves it, with its containers and processes.
+# starts or stops anything. A batch killed outright leaves it, with its containers, its processes
+# and its services' files (services_files). A file of those that is there when the lock is taken
+# is an earlier batch's, which this batch would overwrite or remove: the batch is refused, naming
+# each, and drops only the lock it took.
 lock_services() {
   S=$work/services
   mkdir -p "$S/logs"
   (set -C && : >"$S/up") 2>/dev/null ||
     fail "a batch already holds $S/up; a batch killed outright leaves it, its $tag-* containers and its processes behind"
+  local file left=()
+  while IFS= read -r file; do
+    [ ! -e "$file" ] && [ ! -L "$file" ] || left+=("$file")
+  done < <(services_files)
+  [ ${#left[@]} = 0 ] || {
+    rm -f -- "$S/up"
+    fail "an earlier batch left ${left[*]}; a batch replaces no earlier batch's file, so remove them once that batch's containers and processes are stopped"
+  }
 }
 
 # given_services is whether the operator gave the batch both a Postgres and a NATS, so it starts
@@ -1318,6 +1354,11 @@ nats_ready() {
   case $line in 'INFO '*) ;; *) return 1 ;; esac
 }
 
+# Each container services_up started, named here once its `docker run` succeeded; services_down
+# removes these alone. A `docker run` docker refused (a name an earlier batch's container still
+# holds) names nothing, so that container stays.
+containers=()
+
 # Each run's Dispatch server opens at most 30 connections to the batch's Postgres: its shared pool
 # (16), loop leases (8), document rooms (4), health probe (1) and listener (1), the sizes in
 # packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
@@ -1337,11 +1378,13 @@ services_up() {
     docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
       -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
       -c max_connections=$needs >/dev/null
+    containers+=("$tag-pg")
     pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
     [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
     pg_url="postgres://postgres:ci@127.0.0.1:$pg_port/postgres?sslmode=disable"
     # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
     docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f -js >/dev/null
+    containers+=("$tag-nats")
     nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
     [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
     nats_url=nats://127.0.0.1:$nats_port
@@ -1367,13 +1410,18 @@ services_up() {
   note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
 }
 
+# services_down stops and removes what this batch started and made, and nothing else: the
+# containers it started (containers), and its services' files (services_files), which
+# lock_services found absent before this batch made them, then its lock. A given Postgres and a
+# given NATS keep running, and every database a run made on that Postgres (own_dispatch) stays
+# there for the operator to drop.
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
 services_down() {
   stop_tree "${listener_pid:-}"
-  # Only what the batch started. A given Postgres and a given NATS keep running, and every database
-  # a run made on that Postgres (own_dispatch) stays there for the operator to drop.
-  given_services || docker rm -fv "$tag-nats" "$tag-pg" >/dev/null 2>&1 || true
-  rm -f "$services_env" "$services_postgres" "$S/up"
+  [ ${#containers[@]} = 0 ] || docker rm -fv "${containers[@]}" >/dev/null 2>&1 || true
+  local files
+  mapfile -t files < <(services_files)
+  rm -f -- "${files[@]}" "$S/up"
 }
 
 # own_dispatch SEED gives the run a Dispatch of its own and seeds it with `seed.ts SEED`, the world
@@ -1599,9 +1647,11 @@ judge_ts() {
     fail "judge.ts $1 failed; see $R/judge.log"
 }
 
-# next_run SCENARIO LABEL prints one above the highest <n> of a run directory
-# $work/runs/<SCENARIO>-<LABEL>-<n> or $work/archive/runs/<SCENARIO>-<LABEL>-<n> (archive_run),
-# or 1 when there is none.
+# next_run NAME LABEL prints one above the highest <n> of a run directory
+# $work/runs/<NAME>-<LABEL>-<n> or $work/archive/runs/<NAME>-<LABEL>-<n> (archive_run), or 1 when
+# there is none. NAME is the scenario, with its case after it for a cased scenario, as cmd_run
+# names a run: cmd_batch numbers every run it starts from this, so no batch takes the name of a
+# run of an earlier one.
 next_run() {
   local dir n highest=0
   for dir in "$work/runs/$1-$2-"* "$work/archive/runs/$1-$2-"*; do
@@ -1703,20 +1753,24 @@ run_spec() {
 # The judge's two profiles, under $work/judge-profiles/<kind>, each its own HOME made by
 # make_omp_home with the model route install_model_route installs and no plugin. `ste` holds one
 # user skill, this checkout's skills/asd-ste100. `bare` holds none. The first judge-omp call builds
-# both, and every other call waits on the same lock, so parallel calls are safe.
+# both, and every other call waits on the same lock, so parallel calls are safe. A build an earlier
+# call left unready (no ready file: it failed, or was killed outright) is refused, naming the
+# directory, before this call sets its exit handler: its install.log says why it failed, and the
+# operator removes the directory to rebuild, as a label's profile is rebuilt (cmd_profile).
 judge_profiles() {
   local dir=$work/judge-profiles kind P commit
   mkdir -p "$dir"
   exec 9>"$dir.lock"
   flock 9
   if [ ! -f "$dir/ready" ]; then
+    [ -z "$(ls -A -- "$dir")" ] ||
+      fail "judge-omp: $dir holds a judge-profile build an earlier call left unready (no $dir/ready); see its install.log, then remove $dir to rebuild"
     on_exit "$(printf 'drop_unready_keys %q %q %q' "$dir/ready" "$dir/ste/model-key" "$dir/bare/model-key")"
     [ -f "$root/skills/asd-ste100/SKILL.md" ] || fail "$root has no skills/asd-ste100, the judge's one skill"
     commit=$(checkout_commit "$root") || fail "cannot read the commit of $root with jj or git"
     for kind in ste bare; do
       P=$dir/$kind
-      rm -rf "$P"
-      mkdir -p "$P"
+      mkdir "$P"
       (
         # shellcheck source=/dev/null
         source "$root/scripts/e2e/lib/omp-home.sh"
@@ -1840,6 +1894,16 @@ cmd_judge_omp() {
   case $output in
   "" | . | .. | */* | prompt.txt | sessions | out.txt | judge-model.txt | .tmp) fail "judge-omp: '$output' is not the name of an answer file in $dir" ;;
   esac
+  # What an earlier judge of DIR left is that judge's: its output and model record, and the key
+  # directory beside DIR that a judge killed outright leaves. Each is refused, naming it, and
+  # nothing of it is removed or replaced. The key directory is removed by the judge that made it
+  # alone (on_exit, below).
+  local leftover
+  keys=$dir.key
+  for leftover in "$dir/out.txt" "$dir/judge-model.txt" "$keys"; do
+    [ ! -e "$leftover" ] && [ ! -L "$leftover" ] ||
+      fail "judge-omp: $leftover is there from an earlier judge of $dir; nothing of it is removed or replaced: give this judge a directory of its own, and remove a key directory a killed judge left"
+  done
   case "$(omp_ancestor "$dir" || true)" in "") ;; *) fail "judge-omp: $dir is under $(omp_ancestor "$dir"), whose plugins Oh My Pi would load" ;; esac
   case ${LEGION_E2E_MODEL_ROUTE:-gateway} in gateway | key-file | provider) ;; *) fail "judge-omp: LEGION_E2E_MODEL_ROUTE is '$LEGION_E2E_MODEL_ROUTE': it is gateway, key-file or provider" ;; esac
   command -v docker >/dev/null || fail "judge-omp: docker is not on PATH; each judge runs in a container"
@@ -1847,8 +1911,6 @@ cmd_judge_omp() {
   P=$work/judge-profiles/$kind
   agent=$P/home/.omp/profiles/judge-$kind/agent
   local route=() host ip
-  keys=$dir.key
-  rm -rf -- "$keys"
   on_exit "$(printf 'rm -rf -- %q' "$keys")"
   key_file=$(judge_keys "$P" "$agent" "$keys") || exit 1
   route=(-v "$keys:/opt/key:ro")
@@ -2914,16 +2976,24 @@ cmd_run() {
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
   [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\`"
-  # A cased scenario's run name carries its case, so the batches of the cases, each numbered from
-  # 1, never remove each other's runs.
+  # A cased scenario's run name carries its case, so each case's batches are numbered apart
+  # (next_run) and no case's run takes another's name.
   run_case=$(scenario_case "$scenario") || exit 1
   name=$scenario${run_case:+-$run_case}-${P##*/}-$n
   R=$work/runs/$name
+  # A run never replaces another: a run of this name, live or archived, is an earlier run's
+  # evidence, so the run is refused, naming it, before anything of it starts, and its exit
+  # handler (stop_run, which stops processes of $R and archives $R) is set only once `mkdir`
+  # has made $R this run's own.
+  [ ! -e "$work/archive/runs/$name" ] && [ ! -L "$work/archive/runs/$name" ] ||
+    fail "run $name is already archived at $work/archive/runs/$name; a run never replaces another (a batch numbers its runs above each label's highest)"
+  mkdir -p "$work/runs"
+  mkdir -- "$R" ||
+    fail "run $name could not be made at $R (mkdir says why above); a run never replaces another (a batch numbers its runs above each label's highest)"
   evidence=$R
   on_exit stop_run
-  rm -rf "$R"
   mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs"
-  # What the shared scratch held before this run, so its exit removes what the run made there.
+  # What the shared scratch held before this run, so its exit records what the run made there.
   scratch_before
   # The run's own record of its case, which the scorer holds to the name above.
   [ -z "$run_case" ] || printf '%s\n' "$run_case" >"$R/case.txt"
@@ -2964,19 +3034,21 @@ stop_batch() {
 
 cmd_batch() {
   [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|reviewer-text-findings|threads-closed|brainstorm|askgate|spec-writing|spec-rewrite> <runs> <label>..."
-  local runs=$2 label n index=0 start
+  local runs=$2 label n index=0 start run_case first
   batch_scenario=$1
   case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | reviewer-text-findings | threads-closed | brainstorm | askgate | spec-writing | spec-rewrite) ;; *) fail "unknown scenario $batch_scenario" ;; esac
-  # A cased scenario's case, refused here before any service starts, as each run refuses it.
-  scenario_case "$batch_scenario" >/dev/null || exit 1
+  # A cased scenario's case, refused here before any service starts, as each run refuses it. It
+  # is part of each run's name, so it is part of the name the batch numbers from (next_run).
+  run_case=$(scenario_case "$batch_scenario") || exit 1
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_MODE:-} in
     '' | warn | block) ;;
     *) fail "an askgate batch takes SKILL_SCENARIOS_ASKGATE_MODE unset, warn or block (got '$SKILL_SCENARIOS_ASKGATE_MODE')" ;;
   esac
   [[ $runs =~ ^[0-9]+$ ]] || fail "run count '$runs' is not a number"
-  # A spec batch numbers its run one above its first label's highest (next_run, below), so a second
-  # label or a second run could take the number of a run cmd_run would then remove: one run of one
-  # label. Each run has a Dispatch of its own (own_dispatch), so no run sees a sibling's issue.
+  # A spec batch takes one run of one label. That limit was set when a spec batch alone numbered
+  # its run above its label's highest; every batch does now (next_run, below), and the limit
+  # stays as it was set. Each run has a Dispatch of its own (own_dispatch), so no run sees a
+  # sibling's issue.
   case $batch_scenario in spec-writing | spec-rewrite)
     [ $((runs * ($# - 2))) = 1 ] ||
       fail "a $batch_scenario batch takes one run of one label (got $runs of $(($# - 2))); run each label as its own batch"
@@ -2990,19 +3062,21 @@ cmd_batch() {
   # And a host that refuses the agents' namespace, likewise (require_namespace).
   require_namespace
   # A spec run reads its source and the label's superpowers skills: refused here, before any
-  # service starts. Its number is one above the label's highest, so no batch removes an earlier run.
-  local first=1
+  # service starts.
   case $batch_scenario in spec-writing | spec-rewrite)
     source_dir "$batch_scenario" "${SKILL_SCENARIOS_SOURCE:-}" >/dev/null
     require_superpowers "$batch_scenario"
-    first=$(next_run "$batch_scenario" "$1")
     ;;
   esac
   lock_services
   on_exit stop_batch
   services_up
   start=$(date +%s)
+  # Each label's runs are numbered from one above that label's highest run, live or archived
+  # (next_run), read once this batch holds the work directory (lock_services): a batch never gives
+  # a run the name of an earlier one, which cmd_run would refuse and archive_run could not keep.
   for label in "$@"; do
+    first=$(next_run "$batch_scenario${run_case:+-$run_case}" "$label")
     for n in $(seq "$first" $((first + runs - 1))); do
       index=$((index + 1))
       printf '%s %s %s %s %s\n' "$batch_scenario" "$label" "$n" "$index" "$start"

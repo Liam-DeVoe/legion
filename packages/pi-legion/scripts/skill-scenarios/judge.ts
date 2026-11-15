@@ -19,7 +19,12 @@
 // <work> is the directory that holds the run's `runs/` directory, or the `archive/runs/` rig.sh
 // moves a run to once it has ended, as score.ts reads it (`workOfRuns`). Seeded asks
 // (seeded.json) never reach a judge's inputs.
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+//
+// judge.ts removes and replaces nothing an earlier judging left. Before any judge starts, it
+// refuses, naming each, a judge directory under <work>/judging/<run>/ or an answer file in the run
+// directory (answers-<turn>.jsonl, or the nine files of `run`) that is already there: a run is
+// judged again once those are moved aside.
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -96,12 +101,22 @@ interface Job<T> {
   inputs: Record<string, string>;
   covers?: (answer: T) => string[];
 }
-/** Builds the job's directory afresh with only its inputs and prompt.txt, runs the judge in it, and
- * returns its validated answer. An answer that does not parse, or does not cover what the judge was
- * given, fails the run, naming the answer's file. */
+/** Refuses, naming each, the paths of `paths` that are there: what an earlier judging left, which
+ * judge.ts never removes or replaces. Called with every path a judging makes before any judge
+ * starts, so a refused judging leaves nothing behind. */
+function refuseTaken(paths: readonly string[]): void {
+  const taken = paths.filter((one) => lstatSync(one, { throwIfNoEntry: false }) !== undefined);
+  if (taken.length > 0)
+    throw new Error(
+      `judge.ts: ${taken.join(", ")} from an earlier judging; judge.ts removes and replaces none of it: move it aside to judge again`
+    );
+}
+/** Makes the job's directory, which refuseTaken found absent, with only its inputs and
+ * prompt.txt, runs the judge in it, and returns its validated answer. An answer that does not
+ * parse, or does not cover what the judge was given, fails the run, naming the answer's file. */
 async function runJob<T>(job: Job<T>, runner: JudgeRunner): Promise<T> {
-  rmSync(job.dir, { recursive: true, force: true });
-  mkdirSync(job.dir, { recursive: true });
+  mkdirSync(path.dirname(job.dir), { recursive: true });
+  mkdirSync(job.dir);
   for (const [file, text] of Object.entries(job.inputs)) {
     mkdirSync(path.dirname(path.join(job.dir, file)), { recursive: true });
     writeFileSync(path.join(job.dir, file), text);
@@ -185,15 +200,18 @@ export async function answerTurn(runDir: string, turn: number, options: JudgeOpt
       },
     };
   });
+  const out = path.join(runDir, `answers-${turn}.jsonl`);
+  refuseTaken([out, ...jobs.map((job) => job.dir)]);
   const answers = await runAll(jobs, runner, options.parallel ?? 5);
   writeFileSync(
-    path.join(runDir, `answers-${turn}.jsonl`),
+    out,
     answers
       .map((answer, index) =>
         JSON.stringify({ ask: open[index]?.id, selected: answer.selected, text: answer.text })
       )
       .map((line) => `${line}\n`)
-      .join("")
+      .join(""),
+    { flag: "wx" }
   );
 }
 
@@ -287,29 +305,33 @@ export async function judgeRun(runDir: string, options: JudgeOptions = {}) {
       "rule.md": SHARED_RUNS_RULE,
     },
   }));
+  // Every answer file this judging writes into the run directory, and every judge directory.
+  const outputs = [
+    ...new Set([
+      ...single.map((job) => job.prompt.file),
+      findingsPrompt.file,
+      checkablePrompt.file,
+      "shared-runs.json",
+    ]),
+  ].map((name) => path.join(runDir, name));
+  refuseTaken([...outputs, ...single.map((job) => job.dir), ...shared.map((job) => job.dir)]);
   const [singleAnswers, sharedAnswers] = await Promise.all([
     runAll(single, runner, parallel),
     runAll(shared, runner, parallel),
   ]);
+  const write = (name: string, text: string) =>
+    writeFileSync(path.join(runDir, name), text, { flag: "wx" });
   for (const [index, job] of single.entries()) {
     const answer = singleAnswers[index];
-    const out = path.join(runDir, job.prompt.file);
     if (job.prompt === checkablePrompt)
-      writeFileSync(out, pretty(CheckableFile.parse({ ...(answer as object), version })));
-    else cpSync(path.join(job.dir, job.prompt.file), out);
+      write(job.prompt.file, pretty(CheckableFile.parse({ ...(answer as object), version })));
+    else write(job.prompt.file, readFileSync(path.join(job.dir, job.prompt.file), "utf8"));
   }
-  if (checks.length === 0)
-    writeFileSync(
-      path.join(runDir, findingsPrompt.file),
-      pretty(FindingsOutput.parse({ rows: [] }))
-    );
+  if (checks.length === 0) write(findingsPrompt.file, pretty(FindingsOutput.parse({ rows: [] })));
   if (approvedSpec === undefined)
-    writeFileSync(
-      path.join(runDir, checkablePrompt.file),
-      pretty(CheckableFile.parse({ rows: [], version: null }))
-    );
-  writeFileSync(
-    path.join(runDir, "shared-runs.json"),
+    write(checkablePrompt.file, pretty(CheckableFile.parse({ rows: [], version: null })));
+  write(
+    "shared-runs.json",
     pretty(
       SharedRunsFile.parse({
         rows: runs.map((found, index) => ({
