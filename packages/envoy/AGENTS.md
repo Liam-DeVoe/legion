@@ -1523,6 +1523,7 @@ That rule decides a switch, not the request, because a tab loaded before the fie
 a create-message request may still set `connected_only` itself, as Dispatch's live view's switch does, and any other send that sets it is refused the same way.
 The flag is the message's, not one send's:
 attempt 1 records whether the message asks it (`message_deliveries.connected_only`, written by `createStoredMessage`) and every later attempt of that message is opened with the first attempt's (`insertMessageDeliveryAttempt`), so the delivery sweep's resume, a repeat under the request's key, and a person's Retry or mode change from the agent card all ask the listener for a running session and are refused again.
+Every send of a switch asks it whatever its row holds (`deliverMessageResuming`), so a switch an earlier release stored with no flag is held to a running session on its Retry, mode change or resume too.
 
 **A send that meets a listener take-over waits it out under the attempt it holds.**
 While the active listener pod is replaced its successor refuses connections, answers 503 (its starting gate's `{"error":"service starting"}`), or does not hold the session yet for a few seconds (INFRA-557's take-over target is under 10).

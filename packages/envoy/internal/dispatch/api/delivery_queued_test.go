@@ -432,19 +432,27 @@ func TestTheSweepLeavesAQueuedAttemptAlone(t *testing.T) {
 }
 
 // An attempt whose sender died between the commit and the settle is resumed by the delivery
-// sweep, which asks for a connected session only if the send that opened the attempt did. So the
-// switch's own attempt, resumed against a stopped target, is settled failed and nothing is
-// stored for the session, while the same attempt without the flag is queued. The flag lives on
-// the row (message_deliveries.connected_only), because the sweep never saw the request.
+// sweep, which asks for a connected session if the send that opened the attempt did, or if the
+// message is a model or thinking switch (isSessionSwitchCommand). So the switch's own attempt,
+// resumed against a stopped target, is settled failed and nothing is stored for the session -
+// the attempt this release opened, which carries the flag on its row
+// (message_deliveries.connected_only), because the sweep never saw the request, and the attempt
+// an earlier release opened, whose row carries none. An ordinary send's attempt without the flag
+// is queued.
 func TestTheSweepResumesAStrandedSwitchAsConnectedOnly(t *testing.T) {
 	for _, test := range []struct {
 		name          string
+		body          string
 		connectedOnly bool
 		wantState     string
 		wantSends     int
 	}{
-		{name: "a stranded switch", connectedOnly: true, wantState: "failed", wantSends: 0},
-		{name: "a stranded ordinary send", connectedOnly: false, wantState: "queued", wantSends: 1},
+		{name: "a stranded switch", body: "/model claude-opus", connectedOnly: true, wantState: "failed", wantSends: 0},
+		{
+			name: "a stranded switch an earlier release wrote", body: "/model claude-opus", connectedOnly: false,
+			wantState: "failed", wantSends: 0,
+		},
+		{name: "a stranded ordinary send", body: "Carry on.", connectedOnly: false, wantState: "queued", wantSends: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			listener := stoppedAndLive(t)
@@ -453,9 +461,9 @@ func TestTheSweepResumesAStrandedSwitchAsConnectedOnly(t *testing.T) {
 			var messageID string
 			if err := database.Pool.QueryRow(ctx, `
 				insert into messages (author, body, target)
-				values ('{"kind":"user","id":"alice"}', '/model claude-opus', 'session:s1')
+				values ('{"kind":"user","id":"alice"}', $1, 'session:s1')
 				returning id::text
-			`).Scan(&messageID); err != nil {
+			`, test.body).Scan(&messageID); err != nil {
 				t.Fatalf("seed the message: %v", err)
 			}
 			// The attempt its own request committed and never settled: pending, claimed ten
@@ -480,8 +488,13 @@ func TestTheSweepResumesAStrandedSwitchAsConnectedOnly(t *testing.T) {
 				t.Fatalf("the resumed attempt = %#v carrying connected_only %v, want one %s attempt carrying connected_only=%v",
 					attempts, flags, test.wantState, test.connectedOnly)
 			}
-			if test.wantState == "failed" && (attempts[0].Error == nil || *attempts[0].Error != "the session is stopped") {
-				t.Fatalf("the refused switch's error = %v, want \"the session is stopped\"", attempts[0].Error)
+			if test.wantState == "failed" {
+				if attempts[0].Error == nil || *attempts[0].Error != "the session is stopped" {
+					t.Fatalf("the refused switch's error = %v, want \"the session is stopped\"", attempts[0].Error)
+				}
+				if refused := listener.refusedFor("s1"); len(refused) != 1 || refused[0]["connected_only"] != true {
+					t.Fatalf("the listener refused %#v, want the one resumed send, carrying connected_only", refused)
+				}
 			}
 			sends := listener.sentTo("s1")
 			if len(sends) != test.wantSends {

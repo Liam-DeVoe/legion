@@ -1731,6 +1731,7 @@ It drops `comment_deliveries_state_check` (`0039`) and `message_deliveries_state
 no row can fail a check wider than the one it was written under.
 It adds `message_deliveries.connected_only`, a nullable `text` column with no default whose one other value is `connected_only` (its own check, also `not valid`), set on an attempt whose sends ask the listener for a session that is running now:
 every model or thinking switch asks that whatever its request says (a targeted message whose body is one `/model <value>` or `/effort <value>` line, `isSessionSwitchCommand`), so does any request that sets `connected_only`, and every later attempt of a message inherits attempt 1's value.
+Every send of a switch asks it whatever its row holds (`deliverMessageResuming`), so a switch an earlier release stored with no flag is held to a running session on its Retry, mode change or resume too.
 The release before this one writes only `pending`, `sent` and `failed` and never names the column, so the two builds run against the widened schema at once.
 Each statement is one of the census's catalog-only `alter table` forms, so the census exempts the migration from its table size limit at any size, and each takes `ACCESS EXCLUSIVE` on its table for its catalog write alone.
 Its census answers `0`: it refuses and rewrites no row.

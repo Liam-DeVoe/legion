@@ -370,9 +370,11 @@ func (s *server) createStoredMessage(
 	// openFirstMessageDeliveryAttempt) serves only the messages such a release stored. It records
 	// who asked for it, the urgency they chose and whether it asks for a session running now -
 	// the request's connected_only, or a model or thinking switch whatever the request said
-	// (isSessionSwitchCommand) - which every send of it carries (pendingMessageDelivery), this
-	// request's own and a resumed one alike. The target is read here and not at validation, since
-	// a person's reply that names none takes its thread root's above.
+	// (isSessionSwitchCommand). Every later attempt records attempt 1's flag, or the switch rule's
+	// (insertMessageDeliveryAttempt), and every send of every attempt - this request's own, a
+	// resumed one, a Retry and a mode change - asks for a running session when its row says so
+	// or the message is a switch (pendingMessageDelivery). The target is read here and not at
+	// validation, since a person's reply that names none takes its thread root's above.
 	if message.Target != nil {
 		connectedOnly := input.ConnectedOnly || isSessionSwitchCommand(input.Body)
 		if _, err := tx.Exec(ctx, `
@@ -464,13 +466,14 @@ func validateCreateMessage(input *createMessageInput) (string, error) {
 // in the release before it). A body that only mentions /model in its prose is not one.
 //
 // A targeted message that is one asks the listener for a session that is running now whatever
-// its request says (createStoredMessage): this rule decides a switch, not the client's
-// connected_only, which any other send may still set to ask the same. A tab loaded before
-// connected_only existed sends the switch without the field, and a switch stored for a stopped
-// session would change that session's model or thinking level at an unknown later time, long
-// after the person chose it. The spec keeps the switch out of the queued path (its non-goal,
-// dispatch://INFRA-626/spec) and plan D9 refuses it for a stopped session with nothing stored
-// (dispatch://INFRA-626/artifact/plan-md).
+// its request says, on every attempt and every send of it (createStoredMessage,
+// insertMessageDeliveryAttempt, deliverMessageResuming), a switch an earlier release stored with
+// no flag on its rows included: this rule decides a switch, not the client's connected_only,
+// which any other send may still set to ask the same. A tab loaded before connected_only existed
+// sends the switch without the field, and a switch stored for a stopped session would change that
+// session's model or thinking level at an unknown later time, long after the person chose it. The
+// spec keeps the switch out of the queued path (its non-goal, dispatch://INFRA-626/spec) and plan
+// D9 refuses it for a stopped session with nothing stored (dispatch://INFRA-626/artifact/plan-md).
 func isSessionSwitchCommand(body string) bool {
 	command := strings.TrimSpace(body)
 	value, found := strings.CutPrefix(command, "/model ")
