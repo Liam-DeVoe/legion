@@ -303,10 +303,9 @@ func TestRedactCredentialsReachesAFixedPointWithinItsBound(t *testing.T) {
 	}
 }
 
-// RedactedLine masks what a capability report's detail masks, since the memory guard prints a
-// process's arguments through it: every case of the shared fixture reads from it as the fixture
-// says, but those a pad pushes past MaxReportDetail, whose want is cleanDetail's cut, which
-// RedactedLine does not make.
+// redactedLine is cleanDetail's cleaning short of the cut: every case of the shared fixture reads
+// from it as the fixture says, but those a pad pushes past MaxReportDetail, whose want is
+// cleanDetail's cut, which redactedLine does not make.
 func TestRedactedLineMasksEachUncutCaseOfTheSharedFixture(t *testing.T) {
 	var fixture struct {
 		Patterns []redactionCase `json:"patterns"`
@@ -320,62 +319,11 @@ func TestRedactedLineMasksEachUncutCaseOfTheSharedFixture(t *testing.T) {
 			continue
 		}
 		uncut++
-		if got, want := RedactedLine(detail), padding+testCase.Want; got != want {
-			t.Errorf("%s: %s: RedactedLine(%q) = %q\nwant %q", testCase.Pattern, testCase.Name, detail, got, want)
+		if got, want := redactedLine(detail), padding+testCase.Want; got != want {
+			t.Errorf("%s: %s: redactedLine(%q) = %q\nwant %q", testCase.Pattern, testCase.Name, detail, got, want)
 		}
 	}
 	t.Logf("%d of %d cases uncut", uncut, len(fixture.Patterns))
-}
-
-// RedactedCutLine masks a userinfo the cut leaves open from its scheme to the line's end: one cut
-// before its `@`, one another rule's mask ran to the end of the cut text, and one masked at an `@`
-// of the cut text that a control rune, read as a space, leaves open to a later `@` past the cut.
-// A userinfo, masked or not, that a `/`, `?` or `#` closes is as RedactedLine gives it, and so is
-// every detail of the shared fixture with no scheme in it.
-func TestRedactedCutLineMasksAUserinfoTheCutLeavesOpenToTheEnd(t *testing.T) {
-	for _, testCase := range []struct {
-		name, text string
-		// want is what RedactedCutLine gives; empty, it is what RedactedLine gives.
-		want string
-	}{
-		{"a userinfo cut before its at sign", "curl https://user:pw", "curl https://***"},
-		{"a scheme in capitals", "curl HTTPS://USER:PW", "curl HTTPS://***"},
-		{"a scheme the cut text ends at", "curl https://", "curl https://***"},
-		{"a userinfo an Authorization value ran to the end of", "curl http://user:SECRETPASS\x07Authorization:a w w", "curl http://***"},
-		{"a userinfo a quoted password ran to the end of", "curl http://u:P\x07password='a b", "curl http://***"},
-		{"a userinfo masked at an at sign, open after it", "dial postgres://legion:p@ss\x07Authorization:a w", "dial postgres://***"},
-		{"a masked userinfo at the end of the cut text", "get http://***@h", "get http://***"},
-		{"the first scheme left open, after one a path closes", "get https://***@h/x then http://u:p more", "get https://***@h/x then http://***"},
-		{"a masked userinfo a path closes", "get http://***@h/x more", ""},
-		{"a userinfo followed by its at sign and a path", "get https://user:pw@h/x more", ""},
-		{"a userinfo followed by its at sign and a query", "get https://user:pw@h?q=1 more", ""},
-		{"a userinfo followed by its at sign and a fragment", "get https://user:pw@h#top more", ""},
-		{"a URL with no userinfo, closed by its path", "get https://example.org/a more", ""},
-		{"no scheme", "make -j8 all", ""},
-	} {
-		want := testCase.want
-		if want == "" {
-			want = RedactedLine(testCase.text)
-		}
-		if got := RedactedCutLine(testCase.text); got != want {
-			t.Errorf("%s: RedactedCutLine(%q) = %q, want %q", testCase.name, testCase.text, got, want)
-		}
-	}
-	var fixture struct {
-		Patterns []redactionCase `json:"patterns"`
-	}
-	readFixture(t, "capability-redaction.json", &fixture)
-	plain := 0
-	for _, testCase := range fixture.Patterns {
-		if strings.Contains(testCase.Detail, "://") {
-			continue
-		}
-		plain++
-		if got, want := RedactedCutLine(testCase.Detail), RedactedLine(testCase.Detail); got != want {
-			t.Errorf("%s: %s: RedactedCutLine(%q) = %q, want RedactedLine's %q", testCase.Pattern, testCase.Name, testCase.Detail, got, want)
-		}
-	}
-	t.Logf("%d of %d details with no scheme", plain, len(fixture.Patterns))
 }
 
 // An API-key or bare bearer value that is a URL's scheme with other value characters glued
@@ -392,11 +340,8 @@ func TestRedactedLineMasksAUserinfoAfterALabelWhoseValueGluesTextToItsScheme(t *
 	for _, label := range []string{"Bearer ", "api-key: ", "application-key=", "ocp-apim-subscription-key: ", "x-subscription-token: "} {
 		for _, glued := range []string{"_", "x_", "~", "/", "=", "*", "1", "+", ".", "-"} {
 			text := "curl -H " + label + glued + "http://u:SECRETPASS\x07Authorization:a b)@h"
-			if got := RedactedLine(text); strings.Contains(got, "SECRETPASS") {
-				t.Errorf("RedactedLine(%q) = %q, which shows the password", text, got)
-			}
-			if got := RedactedCutLine(text); strings.Contains(got, "SECRETPASS") {
-				t.Errorf("RedactedCutLine(%q) = %q, which shows the password", text, got)
+			if got := redactedLine(text); strings.Contains(got, "SECRETPASS") {
+				t.Errorf("redactedLine(%q) = %q, which shows the password", text, got)
 			}
 		}
 	}
@@ -422,15 +367,15 @@ func TestRedactedLineMasksATokenThatIsAURLWithNoAtSignAfterALabel(t *testing.T) 
 			"http://u:SECRETPASS" + " " + "@h",
 		} {
 			text := "curl -H " + label + value
-			for name, redact := range map[string]func(string) string{"RedactedLine": RedactedLine, "RedactedCutLine": RedactedCutLine, "cleanDetail": cleanDetail} {
+			for name, redact := range map[string]func(string) string{"redactedLine": redactedLine, "cleanDetail": cleanDetail} {
 				if got := redact(text); strings.Contains(got, "SECRETPASS") {
 					t.Errorf("%s(%q) = %q, which shows the token", name, text, got)
 				}
 			}
 		}
 		port := "curl -H " + label + "http://h:8080/x"
-		if got := RedactedLine(port); !strings.Contains(got, strings.TrimSpace(label)) {
-			t.Errorf("RedactedLine(%q) = %q, which lost the label", port, got)
+		if got := redactedLine(port); !strings.Contains(got, strings.TrimSpace(label)) {
+			t.Errorf("redactedLine(%q) = %q, which lost the label", port, got)
 		}
 	}
 }

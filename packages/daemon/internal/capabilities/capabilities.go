@@ -275,19 +275,18 @@ func Normalize(rows []claim.CapabilityRow) (kept []Row, dropped []string) {
 //     reads, while held stands there, as the middle of a base64url run.
 //
 // Space runs then collapse to one space with none at either end; that line, before the cut, is
-// RedactedLine, which another package takes whole. Redaction runs on the one line, so a credential
-// a session split across lines is still found, and before the cut, so a cut never leaves a
-// credential's head too short to match. The rules run until a pass changes nothing
-// (redactCredentials), so the line is already a fixed point of them. After a cut, trailing space
-// goes, then trailing words, and within a last word trailing characters, while the rules would
-// still change what is left — a label the cut parted from its value, or a value it parted from the
-// rest of its `***` — but never the last character, since one character matches no rule; so
-// cleaning what this returns gives it back unchanged, and a cut never empties a detail that had
-// text. The Legion plugin cleans its report the same way before it sends it (`cleanDetail` in
-// `packages/pi-legion/src/capability-report.ts`); both are held to
-// `packages/contracts/fixtures/capability-redaction.json`.
+// redactedLine. Redaction runs on the one line, so a credential a session split across lines is
+// still found, and before the cut, so a cut never leaves a credential's head too short to match.
+// The rules run until a pass changes nothing (redactCredentials), so the line is already a fixed
+// point of them. After a cut, trailing space goes, then trailing words, and within a last word
+// trailing characters, while the rules would still change what is left — a label the cut parted
+// from its value, or a value it parted from the rest of its `***` — but never the last character,
+// since one character matches no rule; so cleaning what this returns gives it back unchanged, and
+// a cut never empties a detail that had text. The Legion plugin cleans its report the same way
+// before it sends it (`cleanDetail` in `packages/pi-legion/src/capability-report.ts`); both are
+// held to `packages/contracts/fixtures/capability-redaction.json`.
 func cleanDetail(text string) string {
-	line := RedactedLine(text)
+	line := redactedLine(text)
 	cut := strings.TrimRight(truncate(line, MaxReportDetail), " ")
 	if len(cut) < len(line) {
 		for redactCredentials(cut) != cut {
@@ -302,17 +301,10 @@ func cleanDetail(text string) string {
 	return cut
 }
 
-// RedactedLine is text as one line with every credential masked: cleanDetail's line before its
-// cut, with each space rune a space and each other control rune held, every credential redacted on
-// that line and, when anything was held, on each of heldReadings in turn, and space runs collapsed
-// to one space with none at either end. So each run of whitespace is one space, each control rune,
-// control sequence and byte that is not UTF-8 is read away, and every credential shape is masked
-// exactly as a capability report's detail is, both held to the one shared fixture. Another package
-// that prints text a process chose takes it from here: the launcher's memory guard prints a
-// process's arguments in its log and in the note to that process's role, and an argument can carry
-// a token. Unlike a detail, the line is not cut: the caller cuts it to its own bound, and a caller
-// that masks only the head of a longer text takes RedactedCutLine.
-func RedactedLine(text string) string {
+// redactedLine is cleanDetail's line before its cut: text with each space rune a space and each
+// other control rune held, every credential redacted on that line and, when anything was held, on
+// each of heldReadings in turn, and space runs collapsed to one space with none at either end.
+func redactedLine(text string) string {
 	marked := strings.Map(func(r rune) rune {
 		switch {
 		case unicode.IsSpace(r):
@@ -333,41 +325,6 @@ func RedactedLine(text string) string {
 		}
 	}
 	return strings.Join(strings.Fields(redacted), " ")
-}
-
-// RedactedCutLine is RedactedLine for the head of a longer text, cut where the whole text has
-// whitespace, so that each run of the head with no whitespace in it is a whole run of the text:
-// RedactedLine's line of the head, with everything after the first opener of a match the cut may
-// have left open (a credentialRules cutOpener whose cutClosed does not find it closed) one `***`
-// to the line's end. The whole text's line masks such a match up to a closer past the cut, which
-// the head does not hold, so without this the head's line would show what the whole one masks.
-// What it masks after that opener the whole line may show, but a reader of a line already cut
-// loses only more of its end. The memory guard masks a long process's arguments this way.
-func RedactedCutLine(text string) string {
-	line := RedactedLine(text)
-	open := -1
-	for _, rule := range credentialRules {
-		if rule.cutOpener == nil {
-			continue
-		}
-		for from := 0; ; {
-			at := rule.cutOpener.FindStringIndex(line[from:])
-			if at == nil {
-				break
-			}
-			from += at[1]
-			if !rule.cutClosed.MatchString(line[from:]) {
-				if open < 0 || from < open {
-					open = from
-				}
-				break
-			}
-		}
-	}
-	if open < 0 {
-		return line
-	}
-	return line[:open] + "***"
 }
 
 // held is what cleanDetail holds a control rune as while it redacts, c1Introducer what it holds
@@ -406,130 +363,72 @@ const heldSequence = `\x{FFFE}|\x{FDD0}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 // also ran across one would let one run hold a start after each opener in it.
 const jwtFirstHeldSequence = `\x{FFFE}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 
-// apiKeyRule and bearerRule are the API-key and bare bearer rules' patterns: each a label, its
-// value, and the `://` after the value where one follows. RE2 has no lookahead, so each rule takes
-// that `://` into its match and redactLabeledValue reads it there, rather than the rule standing
-// itself down before a URL.
-var apiKeyRule = regexp.MustCompile(`(?i)((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*\\?["']?)((?:[A-Za-z0-9._~+/=*-]|` + heldSequence + `)+)(://)?`)
-
-var bearerRule = regexp.MustCompile(`(?i)\b(bearer[ \x{FFFE}\x{FFFF}]+)((?:[A-Za-z0-9._~+/=*-]|` + heldSequence + `)+)(://)?`)
-
-// urlSchemeTail is a value's scheme-shaped tail: from the leftmost position where what the
-// userinfo rule takes before its `://` runs on to the value's end.
-var urlSchemeTail = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*$`)
+// labeledWord is the value of the API-key and bare bearer rules: the whole word after the label,
+// whatever its shape, held markers included. It runs to the next space or quote, and takes a run of
+// backslashes and closing brackets (`)`, `]`, `}`, `>`, where the Authorization rule's unquoted
+// value ends) only where another of its characters follows. So a quoted value keeps its closing
+// quote, escaped or not (`\"x-api-key\":\"***\"`), and a header the Authorization rule masked keeps
+// its closing bracket (`(Authorization: Bearer ***)`), while a bracket inside the word, such as an
+// IPv6 host's, is masked with the rest of it.
+const labeledWord = `(?:[^ "'\\)\]}>]|[\\)\]}>]+[^ "'\\)\]}>])+`
 
 // credentialRules are the credential shapes redactCredentials replaces, each keeping what names
-// the credential and replacing the secret with `***`; the shared fixture names each with an
-// example, in this order. They run on cleanDetail's line, where a space is the only whitespace and
-// held or c1Introducer stands for a control rune: a value class runs across a heldSequence, and a
-// separator takes a space or either marker. A quote may follow a backslash, as it does in JSON that
-// was escaped again. Order matters: the Authorization header runs before the bare bearer rule, so a
-// header under any scheme loses its whole value and keeps a listed scheme's label, and the GitHub
-// rule before the JWT rule, so a stateless installation token (`ghs_<app id>_<JWT>`) reads
-// `ghs_***`. Where one rule's mask would take what another rule reads, the mask stands back:
-// an API-key value and a bare bearer value take no `:`, so before a URL after either label
-// (`api-key: http://user:pw@host`, `Bearer _http://user:pw@host`) the value ends with the URL's
-// scheme, and masking it would take the scheme the userinfo rule anchors on, since `***://` is
-// no scheme — the userinfo would never be masked at all. So both rules take the `://` after
-// their value as well, and redactLabeledValue leaves the value's scheme-shaped tail for the
-// userinfo rule and masks what is glued before it; a new rule whose value class stops at a `:`,
-// so that a URL's scheme can end its value, must leave that tail before `://` in the same way.
-// The passes then do the rest, as they do for a userinfo the Authorization rule opens:
-// where a control rune parts a userinfo from its `@` (`Bearer http://u:pw`, a control rune,
-// an Authorization value that runs across spaces to a `)` before the `@`), the Authorization
-// rule masks what stood between them on the first pass and the userinfo rule reaches its `@`
-// on the next. The JWT rule starts nowhere its first segment's class could have run on from:
-// not after held, a C1 introducer or a value character, and not after a held `[` and its
-// parameters, followed by any final byte or by a `\uXXXX` escape whose backslash is that final
-// byte. The plugin says so with a lookbehind; here the rule's last alternative matches that
-// held prefix with `eyJ` and redactJWT gives it back unchanged. It may start after an opener,
-// which its first segment does
-// not run across, and right after a percent or `\u` escape that no held sequence closes. A JWT may
-// also start right after held when its first segment crosses no held character and no opener, only
-// a C1 introducer, so a JWT right after a replacement character is masked in the first pass, before
-// the fourth reading would split it at a control inside it. And it may start right after a held
-// `[`, its parameters and an optional final byte or `\uXXXX` when its first segment holds a C1
-// introducer and crosses nothing else held, since reading 2 would turn that introducer into an
-// opener its first segment can't cross. A JWT with no C1 introducer in its first segment is left to
-// the later readings there, where its later segments cross what the first pass would stop at. These
-// segments stop at the next held character, and a first segment ends at its one dot, so no start
-// reads another's run: in the plugin's JavaScriptCore, which backtracks, a start inside a run its
-// first segment reads through would read that run once per start. An Authorization value opened by
-// an escaped quote ends at the next backslash or quote; one opened by a quote runs over escaped
-// characters to an unescaped quote; one with neither runs to a closing bracket or the end of the
-// line, since an AWS signature or a Digest credential carries commas, semicolons and quotes of its
-// own. The API-key rule has no left anchor, so `api-key` also covers `x-api-key`, `x-goog-api-key`
-// and Datadog's `dd-api-key`, and `application-key` covers `dd-application-key`. A rule whose value
-// may be short takes `*` in its value class, and a quoted connection-string password keeps its
-// quotes, so a value already redacted is matched whole and left as it is; the others need more than
-// `***` to match at all.
-//
-// A rule whose match can still be open where a caller cut its text short says so with cutOpener,
-// where a match of it starts, and cutClosed, which reads the line after that start and finds the
-// match closed there; RedactedCutLine masks a cut line from the first opener it does not find
-// closed to the line's end, and a new rule whose match can run past a cut must say so here. The
-// userinfo rule is the one rule that can: it needs an `@` after its value, and its value class
-// takes `*`, quotes and brackets, so another rule's mask can remove the space that kept it from an
-// `@` past the cut (the Authorization value that runs across spaces to a `)`, or a quoted
-// password, which the cut text masks to its end, where the userinfo never meets its `@`). Its
-// value runs to the last `@` before ` `, `/`, `?` or `#`, so a userinfo masked at an `@` of the cut
-// text can still run on to a later one; only a `/`, `?` or `#` the line keeps closes it, since a
-// space in the line may stand for a control rune the rule read across. A rule whose value needs
-// nothing after it (password, Authorization, the API-key headers, the JSON members, bearer, the
-// query parameter) masks a value the cut parts to the end of the text, so it is never open at a
-// cut; the `://` the API-key and bearer rules take after their value is no exception, since it
-// holds no space and a cut where the whole text has whitespace never parts it from the value
-// before it. A token
-// rule (GitHub, the JWT, the prefixed tokens, AIza, AKIA) needs a least length or a
-// terminator, but matches within one run with no whitespace in it, which a cut where the whole text
-// has whitespace keeps whole, and takes no `*` in its value, so no other rule's `***` joins it to
-// text past the cut.
+// the credential and replacing the secret with `***`. The shared fixture is the fixed list of the
+// shapes they cover, each with an example, in this order; a secret that no named pattern marks,
+// such as a positional argument (`mysql -p hunter2`, `curl -u user:pw`), is not masked. They run on
+// cleanDetail's line, where a space is the only whitespace and held or c1Introducer stands for a
+// control rune: a value class runs across a heldSequence, and a separator takes a space or either
+// marker. A quote may follow a backslash, as it does in JSON that was escaped again. Order matters:
+// the Authorization header runs before the bare bearer rule, so a header under any scheme loses its
+// whole value and keeps a listed scheme's label, and the GitHub rule before the JWT rule, so a
+// stateless installation token (`ghs_<app id>_<JWT>`) reads `ghs_***`. After an API-key label or a
+// bare `Bearer`, the whole word is masked (labeledWord): what stands there is the credential,
+// whatever its shape, so a URL there reads `Bearer ***` with or without a userinfo. A userinfo the
+// Authorization rule opens takes a second pass: where a control rune parts a userinfo from its `@`
+// (`http://u:pw`, a control rune, an Authorization value that runs across spaces to a `)` before
+// the `@`), the Authorization rule masks what stood between them on the first pass and the
+// userinfo rule reaches its `@` on the next. The JWT rule starts nowhere its first segment's class
+// could have run on from: not after held, a C1 introducer or a value character, and not after a
+// held `[` and its parameters, followed by any final byte or by a `\uXXXX` escape whose backslash
+// is that final byte. The plugin says so with a lookbehind; here the rule's last alternative
+// matches that held prefix with `eyJ` and redactJWT gives it back unchanged. It may start after an
+// opener, which its first segment does not run across, and right after a percent or `\u` escape
+// that no held sequence closes. A JWT may also start right after held when its first segment
+// crosses no held character and no opener, only a C1 introducer, so a JWT right after a replacement
+// character is masked in the first pass, before the fourth reading would split it at a control
+// inside it. And it may start right after a held `[`, its parameters and an optional final byte or
+// `\uXXXX` when its first segment holds a C1 introducer and crosses nothing else held, since
+// reading 2 would turn that introducer into an opener its first segment can't cross. A JWT with no
+// C1 introducer in its first segment is left to the later readings there, where its later segments
+// cross what the first pass would stop at. These segments stop at the next held character, and a
+// first segment ends at its one dot, so no start reads another's run: in the plugin's
+// JavaScriptCore, which backtracks, a start inside a run its first segment reads through would read
+// that run once per start. An Authorization value opened by an escaped quote ends at the next
+// backslash or quote; one opened by a quote runs over escaped characters to an unescaped quote; one
+// with neither runs to a closing bracket or the end of the line, since an AWS signature or a Digest
+// credential carries commas, semicolons and quotes of its own. The API-key rule has no left anchor,
+// so `api-key` also covers `x-api-key`, `x-goog-api-key` and Datadog's `dd-api-key`, and
+// `application-key` covers `dd-application-key`. A rule whose value may be short takes `*` in its
+// value class, and a quoted connection-string password keeps its quotes, so a value already
+// redacted is matched whole and left as it is; the others need more than `***` to match at all.
 var credentialRules = []struct {
 	pattern *regexp.Regexp
 	// replacement expands the match; replace, when set, computes it instead.
 	replacement string
 	replace     func(match string) string
-	// cutOpener and cutClosed are set on a rule whose match can be open at a cut (RedactedCutLine).
-	cutOpener, cutClosed *regexp.Regexp
 }{
-	{pattern: regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^ /?#]+@`), replacement: "${1}***@",
-		cutOpener: regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://`), cutClosed: regexp.MustCompile(`^[^ /?#]*[/?#]`)},
+	{pattern: regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^ /?#]+@`), replacement: "${1}***@"},
 	{pattern: regexp.MustCompile(`(?i)([?&](?:token|key|secret|password|access_token|accesstoken|refresh_token|id_token|auth_token|private_token|api_key|apikey|client_secret|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^ &#"'<>]+`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?i)\b(password[ \x{FFFE}\x{FFFF}]*=[ \x{FFFE}\x{FFFF}]*)(?:(')(?:[^'\\]|\\.)*('?)|[^ &#"'<>]+)`), replacement: "${1}${2}***${3}"},
 	{pattern: regexp.MustCompile(`(?i)(authorization\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*)(?:(\\["'](?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)[^"'\\]+|(["'](?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)(?:[^"'\\]|\\.)+|(\[?(?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)[^)\]}>]+)`), replacement: "${1}${2}${3}${4}***"},
-	{pattern: apiKeyRule, replace: func(m string) string { return redactLabeledValue(apiKeyRule, m) }},
+	{pattern: regexp.MustCompile(`(?i)((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*\\?["']?)` + labeledWord), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?i)(\\?["'](?:api_key|access_token)\\?["'][ \x{FFFE}\x{FFFF}]*:[ \x{FFFE}\x{FFFF}]*\\?["'])[^"'\\]+`), replacement: "${1}***"},
-	{pattern: bearerRule, replace: func(m string) string { return redactLabeledValue(bearerRule, m) }},
+	{pattern: regexp.MustCompile(`(?i)\b(bearer[ \x{FFFE}\x{FFFF}]+)` + labeledWord), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`\b(gh[pousr]_|github_pat_)(?:[A-Za-z0-9._-]|` + heldSequence + `){20,}`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?:\x{FFFF}eyJ(?:[A-Za-z0-9_-]|\x{FFFE}){8,}|\x{FFFF}\[[0-?]*(?:[@-~]|\\u[0-9A-Fa-f]{4})?eyJ[A-Za-z0-9_-]*\x{FFFE}(?:[A-Za-z0-9_-]|\x{FFFE})*|(?:^|[^A-Za-z0-9_\x{FFFE}\x{FFFF}-]|%[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4})eyJ(?:[A-Za-z0-9_-]|` + jwtFirstHeldSequence + `){8,})\.(?:[A-Za-z0-9_-]|` + heldSequence + `){8,}\.(?:[A-Za-z0-9_-]|` + heldSequence + `)*|\x{FFFF}\[[0-?]*(?:[@-~]?|\\u[0-9A-Fa-f]{4})eyJ`), replace: redactJWT},
 	{pattern: regexp.MustCompile(`\b(sk-|dsp_|ddsat_|ddpat_|ddapp_|ya29\.|xox[a-z]-|glpat-|npm_)(?:[A-Za-z0-9_-]|` + heldSequence + `){20,}`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`\b(AIza)(?:[A-Za-z0-9_-]|` + heldSequence + `){35,}`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`\b(AKIA|ASIA)(?:(?:` + heldSequence + `)*[A-Z0-9]){16}\b`), replacement: "${1}***"},
-}
-
-// redactLabeledValue is an API-key or bearer rule match redacted. Each rule takes the `://` after
-// its value into its match, since RE2 has no lookahead. A value followed by `://` can end with a
-// URL's scheme (`api-key: http://user:pw@host`, `Bearer _http://user:pw@host`), and masking that
-// scheme would leave `***://`, which is no scheme for the userinfo rule to anchor on. So the
-// value's scheme-shaped tail (urlSchemeTail) stays: a match whose whole value is that tail is
-// given back unchanged, and one with other value characters glued before the tail, which may be
-// part of a token, keeps its label, `***` for those characters, the tail and the `://`. The
-// userinfo rule has no left anchor, so it finds the scheme after that `***` and masks the
-// userinfo. The next pass gives either back as it is: `*` is in the value class, and the tail of
-// `***` and a scheme is that scheme. Any other match, one with no `://` or a value with no such
-// tail, keeps its label and any `://` after its value, which is text of its own, and replaces the
-// value.
-func redactLabeledValue(rule *regexp.Regexp, match string) string {
-	parts := rule.FindStringSubmatch(match)
-	if parts[3] != "" {
-		if tail := urlSchemeTail.FindStringIndex(parts[2]); tail != nil {
-			if tail[0] == 0 {
-				return match
-			}
-			return parts[1] + "***" + parts[2][tail[0]:] + parts[3]
-		}
-	}
-	return parts[1] + "***" + parts[3]
 }
 
 // redactJWT is a JWT rule match redacted. One with no `.` is the rule's last alternative: a held

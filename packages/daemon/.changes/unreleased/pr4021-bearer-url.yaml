@@ -2,6 +2,8 @@ kind: Fixed
 custom:
   Issue: pr4021
 body: |-
-  A capability detail now masks a URL's password after a `Bearer` or an `api-key` label: those two
-  rules no longer take a URL's scheme as their value, which left the userinfo rule no scheme to
-  match (`Bearer http://u:SECRET` with a control character before the URL's `@`).
+  A capability detail now masks the whole word after a `Bearer` or an API-key label, whatever its
+  shape: a URL there reads `Bearer ***`, where before the text after its scheme could show
+  (`Bearer http://u:SECRET` read `Bearer ***://u:SECRET`). The masking covers the fixed list of
+  shapes in the shared fixture and nothing else: a secret that no named pattern marks, such as a
+  positional argument (`mysql -p hunter2`), is not masked.

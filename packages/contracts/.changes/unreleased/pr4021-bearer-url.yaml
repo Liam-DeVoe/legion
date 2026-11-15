@@ -2,6 +2,7 @@ kind: Changed
 custom:
   Issue: pr4021
 body: |-
-  The shared redaction fixture (`capability-redaction.json`) holds a URL after a `Bearer` and an
-  `api-key` label, plain, with a control character between its user part and its `@`, and with
-  other value characters glued before its scheme.
+  The shared redaction fixture (`capability-redaction.json`) expects the whole word after a
+  `Bearer` or an API-key label masked, a URL included, and its `note` says that the fixture is the
+  fixed list of shapes the rules cover: a secret that no named pattern marks, such as a positional
+  argument, is not masked.
