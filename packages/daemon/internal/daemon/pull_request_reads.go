@@ -123,11 +123,12 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // key off.
 //
 // What a confirming read costs is one fact and one round settlement each time: each climb of the
-// merge-state ladder makes at most mergeStateLadderReads reads, and only a request that arrives
-// during a climb starts another (mergeStateEnds); the review-stuck notice such a settlement would
-// write is deduplicated by the round's own mark (record.ReviewDecision.ToldStuckHead); and a
-// settlement that finds the round mergeable advances the issue, which is the right answer whenever
-// it is true.
+// merge-state ladder makes at most mergeStateLadderReads reads, and each request for a read starts
+// at most one more climb, whether it arrives during a climb (mergeStateEnds) or after the ladder
+// has ended (readMergeStates); the review-stuck notice such a settlement would write is
+// deduplicated by the round's own mark (record.ReviewDecision.ToldStuckHead); and a settlement
+// that finds the round mergeable advances the issue, which is the right answer whenever it is
+// true.
 //
 // The fact names the head GitHub answered for (`head.sha` of the same answer), which the engine
 // records the verdict against only while the record still stands at it: this read and the merge
