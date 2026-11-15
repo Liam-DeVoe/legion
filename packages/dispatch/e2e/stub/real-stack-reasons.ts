@@ -69,6 +69,8 @@ export const realStackReasons: Record<string, string> = {
     "a definition is the server's model call through the stand-in, its side question goes through the fake Envoy, and the answer, the records and the counts are the server's to keep",
   "ask-card-menu.e2e.ts":
     "each key of the card writes or reads the server: a rewrite through the stand-in, an ask back, a hand-on, a decline, and the Reaches list the server and the fake Envoy answer",
+  "ask-card-pictures.e2e.ts":
+    "it takes the design's pictures from the build against the server, the stand-in and the reviewer's server, which make every rewrite and definition it shows",
   "ask-card-reviewer.e2e.ts":
     "the reviewer's server holds each text and posts it on its own sweep, and the open page shows it over the live socket with no reload",
   "ask-card-rewrite.e2e.ts":

@@ -800,6 +800,21 @@ export function getAsk(id: string, options: ApiOptions = {}) {
   return get("/api/v1/asks/{id}", { params: { id } }, options);
 }
 
+/** `POST /api/v1/asks/{id}/rewrite`: a person's Rewrite of an open question (INFRA-3231's R7),
+ *  answered at once while the rewrite runs in the background. */
+export function rewriteAsk(id: string, options: ApiOptions = {}) {
+  return post("/api/v1/asks/{id}/rewrite", { params: { id } }, options);
+}
+
+/** `PUT /api/v1/asks/{id}/asked-of`: hands the open question to `askedOf`, as the caller. */
+export function setAskedOf(id: string, askedOf: string, options: ApiOptions = {}) {
+  return put(
+    "/api/v1/asks/{id}/asked-of",
+    { body: { asked_of: askedOf }, params: { id } },
+    options
+  );
+}
+
 /** `GET /api/v1/held/{id}`: one text the reviewer holds (INFRA-3231's R5), as an agent's bearer
  *  reads it - no person reads one - with its state (`reviewing`, `awaiting_writer`, `posting`,
  *  `posted`, `failed`) and, once it posts, its outcome. `id` is the id its write answered: an

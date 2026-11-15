@@ -183,16 +183,18 @@ test("the page reads the agent list once, asks nothing per agent, and shows a re
 });
 
 // The ask card's provenance line holds the asker's copy-handles button with the live link beside
-// it, and the time; the turn is named there only where it is not the reader's own (INFRA-3231's
-// R7). On a phone the live link's 44 px touch box leaves the asker's name a few letters ("Le…")
-// unless the asker gets the room the line has.
+// it, the time and the ask's reference; the turn is named there only where it is not the
+// reader's own (INFRA-3231's R7). The line stays one line, so on a phone, beside the live link's
+// 44 px touch box, the asker's name gives up width and is cut short, whole in its title: the
+// design's own picture of the card on a phone draws it so (INFRA-3231's ask-card-14-phone-card).
+// Before that design the line gave the name its room and this row read the name whole.
 //
 // It stayed on the real stack after a measurement, not by the exclusion rules: moved to the
 // stubbed layer it read `scrollWidth` 144 against `clientWidth` 116 and failed, because the
 // claim is a text measurement and a stubbed page paints before its web fonts have loaded, where
 // the real stack's server round trips give them the time. A row whose claim is a width needs a
 // settled font, and this layer is faster than that.
-test("on a phone the ask card's asker reads its whole name beside the live link @phone", async ({
+test("on a phone the ask card's asker shares one line with the live link and keeps its whole name in its title @phone", async ({
   browser,
 }) => {
   const seeded = await seed();
@@ -203,18 +205,25 @@ test("on a phone the ask card's asker reads its whole name beside the live link 
     const card = page.getByTestId(`ask-${seeded.runAsk}`);
     // The reader's own question names no turn: it is hers.
     await expect(card.getByTestId(`turn-${seeded.runAsk}`)).toHaveCount(0);
-    await expect(
-      card.getByRole("link", { exact: true, name: `Open live conversation with ${runCurrent}` })
-    ).toBeVisible();
+    const live = card.getByRole("link", {
+      exact: true,
+      name: `Open live conversation with ${runCurrent}`,
+    });
+    await expect(live).toBeVisible();
     const name = card
       .getByRole("button", { expanded: false, name: /Running agent \(current\)/ })
       .locator(`[title="${runCurrent} · ${runId}"]`);
     await expect(name).toHaveText(runCurrent);
-    const fits = await name.evaluate((element) => ({
-      client: element.clientWidth,
-      scroll: element.scrollWidth,
-    }));
-    expect(fits.scroll, "the asker's name is not cut short").toBeLessThanOrEqual(fits.client);
+    // One line: the name and the live link stand on the same row, and the line, cut short where
+    // it must be, widens neither the card nor the page.
+    const [nameBox, liveBox] = await Promise.all([name.boundingBox(), live.boundingBox()]);
+    if (nameBox === null || liveBox === null)
+      throw new Error("the name or the live link has no box");
+    expect(nameBox.y + nameBox.height).toBeGreaterThan(liveBox.y);
+    expect(nameBox.y).toBeLessThan(liveBox.y + liveBox.height);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true);
   } finally {
     await alice.close();
   }

@@ -181,6 +181,19 @@ recipe written as a script, for the container it runs Playwright in. A session
 of the stubbed layer alone needs no stack at all, since it addresses none:
 `--project=stub --ui` opens as it is.
 
+The ask card's 23 pictures (INFRA-3231's check b5ee93c7) are one row of
+`e2e/ask-card-pictures.e2e.ts`, which runs only where the command names its
+project: `bun run e2e -- --project=ask-card-pictures`. It seeds the demo's
+fixture text (`e2e/ask-card-fixtures.ts`) through the stack's server and the
+reviewer's (`e2e/reviewer-server.ts`), with the stand-in model, and writes each
+picture under the row's output directory. With `DISPATCH_E2E_ASK_CARD_DEMO`
+naming a directory of the demo's pictures it lays each beside the demo's with
+its share of changed pixels (`bunx pixelmatch@5.3.0`), and
+`bun e2e/tools/ask-card-pictures-diff.ts <built> <demo> <out>` does the same for
+pictures taken elsewhere. The pictures are drawn in Inter, as the demo's were:
+point Chromium's fontconfig at Inter's files (`FONTCONFIG_FILE`) on a machine
+that lacks it.
+
 Playwright's own `--workers <n>` runs the suite in parallel, and the config's
 default is 1. `e2e/global-setup.ts` starts one stack
 per worker before the first row. A stack is a whole harness of its own — a

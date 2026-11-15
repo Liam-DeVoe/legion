@@ -90,7 +90,10 @@ test("a held ask reaches the open Inbox only once it posts, rewritten, marked by
       reviewed({
         body: ASK_REWRITE,
         multiple: false,
-        options: OPTIONS.map((option) => ({ ...option, id: "" })),
+        options: OPTIONS.map((option) => ({
+          description: option.description ?? "",
+          label: option.label,
+        })),
       })
     ),
   ]);

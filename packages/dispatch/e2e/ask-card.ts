@@ -308,16 +308,14 @@ export async function selectWords(scope: Locator, words: string): Promise<void> 
 }
 
 /** A rewrite's answer as the component's schema reads it: the wording, the options and the
- *  choice. Each option's id is the record's, and the record the model reads holds an ask's
- *  options as its row stores them, with no id: the `b1`, `b2` an ask read carries are the ids of
- *  its text's blocks, which the read adds. */
+ *  choice. An option is its label and description alone: the server keeps each option's own id,
+ *  and compares a rewrite's options with the record's by their number, order and labels. */
 export function rewriteText(body: string, options: readonly AskOption[], multiple = false): string {
   return JSON.stringify({
     body,
     multiple,
     options: options.map((option) => ({
       description: option.description ?? "",
-      id: "",
       label: option.label,
     })),
   });
