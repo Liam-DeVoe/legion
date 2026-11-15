@@ -192,6 +192,46 @@ function land(element: HTMLElement): boolean {
   return true;
 }
 
+/** Whether any part of `element` is in the reader's sight: its box meets the viewport and every
+ *  box in `boxes`, the scroll boxes around it that have scrolled. An element whose edge only
+ *  touches the edge of what is in sight counts as in sight. */
+function inSight(element: Element, boxes: Iterable<Element>): boolean {
+  let top = 0;
+  let left = 0;
+  let bottom = window.innerHeight;
+  let right = window.innerWidth;
+  for (const box of boxes) {
+    const edges = box.getBoundingClientRect();
+    top = Math.max(top, edges.top);
+    left = Math.max(left, edges.left);
+    bottom = Math.min(bottom, edges.bottom);
+    right = Math.min(right, edges.right);
+  }
+  const drawn = element.getBoundingClientRect();
+  return drawn.bottom >= top && drawn.top <= bottom && drawn.right >= left && drawn.left <= right;
+}
+
+/** The element the focus was last noted on, and whether the reader can still see it: read off
+ *  every scroll that can move it - the page's, or a box's around it, which `boxes` keeps - while
+ *  it is in the page. The rescue reads it when it answers a loss of that element, which may have
+ *  gone by then, so it holds what the last scroll before that saw. */
+interface Sight {
+  readonly boxes: Set<Element>;
+  readonly element: HTMLElement;
+  seen: boolean;
+}
+
+/** Answers a loss the reader can no longer see, in a region still in the page: nothing scrolls,
+ *  and the focus goes to no control the reader did not pick. It stays where it is, on the body,
+ *  except in a dialog, which takes the focus itself so that the page behind a modal one is
+ *  never reached - given `tabindex="-1"` for it where it has no Tab stop of its own, as when
+ *  it loses every control. */
+function leaveUnseen(region: Element): void {
+  if (!(region instanceof HTMLElement) || !region.matches(DIALOG)) return;
+  if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
+  region.focus({ preventScroll: true });
+}
+
 /** A focus an element lost: the element, the region it was counted in, its place there among
  *  the controls the page draws, the path of the page it was focused on, whether the page took it
  *  from the reader (`taken`: the element was disabled, hidden or taken away) rather than the
@@ -311,8 +351,9 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * The page's one focus rescue, mounted once in the app shell: after any loss of the focus to the
  * body - a press, or an update that takes the focused control away - the keyboard focus never
  * stays on the page's body because the element holding it was disabled, hidden, taken away or
- * drawn again under a new key. A keyboard reader left on the body starts again from the page's
- * first link, a walk through everything above the control they were using.
+ * drawn again under a new key, unless the reader had scrolled that element out of their sight
+ * (below). A keyboard reader left on the body starts again from the page's first link, a walk
+ * through everything above the control they were using.
  *
  * Every element that takes the focus is noted as it does (`focusin`), with its region - the
  * dialog holding it, modal or not, else the shell's main content (`main`), else the document -
@@ -358,6 +399,18 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * focus - is the reader leaving it, and the focus stays where Escape left it, as the Inbox's and
  * the Board's own Escape leave it on the page. The element the rescue lands on is scrolled into
  * view (`land`).
+ *
+ * A loss the reader can no longer see is not answered: the element was scrolled out of their
+ * sight - out of the viewport, or out of a scroll box around it - before it went, or before the
+ * control a wait is on came back, and its region is still in the page. Every scroll that can move
+ * the noted element, the page's or a box's around it, reads whether any of it is still in sight
+ * (`Sight`), while a loss of it could still be answered; the document's capture listener hears a
+ * box's scroll before the box's own listeners, so a virtual list that takes the row away in its
+ * listener has it read while it is still in the page. Nothing scrolls and no control the reader
+ * did not pick takes the focus, so neither a list nor the page is pulled back to a row the reader
+ * scrolled away from - a live update taking that row away, say - and their next key acts on
+ * nothing they did not choose. The focus stays on the body, except in a dialog, which takes it
+ * itself without a scroll, so the page behind a modal one is never reached (`leaveUnseen`).
  */
 export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
   useEffect(() => {
@@ -372,6 +425,12 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     let moving: { from: Loss | null; to: Element } | null = null;
     /** Cancels the check or the wait still out for the latest loss. */
     let pending: (() => void) | null = null;
+    /** The element the focus was last noted on, and whether the reader can still see it. */
+    let sight: Sight | null = null;
+    /** Whether the reader had scrolled `loss`'s element out of their sight before it went, in a
+     *  region still in the page. */
+    const unseen = (loss: Loss) =>
+      sight?.element === loss.element && !sight.seen && present(loss.region);
 
     /** Waits for `loss`'s element, which the press disabled, to be enabled again or to go. */
     const wait = (loss: Loss): (() => void) => {
@@ -381,6 +440,10 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       const settle = () => {
         pending = null;
         if (!focusLost() || window.location.pathname !== loss.path) return;
+        if (unseen(loss)) {
+          leaveUnseen(loss.region);
+          return;
+        }
         if (element.isConnected && rendered(element) && land(element)) return;
         handOn(loss, main.current);
       };
@@ -420,7 +483,9 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       pending = null;
       if (window.location.pathname !== loss.path || !focusLost()) return;
       const { element } = loss;
-      if (!element.isConnected || !rendered(element)) {
+      if (unseen(loss)) {
+        leaveUnseen(loss.region);
+      } else if (!element.isConnected || !rendered(element)) {
         handOn(loss, main.current);
       } else if (element.matches(":disabled")) {
         pending = wait(loss);
@@ -441,6 +506,9 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       }
       moving = null;
       focused = { element, path: window.location.pathname, region };
+      // The same element taking the focus again - the window given back the focus - keeps what
+      // the scrolls since it was first noted saw.
+      if (sight?.element !== element) sight = { boxes: new Set(), element, seen: true };
     };
 
     const record = (event: globalThis.FocusEvent) => {
@@ -496,6 +564,21 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       pending = afterComponents(() => check(loss));
     });
     watcher.observe(document.body, { childList: true, subtree: true });
+    // A scroll that can move the noted element reads whether the reader can still see it, while a
+    // loss of it could still be answered: it holds the focus, or a check or a wait is out. A box's
+    // `scroll` does not bubble; the document hears it in its capture phase, before the box's own
+    // listeners.
+    const noteScroll = (event: Event) => {
+      const watched = sight;
+      if (watched === null || (focused === null && pending === null)) return;
+      if (!watched.element.isConnected) return;
+      const { target } = event;
+      if (target instanceof Element) {
+        if (!target.contains(watched.element)) return;
+        watched.boxes.add(target);
+      }
+      watched.seen = inSight(watched.element, watched.boxes);
+    };
     const readerMoved = () => {
       pending?.();
       pending = null;
@@ -514,12 +597,14 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     document.addEventListener("focusout", record, true);
     document.addEventListener("pointerdown", readerMoved, true);
     document.addEventListener("keydown", noteEscape, true);
+    document.addEventListener("scroll", noteScroll, { capture: true, passive: true });
     return () => {
       watcher.disconnect();
       document.removeEventListener("focusin", noteFocus, true);
       document.removeEventListener("focusout", record, true);
       document.removeEventListener("pointerdown", readerMoved, true);
       document.removeEventListener("keydown", noteEscape, true);
+      document.removeEventListener("scroll", noteScroll, true);
       pending?.();
     };
   }, [main]);

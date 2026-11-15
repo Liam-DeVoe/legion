@@ -889,3 +889,99 @@ test("a table given no selection draws no selection column and selects nothing",
   await user.click(screen.getByRole("button", { name: "Pick the first priority" }));
   expect(screen.getByText("0 picked")).toBeInTheDocument();
 });
+
+/** How tall the unit DOM takes every drawn line to be, which the virtualizer measures it at. */
+const LINE_PX = 40;
+
+/** The unit DOM lays nothing out: give every drawn line - a row or a group's heading, each
+ *  carrying `data-index` - a height of `LINE_PX`, so a 600 px box draws the lines near it and
+ *  no more. */
+function linesTall(): void {
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get() {
+      return this.dataset.index === undefined ? (descriptor?.get?.call(this) ?? 0) : LINE_PX;
+    },
+  });
+  restores.push(() => {
+    if (descriptor) Object.defineProperty(HTMLElement.prototype, "offsetHeight", descriptor);
+    else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
+  });
+}
+
+/** `count` deploys, `d1` to `d<count>`, the first and every other one after it in `eu` and the
+ *  rest in `us`. */
+function manyDeploys(count: number): Deploy[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `d${index + 1}`,
+    minutes: index,
+    region: index % 2 === 0 ? "eu" : "us",
+    service: `service ${index + 1}`,
+    state: "live",
+  }));
+}
+
+/** The scroll a browser makes and reports: happy-dom scrolls no box, so the test moves it and
+ *  fires the event the virtualizer reads its window from. */
+function scrollBoxTo(box: HTMLElement, top: number): void {
+  act(() => {
+    box.scrollTop = top;
+    box.dispatchEvent(new Event("scroll"));
+  });
+}
+
+/** The place each drawn line of `table` says it holds among the table's rows. */
+const places = (table: HTMLElement) =>
+  [...table.querySelectorAll("tbody tr[data-index]")].map((line) =>
+    line.getAttribute("aria-rowindex")
+  );
+
+// INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6zF): the table draws only the lines near
+// its box, so it says how many rows it has, drawn or not, and each drawn line where it sits among
+// them with the header's row first, as the Delivery list did before it was drawn here: a screen
+// reader hears "row 40 of 61" rather than the drawn rows alone. Every table takes them, the
+// project List and the priorities tables too. A grouped table counts its headings among its
+// rows, and a paged one the lines of the page it shows, with the heading a group carried over
+// from the page before.
+test("the table counts every row of its page for a screen reader, drawn or not, and each drawn line says its place", async () => {
+  const user = userEvent.setup();
+  linesTall();
+  draw(
+    <>
+      <Deploys layoutKey="flat" pageSize={100} pager={null} rows={manyDeploys(60)} />
+      <Deploys
+        groupOrder={(_column, a, b) => a.localeCompare(b)}
+        grouping={["region"]}
+        layoutKey="grouped"
+        pageSize={10}
+        rows={manyDeploys(12)}
+      />
+    </>
+  );
+
+  // Sixty rows, of which the box draws the first few dozen: `d<n>` is the row in place n + 1.
+  const flat = await screen.findByRole("table", { name: "Deploys flat" });
+  expect(flat).toHaveAttribute("aria-rowcount", "61");
+  expect(flat.querySelector("thead tr")).toHaveAttribute("aria-rowindex", "1");
+  const owned = () => listed(flat).map((id) => String(Number(id?.slice(1)) + 1));
+  expect(listed(flat).length).toBeLessThan(60);
+  expect(places(flat)).toEqual(owned());
+  expect(places(flat)[0]).toBe("2");
+  scrollBoxTo(screen.getByTestId("flat-scroll"), 10_000);
+  expect(listed(flat)).toContain("d60");
+  expect(places(flat)).toEqual(owned());
+  expect(places(flat).at(-1)).toBe("61");
+
+  // Page one: the eu heading and its six rows, then the us heading and two of its rows. Page
+  // two: the us heading carried over, and its last four rows.
+  const grouped = screen.getByRole("table", { name: "Deploys grouped" });
+  expect(grouped).toHaveAttribute("aria-rowcount", "11");
+  expect(places(grouped)).toEqual(["2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]);
+  await user.click(screen.getByRole("button", { name: "Next ›" }));
+  expect(grouped).toHaveAttribute("aria-rowcount", "6");
+  expect(places(grouped)).toEqual(["2", "3", "4", "5", "6"]);
+  expect(
+    within(grouped).getByRole("button", { name: "Collapse us" }).closest("tr")
+  ).toHaveAttribute("aria-rowindex", "2");
+});

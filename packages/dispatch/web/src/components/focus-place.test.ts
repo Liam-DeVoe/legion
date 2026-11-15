@@ -657,3 +657,151 @@ test("two controls taken away together at a region's end land the focus on one c
     expect(chromium).toBe(firefox);
   }
 });
+
+/** Lays `element` out `top` px down the window and `height` px tall: where a scroll left it,
+ *  which happy-dom, laying nothing out, does not say. */
+function placeAt(element: Element, top: number, height = 40): void {
+  element.getBoundingClientRect = () => new DOMRect(0, top, 200, height);
+}
+
+/** A box that scrolls by itself, laid out from 100 px to 400 px down the window, holding one
+ *  button per label, appended to `parent`. */
+function scrollBoxIn(
+  parent: Element,
+  ...labels: string[]
+): { box: HTMLElement; buttons: HTMLButtonElement[] } {
+  const box = document.createElement("div");
+  parent.append(box);
+  placeAt(box, 100, 300);
+  return { box, buttons: labels.map((label) => buttonIn(box, label)) };
+}
+
+// (aa) A loss the reader can no longer see moves nothing and scrolls nothing. The reader scrolled
+// the focused element out of their sight - out of the window by the page's scroll, or out of the
+// box it scrolls in while that box stays on screen - and then it went: a row a virtual list
+// stopped drawing, or a row a live update took away. The focus stays on the page rather than the
+// list or the page being pulled back to that place and a row the reader did not pick taking the
+// focus, whether the engine fired a `focusout` for it (Chromium) or not (Firefox and WebKit).
+// Asked for in INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6y_): with a row's checkbox
+// focused, wheel steps over a virtual table pulled its box back from 690 px to 24 px, and a
+// focused row a live update took away pulled the page back from 3,000 px to its top.
+test("a loss of an element scrolled out of sight moves nothing and scrolls nothing", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    for (const withFocusout of [true, false]) {
+      const goes = (element: HTMLElement) => {
+        if (withFocusout) lose(element);
+        else element.remove();
+      };
+      // Out of the window: the page scrolled it past the window's bottom edge.
+      await withRescue(async () => {
+        const [, second, third] = mainOf("First", "Second", "Third").buttons;
+        second?.focus();
+        placeAt(second as HTMLElement, 5_000);
+        document.dispatchEvent(new Event("scroll"));
+        goes(second as HTMLElement);
+        await settled();
+        expect(document.activeElement).toBe(document.body);
+        expect(third).not.toHaveFocus();
+      });
+      // Out of its box: the box scrolled it above its top edge, where the window still holds it.
+      await withRescue(async () => {
+        const { box, buttons } = scrollBoxIn(mainOf("Before").main, "One", "Two", "Three");
+        const [, second, third] = buttons;
+        second?.focus();
+        placeAt(second as HTMLElement, 40);
+        box.dispatchEvent(new Event("scroll"));
+        goes(second as HTMLElement);
+        await settled();
+        expect(document.activeElement).toBe(document.body);
+        expect(third).not.toHaveFocus();
+      });
+    }
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+});
+
+// (ab) A loss the reader can still see is answered as before: an element its box scrolled but
+// kept in sight, and one scrolled out of sight and back into it before it went, hand the focus
+// to the control now at their place. Only the scroll that leaves nothing of it in sight counts.
+test("a loss of an element still in sight is answered, however it was scrolled", async () => {
+  await withRescue(async () => {
+    const { box, buttons } = scrollBoxIn(mainOf("Before").main, "One", "Two", "Three");
+    const [, second, third] = buttons;
+    second?.focus();
+    // Half of it above the box's top edge: the reader still sees the other half.
+    placeAt(second as HTMLElement, 80);
+    box.dispatchEvent(new Event("scroll"));
+    lose(second as HTMLElement);
+    await waitFor(() => expect(third).toHaveFocus());
+  });
+  await withRescue(async () => {
+    const [, second, third] = mainOf("First", "Second", "Third").buttons;
+    second?.focus();
+    placeAt(second as HTMLElement, 5_000);
+    document.dispatchEvent(new Event("scroll"));
+    placeAt(second as HTMLElement, 300);
+    document.dispatchEvent(new Event("scroll"));
+    second?.remove();
+    await waitFor(() => expect(third).toHaveFocus());
+  });
+});
+
+// (ac) In a dialog the same loss still keeps the focus inside it, so the page behind a modal one
+// is never reached, and still scrolls nothing and focuses no row the reader did not pick: the
+// Inbox drawer, whose list the reader scrolled away from the focused row before a live update
+// took that row away, takes the focus itself.
+test("a loss scrolled out of sight in a modal dialog leaves the focus on the dialog itself, scrolling nothing", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await withRescue(async () => {
+      const pageSearch = pageSearchIn(mainOf("Before").main);
+      const drawer = document.createElement("div");
+      drawer.setAttribute("role", "dialog");
+      drawer.setAttribute("aria-modal", "true");
+      document.body.append(drawer);
+      const { box, buttons } = scrollBoxIn(drawer, "Answer one", "Answer two", "Answer three");
+      const [first, second] = buttons;
+      first?.focus();
+      placeAt(first as HTMLElement, 20);
+      box.dispatchEvent(new Event("scroll"));
+      first?.remove();
+      await settled();
+      expect(drawer).toHaveFocus();
+      expect(drawer).toHaveAttribute("tabindex", "-1");
+      expect(second).not.toHaveFocus();
+      expect(pageSearch).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+});
+
+// (ad) The wait is held to the same rule: a control the reader's press disabled, and that they
+// scrolled out of their sight while its write was out, does not get the focus back once it is
+// enabled again, which would pull the page back to it. Left in sight it gets it back (c).
+test("a control scrolled out of sight while its write is out is left alone when it is enabled again", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await withRescue(async () => {
+      const [, saving] = mainOf("Before", "Save", "After").buttons;
+      const button = saving as HTMLButtonElement;
+      button.focus();
+      button.blur();
+      button.disabled = true;
+      await settled();
+      placeAt(button, 5_000);
+      document.dispatchEvent(new Event("scroll"));
+      button.disabled = false;
+      await settled();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+});

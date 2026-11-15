@@ -369,9 +369,10 @@ export interface DataTableProps<Row> {
    *  to React, so a change there would draw every cell anew. */
   readonly filterUnloaded?: ReadonlyMap<string, readonly string[]>;
   /** Draws one row: a `<tr>` carrying the caller's own row attribute, which the keys and the
-   *  box's height read, `data-index` and `ref={measure}`. */
+   *  box's height read, `data-index`, which the table writes the row's `aria-rowindex` from,
+   *  and `ref={measure}`. */
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
-  /** Draws one group's heading, with `data-index` and `ref={measure}`. */
+  /** Draws one group's heading, with `data-index` and `ref={measure}`, as `renderRow` does. */
   readonly renderGroup: (props: LineProps & { readonly entry: DisplayRow<Row> }) => ReactNode;
   /** What one row of this table is, which the shared header filter and the pager count in. */
   readonly noun: RowNoun;
@@ -497,7 +498,13 @@ function TableHeaderCell<TData>({
  * its issue starts next - hands the focus to the control now at its place in that row, else to
  * the one before it, else to the row itself, which takes the focus as the row keys' `focusRow`
  * gives it. A row that leaves altogether is no case of this: the selection bar and the page's
- * own hand-offs answer for it.
+ * own hand-offs answer for it. Nor is a focused row the box scrolls out of its drawn window: it
+ * goes with the focus, which the shell's focus rescue leaves on the page rather than pull the
+ * box back to where the row was (`useFocusRescue`).
+ *
+ * The table says how many rows it has (`aria-rowcount`) and each drawn line where it sits among
+ * them (`aria-rowindex`), so a screen reader hears the whole page's rows rather than the drawn
+ * ones alone.
  */
 export function DataTable<Row>({
   empty,
@@ -528,6 +535,25 @@ export function DataTable<Row>({
   // The space the rows above and below the drawn window would take.
   const first = virtualRows[0];
   const last = virtualRows.at(-1);
+  // The rows `aria-rowcount` and `aria-rowindex` count, every line of the page whether drawn
+  // or not: the header's, one per TanStack header group (`getHeaderGroups`), then `displayRows`,
+  // the page's lines - TanStack's row model for this page (`getRowModel`, after grouping,
+  // expanding and paging, an open group's heading among its rows), with the heading of a group
+  // the page before began repeated at its top and a heading whose rows all fall on the next page
+  // left off.
+  const headerGroups = table.getHeaderGroups();
+  const body = useRef<HTMLTableSectionElement>(null);
+  // Each drawn line's place among those rows, 1-based with the header's first. The caller draws
+  // every line's `<tr>`, so the place is written onto it here after each commit, from the
+  // `data-index` every line carries: its index in `displayRows`.
+  useLayoutEffect(() => {
+    for (const line of body.current?.children ?? []) {
+      const index = line.getAttribute("data-index");
+      if (index === null) continue;
+      const place = String(headerGroups.length + Number(index) + 1);
+      if (line.getAttribute("aria-rowindex") !== place) line.setAttribute("aria-rowindex", place);
+    }
+  });
   // The shared filter, for a caller that asked for no other: it counts with what the table was
   // handed, in what the caller calls its rows.
   const drawFilter: ColumnFilterRenderer<Row> =
@@ -565,12 +591,13 @@ export function DataTable<Row>({
         >
           <table
             aria-label={label}
+            aria-rowcount={headerGroups.length + displayRows.length}
             className="table-fixed border-separate border-spacing-0 text-sm"
             style={{ width: table.getTotalSize() + trailingWidth }}
           >
             <thead>
-              {table.getHeaderGroups().map((group) => (
-                <tr key={group.id}>
+              {headerGroups.map((group, index) => (
+                <tr aria-rowindex={index + 1} key={group.id}>
                   {group.headers.map((header) => (
                     <TableHeaderCell
                       dragColumn={dragColumn}
@@ -594,7 +621,7 @@ export function DataTable<Row>({
                 </tr>
               ))}
             </thead>
-            <tbody onFocus={noteFocus}>
+            <tbody onFocus={noteFocus} ref={body}>
               {first ? <tr aria-hidden style={{ height: first.start }} /> : null}
               {virtualRows.map((virtual) => {
                 const entry = displayRows[virtual.index];
