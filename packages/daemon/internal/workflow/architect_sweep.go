@@ -103,12 +103,18 @@ const (
 // the run is one startActs counts for the architect, whose start names no phase: one above the
 // newest stop that still acts (actingStop).
 //
-// A start a lane holds (record.QueuedSupervise.Running) is the next move, whatever else the record
-// says of it: the outbox is running it now, or runs it again once the lease of a lane that died
-// lapses. The outbox writes LastStartRow when a run begins (internal/daemon's outbox, supervise's
-// Machine.StartedBy) and only then relaunches the claim, so for that moment the record shows the
-// claim still failed or retired beside the start that is relaunching it, and the start's Attempts
-// may be above zero from an earlier run that waited.
+// A start a lane holds under a live lease (record.QueuedSupervise.Running) is the next move,
+// whatever else the record says of it: the outbox is running it now. The outbox writes
+// LastStartRow when a run begins (internal/daemon's outbox, supervise's Machine.StartedBy) and only
+// then relaunches the claim, so for that moment the record shows the claim still failed or retired
+// beside the start that is relaunching it, and the start's Attempts may be above zero from an
+// earlier run that waited. A lapsed lease holds nothing: a lane that died mid-run leaves its lease
+// on the row until the outbox's sweep runs the row again, and the store's own due predicate reads
+// such a row as free (record's outboxUnleasedDue), so a start under a lapsed lease is read below as
+// one no lane holds. lease_until is the daemon's clock at the claim, or at the lane's latest
+// renewal, plus the outbox's 30-second lease (internal/daemon's outboxLease), and it is compared
+// with the store's now(), as the start's age is (record.QueuedSupervise.Age); the two clocks agree
+// on a deployment to far less than that lease.
 //
 // A start no lane holds is failing when its id is at or below the claim's LastStartRow, which says
 // it has run against the claim, and its Attempts are above zero, which says a run of it ended
@@ -129,10 +135,7 @@ const (
 // (the architect's reading of R7 at dispatch://INFRA-2614).
 func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunch {
 	stop := actingStop(run, root)
-	var lastStart int64
-	if run.Claim != nil {
-		lastStart = run.Claim.LastStartRow
-	}
+	lastStart := lastStartRow(run)
 	relaunch := RelaunchNone
 	for _, queued := range run.Queued {
 		if !startActs(queued, stop, "") {

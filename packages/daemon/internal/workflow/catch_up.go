@@ -122,17 +122,7 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // about queued rows, read without its question about the claim's own liveness: this claim is
 // live, which is precisely why it is being given its task.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
-	var lastStart int64
-	if run.Claim != nil {
-		lastStart = run.Claim.LastStartRow
-	}
-	var stop int64
-	for _, queued := range run.Queued {
-		if StopActs(queued.ID, queued.Request, lastStart, &root) {
-			stop = max(stop, queued.ID)
-		}
-	}
-	if stop != 0 {
+	if actingStop(run, root) != 0 {
 		return true
 	}
 	for _, queued := range run.Queued {

@@ -1901,16 +1901,24 @@ type RoleRun struct {
 
 // QueuedSupervise is one queued supervise row: its id, which orders it against the others and
 // against the newest start run on the claim, its request, how many of its runs ended without
-// success, whether a lane holds it, and how long ago it was queued.
+// success, whether a lane holds it under a live lease, and how long ago it was queued.
 //
 // Attempts is the row's attempts. The outbox adds one each time a run of the row ends without
 // success and leaves the row queued for its backoff, a failure or a wait alike (wait.ErrWaiting:
 // internal/daemon's outbox settle, then Store.RetryOutbox), and a run that succeeds deletes the
 // row.
 //
-// Running is whether a lane holds the row's lease (lease_token): the outbox is running it now, or
-// the lane that ran it died and the row runs again once the lease lapses. Store.RetryOutbox clears
-// the lease, and a finished row is deleted, so a row no lane holds is between runs.
+// Running is whether a lane holds a live lease on the row: its lease_token is set and its
+// lease_until is after now(), so the outbox is running the row now. A lapsed lease holds nothing.
+// A lane that dies mid-run records neither the row's finish nor its retry, so the row keeps that
+// lane's token and a lease_until in the past until the outbox's sweep wakes its lane and the lane
+// runs it again (internal/daemon's outbox_lanes.go); the store's own due predicate reads such a
+// row as free (outboxUnleasedDue), and Running reads it the same way, as a row between runs.
+// lease_until is the daemon's clock at the claim, or at the lane's latest renewal, plus the
+// outbox's 30-second lease (internal/daemon's outboxLease), and it is compared here with the
+// store's now(), as Age is; the two clocks agree on a deployment to far less than that lease. The
+// other ends of a run leave no lease at all: Store.RetryOutbox clears it, and a finished row is
+// deleted.
 //
 // Age is now(), the start of the reading transaction, less created_at, both in the store's own
 // clock. A row a transaction that began later wrote reads a negative age, which is inside any

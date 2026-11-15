@@ -398,25 +398,27 @@ func TestNoArchitectWakeIsRaisedForARootThatIsMovingAlong(t *testing.T) {
 
 // The second arm wakes the controller for a failed or a retired architect claim only while no
 // start of the root's run is the daemon's next move for it (workflow.ArchitectRelaunchOf): a start
-// a lane holds is, and so is a start queued in the last ten minutes unless it has already run
-// against the claim and a run of it ended without success. A queued start is the daemon's own
-// next move: the outbox's start of a failed or a retired claim relaunches it on its kept session,
-// and a controller woken now would take `fresh_session`, which discards that session. Every
-// re-admission of a closed tree makes this shape: the linger's end retires the architect's claim,
-// and the promotion queues the architect's start in the same pass that reads the arms. A start in
-// its run against the claim is still the next move: the outbox records the start on the claim
-// (claims.last_start_row) before it relaunches the claim, so a pass that reads the record in that
-// moment reads the claim failed or retired beside the start that is relaunching it, whatever an
-// earlier run of that start that waited added to its attempts.
+// a lane holds under a live lease is, and so is a start queued in the last ten minutes unless it
+// has already run against the claim and a run of it ended without success. A lapsed lease, which a
+// lane that died mid-run leaves on the row until the outbox's sweep runs the row again, holds
+// nothing, as the store's own due predicate reads it (record.QueuedSupervise.Running). A queued
+// start is the daemon's own next move: the outbox's start of a failed or a retired claim
+// relaunches it on its kept session, and a controller woken now would take `fresh_session`, which
+// discards that session. Every re-admission of a closed tree makes this shape: the linger's end
+// retires the architect's claim, and the promotion queues the architect's start in the same pass
+// that reads the arms. A start in its run against the claim is still the next move: the outbox
+// records the start on the claim (claims.last_start_row) before it relaunches the claim, so a pass
+// that reads the record in that moment reads the claim failed or retired beside the start that is
+// relaunching it, whatever an earlier run of that start that waited added to its attempts.
 //
 // workflow.Stranded is asked here too, of the claims the store holds for the very fixture the
 // pass then reads, and the two readings answer different questions. Stranded asks whether nothing
 // will start the claim again, and a start that has run against it and left it failed will, since
 // the outbox runs it again on its backoff. The arm asks whether a start can still cure the claim,
-// and that start cannot. So on these cases the two agree on every one but the failed claim whose
-// own start has run against it and left it failed, which the arm wakes the controller for and
-// Stranded leaves out. A start of an earlier run reaches no claim of this one, so it quiets
-// neither.
+// and that start cannot. So on these cases the two agree on every one but the failed claims whose
+// own start has run against them and left them failed, under no lease or a lapsed one, which the
+// arm wakes the controller for and Stranded leaves out. A start of an earlier run reaches no claim
+// of this one, so it quiets neither.
 func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunchesTheClaim(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -429,8 +431,9 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunche
 		// ended without success, a failure or a wait (record.Store.RetryOutbox).
 		ran      bool
 		attempts int
-		// running gives that start a lane's lease, which is the outbox running it now.
-		running bool
+		// lease gives that start a lane's lease: "live" is a lane running it now, and "lapsed" is
+		// the lease a lane that died mid-run leaves, five minutes past, which holds nothing.
+		lease string
 		// awaiting puts the root in awaiting_person on that wait, whose answer resumes its
 		// architect with a start of its own (workflow.Engine.ResumeAwaitedRoot).
 		awaiting *record.Awaiting
@@ -457,22 +460,27 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunche
 			awaiting: &record.Awaiting{Ask: "ask-q", Since: seqMark(10)},
 			why:      "the person's answer resumes the architect with a start that relaunches the claim, as workflow.Stranded reads it"},
 		{name: "a retired claim whose start is in its first run against it", state: supervise.StateRetired,
-			queued: architectWakeGeneration, ran: true, running: true,
+			queued: architectWakeGeneration, ran: true, lease: "live",
 			why: "the outbox records the start on the claim before it relaunches the claim, so that start is still the daemon's next move"},
 		{name: "a failed claim whose start is in its first run against it", state: supervise.StateFailed,
-			queued: architectWakeGeneration, ran: true, running: true,
+			queued: architectWakeGeneration, ran: true, lease: "live",
 			why: "the outbox records the start on the claim before it relaunches the claim, so that start is still the daemon's next move"},
 		{name: "a failed claim whose start no run has ended yet, though it stands as the claim's last start", state: supervise.StateFailed,
 			queued: architectWakeGeneration, ran: true,
 			why: "no run of the start has ended without success, so nothing says it failed against the claim, and it was queued inside the bound"},
 		{name: "a retired claim whose start the outbox is running now, after an earlier run of it waited", state: supervise.StateRetired,
-			queued: architectWakeGeneration, ran: true, attempts: 1, running: true,
-			why: "a lane holds the start, so the outbox is relaunching the claim now, whatever the earlier run that waited added to its attempts"},
+			queued: architectWakeGeneration, ran: true, attempts: 1, lease: "live",
+			why: "a lane holds the start under a live lease, so the outbox is relaunching the claim now, whatever the earlier run that waited added to its attempts"},
 		{name: "a failed claim whose own start has run against it and left it failed", state: supervise.StateFailed,
 			queued: architectWakeGeneration, ran: true, attempts: 3, woken: true,
 			says: "The start of its run has run against it and left it failed",
 			why: "the outbox only runs that start again on its backoff, which cures nothing, so the arm wakes the controller, " +
 				"while Stranded leaves the claim out because that start will run again"},
+		{name: "a failed claim whose own start left it failed, under the lapsed lease of a lane that died", state: supervise.StateFailed,
+			queued: architectWakeGeneration, ran: true, attempts: 3, lease: "lapsed", woken: true,
+			says: "The start of its run has run against it and left it failed",
+			why: "a lapsed lease holds nothing, as the outbox's own due predicate reads it, so that start is one the outbox only runs " +
+				"again on its backoff, which cures nothing; Stranded leaves the claim out because that start will run again"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -507,9 +515,18 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunche
 					if _, err := tx.Exec(ctx, `update outbox set attempts = $1 where id = $2`, tc.attempts, startRow); err != nil {
 						t.Fatalf("record %d unsuccessful runs of start row %d: %v", tc.attempts, startRow, err)
 					}
-					if tc.running {
-						if _, err := tx.Exec(ctx, `update outbox set lease_token = 'lane', lease_until = now() + interval '1 minute' where id = $1`, startRow); err != nil {
-							t.Fatalf("lease start row %d to a lane: %v", startRow, err)
+					if tc.lease != "" {
+						var until string
+						switch tc.lease {
+						case "live":
+							until = "now() + interval '1 minute'"
+						case "lapsed":
+							until = "now() - interval '5 minutes'"
+						default:
+							t.Fatalf("the lease %q is neither live nor lapsed", tc.lease)
+						}
+						if _, err := tx.Exec(ctx, `update outbox set lease_token = 'lane', lease_until = `+until+` where id = $1`, startRow); err != nil {
+							t.Fatalf("lease start row %d to a lane, %s: %v", startRow, tc.lease, err)
 						}
 					}
 					if _, err := tx.Exec(ctx, `update claims set last_start_row = $1 where token = $2`, startRow, string(token)); err != nil {

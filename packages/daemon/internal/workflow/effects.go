@@ -300,10 +300,7 @@ func OwedEntry(run record.RoleRun, root record.Issue, entry int64) bool {
 // unpromptedPhaseWorker, asking whether nothing will prompt a live claim. One body is what keeps
 // them from reading the same rows differently.
 func actingStop(run record.RoleRun, root record.Issue) int64 {
-	var lastStart int64
-	if run.Claim != nil {
-		lastStart = run.Claim.LastStartRow
-	}
+	lastStart := lastStartRow(run)
 	var stop int64
 	for _, queued := range run.Queued {
 		if StopActs(queued.ID, queued.Request, lastStart, &root) {
@@ -311,6 +308,14 @@ func actingStop(run record.RoleRun, root record.Issue) int64 {
 		}
 	}
 	return stop
+}
+
+// lastStartRow is the newest start the outbox ran against run's claim, 0 when run has no claim.
+func lastStartRow(run record.RoleRun) int64 {
+	if run.Claim == nil {
+		return 0
+	}
+	return run.Claim.LastStartRow
 }
 
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {
