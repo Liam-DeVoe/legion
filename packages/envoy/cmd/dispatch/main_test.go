@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1223,7 +1224,7 @@ func TestCensusSubcommandExitCodes(t *testing.T) {
 func TestCensusSubcommandPrintsACensusErrorWithOnePrefix(t *testing.T) {
 	database := storetest.Open(t)
 	var out, errOut bytes.Buffer
-	if code := census(context.Background(), database.Pool.Config().ConnString()+"&search_path=nosuch", &out, &errOut); code != 2 {
+	if code := census(context.Background(), testpg.WithParameter(t, database.Pool.Config().ConnString(), "search_path", "nosuch"), &out, &errOut); code != 2 {
 		t.Fatalf("exit %d, want 2; stderr %q", code, errOut.String())
 	}
 	const want = "census: the connection's search_path names no schema that exists, so current_schema() is null: the census would find neither schema_migrations nor any table, and the runner can create neither; name an existing schema in the search_path\n"

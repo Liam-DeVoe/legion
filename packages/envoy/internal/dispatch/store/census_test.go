@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testpg"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -152,7 +153,7 @@ func TestCensusPassesAtZeroAndNamesTheTouchedTable(t *testing.T) {
 // Postgres would run every statement. Either way the table is unchanged.
 func TestCensusRefusesACensusThatWrites(t *testing.T) {
 	ctx := context.Background()
-	for name, tc := range map[string]struct{ census, urlSuffix, wantCode string }{
+	for name, tc := range map[string]struct{ census, param, value, wantCode string }{
 		"a write in a CTE": {
 			census:   "with w as (insert into things (id, kind) values (9, 'x') returning id) select count(*) from w",
 			wantCode: "SQLSTATE 25006",
@@ -161,9 +162,10 @@ func TestCensusRefusesACensusThatWrites(t *testing.T) {
 		// ends the read-only transaction and the insert lands. With the pin Postgres refuses the
 		// text at Parse.
 		"several statements over the simple protocol": {
-			census:    "select 0; commit; insert into things (id, kind) values (9, 'x'); select 0",
-			urlSuffix: "&default_query_exec_mode=simple_protocol",
-			wantCode:  "SQLSTATE 42601",
+			census:   "select 0; commit; insert into things (id, kind) values (9, 'x'); select 0",
+			param:    "default_query_exec_mode",
+			value:    "simple_protocol",
+			wantCode: "SQLSTATE 42601",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -171,7 +173,11 @@ func TestCensusRefusesACensusThatWrites(t *testing.T) {
 			if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'good')"); err != nil {
 				t.Fatal(err)
 			}
-			report, err := census(ctx, url+tc.urlSuffix, withCheck(tc.census), pgmigrate.CensusOptions{})
+			censusURL := url
+			if tc.param != "" {
+				censusURL = testpg.WithParameter(t, url, tc.param, tc.value)
+			}
+			report, err := census(ctx, censusURL, withCheck(tc.census), pgmigrate.CensusOptions{})
 			if err != nil {
 				t.Fatalf("census: %v", err)
 			}
@@ -194,7 +200,7 @@ func TestCensusRefusesACensusThatWrites(t *testing.T) {
 // backslash and this census answers -1.
 func TestCensusReadsItsStringLiteralsWithStandardConformingStrings(t *testing.T) {
 	_, url := migratedToOne(t)
-	report, err := census(context.Background(), url+"&standard_conforming_strings=off", withCheck(`select length('\\') - 2`), pgmigrate.CensusOptions{})
+	report, err := census(context.Background(), testpg.WithParameter(t, url, "standard_conforming_strings", "off"), withCheck(`select length('\\') - 2`), pgmigrate.CensusOptions{})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
@@ -211,13 +217,13 @@ func TestCensusReadsItsStringLiteralsWithStandardConformingStrings(t *testing.T)
 // quotes after it are one quote inside the literal, and the literal never ends. Read as Load reads
 // them, each census answers 0.
 func TestCensusReadsItsTextWithBackslashQuoteSafeEncodingAndClientEncodingUTF8(t *testing.T) {
-	for name, tc := range map[string]struct{ urlSuffix, census string }{
-		"backslash_quote off":  {"&backslash_quote=off", `select length(E'a\'') - 2`},
-		"client_encoding SJIS": {"&client_encoding=SJIS", `select length(E'Á\'') - 2`},
+	for name, tc := range map[string]struct{ param, value, census string }{
+		"backslash_quote off":  {"backslash_quote", "off", `select length(E'a\'') - 2`},
+		"client_encoding SJIS": {"client_encoding", "SJIS", `select length(E'Á\'') - 2`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, url := migratedToOne(t)
-			report, err := census(context.Background(), url+tc.urlSuffix, withCheck(tc.census), pgmigrate.CensusOptions{})
+			report, err := census(context.Background(), testpg.WithParameter(t, url, tc.param, tc.value), withCheck(tc.census), pgmigrate.CensusOptions{})
 			if err != nil {
 				t.Fatalf("census: %v", err)
 			}
@@ -624,7 +630,7 @@ func TestCensusCannotBeTakenWhereTheSearchPathNamesNoSchema(t *testing.T) {
 	if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'bad')"); err != nil {
 		t.Fatal(err)
 	}
-	report, err := census(ctx, url+"&search_path=nosuch", withCheck("select count(*) from things where kind = 'bad'"), pgmigrate.CensusOptions{})
+	report, err := census(ctx, testpg.WithParameter(t, url, "search_path", "nosuch"), withCheck("select count(*) from things where kind = 'bad'"), pgmigrate.CensusOptions{})
 	if err == nil {
 		t.Fatalf("census took a database whose search_path names no schema:\n%s", reportText(report))
 	}

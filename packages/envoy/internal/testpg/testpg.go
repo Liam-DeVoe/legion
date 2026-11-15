@@ -8,9 +8,10 @@
 // no server, as a natslive test brings its own NATS through testnats: it takes a database on the
 // server DISPATCH_TEST_DATABASE_URL names, or starts a container when that variable is unset.
 // DatabaseOn is the helper for a test that already holds the URL of the server it runs on: it
-// reads no variable and starts nothing. Template is a migrated database a binary makes once and
-// copies for each test; Dispatch's and the broker's storetest packages give out its clones as
-// migrated stores, and a test of either store that wants one calls its storetest instead.
+// reads no variable and starts nothing. WithParameter sets a query parameter on any of these URLs.
+// Template is a migrated database a binary makes once and copies for each test; Dispatch's and
+// the broker's storetest packages give out its clones as migrated stores, and a test of either
+// store that wants one calls its storetest instead.
 package testpg
 
 import (
@@ -108,6 +109,23 @@ func adminExec(t testing.TB, adminURL, host, statement string) {
 func databaseURL(server url.URL, database string) string {
 	server.Path = "/" + database
 	return server.String()
+}
+
+// WithParameter returns databaseURL with its query parameter key set to value. A test that has a
+// connection ask for a setting adds it here rather than appending "&key=value", which names a
+// parameter only when the URL already carries a query: DatabaseOn keeps the server URL's query, so
+// on a URL that has none the suffix runs on into the database's name. A failure prints only what
+// url.Parse wraps, since the URL carries a credential (DatabaseOn).
+func WithParameter(t testing.TB, databaseURL, key, value string) string {
+	t.Helper()
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the URL of the test database: %v", errors.Unwrap(err))
+	}
+	query := parsed.Query()
+	query.Set(key, value)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 // randomSuffix is eight random bytes in hex, the part of a database's name that keeps it apart
