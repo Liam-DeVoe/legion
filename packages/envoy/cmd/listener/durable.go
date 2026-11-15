@@ -373,13 +373,14 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 // storedSeq, may need this listener's durable path, read from the subject alone, and when it does
 // not, how many sessions of this machine hold it in a consumer of their own
 // (session.SessionEntry.ConsumerHoldsStored; a message stored below a consumer's start is in no
-// consumer, so the durable path still takes it up and NAKs it while the session is live, with a
-// delivery exception on the session's agent subject alone, since session.Resolve answers it with
-// session.ErrNoSessionRecord). A role lane's subject always needs it. A session's agent subject
+// consumer, so the durable path still takes it up, and since session.Resolve answers it with
+// session.ErrNoSessionRecord, on the session's agent subject it NAKs while the session is live or
+// unresponsive, with a delivery exception; on a followed topic it NAKs only while the session is
+// live, and raises no exception). A role lane's subject always needs it. A session's agent subject
 // does unless the session's consumer holds it or the session is another listener's
 // (agentSubjectNeedsDelivery). Any other subject does when it matches a topic of an interest of
-// this machine (the registry's subject index) whose session's consumer does not hold it; with
-// none, the fan-out would deliver it to nobody and report nothing.
+// this machine (the registry's subject index) whose session's consumer does not hold it; with none,
+// the fan-out would deliver it to nobody and report nothing.
 func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, storedSeq uint64) (needed bool, skipped int) {
 	if strings.HasPrefix(subject, contracts.RoleTopicPrefix) {
 		return true, 0

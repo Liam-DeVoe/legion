@@ -61,26 +61,27 @@ type SessionEntry struct {
 	// that wrote this entry read it (bus.SessionConsumers.Ensure). Every stored message at or after
 	// it is the consumer's to deliver. One below it is in no consumer, so the durable path takes it
 	// up, and since a session receives only what its own consumer relays, that path's resolution
-	// answers it with ErrNoSessionRecord (Resolve): the path logs the delivery failure and NAKs the
-	// message while the session is live, and raises a delivery exception for it only on the
-	// session's own agent subject, a control topic; a followed topic's failure raises none
-	// (cmd/listener isControlTopic, ConsumerHoldsStored). A restart of the consumer normally moves
-	// its start forward, to the sequence after its ack floor, past messages it has acked, so a
-	// start recorded before that restart still names a sequence the consumer covers from. Only a
-	// registration writes this field (cmd/listener sessionEntryFromSubscribe), though, so a repair
-	// or a relay restart that creates the consumer below it leaves it above the consumer's real
-	// start until the session's next registration rewrites it. A create that clamps a start past
-	// the stream's end to the stream's first sequence does that where an earlier build or a
-	// restored stream left a start past the end here, and so does a restart at an ack floor the
-	// server lowered after the stream lost data, or at the stream's first sequence after its
+	// answers it with ErrNoSessionRecord (Resolve): the path logs the delivery failure: on the
+	// session's agent subject it NAKs while the session is live or unresponsive, with a delivery
+	// exception; on a followed topic it NAKs only while the session is live, and raises no
+	// exception (cmd/listener isControlTopic, ConsumerHoldsStored). A restart of the consumer
+	// normally moves its start forward, to the sequence after its ack floor, past messages it has
+	// acked, so a start recorded before that restart still names a sequence the consumer covers
+	// from. Only a registration writes this field (cmd/listener sessionEntryFromSubscribe), though,
+	// so a repair or a relay restart that creates the consumer below it leaves it above the
+	// consumer's real start until the session's next registration rewrites it. A create that clamps
+	// a start past the stream's end to the stream's first sequence does that where an earlier build
+	// or a restored stream left a start past the end here, and so does a restart at an ack floor
+	// the server lowered after the stream lost data, or at the stream's first sequence after its
 	// sequences went back (bus.SessionConsumers.create, bus.SessionConsumers.RestartAtFloor). Until
 	// then the durable path reads a message between the two starts as in no consumer, so Resolve
-	// answers it with ErrNoSessionRecord and the path logs the failure and NAKs it while the
-	// session is live, with a delivery exception on the agent subject, although the consumer holds
-	// that message too and its relay delivers it; once the next registration has rewritten the
-	// start, the path skips it (ConsumerHoldsStored). Zero for a session on the core path, and for
-	// one whose entry an earlier release wrote, which the durable path reads as today: the consumer
-	// holds every stored message of it.
+	// answers it with ErrNoSessionRecord and the path logs the failure: on the session's agent
+	// subject it NAKs while the session is live or unresponsive, with a delivery exception; on a
+	// followed topic it NAKs only while the session is live, and raises no exception. The consumer
+	// holds that message all the same and its relay delivers it, and once the next registration has
+	// rewritten the start, the path skips it (ConsumerHoldsStored). Zero for a session on the core
+	// path, and for one whose entry an earlier release wrote, which the durable path reads as
+	// today: the consumer holds every stored message of it.
 	ConsumerStart uint64 `json:"consumer_start,omitempty"`
 	// Plugin is the npm package the session registered through and PluginVersion that plugin's
 	// build; both empty for a session whose plugin predates the fields.
@@ -126,10 +127,11 @@ const DeliveryConsumer = "consumer"
 // every message at or after the sequence its consumer starts at (ConsumerStart). A durable message
 // below that start is in no consumer — one NAKed, or deferred, before the consumer was created, and
 // redelivered after it — and the durable path takes it up as it would for a session with no
-// consumer at all: Resolve answers it with ErrNoSessionRecord, and the path NAKs it while the
-// session is live, raising a delivery exception for it on the session's agent subject alone.
-// storedSeq 0 names a message that is not the durable's copy of a stored one (a core frame), whose
-// stored copy the consumer holds whatever its sequence.
+// consumer at all: Resolve answers it with ErrNoSessionRecord: on the session's agent subject it
+// NAKs while the session is live or unresponsive, with a delivery exception; on a followed topic it
+// NAKs only while the session is live, and raises no exception. storedSeq 0 names a message that is
+// not the durable's copy of a stored one (a core frame), whose stored copy the consumer holds
+// whatever its sequence.
 func (e SessionEntry) ConsumerHoldsStored(storedSeq uint64) bool {
 	return e.Delivery == DeliveryConsumer && (storedSeq == 0 || storedSeq >= e.ConsumerStart)
 }

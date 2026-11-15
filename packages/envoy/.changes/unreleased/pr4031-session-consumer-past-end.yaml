@@ -32,13 +32,14 @@ body: |-
   that an earlier build created past the end.
 
   Two limits remain, both limits of resuming by stream sequence. First, a consumer the stream
-  catches up with before anything restarts it (one an earlier build created past the end, or one
-  an unreconciled whole loss of a one-copy stream left there) is kept once the stream reaches its
+  catches up with before anything restarts it (one an earlier build created past the end, or one an
+  unreconciled whole loss of a one-copy stream left there) is kept once the stream reaches its
   floor, and the messages between the old end and that floor are skipped. For an earlier build's
-  consumer, the window closes at this build's listener's start. A live session's consumer is
-  repaired by the relay restart the listener makes then. A gone session has no relay, so its
-  consumer is reached by the sweep's delete instead, whose first pass runs at the listener's
-  start and then every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5 minutes by default), at most
-  256 consumers a pass. Second, after a restore from an older backup that keeps the stream's
-  `envoy_stream_id`, a stream that grows past a client's resume point R before that client returns
-  puts R + 1 inside the stream, so the messages between the restored end and R are skipped.
+  consumer, the window closes at the first start of a listener that runs this build and holds that
+  session's consumer. A session it relays is repaired by the relay restart it makes at its start. A
+  session it no longer relays is reached by the sweep's delete instead, whose first pass runs at
+  the listener's start and then every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5 minutes by
+  default), at most 256 consumers a pass. Second, after a restore from an older backup that keeps
+  the stream's `envoy_stream_id`, a stream that grows past a client's resume point R before that
+  client returns puts R + 1 inside the stream, so the messages between the restored end and R are
+  skipped.

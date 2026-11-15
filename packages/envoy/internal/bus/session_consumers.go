@@ -586,14 +586,14 @@ func (state sessionStreamState) firstStart() uint64 {
 // The floor is 0 where this call recorded nothing, which is each of: a session id that names no
 // consumer; a consumer the stream no longer holds with no pending start behind it; a floor of 0
 // recorded for a consumer that had acked nothing; and the 0 a floor past the end records for a
-// stream whose first sequence is 1, as a stream that has aged nothing out has. Each of those is
-// the same 0 to the caller and means the same thing to it, since a create at the sequence after
-// 0 is a create at the first sequence the stream holds. A caller reads 0 as "no floor to raise
-// the record's own start to", which is what registeredTarget does with it. A delete whose
-// resume record could not be published returns 0 with its error and deletes nothing: the sweep
-// reaches that session again next pass, so no consumer is deleted with its position unrecorded.
-// A delete whose record landed and whose own call then failed returns that recorded floor with
-// its error.
+// stream that has stored nothing, or for one whose first sequence is 1, as a stream that has aged
+// nothing out has. Each of those is the same 0 to the caller and means the same thing to it, since
+// a create at the sequence after 0 is a create at the first sequence the stream holds. A caller
+// reads 0 as "no floor to raise the record's own start to", which is what registeredTarget does
+// with it. A delete whose resume record could not be published returns 0 with its error and deletes
+// nothing: the sweep reaches that session again next pass, so no consumer is deleted with its
+// position unrecorded. A delete whose record landed and whose own call then failed returns that
+// recorded floor with its error.
 //
 // Dropping the consumer's pending start (RestartAtFloor) goes before the delete, and that order
 // is what makes the delete final: a pending start left standing would have the next registration
