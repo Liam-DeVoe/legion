@@ -64,14 +64,16 @@ import { replayCase } from "./replay";
  * trees draws the same slices. `draw.json` records the key the groups were taken under, how many
  * groups there were, and every parent it read, since a later reading of the slices turns on them.
  *
- * A group stands on one side of the cut whole, and the side is its first case's. A tree with a
- * case answered before the cut stands on the training side, so its cases answered after the cut
- * go to no slice: they are left out under `group-before-cut`, counted and named, because a case
- * in a scored slice whose own issue or tree has decisions on the training side is measured on a
- * subject the training already holds ("a group that spans the time cut goes whole to the set of
- * its first case, so grouping wins", the same section). A case whose tree Dispatch cannot answer
- * is left out the same way, under `tree-unknown`. Nothing here moves a training case: the side of a
- * case answered before the cut is the training side already.
+ * No group has cases on both sides of the cut. A tree with a case answered before the cut has
+ * training evidence, so its cases answered after the cut go to no slice: they are left out under
+ * `group-before-cut`, counted and named, because a case in a scored slice whose own issue or tree
+ * has decisions on the training side is measured on a subject the training already holds. They
+ * are not added to the training evidence either, so this is narrower than "a group that spans
+ * the time cut goes whole to the set of its first case, so grouping wins" (the same section):
+ * the group's later cases are left out rather than moved. A tree Dispatch cannot answer cannot be
+ * shown to stand on one side: a case answered after the cut on one is left out under
+ * `tree-unknown`, and a case answered before the cut on one stops the draw, since it might share
+ * a tree with any drawn case.
  *
  * Four more kinds of case never reach the draw. A question offering fewer than two options
  * cannot be judged as a choice, and a question whose answer names no option cannot be scored
@@ -394,14 +396,15 @@ function answeredBefore(one: CaseRow, other: CaseRow): boolean {
  * `rows` is the whole corpus, both sides of the cut, because which side a group stands on is its
  * first case's.
  *
- * - A case whose group holds a case answered before the cut stands with its group on the training
- *   side, so it reaches no slice; it is named, with the group's earliest case, as
- *   `group-before-cut`. It joins no training input either: retrieval and distillation read only
- *   cases answered before the cut (`evidenceFor` in `split.ts`), and reading such a case there is
- *   a change to every arm's recipe, which is a round's to decide and not the draw's.
- * - A case whose chain of parents passes an issue Dispatch answered 404 for has a tree nobody can
- *   read, so it may share a group with a training case and reaches no slice either, as
- *   `tree-unknown`.
+ * - A case whose group holds a case answered before the cut reaches no slice; it is named, with
+ *   the group's earliest case, as `group-before-cut`. It is no retrieval evidence either:
+ *   `evidenceFor` in `split.ts` reads only cases answered before the cut, and reading such a case
+ *   there is a change to every arm's recipe, which is a round's to decide and not the draw's.
+ * - A case answered after the cut whose chain of parents passes an issue Dispatch answered 404
+ *   for has a tree nobody can read, so it may share a group with a training case and reaches no
+ *   slice either, as `tree-unknown`. A case answered before the cut on such a chain stops the
+ *   split: it is training evidence whose tree nobody can read, so it may share a tree with any
+ *   case drawn.
  *
  * An approval case answered after the cut that names no option stops the split, as it stops
  * `drawSlices`: leaving it out under a tree would pass over a corpus read wrongly.
@@ -415,6 +418,17 @@ export function splitAtCut(
   const firstBefore = new Map<string, CaseRow>();
   for (const row of rows) {
     if (answeredTime(row) >= cut) continue;
+    const lacked =
+      row.issueKey === null
+        ? undefined
+        : chainOf(row.issueKey, trees.parents).find((key) => missing.has(key));
+    if (lacked !== undefined) {
+      throw new DrawError(
+        `the training case ${row.caseId} is on ${row.issueKey}, whose chain of parents passes ` +
+          `${lacked}, which Dispatch answered 404 for: its tree cannot be read, so no drawn ` +
+          "case can be shown to stand apart from it"
+      );
+    }
     const key = groupKeyOf(row, trees.parents);
     const known = firstBefore.get(key);
     if (known === undefined || answeredBefore(row, known)) firstBefore.set(key, row);
@@ -810,8 +824,14 @@ export async function pinnedIssueTrees(path: string, keys: readonly string[]): P
         `the first ${absent[0]}`
     );
   }
+  if (!Array.isArray(held.missing)) {
+    throw new UsageError(
+      `--issue-trees ${path} holds no list under \`missing\`, which draw.json always writes ` +
+        "(an empty one where Dispatch found every issue)"
+    );
+  }
   const missing: string[] = [];
-  for (const key of listOf(held.missing)) {
+  for (const key of held.missing as unknown[]) {
     if (typeof key !== "string" || parents.get(key) !== null) {
       throw new UsageError(
         `--issue-trees ${path} lists ${JSON.stringify(key)} as missing, which is no issue it ` +
@@ -1014,7 +1034,7 @@ async function draw(flags: Flags): Promise<number> {
   const split = splitAtCut(corpus.rows, cut, trees);
   const leftOut = (kind: UndrawableKind): number =>
     split.leftOut.filter((one) => one.undrawableKind === kind).length;
-  console.log(`of a tree with a case before the cut, so training  ${leftOut("group-before-cut")}`);
+  console.log(`of a tree with a case before the cut, left out     ${leftOut("group-before-cut")}`);
   console.log(`on a tree Dispatch could not answer                ${leftOut("tree-unknown")}`);
   const definition = await neverDecideDefinition();
   const ruleOptions: NeverDecideOptions = {

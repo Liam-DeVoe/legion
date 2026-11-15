@@ -66,9 +66,12 @@ export interface IssueTrees {
   readAt: string;
   /** Where this run took them from: `dispatch`, or the file they were pinned from. */
   source: string;
-  /** Each issue's parent by key, sorted by key; null for a root. */
+  /** Each issue's parent by key, sorted by key; null for a root and for a missing issue. */
   parents: Record<string, string | null>;
-  /** The issues the corpus names that Dispatch answered 404 for, each the root of its own tree. */
+  /**
+   * The issues Dispatch answered 404 for, the corpus's own and any above them. Each one's entry
+   * under `parents` is null because its chain cannot be read past it, not because it is a root.
+   */
   missing: string[];
 }
 

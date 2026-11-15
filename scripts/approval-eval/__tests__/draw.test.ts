@@ -368,6 +368,16 @@ describe("the side of the cut a group stands on", () => {
     expect(split.leftOut[1]?.reason).toMatch(/404 for GONE-1, on the chain of parents of CHILD-9/);
   });
 
+  test("a training case on a tree Dispatch lacks an issue of stops the split", () => {
+    const rows = [
+      answered(caseRow("a-old-unknown", "approval", "GONE-1"), "2026-11-04T10:00:00Z"),
+      answered(caseRow("a-post-known", "approval", "ROOT-1"), "2026-11-06T11:00:00Z"),
+    ];
+    const trees = { parents: { "GONE-1": null, "ROOT-1": null }, missing: ["GONE-1"] };
+    expect(() => splitAtCut(rows, cut, trees)).toThrow(DrawError);
+    expect(() => splitAtCut(rows, cut, trees)).toThrow(/a-old-unknown is on GONE-1/);
+  });
+
   test("an approval with no option chosen stops the split, even on a tree before the cut", () => {
     const rows = [
       answered(caseRow("a-root-old", "approval", "ROOT-1"), "2026-11-04T10:00:00Z"),
@@ -452,6 +462,13 @@ describe("the trees a draw is given from a file", () => {
     for (const missing of [[7], ["CHILD-1"], ["OTHER-9"]]) {
       const path = await fixture({ ...trees, missing });
       await expect(pinnedIssueTrees(path, ["CHILD-1"])).rejects.toThrow(/as missing/);
+    }
+  });
+
+  test("refuses a file whose missing issues are not a list", async () => {
+    for (const missing of ["GONE-1", { "GONE-1": true }, null, undefined]) {
+      const path = await fixture({ ...trees, missing });
+      await expect(pinnedIssueTrees(path, ["CHILD-1"])).rejects.toThrow(/no list under `missing`/);
     }
   });
 
