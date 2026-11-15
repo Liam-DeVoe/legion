@@ -46,7 +46,8 @@ The claim operations and the re-run of a CI run need no `kubectl`.
 that holds its task and does not run it, a session that a provider keeps refusing, a claim that a
 wake gives you (`provider-errors`, an escalated hold, `worker-died`), or a claim that a person asks
 you to act on. A tree's architect holds the same six operations for the claims of its own tree,
-but not for its own claim. A tree's architect claim is yours.
+but not for its own claim (`skill://legion-architect/SKILL.md#escalation-judgment`). A tree's
+architect claim is yours.
 
 **The command.** `legion({ op: "<op>", issue: "<KEY>", role: "<role>" })`, with `<op>` one of
 the six below. Each refuses your own claim (role `controller`).
@@ -281,7 +282,8 @@ gh run view <id> --log-failed --repo <owner>/<repo>
 A test that failed and passed on the same code is flaky. That is no reason for a re-run: it goes
 to the tree whose code it is, by a mention
 (`skill://legion-worker/references/findings.md#write-to-the-owner`), to be fixed at its cause.
-A tree's architect holds the same command for its own tree's runs.
+A tree's architect holds the same command for its own tree's runs
+(`skill://legion-architect/references/acceptance.md#a-re-run-of-your-trees-ci-run`).
 
 **The command.** One run, with the implement App token that the secrets broker lends, narrowed to
 the repository:
@@ -350,7 +352,7 @@ it to no other session.
 | --- | --- |
 | `change a claim or a session` | [A claim's state](#a-claims-state): the six `legion` tool operations. Under the operator's suspension: [A claim the operator holds](#a-claim-the-operator-holds). A pod that must go: [A pod delete with nothing lost](#a-pod-delete-with-nothing-lost). |
 | `change a Dispatch record` | Your own `dispatch` commands (a comment, an ask, an artifact, the fields of an issue other than its status) and `set_status`. A lifecycle status stays the daemon's. A GitHub write that your own `gh` cannot make takes the implement App token that the broker lends, narrowed to the repository as in [A re-run of a CI run](#a-re-run-of-a-ci-run). |
-| `merge or queue a pull request` | Not yours: you merge and enqueue nothing. The architect of the tree that owns the pull request enqueues it, after it reads `merge-holds-md`. Write to that architect by a mention. A merge that only a person may schedule is a `dispatch ask`. |
+| `merge or queue a pull request` | Not yours: you merge and enqueue nothing. The architect of the tree that owns the pull request enqueues it, after it reads `merge-holds-md` (`skill://legion-architect/references/acceptance.md#a-pull-request-no-merger-merges`). Write to that architect by a mention. A merge that only a person may schedule is a `dispatch ask`. |
 | `act on the cluster, cloud or CI` | [A restart of your project's daemon](#a-restart-of-your-projects-daemon), [A re-run of a CI run](#a-re-run-of-a-ci-run), [A pod delete with nothing lost](#a-pod-delete-with-nothing-lost), and the reads of your project's pods and Sandboxes in `legion`. Any other act, such as a quota, a pin or a Pulumi value, is a change of code. It goes by a mention to the architect of the tree whose code it is, or it is a Legion root you file when no tree owns that code (`skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns`). An apply window that only a person may set is a `dispatch ask`. |
 | `do or change work` | No operation: it is the recipient's own work. Write to its owner by a mention. |
 | `investigate and report` | No operation: it is the recipient's own work. Read and measure what you can reach yourself. Write the rest to its owner by a mention. |

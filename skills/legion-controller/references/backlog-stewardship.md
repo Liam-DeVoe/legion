@@ -12,9 +12,73 @@ roles ends the controller's wake delivery. Scope questions, routing requests, fi
 references and clear defects no tree owns reach you on
 `notifications.role.legion-<project>-controller`.
 
+## The prioritization pass
+
+The pass keeps the order of the project's work aligned with the project's priorities. No timer
+starts it: a wake does. Run it at most once a turn, after the wake's work, as the last step
+before your summary.
+
+**When.**
+
+- On every turn that a `tick`, `slot-free` or `todo` wake starts.
+- On your first turn of each UTC day, whatever woke you, and after every directive from a person,
+  in its daily form: [Reconcile the weekly plan](#reconcile-the-weekly-plan).
+- On every other turn, when all three of these hold: the wake's work is done, nothing else waits
+  for you, and the board changed since your last pass. The board changed when this read lists an
+  issue:
+
+  ```bash
+  dispatch issues --project <PROJECT> --updated-since <the time of your newest pass line> --all
+  ```
+
+  Every change to an issue updates it: its status, its rank, its priority, its labels or its
+  assignee. When your context holds no pass line, run the pass. A new session, a restarted
+  session and a compacted session can hold none.
+
+**What to read.**
+
+1. `read_state`'s `admission`: the line (`waiting`, in the line's own order), `active` and
+   `blocked`. The `waiting` and `active` lines of the `read_state` summary give the same.
+2. The weekly plan: the newest `plan-week-*` artifact of the weekly-planning issue, which step 1
+   of [Reconcile the weekly plan](#reconcile-the-weekly-plan) selects.
+3. The open P0 and P1 issues: `dispatch issues --project <PROJECT> --priority 0 --priority 1 --all`.
+   Make [the owner audit](#the-owner-audit) on that read.
+
+**What to change.** Change each of these where it no longer matches the project's priorities,
+and change nothing else:
+
+- **A rank.** Make the board order match the plan's order, as step 2 of
+  [Reconcile the weekly plan](#reconcile-the-weekly-plan) says:
+  `dispatch issue-update --issue <KEY> --before <OTHER>`, or `--after <OTHER>`.
+- **An admission.** Admit an issue only as the intake your deployment instructions give and the
+  moves to `todo` of [Free slots](skill://legion-controller/SKILL.md#free-slots) allow. A free slot
+  is no reason to admit an issue. Park a root that the plan defers only as
+  [A root the plan defers](#a-root-the-plan-defers) says.
+- **The plan.** Record in the plan what it no longer matches: a person's directive that it does
+  not hold yet, or an owner that changed. Edit the line as step 4 of
+  [Reconcile the weekly plan](#reconcile-the-weekly-plan) says.
+
+**How it ends.** End the pass with exactly one line in your summary:
+
+```text
+Prioritization pass at <RFC3339>: <what it changed, or none>
+```
+
+- `<RFC3339>` is what `date -u +%FT%TZ` prints after the pass's last change. So the changes you
+  made in the pass are older than the line, and your next turn does not read them as a change of
+  the board.
+- `<what it changed, or none>` names each change, with the issue and the move, such as
+  `ACME-41 before ACME-40` or `ACME-43 admitted`. Write `none` when the pass changed nothing.
+- Write the line once a turn, and only on a turn that ran the pass. The line is no note between
+  turns ([Rules](skill://legion-controller/SKILL.md#rules)): your next turn reads it in its own
+  context, and a session that has no such line runs the pass.
+
 ## Reconcile the weekly plan
 
-Run this pass on the first turn of every UTC day and after every directive from a person:
+This is the daily form of [the prioritization pass](#the-prioritization-pass). Run it on your
+first turn of each UTC day, whatever woke you, and after every directive from a person. It reads
+what the pass reads and makes every change the pass makes. It also reconciles the plan's
+one-owner map (step 3). It ends as the pass ends, with the pass's one line. Its steps:
 
 1. Read the weekly-planning issue and select its newest `plan-week-*` artifact by its latest
    `artifact.version` event. Read that artifact before changing any issue.
@@ -46,7 +110,7 @@ A directive from a person is a direct Dispatch message to this controller. Answe
 its directive on scope or priority, then record the resulting current rule in the affected weekly-plan
 row (or its directives section when it has no one line). Link the message when Dispatch gave it a
 reference.
-A directive triggers the full reconciliation pass even when it appears to affect only one issue.
+A directive runs this daily form even when it appears to affect only one issue.
 
 ## Answering controller deliveries
 
@@ -56,12 +120,16 @@ Answer a scope question from the weekly plan and the deployment instructions. An
 request with the owner the plan's one-owner map names for that issue, and that owner's address,
 so the asker writes to it. Send nothing on: you forward no message to another session.
 
-Never merge or use a GitHub credential to merge from the controller, because the merger merges the
-pull request itself, at the head it read and under the repository's own rules.
+Never merge or enqueue a pull request from the controller, whatever credential you hold. The
+merger merges its issue's pull request itself, at the head it read and under the repository's own
+rules. A tree's architect enqueues a pull request of its tree that no merger merges
+(`skill://legion-architect/references/acceptance.md#a-pull-request-no-merger-merges`). Write a
+request to merge or queue a pull request to that architect by a mention
+(`skill://legion-controller/references/operations.md#each-kind-of-request-the-controller-sent`).
 
 ## The owner audit
 
-At each pass, read `dispatch issues --project <KEY> --priority 0 --priority 1 --all`:
+At each prioritization pass, read `dispatch issues --project <KEY> --priority 0 --priority 1 --all`:
 
 - An unclaimed row in `triage`, `icebox`, `backlog` or `todo` is a decision: someone builds it, or
   it closes. A claimed or in-flight row already has an owner.
@@ -99,7 +167,7 @@ tree (a root in `admission.trees`, or an issue whose `tree` is one); its archite
 A person's `legion` label outranks a plan's deferral. The daemon queues the root at once: a
 person's label on an unrecorded root in `triage` is the root's `todo`, written by the daemon. A
 labelled root that the daemon has queued or runs, and that the weekly plan says to defer, is
-parked by you at your next backlog pass, not before, and only when the plan's line names a
+parked by you at your next prioritization pass, not before, and only when the plan's line names a
 person's request to defer it: `set_status` it to `backlog`, or to `icebox` for a longer deferral,
 and cite that request in a comment on the issue.
 Park a root only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
@@ -135,9 +203,10 @@ defer that root instead:
    above, and cite the answer in a comment on the issue. On `Defer it` in any other case, move
    nothing, and say in your reply what you checked. On `Let it run`, move nothing, and take the
    deferral off that plan row with `dispatch doc-edit`, as step 4 of
-   [Reconcile the weekly plan](#reconcile-the-weekly-plan) edits a row, so that the next backlog
-   pass asks nothing. In each case, reply under the ask with what you did, its first line exactly
-   `Deferred dispatch://<root>`, `Not deferred dispatch://<root>` or `Let run dispatch://<root>`:
+   [Reconcile the weekly plan](#reconcile-the-weekly-plan) edits a row, so that the next
+   prioritization pass asks nothing. In each case, reply under the ask with what you did, its
+   first line exactly `Deferred dispatch://<root>`, `Not deferred dispatch://<root>` or
+   `Let run dispatch://<root>`:
    `dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`.
 
 The cost is the architect's work between the daemon's `todo` and your park.

@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, session-store-fault, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, a merge hold, an architect's escalation, an operation of your own work (a claim's state, a daemon restart, a pod delete, a CI re-run), or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, session-store-fault, provider-errors), the prioritization pass, weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, a merge hold, an architect's escalation, an operation of your own work (a claim's state, a daemon restart, a pod delete, a CI re-run), or a person's message or mention.
 ---
 
 # Legion Controller
@@ -14,7 +14,7 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 
 - Handle no wake until the extension has registered this session with the daemon as the project's controller, at session startup or, in a controller an operator started, from its first command once Oh My Pi has started, because without that registration the daemon does not know you as its controller.
 - Answer a person's direct message first, in the conversation. A plain user turn that is neither the start message nor a task sent with `legion claims deliver` is a person writing from Dispatch's Agents page.
-- A direct Dispatch message that settles scope, priority or an owner is a directive: after you answer it, run the weekly-plan reconciliation (`skill://legion-controller/references/backlog-stewardship.md`), because the plan must record the rule.
+- A direct Dispatch message that settles scope, priority or an owner is a directive: after you answer it, run the daily form of the prioritization pass (`skill://legion-controller/references/backlog-stewardship.md#reconcile-the-weekly-plan`), because the plan must record the rule.
 - Handle one wake per turn, then end the turn. Never poll or wait for an event, because the daemon wakes you again (`tick` at least every `controller_wake_interval_seconds`).
 - Before any side effect, read `read_state` and the Dispatch issue, because a wake can be stale or sent twice.
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it as gone, because it is working and keeps its claims.
@@ -41,10 +41,13 @@ Launch, `gh`, pull requests, takeover: `skill://legion-controller/references/ses
 4. On your first turn of each UTC week, whatever woke you: run the weekly audit
    (`skill://legion-controller/references/weekly-audit.md`) before the day's report, so its
    numbers and its nudges go in that report.
-5. On your first turn of each UTC day, whatever woke you: run the weekly-plan reconciliation
-   (`skill://legion-controller/references/backlog-stewardship.md`), then post the
-   [daily report](#daily-report).
-6. Name the [free slots](#free-slots) in your summary, so a person sees room to hand Legion work.
+5. On your first turn of each UTC day, whatever woke you: run the
+   [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass)
+   in its daily form, then post the [daily report](#daily-report).
+6. On every other turn, run the prioritization pass when it is due: on each turn that a `tick`,
+   `slot-free` or `todo` wake starts, and on a turn whose wake's work is done and that has nothing
+   else waiting, when the board changed since your last pass. End the pass with its one line.
+7. Name the [free slots](#free-slots) in your summary, so a person sees room to hand Legion work.
 
 ## What happened before you started
 
@@ -72,8 +75,8 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | Wake | Action |
 |---|---|
 | `triage on <KEY>` | `skill://legion-controller/references/triage.md` |
-| `slot-free on <KEY>`, `todo on <KEY>` | Start the prioritization pass and the intake your deployment instructions give |
-| `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`), then the merge holds whose end is past ([Merge holds](#merge-holds)) |
+| `slot-free on <KEY>`, `todo on <KEY>` | Start the [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass) and the intake your deployment instructions give |
+| `tick on <PROJECT>` | The parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`), then the merge holds whose end is past ([Merge holds](#merge-holds)). Every tick turn then runs the [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass) |
 | `tree-stalled on <KEY>` | Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree only as [Rules](#rules) allows |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | It comes only with `reason: "escalated"`: an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
@@ -208,8 +211,9 @@ apply first or for another reason a person or your deployment instructions give.
 merge holds are one Dispatch document of the project, `merge-holds.md` (slug `merge-holds-md`),
 and only you write it. Each hold is one line under its `Holds` heading: the repositories it holds,
 its reason and its end. No line means no hold, and a project with no such document has none. The
-architect reads the document before every `sign_off`, and the merger before it merges, so the
-document is the whole hold. Send a hold to no tree, no architect and no role topic. At each change
+architect reads the document before every `sign_off` and before it enqueues a pull request that
+no merger merges, and the merger reads it before it merges, so the document is the whole hold.
+Send a hold to no tree, no architect and no role topic. At each change
 of the document the daemon sends a `merge-holds-changed` notice to the architect of each issue in
 `accepting`, and a message of the same text to the merger of each issue in `merging`. That wakes a
 held role, also one whose pod the daemon released.
@@ -245,9 +249,9 @@ The document's header, with no line under `Holds`:
 # Merge holds
 
 The controller writes this document, and nobody else edits it. Each line under Holds is one
-merge hold. An architect reads this document before every sign-off, and a merger before it
-merges. A line that names your repository, or `all`, and whose end is not past holds your
-sign-off or your merge. No line means no hold.
+merge hold. An architect reads this document before every sign-off and every enqueue, and a
+merger before it merges. A line that names your repository, or `all`, and whose end is not past
+holds your sign-off, your enqueue or your merge. No line means no hold.
 
 A line reads `- <repositories> | <reason> | <end>`. `<repositories>` is `all`, or one or more
 `owner/name` separated by commas. `<reason>` holds no `|`. `<end>` is an RFC 3339 time in UTC,

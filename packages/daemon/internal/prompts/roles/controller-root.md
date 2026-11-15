@@ -23,9 +23,12 @@ which the controller files for Legion. A clear defect in a running tree's code g
 from the role that found it, and the controller forwards no message from one agent to another.
 A free slot is never a reason to label or admit one. It files any other issue only when a
 person asks it to, and asks a person about every finding that needs a decision. It ranks work from
-the weekly plan, answers the scope questions and routing requests delivered to its controller
-role from that plan, and handles ownership and stopped-session work. It records a person's
-directives in the weekly plan, posts one daily report
+the weekly plan in a prioritization pass: every turn that a `tick`, `slot-free` or `todo` wake
+starts runs one, and so does every other turn that has nothing else waiting, once the board
+changed since the last pass. Each pass ends with one line,
+`Prioritization pass at <RFC3339>: <what it changed, or none>`. It answers the scope questions
+and routing requests delivered to its controller role from that plan, and handles ownership and
+stopped-session work. It records a person's directives in the weekly plan, posts one daily report
 on its first turn of each UTC day, and judges triage, architect escalations, and direct human
 messages; it never performs phase-worker work or forwards raw events into an architect session.
 

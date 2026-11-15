@@ -24,20 +24,25 @@ parent, which come as notices
 The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue's work is past
 its review, it began waiting on another issue, it is done, it left the workflow, or its tree
 closed or stopped running ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). A slot is one issue the daemon has started, a root or a
-child, so the issue it names may be either. Start the prioritization pass and the intake your
-deployment instructions give.
+child, so the issue it names may be either. Start the
+[prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass)
+and the intake your deployment instructions give.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)
 
 `<KEY>`, an issue nobody handed to Legion, changed while in `todo` and a slot stood free; the
 daemon waits half a minute and folds that window's events into one wake. Start the
-prioritization pass and the intake your deployment instructions give.
+[prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass)
+and the intake your deployment instructions give.
 
 ## `tick on <PROJECT>` (`{kind: "tick", openCapabilities?, blocked?, held?, silent?}`)
 
 The daemon's periodic wake, a minute after it starts and then every
-`controller_wake_interval_seconds` (an hour by default), whatever the slots. Run the skill's every-turn
-steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`).
+`controller_wake_interval_seconds` (an hour by default), whatever the slots. Run the skill's
+every-turn steps. The wake's work is the parked-root walk
+(`skill://legion-controller/references/parked-decisions.md#the-walk`) and the merge holds whose
+end is past (`skill://legion-controller/SKILL.md#merge-holds`). Every tick turn then runs the
+[prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass).
 
 `openCapabilities`, when present, names the open capability rows; `read_state`'s `capabilities`
 gives each one's `detail`. A deployment row (the secrets broker, model fallback, a role's CPU and

@@ -1,7 +1,7 @@
 # Acceptance, retro, the merge and the close
 
-Part of `skill://legion-architect`, sections 3, 5, 6 and 7. Read the section for the step you are
-at.
+Part of `skill://legion-architect`, sections 3, 5, 6 and 7, and its escalation judgment. Read the
+section for the step you are at.
 
 ## Retro's result
 
@@ -95,6 +95,148 @@ While a line holds the sign-off:
 The passing of an end time sends no event. The controller deletes a line whose end is past on its
 next tick, and that deletion sends the notice. The document is the whole hold, so send the
 controller no message about it.
+
+## The token the secrets broker lends
+
+These GitHub writes of your tree's work take the implement App token that the secrets broker
+lends every enrolled pod (`skill://agent-secrets`): a re-run of your tree's CI run, the enqueue of
+a pull request that no merger merges, and any other write that your own `gh` cannot make, such as
+a comment on a pull request in a repository that your `gh` does not reach. Take the token
+narrowed to the one repository, in this form:
+
+```sh
+agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: <the write, and why>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c '<one curl call that reads "$LEGION_IMPLEMENT_APP">'
+```
+
+- `--github-owner` and `--github-repo` narrow the token to the one repository. `--github-token`
+  gives the token alone. Without it, the name holds the JSON object of installations, and GitHub
+  answers `401`.
+- Make the call with `curl` to `https://api.github.com`, never with `gh`: the `gh` wrapper refuses
+  a set `GH_TOKEN`. Keep the call in single quotes, so that the child shell reads
+  `$LEGION_IMPLEMENT_APP` (`skill://agent-secrets`). Never print the token.
+- Name in `--reason` the write, why you make it, and your issue's key.
+- After the grant, `agent-secrets` writes one line, `agent-secrets: LEGION_IMPLEMENT_APP from
+  <source>`, and the exit status is then `curl`'s. Without that line the status is the client's
+  own, and 77 is a denial. A denial is final: ask no other session to make the write.
+
+A comment on the pull request `<n>`, with `<the comment>` its text:
+
+```sh
+agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: comment on <owner>/<repo>#<n>, which my gh does not reach' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'curl -fsS -X POST -H "Authorization: Bearer $LEGION_IMPLEMENT_APP" --data-binary "$1" https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments' sh "$(jq -nc --arg body '<the comment>' '{body: $body}')"
+```
+
+It worked when `curl` exits 0: GitHub answered `201`, and the answer holds the comment's
+`html_url`.
+
+## A pull request no merger merges
+
+An issue's merger merges the pull request that its issue records, and no other. A pull request of
+your tree that no issue records is yours to put in its base's merge queue, or to arm with
+auto-merge where the base has no merge queue. Ask no other session, the controller included, to
+merge or queue it. The controller holds no enqueue: it writes such a request to you by a mention.
+
+**Which pull request.** All three of these hold:
+
+- It is a pull request of your tree: its head branch begins with your tree's root key in lower
+  case and a slash (`acme-41/…` under the root `ACME-41`), or it is `legion/<KEY>` of an issue of
+  your tree.
+- No issue of your tree records it: it is the `pullRequest` of no issue's `read_record`.
+- A review approves its head (step 2).
+
+**The steps.** `<head sha>` is the one head that every step names.
+
+1. Read the pull request, as the merger's step 1 reads it:
+
+   ```sh
+   gh pr view <n> -R <owner>/<repo> --json id,number,title,state,headRefName,baseRefName,headRefOid,mergeStateStatus,autoMergeRequest
+   ```
+
+   `headRefOid` is `<head sha>`, and `id` is `<pull request id>`. Check `headRefName` against the
+   first rule above. A `state` other than `OPEN` ends the procedure. A non-null `autoMergeRequest`
+   is auto-merge that is armed already, at a head that you did not read: turn it off first
+   (step 7), then begin again at step 1.
+2. Read the approvals:
+
+   ```sh
+   gh api --paginate repos/<owner>/<repo>/pulls/<n>/reviews --jq '.[] | select(.state == "APPROVED") | [.user.login, .commit_id, ((.body // "") | capture("\"head\" *: *\"(?<head>[0-9a-f]{40})\"").head // "-")] | @tsv'
+   ```
+
+   Each line is one approval: the reviewer, the review's `commit_id`, and the head that its Legion
+   footer names, or `-` where it has no footer. The head is approved when a line names
+   `<head sha>` in its footer, or, with no footer, as its `commit_id`. When no line does, enqueue
+   nothing.
+3. Read the merge holds, as [A merge hold](#a-merge-hold) reads them before a sign-off. A line
+   that names `<owner>/<repo>` or `all`, and whose end is not past, holds the enqueue: enqueue
+   nothing, and name the hold in your summary. The `merge-holds-changed` notice reaches you only
+   for an issue in `accepting`, so read the document again on each wake before you enqueue.
+4. Read the base, with the merger's step 2 command:
+
+   ```bash
+   base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q .baseRefName) && \
+     base_path=$(jq -rn --arg b "$base" '$b | split("/") | map(@uri) | join("/")') && \
+     gh api "repos/<owner>/<repo>" --jq '[.squash_merge_commit_title, .squash_merge_commit_message] | @tsv' && \
+     gh api --paginate "repos/<owner>/<repo>/rules/branches/$base_path" --jq '.[].type'
+   ```
+
+   A `merge_queue` line means a merge-queue base. `enqueuePullRequest` takes no message, so on
+   such a base a `squash_merge_commit_message` of `COMMIT_MESSAGES` puts the branch's commit
+   messages on the default branch. Then enqueue nothing. Open a `dispatch ask` on your root that
+   names the pull request, the head and the setting, because only a person can change the setting
+   to `PR_BODY` or `BLANK`.
+5. On a merge-queue base, enqueue the pull request at that head:
+
+   ```sh
+   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: enqueue <owner>/<repo>#<n> at <head sha>, which a review approved and no merger merges' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'curl -fsS -X POST -H "Authorization: Bearer $LEGION_IMPLEMENT_APP" --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' --arg head '<head sha>' '{query: "mutation($pr:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pr,expectedHeadOid:$head}){mergeQueueEntry{state position}}}", variables: {pr: $pr, head: $head}}')"
+   ```
+
+   On any other base, arm auto-merge at that head, with the merger's subject and an empty body:
+
+   ```sh
+   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: arm auto-merge of <owner>/<repo>#<n> at <head sha>, which a review approved and no merger merges' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'curl -fsS -X POST -H "Authorization: Bearer $LEGION_IMPLEMENT_APP" --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' --arg head '<head sha>' --arg title '<pull request title> (#<n>)' '{query: "mutation($pr:ID!,$head:GitObjectID!,$title:String!){enablePullRequestAutoMerge(input:{pullRequestId:$pr,expectedHeadOid:$head,mergeMethod:SQUASH,commitHeadline:$title,commitBody:\"\"}){pullRequest{autoMergeRequest{enabledAt mergeMethod}}}}", variables: {pr: $pr, head: $head, title: $title}}')"
+   ```
+
+   GitHub answers in JSON, and `curl` exits 0 on a refusal too, so read the answer. The call
+   worked when the answer's `mergeQueueEntry` or `autoMergeRequest` is an object. An `errors`
+   array is GitHub's refusal: quote its `message`. A refusal for a repository setting or an App
+   permission is a person's to change: open a `dispatch ask` on your root.
+6. Read the pull request again:
+
+   ```sh
+   gh api graphql -F number=<n> -f owner=<owner> -f name=<repo> -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state headRefOid isInMergeQueue mergeQueueEntry{state position} autoMergeRequest{enabledAt mergeMethod}}}}'
+   ```
+
+   It worked when `headRefOid` is still `<head sha>`, and `mergeQueueEntry` on a merge-queue base,
+   or `autoMergeRequest` on any other base, is not null. A `state` of `MERGED` means that GitHub
+   merged it. Read it again on each later wake while it is open.
+7. A head that moved after step 5 is a head that no review approved, and GitHub checks the head
+   of an auto-merge only when it arms it, never when it merges. So when a read of step 6 shows
+   another `headRefOid` than `<head sha>`, take the pull request out of the queue, or turn its
+   auto-merge off, at once. Then begin again at step 1. Out of the queue:
+
+   ```sh
+   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: take <owner>/<repo>#<n> out of the merge queue: its head moved from <head sha>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'curl -fsS -X POST -H "Authorization: Bearer $LEGION_IMPLEMENT_APP" --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' '{query: "mutation($pr:ID!){dequeuePullRequest(input:{pullRequestId:$pr}){mergeQueueEntry{state}}}", variables: {pr: $pr}}')"
+   ```
+
+   Auto-merge off:
+
+   ```sh
+   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: turn off auto-merge of <owner>/<repo>#<n>: its head moved from <head sha>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'curl -fsS -X POST -H "Authorization: Bearer $LEGION_IMPLEMENT_APP" --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' '{query: "mutation($pr:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$pr}){pullRequest{autoMergeRequest{enabledAt}}}}", variables: {pr: $pr}}')"
+   ```
+
+   The read of step 6 then shows `mergeQueueEntry` and `autoMergeRequest` null.
+
+## A re-run of your tree's CI run
+
+A CI run of your tree is a run on the head of a pull request of your tree
+([A pull request no merger merges](#a-pull-request-no-merger-merges) says which pull requests are
+your tree's). Its re-run is yours: ask no other session, the controller included, to re-run it.
+Re-run only its failed jobs, and only for an infrastructure failure that the failed job's log
+shows. Use the rules, the command and the reads of
+`skill://legion-controller/references/operations.md#a-re-run-of-a-ci-run`: the rules are the
+`developing-ci` skill's section 7, and the command takes the token as
+[The token the secrets broker lends](#the-token-the-secrets-broker-lends) says. That section is
+written for the controller. Follow it for your own tree's runs alone, and where it names the day's
+report, name the denial in your summary.
 
 ## The last round
 

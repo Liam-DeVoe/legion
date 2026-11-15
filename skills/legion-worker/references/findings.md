@@ -41,6 +41,11 @@ A fix you are not sure of is not step 1: take step 2 when it holds, else step 3.
   rules*), which adds it to an open pull request of the tree, or files a child when it is a
   separately deliverable change. Anything else, in the same
   repository or not, is a finding.
+- A fault of Legion's own machinery that holds your phase is a finding too, never a request to
+  another session to change your claim or your session: a reminder that comes after your phase
+  ended, an update round that does not end, or a completion that `handoff_complete` cannot make.
+  Its fix is in Legion's code, so take the three steps above. Tell your own tree's architect too
+  where a stop rule of `skill://legion-worker` says so.
 - Search first (`skill://dispatch-first`): when an open issue already tracks the problem, comment
   the evidence on that issue and send or ask nothing. When an open ask on the report issue already
   asks about it (`dispatch open-asks --project <PROJECT>` lists them), add your evidence under that
