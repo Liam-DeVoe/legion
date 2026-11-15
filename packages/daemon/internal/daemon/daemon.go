@@ -1872,7 +1872,15 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 			refused++
 			continue
 		}
-		s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Admitted: true})
+		if !s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Admitted: true}) {
+			// The post reached no machine to give this admission's credit back at a decision's end
+			// (endRefreshLane): the claim is one this daemon does not supervise, or supervision is
+			// stopping. The credit is returned here, where it was taken, because the correction no
+			// longer resets its count — a credit no machine will release would otherwise be held
+			// for the rest of the gate's life, and K such would stop the lane for good
+			// (supervise.RefreshGate.Correct, dispatch://INFRA-3149).
+			s.refreshGate.Release()
+		}
 	}
 	if refused > 0 {
 		s.log.Info("supervise: the stale-plugin refresh gate is full; these claims are left to a later sweep",

@@ -341,22 +341,26 @@ func (s *supervisor) quiet() supervisionQuiet {
 	return supervisionQuiet{posted: s.posted.Load(), decided: decided, deciding: s.inDecision()}
 }
 
-// post queues ev for the claim's machine. An event for a claim the daemon does not supervise, or
-// one that arrives once supervision is stopping, goes nowhere.
-func (s *supervisor) post(token claim.Token, ev supervise.Event) {
+// post queues ev for the claim's machine and reports whether it did. An event for a claim the
+// daemon does not supervise, or one that arrives once supervision is stopping, is queued nowhere
+// and reports false, so a caller that took the refresh gate's credit for this event gives that
+// credit back where no machine will (refreshStalePlugins, supervise.RefreshGate); every other
+// caller posts an event that carries no credit and ignores the report.
+func (s *supervisor) post(token claim.Token, ev supervise.Event) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.stopped {
-		return
+		return false
 	}
 	m, ok := s.machines[token]
 	if !ok {
 		s.log.Warn("supervise: an event for a claim this daemon does not supervise", "claim", token,
 			"event", fmt.Sprintf("%T", ev))
-		return
+		return false
 	}
 	s.posted.Add(1)
 	m.inbox.put(ev)
+	return true
 }
 
 // count is how many claims the daemon supervises. It waits on no lock a decision holds.

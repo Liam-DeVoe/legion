@@ -240,6 +240,31 @@ func TestARefreshWhoseClaimIsInATurnAtItsTurnRelaunchesNothingAndIsAdmittedAgain
 	gate.wantAsks(t, "the sweep after the turn ended", refreshAsks{asked: 2, granted: 2, released: 1})
 }
 
+// A refresh the gate admitted and the machine parked keeps its credit until its turn, but a claim
+// closed while that turn waits gives the credit back at the close. The retirement lets the process
+// go and clears the wake (retire, letGo), so the decision ends with no refresh wake of this
+// claim's and endRefreshLane releases (Machine.unlock). Every path that stops, retires or replaces
+// a machine holding a credit ends in a decision of that machine, and every decision ends there, so
+// none holds a credit past the wake it was taken for — which is what the correction no longer
+// resetting its count relies on (RefreshGate, dispatch://INFRA-3149).
+//
+// The negative control is the credit check removed from the end of a decision (endRefreshLane):
+// the retired claim then holds a credit for a wake that no longer exists, which this test reads at
+// the asks.
+func TestARefreshHeldWhenTheClaimIsClosedGivesItsCreditBack(t *testing.T) {
+	h, gate := gatedHarness(t, wakeRate)
+	h.reach(StateIdle)
+	h.m.deps.PluginContract = refreshContract
+
+	h.mustRefreshPass(gate, "sweep")
+	h.wantWaitingWake(WakePluginRefresh)
+	gate.wantAsks(t, "the refresh waiting its turn", refreshAsks{asked: 1, granted: 1})
+
+	h.must(RequestTreeClose{Claim: h.token})
+	h.wantState(StateRetired)
+	gate.wantAsks(t, "the refresh whose claim was closed before its turn", refreshAsks{asked: 1, granted: 1, released: 1})
+}
+
 // A claim that registered on this daemon's own contract while its refresh waited is relaunched by
 // that wake not at all: there is nothing left to replace, and replacing it would cost the claim
 // its process and the task it holds for a fact that is already fixed. The credit goes back, and

@@ -332,6 +332,41 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 	}
 }
 
+// A credited stale-plugin post the pass cannot queue gives its admission's credit straight back.
+// The claim is one this daemon does not supervise, so supervisor.post drops the event and no
+// decision of a machine will give the credit back at its end (endRefreshLane); the pass reads that
+// its post was not queued and releases the credit where it took it. Because the correction no
+// longer resets the gate's count (supervise.RefreshGate.Correct, dispatch://INFRA-3149), a credit
+// left out here would be held for the gate's life, and K of them would stop the lane for good.
+//
+// The negative control is the release removed from refreshStalePlugins (its `if !post` branch):
+// the gate then holds the dropped credit, and the admission this test takes after the pass is
+// refused.
+func TestACreditedRefreshPostThatReachesNoMachineGivesItsCreditBack(t *testing.T) {
+	sup, _ := newPluginSupervisor(t, 24, true)
+	project, _ := claim.ProjectToken("legion")
+	token, _ := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
+	// A stale idle claim the pass admits and posts, and which this supervisor holds no machine
+	// for — restore is never called — so the post reaches nothing.
+	stale := supervise.Claim{
+		Token: token, Project: project, Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleImplementer,
+		Generation: 1, State: supervise.StateIdle, Session: "ses_implementer",
+		SessionFile: "/sessions/implementer.jsonl", PluginContract: 23, Locator: pluginTestLocator(token),
+	}
+	gate := supervise.NewRefreshGate(1)
+	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{stale},
+		plan: plan{pluginRelaunchable: true}, refreshGate: gate}
+
+	s.refreshStalePlugins(s.claims, "sweep")
+
+	if _, ok := sup.Machine(token); ok {
+		t.Fatal("the stale claim is supervised; this test needs a credited post that reaches no machine")
+	}
+	if !gate.Admit() {
+		t.Fatal("the gate refused an admission after a dropped post, want the dropped credit given back: a credit no machine releases must come back at the pass")
+	}
+}
+
 // Every claim a previous daemon left in a plugin update round leaves it at this boot, whatever
 // its state, and the live ones are refreshed by the stale-plugin lane in that same pass
 // (dispatch://INFRA-2712 R5, endPluginRounds). Nothing of this release opens a plugin round and

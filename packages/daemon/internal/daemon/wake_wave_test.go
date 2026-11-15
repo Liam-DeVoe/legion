@@ -1396,14 +1396,6 @@ func staleController(t *testing.T, cfg config.Config) claim.Token {
 	return token
 }
 
-// refreshWakesWaiting is the wakes of the stale-plugin lane the pacing holds, by the kind that
-// lane alone parks: what the gate bounds, read where the operator reads it
-// (supervise.WakePluginRefresh, api.State.WakesWaiting).
-func refreshWakesWaiting(t *testing.T, d *daemon) []api.WakeWaiting {
-	t.Helper()
-	return refreshesOf(waitingWakes(t, d))
-}
-
 // awaitGate waits until a settled reading of the pacing (settledWakes) holds exactly count
 // refreshes, and returns them: awaitWave's settled reading over the gate's own K rather than over
 // a whole wave, which no gated lane ever holds at once.
@@ -1487,7 +1479,7 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 	// The boot's own burst lets one refresh straight out, so the gate fills at a sweep after it:
 	// this test runs those sweeps, the daemon's own being a minute out on its clock.
 	passes.until(t, passOrphans, "the sweeps after the boot pass to fill the gate", func() bool {
-		return len(refreshWakesWaiting(t, d)) >= testWakeRate
+		return len(settledRefreshes(t, d, "the sweeps after the boot pass fill the gate")) >= testWakeRate
 	})
 	first := awaitGate(t, d, testWakeRate)
 	refusals := gateFullLines(t, logged)
@@ -1503,10 +1495,7 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 	if got := len(rt.fake().CallsOf("ReconcileOrphans")) - sweeps; got < 3 {
 		t.Fatalf("three sweeps over the claims the boot pass left made %d reconciliations, want one each", got)
 	}
-	if held := refreshWakesWaiting(t, d); len(held) > testWakeRate {
-		t.Fatalf("the lane holds %d refreshes in the pacing after three more sweeps, want at most the rate, %d",
-			len(held), testWakeRate)
-	}
+	settledRefreshes(t, d, "three more sweeps over the claims the boot pass left")
 	if got := len(rt.launches()); got > testWakeRate+1 {
 		t.Fatalf("%d processes were relaunched while the first refreshes still wait, want at most the rate and the controller's own", got)
 	}
@@ -1531,7 +1520,7 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 	// The sweep that follows posts the next rate's worth, over claims the first round left: this
 	// test runs it, the daemon's own being a minute out on the clock the turns above reached.
 	passes.until(t, passOrphans, "a sweep after the first round to post the next rate's worth", func() bool {
-		return len(refreshWakesWaiting(t, d)) >= testWakeRate
+		return len(settledRefreshes(t, d, "a sweep after the first round posts the next rate's worth")) >= testWakeRate
 	})
 	next := awaitGate(t, d, testWakeRate)
 	refreshed := claimsOfWakes(first)
@@ -1619,7 +1608,7 @@ func TestAStaleClaimInATurnIsPostedWithNoCreditWhileTheIdleClaimsTakeTheRate(t *
 	// The boot's own burst lets one refresh straight out, so the gate fills at a sweep after it:
 	// this test runs those sweeps, the daemon's own being a minute out on its clock.
 	passes.until(t, passOrphans, "the sweeps after the boot pass to fill the gate", func() bool {
-		return len(refreshWakesWaiting(t, d)) >= testWakeRate
+		return len(settledRefreshes(t, d, "the sweeps after the boot pass fill the gate")) >= testWakeRate
 	})
 	first := awaitGate(t, d, testWakeRate)
 	working := claimsOfTokens(inATurn)
