@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/url"
 	"os"
 	"strconv"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
@@ -153,6 +156,151 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 	}
 }
 
+// The runner pins its transaction (pgmigrate.Locking.Pin) right after its advisory lock, so the
+// statements it runs before the first migration's own pin are bounded by LockTimeout too: the
+// create table of broker_schema_migrations and the first applied check. Here another connection
+// holds ACCESS EXCLUSIVE on an existing broker_schema_migrations in an open transaction. The first
+// applied check is the statement that waits: on PostgreSQL 18.6, create table if not exists takes
+// no lock on a table that exists, and the check reads the table under ACCESS SHARE. migrate gives
+// up after LockTimeout with a lock-timeout error (SQLSTATE 55P03) rather than wait for as long as
+// the holder lives.
+//
+// Control: remove the Pin call after the advisory lock in migrate, and migrate waits until the
+// test's own deadline cancels it.
+//
+// Serial: it holds a table lock on purpose, and its assertion is a time - migrate gives up within
+// ten seconds of LockTimeout.
+func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
+	lockTimeout := pgmigrate.LockTimeout
+	ctx := context.Background()
+	s := emptyDatabaseStore(t)
+	if _, err := s.Pool.Exec(ctx, "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())"); err != nil {
+		t.Fatalf("create the version table: %v", err)
+	}
+	holder, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("connect the holder: %v", err)
+	}
+	t.Cleanup(func() { holder.Close(context.Background()) })
+	held, err := holder.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder's transaction: %v", err)
+	}
+	defer held.Rollback(ctx)
+	if _, err := held.Exec(ctx, "lock table broker_schema_migrations in access exclusive mode"); err != nil {
+		t.Fatalf("hold the version table: %v", err)
+	}
+	set := fstest.MapFS{
+		"migrations/0001_guard_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
+	}
+
+	bound := 6 * lockTimeout
+	bounded, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+	started := time.Now()
+	err = s.migrate(bounded, set)
+	waited := time.Since(started)
+	if bounded.Err() != nil {
+		t.Fatalf("migrate waited %s for the held version table, until the test's own %s bound cancelled it (%v): nothing bounds the runner's first applied check", waited.Round(time.Millisecond), bound, err)
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("migrate returned %v after %s; want a lock-timeout error (SQLSTATE 55P03)", err, waited.Round(time.Millisecond))
+	}
+	if waited < lockTimeout || waited > lockTimeout+10*time.Second {
+		t.Errorf("migrate gave up after %s, want about the %s lock timeout", waited.Round(time.Millisecond), lockTimeout)
+	}
+	t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
+	if left := existingTables(t, s, "guard_first"); len(left) != 0 {
+		t.Errorf("the run that gave up committed %v; want its whole transaction rolled back", left)
+	}
+}
+
+// A migration whose own text runs a session SET, one without LOCAL, leaves that setting on its
+// connection past the commit. The runner resets that connection's session before it goes back to
+// the pool (releaseMigrationConn, pgmigrate.ResetSession), so after migrate returns no connection
+// the pool can give carries the migration's statement_timeout or search_path. The test holds as
+// many connections as the pool can give at once (its MaxConns) and reads each, because the
+// migration ran on one of them. The store's database is the test's own (emptyDatabaseStore) and
+// its URL names no search_path, so the reset gives back the server's default, which a new
+// connection reads too; the schema the migration creates goes with that database. The control
+// runs the same SETs in a committed transaction on a connection of its own and reads them back:
+// the SETs survive a commit, so the row shows that the reset clears them.
+//
+// Control: remove the pgmigrate.ResetSession call from releaseMigrationConn, so the connection
+// goes back as it is, and this fails: a pooled connection reads 77s and the row's schema.
+func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := emptyDatabaseStore(t)
+	schema := "broker_migrate_leak_" + randomSuffix(t)
+	leaked := schema + ", public"
+	set := fstest.MapFS{
+		"migrations/0001_schema.up.sql": {Data: []byte("create schema " + schema)},
+		"migrations/0002_leak.up.sql":   {Data: []byte("set statement_timeout = '77s'; set search_path = " + leaked)},
+	}
+	if err := s.migrate(ctx, set); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	const read = "select current_setting('statement_timeout'), current_setting('search_path')"
+
+	// A new connection reads the values that the reset gives, which every pooled connection must
+	// read after migrate.
+	fresh, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("connect a new connection: %v", err)
+	}
+	t.Cleanup(func() { fresh.Close(context.Background()) })
+	var wantTimeout, wantSearchPath string
+	if err := fresh.QueryRow(ctx, read).Scan(&wantTimeout, &wantSearchPath); err != nil {
+		t.Fatalf("read a new connection's settings: %v", err)
+	}
+	if wantTimeout == "77s" || wantSearchPath == leaked {
+		t.Fatalf("a new connection already reads the migration's settings (%q, %q), so the row proves nothing", wantTimeout, wantSearchPath)
+	}
+
+	acquire, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	held := make([]*pgxpool.Conn, 0, s.Pool.Config().MaxConns)
+	t.Cleanup(func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	})
+	for i := range s.Pool.Config().MaxConns {
+		conn, err := s.Pool.Acquire(acquire)
+		if err != nil {
+			t.Fatalf("acquire pooled connection %d of %d: %v", i+1, s.Pool.Config().MaxConns, err)
+		}
+		held = append(held, conn)
+	}
+	for i, conn := range held {
+		var timeout, searchPath string
+		if err := conn.QueryRow(ctx, read).Scan(&timeout, &searchPath); err != nil {
+			t.Fatalf("read pooled connection %d's settings: %v", i+1, err)
+		}
+		if timeout != wantTimeout || searchPath != wantSearchPath {
+			t.Errorf("pooled connection %d reads statement_timeout %q and search_path %q; want %q and %q, the values the reset gives: the migration's session SET reached the pool", i+1, timeout, searchPath, wantTimeout, wantSearchPath)
+		}
+	}
+
+	control, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("control: connect: %v", err)
+	}
+	t.Cleanup(func() { control.Close(context.Background()) })
+	if _, err := control.Exec(ctx, "begin; set statement_timeout = '77s'; set search_path = "+leaked+"; commit"); err != nil {
+		t.Fatalf("control: run the SETs in a committed transaction: %v", err)
+	}
+	var controlTimeout, controlSearchPath string
+	if err := control.QueryRow(ctx, read).Scan(&controlTimeout, &controlSearchPath); err != nil {
+		t.Fatalf("control: read the settings: %v", err)
+	}
+	if controlTimeout != "77s" || controlSearchPath != leaked {
+		t.Fatalf("control: after a committed SET the connection reads %q and %q; want 77s and %q: the SETs do not survive a commit, so the row proves nothing", controlTimeout, controlSearchPath, leaked)
+	}
+}
+
 // testDatabaseURL is the BROKER_TEST_DATABASE_URL server the rows below make their databases on,
 // skipping t when it is unset. The external test package reaches its databases through
 // storetest; these rows cannot, since they drive the unexported migrate and the embedded set,
@@ -175,12 +323,8 @@ func testDatabaseURL(t *testing.T) string {
 func emptyDatabaseStore(t *testing.T) *Store {
 	t.Helper()
 	raw := testDatabaseURL(t)
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random database name: %v", err)
-	}
 	// A file copy of template1 (docs/testing.md, "A database a Go test creates").
-	database := "broker_migrate_test_" + hex.EncodeToString(suffix[:])
+	database := "broker_migrate_test_" + randomSuffix(t)
 	adminExec(t, raw, "create database "+database+" strategy file_copy")
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -223,6 +367,17 @@ func adminTry(databaseURL, statement string) error {
 	defer conn.Close(ctx)
 	_, err = conn.Exec(ctx, statement)
 	return err
+}
+
+// randomSuffix is 16 random hex digits, for a name of the test's own on a server that other tests
+// share.
+func randomSuffix(t *testing.T) string {
+	t.Helper()
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		t.Fatalf("random name: %v", err)
+	}
+	return hex.EncodeToString(suffix[:])
 }
 
 func adminExec(t *testing.T, databaseURL, statement string) {
