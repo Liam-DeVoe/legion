@@ -6,9 +6,11 @@ import {
   createIssue,
   createIssueArtifact,
   createMessage,
+  createPriority,
   createProject,
   editArtifact,
   getIssueEvents,
+  patchIssue,
   putIssueState,
   replyToMessageBlock,
   uploadIssueFile,
@@ -258,6 +260,35 @@ export async function seedWholeIssue(): Promise<WholeIssueSeed> {
     summaryBlockId: SUMMARY_BLOCK_ID,
     verificationArtifactId: seeded.verificationArtifactId,
   };
+}
+
+export interface AdvancingIssueSeed extends WholeIssueSeed {
+  /** The ids of the two priorities the issue is under, in the order the priorities page ranks
+   *  them: `own` is the issue's own relation, `inherited` its parent's. */
+  readonly priorities: { readonly inherited: string; readonly own: string };
+}
+
+/**
+ * `seedWholeIssue`, with the issue under two priorities (dispatch://INFRA-2947 R3 and R4): one
+ * it advances itself, which its priority row draws as a link with a remove beside it, and one
+ * its parent advances, which the row draws as a link marked inherited and with no remove. That
+ * is the whole priority row an issue can draw short of its cap, so it is what the page inventory
+ * is recorded over (`record-page-inventory.e2e.ts`) and what c-nothing-lost reads the new page
+ * against; both call this one seed, so the two read the same row.
+ *
+ * It is a seed of its own rather than part of `seedWholeIssue`, because each relation makes the
+ * page read the priorities on its first load, and every other row of `issue-layout.e2e.ts`
+ * reads that issue with the requests and the properties it has without them.
+ */
+export async function seedWholeIssueAdvancing(): Promise<AdvancingIssueSeed> {
+  const seeded = await seedWholeIssue();
+  // One after the other, because a priority takes the last place of the one order as it is
+  // written (`POST /api/v1/priorities`): the issue's own is P1 and its parent's P2.
+  const own = await createPriority({ owner: "alice", title: "Ship the redrawn issue page" });
+  const inherited = await createPriority({ owner: "alice", title: "Keep every old address" });
+  await patchIssue(seeded.key, { advances: [own.id] });
+  await patchIssue(seeded.parentKey, { advances: [inherited.id] });
+  return { ...seeded, priorities: { inherited: inherited.id, own: own.id } };
 }
 
 export interface FrontierSeed {

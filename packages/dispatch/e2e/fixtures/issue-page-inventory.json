@@ -1,10 +1,14 @@
 {
-  "commit": "12ba4e6afa71acf380d0b64738de7a44653f9ea8",
-  "recordedAtHead": "20942176157961571a16c823ba0a58941ca4c962",
-  "recordedAt": "2026-11-13T09:27:21.336Z",
+  "commit": "d0c0090acea2e44d677aa0da6e4e93a28b0b9fe9",
+  "recordedAtHead": "4276952c40634f29b5b825c67cbdba1e42158099",
+  "recordedAt": "2026-11-15T02:32:31.264Z",
   "open-1440": [
     {
       "name": "1 references on block",
+      "role": "button"
+    },
+    {
+      "name": "Add",
       "role": "button"
     },
     {
@@ -12,7 +16,15 @@
       "role": "button"
     },
     {
+      "name": "Add a priority to LAY-2",
+      "role": "button"
+    },
+    {
       "name": "All",
+      "role": "button"
+    },
+    {
+      "name": "Cancel",
       "role": "button"
     },
     {
@@ -168,6 +180,10 @@
       "role": "button"
     },
     {
+      "name": "Remove P1 Ship the redrawn issue page from LAY-2",
+      "role": "button"
+    },
+    {
       "name": "Reply",
       "role": "button"
     },
@@ -233,6 +249,10 @@
     },
     {
       "name": "Priority of LAY-2",
+      "role": "combobox"
+    },
+    {
+      "name": "Priority to advance",
       "role": "combobox"
     },
     {
@@ -408,6 +428,14 @@
       "role": "link"
     },
     {
+      "name": "P1 Ship the redrawn issue page",
+      "role": "link"
+    },
+    {
+      "name": "P2 Keep every old address",
+      "role": "link"
+    },
+    {
       "name": "Pipeline CI and deploy step timings",
       "role": "link"
     },
@@ -420,7 +448,15 @@
       "role": "link"
     },
     {
+      "name": "Priorities Every project's priorities, and the work on none 0",
+      "role": "link"
+    },
+    {
       "name": "Put every remaining property in one panel",
+      "role": "link"
+    },
+    {
+      "name": "Recorder (issue layout)",
       "role": "link"
     },
     {
@@ -449,10 +485,6 @@
     },
     {
       "name": "Requirement 8 of the redesign stands on a row of its own.",
-      "role": "link"
-    },
-    {
-      "name": "session:e2e-seed…",
       "role": "link"
     },
     {
@@ -553,6 +585,10 @@
     },
     {
       "name": "Backlog",
+      "role": "option"
+    },
+    {
+      "name": "Choose a priority",
       "role": "option"
     },
     {
@@ -762,11 +798,23 @@
       "role": "button"
     },
     {
+      "name": "Add",
+      "role": "button"
+    },
+    {
       "name": "Add a note or answer in your own words",
       "role": "button"
     },
     {
+      "name": "Add a priority to LAY-2",
+      "role": "button"
+    },
+    {
       "name": "All",
+      "role": "button"
+    },
+    {
+      "name": "Cancel",
       "role": "button"
     },
     {
@@ -914,6 +962,10 @@
       "role": "button"
     },
     {
+      "name": "Remove P1 Ship the redrawn issue page from LAY-2",
+      "role": "button"
+    },
+    {
       "name": "Reply",
       "role": "button"
     },
@@ -971,6 +1023,10 @@
     },
     {
       "name": "Priority of LAY-2",
+      "role": "combobox"
+    },
+    {
+      "name": "Priority to advance",
       "role": "combobox"
     },
     {
@@ -1114,11 +1170,23 @@
       "role": "link"
     },
     {
+      "name": "P1 Ship the redrawn issue page",
+      "role": "link"
+    },
+    {
+      "name": "P2 Keep every old address",
+      "role": "link"
+    },
+    {
       "name": "plan.md",
       "role": "link"
     },
     {
       "name": "Planner (issue layout)",
+      "role": "link"
+    },
+    {
+      "name": "Recorder (issue layout)",
       "role": "link"
     },
     {
@@ -1147,10 +1215,6 @@
     },
     {
       "name": "Requirement 8 of the redesign stands on a row of its own.",
-      "role": "link"
-    },
-    {
-      "name": "session:e2e-seed…",
       "role": "link"
     },
     {
@@ -1239,6 +1303,10 @@
     },
     {
       "name": "Backlog",
+      "role": "option"
+    },
+    {
+      "name": "Choose a priority",
       "role": "option"
     },
     {
@@ -1420,6 +1488,10 @@
       "role": "button"
     },
     {
+      "name": "Add a priority to LAY-2",
+      "role": "button"
+    },
+    {
       "name": "All",
       "role": "button"
     },
@@ -1549,6 +1621,10 @@
     },
     {
       "name": "Remove",
+      "role": "button"
+    },
+    {
+      "name": "Remove P1 Ship the redrawn issue page from LAY-2",
       "role": "button"
     },
     {
@@ -1784,6 +1860,14 @@
       "role": "link"
     },
     {
+      "name": "P1 Ship the redrawn issue page",
+      "role": "link"
+    },
+    {
+      "name": "P2 Keep every old address",
+      "role": "link"
+    },
+    {
       "name": "Pipeline CI and deploy step timings",
       "role": "link"
     },
@@ -1796,7 +1880,15 @@
       "role": "link"
     },
     {
+      "name": "Priorities Every project's priorities, and the work on none 0",
+      "role": "link"
+    },
+    {
       "name": "Put every remaining property in one panel",
+      "role": "link"
+    },
+    {
+      "name": "Recorder (issue layout)",
       "role": "link"
     },
     {
@@ -1825,10 +1917,6 @@
     },
     {
       "name": "Requirement 8 of the redesign stands on a row of its own.",
-      "role": "link"
-    },
-    {
-      "name": "session:e2e-seed…",
       "role": "link"
     },
     {
@@ -2110,6 +2198,10 @@
       "role": "button"
     },
     {
+      "name": "Add a priority to LAY-2",
+      "role": "button"
+    },
+    {
       "name": "All",
       "role": "button"
     },
@@ -2231,6 +2323,10 @@
     },
     {
       "name": "Remove",
+      "role": "button"
+    },
+    {
+      "name": "Remove P1 Ship the redrawn issue page from LAY-2",
       "role": "button"
     },
     {
@@ -2426,11 +2522,23 @@
       "role": "link"
     },
     {
+      "name": "P1 Ship the redrawn issue page",
+      "role": "link"
+    },
+    {
+      "name": "P2 Keep every old address",
+      "role": "link"
+    },
+    {
       "name": "plan.md",
       "role": "link"
     },
     {
       "name": "Planner (issue layout)",
+      "role": "link"
+    },
+    {
+      "name": "Recorder (issue layout)",
       "role": "link"
     },
     {
@@ -2459,10 +2567,6 @@
     },
     {
       "name": "Requirement 8 of the redesign stands on a row of its own.",
-      "role": "link"
-    },
-    {
-      "name": "session:e2e-seed…",
       "role": "link"
     },
     {

@@ -323,6 +323,10 @@ async function parentRowMissing(
  * every instance of the entry sits inside the viewport's own width, so nothing is reached by
  * scrolling a row or a card sideways.
  *
+ * What a state lost fails the row softly (`expect.soft`): the row goes on to the next state it
+ * reads and fails at its end, so one run names the losses of every state rather than those of
+ * the first state that lost anything.
+ *
  * It asserts nothing about the redesign: a page may offer more than it did, in any order.
  */
 export async function assertInventoryCarried(
@@ -388,7 +392,7 @@ export async function assertInventoryCarried(
     const missing = await parentRowMissing(page, mapping);
     if (missing !== undefined) lost.push(`${described} (${missing})`);
   }
-  expect(lost, `${options.state} no longer offers: ${lost.join(", ")}`).toEqual([]);
+  expect.soft(lost, `${options.state} no longer offers: ${lost.join(", ")}`).toEqual([]);
 
   const viewport = await page.evaluate(() => document.documentElement.clientWidth);
   const sideways = wanted

@@ -61,6 +61,7 @@ import {
   seedUnbrokenChildTitle,
   seedUnbrokenWords,
   seedWholeIssue,
+  seedWholeIssueAdvancing,
   UNBROKEN_PATH,
   type WholeIssueSeed,
 } from "./issue-layout-seed";
@@ -89,6 +90,7 @@ import {
   ancestorsOfRow,
   badgeValue,
   boxesPastTheirCard,
+  caretInNode,
   checksRow,
   childRow,
   childRows,
@@ -3041,10 +3043,17 @@ interface PageInventoryFixture {
   readonly "closed-390": readonly InventoryEntry[];
 }
 
+/** The issue's priority row, the one place its add control and that control's picker are drawn
+ *  (`IssuePriorityLine.tsx`). */
+function priorityRow(page: Page): Locator {
+  return page.getByTestId("issue-advances");
+}
+
 /** Closes whatever the view before this one opened, so the next control is reached rather than
  *  dismissed: a press outside an open menu, or outside the identity block's actions group,
  *  closes it instead of reaching the control under it, and Escape closes each of them
- *  (`IssueActionsMenu.tsx`). */
+ *  (`IssueActionsMenu.tsx`). The priority row's picker closes by its own Cancel, as a reader
+ *  closes it. */
 async function closeOpenControls(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
   await expect(openMenu(page)).toHaveCount(0);
@@ -3052,16 +3061,26 @@ async function closeOpenControls(page: Page): Promise<void> {
   if ((await actions.count()) === 1) {
     await expect(actions).not.toHaveAttribute("aria-expanded", "true");
   }
+  const picker = priorityRow(page).getByRole("combobox", {
+    exact: true,
+    name: CONTROL_LABELS.priority_to_advance,
+  });
+  if ((await picker.count()) > 0) {
+    await priorityRow(page)
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.cancel })
+      .click();
+    await expect(picker).toHaveCount(0);
+  }
 }
 
 // c-nothing-lost.
 test("the new page carries every element of the old one @phone", async ({ browser }) => {
   // Four states, each read through the page's own views - its five presets, the four
-  // addresses beside them, the five views behind a control or a width, one per row of the
+  // addresses beside them, the seven views behind a control or a width, one per row of the
   // tree, and, where the narrow tree is the way in, the presets and the zooms walked again.
   // Each walk loads the page once and moves through it from there, which is how a reader moves
-  // through it: 17 loads of the issue page per 390 px state and 11 per 1440 px one, naming 126
-  // and 38 views, each settled over two readings of its accessibility tree, and the write walk
+  // through it: 18 loads of the issue page per 390 px state and 12 per 1440 px one, naming 128
+  // and 40 views, each settled over two readings of its accessibility tree, and the write walk
   // below after them. A view over a row the tree does not draw answers that it is not there
   // and is not read, so a state pays for the views it has.
   //
@@ -3078,16 +3097,17 @@ test("the new page carries every element of the old one @phone", async ({ browse
     )
   ) as PageInventoryFixture;
 
-  await phase(browser, seedWholeIssue, async (page, seeded) => {
+  await phase(browser, seedWholeIssueAdvancing, async (page, seeded) => {
     // The inventory first: what the old page offered is this check's own subject, and the page
     // root below it says whether the page carrying it is the redesigned one. The fixture is the
-    // merge of the old page's nine tab panels, one view at a time, so the new page is read the
-    // same way: its five presets and the four addresses beside them, the conversation, the
-    // activity, the collaborators and the artifacts (R3, R12, R19). Three more views are the
-    // page's own, because what they hold sits behind a control rather than behind an address:
-    // the node menu, where every document and artifact of the issue lives (R3); the identity
-    // block's actions menu, where Close and the parent editor live (R11); and each row of the
-    // tree, whose body is what a node opens (R6).
+    // merge of the old page's nine tab panels and its priority picker, one view at a time, so
+    // the new page is read the same way: its five presets and the four addresses beside them,
+    // the conversation, the activity, the collaborators and the artifacts (R3, R12, R19). Four
+    // more views are the page's own, because what they hold sits behind a control rather than
+    // behind an address: the node menu, where every document and artifact of the issue lives
+    // (R3); the identity block's actions menu, where Close and the parent editor live (R11);
+    // the priority row's picker, which its add control opens (R13); and each row of the tree,
+    // whose body is what a node opens (R6).
     // How far a walk over the tree reaches. The seeded issue draws fewer rows than this at
     // either width, and a view over a row the tree does not draw answers that it is not there
     // rather than reading the page the view before it left (`e2e/page-inventory.ts`), so the
@@ -3101,18 +3121,24 @@ test("the new page carries every element of the old one @phone", async ({ browse
     const specName = (await getArtifact(seeded.specArtifactId)).name;
     // The outline drawing both rows a parent-row mapping names (`page-inventory.ts`): every
     // branch open where the outline draws the whole tree, and below 1025 px, where a twisty
-    // zooms instead, the target's own zoom, whose nodes follow it.
+    // zooms instead, the target's own zoom, whose nodes follow it. It is read off a page that
+    // has stopped reading, as the zoom walk below is, because the tree fills as its reads land.
+    // A target the tree does not draw has no zoom to press, and the mapping is then lost, which
+    // `parentRowMissing` names: a press waiting for that twisty times out and ends the row
+    // there, leaving every state after it unread.
     const outline = (width: number) => async (mapping: ParentRowMapping) => {
+      const settling = watchApiRequests(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectLoadSettled(settling);
       if (width > 1024) {
         await unfoldEveryBranch(page);
         return;
       }
-      await nodeRows(page)
+      const twisty = nodeRows(page)
         .filter({ hasText: mapping.parent })
         .first()
-        .getByRole("button", { name: CONTROL_LABELS.unfold })
-        .click();
+        .getByRole("button", { name: CONTROL_LABELS.unfold });
+      if ((await twisty.count()) > 0) await twisty.click();
     };
     const views = (width: number) => [
       ...PRESET_ORDER.map((preset) => async () => {
@@ -3206,6 +3232,33 @@ test("the new page carries every element of the old one @phone", async ({ browse
           `the page draws no ${CONTROL_LABELS.issue_actions} control: its view is unreadable`
         ).toHaveCount(1);
         await actions.click();
+        return true;
+      },
+      // The priority row's picker (dispatch://INFRA-2947 R3), which the row's add control opens
+      // and no address does: the old page drew that row in its header's rail and its recording
+      // opened the picker there (`record-page-inventory.e2e.ts`), and this page draws it in the
+      // Details panel's Development section (R13). A closed issue's add control is refused, so
+      // there the view is the page with the menus closed, as the three views below are where
+      // what they open is already open; the next view closes the picker by its Cancel.
+      async () => {
+        await closeOpenControls(page);
+        const add = priorityRow(page).getByRole("button", {
+          exact: true,
+          name: `${CONTROL_LABELS.add_priority} to ${seeded.key}`,
+        });
+        await expect(
+          add,
+          `the page draws no ${CONTROL_LABELS.add_priority} control: its view is unreadable`
+        ).toHaveCount(1);
+        if (await add.isEnabled()) {
+          await add.click();
+          await expect(
+            priorityRow(page).getByRole("combobox", {
+              exact: true,
+              name: CONTROL_LABELS.priority_to_advance,
+            })
+          ).toBeVisible();
+        }
         return true;
       },
       // The preset row below 1280 px is one chooser rather than a row of tabs, the children
@@ -3539,6 +3592,10 @@ test("the new page carries every element of the old one @phone", async ({ browse
         mimeType: "text/markdown",
         name: "carried.md",
       });
+    // The pick is staged behind its summary field until its own Upload confirms it
+    // (`ArtifactUploadRow` in `features/artifacts/ArtifactUpload.tsx`), as on every page that
+    // uploads an issue's file.
+    await page.getByRole("button", { exact: true, name: "Upload" }).click();
     await expect
       .poll(async () => ((await getIssue(seeded.key)).artifacts ?? []).map((one) => one.name))
       .toContain("carried.md");
@@ -3569,6 +3626,12 @@ test("the new page carries every element of the old one @phone", async ({ browse
       .first()
       .focus();
     await page.keyboard.press("Enter");
+    // The words go where the caret is, so they wait for it to land in the row's own text: typed
+    // before it does, the space and the capital reach the page's own keys and the rest of the
+    // words land in whatever those keys opened.
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in requirement 3" })
+      .toBe(true);
     await page.keyboard.type(" Edited in place.");
     await expect
       .poll(async () => (await getIssueArtifactText(seeded.key, specSlug)).markdown)

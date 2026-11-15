@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { expect, type Page, test } from "@playwright/test";
 
 import { patchIssue } from "./api";
-import { seedWholeIssue } from "./issue-layout-seed";
+import { seedWholeIssueAdvancing } from "./issue-layout-seed";
 import {
   INVENTORY_CONTROLS,
   type InventoryEntry,
@@ -18,11 +18,12 @@ import { asUser } from "./users";
 
 /**
  * The recorder of what the issue page offered before dispatch://INFRA-1196 redrew it: every
- * landmark and every control of the whole issue (`seedWholeIssue`), in four states - open and
- * closed, at 1440x900 and at 390x844 CSS pixels - written to
- * `e2e/fixtures/issue-page-inventory.json`. The redesign's own check reads that fixture and
- * asserts the new page still carries all of it (`assertInventoryCarried`, c-nothing-lost), so
- * the fixture is the ground truth and has to be recorded against the page as it stood.
+ * landmark and every control of the whole issue under two priorities, one its own and one its
+ * parent's (`seedWholeIssueAdvancing`), in four states - open and closed, at 1440x900 and at
+ * 390x844 CSS pixels - written to `e2e/fixtures/issue-page-inventory.json`. The redesign's own
+ * check reads that fixture and asserts the new page still carries all of it
+ * (`assertInventoryCarried`, c-nothing-lost), so the fixture is the ground truth and has to be
+ * recorded against the page as it stood.
  *
  * **It is a recorder and no check of the page it runs against.** It reads the page through the
  * nine tabs that page had (`#issue-<tab>-tab`), which the redesign replaced with five presets
@@ -56,7 +57,8 @@ import { asUser } from "./users";
  * That page renders only the active tab's panel - every other panel is `hidden`, which the
  * accessibility snapshot leaves out - so a state's inventory is the merge of the nine tabs'
  * panels, visited in turn at each width, and each panel is asserted to offer a control of its
- * own.
+ * own. The priority row's picker is a view of its own too, because no tab holds it: the row's
+ * add control opens it, and an open state records the page with it open (`recordPriorityPicker`).
  */
 
 /** The nine tabs of the issue page, in the order `web/src/features/issue/issue-tab-list.ts`'s
@@ -146,15 +148,50 @@ function named(entry: InventoryEntry): string {
 }
 
 /**
+ * The priority row's picker (dispatch://INFRA-2947 R3), which the row's add control opens and
+ * no tab holds: in an open state the page is recorded once more with it open, and it is closed
+ * by its own Cancel. A closed issue's row draws the add control refused (`disabled`), so a
+ * closed state has no picker to open, and asserting that is what keeps an open state whose
+ * control could not be pressed from recording no picker without a word. The row's cap line is
+ * a third state of the same control - drawn in its place once the issue advances as many
+ * priorities as one may - and is text rather than a control, so no state records it.
+ */
+async function recordPriorityPicker(
+  page: Page,
+  issueKey: string,
+  state: RecordedState
+): Promise<InventoryEntry[]> {
+  const row = page.getByTestId("issue-advances");
+  const add = row.getByRole("button", { exact: true, name: `Add a priority to ${issueKey}` });
+  if (state.closed) {
+    await expect(
+      add,
+      `the closed issue's priority row of ${state.key} refuses its add control`
+    ).toBeDisabled();
+    return [];
+  }
+  await add.click();
+  await expect(
+    row.getByRole("combobox", { exact: true, name: "Priority to advance" })
+  ).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  const picked = await recordInventory(page);
+  await row.getByRole("button", { exact: true, name: "Cancel" }).click();
+  await expect(add, `Cancel left the priority picker of ${state.key} open`).toBeVisible();
+  return picked;
+}
+
+/**
  * One state's inventory: the page at that width, in that open or closed state, with every tab
- * visited in turn and what each offers merged into one list. The tablist the page draws is read
- * first and held to `ISSUE_TABS`, so a tab the base has and this file does not - the way
- * `collaborators` was left out of the recording before dispatch://INFRA-1196's base moved -
- * fails the recording rather than leaving that panel's controls out of the fixture. Each panel
- * is then asserted to offer a control of its own, so a tab whose panel never rendered fails here
- * rather than being counted as covered. A recording run also prints, for each panel, a control
- * no other panel of that state offers - the evidence that the state covers all nine - falling
- * back on its first control when every one of them is offered elsewhere too.
+ * visited in turn, then the priority row's picker opened, and what each offers merged into one
+ * list. The tablist the page draws is read first and held to `ISSUE_TABS`, so a tab the base
+ * has and this file does not - the way `collaborators` was left out of the recording before
+ * dispatch://INFRA-1196's base moved - fails the recording rather than leaving that panel's
+ * controls out of the fixture. Each panel is then asserted to offer a control of its own, so a
+ * tab whose panel never rendered fails here rather than being counted as covered. A recording
+ * run also prints, for each panel, a control no other panel of that state offers - the
+ * evidence that the state covers all nine - falling back on its first control when every one of
+ * them is offered elsewhere too.
  */
 async function recordState(
   page: Page,
@@ -189,6 +226,7 @@ async function recordState(
     ).toBeDefined();
     panels.set(tab, controls);
   }
+  found.push(...(await recordPriorityPicker(page, issueKey, state)));
   if (report) {
     for (const [tab, controls] of panels) {
       const elsewhere = new Set(
@@ -222,7 +260,7 @@ test("the issue page's landmarks and controls, open and closed, at 1440 and at 3
   const recordedAtHead = git("rev-parse", "HEAD");
   expect(commit, "git merge-base answered no commit").toMatch(/^[0-9a-f]{40}$/);
   expect(recordedAtHead, "git rev-parse HEAD answered no commit").toMatch(/^[0-9a-f]{40}$/);
-  const seeded = await seedWholeIssue();
+  const seeded = await seedWholeIssueAdvancing();
 
   const alice = await asUser(browser, "alice");
   const recorded = new Map<RecordedState["key"], InventoryEntry[]>();
