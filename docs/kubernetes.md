@@ -4781,9 +4781,11 @@ no init container runs, the daemon mints no provisioning token, and the role fin
 In an issue's ordinary run that is five of its six roles: the first launch creates the pod and the other five start into it.
 So only a new or replacement pod provisions afresh, and an agent resumed into a pod created after the one it last worked in finds a workspace newer than its session's last write;
 it is told so before its next turn, by `LEGION_WORKSPACE_RECREATED` and the message its plugin saves from it ([Selecting the store](#selecting-the-store)).
-An agent's unpushed work is lost with the pod at every end above but two, and never at a role start into a live pod, which is why a phase pushes what it has done.
-The first is a release, which keeps it as a bundle in the daemon's database and nowhere else ([Idle release](#idle-release)).
-The second is an end from outside the pod, where the daemon's own copy of the workspace comes back in the next pod and what is lost is the minutes since that copy was taken ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
+An agent's unpushed work is never lost at a role start into a live pod, and at an end of the pod it is kept only in the daemon's own copies of the workspace, which is why a phase pushes what it has done.
+A release keeps it as a bundle in the daemon's database and nowhere else ([Idle release](#idle-release)).
+At every other end that the issue's work outlives, the next pod of the issue restores the running copy the daemon took minutes before: an update round's replacement, a launch's replacement, the pod of an issue that comes back from a park and the pod after an end from outside the pod alike, since the restore does not read how the pod before it ended ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
+What such an end loses is the work done since that copy was taken.
+An issue's close as `done` and its tree's close drop both copies, so what no role pushed goes with the pod.
 
 A near-full disk slows jj's working-copy snapshot before a push, which is why `legion push`'s grant lives `credential.pushTTL` (5 minutes) in place of the usual 60 seconds (`internal/credential/grants.go`;
 `docs/solutions/legion/worker-pane-shell-gotchas.md` has the mechanics).
