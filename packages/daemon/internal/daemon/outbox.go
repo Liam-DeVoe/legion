@@ -1524,6 +1524,42 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	return nil
 }
 
+// retireStoppedTask runs a `retire_task` row (record.SuperviseRequest): the admission pass's move
+// of a parent into awaiting_children stopped the phase its worker was in (workflow's
+// StopForChildren), and the task that worker's claim holds for that phase goes
+// (supervise.Machine.RetireStoppedTask), so no relaunch, fresh session or wake during the wait,
+// and no send after the return to that same phase, carries the stopped phase's work. It stops
+// nothing and starts nothing.
+//
+// A row of an earlier run finishes without acting, as every supervise row of one does. The phase
+// is not fenced: the row names the phase the issue has left, and the machine retires only a task
+// of that phase, that run and an entry no later than the row's, so the task of the return's own
+// start is never one it takes. A claim this daemon does not supervise holds no task to retire.
+// A task on its way to the agent keeps the row (supervise.ErrTaskSending, a wait), which runs
+// again once the send has settled.
+func (r *outbox) retireStoppedTask(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
+	if payload.Generation != issue.Generation {
+		r.log.Info("outbox supervise row serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
+			"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
+		return nil
+	}
+	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	if err != nil {
+		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+	}
+	machine, found := r.supervisor.Machine(token)
+	if !found {
+		return nil
+	}
+	retired, err := machine.RetireStoppedTask(ctx, payload.Phase, payload.Generation, payload.Entry)
+	if err != nil {
+		return fmt.Errorf("retire the %s task of %s's %s: %w", payload.Phase, row.Issue, payload.Role, err)
+	}
+	r.log.Info("outbox retired the task of a stopped phase", "row", row.ID, "issue", issue.Key, "role", payload.Role,
+		"phase", payload.Phase, "entry", payload.Entry, "held", retired)
+	return nil
+}
+
 // hookPrompt publishes the words of a hook-prompt row (record.HookPrompt) to the Envoy topic of
 // the role the deployment's hook named, the claim of that role on the row's issue, and to nothing
 // else. The row is the daemon's own facts of the firing — the hook, the move back and the counts —
@@ -1682,6 +1718,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
 		return err
+	}
+	// A task's retirement names the phase that was stopped, which the issue has left by design —
+	// it waits in awaiting_children, or has come back to that phase on an entry of its own — so
+	// it is decided before the phase and entry fences below, which would finish it unrun. Its own
+	// bounds are the run and the entry it names (retireStoppedTask).
+	if payload.Op == "retire_task" {
+		return r.retireStoppedTask(ctx, row, payload, issue)
 	}
 	// A close row naming a tree other than its issue's never reserves it; the checks below decide it.
 	if payload.Op == "tree_close" && payload.Tree == issue.Tree {

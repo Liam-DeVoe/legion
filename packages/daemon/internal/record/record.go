@@ -235,7 +235,7 @@ type Issue struct {
 	// ForwardMergeOwed is whether the parent still owes a forward merge of its children's work. It
 	// is set whenever a parent enters awaiting_children (workflow's AwaitChildren), stays set after
 	// the return until an implementing task carries the merge request (workflow's
-	// ForwardMergeRequest), and a merged pull request clears it too (dispatch://INFRA-3320 R12). It
+	// forwardMergeRequest), and a merged pull request clears it too (dispatch://INFRA-3320 R12). It
 	// outlives the phase, so PutIssue carries it on every write.
 	ForwardMergeOwed bool
 	// ChildrenWaitedAt is when the parent last moved into awaiting_children, nil for a parent that
@@ -342,8 +342,9 @@ const (
 // implementing, testing, reviewing or accepting; Task the task its transition wrote and Reason
 // that transition's reason, which the return names (dispatch://INFRA-3320 R12); and Since when
 // the wait on the children began. The daemon resumes the parent from this when no open child is
-// left: a held planning or implementing starts that phase, and a held testing, reviewing or
-// accepting starts implementing in its place.
+// left (workflow's ReturnFromChildren): a held planning or implementing starts that phase, and a
+// held testing, reviewing or accepting starts implementing in its place, unless the pull request
+// merged during the wait, when the start goes back as it was held.
 type ChildrenWait struct {
 	Start  phase.Phase
 	Task   string

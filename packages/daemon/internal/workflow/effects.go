@@ -879,7 +879,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // pass reads it as the tester's report, never as a field of its own completion.
 //
 // An implementing task of a parent that still owes the forward merge of its children's work ends
-// with the request for it (ForwardMergeRequest).
+// with the request for it (forwardMergeRequest).
 func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
@@ -898,7 +898,7 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	if reason != "" {
 		text += " Reason: " + reason + "."
 	}
-	if request := ForwardMergeRequest(issue, pr); request != "" {
+	if request := forwardMergeRequest(issue, pr); request != "" {
 		text += " " + request
 	}
 	return text

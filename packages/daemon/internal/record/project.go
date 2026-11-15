@@ -445,6 +445,18 @@ type LineFacts struct {
 	// LineWaitingOnIssue until the wait ends. Only the caller can fill it, for the reason Held
 	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
+	// StartedParentWaits is the open Dispatch children of each issue whose phases have started,
+	// by parent key (StartedParentWaits over StartedParents): an issue in planning through
+	// accepting, held from one of them, owing a start, or waiting in awaiting_children, with no
+	// entry for one no open child holds. It is what the admission pass moves a started parent into
+	// awaiting_children by and takes one back to the start it held by (admit's childrenWaits), and
+	// the children the held word awaiting_children names (HeldReasonOf). It is apart from
+	// ChildWaits, the wait of an issue whose first phase has not started: a started parent's
+	// children hold no first phase, so no children-first notice, no children_first word and no
+	// wait of a started issue on another issue (Waits) reads them. ReadLineFacts fills it, since
+	// the judgement reads the mirror against the daemon's records in the transaction the line is
+	// never given; it is never stored, and each read of the facts judges it again.
+	StartedParentWaits map[string]ChildWait
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in
@@ -601,9 +613,11 @@ func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps 
 
 // ReadLineFacts reads the facts of one admission pass for issues: one tree-lifecycle read
 // (ReadLifecycles), one read of the records above the pass's own (ReadParents), one read of the
-// tree roots it leaves out (ReadTreeRoots), one gate read (gatesOf) and one read of the starts
-// the project owes, whatever the number of trees, gates and issues involved. project is the
-// Dispatch project key and steps the design-gate steps the deployment gates.
+// tree roots it leaves out (ReadTreeRoots), one gate read (gatesOf), one read of the starts the
+// project owes, and the open children of every started parent (StartedParentWaits: no read where
+// no issue has started a phase, and two where any has), whatever the number of trees, gates and
+// issues involved. project is the Dispatch project key and steps the design-gate steps the
+// deployment gates.
 //
 // The roots are read before the gates because the gates cover both sets of roots: the roots
 // among the pass's own issues (treeRoots) and the roots those issues leave out, which this read
@@ -643,7 +657,13 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 			owed[row.Issue] = row
 		}
 	}
-	return LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}, nil
+	facts := LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}
+	// The started parents are read last, since an issue owing a start is one of them
+	// (StartedParents) and the cycle walk crosses the records above the pass's own.
+	if facts.StartedParentWaits, err = StartedParentWaits(ctx, tx, store, project, issues, facts); err != nil {
+		return LineFacts{}, err
+	}
+	return facts, nil
 }
 
 // GateOpen is whether an approval stands on the gate's current document version: a person's, or

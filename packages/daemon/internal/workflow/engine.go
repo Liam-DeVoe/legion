@@ -1138,7 +1138,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // reason (AwaitChildren), and starts nobody. The round of a reviewing release is not read then:
 // the held reviewing goes back as implementing, whatever that round came to. A retry of
 // implementing whose task asks for the forward merge the parent owes clears that debt in the
-// write that puts the issue back in its phase, as a transition's does (ForwardMergeRequest).
+// write that puts the issue back in its phase, as a transition's does (forwardMergeRequest).
 //
 // Its callers have established that the tree does not linger, which is what holds every member
 // where it stood.
@@ -1170,7 +1170,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// The issue as the restarted worker's task reads it: the write below clears a forward merge
 	// that task asks for.
 	asked := issue
-	if ForwardMergeRequest(issue, pr) != "" {
+	if forwardMergeRequest(issue, pr) != "" {
 		issue.ForwardMergeOwed = false
 	}
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
@@ -1505,9 +1505,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	issue.Phase, issue.Hold = row.To, nil
 	// The task the start below hands the worker. An implementing task carries the forward merge a
 	// parent owes after a wait on its children, and this write, which puts the issue in the phase
-	// that task is for, is the one that clears the debt (ForwardMergeRequest).
+	// that task is for, is the one that clears the debt (forwardMergeRequest).
 	work := task(issue, handoff, pr, reason)
-	if ForwardMergeRequest(issue, pr) != "" {
+	if forwardMergeRequest(issue, pr) != "" {
 		issue.ForwardMergeOwed = false
 	}
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's

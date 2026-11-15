@@ -170,8 +170,9 @@ func liveAncestry(issue Issue, live map[string]struct{}) []string {
 	return under
 }
 
-// openChildren is the keys of the open Dispatch children of one children-first wait, in the order
-// that judgement lists them (ChildWait.Open, Dispatch key order).
+// openChildren is the keys of the open Dispatch children of one wait on them — a children-first
+// wait (ChildWaits) or a started parent's (StartedParentWaits) — in the order that judgement lists
+// them (ChildWait.Open, Dispatch key order).
 func openChildren(wait ChildWait) []string {
 	children := make([]string, len(wait.Open))
 	for i, child := range wait.Open {
@@ -232,11 +233,12 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 		return HeldRootAwaitingPerson, []string{issue.Tree}
 	// A parent that held a phase start because a child of it is still open stands here on its own
 	// phase (awaiting_children), not on its tree's: it reads before design_gate, since its wait is
-	// its open children and not its gate. The children that hold it are the admission pass's
-	// judgement (ChildWaits), which names them only once that pass reads a started parent's
-	// children; a word whose judgement names no child stands with no issue beside it.
+	// its open children and not its gate. The children that hold it are the started parents'
+	// judgement (LineFacts.StartedParentWaits), the one the admission pass moves it and brings it
+	// back by; a parent whose last open child has gone since stands with no issue beside it until
+	// the pass takes it back to the start it held.
 	case issue.Phase == phase.AwaitingChildren:
-		return HeldAwaitingChildren, openChildren(facts.Facts.ChildWaits[issue.Key])
+		return HeldAwaitingChildren, openChildren(facts.Facts.StartedParentWaits[issue.Key])
 	case recorded && !facts.Facts.Gates[issue.Tree].Open():
 		return HeldDesignGate, []string{issue.Tree}
 	}

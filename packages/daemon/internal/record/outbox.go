@@ -739,8 +739,12 @@ func NoticePerClaim(kind NoticeKind) bool {
 // issue that stays in the workflow and comes back at the next wake; "tree_close" is the tree's
 // close — the request that ends the claim, the tree's root claim included; "issue_close" is a
 // child issue's close as done, which ends the claim as a tree close does and drops its session,
-// since the issue is finished and its next run, should a person set it todo again, starts fresh.
-// There is no plain stop: only a close ends a claim from the workflow, so the op states which.
+// since the issue is finished and its next run, should a person set it todo again, starts fresh;
+// "retire_task" takes back the task the role's claim holds for a phase the workflow stopped under
+// its worker (Phase, at the generation and no later than Entry), and stops nothing: the worker
+// keeps its process, its turn and its session (workflow's StopForChildren,
+// supervise.Machine.RetireStoppedTask). There is no plain stop: only a close ends a claim from
+// the workflow, so the op states which.
 type SuperviseOp string
 
 // SuperviseRequest describes the session operation the outbox runner performs.
@@ -1654,6 +1658,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if (value.Op == "tree_close") != (value.Linger != 0) {
 			return fmt.Errorf("a tree close, and only a tree close, names the root generation of its linger")
 		}
+		if value.Op == "retire_task" && (value.Role == "" || value.Phase == "" || value.Task != "" || value.NeedsSlot) {
+			return fmt.Errorf("a supervise retire_task names the role and the phase whose task it retires, and carries no task")
+		}
 		if value.ResumeTask && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise resume task requires a start with a task and a phase")
 		}
@@ -1910,7 +1917,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 
 func validSuperviseOp(op SuperviseOp) bool {
 	switch op {
-	case "start", "suspend", "release", "tree_close", "issue_close":
+	case "start", "suspend", "release", "tree_close", "issue_close", "retire_task":
 		return true
 	default:
 		return false

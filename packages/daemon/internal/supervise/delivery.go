@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // CheckLook names one look of one production check: the look's number and the check instance the
@@ -772,6 +773,52 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 	// no task's and the line names none. It goes before the write, as the other two do.
 	m.startTurn("")
 	return m.persist(ctx)
+}
+
+// ErrTaskSending is RetireStoppedTask finding the task it would retire on its way to the agent
+// (Machine.send): the prompt is already leaving, so the retirement waits for the send to settle
+// and is asked again, when the task is either confirmed by the turn it started or back as
+// unsent, and either way retired then.
+var ErrTaskSending = wait.New("the task is on its way to the agent")
+
+// RetireStoppedTask retires the task this claim holds for phase p of run generation, at an entry
+// no later than entry (0 for a stop that names no entry), and answers whether it held one. It is
+// the retirement of the task of a phase the workflow stopped under its worker: the admission
+// pass's move of a parent into awaiting_children, which holds that phase's start on the record
+// and gives it back later on an entry of its own (internal/workflow's StopForChildren and
+// ReturnFromChildren). Its one caller is the outbox, which runs the move's `retire_task` row
+// (internal/daemon's outbox).
+//
+// The task goes whether or not a turn has taken it. Unsent, every send already drops it while
+// the issue waits (sendPending asks PhaseHolds first), but the return puts the issue back in that
+// same phase at the same run, where PhaseHolds holds it again, and a task held back the whole
+// wait — behind a suspension, an answered update round, a paced launch, a stale plugin or a turn
+// that outlives the wait — would then reach the worker before the return's own start is given
+// its slot. Taken, the turn that took it runs on, and a death that takes it back marked
+// interrupted would send it again the same way. So it goes here, as a newer task retires one a
+// turn has taken (queue), and the claim keeps its state, its turn and its session: the task is
+// stale, not the agent.
+//
+// A task of another phase or run, one of a later entry — the return's own start, should it reach
+// the claim before this row runs — and a task of no phase (an operator's own, an architect's) are
+// not this phase's work and are left where they are. A task on its way to the agent is answered
+// ErrTaskSending and retired when the outbox runs the row again.
+func (m *Machine) RetireStoppedTask(ctx context.Context, p phase.Phase, generation uint64, entry int64) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	d := m.claim.Pending
+	if d == nil || d.Phase == "" || d.Phase != p || d.Generation != generation || (entry > 0 && d.Entry > entry) {
+		return false, nil
+	}
+	if m.send != nil {
+		return false, ErrTaskSending
+	}
+	m.log.Info("supervise: the workflow stopped the phase this task was queued for; it is retired rather than kept",
+		"delivery", d.ID, "issue", m.claim.Issue, "phase", p, "entry", d.Entry, "confirmed", !d.ConfirmedAt.IsZero())
+	if err := m.retirePending(ctx); err != nil {
+		return false, err
+	}
+	return true, m.answerAskFirstAfterDrop(ctx)
 }
 
 // phaseHolds asks whether the issue is still in the phase and run this task was queued for. A delivery

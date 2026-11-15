@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -18,7 +19,8 @@ import (
 // the parent to awaiting_children, where it holds no admission slot and no role of it works, and
 // keeps the start it held for the moment no open child is left (record.Issue.ChildrenWait). This
 // file holds the one move every door takes — the transition's guard (Engine.transition), the
-// release of a hold (retryPhase) and the admission pass — and what the move says.
+// release of a hold (retryPhase) and the admission pass (StopForChildren) — what the move says,
+// and the return the admission pass makes once no open child is left (ReturnFromChildren).
 
 // AwaitingChildrenNoticeKind is the kind of the notice a parent's architect is told when the
 // parent enters awaiting_children (awaitingChildrenNotice). It replaces the phase-finished or
@@ -32,7 +34,7 @@ const AwaitingChildrenNoticeKind = record.NoticeKind("awaiting-children")
 const waitingOnChildren = "WAITING_ON_CHILDREN"
 
 // childrenMergedLine is the line an implementer ends its forward-merge comment with in the first
-// implementing round after a wait on the children (ForwardMergeRequest): the tester reads it and
+// implementing round after a wait on the children (forwardMergeRequest): the tester reads it and
 // runs a full round of every check of the issue rather than the forward-merge re-check
 // (dispatch://INFRA-3320 R12).
 const childrenMergedLine = "children merged: full test round"
@@ -40,16 +42,18 @@ const childrenMergedLine = "children merged: full test round"
 // ChildrenHold is one move of a parent into awaiting_children (Engine.AwaitChildren): the start
 // the move holds and what the move tells. Each caller fills it from what it has already read —
 // the transition from the row it chose and the task it built, the release of a hold from the
-// phase it restores, and the admission pass from the phase a worker is in — so the one move writes
-// the same record, the same notice and the same message whichever door it came through.
+// phase it restores, and the admission pass from the phase the parent stands in (StopForChildren)
+// — so the one move writes the same record, the same notice and the same message whichever door
+// it came through.
 type ChildrenHold struct {
 	// Start is the phase whose start the move holds, one of planning through accepting
 	// (holdsForChildren).
 	Start phase.Phase
 	// Task is the task that start gives its worker, which the return carries
-	// (record.ChildrenWait.Task): the task a transition built, a retry's, or the task the
-	// stopped phase's entry was raised with (record.PhaseRow.EntryTask). It carries no
-	// forward-merge request, which the return adds while the merge is owed (ForwardMergeRequest).
+	// (record.ChildrenWait.Task): the task a transition built, a retry's, the task a start
+	// written and not yet delivered carries, or the task the stopped phase's entry was raised
+	// with (record.PhaseRow.EntryTask). The return takes any forward-merge request out of it and
+	// adds the request once while the merge is owed (ReturnFromChildren).
 	Task string
 	// Cause is what the start was for: the reason the notice the move replaces carried — a
 	// worker's own move back with its words, or the base a conflicting head merges forward — or
@@ -92,9 +96,9 @@ type ChildrenHold struct {
 // nothing. It writes no count: a move back counted before the call counts what it counts today
 // (recordPass, recordRound), and the move itself counts nothing more (R10).
 //
-// It is exported for the admission pass (internal/admit), which holds the engine and moves a
-// parent in accepting, one whose start waits for a slot, and one whose worker is in the middle of
-// a phase through this same function.
+// The admission pass (internal/admit) reaches it through StopForChildren, which moves a parent in
+// accepting, one whose start is written and not delivered, and one whose worker is in the middle
+// of a phase through this same function.
 func (e *Engine) AwaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issue, hold ChildrenHold) error {
 	if issue.Phase == phase.AwaitingChildren {
 		return nil
@@ -235,25 +239,239 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold ChildrenHold) 
 	return record.Notice{Kind: AwaitingChildrenNoticeKind, Role: claim.RoleArchitect, Phase: from, Summary: hold.Summary, Verdict: hold.Verdict, Reason: reason}
 }
 
-// ForwardMergeRequest is the request an implementing task of issue carries while the parent owes
+// forwardMergeRequest is the request an implementing task of issue carries while the parent owes
 // the forward merge of its children's work (record.Issue.ForwardMergeOwed) and its pull request
 // has not merged, and "" for every other task (dispatch://INFRA-3320 R12): merge the default
 // branch into the branch before anything else, push, and complete with a new handoff record,
 // however the children left, and end the forward-merge comment with the line the tester reads as
 // asking for a full round (childrenMergedLine). task adds it, and the write that puts the issue in
-// the phase that task is for clears the flag (transition, retryPhase). It is exported for the
-// admission pass, whose return to a held start builds the implementing task from the task the
-// start held.
-func ForwardMergeRequest(issue record.Issue, pr *record.PullRequest) string {
+// the phase that task is for clears the flag (transition, retryPhase, ReturnFromChildren).
+func forwardMergeRequest(issue record.Issue, pr *record.PullRequest) string {
 	if issue.Phase != phase.Implementing || !issue.ForwardMergeOwed || (pr != nil && pr.State == record.PullRequestMerged) {
 		return ""
 	}
+	return forwardMergeText(issue)
+}
+
+// forwardMergeText is the words of issue's forward-merge request whether or not the issue owes
+// one: the one text forwardMergeRequest adds and the return takes out of a held task that already
+// carries it (ReturnFromChildren), so a task carries the request once or not at all.
+func forwardMergeText(issue record.Issue) string {
 	base := "the default branch"
 	if issue.DefaultBranch != "" {
 		base += " " + issue.DefaultBranch
 	}
 	return fmt.Sprintf("%s waited on its children: before anything else, merge %s into the branch, push, and complete with a new handoff record, however the children left; end your forward-merge comment with the line `%s`.",
 		issue.Key, base, childrenMergedLine)
+}
+
+// StopForChildren is the admission pass's move of a started parent that an open Dispatch child
+// now holds (dispatch://INFRA-3320 R9), through the one move into awaiting_children
+// (AwaitChildren), and answers whether it moved the parent. open is the parent's open children as
+// the pass judged them (record.LineFacts.StartedParentWaits), and owed the starts the parent owes
+// its workers that no lane holds (its own rows of record.LineFacts.OwedRows). The pass meets three
+// cases no transition raises:
+//
+//   - a parent in accepting, where no worker runs: it holds accepting, with the task that start
+//     is given (task, over the reviewer's handoff);
+//   - a parent whose start is written and not yet delivered — a start of the phase it stands in,
+//     owed its worker at its own generation: it holds that start with the task its queued row
+//     carries (queuedTask), and no role is told, since none has been given that phase;
+//   - a parent whose worker is in the middle of its phase: it holds that phase with the task its
+//     worker was given, the work the phase entry was raised with (record.PhaseRow.EntryTask, or
+//     the phase's resume task where the row holds none, as SendOwedEntry sends one), and that
+//     worker is told on its own topic that its phase ended (ChildrenHold.Ended,
+//     record.PhaseEnded), which wakes a pod the idle rule released.
+//
+// Every start the parent owes is finished in the same transaction (Store.FinishOutbox), so none
+// delivers later: the wait keeps its start on the record (record.ChildrenWait), and the return
+// writes a start of its own from the moment the wait ended (ReturnFromChildren). The phase stops
+// at this pass, and the slot it held is the pass's own release to free, since awaiting_children
+// keeps none (record.PhaseKeepsSlot).
+//
+// A parent standing anywhere else is left as it stands: held, whose release is a start the guard
+// in retryPhase reads, retro, merging, admitted, and awaiting_children itself, which AwaitChildren
+// leaves alone so that a second pass sends nothing again. So is a parent whose pull request has
+// merged, whose worker R9 leaves unmessaged.
+//
+// The worker the move stops has the task its claim holds for the stopped phase retired, in this
+// transaction (a `retire_task` row, record.SuperviseRequest, which the outbox runs through
+// supervise.Machine.RetireStoppedTask), bounded by the run and by the entry the phase stood on,
+// so the return's own start, on an entry of its own, is never taken. While the parent waits,
+// every send of a pending delivery drops such a task already (supervise's PhaseHolds), but the
+// return puts the issue back in that same phase at the same run, where a task held back all the
+// wait would pass that question again and reach the worker before the return's start has its
+// slot.
+func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Issue, open []record.OpenChild, owed []record.OwedStart) (bool, error) {
+	if !holdsForChildren(issue.Phase) || len(open) == 0 {
+		return false, nil
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil || (pr != nil && pr.State == record.PullRequestMerged) {
+		return false, err
+	}
+	role := RoleFor(issue.Phase)
+	hold := ChildrenHold{Start: issue.Phase, Open: open}
+	switch due, owes := undeliveredStart(issue, owed); {
+	case issue.Phase == phase.Accepting:
+		review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		if err != nil {
+			return false, err
+		}
+		hold.Task, hold.Cause = task(issue, review, pr, ""), "its reviewed head waited in accepting for the architect's sign-off"
+	case owes:
+		if hold.Task, err = e.queuedTask(ctx, tx, issue, due); err != nil {
+			return false, err
+		}
+		hold.Cause = fmt.Sprintf("its start of %s was written and had not reached the %s", issue.Phase, role)
+	default:
+		row, err := e.phaseRow(ctx, tx, issue.Key, role)
+		if err != nil {
+			return false, err
+		}
+		hold.Task = cmp.Or(row.EntryTask, ResumePhaseTask(issue))
+		hold.Cause, hold.Ended = fmt.Sprintf("the admission pass stopped the %s's %s phase", role, issue.Phase), role
+		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "retire_task", Tree: issue.Tree, Role: role,
+			Generation: issue.Generation, Phase: issue.Phase, Entry: row.Entry}); err != nil {
+			return false, err
+		}
+	}
+	for _, start := range owed {
+		if err := e.store.FinishOutbox(ctx, tx, start.ID, start.LeaseToken); err != nil {
+			return false, fmt.Errorf("finish the start of %s's %s before its wait on its children: %w", issue.Key, start.Role, err)
+		}
+	}
+	return true, e.AwaitChildren(ctx, tx, issue, hold)
+}
+
+// undeliveredStart is the start of the phase issue stands in that it owes that phase's worker at
+// its own generation, among owed: the start written and not yet delivered that StopForChildren
+// holds.
+func undeliveredStart(issue record.Issue, owed []record.OwedStart) (record.OwedStart, bool) {
+	for _, start := range owed {
+		if start.Phase == issue.Phase && start.Generation == issue.Generation && start.Role == RoleFor(issue.Phase) {
+			return start, true
+		}
+	}
+	return record.OwedStart{}, false
+}
+
+// queuedTask is the task the start row due carries for issue, read from its role's queued
+// supervise rows (Store.RoleRun): the very task that start would have delivered, which for the
+// retry of a held phase is the retry's own and not its entry's. A row no longer queued — its lane
+// finished it after the pass read it — leaves the task the role's phase entry was raised with.
+func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, due record.OwedStart) (string, error) {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", err
+	}
+	token, err := claim.NewToken(project, issue.Key, due.Role)
+	if err != nil {
+		return "", err
+	}
+	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, due.Role, due.Generation)
+	if err != nil {
+		return "", err
+	}
+	for _, queued := range run.Queued {
+		if queued.ID == due.ID && queued.Request.Task != "" {
+			return queued.Request.Task, nil
+		}
+	}
+	row, err := e.phaseRow(ctx, tx, issue.Key, due.Role)
+	if err != nil {
+		return "", err
+	}
+	return cmp.Or(row.EntryTask, ResumePhaseTask(issue)), nil
+}
+
+// ReturnFromChildren takes issue back from awaiting_children to the start it held, once no open
+// Dispatch child stands under it (dispatch://INFRA-3320 R12): the admission pass calls it on the
+// pass that finds the last open child gone (admit's childrenWaits), with nobody acting.
+//
+//   - A held start of planning or implementing starts that phase, with the task the start held,
+//     which carries the reason its transition wrote. A held start of testing, reviewing or
+//     accepting starts implementing in its place, since a test or a review of a head without the
+//     children's merges proves nothing, with a task that names the held start and its reason.
+//   - While the forward merge is owed and the pull request has not merged, the implementing task
+//     ends with the request to merge the default branch forward (forwardMergeRequest), once,
+//     whatever the held task carried, and the write that starts implementing clears the debt.
+//   - A parent whose pull request merged during the wait goes back to the very start it held,
+//     with no forward merge (the merge cleared the debt, Engine.merged), and keeps today's path
+//     for a merged pull request from there. A held accepting goes back to accepting, where no
+//     worker starts: its architect learns of an issue entering accepting from the notice of the
+//     move that took it there, which the wait's own notice replaced, so the return tells it once,
+//     under the wait's kind (AwaitingChildrenNoticeKind), that the issue waits on its sign_off.
+//   - The start raises a new phase entry (enter, through start), not a resend of the entry the
+//     wait stopped (restart), and marks it as a move back's (record.PhaseRow.EntryMovedBack): the
+//     return asks for the phase's work to be done again on a head that is to carry the children's
+//     merges, so a completion of an entry from before the wait is refused whatever head it names,
+//     as leftItsPhase refuses one of a phase the issue has left. The starting role's handoff is
+//     cleared, as a transition clears it (clearHandoff).
+//   - The held start goes with the phase (record.Issue.ChildrenWait), and the moment of the last
+//     wait stays (record.Issue.ChildrenWaitedAt), which leftItsPhase reads after the return.
+//
+// It counts nothing — no pass, no pair, no round — and does not wait for the design gate, which
+// holds no phase already under way. The start goes through the one writer of a phase worker's
+// start (start, StartOrOwe), and the parent holds no admission slot, since awaiting_children
+// keeps none: a start of planning through reviewing therefore waits in the line for one, among the
+// issues whose work came back, from the moment this return wrote it (record.Waiting, OwedStart),
+// or there as a waiting issue while a blocked_by link still holds the parent
+// (record.LineWaitingOnIssue), ordered by that same moment.
+func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	if issue.Phase != phase.AwaitingChildren || issue.ChildrenWait == nil {
+		return nil
+	}
+	held := *issue.ChildrenWait
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	back := issue
+	back.Phase, back.Hold, back.ChildrenWait = held.Start, nil, nil
+	merged := pr != nil && pr.State == record.PullRequestMerged
+	if !merged && held.Start != phase.Planning && held.Start != phase.Implementing {
+		back.Phase = phase.Implementing
+	}
+	// The work the start hands its role: the held task where the start goes back as it was held,
+	// with any forward-merge request it carried taken out so that the one rule below adds it,
+	// and otherwise an implementing task of its own that names the start it replaces (task, which
+	// adds the request itself).
+	work := strings.ReplaceAll(held.Task, " "+forwardMergeText(back), "")
+	if back.Phase != held.Start {
+		work = task(back, record.PhaseRow{}, pr, fmt.Sprintf("%s goes back from awaiting_children now that no Dispatch child of it is open, and starts implementing in place of the start of %s it held, since a test or a review of a head without its children's merges proves nothing. The held start of %s was for this: %s",
+			issue.Key, held.Start, held.Start, held.Reason))
+	} else if request := forwardMergeRequest(back, pr); request != "" {
+		work += " " + request
+	}
+	if forwardMergeRequest(back, pr) != "" {
+		back.ForwardMergeOwed = false
+	}
+	status := PhaseStatus(back.Phase)
+	if err := e.status(ctx, tx, issue, status); err != nil {
+		return err
+	}
+	if status != "" {
+		back.Status = status
+	}
+	if err := e.store.PutIssue(ctx, tx, back); err != nil {
+		return err
+	}
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a parent's open children are finished, so it goes back to the start it held", "issue", issue.Key,
+		"tree", issue.Tree, "held", held.Start, "to", back.Phase, "merged", merged)
+	role := RoleFor(back.Phase)
+	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
+		return err
+	}
+	if role != "" && role != claim.RoleArchitect {
+		return e.start(ctx, tx, back, role, work, true)
+	}
+	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: AwaitingChildrenNoticeKind, Role: claim.RoleArchitect, Phase: phase.AwaitingChildren,
+		Reason: fmt.Sprintf("%s left awaiting_children: no Dispatch child of it is open now, and its pull request merged during the wait, so it is back in %s with no forward merge. It waits on your sign_off, as an issue in %s does.",
+			issue.Key, back.Phase, back.Phase)})
 }
 
 // waitingRefusal refuses act — request_backward_move or sign_off — on issue, which stands in
