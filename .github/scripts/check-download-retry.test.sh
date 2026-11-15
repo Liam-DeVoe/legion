@@ -1224,7 +1224,7 @@ check "says where a count can be written or declared" "$(contains "$out" 'DECLAR
 check "does not judge the budget against a figure it is missing" \
   "$(is "$(contains "$out" 'does not strictly exceed')" false)"
 check "does not ask for a bound written as a number, the bound being one" \
-  "$(is "$(contains "$out" 'write that bound as a number')" false)"
+  "$(is "$(contains "$out" '[Ww]rite that bound as a number')" false)"
 
 # Two uncounted loops, one inside the other's script: the step's loop cannot be counted, and
 # neither can the loop inside the script it runs, so the figure for one run of that script is
@@ -1473,7 +1473,13 @@ check "prints no figure for a call it cannot price" \
 check "prices the site at nothing nowhere" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
 check "gives the site's advice and not a script call's" \
-  "$(contains "$out" 'write that bound as a number')"
+  "$(contains "$out" 'Write that bound as a number')"
+# With the count advice left out, the advice is a sentence of its own and starts with a capital:
+# it read `… it exists to allow. write that bound …` (dispatch://INFRA-1545, round 37).
+check "starts the advice that follows the count's absence with a capital letter" \
+  "$(contains "$out" 'cuts in the middle of the retry it exists to allow\. Write that bound as a number')"
+check "starts no sentence of the refusal in lowercase" \
+  "$(is "$(contains "$out" 'it exists to allow\. [a-z]')" false)"
 check "says a declaration answers an unread bound" \
   "$(contains "$out" 'or declare that site in DECLARED_LOOPS in .github/scripts/check-download-retry.sh. An entry there writes the seconds the site contributes to this budget, whole')"
 check "says why that entry writes the whole of it" \
@@ -1486,6 +1492,108 @@ check "offers no pass count as a way out of this one" \
   "$(is "$(contains "$out" 'Write the count where this check reads it')" false)"
 check "does not tell the author to take a call out of a loop" \
   "$(is "$(contains "$out" 'take the call out of the loop')" false)"
+
+# A site with no bound at all, in that same loop, is not a site whose bound is a variable. Rule 8
+# kept it, rightly, since the loop is its own fault and rule 1 says nothing of a loop, but it
+# told the author the bound was written as a variable and to write that bound as a number,
+# when the curl writes no `--max-time` at all (dispatch://INFRA-1545, round 37). It now says it
+# finds no bound, asks for one as a number, and then for the count, since a bound alone leaves
+# the loop unread. The second step is the control: a `retry_fetch` whose seconds are `"$T"`
+# around a curl whose `--max-time` is `"$T"` writes its bound as a variable, and is told so.
+echo "case: a loop around the step's own curl with no bound names no variable bound"
+root=$(fixture site-no-bound-in-loop)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 30
+        run: |
+          read_run() {
+            curl -fsSL --retry 7 --retry-all-errors \
+              -o "run-$1.json" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$1"
+          }
+          while read -r id; do
+            read_run "$id"
+          done <<<"$ids"
+      - name: Fetch every row at the caller's bound
+        timeout-minutes: 5
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r url; do
+            retry_fetch "a row" "$T" -- curl -fsSL --max-time "$T" -o f "$url"
+          done < urls.txt
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "leaves rule 1 refusing the curl on its own line" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::.curl. in step 'Read every run the decision named' fetches without the floor: it lacks .--max-time <seconds>.")"
+check "refuses the step for the loop it cannot count" \
+  "$(contains "$out" "step .Read every run the decision named. carries .timeout-minutes: 30. and this check can put no figure on it: it runs a retried call inside a loop whose passes it cannot read — .curl. at .github/workflows/case.yaml:10, inside the loop at line 13")"
+check "says it finds no bound on one attempt of the call" \
+  "$(contains "$out" "step .Read every run the decision named. .*What one call of .curl. there takes is a figure this check cannot make, because this check finds no bound on one attempt of it, and the step waits for that once per pass")"
+check "does not say that call's bound is written as a variable" \
+  "$(is "$(contains "$out" "step .Read every run the decision named. .*written as a variable")" false)"
+check "asks for a bound written as a number, as a sentence of its own" \
+  "$(contains "$out" "step .Read every run the decision named. .*it exists to allow\. Bound each attempt with a number of seconds — .--max-time <seconds>. on a curl, or the seconds .retry_fetch. takes before its .--. — which is the figure this check multiplies by the passes it reads\. Write the count where this check reads it")"
+check "does not ask it to write as a number a bound it does not write" \
+  "$(is "$(contains "$out" "step .Read every run the decision named. .*[Ww]rite that bound as a number")" false)"
+check "tells the control its bound is written as a variable" \
+  "$(contains "$out" "step .Fetch every row at the caller's bound. .*because its bound is written as a variable rather than as a number, .*it exists to allow\. Write that bound as a number")"
+
+# The same false premise one script in: a script whose curl writes no bound, run in a loop the
+# check cannot count, was said to make 'attempts whose bound is written as a variable'
+# (dispatch://INFRA-1545, round 37). The second script holds one call of each kind, and is told
+# of both.
+echo "case: a loop around a script whose curl has no bound names no variable bound"
+root=$(fixture script-no-bound-in-loop)
+cat > "$root/.github/scripts/zz-nobound.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+curl -fsSL --retry 7 --retry-all-errors -o run.json \
+  "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$1"
+SH
+cat > "$root/.github/scripts/zz-mixed.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+bound=60
+curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" -o run.json \
+  "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$1"
+curl -fsSL --retry 7 --retry-all-errors -o jobs.json \
+  "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$1/jobs"
+SH
+chmod +x "$root/.github/scripts/zz-nobound.sh" "$root/.github/scripts/zz-mixed.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 1
+        run: |
+          printf 'a\nb\n' | while read -r id; do .github/scripts/zz-nobound.sh "$id"; done
+      - name: Read every run and its jobs
+        timeout-minutes: 1
+        run: |
+          printf 'a\nb\n' | while read -r id; do .github/scripts/zz-mixed.sh "$id"; done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "leaves rule 1 refusing the script's curl on its own line" \
+  "$(contains "$out" "::error file=.github/scripts/zz-nobound.sh,line=3::.curl. fetches without the floor: it lacks .--max-time <seconds>.")"
+check "names the script call and the loop around it" \
+  "$(contains "$out" '..github/scripts/zz-nobound.sh. at .github/workflows/case.yaml:9, inside the loop at line 9')"
+check "says it finds no bound on that script's attempts" \
+  "$(contains "$out" 'One run of ..github/scripts/zz-nobound.sh. makes attempts on which this check finds no bound, there or in a script it calls')"
+check "does not say that script's bound is written as a variable" \
+  "$(is "$(contains "$out" "step .Read every run the decision named. .*written as a variable")" false)"
+check "names both kinds in the script holding both" \
+  "$(contains "$out" 'One run of ..github/scripts/zz-mixed.sh. makes attempts whose bound is written as a variable rather than as a number and attempts on which this check finds no bound, there or in a script it calls')"
 
 # The fourth member of that family, and the one with no loop anywhere in it. A curl whose
 # `--max-time` is written as a variable is bounded, so rule 4 passes it, and the seconds are
@@ -5427,7 +5535,12 @@ check "names zz-c.sh nowhere" "$(is "$(contains "$out" 'zz-c.sh')" false)"
 # refused by name: the file and the line, the step, the script, the form and the rewrite
 # (dispatch://INFRA-1545, round 37). One step for each form, each naming zz-c.sh, which retries
 # at 180 s. The process substitution is written twice: a run inside one, and the tester's
-# `bash <(cat …)`, where the path is an argument of `cat` inside it and is named that way.
+# `bash <(cat …)`, where the path is an argument of `cat` inside it and is named that way. A run
+# inside a substitution has its path as the command word already, so it is told to take the run
+# out of the substitution instead, which is advice it can follow. An `echo` or a `printf`
+# piped into a shell is a pipe into a shell like `cat`'s, though the same `echo` with no pipe is
+# a non-call (the case above): it was read as a non-call, and the script the shell runs was
+# neither charged nor refused.
 echo "case: each place rule 8 does not read is refused by name where the script fetches"
 root=$(fixture unread-forms)
 cp "$work/runs-twice-under-30/.github/scripts/zz-c.sh" "$root/.github/scripts/"
@@ -5477,28 +5590,41 @@ jobs:
         run: |
           die() { echo "$*" >&2; exit 1; }
           die "see .github/scripts/zz-c.sh"
+      - name: Echo it into a shell
+        timeout-minutes: 1
+        run: |
+          echo .github/scripts/zz-c.sh | bash
+      - name: Print it into a shell
+        timeout-minutes: 1
+        run: |
+          printf '%s\n' .github/scripts/zz-c.sh | sh
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 command_word='Write the path as the command word'
+substitution='Take the run out of the substitution: run the script as a command of its own, with its output written to a file, and name that file where the substitution stood'
 for refusal in \
   "10	Run it through a variable	a variable assignment	$command_word" \
   "14	List it in an array	an array	$command_word" \
   "19	Run it through eval	.eval.	$command_word" \
   "23	Run it in bash -c	.bash -c. text	$command_word" \
   "27	Pipe it into a shell	a pipe into a shell	$command_word" \
-  "31	Run it in a process substitution	a process substitution	$command_word" \
+  "31	Run it in a process substitution	a process substitution	$substitution" \
   "35	Feed it to bash through a process substitution	an argument of .cat.	$command_word" \
   "39	Run it in a function	a function body	Call the script outside the function" \
-  "44	Name it to a helper	an argument of .die.	$command_word"; do
+  "44	Name it to a helper	an argument of .die.	$command_word" \
+  "48	Echo it into a shell	a pipe into a shell	$command_word" \
+  "52	Print it into a shell	a pipe into a shell	$command_word"; do
   IFS=$'\t' read -r line step form cure <<<"$refusal"
   check "refuses '$step' by its file and line, the step, the script and the form" \
     "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' names .github/scripts/zz-c.sh in $form, a place this check does not read as a call, and that script fetches")"
   check "gives '$step' its rewrite" \
     "$(contains "$out" "step '$step' of job 'build' names .github/scripts/zz-c.sh in $form, .*$cure")"
 done
+check "does not tell a run inside a substitution to write its path as the command word" \
+  "$(is "$(contains "$out" "step 'Run it in a process substitution' of job 'build' .*$command_word")" false)"
 check "refuses nothing else" \
-  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 9)"
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 11)"
 check "charges none of them" "$(is "$(contains "$out" 'its own retries take')" false)"
 
 # The same places naming a script that fetches nothing are neither charged nor refused

@@ -81,22 +81,26 @@
 #          `$script_dir/x.sh`, `../../.github/scripts/x.sh`, `$(dirname "${BASH_SOURCE[0]}")/x.sh`
 #          — or the first word after `bash` or `sh` and their options;
 #        - a SOURCE: `. <path>` or `source <path>`.
-#   2. A RECOGNISED NON-CALL: an argument of `echo`, `printf` or `grep` (NONCALL_COMMANDS),
-#      which covers every `::error`, `::warning` and `::notice` line written through the first
-#      two, and a comment. It is charged nothing and refused nothing. Until round 37 a path
-#      anywhere on a line that was not a comment line was a call, so a message a step echoed
-#      charged the step the whole script it named: two echo lines of ci.yaml's `tool-fallback`
-#      step that checks its eight installs failed read as calls, 3843 s where its call is 1281 s.
+#   2. A RECOGNISED NON-CALL: an argument of `echo`, `printf` or `grep` (NONCALL_COMMANDS)
+#      whose output is not piped into a shell, which covers every `::error`, `::warning` and
+#      `::notice` line written through the first two, and a comment. It is charged nothing and
+#      refused nothing. Until round 37 a path anywhere on a line that was not a comment line
+#      was a call, so a message a step echoed charged the step the whole script it named: two
+#      echo lines of ci.yaml's `tool-fallback` step that checks its eight installs failed read
+#      as calls, 3843 s where its call is 1281 s.
 #   3. ANYTHING ELSE: a path in a variable assignment or in an array, behind `eval`, in the
-#      text of a `bash -c` or `sh -c`, in a command whose output is piped into a shell, in a
-#      process substitution, inside the body of a function (`name() { … }` or `function
-#      name`), in a redirect, in the words of a `for`, or an argument of any other command — a
-#      `die`, `fail` or `note` helper, `cp`, `cat`, `xargs`. Such an occurrence naming a
-#      script that fetches, which is a script holding a retried call or reaching one through
-#      its recognised calls, is refused by name: the file and the line, the step or the script
+#      text of a `bash -c` or `sh -c`, in a command whose output is piped into a shell (an
+#      `echo` or `printf` included, since the shell runs what it prints), in a process
+#      substitution, inside the body of a function (`name() { … }` or `function name`), in a
+#      redirect, in the words of a `for`, or an argument of any other command — a `die`,
+#      `fail` or `note` helper, `cp`, `cat`, `xargs`. Such an occurrence naming a script that
+#      fetches, which is a script holding a retried call or reaching one through its
+#      recognised calls, is refused by name: the file and the line, the step or the script
 #      holding it, the script it names, the form, and the rewrite — the path written as the
-#      command word, or sourced with `.`, and for a function body, the call written outside
-#      the function. It is not charged, and a refusal stands where its figure would be. One
+#      command word, or sourced with `.`; for a process substitution, where the path may be
+#      the command word already, the script run as a command of its own with what it reads
+#      or writes passed through a file; and for a function body, the call written outside the
+#      function. It is not charged, and a refusal stands where its figure would be. One
 #      naming a script that fetches nothing is neither charged nor refused.
 #
 # The recognised calls are then charged (shell_arithmetic). A RUN is charged once for every
@@ -809,7 +813,9 @@ CALL_SOURCED = "sourced"
 CALL_NONE = "non-call"
 CALL_UNREAD = "unread"
 # The commands whose arguments are text a step prints or searches and never runs: a path written
-# as an argument of one of them is a recognised non-call, an `::error` message included.
+# as an argument of one of them is a recognised non-call, an `::error` message included, unless
+# that command's output is piped into a shell, which runs the text it prints and is read as any
+# other pipe into a shell is (dispatch://INFRA-1545, round 37).
 NONCALL_COMMANDS = {"echo", "printf", "grep"}
 # The builtins whose arguments are assignments, read as a bare `name=value` is.
 ASSIGN_BUILTINS = {"export", "local", "readonly", "declare", "typeset"}
@@ -1888,7 +1894,10 @@ class Uncounted:
     `what` is the verb, or the script's path; `one` is what one call of it costs, left None
     wherever no figure can be made of that — a script, whose arithmetic is read when the
     refusal is written because the scripts are read after the steps that run them, and a site
-    whose bound is written as a variable rather than as a number.
+    whose bound is written as a variable rather than as a number, or not found at all.
+    `unbounded` tells those last two apart, for an UNCOUNTED_SITE: True where this check finds
+    no bound on one attempt of the site in any spelling (bound_spelled answers False), so the
+    refusal names that rather than a variable nobody wrote (dispatch://INFRA-1545, round 37).
 
     `kind` tells apart the three things this class holds: UNCOUNTED_SITE, a fetch written in
     the body the item was read from, inside a loop with no pass count; UNCOUNTED_UNREAD_BOUND,
@@ -1902,13 +1911,14 @@ class Uncounted:
     (review round 8 of dispatch://INFRA-1545)."""
 
     def __init__(self, path: str, line: int, what: str, loop: int | None,
-                 one: int | None, kind: str) -> None:
+                 one: int | None, kind: str, unbounded: bool = False) -> None:
         self.path = path
         self.line = line
         self.what = what
         self.loop = loop
         self.one = one
         self.kind = kind
+        self.unbounded = unbounded
 
 
 def one_call(site: Site) -> int | None:
@@ -1956,12 +1966,25 @@ def bound_written(site: Site) -> bool:
     `timeout` or `retry_fetch` seconds around it, or curl's own `--max-time`. The number may
     still be unreadable — `--max-time "$T"` writes the option and leaves the seconds to the
     caller — and that is the pair rule 8 needs told apart from a site that writes no bound at
-    all. A site writing none is rule 4's refusal, and rule 8 adds nothing to it: one fault
-    reads better as one annotation, and the figure rule 8 would ask for is the very thing
-    rule 4 is already asking the author to write."""
+    all. Where its passes are read, a site writing none is rule 4's refusal, and rule 8 adds
+    nothing to it: one fault reads better as one annotation, and the figure rule 8 would ask
+    for is the very thing rule 4 is already asking the author to write. Inside a loop whose
+    passes this check cannot read, the loop is a fault of rule 8's own, so that site is
+    refused for it all the same, and bound_spelled below says what that refusal names: a
+    bound written as a variable, or none this check finds (dispatch://INFRA-1545, round 37)."""
     if site.bounded:
         return True
     return site.verb == "curl" and site.retry is None and curl_options(site.words)[2]
+
+
+def bound_spelled(site: Site) -> bool:
+    """Whether one attempt of this site carries a bound in any spelling, a variable included,
+    which is what rule 8 says of a site one_call answers None for: bound_written's answer, and
+    also a curl's own `--max-time` under a `retry_fetch` whose seconds this check cannot read,
+    where rule 4 reads no bound. False is a site with no bound this check finds, and a refusal
+    saying its bound was written as a variable told the author of a curl with no `--max-time`
+    to write as a number a bound they had not written (dispatch://INFRA-1545, round 37)."""
+    return bound_written(site) or (site.verb == "curl" and curl_options(site.words)[2])
 
 
 def declared_arithmetic(site: Site) -> "DeclaredArithmetic | None":
@@ -2114,7 +2137,16 @@ def call_of(text: str, commands: list[Command], in_function: list[bool],
             return CALL_UNREAD, "a variable assignment"
         return CALL_UNREAD, f"an argument of `{words[0]}`"
     argument = at - wrappers
+    following = commands[index + 1].words if index + 1 < len(commands) else []
+    shell = reduce_words(following)[0][:1]
+    into_shell = bool(command.piped and shell
+                      and PROGRAM.sub("", shell[0]).rsplit("/", 1)[-1] in INTERPRETERS)
     if head in NONCALL_COMMANDS and argument > 0:
+        # Text piped into a shell is shell that shell runs, whatever command prints it: an
+        # `echo <path> | bash` runs the script as surely as `cat <path> | bash` does, so the
+        # pipe is asked about before the printing command is (dispatch://INFRA-1545, round 37).
+        if into_shell:
+            return CALL_UNREAD, "a pipe into a shell"
         return CALL_NONE, f"an argument of `{head}`"
     if argument == 0:
         if not ends:
@@ -2151,9 +2183,7 @@ def call_of(text: str, commands: list[Command], in_function: list[bool],
     elif head in ASSIGN_BUILTINS and ASSIGNMENT.match(words[at]):
         return CALL_UNREAD, "a variable assignment"
     else:
-        following = commands[index + 1].words if index + 1 < len(commands) else []
-        shell = reduce_words(following)[0][:1]
-        if command.piped and shell and PROGRAM.sub("", shell[0]).rsplit("/", 1)[-1] in INTERPRETERS:
+        if into_shell:
             return CALL_UNREAD, "a pipe into a shell"
         return CALL_UNREAD, f"an argument of `{head}`"
     if "proc" in command.context:
@@ -2293,11 +2323,16 @@ def uncounted_of(found: list[Site]) -> list[Uncounted]:
     one wait nobody can price, and pricing it at 0 is what let every tool install of
     .github/scripts/ci-tools.sh sit under a budget of one minute (review round 8 of dispatch://INFRA-1545
     and review round 9 of dispatch://INFRA-1545). Dropping it inside a loop priced the step's whole wait at 0 and refused nobody
-    for it (review round 8 of dispatch://INFRA-1545). A site rule 4 refuses for writing no bound at all is left to rule 4, which
-    is the bound_written question above: what rule 8 would ask its author for is the figure
-    rule 4 is already asking them to write. The refusals below read the kind field, not
-    `one`, to tell these items from blocked_calls's script calls, so a None written here
-    blurs nothing."""
+    for it (review round 8 of dispatch://INFRA-1545). A site rule 4 refuses for writing no
+    bound at all is left to rule 4 where its passes are read, which is the bound_written
+    question above: what rule 8 would ask its author for is the figure rule 4 is already asking
+    them to write. Inside a loop whose passes this check cannot read it is kept, because that
+    loop is rule 8's own fault and rule 4 says nothing of it, and it is marked `unbounded`
+    where bound_spelled finds no bound in any spelling, so its refusal says that: it said the
+    bound was written as a variable, and told the author to write as a number a bound they had
+    not written (dispatch://INFRA-1545, round 37). The refusals below read the kind field, not
+    `one`, to tell these items from blocked_calls's script calls, so a None written here blurs
+    nothing."""
     kept = []
     for site in found:
         if site.path in DOCKERFILES:
@@ -2308,7 +2343,8 @@ def uncounted_of(found: list[Site]) -> list[Uncounted]:
         if site.factor is None:
             if one != 0:
                 kept.append(Uncounted(site.path, site.line, site.verb, site.blocked, one,
-                                      UNCOUNTED_SITE))
+                                      UNCOUNTED_SITE,
+                                      unbounded=one is None and not bound_spelled(site)))
         elif one is None and bound_written(site):
             # No loop in the item: `loop` names the one whose passes could not be read, and
             # this site's were read, whether it sits in a loop or in none. The refusal below
@@ -3365,17 +3401,22 @@ def retries_nothing(path: str, seen: set[str]) -> bool:
     return all(retries_nothing(call.target, seen) for call in script_reach.get(path, []))
 
 
-def unpriced_wait(path: str, seen: set[str]) -> bool:
-    """Whether this script, or one it calls in turn, holds a call whose attempts this check
-    cannot price: one_call answers None for it, because the bound is written as a variable.
-    The refusal below says that in place of a figure, since what one run of such a script
-    takes is a number nobody can write."""
+def unpriced_waits(path: str, seen: set[str]) -> set[bool]:
+    """How this script, or one it calls in turn, holds a call whose attempts this check cannot
+    price, as the answers bound_spelled gives for each call one_call answers None for: True
+    for a bound written as a variable, False for no bound this check finds. Empty where it
+    holds no such call. The refusal below says which in place of a figure, since what one run
+    of such a script takes is a number nobody can write; it said a variable for both, and so
+    told the author of a call with no bound that the bound was written (dispatch://INFRA-1545,
+    round 37)."""
     if path in seen:
-        return False
+        return set()
     seen.add(path)
-    if any(one is None for one in script_waits.get(path, ())):
-        return True
-    return any(unpriced_wait(call.target, seen) for call in script_reach.get(path, []))
+    found = {bound_spelled(site) for site in script_read.get(path, ([], None))[0]
+             if one_call(site) is None}
+    for call in script_reach.get(path, []):
+        found |= unpriced_waits(call.target, seen)
+    return found
 
 
 def waits_for_nothing(item: Uncounted) -> bool:
@@ -3437,6 +3478,16 @@ for path, line, who, occurrence in unread_calls:
                 "script's path as its command word. A function runs the script once for every "
                 "time it is called, from wherever it is called, and this check does not follow "
                 "a function's calls to a script")
+    elif occurrence.form == "a process substitution":
+        # The path may be the command word already, inside the `<(…)`, so telling the reader
+        # to write it as one is advice they cannot follow: the substitution is what this check
+        # does not read, and the rewrite takes the run out of it (dispatch://INFRA-1545, round 37).
+        cure = ("Take the run out of the substitution: run the script as a command of its own, "
+                "with its output written to a file, and name that file where the substitution "
+                f"stood, so `cmd <({occurrence.target} …)` becomes `{occurrence.target} … > "
+                "out.txt` and then `cmd out.txt`; for a `>(…)`, write what fed it to a file and "
+                f"run `{occurrence.target} … < that-file`. A command of its own is a run, which "
+                "this check charges once for each time the step runs it")
     else:
         cure = (f"Write the path as the command word — `{occurrence.target} …`, or `bash "
                 f"{occurrence.target} …` — or source it with `. {occurrence.target}`, which are "
@@ -3448,8 +3499,9 @@ for path, line, who, occurrence in unread_calls:
             "sources a script that does. So whatever runs this line may wait for every attempt "
             "that script makes, and rule 8 can put no figure on that wait: it is not charged "
             f"to any budget, and this refusal stands in its place. {cure}. A path a step only "
-            "prints is a path in a comment or an argument of `echo`, `printf` or `grep`, which "
-            "this check charges nothing and refuses nothing (dispatch://INFRA-1545, round 37).")
+            "prints is a path in a comment or an argument of `echo`, `printf` or `grep` whose "
+            "output no shell runs, which this check charges nothing and refuses nothing "
+            "(dispatch://INFRA-1545, round 37).")
 
 for budget in budgets:
     # One shell for the whole step: the scripts its `run:` runs and sources and the action it
@@ -3514,35 +3566,46 @@ for budget in budgets:
         # above names the site that stopped the reading.
         #
         # A script can be unreadable the other way too: a call in it, or in one it calls,
-        # bounds its attempts with a variable, so one_call puts no seconds behind that call
-        # and the sum leaves it out. What comes back is a plain 0 where that call is the only
-        # one the script makes and an undercount where it is not, and neither is a figure to
-        # print, so the sentence names the unread bound instead. That is the item this filter
-        # dropped before review round 6 of dispatch://INFRA-1545.
+        # bounds its attempts with a variable, or writes no bound for them at all, so one_call
+        # puts no seconds behind that call and the sum leaves it out. What comes back is a
+        # plain 0 where that call is the only one the script makes and an undercount where it
+        # is not, and neither is a figure to print, so the sentence names the unread bound
+        # instead, as a variable or as no bound, whichever unpriced_waits found. That is the
+        # item this filter dropped before review round 6 of dispatch://INFRA-1545.
         #
-        # A site is unreadable in that one way only, and it is the same way: `--max-time "$T"`
-        # bounds the attempt where this check cannot read the bound. Then both halves of what
-        # the step waits for are unread — what one call takes, and how many calls the loop
-        # makes — so no number is printed for it either. Its advice is a site's all the same,
-        # because the verb is there for a declaration to name (review round 8 of dispatch://INFRA-1545).
+        # A site is unreadable in the same two ways: `--max-time "$T"` bounds the attempt
+        # where this check cannot read the bound, and a curl with no `--max-time` bounds it
+        # nowhere. Then both halves of what the step waits for are unread — what one call
+        # takes, and how many calls the loop makes — so no number is printed for it either.
+        # Its advice is a site's all the same, because the verb is there for a declaration to
+        # name (review round 8 of dispatch://INFRA-1545). The sentence says which of the two
+        # it is: a site with no bound was told its bound was written as a variable, and to
+        # write as a number a bound it does not write (dispatch://INFRA-1545, round 37).
         script_call = blocking[0].kind == UNCOUNTED_SCRIPT_CALL
         unread_bound = not script_call and blocking[0].one is None
+        unbounded = unread_bound and blocking[0].unbounded
+        variable_bound = unread_bound and not unbounded
         one = (file_arithmetic(blocking[0].what, set()) if script_call
                else blocking[0].one)
+        unread_kinds = unpriced_waits(blocking[0].what, set()) if script_call else set()
         if unread_bound:
+            why = ("this check finds no bound on one attempt of it" if unbounded
+                   else "its bound is written as a variable rather than as a number")
             cost_read = (f"What one call of `{blocking[0].what}` there takes is a figure this "
-                         "check cannot make, because its bound is written as a variable "
-                         "rather than as a number, and the step waits for that once per pass "
-                         "of a loop whose passes this check cannot read either")
-        elif script_call and unpriced_wait(blocking[0].what, set()):
+                         f"check cannot make, because {why}, and the step waits for that once "
+                         "per pass of a loop whose passes this check cannot read either")
+        elif unread_kinds:
             # Before the loop sentence below, because a script holding a call whose bound is
             # unread answers None for its whole arithmetic now, as a script reaching an
             # uncounted loop does, and the two read the same from here. The unread bound is
             # the one this sentence can name a cure for, so it is asked first; a script with
             # both faults is told about the bound and told about the loop the next time
             # (review round 9 of dispatch://INFRA-1545).
-            cost_read = (f"One run of `{blocking[0].what}` makes attempts whose bound is "
-                         "written as a variable rather than as a number, there or in a script "
+            made = " and ".join(
+                "attempts whose bound is written as a variable rather than as a number"
+                if written else "attempts on which this check finds no bound"
+                for written in sorted(unread_kinds, reverse=True))
+            cost_read = (f"One run of `{blocking[0].what}` makes {made}, there or in a script "
                          "it calls, so what one run of it takes is a figure this check cannot "
                          "make either, and the step waits for that once per pass of the loop "
                          "above it")
@@ -3564,7 +3627,7 @@ for budget in budgets:
                 "step and the verb it retries, and a call of a script writes a path where "
                 "that verb would be, so an entry pointed at it matches no retried call and "
                 "fails this check in its own right.")
-        elif unread_bound:
+        elif variable_bound:
             # The bound first and the loop second, and in that order rather than as a choice:
             # a bound written as a number leaves the loop still unread, which is this rule's
             # ordinary refusal, while a pass count written over an unread bound leaves the
@@ -3589,16 +3652,28 @@ for budget in budgets:
                 "DECLARED_LOOPS in .github/scripts/check-download-retry.sh: a "
                 "DeclaredArithmetic entry there writes the seconds the site contributes to "
                 "this budget and the sum they come from.")
-        count_advice = ("" if unread_bound else
+        count_advice = ("" if variable_bound else
                         "Write the count where this check reads it — a "
                         "`for x in 1 2 3 4 5 6 7`, a `for x in $(seq 1 7)`, or a "
                         "`for ((i = 0; i < 7; i++))` — or ")
+        # A site with no bound is told to write one first, as a number, which is the figure
+        # the passes multiply, and then the ordinary advice about the loop: a bound alone
+        # leaves the loop unread (dispatch://INFRA-1545, round 37).
+        bound_advice = ("Bound each attempt with a number of seconds — `--max-time "
+                        "<seconds>` on a curl, or the seconds `retry_fetch` takes before its "
+                        "`--` — which is the figure this check multiplies by the passes it "
+                        "reads. " if unbounded else "")
+        # The advice after the sentence above starts a sentence of its own whichever pieces it
+        # is built from: with the count left out, it began with the lowercase word of the
+        # clause that follows the count (dispatch://INFRA-1545, round 37).
+        advice = count_advice + instead
+        advice = bound_advice + advice[:1].upper() + advice[1:]
         problem(budget.path, budget.line,
                 f"step '{step_name(budget)}' {carries} and this "
                 "check can put no figure on it: it runs a retried call inside a loop whose "
                 f"passes it cannot read — {named}. {cost_read}, so a budget written for one "
                 "pass is a step the runner "
-                f"cuts in the middle of the retry it exists to allow. {count_advice}{instead}")
+                f"cuts in the middle of the retry it exists to allow. {advice}")
         continue
     if unpriced:
         named = "; ".join(f"`{item.what}` at {item.path}:{item.line}" for item in unpriced)
