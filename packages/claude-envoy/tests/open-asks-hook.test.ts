@@ -899,13 +899,14 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
   // charged 36624.60 ms and so nowhere near this limit, because the hook's own
   // `OPEN_ASKS_TIMEOUT_MS` of 3 s (`hooks/session-hook-budgets.ts`) lost the Dispatch read on a
   // starved host. That bound reads no environment variable, so no per-test limit guards it.
-  // Row-filtered at 160 busy loops the row is 19 of 20 in one campaign and 18 of 20 in another:
-  // the first failed run 2 at the row's `toStartWith("Dispatch authored-ask summary:\n")`
-  // assertion charged 39970.84 ms, the second runs 17 and 18 charged
-  // 119944.23 ms and 76754.74 ms, each with `Dispatch authored-ask summary unavailable: The
-  // operation timed out.` where the summary belongs, which is that 3 s read and no limit of this
-  // row's. So on a host starved that far this row still loses a correct run to that production
-  // budget, and the budget stays.
+  // Row-filtered at 160 busy loops, 80 per CPU, the row lost one or two correct runs in each of
+  // three campaigns of 20 that way — runs charged 39970.84, 119944.23, 76754.74 and 58823.84 ms,
+  // each failing at the row's `toStartWith("Dispatch authored-ask summary:\n")` with `Dispatch
+  // authored-ask summary unavailable: The operation timed out.` where the summary belongs, which is
+  // that 3 s read and no limit of this row's. So the budget stays, by the architect's decision,
+  // and this row's acceptance rung is 80 busy loops, 40 per CPU, the rung its sibling below takes:
+  // there it is 20 of 20, charged 10169.40 / 15338.93 / 26831.90 ms (min/median/max), so this
+  // 180_000 is 6.7 times that worst.
 }, 180_000)
 
 // `CLAUDE_ENV_FILE` is one file per session id
