@@ -880,6 +880,23 @@ go vet ./...
 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it
 (`docs/testing.md`, "Go's package deadline").
 
+Every Dispatch process a test starts is checked against the Postgres it meets
+(`connection_ceiling_test.go`). A server that allows `testlimits.ServerConnections` beyond its
+superuser reserve, as every CI lane's does (`.github/scripts/pg-connection-ceiling.sh`) and as
+`legion-testpg`'s does, runs every process at production's pool sizes. A smaller one, such as a
+Postgres at its default `max_connections` of 100, gives each of `testlimits.MaxProcessesAtOnce`
+processes its share of the server beside `testlimits.SuiteHeadroom` (`testlimits.PoolBudget`: 19
+connections at 100 with the default reserve of 3). The start hands the process that share as
+`DISPATCH_TEST_POOL_BUDGET`, and the process scales its pools to it, each kept at the smallest size
+that still serves its callers (`store.ScaledPoolSizes`);
+`TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget` holds four such processes under
+load to it. A server too small for even those refuses every start, naming the `max_connections` it
+needs (`testlimits.MinServerConnections` plus the reserve: 95 with the default reserve). A row that
+needs production's sizes is refused by name on a server that scales them
+(`requireProductionPools`): the memory rows, `TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses`
+(which holds four leased passes inside their leases at once), `TestTheOutboxLoadSteps`, and a start
+of an earlier build that does not read the setting.
+
 The real-process memory tests (`memory_test.go`, LEGION-481) start a Dispatch server per row and
 read its resident memory from `/proc`, so they build only under the `memory` tag and run in their
 own CI job (`dispatch-memory` in `.github/workflows/ci.yaml`), past `go test`'s

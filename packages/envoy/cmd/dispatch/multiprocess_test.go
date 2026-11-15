@@ -4077,6 +4077,13 @@ const (
 // writes every five seconds, so a lock that held the prune would hold the registry itself.
 func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	pair := newPair(t)
+	// Four passes are held inside their leases at once, each on a lease connection of whichever
+	// process took it, and the other process's tries for the same leases, and both processes'
+	// intakes, need lease connections beside them: production's lease pool has one per caller
+	// (store.LeasePoolSize), and one scaled to a small server's budget leaves a try waiting for a
+	// connection rather than finding the lease held.
+	requireProductionPools(t, serverPoolBudget(t, pair.databaseURL(t)),
+		"this row holds four leased passes inside their leases at once while the other process tries for each lease")
 	waitOutABucketBoundary(t, time.Hour)
 	fake := startGitHubFake(t)
 	// The term-statistics refresh writes nothing for a database with no project, so one exists

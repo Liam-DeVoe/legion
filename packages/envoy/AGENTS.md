@@ -1390,6 +1390,8 @@ pgx's default, `max(4, NumCPU)`, is four on production's one Fargate task at `cp
 with four writers parked on one issue's row lock, a read of an unrelated issue waits for as long as the lock is held.
 Sixteen ran out too: under heavy agent load the API held all sixteen and every other caller, the events outbox included, waited behind them.
 The database has hundreds of connections spare, so 64 is deliberate headroom.
+These sizes are what every deployment runs (`store.Open`).
+A test process alone runs smaller ones: given `DISPATCH_TEST_POOL_BUDGET`, refused without `DISPATCH_TEST_HOOKS=1`, it opens its pools through `store.OpenWithin`, each kept at the smallest size that still serves its callers (`store.ScaledPoolSizes`), so the processes a test suite starts fit a test server smaller than production's sizes need; every CI lane's server is sized for production's (`cmd/dispatch/AGENTS.md`, Checks).
 
 Work that genuinely needs its own connection while a transaction is open does not take it from the shared one;
 it takes it from a pool of its own, opened on demand from a copy of the shared pool's configuration and closed with it (`store.Pool.separate`).

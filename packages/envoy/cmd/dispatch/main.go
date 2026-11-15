@@ -172,6 +172,11 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// PoolBudget is how many connections this process may open to Postgres in all, which its pools
+	// scale to (store.OpenWithin), zero for production's sizes; only DISPATCH_TEST_POOL_BUDGET,
+	// under the test hooks, sets it, which cmd/dispatch's test harness does on a test server too
+	// small for production's sizes (connection_ceiling_test.go).
+	PoolBudget int
 	// OIDCIssuer and OIDCAudience configure verification of projected
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
@@ -337,7 +342,7 @@ func main() {
 		agentStream = agentstream.NewNATS(streamConn)
 	}
 
-	database, err := store.Open(ctx, boot.DatabaseURL)
+	database, err := openDatabase(ctx, boot)
 	if err != nil {
 		slog.Error("dispatch: open database", "error", err)
 		os.Exit(1)
@@ -1274,6 +1279,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
+	if boot.PoolBudget, err = testHookPoolBudget(env, boot.TestHooksEnabled); err != nil {
+		return bootConfig{}, err
+	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
 		return bootConfig{}, err
@@ -2000,6 +2008,45 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 	}
 	*target = raw == "1"
 	return nil
+}
+
+// testHookPoolBudget reads DISPATCH_TEST_POOL_BUDGET, how many connections a test process may open
+// to Postgres in all, which its pools scale to (store.OpenWithin); zero when it is unset, which
+// keeps production's sizes. Like every test-only setting it is refused without
+// DISPATCH_TEST_HOOKS=1, and so is a value that is not a whole number of at least
+// store.MinBudget.
+func testHookPoolBudget(env settingValues, testHooksEnabled bool) (int, error) {
+	const name = "DISPATCH_TEST_POOL_BUDGET"
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return 0, nil
+	}
+	if !testHooksEnabled {
+		return 0, fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	budget, err := strconv.Atoi(raw)
+	if err != nil || strings.TrimLeft(raw, "0123456789") != "" || budget < store.MinBudget() {
+		return 0, fmt.Errorf("%s=%q (expected a whole number of connections, at least store.MinBudget's %d)", name, raw, store.MinBudget())
+	}
+	return budget, nil
+}
+
+// openDatabase opens the server's database: at production's pool sizes (store.Open), which every
+// deployment runs, or, for a test process given DISPATCH_TEST_POOL_BUDGET, with every pool scaled
+// to that budget (store.OpenWithin), whose sizes it logs so a test can read what the process runs.
+func openDatabase(ctx context.Context, boot bootConfig) (*store.Store, error) {
+	if boot.PoolBudget == 0 {
+		return store.Open(ctx, boot.DatabaseURL)
+	}
+	database, err := store.OpenWithin(ctx, boot.DatabaseURL, boot.PoolBudget)
+	if err != nil {
+		return nil, err
+	}
+	sizes := database.Pool.Sizes()
+	slog.Info("dispatch: pools scaled to the test connection budget", "budget", boot.PoolBudget,
+		"shared", sizes.Shared, "rooms", sizes.Rooms, "room_appends", sizes.RoomAppends, "leases", sizes.Leases,
+		"outbox", sizes.Outbox, "compaction", sizes.Compaction, "text_trees", sizes.TextTrees, "horizon", sizes.Horizon)
+	return database, nil
 }
 
 // roleHolderWindows are the session windows Dispatch judges a role route's holder by, read
