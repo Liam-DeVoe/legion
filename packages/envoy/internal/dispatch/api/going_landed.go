@@ -171,17 +171,21 @@ func (l *goingLandings) landed(ctx context.Context, index int, spec goingSend) (
 	return landed, nil
 }
 
+// goingRecordedAnswerRead reads what the route of request $5 of the pending claim of the run $1 of
+// author $2 - the write of id $3, or where $4 is the moment an undo was claimed, that undo of write
+// $3 - recorded beside its landing (goingRecordAnswer), null for none.
+const goingRecordedAnswerRead = `
+	select e->'requests'->$5::int->'answer'
+	from going_runs r, jsonb_array_elements(case when $4::text = '' then r.writes else r.undos end) e
+	where r.id = $1::uuid and r.author_login = $2 and coalesce((e->>'pending')::boolean, false)
+	  and case when $4::text = '' then e->>'id' = $3 else e->>'write_id' = $3 and e->>'at' = $4::text end`
+
 // recordedAnswer is what the route of the request at index recorded beside its landing on the
 // pending claim (goingRecordAnswer), nil where it recorded none or the claim is no longer pending.
 // It is the writes route's own read, outside every commit step, on ctx as given.
 func (l goingLandings) recordedAnswer(ctx context.Context, index int) (json.RawMessage, error) {
-	column, condition := l.element()
 	var answer []byte
-	err := l.s.deps.Store.Pool.QueryRow(ctx, fmt.Sprintf(`
-		select e->'requests'->$5::int->'answer'
-		from going_runs r, jsonb_array_elements(r.%[1]s) e
-		where r.id = $1::uuid and r.author_login = $2 and %[2]s`, column, condition),
-		l.run, l.login, l.write, l.undo, index).Scan(&answer)
+	err := l.s.deps.Store.Pool.QueryRow(ctx, goingRecordedAnswerRead, l.run, l.login, l.write, l.undo, index).Scan(&answer)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
