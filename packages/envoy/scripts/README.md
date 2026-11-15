@@ -248,8 +248,9 @@ from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports 
 not the check's.
 
 It needs bash, curl, jq, go, python3, openssl, node and psql; `k2` and `k7` also need
-`gh` (the last released `agent-secrets` comes from the newest `legion-envoy-v*`
-release, and the consumers come from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
+`gh` (their controls run the `agent-secrets` of the pinned release before the airlock,
+`OLD_CLI_DEFAULT_TAG` in the script, which `AIRLOCK_OLD_CLI_TAG` overrides, and the
+consumers come from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
 `wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
