@@ -141,7 +141,7 @@ of these that holds:
      `skill://legion-controller/references/daily-report.md` gives, then park it with
      `dispatch issue-update --issue <NEW KEY> --status icebox`. It carries no `legion` label.
    - Then post the evidence there and ask there, as [What the ask says](#what-the-ask-says)
-     spells it. Say in your summary that you reopened or created it, so the controller knows.
+     spells it. Say in your summary that you reopened or created it.
 
 Name the ask in your summary, and in the result a production check records. A look that must wait
 for the answer reports `pending` with a `wake_at` of its own, the time you want to look again:
