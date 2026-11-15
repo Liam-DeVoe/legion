@@ -1,12 +1,20 @@
 /**
- * The rig's reading of the Legion daemon: `daemon-pane.go`, run with `go run -overlay` as a main
- * inside a checkout's daemon module, which is how it reaches the daemon's internal packages, and
- * `daemon-routes.go`, run with `go run` outside every module, since reading the routes needs only
- * the daemon's files. The rig asks them rather than restating the daemon: a change to the daemon
- * reaches the rig by construction. The one exception is `daemon-pane.go`'s own table of the
- * handoff words, which the program carries because one program runs against both checkouts of a
- * comparison and the daemon's table has not always had the same name; its comment says so.
- * `workerPane` builds a phase worker's whole pane environment over it.
+ * The rig's reading of the Legion daemon: `daemon-pane.go`, run as a main inside a checkout's
+ * daemon module, which is how it reaches the daemon's internal packages (a build of it there,
+ * `SKILL_SCENARIOS_DAEMON_PANE`, or `go run -overlay`), and `daemon-routes.go`, run with `go run`
+ * outside every module, since reading the routes needs only the daemon's files. The rig asks them
+ * rather than restating the daemon: a change to the daemon reaches the rig by construction. The
+ * one exception is `daemon-pane.go`'s own table of the handoff words, which the program carries
+ * because one program runs against both checkouts of a comparison and the daemon's table has not
+ * always had the same name; its comment says so. `workerPane` builds a phase worker's whole pane
+ * environment over it, and `standinFacts` reads every fact the daemon stand-in answers by.
+ *
+ * Usage: `bun daemon-pane.ts facts <checkout> <role>[:<phase>]...` reads, through the build
+ * `SKILL_SCENARIOS_DAEMON_PANE` names, the facts `standinFacts` reads for a stand-in of each role
+ * booted in each phase (none: the role's own) into the facts cache under `SKILL_SCENARIOS_WORK`,
+ * so a stand-in's boot after it reads each out of a file (rig.sh's label_facts). It exits 1,
+ * naming the fact, when one cannot be read, and 2 on a usage error or with no build or no work
+ * directory named.
  */
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -21,9 +29,10 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { LegionRole } from "@legion/contracts";
+import { isLegionRole, type LegionRole } from "@legion/contracts";
 import { DEFAULT_ENVOY_URL } from "@legion/envoy-client/envoy-settings";
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings";
+import { NOT_CURRENT_PHASE } from "./completion-answers";
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
@@ -31,17 +40,17 @@ export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
 const PROGRAM = path.join(import.meta.dir, "daemon-pane.go");
 const ROUTES_PROGRAM = path.join(import.meta.dir, "daemon-routes.go");
 
-/** Runs `go run` with `args` in `cwd` under the caller's environment and `env` over it, `input`
- * on its stdin (the caller's own stdin when there is none), and returns its stdout. Throws naming
- * `what`, with go's own stderr, when the run exits other than 0. */
-function goRun(
+/** Runs `command` in `cwd` under the caller's environment and `env` over it, `input` on its stdin
+ * (the caller's own stdin when there is none), and returns its stdout. Throws naming `what`, with
+ * the program's own stderr, when the run exits other than 0. */
+function runProgram(
   what: string,
+  command: readonly string[],
   cwd: string,
-  args: readonly string[],
   env: Record<string, string>,
   input?: string
 ): string {
-  const result = Bun.spawnSync(["go", "run", ...args], {
+  const result = Bun.spawnSync([...command], {
     cwd,
     env: { ...process.env, ...env },
     stdin: input === undefined ? "inherit" : new TextEncoder().encode(input),
@@ -53,18 +62,42 @@ function goRun(
   return result.stdout.toString();
 }
 
+/** The build of daemon-pane.go a process runs in place of `go run` (`runDaemonPane`): the binary
+ * `SKILL_SCENARIOS_DAEMON_PANE` names, or undefined where it names none and every read is a `go
+ * run`. rig.sh's daemon_pane_binary builds it in the daemon module of a label's checkout once a
+ * batch (services_up), and the rig hands it to each process that reads that label's daemon
+ * (label_facts, worker_boot). A `go run` compiles the daemon module first: 6.2-7.4 s a read with
+ * a warm Go build cache and 282 s with a cold one (measured on 2026-11-15), where the build's run
+ * takes milliseconds. One process reads one label's daemon, so one build serves every read it
+ * makes: `phase` and `pane` run that module's own functions, and `refusal`, `count-default` and
+ * `claim-refusal` are the program's own parse of the source files they are given, the same in a
+ * build of any module. A build named and not there is an error, never a `go run` in its place. */
+function daemonPaneBuild(): string | undefined {
+  const build = process.env.SKILL_SCENARIOS_DAEMON_PANE;
+  if (build === undefined || build === "") return undefined;
+  if (!existsSync(build))
+    throw new Error(
+      `SKILL_SCENARIOS_DAEMON_PANE names ${build}, which is not there: rig.sh's services_up builds it (daemon_pane_binary)`
+    );
+  return build;
+}
+
 /** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when
- * there is none), and returns its stdout. */
+ * there is none), and returns its stdout: the build `daemonPaneBuild` names, or else `go run
+ * -overlay` of the program as `<module>/cmd/daemon-pane/main.go`. */
 export function runDaemonPane(module: string, args: readonly string[], input?: string): string {
+  const what = `daemon-pane ${args.join(" ")} in ${module}`;
+  const build = daemonPaneBuild();
+  if (build !== undefined) return runProgram(what, [build, ...args], module, {}, input);
   const scratch = mkdtempSync(path.join(os.tmpdir(), "daemon-pane-"));
   try {
     const overlay = path.join(scratch, "overlay.json");
     const main = path.join(module, "cmd", "daemon-pane", "main.go");
     writeFileSync(overlay, JSON.stringify({ Replace: { [main]: PROGRAM } }));
-    return goRun(
-      `daemon-pane ${args.join(" ")} in ${module}`,
+    return runProgram(
+      what,
+      ["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args],
       module,
-      ["-overlay", overlay, "./cmd/daemon-pane", ...args],
       {},
       input
     );
@@ -81,7 +114,9 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
  * reads it, since the program runs in another. */
 function runRoutes(api: string): string {
   const dir = path.resolve(api);
-  return goRun(`daemon-routes ${dir}`, import.meta.dir, [ROUTES_PROGRAM, dir], { GOWORK: "off" });
+  return runProgram(`daemon-routes ${dir}`, ["go", "run", ROUTES_PROGRAM, dir], import.meta.dir, {
+    GOWORK: "off",
+  });
 }
 
 /** The daemon's refusal of a completion of a phase the completing role does not run: its code
@@ -285,7 +320,7 @@ export function countDefault(checkout: string, key: string): number {
  * `checkout`, its status and its message: daemon-pane.go's `claim-refusal`, over that checkout's
  * claim source, which the stand-in answers a caller it refuses with. Throws what the reading
  * refused. */
-export function claimRefusal(checkout: string, name: string): { status: number; message: string } {
+export function claimRefusal(checkout: string, name: string): ClaimRefusal {
   const daemon = daemonOf(checkout);
   const claim = path.join(daemon, "internal", "claim");
   const command = ["claim-refusal", name];
@@ -299,6 +334,124 @@ export function claimRefusal(checkout: string, name: string): { status: number; 
   if (!/^\d+$/.test(status) || message === "")
     throw new Error(`daemon-pane claim-refusal ${name} printed no status and message`);
   return { status: Number(status), message };
+}
+
+/** Stands in for the phase the issue stands in, in the refusal `standinFacts` reads: the
+ * stand-in replaces it with the phase it serves when it sends the refusal. */
+export const PHASE_SLOT = "PHASESLOTOFTHEISSUE";
+/** Stands in for the issue's key in that refusal: the stand-in replaces it with its run's issue.
+ * Each run files an issue of its own, so a refusal read with the run's key is a fact no read
+ * before the run (rig.sh's label_facts) could have read for it. */
+export const ISSUE_SLOT = "ISSUESLOTOFTHERUN";
+
+/** The phases that end with a handoff record (`phase.Handoff` in
+ * packages/daemon/internal/phase/phase.go): the stand-in refuses a completion naming a record in
+ * any other phase. daemon-pane.go answers only the role's own phase, at a read each, so the rest
+ * is written here, and `standinFacts` refuses a daemon whose answer for the role's own phase
+ * disagrees with it. */
+export const RECORD_PHASES: readonly string[] = [
+  "planning",
+  "implementing",
+  "testing",
+  "reviewing",
+];
+
+/** A claim refusal of the daemon's (`claimRefusal`): its status and its sentence. */
+export interface ClaimRefusal {
+  readonly status: number;
+  readonly message: string;
+}
+
+/** Every fact of a label's daemon the daemon stand-in answers by, read at its boot. */
+export interface StandinFacts {
+  /** The routes the daemon registers (`labelRoutes`): the one answer to "does this daemon serve
+   * that route", which the stand-in asks of every request and health asks of every 404. */
+  readonly routes: readonly string[];
+  /** The run of refused turns at which the daemon fails the claim: the launch failure limit
+   * (supervise's `turnOutcome`, `run < m.deps.Limits.LaunchFailures`), which the daemon is given
+   * as `launch_failure_limit` and the rig, having no legion.yaml, runs at its default
+   * (`countDefault`). Read only for a daemon that serves `claims/turn-outcome`, and 0 for one
+   * that serves none. */
+  readonly turnOutcomeLimit: number;
+  /** The claim refusals the claim routes answer a caller with (packages/daemon/internal/claim's
+   * `InvalidSecret`, `InvalidBootToken` and `StaleGeneration`, `claimRefusal`). */
+  readonly invalidSecret: ClaimRefusal;
+  readonly invalidBootToken: ClaimRefusal;
+  readonly staleGeneration: ClaimRefusal;
+  /** The phase the role's own worker is started in, the first of the transition table it works,
+   * and the word of the handoff record that phase ends with, empty when it ends with none
+   * (`labelPhase`). */
+  readonly rolePhase: string;
+  readonly handoffWord: string;
+  /** The phase the issue stands in for the run: the one the stand-in is started in, or the
+   * role's own when it is started in none. One that is not the role's is a run of a loop the
+   * daemon starts no phase for, where the role's completion is a late one. */
+  readonly phase: string;
+  /** The daemon's own refusal of a late completion of the role, its code and its message
+   * (`notCurrentPhase`), with `PHASE_SLOT` for the issue's phase and `ISSUE_SLOT` for its key:
+   * the skill has the worker quote that sentence to its architect. Read only for a run whose
+   * role can be late, one started in a phase that is not the role's or in `reviewing`, the one
+   * phase the review round moves; undefined for any other. */
+  readonly notCurrentPhase: Refusal | undefined;
+}
+
+/** `read()`, or an error naming `fact` of the daemon of `checkout` and why it could not be read. */
+function readFact<T>(checkout: string, fact: string, read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    throw new Error(
+      `the daemon fact \`${fact}\` of ${checkout} could not be read: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/** Every fact of the daemon of `checkout` a daemon stand-in of `role` started in `phase` (""
+ * for the role's own) answers by (`StandinFacts`), each read through the facts cache. The
+ * stand-in reads them at its boot and rig.sh's label_facts reads them for every stand-in a batch
+ * boots before any of its runs starts, through this one function, so a boot reads each out of a
+ * file. Throws naming the fact that could not be read, or the one the daemon answered in a way
+ * this rig cannot answer by. */
+export function standinFacts(checkout: string, role: string, phase: string): StandinFacts {
+  const routes = readFact(checkout, "routes", () => labelRoutes(checkout));
+  const turnOutcomeLimit = serves(routes, "POST", "/legion/v1/claims/turn-outcome")
+    ? readFact(checkout, "count-default launch_failure_limit", () =>
+        countDefault(checkout, "launch_failure_limit")
+      )
+    : 0;
+  const refusal = (name: string) =>
+    readFact(checkout, `claim-refusal ${name}`, () => claimRefusal(checkout, name));
+  const invalidSecret = refusal("InvalidSecret");
+  const invalidBootToken = refusal("InvalidBootToken");
+  const staleGeneration = refusal("StaleGeneration");
+  const { phase: rolePhase, word: handoffWord } = readFact(checkout, `phase ${role}`, () =>
+    labelPhase(checkout, role)
+  );
+  if ((handoffWord !== "") !== RECORD_PHASES.includes(rolePhase))
+    throw new Error(
+      `the daemon fact \`phase ${role}\` of ${checkout} gives ${rolePhase} the handoff word '${handoffWord}', which RECORD_PHASES does not agree with`
+    );
+  const served = phase === "" ? rolePhase : phase;
+  const late = served !== rolePhase || served === "reviewing";
+  const command = `refusal not-current-phase ${role}`;
+  const lateRefusal = late
+    ? readFact(checkout, command, () => notCurrentPhase(checkout, role, PHASE_SLOT, ISSUE_SLOT))
+    : undefined;
+  if (late && lateRefusal?.code !== NOT_CURRENT_PHASE)
+    throw new Error(
+      `the daemon fact \`${command}\` of ${checkout} is no ${NOT_CURRENT_PHASE} code and message for the refusal of ${role}'s late completion`
+    );
+  return {
+    routes,
+    turnOutcomeLimit,
+    invalidSecret,
+    invalidBootToken,
+    staleGeneration,
+    rolePhase,
+    handoffWord,
+    phase: served,
+    notCurrentPhase: lateRefusal,
+  };
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot
@@ -446,4 +599,38 @@ export function workerPane(
       ...pane.env,
     },
   };
+}
+
+if (import.meta.main) {
+  const [command, checkout, ...boots] = Bun.argv.slice(2);
+  if (command !== "facts" || checkout === undefined || boots.length === 0) {
+    console.error("usage: bun daemon-pane.ts facts <checkout> <role>[:<phase>]...");
+    process.exit(2);
+  }
+  // Without a build each fact is a `go run`, which is the cost this read is made to take off a
+  // stand-in's boot; without the work directory the facts go to a cache no stand-in reads.
+  for (const [variable, what] of [
+    ["SKILL_SCENARIOS_DAEMON_PANE", "build of daemon-pane.go to read the daemon's facts with"],
+    ["SKILL_SCENARIOS_WORK", "work directory, whose facts cache the label's stand-ins read"],
+  ] as const) {
+    if ((process.env[variable] ?? "") === "") {
+      console.error(`daemon-pane facts: ${variable} names no ${what}`);
+      process.exit(2);
+    }
+  }
+  for (const boot of boots) {
+    const [role = "", phase = ""] = boot.split(":");
+    if (!isLegionRole(role)) {
+      console.error(`daemon-pane facts: ${boot} names no Legion role`);
+      process.exit(2);
+    }
+    try {
+      standinFacts(checkout, role, phase);
+    } catch (error) {
+      console.error(
+        `daemon-pane facts: the ${role}'s stand-in${phase === "" ? "" : ` in ${phase}`}: ${error instanceof Error ? error.message : String(error)}`
+      );
+      process.exit(1);
+    }
+  }
 }

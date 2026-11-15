@@ -422,9 +422,13 @@ each run's pane and refuses to start a run when it names no readable check.
 
 A phase worker whose claim boot is refused before its first turn is launched once more, in the
 same run, as production's daemon relaunches an agent whose process exits at its boot: the daemon
-stand-in refused its `claims/register`, or its plugin printed `claim boot failed at …` and exited
-(round 23 lost `reviewer-text-findings-text-only-base-1` so, to the Envoy listener's refusal of a
-session that held no consumer). `health.ts --boot-refusal` decides it from what the run recorded:
+stand-in refused its `claims/register`, or its plugin printed its sentence for a claim boot that
+registered and could not finish and exited, read in the wording of the run's own label: the
+opening is read out of `packages/pi-shared/src/legion-claim-core.ts` in the checkout the run's
+`built-from` names (this checkout's `claim boot failed at <step> …`, main `ff2a10ef`'s `claim
+boot failed after claims/register registered …`). Round 23 lost
+`reviewer-text-findings-text-only-base-1` so, to the Envoy listener's refusal of a session that
+held no consumer. `health.ts --boot-refusal` decides it from what the run recorded:
 the stand-in's lines of that role since the launch began, the pane's `out.txt`, and the agent's
 transcripts, which must hold no turn, no model call and no tool call. The first attempt is kept
 whole under `<run>/boot-1/<role>/` (its `out.txt`, its `sessions/` and the stand-in's lines of
@@ -432,13 +436,26 @@ it), and the second attempt's record stands where any agent's does, so `rig.sh s
 `rig.sh health` read the run on it. The stand-in, its boot token and the agent's HOME carry over,
 as a pod's do. The rig relaunches once, where the daemon's launch budget relaunches an agent up to
 its launch failure limit: a second refusal stands, and one after the agent's first turn is never
-relaunched, since a relaunch would not take that turn back.
+relaunched, since a relaunch would not take that turn back. Each attempt is on the run's boot
+record, `<run>/booted`, before it starts: worker_boot writes `boot <role>` before the role's daemon
+stand-in starts and the relaunch writes it again, and where the rig decides not to boot a role of
+its scenario it writes `skip <role> <reason>`, with the one reason `completion-answers.ts`'s
+`SKIPS` declares for the scenario and case (today, threads-closed code-defect's reviewer: "the
+implementer sent the reviewer nothing"), read from that table.
 
 `rig.sh health [--tmp-snapshot <file>] <run dir>...` says whether each run's world could take what
-its agents did, and whether the run stayed inside its own world. It reads fifteen things: the run
-finished (its `out.txt` ends with an `exit=` line); the run carries its `services-from`, and every
-service of its label's own (scope `label`) came from the checkout its `built-from` names, the
-listener, the daemon facts and the worker pane among them (below); no agent's claim boot was
+its agents did, and whether the run stayed inside its own world. It reads sixteen things: the run
+finished: its boot record, `<run>/booted`, decides each role its scenario boots
+(`completion-answers.ts`'s `ANSWERS` `boots`) once, in that order, the first a `boot` of the first
+role and each other a `boot <role>` or a `skip <role> <reason>` whose reason
+`completion-answers.ts`'s `SKIPS` declares for the run's scenario and case (a relaunch's repeated
+`boot` line is one decision), and each role it booted ended on its own record: its own output ends
+with an `exit=` line (`out-<role>.txt`, or `out.txt` for the last role booted) and its own session
+directory (`sessions/` for the first role, `sessions/<role>/` for each later one, a subagent's
+transcript never) holds a transcript with an entry; a run with no `booted` is unhealthy; the run
+carries its `services-from`, and every service of its label's own (scope `label`) came from the
+checkout its `built-from` names, the listener, the Dispatch server, the daemon facts and the
+worker pane among them (below); no agent's claim boot was
 refused but a first attempt's before its first turn, which the rig relaunched (a run refused on
 both attempts is unhealthy, naming both, and so is one refused after a turn); every completion
 line names a role the scenario boots, and every completion the daemon stand-in refused was
@@ -456,7 +473,13 @@ does not declare for the scenario and the calling role (a call no route of the w
 never is; the refusals production gives for a workflow run the world holds none of, GitHub's 404
 for its jobs and gh's for `gh run view` and `gh run watch`, are, for every role; the world answers
 every `gh` read either label's role texts name, which `gh-routes.ts`'s `WORLD_ROUTES` lists and the
-rig's tests pin against both checkouts); no tool call names a path under another run's directory;
+rig's tests pin against both checkouts); no request of an agent that the run's own Dispatch server
+answered with an error, 4xx or 5xx, by the server's own line of it in `<run>/logs/dispatch.log`,
+unless `health.ts`'s `DISPATCH_DECLARED` declares that answer for the scenario and the agent's role
+(the agent booted last before the request began, by the opening line each daemon stand-in writes
+before its agent starts; `HANDOFF_NOT_FOUND` for the `plan` handoff, which no world records, is
+declared for every role, and for the `review` handoff for reviewer-text-findings' reviewer; a run
+with no such log is unhealthy); no tool call names a path under another run's directory;
 no tool call reads a path another of the runs given wrote last before the read, or a `/tmp` entry
 that was there before the run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp`
 entries taken before the
@@ -494,6 +517,13 @@ healthy, 1 when one is not, and 2, printing no run, for no argument or for a pat
 run of a scenario and label the table names. Start a batch only once a run of each label in each
 scenario case is healthy.
 
+A rule that matches text a label's own world prints reads only what both labels print alike, or
+reads the run's own label: tester-proof's PR body check line is read up to `at <commit>, recorded
+by tester.` and its commit taken from that `at` alone, since main `ff2a10ef`'s Dispatch ends the
+line with the check's own words and this checkout's with the reading the tester recorded; the
+claim boot sentence is read as the relaunch paragraph above says, by `rig.sh score` and
+`rig.sh health` alike.
+
 Two tools read production Dispatch, with GET requests only, as the calling session does (its
 envoy.json, or `DISPATCH_URL` with a token): `fetch-spec-sources.ts`, which writes a source's input
 into the work directory for the spec scenarios, and `label-comments.ts`, which labels the comments
@@ -506,13 +536,19 @@ read when a source directory it would write, or `agent-texts.json`, is already u
 ### Where each service of a run comes from
 
 A label's agents load the plugins of the label's own checkout, so every service that speaks to
-those plugins comes from that checkout too, as one deploy pairs them in production. The one
-exception was the Envoy listener, which a batch built once from the rig's own checkout: a base run
-paired main `ff2a10ef`'s pi-envoy (from before #2603) with a listener from after it, a pairing no
-deploy ever had, and lost its claim boot to the listener's `409 not_requested`. A batch now builds
-one listener per label, in that label's checkout, and starts each on a port and a machine id of its
-own (a listener's durable NATS consumer is named for its machine). A service production shares
-across versions, and the rig's own instrument, stays shared, and the table says why.
+those plugins comes from that checkout too, as one deploy pairs them in production. The first
+exception found was the Envoy listener, which a batch built once from the rig's own checkout: a
+base run paired main `ff2a10ef`'s pi-envoy (from before #2603) with a listener from after it, a
+pairing no deploy ever had, and lost its claim boot to the listener's `409 not_requested`. A batch
+now builds one listener per label, in that label's checkout, and starts each on a port and a
+machine id of its own (a listener's durable NATS consumer is named for its machine). The Dispatch
+server was the second: what an agent reads of it is not the same across versions. `ff2a10ef`'s
+`dispatch result` prints a result's pull-request line ending with the check's text where this
+checkout's ends with the role's reading (`packages/envoy/internal/dispatch/api/results.go`,
+`checkResultLine`), and `ff2a10ef`'s server refuses a body field it does not declare (`400
+INVALID_JSON`, `api/server.go`'s `DisallowUnknownFields`) where this checkout's ignores it. So each
+run starts its own Dispatch from its label's build. A service production shares across versions,
+and the rig's own instrument, stays shared, and the table says why.
 
 | Service | Came from before | Comes from now | Scope, and why |
 | --- | --- | --- | --- |
@@ -520,10 +556,10 @@ across versions, and the rig's own instrument, stays shared, and the table says 
 | Packed plugins (pi-envoy with its `dispatch` CLI, pi-legion) | the label's checkout (`rig.sh profile`, `install-plugin-profile.sh`) | the same | label |
 | Model route (the installer that writes the profile's `models.yml`) | the label's checkout's `scripts/e2e/lib/install-*.sh`; the provider route is the rig's `install_provider_route` | the same | label for the installer; the gateway or endpoint it names is shared, since every version's agents reach one gateway |
 | Oh My Pi | the pin the label's checkout's `.omp-pin` names, from mise | the same | pin |
-| Daemon facts (routes, phase table, refusals, launch failure limit) | the label's checkout's `packages/daemon`, which the run's `built-from` names, read by the rig's `daemon-pane.go` and `daemon-routes.go` | the same | label for the facts; the two readers are the rig's instrument |
-| Worker pane (`worker-pane.ts`, then `daemon-pane.go pane`) | composed by the label's checkout's daemon module; the composer, and the `@legion/envoy-client` settings reader it calls, are the rig's | the same | label |
+| Daemon facts (routes, phase table, refusals, launch failure limit) | the label's checkout's `packages/daemon`, which the run's `built-from` names, read at each stand-in's boot by the rig's `daemon-pane.go` (`go run` in that module, a compile of it per fact) and `daemon-routes.go` | the same sources, read once a batch before any run starts by `daemon-pane.go` built in the label's checkout's `packages/daemon` (`$SKILL_SCENARIOS_WORK/builds/<checkout>/daemon-pane`) into `$SKILL_SCENARIOS_WORK/daemon-facts`, which each boot reads | label for the facts and the build; the two readers' source is the rig's instrument |
+| Worker pane (`worker-pane.ts`, then `daemon-pane.go pane`) | composed by the label's checkout's daemon module (`go run`); the composer, and the `@legion/envoy-client` settings reader it calls, are the rig's | the same, composed by the label's build of `daemon-pane.go` | label |
 | Daemon stand-in (`daemon-standin.ts`) | the rig's directory, answering by the label's daemon facts | the same | shared program: it stands in for the label's daemon from that daemon's own facts |
-| Dispatch server (`run-server.sh`, `dispatch-e2e`) | the rig's checkout: `run-server.sh` built `packages/envoy/dispatch-e2e` there at each run's start | the rig's checkout, built once per batch at `$SKILL_SCENARIOS_WORK/builds/<checkout>/dispatch-e2e` and given to `run-server.sh` as `DISPATCH_E2E_SERVER_BIN` | shared: production runs one Dispatch for clients of every version, so a base label's CLI against the head's server is a pairing production has; and `seed.ts`, which both labels' worlds are seeded and read back by, speaks to it |
+| Dispatch server (`dispatch-e2e`) | the rig's checkout, built once per batch and given to the rig's `run-server.sh` as `DISPATCH_E2E_SERVER_BIN` for every label | `go build ./cmd/dispatch` in the label's checkout's `packages/envoy`, kept at `$SKILL_SCENARIOS_WORK/builds/<checkout>/dispatch-e2e`; each run's own Dispatch is started from its label's build by the rig's `run-server.sh` | label: what an agent reads of it differs across versions (above); `run-server.sh`, the harness that starts a build, is the rig's, and hands a build of either tree the same environment |
 | gh and bun stand-ins (`gh-standin.ts`, `$R/bin/bun`) | the rig's directory, and the bun the rig runs on | the same | shared: GitHub is one service for every version |
 | Seed and capture (`seed.ts`, `record-publishes.ts`, `score.ts published`, `health.ts --boot-refusal`) | the rig's directory, and its checkout's `packages/dispatch` e2e client | the same | shared: the instrument, one reading for every label |
 | NATS | a container pinned by digest, or `SKILL_SCENARIOS_NATS_URL` | the same | shared: production runs one NATS for every version |
@@ -539,5 +575,15 @@ provenance to `services/services-from-<label>`, and each run copies its label's 
 checkout), `pin` (`<from>` is the pin) or `shared`, and `<digest>` is `sha256:<hex>` of the binary
 or program file the run starts, `-` where it starts none, or `missing`. `rig.sh health` calls a run
 unhealthy that has no `services-from`, whose `built-from` names no checkout, that names a service
-of scope `label` from any other checkout, or that does not name its listener, daemon facts and
-worker pane as its label's.
+of scope `label` from any other checkout, or that does not name its listener, Dispatch server,
+daemon facts and worker pane as its label's.
+
+A daemon stand-in reads every fact of its label's daemon at its boot, and `worker_boot` gives it
+30 s to listen. Read there by `go run` of `daemon-pane.go`, each fact compiled the daemon module
+first: 6.2-7.4 s a fact with a warm Go build cache and 282 s with a cold one, so a first boot took
+about 43 s (head) and 36 s (base), and a batch in a fresh work directory lost 6 of its 8 runs to
+that bound. A batch now builds `daemon-pane.go` once per label checkout and, before any run
+starts, reads with that build every fact a stand-in of any scenario boots on (`rig.sh`'s
+`label_facts`, `bun daemon-pane.ts facts`): a fact that cannot be read fails the batch then,
+naming it. A boot reads each fact out of a file, and the stand-in and the worker pane run the
+label's build for anything else they read.

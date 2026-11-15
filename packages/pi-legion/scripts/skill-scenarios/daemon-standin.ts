@@ -124,20 +124,14 @@ import {
   LegionTurnOutcomeRequest,
 } from "@legion/contracts/legion-api";
 import { z } from "zod";
+import { COMPLETE_PATH, LABEL_DAEMONS, labelOf } from "./completion-answers";
 import {
-  COMPLETE_PATH,
-  LABEL_DAEMONS,
-  labelOf,
-  NOT_CURRENT_PHASE as NOT_CURRENT_PHASE_CODE,
-} from "./completion-answers";
-import {
-  claimRefusal,
-  countDefault,
+  ISSUE_SLOT,
   labelCheckout,
-  labelPhase,
-  labelRoutes,
-  notCurrentPhase,
+  PHASE_SLOT,
+  RECORD_PHASES,
   serves,
+  standinFacts,
 } from "./daemon-pane";
 import { mergeStateOn, routeFor, worldOf } from "./gh-call";
 import { CALLS, openingLine } from "./run-records";
@@ -228,28 +222,28 @@ function bootRead<T>(read: () => T): T {
   }
 }
 /** The checkout the run's label was built from (the run's built-from, daemon-pane.ts's
- * `labelCheckout`), whose daemon every fact below is read out of: its routes, its phase table,
- * its refusals' sentences and its launch failure limit. Each is read through daemon-pane.ts's
- * facts cache, so a boot whose sources a boot before it read runs no `go run`. */
+ * `labelCheckout`), whose daemon every fact below is read out of. */
 const CHECKOUT = bootRead(() => labelCheckout(runDir));
-/** The routes the run's label's daemon registers (daemon-pane.ts's `labelRoutes`): the one answer
- * to "does this daemon serve that route", which `fetch` asks of every request and health asks of
- * every 404 the log holds. */
-const ROUTES = bootRead(() => labelRoutes(CHECKOUT));
-/** The run of refused turns at which the daemon fails the claim: the launch failure limit
- * (supervise's `turnOutcome`, `run < m.deps.Limits.LaunchFailures`), which the daemon is given as
- * `launch_failure_limit` and the rig, having no legion.yaml, runs at its default, read out of the
- * label's config source (daemon-pane.ts's `countDefault`). Read only for a daemon that serves
- * `claims/turn-outcome`. */
-const TURN_OUTCOME_LIMIT = serves(ROUTES, "POST", "/legion/v1/claims/turn-outcome")
-  ? bootRead(() => countDefault(CHECKOUT, "launch_failure_limit"))
-  : 0;
-/** The claim refusals the claim routes answer a caller with (packages/daemon/internal/claim's
- * `InvalidSecret`, `InvalidBootToken` and `StaleGeneration`), each its status and its sentence,
- * read out of the label's claim source (daemon-pane.ts's `claimRefusal`). */
-const INVALID_SECRET = bootRead(() => claimRefusal(CHECKOUT, "InvalidSecret"));
-const INVALID_BOOT_TOKEN = bootRead(() => claimRefusal(CHECKOUT, "InvalidBootToken"));
-const STALE_GENERATION = bootRead(() => claimRefusal(CHECKOUT, "StaleGeneration"));
+/** Every fact of the run's label's daemon this answers by, read at boot by daemon-pane.ts's
+ * `standinFacts`, which says what each is: its routes (`ROUTES`, the one answer to "does this
+ * daemon serve that route", which `fetch` asks of every request), its launch failure limit, its
+ * claim refusals, the phase the role's own worker is started in and that phase's handoff word,
+ * the phase the issue stands in for this run (`PHASE`: the caller's, or the role's own when it
+ * names none), and, for a run whose role can be late, the daemon's own refusal of a late
+ * completion (`NOT_CURRENT_PHASE`), whose phase and issue are filled in when it is sent. Each is
+ * read through daemon-pane.ts's facts cache, which rig.sh's label_facts fills for every stand-in
+ * of a batch before any run starts, so a boot reads each out of a file. */
+const {
+  routes: ROUTES,
+  turnOutcomeLimit: TURN_OUTCOME_LIMIT,
+  invalidSecret: INVALID_SECRET,
+  invalidBootToken: INVALID_BOOT_TOKEN,
+  staleGeneration: STALE_GENERATION,
+  rolePhase: ROLE_PHASE,
+  handoffWord: HANDOFF_WORD,
+  phase: PHASE,
+  notCurrentPhase: NOT_CURRENT_PHASE,
+} = bootRead(() => standinFacts(CHECKOUT, role, phaseArg));
 /** The answer of a claim refusal read at boot, in the daemon's shape (claim.Refusal marshals as
  * `{error}`). */
 function refuse(refusal: { status: number; message: string }): Response {
@@ -272,47 +266,6 @@ function authenticates(secret: string | undefined): boolean {
 }
 
 const startedAt = new Date().toISOString();
-/** The phase the role's own worker is started in, the first of the transition table it works,
- * and the word of the handoff record that phase ends with, empty when it ends with none, as the
- * label's daemon has them (daemon-pane.ts's `labelPhase`). */
-const { phase: ROLE_PHASE, word: HANDOFF_WORD } = bootRead(() => labelPhase(CHECKOUT, role));
-/** The phases that end with a handoff record (`phase.Handoff` in
- * packages/daemon/internal/phase/phase.go): the route refuses a completion naming a record in any
- * other phase. daemon-pane.go answers only the role's own phase, at a `go run` each, so the rest
- * is written here, and the boot fails when the daemon's answer for the role's own phase disagrees
- * with it. */
-const RECORD_PHASES = ["planning", "implementing", "testing", "reviewing"];
-if ((HANDOFF_WORD !== "") !== RECORD_PHASES.includes(ROLE_PHASE)) {
-  console.error(
-    `daemon-standin: the daemon gives ${ROLE_PHASE} the handoff word '${HANDOFF_WORD}', which RECORD_PHASES does not agree with`
-  );
-  process.exit(2);
-}
-/** The phase the issue stands in for this run: the caller's, or the role's own when it names
- * none. A caller that names another is a run of a loop the daemon starts no phase for, where
- * the role's completion is a late one (`handle`'s `handoff/complete`). */
-const PHASE = phaseArg === "" ? ROLE_PHASE : phaseArg;
-/** Stands in for the issue's phase in the refusal read at boot, and is replaced with the phase
- * served when the refusal is sent. */
-const PHASE_SLOT = "PHASESLOTOFTHEISSUE";
-/** The daemon's own refusal of a late completion of this role, its code and its message, read
- * from the label's daemon's code at boot (daemon-pane.ts's `notCurrentPhase`) rather than written
- * here: the skill has the worker quote that sentence to its architect. It is read once, with the
- * phase left as `PHASE_SLOT`, since the phase the issue stands in when the refusal is sent is the
- * one served then. It is read only for a run whose role can be late: one booted in a phase that
- * is not the role's, or in `reviewing`, the one phase the review round moves. A daemon whose
- * refusal cannot be read fails the boot rather than the completion. */
-const NOT_CURRENT_PHASE = (() => {
-  if (PHASE === ROLE_PHASE && PHASE !== "reviewing") return undefined;
-  const refusal = bootRead(() => notCurrentPhase(CHECKOUT, role, PHASE_SLOT, issue));
-  if (refusal === undefined || refusal.code !== NOT_CURRENT_PHASE_CODE) {
-    console.error(
-      `daemon-standin: daemon-pane printed no ${NOT_CURRENT_PHASE_CODE} code and message for the refusal of ${role}'s late completion`
-    );
-    process.exit(2);
-  }
-  return refusal;
-})();
 /** `GET /legion/v1/state`: the one issue the worker holds, standing in the phase this stand-in
  * was started for, on the run's own world: its repository and the branch its pull request is
  * open against, both read from that world and written nowhere else here. A record that named
@@ -748,7 +701,7 @@ function handle(
             response: failure(
               409,
               NOT_CURRENT_PHASE.code,
-              NOT_CURRENT_PHASE.message.replaceAll(PHASE_SLOT, phase)
+              NOT_CURRENT_PHASE.message.replaceAll(PHASE_SLOT, phase).replaceAll(ISSUE_SLOT, issue)
             ),
           };
         }

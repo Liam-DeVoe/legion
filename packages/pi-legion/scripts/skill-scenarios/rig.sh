@@ -17,22 +17,30 @@
 #   rig.sh health    [--tmp-snapshot <file>] <run dir>...
 #                                                  whether each run's world could take what its
 #                                                  agents did and the run stayed in its own world,
-#                                                  scoring nothing (health.ts): the run finished;
-#                                                  every service of its label's own came from its
-#                                                  label's checkout (<run>/services-from against
-#                                                  its built-from, services_from); no agent's claim
-#                                                  boot was refused but a first attempt's before
-#                                                  its first turn, which the rig relaunched
-#                                                  (boot_agent); every completion names
-#                                                  its role and none was refused in a way its
-#                                                  label's daemon would not refuse it, and its
-#                                                  world took the completions it must take
-#                                                  (completion-answers.ts's ANSWERS); the
-#                                                  daemon stand-in answered no route 404 that the
-#                                                  run's label's daemon registers, and no turn
-#                                                  outcome it answered failed the claim; no
-#                                                  agent met a push-guard refusal or a gh refusal
-#                                                  its scenario does not declare; no tool call named
+#                                                  scoring nothing (health.ts): the run's boot
+#                                                  record (<run>/booted) boots or skips each role
+#                                                  its scenario boots, in order, skipping one only
+#                                                  for the reason completion-answers.ts's SKIPS
+#                                                  declares, and each role it booted finished on
+#                                                  its own output and transcript; every service of
+#                                                  its label's own, its Dispatch server among
+#                                                  them, came from its label's checkout
+#                                                  (<run>/services-from against its built-from,
+#                                                  services_from); no agent's claim boot was
+#                                                  refused but a first attempt's before its first
+#                                                  turn, which the rig relaunched (boot_agent);
+#                                                  every completion names its role and none was
+#                                                  refused in a way its label's daemon would not
+#                                                  refuse it, and its world took the completions
+#                                                  it must take (completion-answers.ts's ANSWERS);
+#                                                  the daemon stand-in answered no route 404 that
+#                                                  the run's label's daemon registers, and no turn
+#                                                  outcome it answered failed the claim; no agent
+#                                                  met a push-guard refusal or a gh refusal its
+#                                                  scenario does not declare, nor an error answer
+#                                                  of the run's own Dispatch server
+#                                                  (<run>/logs/dispatch.log) its scenario does not
+#                                                  declare for its role; no tool call named
 #                                                  another run's directory; and none read a path
 #                                                  another of the runs given wrote, or /tmp scratch
 #                                                  from before the run (<file>: the /tmp entries
@@ -321,6 +329,14 @@
 #     <run>/boot-1/<role>/ (boot_agent). Once, where the daemon's launch budget allows more: a
 #     second refusal stands, and health names both attempts. One refused after its first turn is
 #     never relaunched.
+#   - A worker run's boot record, <run>/booted, holds a line for each role its scenario boots:
+#     `boot <role>` before that role's daemon stand-in starts, again before a relaunch, and `skip
+#     <role> <reason>` where the rig boots none, the reason completion-answers.ts's SKIPS declares
+#     (worker_boot, boot_agent, run_threads_closed). health.ts reads it.
+#   - Its Envoy listener, its Dispatch server and the daemon facts its stand-in answers by are its
+#     label's own: services_up builds the listener, the server and daemon-pane.go out of the
+#     label's checkout and reads every fact a stand-in boots on before any run starts
+#     (label_facts), so a stand-in's boot reads its facts out of files.
 #   - Its agent runs in a user, mount and PID namespace of its own, started with `env -i` (launch,
 #     world_paths, private_world): the scratch root TMPDIR names, the issue workspaces, the work
 #     directory, every label's checkout, /var/run/legion and /var/run/secrets are each an empty
@@ -1284,19 +1300,54 @@ nats_image=ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4ee
 # daemon-pane.ts keeps under $work/daemon-facts, and kept, as they are, from one batch to the next.
 build_dir() { printf '%s/builds/%s\n' "$work" "$(printf '%s' "$1" | sha256sum | cut -c1-16)"; }
 
-# go_binary CHECKOUT PACKAGE NAME builds the command PACKAGE (./cmd/listener, ./cmd/dispatch) of
-# CHECKOUT's own packages/envoy module, in that module and under its own go.work, as NAME in
-# CHECKOUT's build directory (build_dir), and prints the binary's path. One binary per checkout,
-# kept across batches: `go build -o` relinks only an output whose sources changed, so each binary
-# is the build of its checkout's tree as it stands, and a second batch of an unchanged tree builds
-# nothing. One batch at a time holds the work directory (lock_services), so no two builds of one
-# binary race.
+# go_binary CHECKOUT MODULE PACKAGE NAME [FLAG...] builds the command PACKAGE (./cmd/listener,
+# ./cmd/dispatch, ./cmd/daemon-pane) of CHECKOUT's own packages/MODULE module (envoy, daemon), in
+# that module and under its own go.work, with each FLAG, as NAME in CHECKOUT's build directory
+# (build_dir), and prints the binary's path. One binary per checkout, kept across batches: `go
+# build -o` relinks only an output whose sources changed, so each binary is the build of its
+# checkout's tree as it stands, and a second batch of an unchanged tree builds nothing. One batch
+# at a time holds the work directory (lock_services), so no two builds of one binary race.
 go_binary() {
   local dir
   dir=$(build_dir "$1")
   mkdir -p "$dir"
-  (cd "$1/packages/envoy" && go build -o "$dir/$3" "$2") >&2 || return 1
-  printf '%s\n' "$dir/$3"
+  (cd "$1/packages/$2" && go build -o "$dir/$4" "${@:5}" "$3") >&2 || return 1
+  printf '%s\n' "$dir/$4"
+}
+
+# daemon_pane_binary CHECKOUT builds this directory's daemon-pane.go in CHECKOUT's daemon module
+# (go_binary), as daemon-pane.ts's runDaemonPane runs it with `go run`: the program in place of
+# <module>/cmd/daemon-pane/main.go, through an overlay kept beside the binary. It prints the
+# binary's path. Each process that reads a label's daemon runs its label's build
+# (SKILL_SCENARIOS_DAEMON_PANE: label_facts, worker_boot), so a read takes milliseconds where a
+# `go run` compiles the daemon module first: 6.2-7.4 s a read with a warm Go build cache and 282 s
+# with a cold one, measured on 2026-11-15.
+daemon_pane_binary() {
+  local overlay
+  overlay=$(build_dir "$1")/daemon-pane-overlay.json
+  mkdir -p "${overlay%/*}"
+  jq -n --arg main "$1/packages/daemon/cmd/daemon-pane/main.go" --arg program "$here/daemon-pane.go" \
+    '{Replace: {($main): $program}}' >"$overlay"
+  go_binary "$1" daemon ./cmd/daemon-pane daemon-pane -overlay "$overlay"
+}
+
+# The daemon stand-ins the scenarios boot (worker_boot), each `<role>` when started in the role's
+# own phase and `<role>:<phase>` when started in another: tester-proof's tester,
+# reviewer-text-findings' reviewer, and threads-closed's implementer and reviewer, in `reviewing`
+# (text-fixes) or `accepting` (code-defect). label_facts reads every fact each one's boot reads.
+worker_boots=(tester reviewer implementer:reviewing implementer:accepting reviewer:reviewing reviewer:accepting)
+
+# label_facts LABEL BINARY reads, through BINARY (daemon_pane_binary of LABEL's checkout, which
+# load_label loaded last), every fact of that checkout's daemon a stand-in of worker_boots reads
+# at its boot (daemon-pane.ts's `facts`, its standinFacts) into the facts cache under $work, before
+# any run of the batch starts, so each boot reads its facts out of files. A boot that read them
+# itself ran daemon-pane.go once a fact: in the preflight of 2026-11-15 at 7bf20811, in a fresh
+# work directory, a first boot took ~43 s (head) and ~36 s (base) with a warm Go build cache, past
+# worker_boot's 30 s bound for the stand-in to listen, and 6 of the 8 runs ended there. A fact that
+# cannot be read fails the batch here, naming it, where no run has started.
+label_facts() {
+  SKILL_SCENARIOS_WORK=$work SKILL_SCENARIOS_DAEMON_PANE=$2 bun "$here/daemon-pane.ts" facts "$co" "${worker_boots[@]}" ||
+    fail "a fact of the daemon of label $1's checkout $co could not be read (above), so no daemon stand-in of the label could boot"
 }
 
 # start_listener LABEL BINARY serves LABEL's Envoy listener, BINARY (go_binary of the label's own
@@ -1327,36 +1378,37 @@ file_digest() {
   printf 'sha256:%s\n' "$(sha256sum <"$1" | cut -d' ' -f1)"
 }
 
-# services_from LISTENER DISPATCH prints the service provenance of the runs of the label
+# services_from LISTENER DISPATCH PANE prints the service provenance of the runs of the label
 # load_label loaded last (co, pin, P, profile): one `<service> <scope> <from> <digest>` a line,
 # for every service and program a run of that label is built or started from. services_up writes
 # it for each label before any run starts, and cmd_run copies it into the run as
 # <run>/services-from, beside its built-from, before any agent of the run starts: health.ts's
 # "service provenance" rule reads it against that built-from. <scope> is
 #   label   a service the run's own label's checkout gives it, <from> being that checkout, which
-#           health holds to built-from's `checkout` line: its Envoy listener (LISTENER, built from
-#           it), its packed plugins and its model route (cmd_profile), the daemon facts the daemon
-#           stand-in answers by (daemon-pane.ts, read out of built-from's checkout) and its worker
-#           pane, which that checkout's daemon module composes (worker-pane.ts);
+#           health holds to built-from's `checkout` line: its Envoy listener (LISTENER) and its
+#           Dispatch server (DISPATCH), each built from it, its packed plugins and its model
+#           route (cmd_profile), the daemon facts the daemon stand-in answers by (daemon-pane.ts,
+#           read out of built-from's checkout) and its worker pane, which that checkout's daemon
+#           module composes (worker-pane.ts), both read through PANE, daemon-pane.go built in that
+#           module (daemon_pane_binary);
 #   pin     its Oh My Pi, the version that checkout pins (.omp-pin), <from> being the pin;
 #   shared  a service production shares across versions, or this rig's own instrument, <from>
-#           being where it comes from: the Dispatch server (DISPATCH, built from this checkout),
-#           the stand-ins, readers and seed programs of this directory, NATS, Postgres and the
-#           push guard's check.
+#           being where it comes from: the stand-ins, readers and seed programs of this
+#           directory, NATS, Postgres and the push guard's check.
 # <digest> is file_digest of the binary or program file a run starts (`missing` where that file is
 # not there), or `-` where it starts none. The README's skill-scenarios section
 # (packages/pi-envoy/scripts/README.md) holds the table of every service, with the reason each
 # shared one is shared.
 services_from() {
-  local listener=$1 dispatch=$2 omp program
+  local listener=$1 dispatch=$2 pane=$3 omp program
   omp=$(pinned_omp "$pin") || exit 1
   printf 'envoy-listener label %s %s\n' "$co" "$(file_digest "$listener")"
+  printf 'dispatch label %s %s\n' "$co" "$(file_digest "$dispatch")"
   printf 'plugins label %s -\n' "$co"
   printf 'model-route label %s %s\n' "$co" "$(file_digest "$P/home/.omp/profiles/$profile/agent/models.yml")"
-  printf 'daemon-facts label %s -\n' "$co"
-  printf 'worker-pane label %s -\n' "$co"
+  printf 'daemon-facts label %s %s\n' "$co" "$(file_digest "$pane")"
+  printf 'worker-pane label %s %s\n' "$co" "$(file_digest "$pane")"
   printf 'omp pin %s %s\n' "$pin" "$(file_digest "$omp")"
-  printf 'dispatch shared %s %s\n' "$root" "$(file_digest "$dispatch")"
   for program in daemon-standin.ts daemon-pane.go daemon-routes.go worker-pane.ts gh-standin.ts seed.ts record-publishes.ts; do
     printf '%s shared %s %s\n' "$program" "$here" "$(file_digest "$here/$program")"
   done
@@ -1377,17 +1429,19 @@ services_from() {
 # start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database. The
 # harness's fake Envoy and GitHub, which run-server.sh names and this rig does not run, are port 1,
 # where nothing listens; its broker switch is empty, so the server has no secrets broker. The
-# server is the one the batch built from this checkout (services_up, go_binary), which
-# run-server.sh runs in place of a build of its own (DISPATCH_E2E_SERVER_BIN), so every run of the
-# batch runs the binary its provenance names (services_from).
+# server is the one the batch built from the run's label's own checkout (services_up, go_binary),
+# which run-server.sh runs in place of a build of its own (DISPATCH_E2E_SERVER_BIN), so every run
+# runs the binary its provenance names (services_from). run-server.sh itself is this checkout's,
+# the harness that starts a build: it hands a build the same environment whichever tree it came
+# from, since a release ignores a setting it does not know (its own comment says so).
 # With no DISPATCH_E2E_PORT, run-server.sh serves Dispatch on a port the kernel chose, held until
 # the server serves on it, and the server reports it (`msg="dispatch: listening"
 # addr=127.0.0.1:<port>`), which sets dispatch_port. Each run has an evidence directory of its own,
 # and the log is emptied first, so the line read is this run's own start.
 start_dispatch() {
   local url=$1 log=$evidence/logs/dispatch.log server
-  server=$(build_dir "$root")/dispatch-e2e
-  [ -x "$server" ] || fail "no Dispatch server at $server: the run's batch builds it (services_up)"
+  server=$(build_dir "$co")/dispatch-e2e
+  [ -x "$server" ] || fail "no Dispatch server of $co at $server: the run's batch builds it (services_up)"
   : >"$log"
   DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 DISPATCH_E2E_AGENT_SECRETS_URL='' \
     DISPATCH_E2E_SERVER_BIN=$server start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
@@ -1491,14 +1545,20 @@ nats_ready() {
 # holds) names nothing, so that container stays.
 containers=()
 
-# services_up LABEL... brings up the batch's services: its Postgres and its NATS, the Dispatch
-# server every run of the batch starts its own Dispatch on (own_dispatch), built from this
-# checkout, and, for each LABEL, an Envoy listener built from that label's own checkout
-# (go_binary, start_listener), the label's services file (label_services) naming that listener,
-# and the label's service provenance (services_from, label_provenance). A label's agents load the
-# plugins of its own checkout, so one listener built from this checkout paired a base label's
-# plugins, main ff2a10ef's from before #2603, with a listener from after it, a pairing no deploy
-# ever had, and the base runs lost their claim boot to its `409 not_requested`.
+# services_up LABEL... brings up the batch's services: its Postgres and its NATS, and, for each
+# LABEL, out of that label's own checkout: an Envoy listener (go_binary, start_listener), the
+# Dispatch server each run of the label starts its own Dispatch on (own_dispatch), daemon-pane.go
+# built in its daemon module (daemon_pane_binary) and every fact of that daemon a stand-in reads at
+# its boot (label_facts), the label's services file (label_services) naming that listener, and the
+# label's service provenance (services_from, label_provenance). A label's agents load the plugins
+# of its own checkout, so one listener built from this checkout paired a base label's plugins,
+# main ff2a10ef's from before #2603, with a listener from after it, a pairing no deploy ever had,
+# and the base runs lost their claim boot to its `409 not_requested`. The Dispatch server is no
+# more the same across versions: ff2a10ef's `dispatch result` prints a result's line ending with
+# the check's text where the head's ends with the role's reading
+# (packages/envoy/internal/dispatch/api/results.go, checkResultLine), and ff2a10ef's server refuses
+# a body field it does not declare, `400 INVALID_JSON` (api/server.go's DisallowUnknownFields),
+# where the head's ignores it.
 #
 # Each run's Dispatch server opens at most 30 connections to the batch's Postgres: its shared pool
 # (16), loop leases (8), document rooms (4), health probe (1) and listener (1), the sizes in
@@ -1508,7 +1568,7 @@ containers=()
 # not the batch's, so services_up reads it and refuses a parallelism the server cannot serve.
 services_up() {
   evidence=$S
-  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port label dispatch listener
+  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port label dispatch listener pane
   local listening=()
   needs=$((30 * parallel + 20))
   if given_services; then
@@ -1539,18 +1599,20 @@ services_up() {
     [ "$parallel" -le "$fits" ] ||
       fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
   fi
-  dispatch=$(go_binary "$root" ./cmd/dispatch dispatch-e2e) || fail "the Dispatch server of $root did not build"
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   for label in "$@"; do
     load_label "$label"
-    listener=$(go_binary "$co" ./cmd/listener envoy-listener) || fail "the Envoy listener of label $label's checkout $co did not build"
+    listener=$(go_binary "$co" envoy ./cmd/listener envoy-listener) || fail "the Envoy listener of label $label's checkout $co did not build"
+    dispatch=$(go_binary "$co" envoy ./cmd/dispatch dispatch-e2e) || fail "the Dispatch server of label $label's checkout $co did not build"
+    pane=$(daemon_pane_binary "$co") || fail "daemon-pane.go did not build in the daemon module of label $label's checkout $co"
+    label_facts "$label" "$pane"
     start_listener "$label" "$listener"
     {
       echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
       echo "ENVOY_NATS_URL=$nats_url"
       echo "ENVOY_TOKEN_FILE=$S/envoy-token"
     } >"$(label_services "$label")"
-    services_from "$listener" "$dispatch" >"$(label_provenance "$label")"
+    services_from "$listener" "$dispatch" "$pane" >"$(label_provenance "$label")"
     listening+=("$label :$envoy_port")
   done
   note "services up: listeners ${listening[*]}, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
@@ -2811,8 +2873,14 @@ run_project() {
 # while the run keeps one calls.jsonl, one pushes.log and one record of what reached the daemon,
 # $R/daemon.log, which every stand-in of the run appends to. The agent is launched by boot_agent,
 # which relaunches it once when its claim boot is refused before its first turn.
+#
+# Each boot is on the run's boot record, <run>/booted (completion-answers.ts's BOOTED), before its
+# stand-in starts: `boot <role>`, a line per attempt (boot_agent writes the relaunch's), so a boot
+# whose stand-in never listened is on the record too. A role the rig decides not to boot is there
+# as `skip <role> <reason>` (run_threads_closed). Health holds the record to the scenario's roles
+# (ANSWERS' boots, SKIPS) and each booted role to its own output and transcript.
 worker_boot() {
-  local name=$1 project=$2 role=$3 phase=${4:-} completed=${5:-} state port pane_gh pane_vars
+  local name=$1 project=$2 role=$3 phase=${4:-} completed=${5:-} state port pane_gh pane_vars pane_build
   state=$R/state
   mkdir -p "$state/gh" "$state/secrets"
   chmod 0700 "$state/secrets"
@@ -2831,7 +2899,7 @@ worker_boot() {
     stop_pid "$daemon_pid" && wait "$daemon_pid" 2>/dev/null || true
     daemon_pid=''
     mv "$R/logs/daemon.log" "$R/logs/daemon-$booted.log"
-    cp "$R/out.txt" "$R/out-$booted.txt"
+    mv "$R/out.txt" "$R/out-$booted.txt"
     # base_env copies a HOME afresh from the label's for the agent starting now, so the one the
     # agent before it wrote in is moved aside rather than removed with it: a run's evidence is
     # every half's, and the half that ran first left its own files there.
@@ -2845,8 +2913,12 @@ worker_boot() {
   # It is given the run directory, not a repository: the record it answers names the world's own
   # repository and default branch, which it reads out of $R/world.json (the worker world comment).
   # It is given the work directory, under which daemon-pane.ts keeps what it read of the label's
-  # daemon (its facts cache), so a boot whose sources an earlier boot read runs no `go run`.
-  start_process daemon env SKILL_SCENARIOS_WORK="$work" bun "$here/daemon-standin.ts" 0 \
+  # daemon (its facts cache), which services_up filled for every boot of worker_boots
+  # (label_facts), and the label's build of daemon-pane.go, which reads a fact the cache does not
+  # hold in milliseconds (daemon_pane_binary).
+  pane_build=$(build_dir "$co")/daemon-pane
+  printf 'boot %s\n' "$role" >>"$R/booted"
+  start_process daemon env SKILL_SCENARIOS_WORK="$work" SKILL_SCENARIOS_DAEMON_PANE="$pane_build" bun "$here/daemon-standin.ts" 0 \
     "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$R" "$role" "$phase" "$completed"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
@@ -2855,8 +2927,9 @@ worker_boot() {
   # The pane the label's checkout's daemon would give that role, over the base every agent gets:
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
   # recording stand-in, as the pane's real gh. It reads the repository and the default branch its
-  # addressing names out of $R/world.json too, as the daemon stand-in does.
-  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co"
+  # addressing names out of $R/world.json too, as the daemon stand-in does, and composes it with
+  # the label's build of daemon-pane.go, as the stand-in reads its facts.
+  SKILL_SCENARIOS_DAEMON_PANE=$pane_build bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co"
   # The run's Envoy is its label's own listener in the batch, built from the label's checkout
   # (services_up), named once. The daemon's pane carries an ENVOY_URL of its own — the default it
   # gives a pane whose environment configures no Envoy (daemon-pane.ts's DEFAULT_ENVOY_URL) — and
@@ -2924,7 +2997,9 @@ worker_boot() {
 # the run on the second attempt's record. The stand-in, its boot token and the agent's HOME are
 # the first attempt's, as a pod's are across the daemon's relaunch. This is narrower than the
 # daemon's launch budget, which relaunches an agent until its launch failure limit: the rig
-# relaunches once, and a second refusal stands, the run unhealthy, naming both attempts.
+# relaunches once, and a second refusal stands, the run unhealthy, naming both attempts. The
+# relaunch is a second attempt of the same boot, so it adds a second `boot <role>` line to the
+# run's boot record before it starts (worker_boot), which health reads as that one boot.
 boot_agent() {
   local name=$1 role=$2 since first refusal status=0
   since=$(date -u +%FT%T.%3NZ)
@@ -2943,6 +3018,7 @@ boot_agent() {
   jq -c --arg role "$role" --arg since "$since" 'select(.role == $role and .at >= $since)' \
     "$R/daemon.log" >"$first/daemon.log"
   note "${R##*/}: the $role's claim boot was refused before its first turn ($refusal); launching it once more, the first attempt kept in $first"
+  printf 'boot %s\n' "$role" >>"$R/booted"
   launch "$name"
 }
 
@@ -3039,6 +3115,17 @@ reviewer_wake() {
   bun "$here/score.ts" published "$R" reviewer
 }
 
+# skip_reason SCENARIO CASE ROLE prints the reason completion-answers.ts's SKIPS declares for
+# booting no ROLE in SCENARIO's CASE, the one place it is written: the run's boot record carries
+# it verbatim on its `skip <role> <reason>` line, which health and the score hold to the same
+# SKIPS. It fails where SKIPS declares none, since a skip with no declared reason is a boot the
+# rig dropped.
+skip_reason() {
+  bun -e 'const { SKIPS } = await import(Bun.argv[1]); const reason = SKIPS[Bun.argv[2]]?.[Bun.argv[3]]?.[Bun.argv[4]]; if (typeof reason !== "string") process.exit(1); console.log(reason);' \
+    -- "$here/completion-answers.ts" "$@" ||
+    fail "completion-answers.ts's SKIPS declares no reason to boot no $3 in $1 $2"
+}
+
 # The loop after an approval that left text threads open, on the world worker_fixture's <case>
 # builds: the reviewer approved the head and left its text findings as open threads (text-fixes),
 # or left the one thread whose sentence the code makes false (code-defect). The issue carries the
@@ -3075,8 +3162,8 @@ reviewer_wake() {
 # (daemon-standin.ts). What each label's daemon may answer each half here is
 # completion-answers.ts's ANSWERS["threads-closed"], which `rig.sh health` and the score read.
 run_threads_closed() {
-  local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head open wake phase=reviewing \
-    completed=implementer
+  local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head open wake skip \
+    phase=reviewing completed=implementer
   [ "$threads_case" = text-fixes ] || phase=accepting
   start_recorder "$project"
   worker_run_world "$index" "$start" "$threads_case"
@@ -3105,11 +3192,15 @@ run_threads_closed() {
   # half to run. Booting one anyway put a reviewer in front of an empty prompt and then counted
   # whatever it did towards the case's pass (`!approvedAny`, `resolves.length === 0`,
   # `moved === undefined`): the rig's own agent answering the rig's own question. The run is
-  # scored on the halves it ran (score.ts's BOOTS and unscored). In text-fixes the implementer
-  # must have sent a wake, so the reviewer is booted on whatever it sent, an empty prompt
-  # included, and the empty wake is the fail on `toldReviewer` it already was.
+  # scored on the halves it ran, which its boot record names: the reviewer's line there is `skip
+  # reviewer <reason>`, the reason completion-answers.ts's SKIPS declares for it (skip_reason),
+  # which the score and health read against the same SKIPS. In text-fixes the implementer must
+  # have sent a wake, so the reviewer is booted on whatever it sent, an empty prompt included,
+  # and the empty wake is the fail on `toldReviewer` it already was.
   if [ "$threads_case" = code-defect ] && [ "$(jq length <<<"$wake")" -eq 0 ]; then
-    note "$name: no reviewer half — the implementer sent the reviewer nothing, which is the act code-defect asks for"
+    skip=$(skip_reason threads-closed code-defect reviewer)
+    printf 'skip reviewer %s\n' "$skip" >>"$R/booted"
+    note "$name: no reviewer half — $skip, which is the act code-defect asks for"
   else
     worker_boot "$name-reviewer" "$project" reviewer "$phase" "$completed"
   fi

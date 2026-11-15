@@ -1124,7 +1124,7 @@ GATES = [
 
     gate("pi_legion", "pi-legion", runs=[
         script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
-                   '["-overlay", overlay, "./cmd/daemon-pane", ...args],',
+                   '["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args],',
                    f"daemon-pane.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
                    overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
     ], reads=reads(
@@ -1155,7 +1155,8 @@ GATES = [
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts imports scripts/e2e/lib/script-functions, its \"a setup that fails after install_model_route\" rows copy install-key-file-model-route.sh and model-endpoint.sh from it, and its \"judge-omp\" row \"fails, naming the rig's root, when the root is no checkout\" copies the directory; rig.sh sources scripts/e2e/lib/rig.sh (its `. \"$root/scripts/e2e/lib/rig.sh\"` line)"),
         ("scripts/e2e/plan-pointer-drive.ts", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts's row \"plan-pointer-drive.ts typechecks, claim and all\" typechecks it: no tsconfig of this repository covers scripts/e2e, and that drive composes a worker pane through this rig's own composer, so the row compiles the one file of the directory the rig's modules reach"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts's \"judge-omp\" rows run rig.sh judge-omp, which copies the checkout's .omp-pin, and its row \"fails, naming the rig's root, when the root is no checkout\" copies .omp-pin"),
-        ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (runDaemonPane); "
+        ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (runDaemonPane), or the build "
+                                                                       "SKILL_SCENARIOS_DAEMON_PANE names, which rig.sh's daemon_pane_binary makes with the same overlay; "
                                                                        "daemon-routes.go, which runRoutes runs with GOWORK=off, imports the standard library alone"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")

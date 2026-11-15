@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { offWorldReach } from "./health";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { ANSWERS, labelOf, SKIPS, scenarioOf } from "./completion-answers";
+import { offWorldReach, serviceProvenance, unfinished } from "./health";
 
 /** The world of a run whose pane names only the loopback. */
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -730,5 +734,338 @@ describe("health: rule 13, off-world network, an eval cell's tool calls (door 1)
     expect(reach(cell("js", `${fetchPy}\nawait tool.bash({command:"python3 f.py"})`))).toContain(
       "in f.py, which a eval call"
     );
+  });
+});
+
+// Rule 1, finished, read on the run's own boot record (<run>/booted) held to the scenario's one
+// definition of the roles it boots (completion-answers.ts's ANSWERS' `boots` and SKIPS). Each row
+// builds a run directory as rig.sh leaves it, named as cmd_run names a run.
+describe("health: rule 1, finished, on the run's boot record", () => {
+  const runs = temporaryDirectories("health-boot-record");
+  /** A transcript with its session's header and one model turn. */
+  const TRANSCRIPT = [
+    { type: "session", id: "s1" },
+    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
+  ]
+    .map((entry) => `${JSON.stringify(entry)}\n`)
+    .join("");
+  /** The implementer's last words in the measured run, threads-closed-text-fixes-head-1 at
+   * 7bf20811: its out.txt and its out-implementer.txt, byte for byte the same. */
+  const IMPLEMENTER_OUT =
+    "WAITING on the reviewer to read the fix, resolve PRRT_kwDOfix001 and PRRT_kwDOfix002, approve head `a0ce49ee301f9d20205337743fb0a88df6480e8c`, and notify the architect, whose acceptance is the gate on the fix head.\nexit=0\n";
+  const FIRST = "sessions/2026-11-15T20-59-48-435Z_01a1e102.jsonl";
+  /** A run directory named `name` holding `files`, each a path under the run and its text; a path
+   * ending in `/` is a directory. */
+  function runOf(name: string, files: Record<string, string>): string {
+    const dir = path.join(runs(), name);
+    mkdirSync(dir);
+    for (const [file, text] of Object.entries(files)) {
+      const full = path.join(dir, file);
+      mkdirSync(file.endsWith("/") ? full : path.dirname(full), { recursive: true });
+      if (!file.endsWith("/")) writeFileSync(full, text);
+    }
+    return dir;
+  }
+  const judge = (dir: string) =>
+    unfinished({ dir, scenario: scenarioOf(dir) ?? "", label: labelOf(dir) });
+  /** A threads-closed run both of whose agents ran to their exit, with `booted` its record. */
+  const both = (name: string, booted: string) =>
+    runOf(name, {
+      booted,
+      "out-implementer.txt": IMPLEMENTER_OUT,
+      "out.txt": "Approved the fix head.\nexit=0\n",
+      [FIRST]: TRANSCRIPT,
+      "sessions/2026-11-15T20-59-48-435Z_01a1e102/": "",
+      "sessions/reviewer/2026-11-15T21-06-10-000Z_01a1e103.jsonl": TRANSCRIPT,
+    });
+  const SKIPPED = `skip reviewer ${SKIPS["threads-closed"]?.["code-defect"]?.reviewer}\n`;
+
+  // Catches: the measured run read healthy. Its reviewer's stand-in timed out, so the reviewer
+  // never launched: sessions/reviewer/ is empty and out.txt is still the implementer's, its exit=
+  // line included, which a reader of out.txt's last line took for the run's end.
+  test("the measured run whose reviewer was booted and never ran is unfinished", () => {
+    const files = {
+      "out-implementer.txt": IMPLEMENTER_OUT,
+      "out.txt": IMPLEMENTER_OUT,
+      [FIRST]: TRANSCRIPT,
+      "sessions/2026-11-15T20-59-48-435Z_01a1e102/": "",
+      "sessions/reviewer/": "",
+    };
+    expect(
+      judge(
+        runOf("threads-closed-text-fixes-head-1", {
+          ...files,
+          booted: "boot implementer\nboot reviewer\n",
+        })
+      )
+    ).toBe(
+      "unfinished: the reviewer left no transcript: <run>/sessions/reviewer holds no .jsonl of its own with an entry"
+    );
+    // As it was recorded, before a run kept a boot record.
+    expect(judge(runOf("threads-closed-text-fixes-head-1", files))).toBe(
+      "no boot record: the run has no <run>/booted, so which roles of threads-closed it booted, and whether each finished, is unknown"
+    );
+    // The same run where worker_boot moves the implementer's output aside rather than copying
+    // it: the reviewer, booted last, has no output of its own at all.
+    const { "out.txt": _, ...moved } = files;
+    expect(
+      judge(
+        runOf("threads-closed-text-fixes-head-1", {
+          ...moved,
+          booted: "boot implementer\nboot reviewer\n",
+        })
+      )
+    ).toBe("unfinished: the reviewer's output, <run>/out.txt, is missing");
+  });
+
+  // Catches: a reader that holds a run to more than it booted, or to less.
+  test("a run whose every booted role finished is finished, a relaunch's repeated line one boot", () => {
+    expect(
+      judge(both("threads-closed-text-fixes-head-2", "boot implementer\nboot reviewer\n"))
+    ).toBe(undefined);
+    expect(
+      judge(
+        both(
+          "threads-closed-text-fixes-base-2",
+          "boot implementer\nboot implementer\nboot reviewer\n"
+        )
+      )
+    ).toBe(undefined);
+    expect(
+      judge(
+        runOf("reviewer-text-findings-defect-base-1", {
+          booted: "boot reviewer\n",
+          "out.txt": "Requested changes.\nexit=0\n",
+          [FIRST]: TRANSCRIPT,
+        })
+      )
+    ).toBe(undefined);
+  });
+
+  // Catches: the code-defect run that boots no reviewer, because its implementer sent the reviewer
+  // nothing, read as unfinished against a definition that names the reviewer; and a skip the
+  // scenario and case do not declare read as one they do.
+  test("a code-defect run that skipped the reviewer for the declared reason is finished, and no other skip is", () => {
+    const skipped = (name: string, booted: string) =>
+      judge(
+        runOf(name, {
+          booted,
+          "out.txt": "Told the architect the thread's sentence is false.\nexit=0\n",
+          [FIRST]: TRANSCRIPT,
+        })
+      );
+    expect(skipped("threads-closed-code-defect-head-1", `boot implementer\n${SKIPPED}`)).toBe(
+      undefined
+    );
+    expect(skipped("threads-closed-text-fixes-head-3", `boot implementer\n${SKIPPED}`)).toBe(
+      'undeclared skip: <run>/booted skips the reviewer because "the implementer sent the reviewer nothing", and threads-closed text-fixes declares no skip of it (completion-answers.ts\'s SKIPS)'
+    );
+    expect(
+      skipped("threads-closed-code-defect-head-2", "boot implementer\nskip reviewer it was late\n")
+    ).toBe(
+      'undeclared skip: <run>/booted skips the reviewer because "it was late", where threads-closed code-defect declares "the implementer sent the reviewer nothing" (completion-answers.ts\'s SKIPS)'
+    );
+  });
+
+  // Catches: a run with no record read on the scenario's definition in its place, and a record
+  // that does not decide each role of the definition once, in its order, read as one that does.
+  test("a missing record, a role outside the definition, a role decided twice or out of order, or one left out is unfinished", () => {
+    const definition =
+      "threads-closed boots the implementer, then the reviewer (completion-answers.ts's ANSWERS)";
+    expect(
+      judge(both("threads-closed-text-fixes-head-4", "boot reviewer\nboot implementer\n"))
+    ).toBe(
+      `boot record: <run>/booted starts with \`boot reviewer\`, not \`boot implementer\`; ${definition}`
+    );
+    expect(judge(both("threads-closed-text-fixes-head-5", `${SKIPPED}boot reviewer\n`))).toBe(
+      `boot record: <run>/booted starts with \`skip reviewer\`, not \`boot implementer\`; ${definition}`
+    );
+    expect(judge(both("threads-closed-text-fixes-head-6", ""))).toBe(
+      `boot record: <run>/booted starts with no line, not \`boot implementer\`; ${definition}`
+    );
+    expect(
+      judge(
+        both("threads-closed-text-fixes-head-7", "boot implementer\nboot reviewer\nboot tester\n")
+      )
+    ).toBe(
+      `boot record: <run>/booted decides the tester, a role threads-closed boots none of; ${definition}`
+    );
+    expect(
+      judge(
+        both(
+          "threads-closed-text-fixes-head-8",
+          "boot implementer\nboot reviewer\nboot implementer\n"
+        )
+      )
+    ).toBe(`boot record: <run>/booted decides the implementer twice; ${definition}`);
+    expect(judge(both("threads-closed-text-fixes-head-9", "boot implementer\n"))).toBe(
+      `boot record: <run>/booted neither boots nor skips the reviewer; ${definition}`
+    );
+    expect(() =>
+      judge(both("threads-closed-text-fixes-head-10", "launched implementer\n"))
+    ).toThrow("booted:1 is neither `boot <role>` nor `skip <role> <reason>`: launched implementer");
+  });
+
+  // Catches: a role's record that is another's standing in for it: the first role's transcript
+  // read from a subagent's directory or a later role's, and an output that is missing or never
+  // ended read as one that did.
+  test("a booted role finishes on its own output and its own top-level transcript alone", () => {
+    const booted = "boot implementer\nboot reviewer\n";
+    expect(
+      judge(
+        runOf("threads-closed-text-fixes-head-11", {
+          booted,
+          "out-implementer.txt": IMPLEMENTER_OUT,
+          "out.txt": "Approved the fix head.\nexit=0\n",
+          "sessions/2026-11-15T20-59-48-435Z_01a1e102/task-1.jsonl": TRANSCRIPT,
+          "sessions/reviewer/2026-11-15T21-06-10-000Z_01a1e103.jsonl": TRANSCRIPT,
+        })
+      )
+    ).toBe(
+      "unfinished: the implementer left no transcript: <run>/sessions holds no .jsonl of its own with an entry"
+    );
+    expect(
+      judge(
+        runOf("threads-closed-text-fixes-head-12", {
+          booted,
+          "out-implementer.txt": IMPLEMENTER_OUT,
+          "out.txt": "Approved the fix head.\nexit=0\n",
+          [FIRST]: TRANSCRIPT,
+          "sessions/reviewer/2026-11-15T21-06-10-000Z_01a1e103/task-1.jsonl": TRANSCRIPT,
+        })
+      )
+    ).toBe(
+      "unfinished: the reviewer left no transcript: <run>/sessions/reviewer holds no .jsonl of its own with an entry"
+    );
+    expect(
+      judge(
+        runOf("threads-closed-text-fixes-head-13", {
+          booted,
+          "out-implementer.txt": IMPLEMENTER_OUT,
+          "out.txt": "Approved the fix head.\nexit=0\n",
+          [FIRST]: "",
+          "sessions/reviewer/2026-11-15T21-06-10-000Z_01a1e103.jsonl": TRANSCRIPT,
+        })
+      )
+    ).toBe(
+      "unfinished: the implementer left no transcript: <run>/sessions holds no .jsonl of its own with an entry"
+    );
+    expect(
+      judge(
+        runOf("threads-closed-text-fixes-head-14", {
+          booted,
+          "out.txt": "Approved the fix head.\nexit=0\n",
+          [FIRST]: TRANSCRIPT,
+          "sessions/reviewer/2026-11-15T21-06-10-000Z_01a1e103.jsonl": TRANSCRIPT,
+        })
+      )
+    ).toBe("unfinished: the implementer's output, <run>/out-implementer.txt, is missing");
+    expect(
+      judge(
+        runOf("threads-closed-text-fixes-head-15", {
+          booted,
+          "out-implementer.txt": IMPLEMENTER_OUT,
+          "out.txt": "Reading the fix head.\n",
+          [FIRST]: TRANSCRIPT,
+          "sessions/reviewer/2026-11-15T21-06-10-000Z_01a1e103.jsonl": TRANSCRIPT,
+        })
+      )
+    ).toBe("unfinished: the reviewer's output, <run>/out.txt, has no exit= line");
+  });
+
+  // Catches: a reader that keeps its own list of the roles a scenario boots. A definition that
+  // gains a role holds every run to it, with no edit to health: a run that neither boots nor
+  // skips it, and one that decides it out of the definition's order, are unfinished.
+  test("a definition that gains a role makes a run without it unfinished", () => {
+    const entry = ANSWERS["threads-closed"] as unknown as { boots: readonly string[] };
+    const defined = entry.boots;
+    entry.boots = ["implementer", "tester", "reviewer"];
+    try {
+      const definition =
+        "threads-closed boots the implementer, then the tester, then the reviewer (completion-answers.ts's ANSWERS)";
+      expect(
+        judge(both("threads-closed-text-fixes-head-16", "boot implementer\nboot reviewer\n"))
+      ).toBe(
+        `boot record: <run>/booted decides the reviewer where the tester comes; ${definition}`
+      );
+      expect(judge(both("threads-closed-text-fixes-head-17", "boot implementer\n"))).toBe(
+        `boot record: <run>/booted neither boots nor skips the tester; ${definition}`
+      );
+    } finally {
+      entry.boots = defined;
+    }
+    expect(
+      judge(both("threads-closed-text-fixes-head-18", "boot implementer\nboot reviewer\n"))
+    ).toBe(undefined);
+  });
+});
+
+// Rule 15, service provenance, on the run's Dispatch server: the server a run's agents call is
+// the one built from the run's label's own checkout (rig.sh's services_up), since what an agent
+// reads of it differs across versions. Catches: a base run on a server the head checkout built,
+// and a provenance that names the server shared, as the rig's own, where the rule would hold it
+// to no checkout at all.
+describe("health: rule 15, service provenance, the run's own Dispatch server", () => {
+  const runs = temporaryDirectories("health-dispatch-provenance");
+  const BASE = "/checkouts/base-ff2a10ef";
+  const HEAD = "/checkouts/head";
+  /** A base run whose built-from names BASE and whose provenance names every service of its
+   * label's own from BASE but the Dispatch server, which `dispatch` names. */
+  function baseRun(name: string, dispatch: string): string {
+    const dir = path.join(runs(), name);
+    mkdirSync(dir);
+    writeFileSync(path.join(dir, "built-from"), `checkout ${BASE}\ncommit ff2a10ef parents=\n`);
+    writeFileSync(
+      path.join(dir, "services-from"),
+      [
+        `envoy-listener label ${BASE} sha256:${"0".repeat(64)}`,
+        dispatch,
+        `plugins label ${BASE} -`,
+        `model-route label ${BASE} -`,
+        `daemon-facts label ${BASE} sha256:${"2".repeat(64)}`,
+        `worker-pane label ${BASE} sha256:${"2".repeat(64)}`,
+        "omp pin omp@stub missing",
+        "",
+      ].join("\n")
+    );
+    return dir;
+  }
+  const judge = (dir: string) => serviceProvenance({ dir, label: labelOf(dir) });
+
+  test("a base run whose Dispatch server the head checkout built is unhealthy", () => {
+    expect(
+      judge(
+        baseRun(
+          "threads-closed-text-fixes-base-1",
+          `dispatch label ${HEAD} sha256:${"1".repeat(64)}`
+        )
+      )
+    ).toBe(
+      `foreign service: the run's dispatch came from ${HEAD}, not from ${BASE}, the checkout of the base label its built-from names`
+    );
+  });
+
+  test("a base run whose provenance names its Dispatch server shared is unhealthy", () => {
+    expect(
+      judge(
+        baseRun(
+          "threads-closed-text-fixes-base-2",
+          `dispatch shared ${HEAD} sha256:${"1".repeat(64)}`
+        )
+      )
+    ).toBe(
+      `service provenance: <run>/services-from names no dispatch of the base label's own checkout (${BASE})`
+    );
+  });
+
+  test("a base run on the Dispatch server its own checkout built holds", () => {
+    expect(
+      judge(
+        baseRun(
+          "threads-closed-text-fixes-base-3",
+          `dispatch label ${BASE} sha256:${"1".repeat(64)}`
+        )
+      )
+    ).toBeUndefined();
   });
 });

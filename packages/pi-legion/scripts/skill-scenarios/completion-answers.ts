@@ -67,16 +67,23 @@ export function daemonLines(runDir: string): DaemonLine[] {
   return records;
 }
 
-/** Whether the run finished: its out.txt ends with the `exit=` line rig.sh's launch writes when
- * the agent exits. */
-export function finished(runDir: string): boolean {
-  const out = path.join(runDir, "out.txt");
-  if (!existsSync(out)) return false;
-  const last = readFileSync(out, "utf8")
+/** Whether the agent output `file` is there and ends with the `exit=` line rig.sh's launch
+ * appends once the agent has exited (`exit=timeout` once it waited no longer): its last line that
+ * is not blank. */
+export function exited(file: string): boolean {
+  if (!existsSync(file)) return false;
+  const last = readFileSync(file, "utf8")
     .split("\n")
     .filter((line) => line.trim() !== "")
     .at(-1);
   return last?.startsWith("exit=") === true;
+}
+
+/** Whether the run finished as score.ts's `unscored` reads it: its out.txt, the last agent's
+ * output, ended (`exited`). Health holds each role the run booted to its own output and
+ * transcript instead (health.ts's `unfinished`). */
+export function finished(runDir: string): boolean {
+  return exited(path.join(runDir, "out.txt"));
 }
 
 /** How a label's daemon answers a completion from a role that does not run the issue's current
@@ -240,6 +247,26 @@ export const ANSWERS: Readonly<
         reviewer: ["200", `409 ${NOT_CURRENT_PHASE}`],
       },
     },
+  },
+};
+
+/** The run's record of each role of its scenario's `boots` (ANSWERS), <run>/booted, which rig.sh
+ * writes at the site that decides each one: `boot <role>` before the role's daemon stand-in
+ * starts, once per attempt (a relaunch writes it again), and `skip <role> <reason>` where the rig
+ * decides not to boot it, the reason one SKIPS declares for the run's scenario and case. Health's
+ * finished rule reads it (`unfinished`). */
+export const BOOTED = "booted";
+
+/** Why a run may leave a role of its scenario's `boots` unbooted, keyed scenario → case → role:
+ * the one reason rig.sh writes verbatim on that role's `skip` line of <run>/booted, and the one
+ * health accepts there. threads-closed's code-defect is the one: the implementer's own act there
+ * is to tell the architect and send the reviewer nothing, so a wake of none ends the loop where the
+ * rule ends it and rig.sh boots no reviewer (run_threads_closed). */
+export const SKIPS: Readonly<
+  Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>
+> = {
+  "threads-closed": {
+    "code-defect": { reviewer: "the implementer sent the reviewer nothing" },
   },
 };
 

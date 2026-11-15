@@ -3,7 +3,16 @@
  * `rig.sh health <run dir>...`: whether the world of each run could take what its agents did, and
  * whether the run stayed inside its own world. It does not score the run, it judges no agent, and
  * it writes nothing. A run is healthy when every rule of RULES holds:
- *   1. finished: its out.txt ends with an `exit=` line (completion-answers.ts's `finished`);
+ *   1. finished: the run's boot record, <run>/booted (completion-answers.ts's BOOTED), holds one
+ *      decision for each role its scenario boots (ANSWERS' `boots`), in that order, the first a
+ *      `boot` of the first role, each other a `boot <role>` or a `skip <role> <reason>` with the
+ *      reason SKIPS declares for the run's scenario and case; a relaunch's repeated `boot` line of
+ *      the same role is that one decision. Each role it booted finished on its own record: its
+ *      own output ends with an `exit=` line (<run>/out-<role>.txt, where rig.sh's worker_boot
+ *      moves it when it boots another agent after it, or <run>/out.txt for the last role booted),
+ *      and its own session directory holds a transcript with an entry (<run>/sessions/*.jsonl for
+ *      the first role, <run>/sessions/<role>/*.jsonl for each later one, a subagent's beside them
+ *      none of it). A run with no record is unhealthy (`unfinished`);
  *   2. completions: every completion line names a role the scenario boots, and no `handoff/complete`
  *      was refused 4xx with an answer its world's entry does not allow for the run's label and that
  *      role. The scorer's refused-completion rule reads this through the same function
@@ -67,13 +76,19 @@
  *      one refused after a turn, are not. It is read third, after `finished` and rule 15;
  *  15. service provenance: the run carries <run>/services-from (rig.sh's services_from, which
  *      cmd_run copies into the run before any agent starts), and every service of it whose scope
- *      is `label` — its Envoy listener, plugins, model route, daemon facts and worker pane, each of
- *      LABEL_SERVICES among them — came from the checkout its built-from names
+ *      is `label` — its Envoy listener, Dispatch server, plugins, model route, daemon facts and
+ *      worker pane, each of LABEL_SERVICES among them — came from the checkout its built-from names
  *      (`serviceProvenance`): a service from another checkout paired the label's plugins with a
  *      service no deploy of theirs ran beside them, as one listener built from the head checkout
  *      paired main ff2a10ef's pi-envoy with a listener from after #2603 and lost the base runs'
  *      claim boot to its `409 not_requested`. It is read second, after `finished`: a world built
- *      from the wrong checkout explains every rule after it.
+ *      from the wrong checkout explains every rule after it;
+ *  16. Dispatch: no request of an agent of the run that the run's own Dispatch server answered
+ *      with an error, 4xx or 5xx, by the server's own line of it (<run>/logs/dispatch.log), unless
+ *      the scenario declares that answer for the agent's role (DISPATCH_DECLARED,
+ *      `dispatchUndeclared`). A request is the agent's whose daemon stand-in opened last before the
+ *      request began (`agentBoots`); a run with no such log is unhealthy. It is read right after
+ *      rule 7.
  * Rules 6 and 8 to 13 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each agent's
  * and each subagent's) through score.ts's readers. The run's own directory is the one its pane
  * file names (`SKILL_SCENARIO_RUN`, which the transcripts' paths are written under) and the
@@ -101,23 +116,27 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { dispatchToolSpecs } from "@legion/contracts/dispatch-tools";
-import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { z } from "zod";
 import {
+  ANSWERS,
   answerOf,
+  BOOTED,
+  DAEMON_LOG,
   type DaemonLine,
   daemonLines,
-  finished,
+  exited,
   labelOf,
   refusedCompletion,
+  SKIPS,
   scenarioOf,
   takenCompletions,
 } from "./completion-answers";
 import { labelCheckout, labelRoutes, serves } from "./daemon-pane";
 import { isPost, methodOf, readWorld, reviewsRoute, submitsReview } from "./gh-call";
-import { CALLS } from "./run-records";
+import { CALLS, Opened } from "./run-records";
 import {
   ABSOLUTE_PATH,
+  claimBootFailure,
   outputs,
   SHELL_COMMAND,
   transcriptEntries,
@@ -415,6 +434,250 @@ function ghUndeclared(run: Run): string | undefined {
     const declared = GH_DECLARED[run.scenario]?.[call.by ?? ""] ?? [];
     if (declared.includes(refusal)) continue;
     return `gh refusal: ${CALLS}:${index + 1}, \`gh ${(call.argv ?? []).join(" ").slice(0, 160)}\` of the ${call.by ?? "unnamed role"}, exited ${call.exit}: ${refusal}, which ${run.scenario} does not declare for that role`;
+  }
+  return undefined;
+}
+
+/** The run's own Dispatch server's output, under the run directory: rig.sh's own_dispatch gives
+ * each run a server of its own (start_dispatch, on a database of its own), which start_process
+ * starts with its output appended to <run>/logs/dispatch.log, emptied first, so every line of it
+ * is the run's. */
+const DISPATCH_LOG = "logs/dispatch.log";
+/** The message of the line the server writes for every request it served, when the request ends
+ * (packages/envoy/internal/dispatch/accesslog's `Message`), matched whole: another of the server's
+ * messages starts with the same words. */
+const REQUEST_MESSAGE = "dispatch: request";
+/** A `key=value` attribute of a line of Go's slog text handler, which the server logs with
+ * (packages/envoy/cmd/dispatch/main.go): a bare value, or one Go quoted (strconv.Quote), as slog
+ * writes a value that holds a blank, a quote, an `=` or a character it does not print. */
+const SLOG_ATTRIBUTE = /(?:^| )([^\s="]+)=("(?:[^"\\]|\\.)*"|[^\s"]*)/g;
+
+/** The attributes of a slog text line, a quoted value read between its quotes. No attribute the
+ * rule reads holds a character Go escapes: the message is the access log's own, a method is an
+ * HTTP token, a path is escaped (a quote or a backslash in it is a `%22` or a `%5C`), and the
+ * rest are numbers and a time. */
+function slogAttributes(line: string): Map<string, string> {
+  const attributes = new Map<string, string>();
+  for (const [, key = "", value = ""] of line.matchAll(SLOG_ATTRIBUTE))
+    attributes.set(key, value.startsWith('"') ? value.slice(1, -1) : value);
+  return attributes;
+}
+
+/** A request line of the server's log, as the rule reads it: when the request ended and how long
+ * it took, its method, its path (escaped, without its query) and the status of the answer. The
+ * line also names the route pattern it was served under and its caller, which the rule does not
+ * read: a read made with the run's shared agent token names no session. */
+const DispatchRequest = z.looseObject({
+  time: z.string().refine((time) => Number.isFinite(Date.parse(time)), "no time"),
+  elapsed_ms: z.string().regex(/^\d+$/).transform(Number),
+  method: z.string(),
+  path: z.string(),
+  status: z
+    .string()
+    .regex(/^\d{3}$/)
+    .transform(Number),
+});
+type DispatchRequest = z.infer<typeof DispatchRequest>;
+
+/** HANDOFF_NOT_FOUND, Dispatch's answer to a read of the newest handoff of `phase` when the phase
+ * holds none: the one 404 of that route (packages/envoy/internal/dispatch/api/handoffs.go,
+ * `writeHandoff`). `dispatch handoff-read --issue <issue> --phase <word>` makes that read when it
+ * names no `--version`, and the Legion plugin makes it at a completion, for the handoff the
+ * completion reports (packages/pi-shared/src/handoff-record.ts, `findHandoffReport`). */
+const noHandoff = (phase: string) => `GET /api/v1/issues/{key}/handoffs/${phase}/latest 404`;
+
+/** The error answers of Dispatch each scenario provokes on purpose, or that a correct agent meets
+ * in it, by the role that meets them, each `<method> <path> <status>` with `{<name>}` for a path
+ * segment of any value; every other error answer of the run's Dispatch to an agent is unhealthy
+ * (rule 16). The server's line keeps the status of an answer and not the code its body carried,
+ * so a declaration names a path whose status says which answer it was. Declared:
+ *   - HANDOFF_NOT_FOUND for the newest `plan` handoff, for every role of both scenarios: the worker
+ *     skill has each role read every handoff before its phase, `plan` first, and says a phase with
+ *     no handoff answers HANDOFF_NOT_FOUND (skills/legion-worker/SKILL.md, "Read first"), and no
+ *     world of this rig records a plan;
+ *   - HANDOFF_NOT_FOUND for the newest `review` handoff, for the reviewer of
+ *     reviewer-text-findings: its world records no review before the reviewer writes its own, and
+ *     the reviewer reads that phase first, as the skill has it, and at a completion made before
+ *     its own write, which the plugin reads it for.
+ * Not declared: HANDOFF_NOT_FOUND for the `implement` and `test` handoffs, which every world
+ * records before its first agent (seed.ts's implement-handoff and tester-result), or for
+ * threads-closed's `review`, which its world records too (review-handoff): a world that lost one
+ * is missing an answer production gives. Nor is any other error answer of any route, a `dispatch
+ * handoff-read --version` of a version that is not there among them, which the command answers
+ * itself after a list Dispatch answers 200, and so never reaches this log. */
+const DISPATCH_DECLARED: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+  "reviewer-text-findings": { reviewer: [noHandoff("plan"), noHandoff("review")] },
+  "threads-closed": { implementer: [noHandoff("plan")], reviewer: [noHandoff("plan")] },
+};
+
+/** Whether `declared`, an entry of DISPATCH_DECLARED, is the answer the server gave `request`. */
+function declares(declared: string, request: DispatchRequest): boolean {
+  const [method, pattern = "", status] = declared.split(" ");
+  const segments = pattern.split("/");
+  const requested = request.path.split("/");
+  return (
+    request.method === method &&
+    String(request.status) === status &&
+    segments.length === requested.length &&
+    segments.every((segment, at) => /^\{\w+\}$/.test(segment) || segment === requested[at])
+  );
+}
+
+/** One decision of a run's boot record (<run>/booted, completion-answers.ts's BOOTED), which
+ * rig.sh writes at the site that decides it: a role booted (`boot <role>`), or a role left
+ * unbooted with the rig's reason (`skip <role> <reason>`). */
+type BootDecision =
+  | { readonly kind: "boot"; readonly role: string }
+  | { readonly kind: "skip"; readonly role: string; readonly reason: string };
+
+/** A line of the boot record: `boot <role>`, or `skip <role> <reason>`, the reason the rest of
+ * the line. */
+const BOOT_LINE = /^(boot) (\S+)$|^(skip) (\S+) (\S.*)$/;
+
+/** The run's boot decisions in the order rig.sh wrote them, a relaunch's `boot` line of the role
+ * booted on the line before it read as that same boot (boot_agent writes one per attempt);
+ * undefined for a run with no record. Throws for a line that is neither shape. */
+function bootDecisions(dir: string): BootDecision[] | undefined {
+  const file = path.join(dir, BOOTED);
+  if (!existsSync(file)) return undefined;
+  const decisions: BootDecision[] = [];
+  for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
+    if (line === "") continue;
+    const [, boot, booted, skip, skipped, reason] = BOOT_LINE.exec(line) ?? [];
+    const last = decisions.at(-1);
+    if (boot !== undefined && booted !== undefined) {
+      if (last?.kind !== "boot" || last.role !== booted)
+        decisions.push({ kind: "boot", role: booted });
+    } else if (skip !== undefined && skipped !== undefined && reason !== undefined) {
+      decisions.push({ kind: "skip", role: skipped, reason });
+    } else {
+      throw new Error(
+        `${BOOTED}:${index + 1} is neither \`boot <role>\` nor \`skip <role> <reason>\`: ${line}`
+      );
+    }
+  }
+  return decisions;
+}
+
+/** Whether the session directory `dir` holds a transcript of its own with an entry: a `.jsonl`
+ * directly in it. A subagent's transcript, one directory down (`<session>/<name>.jsonl`), and a
+ * later agent's (`sessions/<role>/`) are not the agent's own. */
+function holdsTranscript(dir: string): boolean {
+  if (!existsSync(dir)) return false;
+  return readdirSync(dir, { withFileTypes: true }).some(
+    (entry) =>
+      entry.isFile() &&
+      entry.name.endsWith(".jsonl") &&
+      transcriptEntries(path.join(dir, entry.name)).length > 0
+  );
+}
+
+/** Rule 1: why the run did not finish, or undefined when it did. Which roles it booted is the
+ * run's own record of it (<run>/booted), held to the scenario's one definition of them
+ * (ANSWERS' `boots`, SKIPS), and never the definition read as the record: a run of code-defect
+ * whose implementer sent the reviewer nothing boots no reviewer, and threads-closed-text-fixes-
+ * head-1 at 7bf20811, whose reviewer's stand-in never started, left out.txt the implementer's,
+ * its `exit=` line too, when worker_boot still copied it. So each role is read on its own output
+ * and its own transcript, and a record of an earlier role never stands in for a later one's.
+ * The case is the one the run's directory names (`<scenario>-<case>-<label>-<n>`, as rig.sh's
+ * cmd_run names a run), which is the case rig.sh booted it for. */
+export function unfinished(run: Pick<Run, "dir" | "scenario" | "label">): string | undefined {
+  const decisions = bootDecisions(run.dir);
+  if (decisions === undefined)
+    return `no boot record: the run has no <run>/${BOOTED}, so which roles of ${run.scenario} it booted, and whether each finished, is unknown`;
+  const roles = ANSWERS[run.scenario]?.boots ?? [];
+  const definition = `${run.scenario} boots ${roles.map((role) => `the ${role}`).join(", then ")} (completion-answers.ts's ANSWERS)`;
+  const first = decisions[0];
+  if (first?.kind !== "boot" || first.role !== roles[0])
+    return `boot record: <run>/${BOOTED} starts with ${first === undefined ? "no line" : `\`${first.kind} ${first.role}\``}, not \`boot ${roles[0]}\`; ${definition}`;
+  for (const [at, decision] of decisions.entries()) {
+    if (decision.role === roles[at]) continue;
+    if (!roles.includes(decision.role))
+      return `boot record: <run>/${BOOTED} decides the ${decision.role}, a role ${run.scenario} boots none of; ${definition}`;
+    if (decisions.slice(0, at).some((earlier) => earlier.role === decision.role))
+      return `boot record: <run>/${BOOTED} decides the ${decision.role} twice; ${definition}`;
+    return `boot record: <run>/${BOOTED} decides the ${decision.role} where the ${roles[at]} comes; ${definition}`;
+  }
+  const missing = roles[decisions.length];
+  if (missing !== undefined)
+    return `boot record: <run>/${BOOTED} neither boots nor skips the ${missing}; ${definition}`;
+  const runCase = path
+    .basename(run.dir)
+    .slice(run.scenario.length + 1)
+    .replace(new RegExp(`(?:^|-)${run.label}-\\d+$`), "");
+  for (const decision of decisions) {
+    if (decision.kind !== "skip") continue;
+    const declared = SKIPS[run.scenario]?.[runCase]?.[decision.role];
+    if (decision.reason !== declared)
+      return `undeclared skip: <run>/${BOOTED} skips the ${decision.role} because "${decision.reason}", ${declared === undefined ? `and ${run.scenario}${runCase === "" ? "" : ` ${runCase}`} declares no skip of it` : `where ${run.scenario} ${runCase} declares "${declared}"`} (completion-answers.ts's SKIPS)`;
+  }
+  const booted = decisions.filter((decision) => decision.kind === "boot");
+  for (const [at, { role }] of booted.entries()) {
+    const output = at === booted.length - 1 ? "out.txt" : `out-${role}.txt`;
+    if (!exited(path.join(run.dir, output)))
+      return `unfinished: the ${role}'s output, <run>/${output}, ${existsSync(path.join(run.dir, output)) ? "has no exit= line" : "is missing"}`;
+    const sessions = at === 0 ? "sessions" : path.join("sessions", role);
+    if (!holdsTranscript(path.join(run.dir, sessions)))
+      return `unfinished: the ${role} left no transcript: <run>/${sessions} holds no .jsonl of its own with an entry`;
+  }
+  return undefined;
+}
+
+/** When each agent of the run was booted, in order, with its role: the opening line each daemon
+ * stand-in writes to <run>/daemon.log when it starts listening (daemon-standin.ts). rig.sh's
+ * worker_boot starts a stand-in of its own before it launches each agent and stops it once that
+ * agent has exited, keeping it for a relaunch (boot_agent), so the k-th opening line is the boot
+ * of the k-th role the run's boot record boots (`bootDecisions`); a boot past those, or any boot
+ * of a run with no record, has no role. */
+function agentBoots(run: Run): { readonly at: number; readonly role: string | undefined }[] {
+  const file = path.join(run.dir, DAEMON_LOG);
+  if (!existsSync(file)) return [];
+  const roles = (bootDecisions(run.dir) ?? [])
+    .filter((decision) => decision.kind === "boot")
+    .map((decision) => decision.role);
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .flatMap((line) => {
+      const opened = Opened.safeParse(JSON.parse(line));
+      return opened.success ? [Date.parse(opened.data.at)] : [];
+    })
+    .map((at, index) => ({ at, role: roles[index] }));
+}
+
+/** Rule 16: the first request of the run's Dispatch log (DISPATCH_LOG) that the server answered
+ * with an error, 4xx or 5xx, which DISPATCH_DECLARED does not declare for the scenario and the
+ * role of the agent that made it: the agent booted last before the request began, its line's time
+ * less its elapsed time (`agentBoots`). rig.sh runs the agents one after another and seeds the
+ * world before the first and reads it back after the last with seed.ts, which takes no answer that
+ * is not 2xx, so every error answer between two boots is that agent's, its plugins' included. One
+ * before the first boot, or after a boot past the roles the run's boot record boots, is no role's,
+ * and no declaration takes it. A run with no log is unhealthy: every run health reads has a
+ * Dispatch of its own, started with that log, so whether Dispatch refused an agent of the run is
+ * unknown. */
+function dispatchUndeclared(run: Run): string | undefined {
+  const file = path.join(run.dir, DISPATCH_LOG);
+  if (!existsSync(file))
+    return `no Dispatch record: the run has no <run>/${DISPATCH_LOG}, so whether its Dispatch refused a call of its agents is unknown`;
+  const boots = agentBoots(run);
+  for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
+    const attributes = slogAttributes(line);
+    if (attributes.get("msg") !== REQUEST_MESSAGE) continue;
+    const parsed = DispatchRequest.safeParse(Object.fromEntries(attributes));
+    if (!parsed.success)
+      throw new Error(
+        `${DISPATCH_LOG}:${index + 1} is no request line of Dispatch's: ${parsed.error.message}`
+      );
+    const request = parsed.data;
+    if (request.status < 400) continue;
+    const began = Date.parse(request.time) - request.elapsed_ms;
+    const boot = boots.findLast((one) => one.at <= began);
+    const declared = DISPATCH_DECLARED[run.scenario]?.[boot?.role ?? ""] ?? [];
+    if (declared.some((answer) => declares(answer, request))) continue;
+    const call = `${DISPATCH_LOG}:${index + 1}, ${request.method} ${request.path}`;
+    if (boot?.role === undefined)
+      return `dispatch refusal: ${call}, made ${boot === undefined ? "before the run's first agent was booted" : `after boot ${boots.indexOf(boot) + 1} of the run, past the roles its boot record boots`}, answered ${request.status}, which no role's declaration takes`;
+    return `dispatch refusal: ${call} of the ${boot.role}, answered ${request.status}, which ${run.scenario} does not declare for that role`;
   }
   return undefined;
 }
@@ -2229,27 +2492,25 @@ const FIRST_BOOT = "boot-1";
 const REGISTER_PATH = "/legion/v1/claims/register";
 
 /** One launch of an agent as the run records it: its pane output, the daemon stand-in's lines of
- * it, and every entry of its session's transcripts, its subagents' included. */
+ * it, and every entry of its session's transcripts, its subagents' included; `run` is the run's
+ * directory, whose built-from names the checkout its plugin came from. */
 interface BootAttempt {
+  readonly run: string;
   readonly out: string;
   readonly daemon: readonly DaemonLine[];
   readonly entries: readonly SessionEntry[];
 }
 
 /** The refusal an attempt's claim boot met, or undefined: the daemon stand-in's refusal of its
- * `claims/register`, or the line the plugin prints for a boot that registered and could not
- * finish (CLAIM_BOOT_FAILED_OPENING, `stopAfterRegistration` in
- * packages/pi-shared/src/legion-claim-core.ts), which round 23's refusal by the Envoy listener of
- * a session that held no consumer ends in. The plugin exits on either, so the daemon launches the
- * agent again. */
+ * `claims/register`, or the line the run's own label's plugin prints for a boot that registered
+ * and could not finish (score.ts's `claimBootFailure`, which reads that label's wording out of
+ * its checkout), which round 23's refusal by the Envoy listener of a session that held no
+ * consumer ends in. The plugin exits on either, so the daemon launches the agent again. */
 function bootRefusal(attempt: BootAttempt): string | undefined {
   const refused = attempt.daemon.find((line) => line.path === REGISTER_PATH && line.status >= 400);
   if (refused !== undefined)
     return `the daemon stand-in answered the ${refused.role ?? "agent"}'s ${refused.method ?? "POST"} ${REGISTER_PATH} ${answerOf(refused)}`;
-  const opened = attempt.out.indexOf(CLAIM_BOOT_FAILED_OPENING);
-  if (opened < 0) return undefined;
-  const ended = attempt.out.indexOf("\n", opened);
-  return attempt.out.slice(opened, ended < 0 ? undefined : ended);
+  return claimBootFailure(attempt.out, attempt.run);
 }
 
 /** Whether an attempt made a turn: a model call or a tool call its transcripts recorded, an
@@ -2293,6 +2554,7 @@ function claimBoot(run: Run): string | undefined {
     const dir = path.join(firsts, role);
     const out = path.join(dir, "out.txt");
     const first = {
+      run: run.dir,
       out: existsSync(out) ? readFileSync(out, "utf8") : "",
       daemon: daemonLines(dir),
       entries: entriesUnder(path.join(dir, "sessions")),
@@ -2307,6 +2569,7 @@ function claimBoot(run: Run): string | undefined {
     // (worker_boot), and out.txt while it is the run's last.
     const file = existsSync(path.join(run.dir, `out-${role}.txt`)) ? `out-${role}.txt` : "out.txt";
     const again = bootRefusal({
+      run: run.dir,
       out: existsSync(path.join(run.dir, file))
         ? readFileSync(path.join(run.dir, file), "utf8")
         : "",
@@ -2319,7 +2582,7 @@ function claimBoot(run: Run): string | undefined {
   const never =
     "and the agent was not relaunched: the rig relaunches an agent once when its claim boot is refused before its first turn, and never after it";
   for (const [file, text] of outputs(run.dir)) {
-    const refusal = bootRefusal({ out: text, daemon: [], entries: [] });
+    const refusal = bootRefusal({ run: run.dir, out: text, daemon: [], entries: [] });
     if (refusal !== undefined) return `claim boot refused: ${refusal} (<run>/${file}), ${never}`;
   }
   // The stand-in's lines of each role past those its first attempt holds.
@@ -2329,7 +2592,7 @@ function claimBoot(run: Run): string | undefined {
     seen.set(line.role ?? "", index + 1);
     return index >= (firstLines.get(line.role ?? "") ?? 0);
   });
-  const refusal = bootRefusal({ out: "", daemon: later, entries: [] });
+  const refusal = bootRefusal({ run: run.dir, out: "", daemon: later, entries: [] });
   return refusal === undefined
     ? undefined
     : `claim boot refused: ${refusal} (<run>/daemon.log), ${never}`;
@@ -2340,11 +2603,15 @@ function claimBoot(run: Run): string | undefined {
  * run starts. */
 const PROVENANCE = "services-from";
 /** The services the run's own label's checkout gives every run of the label, which its
- * provenance must name with scope `label`: the Envoy listener built from that checkout, the
- * daemon facts the stand-in answers by, read out of it, and the worker pane its daemon module
- * composes. rig.sh names more services of scope `label` (the plugins and the model route,
- * which cmd_profile installs from the checkout), and each is held to the checkout as these are. */
-const LABEL_SERVICES = ["envoy-listener", "daemon-facts", "worker-pane"] as const;
+ * provenance must name with scope `label`: the Envoy listener and the Dispatch server built from
+ * that checkout, the daemon facts the stand-in answers by, read out of it, and the worker pane its
+ * daemon module composes. The Dispatch server is the label's because what its agents read of it
+ * differs across versions: main ff2a10ef's prints a check result's line ending with the check's
+ * text where the head's ends with the role's reading, and refuses a body field it does not
+ * declare where the head's ignores it (rig.sh's services_up). rig.sh names more services of scope
+ * `label` (the plugins and the model route, which cmd_profile installs from the checkout), and
+ * each is held to the checkout as these are. */
+const LABEL_SERVICES = ["envoy-listener", "dispatch", "daemon-facts", "worker-pane"] as const;
 
 /** One line of a run's provenance, as the rule reads it: its digest is a record for the reader. */
 interface Provenance {
@@ -2379,7 +2646,7 @@ function provenanceOf(file: string): Provenance[] {
  * file, a built-from that names no checkout, a service of scope `label` from any checkout but the
  * one built-from names (a base run whose listener the head checkout built, say), or a service of
  * LABEL_SERVICES the provenance does not name as its label's. */
-function serviceProvenance(run: Run): string | undefined {
+export function serviceProvenance(run: Pick<Run, "dir" | "label">): string | undefined {
   const file = path.join(run.dir, PROVENANCE);
   if (!existsSync(file))
     return `no service provenance: the run has no <run>/${PROVENANCE}, so which checkout its Envoy listener and its other services came from is unknown`;
@@ -2436,10 +2703,7 @@ const RULES: readonly {
   readonly name: string;
   readonly judge: (run: Run, runs: readonly Run[]) => string | undefined;
 }[] = [
-  {
-    name: "finished",
-    judge: (run) => (finished(run.dir) ? undefined : "unfinished: out.txt has no exit= line"),
-  },
+  { name: "finished", judge: unfinished },
   // Rule 15, read right after the first: a service from another checkout than the label's own
   // explains every rule after it (a listener that refused the label's plugins at their boot).
   { name: "service provenance", judge: serviceProvenance },
@@ -2469,6 +2733,9 @@ const RULES: readonly {
   { name: "failed claim", judge: failedClaim },
   { name: "push guard", judge: guardRefusal },
   { name: "gh", judge: ghUndeclared },
+  // Rule 16, read right after its sibling: an agent's Dispatch call refused, as rule 7 reads a
+  // refused `gh` call.
+  { name: "dispatch", judge: dispatchUndeclared },
   { name: "another run", judge: otherRunReach },
   { name: "another run's write", judge: otherRunWrite },
   { name: "outside its world", judge: outsideWorld },
@@ -2499,6 +2766,7 @@ if (import.meta.main) {
     try {
       const out = path.join(dir, "out.txt");
       refusal = relaunchFor({
+        run: dir,
         out: existsSync(out) ? readFileSync(out, "utf8") : "",
         daemon: daemonLines(dir).filter((line) => line.role === role && line.at >= since),
         entries: entriesUnder(sessions),

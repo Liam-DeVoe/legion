@@ -18,6 +18,7 @@ import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { ANSWERS, BOOTED, SKIPS, scenarioOf } from "./completion-answers";
 import { routeFor } from "./gh-call";
 import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
 import { bundled, spawnChecked } from "./test-programs";
@@ -46,15 +47,21 @@ const RUN_CHECKOUT = "/recorded/checkout";
 function servicesFrom(checkout: string): string {
   return [
     `envoy-listener label ${checkout} sha256:${"0".repeat(64)}`,
+    `dispatch label ${checkout} sha256:${"1".repeat(64)}`,
     `plugins label ${checkout} -`,
     `model-route label ${checkout} -`,
-    `daemon-facts label ${checkout} -`,
-    `worker-pane label ${checkout} -`,
+    `daemon-facts label ${checkout} sha256:${"2".repeat(64)}`,
+    `worker-pane label ${checkout} sha256:${"2".repeat(64)}`,
     "omp pin omp@stub missing",
-    `dispatch shared /rig sha256:${"1".repeat(64)}`,
     "",
   ].join("\n");
 }
+
+/** The line a run's own Dispatch server writes when it starts listening (rig.sh's start_dispatch
+ * reads its port from it), before the rig seeds the world: the first line of the run's
+ * logs/dispatch.log, and its only line while no request has reached the server. */
+const LISTENING =
+  'time=2026-11-13T17:40:00.000Z level=INFO msg="dispatch: listening" addr=127.0.0.1:43101';
 
 // rig.sh's install_model_route, run with the checkout's real installers: the route a label's
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
@@ -760,6 +767,7 @@ describe("cmd_batch numbering", () => {
           "services_down",
           "build_dir",
           "go_binary",
+          "daemon_pane_binary",
           "label_services",
           "label_provenance",
           "next_run",
@@ -780,6 +788,7 @@ describe("cmd_batch numbering", () => {
         'start_listener() { envoy_port=4100; : >"$work/listener_$1.port"; }',
         "services_from() { printf 'envoy-listener label %s -\\n' \"$co\"; }",
         'go() { : >"$3"; }',
+        "label_facts() { :; }",
         "work=$1 here=$2 root=$3 tag=rig-test containers=()",
         "services_postgres=$work/services/postgres-url",
         'cmd_batch "$4" 1 head',
@@ -1624,7 +1633,10 @@ describe("worker_boot", () => {
    * fixture_write wrote, and the boot's own result unjudged. `gh` writes the pane's own gh,
    * `panePath` the PATH the pane file carries, which is where the boot looks for it, and
    * `paneRun` the run that file records calls under: a row breaks one of the three to say what
-   * a run whose agents could reach no stand-in must leave behind. */
+   * a run whose agents could reach no stand-in must leave behind. `before` is the role of an
+   * agent the run booted and ran before this one, whose output is the run's out.txt. Each process
+   * started keeps the run's boot record as it stood then (booted-at-<process>), and each `bun`
+   * the build of daemon-pane.go it was given (bun-builds). */
   function bootResult(
     role: string,
     phase: string,
@@ -1633,12 +1645,18 @@ describe("worker_boot", () => {
       gh = recordingGh,
       panePath = (dir: string) => `${path.join(dir, "bin")}:${childEnv.PATH}`,
       paneRun = (dir: string) => dir,
+      before = "",
     } = {}
   ) {
     const dir = freshDir(`worker-boot-${role}`);
     mkdirSync(path.join(dir, "logs"), { recursive: true });
     mkdirSync(path.join(dir, "bin"), { recursive: true });
     writeFileSync(path.join(dir, "logs", "daemon.log"), "listening on http://127.0.0.1:4321\n");
+    if (before !== "") {
+      writeFileSync(path.join(dir, "out.txt"), `the ${before} is done\nexit=0\n`);
+      writeFileSync(path.join(dir, "booted"), `boot ${before}\n`);
+      mkdirSync(path.join(dir, "home"));
+    }
     writeFileSync(path.join(dir, "bin", "gh"), gh(dir), { mode: 0o755 });
     // The pane the daemon would give, carrying the Envoy address a pane whose environment
     // configures none gets (daemon-pane.ts's DEFAULT_ENVOY_URL), the PATH it hands the agent
@@ -1657,16 +1675,18 @@ describe("worker_boot", () => {
     const result = bash(
       [
         fn("fail"),
+        fn("build_dir"),
         fn("worker_boot"),
         fn("fixture_write"),
         fn("concluded_checks"),
-        'start_process() { printf "%s\\n" "$*" >"$R/started-$1"; }',
+        'start_process() { printf "%s\\n" "$*" >"$R/started-$1"; cp "$R/booted" "$R/booted-at-$1"; [ "$1" != daemon ] || echo "listening on http://127.0.0.1:4321" >"$R/logs/daemon.log"; }',
         "await_start() { :; }",
+        "stop_pid() { :; }",
         "base_env() { :; }",
         "standins() { :; }",
         'boot_agent() { printf "%s\\n" "$*" >"$R/boot-agent-args"; }',
-        'bun() { printf "%s\\n" "$*" >>"$R/bun-args"; }',
-        "R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=$3 worker_base=main booted='' daemon_pid=''",
+        `bun() { printf "%s\\n" "$*" >>"$R/bun-args"; printf "%s\\n" "\${SKILL_SCENARIOS_DAEMON_PANE:-}" >>"$R/bun-builds"; }`,
+        `R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=$3 worker_base=main booted='${before}' daemon_pid=''`,
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
         "services_env=$R/services.env work=$R/work dispatch_port=1 profile=$R/p co=$R/c",
@@ -1863,6 +1883,61 @@ describe("worker_boot", () => {
     const { dir } = boot("reviewer", "reviewing");
     expect(readFileSync(path.join(dir, "boot-agent-args"), "utf8")).toBe("the-run reviewer\n");
   });
+
+  // The run's boot record and the label's build of daemon-pane.go, which every boot carries.
+  describe("boot record and daemon facts", () => {
+    /** The label's build of daemon-pane.go under the run's work directory, where rig.sh's
+     * daemon_pane_binary keeps it for the label's checkout ($R/c here). */
+    const paneBuild = (dir: string) =>
+      path.join(
+        dir,
+        "work",
+        "builds",
+        new Bun.CryptoHasher("sha256").update(path.join(dir, "c")).digest("hex").slice(0, 16),
+        "daemon-pane"
+      );
+
+    // Catches: a boot left off the run's record, and one recorded only once its stand-in
+    // listened, which leaves a boot whose stand-in timed out (the measured text-fixes-head-1's
+    // reviewer) off the record that health reads it on.
+    test("the boot is on the run's boot record before its stand-in starts", () => {
+      const { dir } = boot("tester", "");
+      expect(readFileSync(path.join(dir, "booted-at-daemon"), "utf8")).toBe("boot tester\n");
+      expect(readFileSync(path.join(dir, "booted"), "utf8")).toBe("boot tester\n");
+    });
+
+    // Catches: a second agent's boot that replaces the first's record, and the first agent's
+    // output left standing as out.txt for a second agent that never ran, which reads as that
+    // agent's exit.
+    test("a second agent's boot adds its line, and moves the first agent's output aside", () => {
+      const { dir, result } = bootResult("reviewer", "reviewing", { before: "implementer" });
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      expect(readFileSync(path.join(dir, "booted"), "utf8")).toBe(
+        "boot implementer\nboot reviewer\n"
+      );
+      expect(readFileSync(path.join(dir, "out-implementer.txt"), "utf8")).toBe(
+        "the implementer is done\nexit=0\n"
+      );
+      expect(existsSync(path.join(dir, "out.txt"))).toBe(false);
+    });
+
+    // Catches: a stand-in or a pane composed by `go run` of daemon-pane.go, a compile of the
+    // daemon module per read (the boot of the 2026-11-15 preflight that timed out), or by a build
+    // of any checkout but the label's.
+    test("the stand-in and the pane are given the label's build of daemon-pane.go", () => {
+      const { dir, started, bunArgs } = boot("reviewer", "reviewing");
+      expect(started.split(" ").slice(0, 4)).toEqual([
+        "daemon",
+        "env",
+        `SKILL_SCENARIOS_WORK=${dir}/work`,
+        `SKILL_SCENARIOS_DAEMON_PANE=${paneBuild(dir)}`,
+      ]);
+      const builds = readFileSync(path.join(dir, "bun-builds"), "utf8").split("\n");
+      const pane = bunArgs.findIndex((line) => line.includes("worker-pane.ts"));
+      expect(pane).toBeGreaterThanOrEqual(0);
+      expect(builds[pane]).toBe(paneBuild(dir));
+    });
+  });
 });
 
 // Catches: a recorder that computes a project of its own instead of taking the run's. It would
@@ -1898,8 +1973,9 @@ describe("start_recorder", () => {
 // wake stays the fail on toldReviewer it already was.
 describe("run_threads_closed", () => {
   /** The loop run for CASE on a wake of WAKE, with both agents and the services stubbed: each
-   * worker_boot it made, in order, the prompt the reviewer half would have been given, and the
-   * record of that wake the run keeps. */
+   * worker_boot it made, in order, the prompt the reviewer half would have been given, the
+   * record of that wake the run keeps, and the run's boot record, to which the stubbed
+   * worker_boot adds the line the real one writes. */
   function loop(threadsCase: string, wake: string) {
     const dir = freshDir(`threads-loop-${threadsCase}`);
     writeFileSync(path.join(dir, "threads.json"), "[]\n");
@@ -1907,22 +1983,25 @@ describe("run_threads_closed", () => {
     const result = bash(
       [
         fn("note"),
+        fn("fail"),
+        fn("skip_reason"),
         fn("run_threads_closed"),
         "start_recorder() { :; }",
         "worker_run_world() { pr=1001; head=0123456789ab; }",
         "seed_ts() { :; }",
         'reviewer_wake() { cat "$R/wake.json"; }',
-        'worker_boot() { printf "%s\\n" "$*" >>"$R/boots"; }',
-        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets",
+        'worker_boot() { printf "%s\\n" "$*" >>"$R/boots"; printf "boot %s\\n" "$3" >>"$R/booted"; }',
+        "R=$1 here=$3 worker_key=LWEVAL-1 worker_repo=example/widgets",
         'run_threads_closed the-run skillsproject1 1 100 "$2"',
       ].join("\n"),
-      [dir, threadsCase]
+      [dir, threadsCase, import.meta.dir]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
     return {
       boots: readFileSync(path.join(dir, "boots"), "utf8").trim().split("\n"),
       prompt: readFileSync(path.join(dir, "prompt.txt"), "utf8"),
       wake: JSON.parse(readFileSync(path.join(dir, "reviewer-wake.json"), "utf8")),
+      booted: readFileSync(path.join(dir, "booted"), "utf8"),
     };
   }
 
@@ -1986,13 +2065,88 @@ describe("run_threads_closed", () => {
     expect(prompt).toBe("");
     expect(wake).toEqual({ wake: [] });
   });
+
+  // The run's boot record names the reviewer either way: booted, or skipped for the one reason
+  // completion-answers.ts's SKIPS declares, which health and the score hold the line to.
+  describe("boot record", () => {
+    const declared = SKIPS["threads-closed"]?.["code-defect"]?.reviewer;
+
+    // Catches: a skip that fires although the implementer woke the reviewer, which would leave
+    // a booted reviewer recorded as never booted.
+    test("code-defect whose implementer woke the reviewer boots it and records no skip", () => {
+      expect(loop("code-defect", '[{"message":"pushed 0123456789ab"}]\n').booted).toBe(
+        "boot implementer\nboot reviewer\n"
+      );
+    });
+
+    // Catches: a reviewer left unbooted with nothing on the record, and a skip whose reason is
+    // the rig's own words rather than the one SKIPS declares.
+    test("code-defect whose implementer sent the reviewer nothing records the skip, with SKIPS' reason", () => {
+      expect(declared).toBeDefined();
+      expect(loop("code-defect", "[]\n").booted).toBe(
+        `boot implementer\nskip reviewer ${declared}\n`
+      );
+    });
+
+    test("text-fixes boots the reviewer on an empty wake, and records no skip", () => {
+      expect(loop("text-fixes", "[]\n").booted).toBe("boot implementer\nboot reviewer\n");
+    });
+  });
+});
+
+// services_up reads the daemon facts of every stand-in worker_boots names before any run starts
+// (label_facts), so each boot reads its facts out of files. Catches: a scenario runner that boots
+// a stand-in the list leaves out, whose boot would read its facts itself, and a list entry no
+// runner boots.
+describe("worker_boots", () => {
+  const listed = /^worker_boots=\((.*)\)$/m.exec(rigScript)?.[1]?.split(" ") ?? [];
+  /** Each stand-in `runner` boots with `args`, as `<role>` or `<role>:<phase>`, on a wake of
+   * `wake`, with its world, its services and its agents stubbed. */
+  function boots(runner: string, args: string[], wake = "[]\n"): string[] {
+    const dir = freshDir(`worker-boots-${runner}`);
+    writeFileSync(path.join(dir, "threads.json"), "[]\n");
+    writeFileSync(path.join(dir, "wake.json"), wake);
+    writeFileSync(
+      path.join(dir, "fixture.json"),
+      JSON.stringify({ implement: { version: 1 }, test: { version: 1 } })
+    );
+    const result = bash(
+      [
+        fn("note"),
+        fn("fail"),
+        fn("skip_reason"),
+        fn(runner),
+        "start_recorder() { :; }",
+        "worker_run_world() { pr=1001; head=0123456789ab; }",
+        "seed_ts() { :; }",
+        'reviewer_wake() { cat "$R/wake.json"; }',
+        `worker_boot() { printf "%s%s\\n" "$3" "\${4:+:$4}" >>"$R/boots"; }`,
+        "R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=example/widgets",
+        `${runner} the-run skillsproject1 1 100 ${args.join(" ")}`,
+      ].join("\n"),
+      [dir, import.meta.dir]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return readFileSync(path.join(dir, "boots"), "utf8").trim().split("\n");
+  }
+
+  test("every stand-in a scenario boots is one services_up reads the facts of, and no other", () => {
+    const booted = [
+      ...boots("run_tester_proof", []),
+      ...boots("run_reviewer_text_findings", ["text-only"]),
+      ...boots("run_threads_closed", ["text-fixes"]),
+      ...boots("run_threads_closed", ["code-defect"], '[{"message":"pushed"}]\n'),
+    ];
+    expect([...new Set(booted)].sort()).toEqual([...listed].sort());
+  });
 });
 
 // `rig.sh health <run dir>...`: whether each run's world could take what its agents did, read
 // through completion-answers.ts, which the score's refused-completion rule reads too. Each row
-// builds run directories as a batch leaves them: named as cmd_run names a run, with an out.txt,
-// a daemon.log that each stand-in of the run opened with its own line before its agent's, and
-// the built-from and services-from cmd_run copies into it.
+// builds run directories as a batch leaves them: named as cmd_run names a run, with a boot record
+// that boots every role its scenario boots, each role's own output and transcript, a daemon.log
+// that each stand-in of the run opened with its own line before its agent's, the log of the run's
+// own Dispatch server, and the built-from and services-from cmd_run copies into it.
 describe("health", () => {
   const complete = (status: number, code?: string, role?: string, phase?: string) => ({
     at: "2026-11-13T18:00:00.000Z",
@@ -2003,11 +2157,42 @@ describe("health", () => {
     ...(phase === undefined ? {} : { phase }),
   });
   const NOT_CURRENT = "HANDOFF_NOT_CURRENT_PHASE";
-  /** A run directory named `name`, under a directory of its own, whose daemon.log holds one
-   * opening line per boot, each followed by that boot's lines; `finished` false leaves out.txt
-   * with no `exit=` line, as a run that never ended leaves it; `checkout` is the checkout its
-   * built-from names, and `provenance` its services-from, every service of its label's own from
-   * that checkout by default and none at all for false. */
+  /** The line the run's Dispatch server writes for a request it served (its access log,
+   * packages/envoy/internal/dispatch/accesslog), as Go's slog text handler writes it: ended at
+   * `at`, `elapsed` ms after it began, a read of the shared agent token, which names no session. */
+  const served = (
+    at: string,
+    method: string,
+    route: string,
+    requested: string,
+    status: number,
+    elapsed = 4
+  ) =>
+    `time=${at} level=INFO msg="dispatch: request" method=${method} route=${route} path=${requested} caller_kind=shared-token caller="" address=127.0.0.1 peer=127.0.0.1 user_agent=Bun/1.3.5 status=${status} elapsed_ms=${elapsed} bytes=97`;
+  /** Dispatch's read of the newest handoff of `phase` of the run's issue, answered `status`. */
+  const handoffRead = (at: string, phase: string, status: number, elapsed?: number) =>
+    served(
+      at,
+      "GET",
+      "/api/v1/issues/{key}/handoffs/{phase}/latest",
+      `/api/v1/issues/LWEVAL-1/handoffs/${phase}/latest`,
+      status,
+      elapsed
+    );
+  /** One transcript of an agent, holding its session's header alone: what each role a run
+   * booted leaves in its own session directory before a row writes its turns over it. */
+  const TRANSCRIPT = "2026-11-14T00-00-00-000Z_s1.jsonl";
+  /** A run directory named `name`, under a directory of its own, as a run whose every role
+   * finished leaves it: a boot record booting each role its scenario boots (ANSWERS' `boots`),
+   * in order, and each role's own output, ending with its `exit=` line, and transcript, the
+   * first role's in sessions/ and each later one's in sessions/<role>/ (rig.sh's worker_boot).
+   * Its daemon.log holds one opening line per boot, each followed by that boot's lines, boot k
+   * (from 0) opened at 17:5k, a minute apart and before any line a row's stand-in answers;
+   * `finished` false leaves the last role's out.txt with no `exit=` line, as a run that never
+   * ended leaves it; `checkout` is the checkout its built-from names, and `provenance` its
+   * services-from, every service of its label's own from that checkout by default and none at
+   * all for false; `dispatch` is the lines of its Dispatch server's log after the server's
+   * listening line, and false for a run with no log. */
   function run(
     name: string,
     boots: object[][],
@@ -2015,23 +2200,47 @@ describe("health", () => {
       finished = true,
       checkout = RUN_CHECKOUT,
       provenance = servicesFrom(checkout),
-    }: { finished?: boolean; checkout?: string; provenance?: string | false } = {}
+      dispatch = [],
+    }: {
+      finished?: boolean;
+      checkout?: string;
+      provenance?: string | false;
+      dispatch?: string[] | false;
+    } = {}
   ) {
     const dir = path.join(freshDir("health"), name);
     mkdirSync(dir);
-    writeFileSync(
-      path.join(dir, "out.txt"),
-      finished ? "the agent's output\nexit=0\n" : "the agent's output\n"
-    );
+    const roles = ANSWERS[scenarioOf(name) ?? ""]?.boots ?? [];
+    writeFileSync(path.join(dir, BOOTED), roles.map((role) => `boot ${role}\n`).join(""));
+    for (const [at, role] of roles.entries()) {
+      const last = at === roles.length - 1;
+      writeFileSync(
+        path.join(dir, last ? "out.txt" : `out-${role}.txt`),
+        last && !finished ? "the agent's output\n" : "the agent's output\nexit=0\n"
+      );
+      const sessions = at === 0 ? path.join(dir, "sessions") : path.join(dir, "sessions", role);
+      mkdirSync(sessions, { recursive: true });
+      writeFileSync(path.join(sessions, TRANSCRIPT), `${JSON.stringify({ type: "session" })}\n`);
+    }
     writeFileSync(path.join(dir, "built-from"), `checkout ${checkout}\n`);
     if (provenance !== false) writeFileSync(path.join(dir, "services-from"), provenance);
     writeFileSync(
       path.join(dir, "daemon.log"),
       boots
-        .flatMap((lines) => [{ at: "2026-11-13T17:59:00.000Z", opened: "daemon.log" }, ...lines])
+        .flatMap((lines, index) => [
+          { at: `2026-11-13T17:5${index}:00.000Z`, opened: "daemon.log" },
+          ...lines,
+        ])
         .map((line) => `${JSON.stringify(line)}\n`)
         .join("")
     );
+    if (dispatch !== false) {
+      mkdirSync(path.join(dir, "logs"));
+      writeFileSync(
+        path.join(dir, "logs", "dispatch.log"),
+        [LISTENING, ...dispatch].map((line) => `${line}\n`).join("")
+      );
+    }
     return dir;
   }
   /** The caller's go settings that decide where a `go run` builds and what it fetches, as `go env`
@@ -2090,16 +2299,22 @@ describe("health", () => {
 
   // Catches: a health that calls the daemon's own deliberate refusal unhealthy. threads-closed's
   // implementer, whose round stands, is refused 409 HANDOFF_NOT_CURRENT_PHASE by either label's
-  // daemon.
+  // daemon: the head run's and the base run's (the fixture's threads-closed-text-fixes-base-1,
+  // which its boot record now reads unfinished, pinned that label's alone).
   test("a threads-closed run whose only refusal is the implementer's not-current-phase is healthy", () => {
     const named = run("threads-closed-text-fixes-head-1", [
       [complete(409, NOT_CURRENT, "implementer")],
       [complete(200, undefined, "reviewer")],
     ]);
-    const { code, stdout } = health(named);
+    const base = run("threads-closed-text-fixes-base-1", [
+      [complete(409, NOT_CURRENT, "implementer")],
+      [],
+    ]);
+    const { code, stdout } = health(named, base);
     expect(code).toBe(0);
     expect(verdict(stdout, named)).toBe("threads-closed-text-fixes-head-1  healthy");
-    expect(stdout).toEndWith("health: 0 of 1 runs unhealthy\n");
+    expect(verdict(stdout, base)).toBe("threads-closed-text-fixes-base-1  healthy");
+    expect(stdout).toEndWith("health: 0 of 2 runs unhealthy\n");
   });
 
   // Catches: a completion line that names no role given the role of the agent booted in its
@@ -2375,7 +2590,7 @@ describe("health", () => {
     const { code, stdout } = health(dir);
     expect(code).toBe(1);
     expect(verdict(stdout, dir)).toBe(
-      "reviewer-text-findings-text-only-head-2  unhealthy: unfinished: out.txt has no exit= line"
+      "reviewer-text-findings-text-only-head-2  unhealthy: unfinished: the reviewer's output, <run>/out.txt, has no exit= line"
     );
   });
 
@@ -2503,7 +2718,7 @@ describe("health", () => {
       ]),
     ];
     writeFileSync(
-      path.join(sessions, "2026-11-14T00-00-00-000Z_s1.jsonl"),
+      path.join(sessions, TRANSCRIPT),
       entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")
     );
     writeFileSync(
@@ -2735,6 +2950,165 @@ describe("health", () => {
       "threads-closed-text-fixes-head-3  unhealthy: gh refusal: calls.jsonl:2, `gh api repos/example/widgets/pulls/1001/files` of the reviewer, exited 1: gh: Not Found (HTTP 404), which threads-closed does not declare for that role"
     );
     expect(stdout).toContain("health: gh: 1 of 3 runs\n");
+    expect(code).toBe(1);
+  });
+
+  // Catches: an error answer of the run's own Dispatch to an agent read as healthy because it is
+  // no completion and no gh call: the read of a handoff the world records before its first agent
+  // (a world that lost it), a 5xx, and a declared answer met before any agent was booted (the
+  // rig's own seeding, which takes no error) or after a boot past the roles the scenario boots;
+  // a declaration read as one of every status of its path, or of every path it starts; and an
+  // answer keyed to the wrong agent: the first booted rather than the one whose turn it came in,
+  // or the one booted last before the request ended rather than before it began.
+  test("a Dispatch error answer the scenario does not declare for the agent's role is unhealthy, naming the call, the role and the answer", () => {
+    const lost = run(
+      "reviewer-text-findings-defect-head-6",
+      [[complete(200, undefined, "reviewer")]],
+      {
+        dispatch: [
+          handoffRead("2026-11-13T17:50:20.000Z", "plan", 404),
+          handoffRead("2026-11-13T17:50:30.000Z", "implement", 404),
+        ],
+      }
+    );
+    const later = run("threads-closed-text-fixes-head-12", [[], []], {
+      dispatch: [
+        handoffRead("2026-11-13T17:50:30.000Z", "plan", 404),
+        handoffRead("2026-11-13T17:51:30.000Z", "plan", 404),
+        handoffRead("2026-11-13T17:51:40.000Z", "review", 404),
+      ],
+    });
+    // Begun two seconds before the reviewer's boot and ended one second after it.
+    const overlapping = run("threads-closed-code-defect-head-16", [[], []], {
+      dispatch: [handoffRead("2026-11-13T17:51:01.000Z", "review", 404, 3000)],
+    });
+    const failing = run("threads-closed-code-defect-base-13", [[]], {
+      dispatch: [
+        served(
+          "2026-11-13T17:50:30.000Z",
+          "POST",
+          "/api/v1/issues/{key}/results",
+          "/api/v1/issues/LWEVAL-1/results",
+          500
+        ),
+      ],
+    });
+    const seeding = run(
+      "reviewer-text-findings-text-only-base-6",
+      [[complete(200, undefined, "reviewer")]],
+      { dispatch: [handoffRead("2026-11-13T17:45:00.000Z", "plan", 404)] }
+    );
+    const past = run(
+      "reviewer-text-findings-defect-base-7",
+      [[complete(200, undefined, "reviewer")], []],
+      { dispatch: [handoffRead("2026-11-13T17:51:30.000Z", "plan", 404)] }
+    );
+    const unauthorized = run(
+      "reviewer-text-findings-text-only-head-7",
+      [[complete(200, undefined, "reviewer")]],
+      { dispatch: [handoffRead("2026-11-13T17:50:30.000Z", "plan", 401)] }
+    );
+    const unrouted = run(
+      "reviewer-text-findings-text-only-head-8",
+      [[complete(200, undefined, "reviewer")]],
+      {
+        dispatch: [
+          served(
+            "2026-11-13T17:50:30.000Z",
+            "GET",
+            "unmatched",
+            "/api/v1/issues/LWEVAL-1/handoffs/plan/latest/body",
+            404
+          ),
+        ],
+      }
+    );
+    const runs = [lost, later, overlapping, failing, seeding, past, unauthorized, unrouted];
+    const { code, stdout } = health(...runs);
+    const read = (phase: string) => `GET /api/v1/issues/LWEVAL-1/handoffs/${phase}/latest`;
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      `reviewer-text-findings-defect-head-6  unhealthy: dispatch refusal: logs/dispatch.log:3, ${read("implement")} of the reviewer, answered 404, which reviewer-text-findings does not declare for that role`,
+      `threads-closed-text-fixes-head-12  unhealthy: dispatch refusal: logs/dispatch.log:4, ${read("review")} of the reviewer, answered 404, which threads-closed does not declare for that role`,
+      `threads-closed-code-defect-head-16  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("review")} of the implementer, answered 404, which threads-closed does not declare for that role`,
+      "threads-closed-code-defect-base-13  unhealthy: dispatch refusal: logs/dispatch.log:2, POST /api/v1/issues/LWEVAL-1/results of the implementer, answered 500, which threads-closed does not declare for that role",
+      `reviewer-text-findings-text-only-base-6  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("plan")}, made before the run's first agent was booted, answered 404, which no role's declaration takes`,
+      `reviewer-text-findings-defect-base-7  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("plan")}, made after boot 2 of the run, past the roles its boot record boots, answered 404, which no role's declaration takes`,
+      `reviewer-text-findings-text-only-head-7  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("plan")} of the reviewer, answered 401, which reviewer-text-findings does not declare for that role`,
+      `reviewer-text-findings-text-only-head-8  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("plan")}/body of the reviewer, answered 404, which reviewer-text-findings does not declare for that role`,
+    ]);
+    expect(stdout).toContain("health: dispatch: 8 of 8 runs\n");
+    expect(code).toBe(1);
+  });
+
+  // Catches: an answer production gives a correct agent read as a broken world: HANDOFF_NOT_FOUND
+  // for the `plan` handoff, which no world records and the worker skill has every role read first,
+  // and for the reviewer-text-findings reviewer's `review`, which its world holds none of before
+  // the reviewer writes it; and a run whose Dispatch refused nothing read as unhealthy, on its
+  // answers of 2xx and 101 or on a line of the server's that is no request's though its message
+  // starts with the same words.
+  test("a Dispatch error answer the scenario declares for the agent's role, and a Dispatch that refused nothing, are healthy", () => {
+    const reviewing = run(
+      "reviewer-text-findings-text-only-head-6",
+      [[complete(200, undefined, "reviewer")]],
+      {
+        dispatch: [
+          served(
+            "2026-11-13T17:45:00.000Z",
+            "POST",
+            "/api/v1/issues/{key}/handoffs/{phase}",
+            "/api/v1/issues/LWEVAL-1/handoffs/implement",
+            201
+          ),
+          handoffRead("2026-11-13T17:50:10.000Z", "plan", 404),
+          handoffRead("2026-11-13T17:50:11.000Z", "implement", 200),
+          handoffRead("2026-11-13T17:50:12.000Z", "test", 200),
+          handoffRead("2026-11-13T17:50:13.000Z", "review", 404),
+        ],
+      }
+    );
+    const looping = run("threads-closed-text-fixes-head-13", [[], []], {
+      dispatch: [
+        handoffRead("2026-11-13T17:50:10.000Z", "plan", 404),
+        handoffRead("2026-11-13T17:50:11.000Z", "review", 200),
+        handoffRead("2026-11-13T17:51:10.000Z", "plan", 404),
+      ],
+    });
+    const quiet = run("threads-closed-code-defect-head-17", [[]], {
+      dispatch: [
+        served("2026-11-13T17:50:10.000Z", "GET", "/api/v1/whoami", "/api/v1/whoami", 200),
+        'time=2026-11-13T17:50:11.000Z level=WARN msg="dispatch: request authenticated with a previous shared agent token" entry=2 address=127.0.0.1 user_agent=Bun/1.3.5 path=/api/v1/whoami',
+        served("2026-11-13T17:50:12.000Z", "GET", "/ws/live", "/ws/live", 101),
+      ],
+    });
+    const runs = [reviewing, looping, quiet];
+    const { code, stdout } = health(...runs);
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      "reviewer-text-findings-text-only-head-6  healthy",
+      "threads-closed-text-fixes-head-13  healthy",
+      "threads-closed-code-defect-head-17  healthy",
+    ]);
+    expect(stdout).toContain("health: dispatch: 0 of 3 runs\n");
+    expect(code).toBe(0);
+  });
+
+  // Catches: a run whose Dispatch record is missing read as one whose Dispatch refused nothing,
+  // where every run health reads starts a Dispatch of its own with that log; and a request line
+  // that names no answer read as no refusal.
+  test("a run with no Dispatch log, or with a request line that names no answer, is unhealthy", () => {
+    const missing = run("threads-closed-code-defect-head-18", [[]], { dispatch: false });
+    const unread = run("threads-closed-code-defect-head-19", [[]], {
+      dispatch: [
+        'time=2026-11-13T17:50:30.000Z level=INFO msg="dispatch: request" method=GET route=/api/v1/whoami path=/api/v1/whoami elapsed_ms=2',
+      ],
+    });
+    const { code, stdout } = health(missing, unread);
+    expect(verdict(stdout, missing)).toBe(
+      "threads-closed-code-defect-head-18  unhealthy: no Dispatch record: the run has no <run>/logs/dispatch.log, so whether its Dispatch refused a call of its agents is unknown"
+    );
+    expect(verdict(stdout, unread)).toStartWith(
+      "threads-closed-code-defect-head-19  unhealthy: unreadable record: logs/dispatch.log:2 is no request line of Dispatch's: "
+    );
+    expect(stdout).toContain("health: dispatch: 2 of 2 runs\n");
     expect(code).toBe(1);
   });
 
@@ -3073,6 +3447,65 @@ describe("health", () => {
     }
   );
 
+  // Catches: a claim boot refusal read in one label's wording alone. main ff2a10ef's plugin
+  // words it `claim boot failed after claims/register registered <token>; …`, with no step
+  // (packages/pi-shared/src/legion-claim-core.ts:97 there), and this checkout's `claim boot failed
+  // at <step> after …`: read for this checkout's opening only, a base agent refused at its boot
+  // was never relaunched (`health.ts --boot-refusal`) and its run read as one whose claim boot met
+  // nothing. Each run is read for the wording of the checkout its built-from names, and a head
+  // sentence in a base run is none its plugin prints.
+  test("a claim boot sentence is read in the wording of the run's own label's plugin", () => {
+    const baseCheckout = freshDir("base-claim-checkout");
+    const core = path.join(baseCheckout, "packages", "pi-shared", "src", "legion-claim-core.ts");
+    mkdirSync(path.dirname(core), { recursive: true });
+    writeFileSync(
+      core,
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the base module's source, verbatim.
+      "    host.log(\n      `claim boot failed after claims/register registered ${claim.claimToken}; ${host.stopping}: ${messageFor(error)}`\n    );\n"
+    );
+    const baseLine =
+      "claim boot failed after claims/register registered legion-skills1-lweval-1-reviewer; exiting so the daemon launches it again: ECONNREFUSED";
+    const headLine =
+      "claim boot failed at claimRole after claims/register registered legion-skills1-lweval-1-reviewer with the daemon at http://127.0.0.1:4321; exiting so the daemon launches it again: ECONNREFUSED";
+    const refused = (name: string, checkout: string, line: string) => {
+      const dir = run(name, [[]], { checkout });
+      writeFileSync(path.join(dir, "out.txt"), `[legion] ${line}\nexit=1\n`);
+      return dir;
+    };
+    const base = refused("reviewer-text-findings-text-only-base-9", baseCheckout, baseLine);
+    const head = refused("reviewer-text-findings-text-only-head-9", CHECKOUT, headLine);
+    const crossed = refused("reviewer-text-findings-text-only-base-10", baseCheckout, headLine);
+    const never =
+      "and the agent was not relaunched: the rig relaunches an agent once when its claim boot is refused before its first turn, and never after it";
+    const { stdout } = health(base, head, crossed);
+    expect(verdict(stdout, base)).toBe(
+      `reviewer-text-findings-text-only-base-9  unhealthy: claim boot refused: ${baseLine} (<run>/out.txt), ${never}`
+    );
+    expect(verdict(stdout, head)).toBe(
+      `reviewer-text-findings-text-only-head-9  unhealthy: claim boot refused: ${headLine} (<run>/out.txt), ${never}`
+    );
+    expect(verdict(stdout, crossed)).toStartWith(
+      "reviewer-text-findings-text-only-base-10  unhealthy: no completion taken: "
+    );
+    // The relaunch rig.sh's boot_agent asks for, of the base agent refused before its first turn.
+    const asked = spawnChecked(
+      [
+        "bun",
+        path.join(import.meta.dir, "health.ts"),
+        "--boot-refusal",
+        base,
+        "reviewer",
+        "2026-11-13T00:00:00.000Z",
+        path.join(base, "sessions"),
+      ],
+      { env: childEnv, stdout: "pipe", stderr: "pipe" }
+    );
+    expect({ code: asked.exitCode, stdout: asked.stdout.toString() }).toEqual({
+      code: 0,
+      stdout: `${baseLine}\n`,
+    });
+  });
+
   // Catches: a base run whose Envoy listener the head checkout built read as healthy, the
   // pairing that put main ff2a10ef's pi-envoy beside a listener from after #2603 and lost the
   // base runs' claim boot to its `409 not_requested`; and a run whose every service of its
@@ -3161,8 +3594,13 @@ describe("health", () => {
   // reading its own file, another run's path named only in a subagent's transcript, and a push
   // the guard could not check; its `expected` is the tester's own verdict, run for run, and its
   // `tmp-snapshot` the /tmp entries before the batch. The runs were recorded before a run carried
-  // its service provenance, so each is read from a copy given the built-from and services-from
-  // cmd_run now copies into a run, every service of its label's own from that label's checkout.
+  // its service provenance and its boot record, and without their Dispatch server's log, so each
+  // is read from a copy given the built-from and services-from cmd_run now copies into a run,
+  // every service of its label's own from that label's checkout, a Dispatch log that holds the
+  // server's listening line alone, and the boot record of what the run booted: its scenario's
+  // first role, whose output and session directory every run of it holds, and each later role whose
+  // session directory it holds (rig.sh's worker_boot makes it before it starts that role's
+  // stand-in), or the skip its scenario and case declare of a role it holds none of.
   // Catches: a health that disagrees with that independent reading on any run of it.
   test("the tester's fixture reads as the tester read it, run for run", () => {
     const fixture = path.join(import.meta.dir, "health-fixture");
@@ -3174,6 +3612,18 @@ describe("health", () => {
       const checkout = `/recorded/${name.includes("-base-") ? "base" : "head"}-checkout`;
       writeFileSync(path.join(copy, "built-from"), `checkout ${checkout}\n`);
       writeFileSync(path.join(copy, "services-from"), servicesFrom(checkout));
+      mkdirSync(path.join(copy, "logs"));
+      writeFileSync(path.join(copy, "logs", "dispatch.log"), `${LISTENING}\n`);
+      const scenario = scenarioOf(name) ?? "";
+      const runCase = name.slice(scenario.length + 1).replace(/-(?:head|base)-\d+$/, "");
+      const [first, ...later] = ANSWERS[scenario]?.boots ?? [];
+      const lines = [`boot ${first}`];
+      for (const role of later) {
+        const skip = SKIPS[scenario]?.[runCase]?.[role];
+        if (existsSync(path.join(copy, "sessions", role))) lines.push(`boot ${role}`);
+        else if (skip !== undefined) lines.push(`skip ${role} ${skip}`);
+      }
+      writeFileSync(path.join(copy, BOOTED), lines.map((line) => `${line}\n`).join(""));
     }
     const { stdout } = health(
       "--tmp-snapshot",
@@ -3186,17 +3636,38 @@ describe("health", () => {
         .filter((line) => line !== "")
         .map((line) => line.split(" ") as [string, string])
     );
+    // The verdicts the finished rule changes, each run's reason beside it. Three hold one agent's
+    // record (out.txt and one transcript, no out-implementer.txt, no sessions/reviewer) in
+    // text-fixes, a two-role case that declares no skip, which is the shape the boot record exists
+    // to catch. Two are reviewer runs whose one transcript is an empty file, where an agent omp
+    // launched writes at least its session's header: the reviewer's own record holds no entry.
+    const unbooted =
+      "unhealthy: boot record: <run>/booted neither boots nor skips the reviewer; threads-closed boots the implementer, then the reviewer (completion-answers.ts's ANSWERS)";
+    const empty =
+      "unhealthy: unfinished: the reviewer left no transcript: <run>/sessions holds no .jsonl of its own with an entry";
+    const changed: Record<string, string> = {
+      "reviewer-text-findings-defect-base-1": empty,
+      "reviewer-text-findings-text-only-head-2": empty,
+      "threads-closed-text-fixes-base-1": unbooted,
+      "threads-closed-text-fixes-head-5": unbooted,
+      "threads-closed-text-fixes-head-7": unbooted,
+    };
     expect(names.map((name) => [name, verdict(stdout, path.join(copies, name))])).toEqual(
       names.map((name) => [
         name,
-        expect.stringMatching(
-          expected[name] === "healthy"
-            ? new RegExp(`^${name}  healthy$`)
-            : new RegExp(`^${name}  unhealthy: `)
-        ),
+        changed[name] !== undefined
+          ? `${name}  ${changed[name]}`
+          : expect.stringMatching(
+              expected[name] === "healthy"
+                ? new RegExp(`^${name}  healthy$`)
+                : new RegExp(`^${name}  unhealthy: `)
+            ),
       ])
     );
-    expect(stdout).toEndWith("health: 14 of 21 runs unhealthy\n");
+    expect(Object.keys(changed).map((name) => expected[name])).toEqual(
+      Object.keys(changed).map(() => "healthy")
+    );
+    expect(stdout).toEndWith("health: 19 of 21 runs unhealthy\n");
   });
 });
 
@@ -5900,16 +6371,27 @@ sleep() { command sleep 0.05; }`;
     "esac",
   ].join("\n");
   /** The reviewer-text-findings run `name` whose reviewer meets `plan`, booted by boot_agent:
-   * boot_agent's result, the run, its first attempt's record, how many launches it made, and the
-   * verdict `rig.sh health` gives the run. The run carries the built-from and services-from
-   * cmd_run copies into it before its agent starts, naming the label's checkout (launched's). */
+   * boot_agent's result, the run, its first attempt's record, how many launches it made, the
+   * run's boot record, and the verdict `rig.sh health` gives the run. The run carries the
+   * built-from and services-from cmd_run copies into it before its agent starts, naming the
+   * label's checkout (launched's), which holds this checkout's plugin claim core (health reads a
+   * claim boot refusal by the sentence of the run's own checkout's), the boot record worker_boot
+   * leaves before boot_agent launches the agent, and the log of the Dispatch own_dispatch starts
+   * for it then, which no request of the stand-in agent reaches. */
   function booted(name: string, plan: string[]) {
     const work = freshDir("boot-agent");
     const run = path.join(work, "runs", name);
+    const checkout = `${work}-checkout`;
+    const core = path.join("packages", "pi-shared", "src", "legion-claim-core.ts");
+    mkdirSync(path.dirname(path.join(checkout, core)), { recursive: true });
+    cpSync(path.join(CHECKOUT, core), path.join(checkout, core));
     mkdirSync(run, { recursive: true });
     writeFileSync(path.join(run, "plan"), `${plan.join("\n")}\n`);
-    writeFileSync(path.join(run, "built-from"), `checkout ${work}-checkout\n`);
-    writeFileSync(path.join(run, "services-from"), servicesFrom(`${work}-checkout`));
+    writeFileSync(path.join(run, "built-from"), `checkout ${checkout}\n`);
+    writeFileSync(path.join(run, "services-from"), servicesFrom(checkout));
+    writeFileSync(path.join(run, "booted"), "boot reviewer\n");
+    mkdirSync(path.join(run, "logs"));
+    writeFileSync(path.join(run, "logs", "dispatch.log"), `${LISTENING}\n`);
     const { result } = launched(work, name, BOOTING, [], { boot: "reviewer" });
     const health = spawnChecked(["bash", path.join(RIG, "rig.sh"), "health", run], {
       env: { ...childEnv, SKILL_SCENARIOS_WORK: freshDir("boot-health") },
@@ -5919,6 +6401,7 @@ sleep() { command sleep 0.05; }`;
       run,
       first: path.join(run, "boot-1", "reviewer"),
       attempts: readFileSync(path.join(run, "attempts"), "utf8").trim(),
+      record: readFileSync(path.join(run, "booted"), "utf8"),
       verdict: health.stdout
         .toString()
         .split("\n")
@@ -5939,12 +6422,14 @@ sleep() { command sleep 0.05; }`;
         ["register", "claims/register registration failed (401): Invalid boot token"],
       ] as const) {
         const name = "reviewer-text-findings-text-only-head-1";
-        const { result, run, first, attempts, verdict } = booted(name, [refused, "works"]);
+        const { result, run, first, attempts, record, verdict } = booted(name, [refused, "works"]);
         expect(result).toMatchObject({ code: 0, stderr: "" });
         expect(result.stdout).toContain(
           `skill-scenarios: ${name}: the reviewer's claim boot was refused before its first turn (`
         );
         expect(attempts).toBe("2");
+        // Each attempt on the run's boot record, the relaunch's line added before it started.
+        expect(record).toBe("boot reviewer\nboot reviewer\n");
         // The first attempt, whole, beside the second: its output, its transcript and the
         // stand-in's lines of it.
         expect(readFileSync(path.join(first, "out.txt"), "utf8")).toBe(
@@ -5973,9 +6458,14 @@ sleep() { command sleep 0.05; }`;
     "a worker refused at both attempts is launched twice and no more, and the run is unhealthy, naming both",
     () => {
       const name = "reviewer-text-findings-text-only-base-1";
-      const { result, first, attempts, verdict } = booted(name, ["register", "register", "works"]);
+      const { result, first, attempts, record, verdict } = booted(name, [
+        "register",
+        "register",
+        "works",
+      ]);
       expect(result).toMatchObject({ code: 0, stderr: "" });
       expect(attempts).toBe("2");
+      expect(record).toBe("boot reviewer\nboot reviewer\n");
       expect(existsSync(path.join(first, "out.txt"))).toBe(true);
       const answered =
         "the daemon stand-in answered the reviewer's POST /legion/v1/claims/register 401 INVALID_BOOT_TOKEN";
@@ -5991,10 +6481,11 @@ sleep() { command sleep 0.05; }`;
     "a worker refused after its first turn is not relaunched, and the run is unhealthy",
     () => {
       const name = "reviewer-text-findings-defect-head-1";
-      const { result, run, first, attempts, verdict } = booted(name, ["late", "works"]);
+      const { result, run, first, attempts, record, verdict } = booted(name, ["late", "works"]);
       expect(result).toMatchObject({ code: 0, stderr: "" });
       expect(result.stdout).not.toContain("claim boot was refused");
       expect(attempts).toBe("1");
+      expect(record).toBe("boot reviewer\n");
       expect(existsSync(first)).toBe(false);
       expect(readFileSync(path.join(run, "out.txt"), "utf8")).toBe(
         `[legion] ${ENVOY_REFUSAL}\nexit=1\n`
@@ -6490,8 +6981,10 @@ sleep() { command sleep 0.05; }`;
 // harness gives services_up a docker that records its command line and answers `docker port`, so
 // the container branch runs where there is no docker, a pg_sql that answers every query with
 // 100, the max_connections of a server that admits 100, a `go` that records the directory each
-// build runs in and writes a binary naming it, and a load_label whose label's checkout is a
-// directory of the row's own (<work>/checkouts/<label>).
+// build runs in and writes a binary naming it, a `bun` that records each read of a label's
+// daemon facts (label_facts) with the work directory and the build it was given, and refuses it
+// when FACTS_REFUSE names why, and a load_label whose label's checkout is a directory of the
+// row's own (<work>/checkouts/<label>).
 describe("services_up and services_down", () => {
   const stubs = `
 until_true() { shift 2; "$@"; }
@@ -6501,6 +6994,10 @@ start_listener() { started=$(( \${started:-0} + 1 )); envoy_port=410$started; pr
 load_label() { P=$work/profiles/$1; co=$work/checkouts/$1; pin=omp@stub; profile=skills-$1; }
 pinned_omp() { printf '%s\\n' "$work/omp"; }
 go() { printf '%s go %s\\n' "$PWD" "$*" >>"$S/go-calls"; printf 'built in %s\\n' "$PWD" >"$3"; }
+bun() {
+  printf '%s|%s|%s\\n' "$SKILL_SCENARIOS_WORK" "$SKILL_SCENARIOS_DAEMON_PANE" "$*" >>"$S/facts-calls"
+  [ -z "\${FACTS_REFUSE:-}" ] || { printf 'daemon-pane facts: %s\\n' "$FACTS_REFUSE" >&2; return 1; }
+}
 docker() {
   printf 'docker %s\\n' "$*" >>"$S/docker-calls"
   case $1 in port) case $2 in *-pg) echo 127.0.0.1:55432 ;; *) echo 127.0.0.1:54222 ;; esac ;; esac
@@ -6514,6 +7011,8 @@ docker() {
       "safe_url",
       "build_dir",
       "go_binary",
+      "daemon_pane_binary",
+      "label_facts",
       "file_digest",
       "services_from",
       "label_services",
@@ -6522,6 +7021,7 @@ docker() {
     ].map(fn),
     assignment("postgres_image"),
     assignment("nats_image"),
+    assignment("worker_boots"),
   ].join("\n");
   const given = {
     SKILL_SCENARIOS_POSTGRES_URL: "postgres://rig:secret@127.0.0.1:5432/postgres?sslmode=disable",
@@ -6541,7 +7041,8 @@ docker() {
     const S = path.join(work, "services");
     mkdirSync(S);
     for (const label of labels)
-      mkdirSync(path.join(work, "checkouts", label, "packages", "envoy"), { recursive: true });
+      for (const module of ["envoy", "daemon"])
+        mkdirSync(path.join(work, "checkouts", label, "packages", module), { recursive: true });
     const result = bash(
       `${servicesUp}\n${stubs}\nwork=$1 S=$1/services root=$2 here=$3 tag=rig-test\nservices_postgres=$S/postgres-url\nshift 3\nservices_up "$@"`,
       [work, root, import.meta.dir, ...labels],
@@ -6606,22 +7107,37 @@ docker() {
   // Catches: one listener built from the rig's own checkout for every label, which paired main
   // ff2a10ef's pi-envoy, from before #2603, with a listener from after it, and lost the base runs'
   // claim boot to its `409 not_requested`; a listener started from a binary other than its
-  // label's; and labels whose runs are pointed at one listener. The Dispatch server, which
-  // production shares across versions, is this checkout's.
-  test("each label's listener is built in that label's own checkout, started from that build, and named in that label's services file", () => {
+  // label's; and labels whose runs are pointed at one listener. Each label's Dispatch server and
+  // its build of daemon-pane.go are its own checkout's too: a base run on the head's Dispatch
+  // server read the head's `dispatch result` lines and had a body field taken that its own server
+  // refuses.
+  test("each label's listener, Dispatch server and daemon-pane are built in that label's own checkout, and its listener started from that build and named in its services file", () => {
     const { work, S, code, stderr } = up({ ...given, SKILL_SCENARIOS_PARALLEL: "1" }, [
       "head",
       "base",
     ]);
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
     const checkout = (label: string) => path.join(work, "checkouts", label);
-    const listener = (label: string) => path.join(builds(work, checkout(label)), "envoy-listener");
+    const built = (label: string, name: string) => path.join(builds(work, checkout(label)), name);
+    const listener = (label: string) => built(label, "envoy-listener");
     expect(readFileSync(path.join(S, "go-calls"), "utf8").split("\n")).toEqual([
-      `${root}/packages/envoy go build -o ${builds(work, root)}/dispatch-e2e ./cmd/dispatch`,
-      `${checkout("head")}/packages/envoy go build -o ${listener("head")} ./cmd/listener`,
-      `${checkout("base")}/packages/envoy go build -o ${listener("base")} ./cmd/listener`,
+      ...["head", "base"].flatMap((label) => [
+        `${checkout(label)}/packages/envoy go build -o ${listener(label)} ./cmd/listener`,
+        `${checkout(label)}/packages/envoy go build -o ${built(label, "dispatch-e2e")} ./cmd/dispatch`,
+        `${checkout(label)}/packages/daemon go build -o ${built(label, "daemon-pane")} -overlay ${built(label, "daemon-pane-overlay.json")} ./cmd/daemon-pane`,
+      ]),
       "",
     ]);
+    // The overlay puts this directory's program in place of the label's module's main, as
+    // daemon-pane.ts's runDaemonPane does for a `go run`.
+    expect(JSON.parse(readFileSync(built("base", "daemon-pane-overlay.json"), "utf8"))).toEqual({
+      Replace: {
+        [`${checkout("base")}/packages/daemon/cmd/daemon-pane/main.go`]: path.join(
+          import.meta.dir,
+          "daemon-pane.go"
+        ),
+      },
+    });
     expect(readFileSync(listener("base"), "utf8")).toBe(
       `built in ${checkout("base")}/packages/envoy\n`
     );
@@ -6650,6 +7166,7 @@ docker() {
     const own = lines.filter((line) => line.split(" ")[1] === "label");
     expect(own.map((line) => line.split(" ")[0])).toEqual([
       "envoy-listener",
+      "dispatch",
       "plugins",
       "model-route",
       "daemon-facts",
@@ -6657,13 +7174,118 @@ docker() {
     ]);
     for (const line of own) expect(line.split(" ")[2]).toBe(checkout);
     expect(lines).toContain("omp pin omp@stub missing");
-    expect(lines.find((line) => line.startsWith("dispatch "))).toStartWith(
-      `dispatch shared ${root} sha256:`
-    );
+    const digest = (name: string) =>
+      `sha256:${new Bun.CryptoHasher("sha256").update(readFileSync(path.join(builds(work, checkout), name))).digest("hex")}`;
+    expect(lines).toContain(`dispatch label ${checkout} ${digest("dispatch-e2e")}`);
+    expect(lines).toContain(`daemon-facts label ${checkout} ${digest("daemon-pane")}`);
+    expect(lines).toContain(`worker-pane label ${checkout} ${digest("daemon-pane")}`);
+    // The Dispatch server is no shared service any more.
+    expect(lines.filter((line) => line.startsWith("dispatch "))).toHaveLength(1);
     expect(lines).toContain("nats shared nats://127.0.0.1:4222 -");
     expect(lines).toContain(
       "postgres shared postgres://rig@127.0.0.1:5432/postgres?sslmode=disable -"
     );
+  });
+
+  // A stand-in's boot reads every fact of its label's daemon it answers by. Read at the boot, each
+  // was a `go run` of daemon-pane.go, a compile of the daemon module: a first boot took ~43 s
+  // (head) and ~36 s (base) with a warm Go build cache, past worker_boot's 30 s bound, and the
+  // 2026-11-15 preflight lost 6 of 8 runs there. services_up reads them all first (label_facts).
+  describe("daemon facts", () => {
+    // Catches: a batch whose runs start before the facts of their label's daemon are read, a read
+    // made by `go run` or by another label's build, one kept anywhere but the work directory's
+    // facts cache, and one that leaves out a stand-in a scenario boots (worker_boots).
+    test("each label's facts are read through its own build into the work directory, for every stand-in of worker_boots", () => {
+      const { work, S, code, stderr } = up({ ...given, SKILL_SCENARIOS_PARALLEL: "1" }, [
+        "head",
+        "base",
+      ]);
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      const checkout = (label: string) => path.join(work, "checkouts", label);
+      expect(readFileSync(path.join(S, "facts-calls"), "utf8")).toBe(
+        ["head", "base"]
+          .map(
+            (label) =>
+              `${work}|${path.join(builds(work, checkout(label)), "daemon-pane")}|${import.meta.dir}/daemon-pane.ts facts ${checkout(label)} tester reviewer implementer:reviewing implementer:accepting reviewer:reviewing reviewer:accepting\n`
+          )
+          .join("")
+      );
+    });
+
+    // Catches: a fact that cannot be read left for a run's boot to meet, and a batch that starts a
+    // label's listener, or writes the provenance a run needs to start, before its facts are read.
+    test("a fact that cannot be read fails the batch before the label's listener or any run starts, naming it", () => {
+      const why =
+        "the reviewer's stand-in in reviewing: the daemon fact `phase reviewer` of /co could not be read";
+      const { work, S, code, stderr } = up(
+        { ...given, SKILL_SCENARIOS_PARALLEL: "1", FACTS_REFUSE: why },
+        ["base"]
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain(`daemon-pane facts: ${why}\n`);
+      expect(stderr).toContain(
+        `skill-scenarios: a fact of the daemon of label base's checkout ${path.join(work, "checkouts", "base")} could not be read (above), so no daemon stand-in of the label could boot\n`
+      );
+      expect(existsSync(path.join(S, "listeners"))).toBe(false);
+      expect(existsSync(path.join(S, "services-from-base"))).toBe(false);
+      expect(existsSync(path.join(S, "env-base"))).toBe(false);
+    });
+  });
+
+  // A run's own Dispatch is started from its label's build. Catches: a run of the base label
+  // started on the server the rig's own checkout built, where the head's `dispatch result` lines
+  // and its acceptance of undeclared body fields are what the base agents met.
+  describe("start_dispatch", () => {
+    /** start_dispatch for a run of the label whose checkout is <work>/checkouts/base, the rig's
+     * own checkout elsewhere, with the builds `built` names made: the server it handed
+     * run-server.sh, or why it refused. */
+    function started(built: ("label" | "rig")[]) {
+      const work = freshDir("start-dispatch");
+      const co = path.join(work, "checkouts", "base");
+      const rigCheckout = path.join(work, "rig-checkout");
+      for (const [which, checkout] of [
+        ["label", co],
+        ["rig", rigCheckout],
+      ] as const) {
+        if (!built.includes(which)) continue;
+        mkdirSync(builds(work, checkout), { recursive: true });
+        writeFileSync(path.join(builds(work, checkout), "dispatch-e2e"), "#!/bin/sh\n", {
+          mode: 0o755,
+        });
+      }
+      mkdirSync(path.join(work, "logs"));
+      const result = bash(
+        [
+          fn("fail"),
+          fn("build_dir"),
+          fn("start_dispatch"),
+          'start_process() { printf "%s %s\\n" "$DISPATCH_E2E_SERVER_BIN" "$*" >"$work/started"; dispatch_pid=1; }',
+          "await_start() { :; }",
+          "report_port() { echo 4242; }",
+          "work=$1 evidence=$1 co=$2 root=$3",
+          'start_dispatch "postgres://rig@127.0.0.1:5432/run_base?sslmode=disable"',
+        ].join("\n"),
+        [work, co, rigCheckout]
+      );
+      return { work, co, rigCheckout, result };
+    }
+
+    test("a run's Dispatch server is its label's build, under the rig's run-server.sh", () => {
+      const { work, co, rigCheckout, result } = started(["label", "rig"]);
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      expect(readFileSync(path.join(work, "started"), "utf8")).toBe(
+        `${path.join(builds(work, co), "dispatch-e2e")} dispatch bash ${rigCheckout}/packages/dispatch/e2e/run-server.sh\n`
+      );
+    });
+
+    test("a run whose label's Dispatch server was not built is refused, though the rig's was", () => {
+      const { work, co, result } = started(["rig"]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toBe(
+        `skill-scenarios: no Dispatch server of ${co} at ${path.join(builds(work, co), "dispatch-e2e")}: the run's batch builds it (services_up)\n`
+      );
+      expect(existsSync(path.join(work, "started"))).toBe(false);
+    });
   });
 
   // Catches: two labels' listeners started as one service (one log, one port file, one pid kept)

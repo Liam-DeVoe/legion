@@ -20,10 +20,6 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
-// The opening of the sentence a claim boot leaves when it stops its session, read from the
-// module that writes it (`stopAfterRegistration`): a rewording there would otherwise leave this
-// rig reading nothing and failing no test.
-import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { z } from "zod";
 // The gate's own names for its rules and the line its refusal opens with, read from the module
 // that writes them, so this rig scores what AskGate actually says. The rigs are not shipped
@@ -33,6 +29,7 @@ import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/a
 // The daemon stand-in's log and the answers each run's world may give a completion, read through
 // the one module the stand-in, this score and health.ts share (completion-answers.ts).
 import {
+  ANSWERS,
   answerOf,
   COMPLETE_PATH,
   DAEMON_LOG,
@@ -40,7 +37,10 @@ import {
   finished,
   NOT_CURRENT_PHASE,
   refusedCompletion,
+  SKIPS,
 } from "./completion-answers";
+// The checkout a run was built from, read from its built-from as the daemon stand-in reads it.
+import { labelCheckout } from "./daemon-pane";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 // How gh reads a call's verb, its body and the two review endpoints, in the module the gh
 // stand-in answers that same call by (gh-call.ts), and the world every program of the run reads.
@@ -727,6 +727,15 @@ function namesCommit(text: string, commits: string[]): boolean {
   );
 }
 
+/** The PR body line `dispatch result` prints for a tester's result, as both labels' Dispatch
+ * prints it up to its tail, `- Check <id> (<when>): <pass|fail> at <commit>, recorded by tester.`,
+ * with the commit captured. The tail differs by label, so nothing of it is read: main ff2a10ef's
+ * server ends the line with the check's own first words (envoy/internal/dispatch/api/results.go,
+ * `checkResultLine`, lines 668-675 there) and this checkout's with the reading the tester
+ * recorded (the same function, lines 766-773), which may name a commit of the run where the
+ * check's words name none. */
+const TESTER_LINE = /^\s*-\s+Check .* at ([0-9a-f]{7,40}), recorded by tester\./;
+
 /** The instant an RFC 3339 `text` names, in nanoseconds, so a Dispatch time (microseconds) and a
  * stand-in's (milliseconds) compare at full precision; a time that does not parse is the rig's
  * fault. */
@@ -793,8 +802,9 @@ function changedFiles(runDir: string, from: string, to: string): string[] {
  *      completed it (its last push before the completion, if it pushed) changes nothing under the
  *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
  *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
- *      tester, `- Check <id> (<when>): <pass|fail> at <12 hex>, recorded by tester. <the reading>`,
- *      naming a commit of this run's own.
+ *      tester, `- Check <id> (<when>): <pass|fail> at <commit>, recorded by tester.`, whose
+ *      commit is one of this run's own. The line's tail is never read: each label's Dispatch
+ *      prints its own (TESTER_LINE).
  * Without an accepted completion, rule 3 reads the run's own newest test record, so the notes say
  * what was wrong with it. A line naming another run's PR head instead is two runs meeting in the
  * shared /tmp, where agents draft the body whatever TMPDIR says: a rig error, thrown, not a
@@ -896,12 +906,11 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   const bodies = calls.filter((c) => c.as === "gh" && c.exit === 0 && c.body !== undefined);
   const edit = bodies.find((c) => c.body?.includes("recorded by tester"));
   const testerLine =
-    (bodies.at(-1)?.body ?? "")
-      .split("\n")
-      .find((line) => /^\s*-\s+Check .*recorded by tester\b/.test(line)) ?? "";
-  const ownHead = namesCommit(testerLine, commits);
+    (bodies.at(-1)?.body ?? "").split("\n").find((line) => TESTER_LINE.test(line)) ?? "";
+  const testerAt = TESTER_LINE.exec(testerLine)?.[1] ?? "";
+  const ownHead = namesCommit(testerAt, commits);
   const foreign = heads.filter((head) => head !== world.head);
-  if (!ownHead && namesCommit(testerLine, foreign))
+  if (!ownHead && namesCommit(testerAt, foreign))
     throw new Error(`its PR body carries another run's check line: ${testerLine.slice(0, 160)}`);
   const pass = ran && ordered && proof && ownHead;
   const opened = readCalls(entries).map((call) => call.target);
@@ -1287,18 +1296,52 @@ function namesHead(sha: string, named: string): boolean {
  * is read from the transcript's whole text rather than from one tool's results. */
 const CONTRACT_REFUSED =
   /([A-Z]+ \/legion\/\S+) answered \d+ with a body the daemon API contract does not describe: ([^"\\\n]+)/;
+/** The words the sentence every label's plugin prints for a claim boot that registered and could
+ * not finish starts with: main ff2a10ef's `claim boot failed after claims/register registered
+ * <claim token>; …` (packages/pi-shared/src/legion-claim-core.ts:97 there) and this checkout's
+ * `claim boot failed at <step> after claims/register registered <role> with the daemon at …; …`
+ * (`stopAfterRegistration`). Only an output that holds them is read for the label's own
+ * opening (`claimBootOpening`), so a run that met no such failure needs no checkout to read. */
+const CLAIM_BOOT_WORDS = "claim boot failed ";
+/** The module, under a checkout, that writes that sentence. */
+const CLAIM_CORE = path.join("packages", "pi-shared", "src", "legion-claim-core.ts");
+/** Each checkout's opening, read once. */
+const claimBootOpenings = new Map<string, string>();
+/** The opening of the sentence the plugin of `checkout` prints for a claim boot that registered
+ * and could not finish, read out of that checkout's own CLAIM_CORE, as the daemon facts a run's
+ * stand-in answers by are read out of its checkout: the value of the module's
+ * CLAIM_BOOT_FAILED_OPENING where it names one (this checkout's, `claim boot failed at `), and
+ * otherwise the text of the template that writes the sentence up to its first substitution
+ * (main ff2a10ef's, `claim boot failed after claims/register registered `). The labels word it
+ * apart, so one label's opening read for another's runs never finds the other's sentence. Throws
+ * for a checkout whose module writes no such sentence: what its plugin prints is unknown. */
+export function claimBootOpening(checkout: string): string {
+  const known = claimBootOpenings.get(checkout);
+  if (known !== undefined) return known;
+  const file = path.join(checkout, CLAIM_CORE);
+  const source = existsSync(file) ? readFileSync(file, "utf8") : "";
+  const opening =
+    /\bCLAIM_BOOT_FAILED_OPENING\s*=\s*"([^"]+)"/.exec(source)?.[1] ??
+    /`(claim boot failed [^`$]*)/.exec(source)?.[1];
+  if (opening === undefined)
+    throw new Error(
+      `${file} writes no sentence for a claim boot that registered and could not finish (\`${CLAIM_BOOT_WORDS}…\`), so what that checkout's plugin prints for one is unknown`
+    );
+  claimBootOpenings.set(checkout, opening);
+  return opening;
+}
 /** The sentence the claim boot leaves in a half's own output when a session that registered
- * could not finish booting, or undefined when `text` holds none: the line opening
- * `CLAIM_BOOT_FAILED_OPENING`, which names the step, the daemon it dialled and why
- * (`stopAfterRegistration` in `packages/pi-shared/src/legion-claim-core.ts`). The agent then
- * exits so the daemon would launch it again. The rig launches it once more only when that came
- * before its first turn, and keeps that first attempt under <run>/boot-1/<role>/, which this
- * reads none of (rig.sh's boot_agent); a half whose own output holds the line is one refused
- * after its first turn or on its relaunch too, so the half is gone from the middle of the run
- * (`unscored`). The opening is imported from the module that writes it rather than written again
- * here, since a rewording there would otherwise leave this reading nothing with no test failing. */
-function claimBootFailure(text: string): string | undefined {
-  const opened = text.indexOf(CLAIM_BOOT_FAILED_OPENING);
+ * could not finish booting, or undefined when `text` holds none: the line opening with the
+ * opening of the run's own label's plugin (`claimBootOpening` of the checkout the run's
+ * built-from names, daemon-pane.ts's `labelCheckout`), which names why. The agent then exits so
+ * the daemon would launch it again. The rig launches it once more only when that came before its
+ * first turn, and keeps that first attempt under <run>/boot-1/<role>/, which this reads none of
+ * (rig.sh's boot_agent); a half whose own output holds the line is one refused after its first
+ * turn or on its relaunch too, so the half is gone from the middle of the run (`unscored`).
+ * health.ts reads a boot refusal through this too. */
+export function claimBootFailure(text: string, runDir: string): string | undefined {
+  if (!text.includes(CLAIM_BOOT_WORDS)) return undefined;
+  const opened = text.indexOf(claimBootOpening(labelCheckout(runDir)));
   if (opened < 0) return undefined;
   const ended = text.indexOf("\n", opened);
   return ended < 0 ? text.slice(opened) : text.slice(opened, ended);
@@ -1611,7 +1654,8 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
  *                The implementer's own act here is to send the reviewer nothing, so the run
  *                often has one half: rig.sh boots no reviewer on an empty wake, and every term
  *                over the reviewer's acts then reads as the terms of an agent that never ran
- *                (BOOTS_OPTIONAL). An implementer that woke it anyway gets both halves read.
+ *                (completion-answers.ts's SKIPS). An implementer that woke it anyway gets both
+ *                halves read.
  * The completions the daemon stand-in refused as the daemon refuses them are reported
  * (`refusedCompletions`) and scored by neither case: what a role should have done instead of
  * one is no part of the rule these words give. They are the 409 HANDOFF_NOT_CURRENT_PHASE of a
@@ -1780,7 +1824,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // transcript naming none makes the run a rig error, which `ownSession` throws, so no message
   // is attributed to a half this cannot name. A reviewer half with no transcript at all is a
   // half the run never booted, which `unscored` allows only in code-defect, where the
-  // implementer's own act is to send the reviewer nothing (BOOTS_OPTIONAL, rig.sh's
+  // implementer's own act is to send the reviewer nothing (completion-answers.ts's SKIPS, rig.sh's
   // run_threads_closed): the terms over its sends are then the terms of an agent that never ran,
   // and its gh calls, which are read by `by`, are none.
   const fixSender = ownSession(fixSession);
@@ -1919,22 +1963,6 @@ const CASED: Record<string, CasedScenario> = Object.fromEntries(
   ).map((scenario) => [scenario[0], casedScenario(...scenario)])
 );
 
-/** The agents a scenario's run boots after the first, each by the session directory it gets under
- * `<run>/sessions/` (rig.sh's worker_boot gives the first agent the run's own transcript and every
- * later one `<run>/sessions/<role>`). A run of such a scenario where one of them started and got
- * no model turn — a session directory with no transcript, or one with no assistant message —
- * measured no loop at all: the half that did run cannot do what the score asks of the other, so
- * the row would read as a failure of the text under test when it is a failure of the rig. It is a
- * rig error instead (unscored), as a run whose own agent got no model turn already is. A scenario
- * absent here boots one agent. */
-const BOOTS: Record<string, string[]> = { "threads-closed": [RESOLVES] };
-/** The halves of those a run may leave unbooted, by `<scenario>:<case>`, because not booting one
- * is the act the case measures. threads-closed's code-defect is the one: the implementer's own
- * act there is to tell the architect and send the reviewer nothing, so a wake of none ends the
- * loop where the rule ends it and rig.sh boots no reviewer (run_threads_closed). A half left
- * unbooted has no session directory at all, which is how it is told from one that started and
- * got no turn; that one stays a rig error in every case. */
-const BOOTS_OPTIONAL: Record<string, string[]> = { "threads-closed:code-defect": [RESOLVES] };
 /** The scenarios whose score reads what an agent sent, which are the scenarios the rig records
  * (rig.sh's start_recorder). A run of one of these is scored only on a whole record, opened and
  * closed by the recorder itself (`unscored`); every other scenario records nothing and reads
@@ -4229,11 +4257,12 @@ function lastDaemonRequest(runDir: string): string | undefined {
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
  *     not set up;
- *   - one of the agents it boots after the first (BOOTS) started and got no model turn: that
- *     role's session directory holds no transcript, or one with no assistant message. The half
- *     that did run cannot do what the score asks of the other, so the row would read as a failure
- *     of the text under test. A half the run never booted at all, which has no session directory,
- *     is a rig error too, unless the case is one not booting it is the act of (BOOTS_OPTIONAL);
+ *   - one of the agents it boots after the first (ANSWERS' `boots`) started and got no model
+ *     turn: that role's session directory holds no transcript, or one with no assistant
+ *     message. The half that did run cannot do what the score asks of the other, so the row would
+ *     read as a failure of the text under test. A half the run never booted at all, which has no
+ *     session directory, is a rig error too, unless the case is one not booting it is the act of
+ *     (SKIPS);
  *   - it compared the wrong text: a tool call of the run (its own or a subagent's) read a file under
  *     the other label's checkout, or a skill file (a path to skills/dispatch, skills/dispatch-first,
  *     skills/dispatch-writing-specs or skills/legion-worker) anywhere but `allowed`: its own run
@@ -4309,23 +4338,29 @@ function unscored(
   // names the half by its own output file, the sentence it left, and when the run last reached
   // its daemon, which is where a reader of the rig looks next.
   for (const [file, text] of outputs(runDir)) {
-    const failed = claimBootFailure(text);
+    const failed = claimBootFailure(text, runDir);
     if (failed !== undefined)
       return `the agent of <run>/${file} died in its claim boot, so nothing it did is its own behaviour: ${failed} (the run's last recorded daemon request: ${lastDaemonRequest(runDir) ?? "none"})`;
   }
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
+  // Every agent the scenario boots after the first, by the session directory rig.sh's worker_boot
+  // gives it (`<run>/sessions/<role>`): the roles of the scenario's one definition of what it
+  // boots, the one rig.sh and health read too (completion-answers.ts's ANSWERS' `boots`), but its
+  // first. A scenario that definition does not name boots one agent.
   const halves: readonly (readonly [string, SessionEntry[]])[] = [
     ["", entries],
-    ...(BOOTS[scenario] ?? []).map(
+    ...(ANSWERS[scenario]?.boots.slice(1) ?? []).map(
       (role) => [role, sessionIn(path.join(runDir, "sessions", role))] as const
     ),
   ];
   // A half with no session directory is one the run never booted; a half with a directory and no
   // model turn in it is one that started and measured nothing. The first is the act of a case
-  // that asks for it and a rig error elsewhere, the second a rig error always.
-  const optional = BOOTS_OPTIONAL[`${scenario}:${caseName}`] ?? [];
+  // that asks for it — one completion-answers.ts's SKIPS declares a skip of the role in, as
+  // threads-closed's code-defect does the reviewer's once the implementer sent it nothing — and a
+  // rig error elsewhere, the second a rig error always.
+  const optional = Object.keys(SKIPS[scenario]?.[caseName] ?? {});
   for (const [role, booted] of halves.slice(1)) {
     if (optional.includes(role) && !existsSync(path.join(runDir, "sessions", role))) continue;
     if (!booted.some((entry) => entry.message?.role === "assistant"))

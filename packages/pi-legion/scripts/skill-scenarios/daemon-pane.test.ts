@@ -1,10 +1,11 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import {
   cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -799,4 +800,221 @@ test("worker-pane.ts refuses a world.json that is no JSON, naming the file", () 
   expect(built.stderr.toString()).toStartWith(`worker-pane.ts: ${dir}/world.json is no world: `);
   expect(built.exitCode).toBe(2);
   expect(existsSync(path.join(dir, "worker.env"))).toBe(false);
+});
+
+// The label's build of daemon-pane.go (rig.sh's daemon_pane_binary) and the facts services_up
+// reads through it before any run starts (rig.sh's label_facts, `bun daemon-pane.ts facts`).
+describe("the label's build and its facts", () => {
+  const FACTS = bundled(path.join(import.meta.dir, "daemon-pane.ts"));
+  const STANDIN = bundled(path.join(import.meta.dir, "daemon-standin.ts"));
+  const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
+  const BOOTS = [
+    "tester",
+    "reviewer",
+    "implementer:reviewing",
+    "implementer:accepting",
+    "reviewer:reviewing",
+    "reviewer:accepting",
+  ];
+  /** A stand-in for a build of daemon-pane.go: it answers each reading the stand-in's facts
+   * need, in the program's own printout, and keeps each command it ran for under <dir>/calls.
+   * `refuse`, a command and its first argument, is answered as the program answers a reading it
+   * cannot make. */
+  function fakeBuild(dir: string, refuse = ""): string {
+    mkdirSync(dir, { recursive: true });
+    const build = path.join(dir, "daemon-pane");
+    writeFileSync(
+      build,
+      [
+        "#!/bin/sh",
+        `printf '%s\\n' "$*" >>"${path.join(dir, "calls")}"`,
+        `[ "$1 $2" != "${refuse}" ] || { echo "daemon-pane $1: refused by the row" >&2; exit 1; }`,
+        "case $1 in",
+        "phase) case $2 in tester) printf 'testing\\ntest\\n' ;; reviewer) printf 'reviewing\\nreview\\n' ;; implementer) printf 'implementing\\nimplement\\n' ;; *) exit 1 ;; esac ;;",
+        "claim-refusal) printf '403\\nrefused as %s\\n' \"$2\" ;;",
+        "count-default) echo 3 ;;",
+        'refusal) printf \'HANDOFF_NOT_CURRENT_PHASE\\nthe %s may not finish %s of %s\\n\' "$3" "$4" "$5" ;;',
+        "*) exit 1 ;;",
+        "esac",
+        "",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    return build;
+  }
+  /** Each command the build at `dir` ran for, its first two words. */
+  const calls = (dir: string) =>
+    existsSync(path.join(dir, "calls"))
+      ? readFileSync(path.join(dir, "calls"), "utf8")
+          .split("\n")
+          .filter((line) => line !== "")
+          .map((line) => line.split(" ").slice(0, 2).join(" "))
+      : [];
+  /** `bun daemon-pane.ts facts` of this checkout for every boot of BOOTS, under `env`. */
+  const facts = (env: Record<string, string>, boots = BOOTS) =>
+    spawnChecked(["bun", FACTS, "facts", CHECKOUT, ...boots], {
+      env: { PATH: process.env.PATH ?? "", HOME: rig, ...env },
+    });
+
+  // Catches: a read that compiles the daemon module with `go run` although the rig named a build,
+  // which is the boot cost the build is for; a build run outside the module or without its
+  // arguments or input; and a named build that is not there answered by `go run` in its place.
+  test("a read runs the build SKILL_SCENARIOS_DAEMON_PANE names, in the module, and a build that is not there is an error", () => {
+    const dir = path.join(rig, "named-build");
+    mkdirSync(dir, { recursive: true });
+    const build = path.join(dir, "daemon-pane");
+    writeFileSync(build, '#!/bin/sh\nprintf "%s|%s|" "$(pwd -P)" "$*"\ncat\n', { mode: 0o755 });
+    const kept = process.env.SKILL_SCENARIOS_DAEMON_PANE;
+    try {
+      process.env.SKILL_SCENARIOS_DAEMON_PANE = build;
+      expect(runDaemonPane(DAEMON_MODULE, ["pane"], '{"role":"tester"}')).toBe(
+        `${realpathSync(DAEMON_MODULE)}|pane|{"role":"tester"}`
+      );
+      process.env.SKILL_SCENARIOS_DAEMON_PANE = path.join(dir, "gone");
+      expect(() => runDaemonPane(DAEMON_MODULE, ["phase", "tester"])).toThrow(
+        `SKILL_SCENARIOS_DAEMON_PANE names ${path.join(dir, "gone")}, which is not there`
+      );
+    } finally {
+      if (kept === undefined) delete process.env.SKILL_SCENARIOS_DAEMON_PANE;
+      else process.env.SKILL_SCENARIOS_DAEMON_PANE = kept;
+    }
+  });
+
+  // Catches: a facts read that leaves a fact some stand-in of worker_boots reads at its boot out
+  // of the cache, one that runs a reading twice, and one made without a build or a work directory,
+  // which would compile the daemon module per fact or keep the facts where no stand-in reads them.
+  test.skipIf(skip)(
+    "facts reads every fact of every boot through the build, once, into the work directory's cache",
+    () => {
+      const work = path.join(rig, "facts-every-boot");
+      const build = fakeBuild(path.join(rig, "facts-every-boot-build"));
+      const env = { SKILL_SCENARIOS_WORK: work, SKILL_SCENARIOS_DAEMON_PANE: build };
+      expect(facts(env)).toMatchObject({ exitCode: 0 });
+      expect(calls(path.dirname(build)).sort()).toEqual(
+        [
+          "count-default launch_failure_limit",
+          "claim-refusal InvalidSecret",
+          "claim-refusal InvalidBootToken",
+          "claim-refusal StaleGeneration",
+          "phase tester",
+          "phase reviewer",
+          "refusal not-current-phase",
+          "phase implementer",
+          "refusal not-current-phase",
+        ].sort()
+      );
+      const kept = readdirSync(path.join(work, "daemon-facts")).sort();
+      // A second read reads each out of the cache and runs nothing.
+      expect(facts(env)).toMatchObject({ exitCode: 0 });
+      expect(calls(path.dirname(build))).toHaveLength(9);
+      expect(readdirSync(path.join(work, "daemon-facts")).sort()).toEqual(kept);
+      for (const [unset, says] of [
+        ["SKILL_SCENARIOS_DAEMON_PANE", "names no build of daemon-pane.go"],
+        ["SKILL_SCENARIOS_WORK", "names no work directory"],
+      ] as const) {
+        const read = facts({ ...env, [unset]: "" });
+        expect(read.exitCode).toBe(2);
+        expect(read.stderr.toString()).toContain(`daemon-pane facts: ${unset} ${says}`);
+      }
+    },
+    600_000
+  );
+
+  // Catches: a fact that cannot be read passed over, to be met by the run whose stand-in boots
+  // on it.
+  test.skipIf(skip)(
+    "a fact that cannot be read fails the read, naming the boot and the fact",
+    () => {
+      const build = fakeBuild(path.join(rig, "facts-refused-build"), "phase reviewer");
+      const read = facts({
+        SKILL_SCENARIOS_WORK: path.join(rig, "facts-refused"),
+        SKILL_SCENARIOS_DAEMON_PANE: build,
+      });
+      expect(read.exitCode).toBe(1);
+      expect(read.stderr.toString()).toContain(
+        `daemon-pane facts: the reviewer's stand-in: the daemon fact \`phase reviewer\` of ${CHECKOUT} could not be read: daemon-pane phase reviewer in ${CHECKOUT}/packages/daemon exited 1: daemon-pane phase: refused by the row`
+      );
+    },
+    600_000
+  );
+
+  /** The daemon stand-in of a reviewer run of the head label on `work`'s facts cache, booted as
+   * rig.sh's worker_boot boots it but with no go on its PATH and a build that refuses every
+   * reading: its exit code and output once it listened or exited. */
+  async function bootOn(work: string, name: string) {
+    const dir = path.join(rig, name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
+    writeFileSync(path.join(dir, "built-from"), `checkout ${CHECKOUT}\n`);
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "LWEVAL-1",
+        repo: "example/widgets",
+        base: "main",
+        branch: "legion/LWEVAL-1",
+        pr: 1001,
+        head: "0".repeat(40),
+      })
+    );
+    const refusing = path.join(dir, "daemon-pane");
+    writeFileSync(refusing, '#!/bin/sh\necho "no read was to run" >&2\nexit 1\n', { mode: 0o755 });
+    const nothing = path.join(dir, "no-go");
+    mkdirSync(nothing);
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        STANDIN,
+        "0",
+        path.join(dir, "daemon.log"),
+        path.join(dir, "boot-token"),
+      ].concat(["skills1", "LWEVAL-1", dir, "reviewer"]),
+      {
+        env: {
+          PATH: nothing,
+          HOME: rig,
+          SKILL_SCENARIOS_WORK: work,
+          SKILL_SCENARIOS_DAEMON_PANE: refusing,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const reader = child.stdout.getReader();
+    let printed = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      printed += new TextDecoder().decode(value);
+      if (printed.includes("listening on")) break;
+    }
+    child.kill();
+    const code = await child.exited;
+    return { printed, code, stderr: await new Response(child.stderr).text() };
+  }
+
+  // The boot of a stand-in after services_up read its label's facts: every fact out of a file, so
+  // a boot needs neither go nor the build to listen. Catches: a boot that reads a fact the read
+  // before it left out, and a batch that drops that read, whose boots then compile the daemon
+  // module per fact, 6-7 s each with a warm Go cache, past worker_boot's 30 s bound.
+  test.skipIf(skip)(
+    "a stand-in boots on the facts read before it, running no go and no build, and fails on an empty cache",
+    async () => {
+      const work = path.join(rig, "facts-boot");
+      const build = fakeBuild(path.join(rig, "facts-boot-build"));
+      expect(
+        facts({ SKILL_SCENARIOS_WORK: work, SKILL_SCENARIOS_DAEMON_PANE: build })
+      ).toMatchObject({ exitCode: 0 });
+      const read = await bootOn(work, "reviewer-head-1");
+      expect(read.printed).toContain("listening on http://127.0.0.1:");
+      expect(read.stderr).toBe("");
+      const empty = await bootOn(path.join(rig, "facts-boot-empty"), "reviewer-head-2");
+      expect(empty.printed).not.toContain("listening on");
+      expect(empty.code).toBe(2);
+      expect(empty.stderr).toContain(
+        `daemon-standin: the daemon fact \`routes\` of ${CHECKOUT} could not be read`
+      );
+    },
+    600_000
+  );
 });

@@ -13,8 +13,9 @@ import {
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
+import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
+import { checkouts, claimBootOpening, specWork, statesDesign, TestHandoff } from "./score";
 import { bundled, spawnChecked } from "./test-programs";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -29,6 +30,13 @@ const runs = path.join(work, "runs");
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
 // so a reservation made further down would be made after that drain had already run.
 const pushWork = temporaryDirectory("skill-scenarios-push");
+/** This checkout, whose plugin's wording a head run's claim boot sentence is read by. */
+const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
+/** The module, under a checkout, that writes a plugin's claim boot sentence. */
+const CLAIM_CORE = path.join("packages", "pi-shared", "src", "legion-claim-core.ts");
+/** A checkout holding main ff2a10ef's claim boot sentence and nothing else, which a base run's
+ * built-from names below. */
+const BASE_CLAIM_CHECKOUT = path.join(work, "base-claim-checkout");
 /** The scorer the rows run as rig.sh runs it, a bundle built from score.ts for this suite, so no
  * run of it transpiles score.ts and its imports again (test-programs.ts). Reserved here, above
  * the hook below that runs it, for the same reason as `pushWork`. */
@@ -338,6 +346,28 @@ recordRun("tester-proof-rec-2", {
 });
 // The stand-in accepted a completion that names a version the record does not hold.
 recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
+// The PR body's check line, read up to its tail and no further (score.ts's TESTER_LINE). lines-1
+// is the base label's line: its tail is the check's own words, as main ff2a10ef's Dispatch prints
+// it, and its `at` names the run's head, so it passes as rec-1 does. lines-2's `at` names no
+// commit of the run, and its tail, a reading as this checkout's Dispatch prints the line, names
+// the head: a reader of the whole line takes that reading for the line's commit, which only the
+// head label's line can carry.
+const testerBody = (at: string, tail: string) => ({
+  ...bodyEdit(head),
+  body: `**Checks:**\n- Check k1 (before_merge): pass at ${at}, recorded by tester. ${tail}`,
+});
+recordRun("tester-proof-lines-1", {
+  "calls.jsonl": calls([ranGreet, testerBody(head.slice(0, 12), "The CLI greets by name.")]),
+});
+recordRun("tester-proof-lines-2", {
+  "calls.jsonl": calls([
+    ranGreet,
+    testerBody(
+      "0000000000ab",
+      `Ran bun greet.ts Ada at ${head.slice(0, 12)}: it printed Hello, Ada.`
+    ),
+  ]),
+});
 // Pushed a change to the code under the PR's head before completing. The repository is staged
 // with every other run, in the hook above: `git init` here would make it whether or not a row of
 // this file runs.
@@ -6434,8 +6464,10 @@ fixRun("threads-closed-text-fixes-head-71", {
 // `packages/pi-shared/src/legion-claim-core.ts`), so the one reply it had made and the push it
 // never made answer nothing the loop asks of it. Six of the twelve runs of 2026-11-11 ended that
 // way and were scored as failures of the text under test. Its own output is `out-implementer.txt`,
-// where rig.sh's worker_boot moves it when the reviewer half boots.
+// where rig.sh's worker_boot moves it when the reviewer half boots. Its built-from names this
+// checkout, whose plugin's wording of that sentence the score reads (`claimBootOpening`).
 fixRun("threads-closed-text-fixes-head-72", {
+  "built-from": `checkout ${CHECKOUT}\n`,
   "calls.jsonl": calls(closedBoth.slice(0, 1)),
   "out-implementer.txt":
     "[legion] claim boot failed at claimRole after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED\nexit=1\n",
@@ -6454,9 +6486,31 @@ fixRun("threads-closed-text-fixes-head-72", {
 // The reading is the sentence wherever it falls: from the first character, and to the end of
 // the output when no line ends it.
 fixRun("threads-closed-text-fixes-head-100", {
+  "built-from": `checkout ${CHECKOUT}\n`,
   "calls.jsonl": calls(closedBoth.slice(0, 1)),
   "out-implementer.txt":
     "claim boot failed at claims/ready after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED",
+  "published.jsonl": bus(),
+  "daemon.log": calls([
+    { at: "2026-09-30T17:30:01.000Z", path: "/legion/v1/claims/register", status: 200 },
+  ]),
+});
+// base-2: head-72's death in a base run, worded as main ff2a10ef's plugin words it, with no step
+// and no daemon (packages/pi-shared/src/legion-claim-core.ts:97 there). Its built-from names a
+// checkout holding that module's sentence alone, as the label's own checkout holds it.
+stagings.push(() => {
+  mkdirSync(path.dirname(path.join(BASE_CLAIM_CHECKOUT, CLAIM_CORE)), { recursive: true });
+  writeFileSync(
+    path.join(BASE_CLAIM_CHECKOUT, CLAIM_CORE),
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the base module's source, verbatim.
+    "    host.log(\n      `claim boot failed after claims/register registered ${claim.claimToken}; ${host.stopping}: ${messageFor(error)}`\n    );\n"
+  );
+});
+fixRun("threads-closed-text-fixes-base-2", {
+  "built-from": `checkout ${BASE_CLAIM_CHECKOUT}\n`,
+  "calls.jsonl": calls(closedBoth.slice(0, 1)),
+  "out-implementer.txt":
+    "[legion] claim boot failed after claims/register registered legion-skills1-lweval-1-implementer; exiting so the daemon launches it again: ECONNREFUSED\nexit=1\n",
   "published.jsonl": bus(),
   "daemon.log": calls([
     { at: "2026-09-30T17:30:01.000Z", path: "/legion/v1/claims/register", status: 200 },
@@ -7088,6 +7142,15 @@ test("a push that changes the code under the PR's head fails the proof", () => {
   expect(out).toContain("the push changed [greet.ts]");
 });
 
+// Catches: the tester's check line read past the part both labels' Dispatch print alike, so a
+// head run's reading that names the head stands in for a commit the line's `at` never named, a
+// pass only the head label's line can earn, while the base's line, ending in the check's words,
+// is held to its `at` alone (score.ts's TESTER_LINE).
+test("tester-proof: the check line's commit is its `at`, whatever tail the label's Dispatch prints", () => {
+  expect(out).toMatch(/tester-proof-lines-1\tpass=true\t.* testerLine=true ownHead=true /);
+  expect(out).toMatch(/tester-proof-lines-2\tpass=false\t.* testerLine=true ownHead=false /);
+});
+
 // Catches: a scorer that reads the pull request's state, which the stand-in's static routes
 // cannot show, instead of the submission the round made.
 test("reviewer-text-findings, text-only: an approval of the head carrying both findings passes", () => {
@@ -7359,6 +7422,23 @@ test("threads-closed: a claim boot sentence that is the half's whole output is r
   expect(out).toContain(
     "threads-closed-text-fixes-head-100\trig error: the agent of <run>/out-implementer.txt died in its claim boot, so nothing it did is its own behaviour: claim boot failed at claims/ready after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED (the run's last recorded daemon request: 2026-09-30T17:30:01.000Z)"
   );
+});
+
+// Catches: a base half that died in its claim boot scored as behaviour, because the score read
+// every run for this checkout's plugin's wording (`claim boot failed at <step> …`) and main
+// ff2a10ef's plugin words it `claim boot failed after claims/register registered …`. Each run is
+// read for its own label's wording, out of the checkout its built-from names.
+test("threads-closed: a base half that died in its claim boot, worded as its own plugin words it, is a rig error", () => {
+  expect(out).toContain(
+    "threads-closed-text-fixes-base-2\trig error: the agent of <run>/out-implementer.txt died in its claim boot, so nothing it did is its own behaviour: claim boot failed after claims/register registered legion-skills1-lweval-1-implementer; exiting so the daemon launches it again: ECONNREFUSED (the run's last recorded daemon request: 2026-09-30T17:30:01.000Z)"
+  );
+  expect(out).not.toMatch(/threads-closed-text-fixes-base-2\tpass=/);
+});
+
+// Catches: a reading of this checkout's module that misses the opening its plugin prints, which
+// would read every head run's claim boot sentence as none; a rewording there fails this row.
+test("the claim boot opening read out of this checkout is the one its plugin prints", () => {
+  expect(claimBootOpening(CHECKOUT)).toBe(CLAIM_BOOT_FAILED_OPENING);
 });
 
 // Catches: a scorer that counts a reply on each thread and never reads what it says, so a reply

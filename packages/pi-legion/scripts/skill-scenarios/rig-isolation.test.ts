@@ -195,8 +195,9 @@ put(
 );
 
 // The work directory: the label's profile, the batch's services file and provenance for it, its
-// Dispatch token, and the Dispatch server the batch built from the checkout (rig.sh's go_binary,
-// under build_dir), which the run-server.sh stand-in is given and does not run.
+// Dispatch token, and the Dispatch server the batch built from the label's checkout, which is the
+// rig's own here (rig.sh's go_binary, under build_dir), which the run-server.sh stand-in is given
+// and does not run.
 const work = path.join(scratch, "work");
 /** A label's built profile, with its Oh My Pi settings `settings` (the model route installers'). */
 function label(name: string, settings: string) {
