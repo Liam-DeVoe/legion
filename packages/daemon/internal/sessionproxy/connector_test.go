@@ -135,6 +135,66 @@ func TestTheConnectorSignsInAsTheServiceAccountItImpersonates(t *testing.T) {
 	}
 }
 
+// A proxy serves its generation for as long as the generation runs, which is days, and each
+// impersonated token lasts an hour. So each source must mint its token again through IAM
+// Credentials once the one it holds has expired: a source that keeps its first token (a static
+// one, or one given a fixed Lifetime, which the library never refreshes) hands the connector an
+// expired token at its first refresh after that hour, and every connection the generation opens
+// after it is refused. The fake's tokens expire within seconds, so each dial after the first one
+// finds both tokens expired; every Admin API call must still carry the impersonated tokens, never
+// the pod's own.
+func TestTheImpersonatedTokensAreMintedAgainOnceTheyExpire(t *testing.T) {
+	usePodCredentials(t)
+	const account = "legion-sessions@example-project.iam.gserviceaccount.com"
+	// The library takes a token as expired ten seconds before its expiry (oauth2's expiryDelta),
+	// and IAM's expireTime has whole seconds, so each token lasts between one and two seconds.
+	iam := &iamCredentialsFake{t: t, lifetime: 12 * time.Second}
+	admin := newAdminAPIFake(t)
+	opts, err := connectorOptions(context.Background(), account, option.WithHTTPClient(&http.Client{Transport: handlerTransport{iam}}))
+	if err != nil {
+		t.Fatalf("connectorOptions: %v", err)
+	}
+	dialer, err := cloudsqlconn.NewDialer(context.Background(), append(opts, cloudsqlconn.WithAdminAPIEndpoint(admin.url+"/"))...)
+	if err != nil {
+		t.Fatalf("NewDialer: %v", err)
+	}
+	defer func() { _ = dialer.Close() }()
+
+	mints := func(scopes []string) int {
+		n := 0
+		for _, r := range iam.requests() {
+			if r.account == account && slices.Equal(r.scopes, scopes) {
+				n++
+			}
+		}
+		return n
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for mints(apiScopes) < 2 || mints(loginScopes) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("after 20 s of dials, the API source minted %d tokens and the login source %d, want two each: a source that keeps its first token signs in with it after it expires; the fake saw %+v",
+				mints(apiScopes), mints(loginScopes), iam.requests())
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if conn, err := dialer.Dial(ctx, testInstance); conn != nil {
+			_ = conn.Close()
+		} else if err == nil {
+			t.Fatal("Dial returned neither a connection nor an error")
+		}
+		cancel()
+		time.Sleep(time.Second)
+	}
+
+	for _, c := range admin.requests() {
+		if want := "Bearer " + impersonatedAPIToken; c.authorization != want {
+			t.Errorf("the API source signed %s with %q after its token expired, want %q", c.path, c.authorization, want)
+		}
+		if c.path == generateEphemeralCertPath && c.accessToken != impersonatedLoginToken {
+			t.Errorf("the login source gave generateEphemeralCert the access_token %q after its token expired, want %q", c.accessToken, impersonatedLoginToken)
+		}
+	}
+}
+
 // usePodCredentials makes a credential file of the test's own the pod's credentials
 // (GOOGLE_APPLICATION_CREDENTIALS). The file names a service account with a key the test generates
 // and a token_uri at a server of the test's own, which answers every token request with podToken.
@@ -182,9 +242,12 @@ type tokenRequest struct {
 
 // iamCredentialsFake is the IAM Service Account Credentials API, served in process through
 // handlerTransport. It answers generateAccessToken for any account with the token for the scopes
-// the request asks for, records each request, and fails the test on any other request.
+// the request asks for, records each request, and fails the test on any other request. Each token
+// expires lifetime after it is minted, or one hour after when lifetime is zero, which is what IAM
+// Credentials gives a request that names no lifetime.
 type iamCredentialsFake struct {
-	t *testing.T
+	t        *testing.T
+	lifetime time.Duration
 
 	mu    sync.Mutex
 	asked []tokenRequest
@@ -223,7 +286,11 @@ func (f *iamCredentialsFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown scopes", http.StatusBadRequest)
 		return
 	}
-	writeJSON(f.t, w, map[string]string{"accessToken": token, "expireTime": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+	lifetime := f.lifetime
+	if lifetime == 0 {
+		lifetime = time.Hour
+	}
+	writeJSON(f.t, w, map[string]string{"accessToken": token, "expireTime": time.Now().Add(lifetime).UTC().Format(time.RFC3339)})
 }
 
 func (f *iamCredentialsFake) requests() []tokenRequest {
