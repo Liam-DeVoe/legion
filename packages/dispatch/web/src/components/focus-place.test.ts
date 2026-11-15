@@ -604,3 +604,52 @@ test("a dialog hidden while it stays mounted hands the focus back to its opener"
     expect(opener).toHaveFocus();
   });
 });
+
+// (z) The same loss lands on the same control in every engine. Two controls at the end of a
+// region go in one commit, the last holding the focus. Chromium fires a `focusout` while both
+// are still counted, Firefox and WebKit fire none and the rescue reads the removal; the reader
+// pressed the same thing either way. Measured by hand on dispatch:local at c3373441, INFRA-3135
+// round 8: with the project List's last two pager controls taken away, Firefox and WebKit land
+// on "‹ Previous", the control before them, and Chromium on the page's search box; in the Inbox
+// drawer, Firefox and WebKit on "Decline to answer" and Chromium on Close at the drawer's top.
+test("two controls taken away together at a region's end land the focus on one control, focusout or none", async () => {
+  /** Builds the region, takes its last two controls away while the last holds the focus, and
+   *  answers the label of the control the rescue landed on. */
+  const landing = async (
+    region: () => HTMLElement,
+    withFocusout: boolean
+  ): Promise<string | null | undefined> => {
+    let label: string | null | undefined;
+    await withRescue(async () => {
+      const inside = region();
+      const controls = ["One", "Two", "Three", "Four", "Five"].map((name) =>
+        buttonIn(inside, name)
+      );
+      const [, , , fourth, fifth] = controls;
+      fifth?.focus();
+      const leave = () => {
+        fifth?.remove();
+        fourth?.remove();
+      };
+      if (withFocusout) lose(fifth as HTMLElement, leave);
+      else leave();
+      await settled();
+      label = document.activeElement?.textContent;
+    });
+    return label;
+  };
+  const inMain = () => mainOf().main;
+  const inDialog = () => {
+    mainOf("Before");
+    const dialog = document.createElement("div");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("role", "dialog");
+    document.body.append(dialog);
+    return dialog;
+  };
+  for (const region of [inMain, inDialog]) {
+    const chromium = await landing(region, true);
+    const firefox = await landing(region, false);
+    expect(chromium).toBe(firefox);
+  }
+});
