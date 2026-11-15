@@ -204,13 +204,14 @@ export default defineConfig({
     // Every size here was measured with `bun run build:web` on 2026-11-15, at this head. The
     // largest chunk is ECharts (an `index-*.js` of 1,134,772 bytes raw), which only the
     // Delivery page loads, and the entry - the one `assets/index-*.js` that dist/index.html
-    // names - is 497,173 bytes, down from the 1,050,950 the default branch's own build writes
+    // names - is 486,666 bytes, down from the 1,050,950 the default branch's own build writes
     // the same day, before dispatch://INFRA-1109 split the
     // shell: the Inbox and its peek, the ask card, the search bar, the Create issue dialog,
-    // the shortcut sheet, the reference-preview layer and the event-refresh map are each a
+    // the shortcut sheet, the reference-preview layer, the event-refresh map and the headless
+    // Markdown engine the shell warms at boot are each a
     // chunk of their own now, and `@legion/contracts`' subpaths keep that package's reference
     // table and zod's schema modules out of a page that reads neither - in the editor's chunk
-    // too (`ask-content-*.js`, 469,396 bytes), which imports that package by subpath alone
+    // too (`ask-content-*.js`, 470,723 bytes), which imports that package by subpath alone
     // (`packages/proof-editor/src/block-pointers.ts`).
     // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and `bun run
     // check:asset-sizes` reads it again; this `chunkSizeWarningLimit` is Vite's own warning
@@ -218,7 +219,7 @@ export default defineConfig({
     // beautiful-mermaid and ELK live only in the Mermaid worker's bundle
     // (features/refs/mermaid-render.worker.ts, 1,565,608 bytes), fetched once a body or a
     // document holds a mermaid block; Vite emits it as an asset and holds it to no chunk limit.
-    // The editor's lazy chunk (`lib-*.js`, 208,249 bytes) carries none of the renderer.
+    // The editor's lazy chunk (`lib-*.js`, 208,971 bytes) carries none of the renderer.
     chunkSizeWarningLimit: 1200,
     emptyOutDir: true,
   },

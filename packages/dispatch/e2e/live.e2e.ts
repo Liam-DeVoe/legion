@@ -734,8 +734,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // the viewer's state read again once that write lands.
     `/api/v1/me/issues/${issue.key}/state`,
     "/api/v1/me/state",
-    // The one block-schema fetch every document surface shares for the session.
-    "/api/v1/schema/blocks",
+    // The block schema is NOT in this set, and not because the landing carries it: the page's
+    // own build carries it (`web/src/features/doc/schema.ts`, `compiledBlockSchema`), so no
+    // document surface asks `/api/v1/schema/blocks` for it at all.
     // The navigation rail's Priorities entry is NOT in this set. Its badge is the two fault
     // counts added (`?summary=true` answers those two numbers and neither fault list), and the
     // landing carries those two counts and seeds them under the key the rail reads them by

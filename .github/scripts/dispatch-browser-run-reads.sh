@@ -372,8 +372,8 @@ case "$mode" in
     # measurement is a figure the fleet decides. On 2026-11-15 two runs of one tree cost 2,252
     # and 2,450 s (43664675139, 43667557013), whose real-stack row medians were 2,746 and
     # 3,126 ms: the lane's cost tracked the runner and not the rows. The default branch moved
-    # with it, as it always does - its four green merge-queue runs of that day cost 3,038,
-    # 3,059, 3,122 and 3,173 s (43651772530, 43599674489, 43618438852, 43654768102) - which is
+    # with it, as it always does - the green merge-queue runs of that day cost 2,975 to 3,181 s
+    # (43670163444, 43675730856, 43673644573, 43673491600, 43675808276) - which is
     # why the ratio is what R5 and R4 read and this ceiling is not.
     # The pull-request lane keeps 900 s, since the default branch runs no such lane and there
     # is no same-day figure to take a ratio against.

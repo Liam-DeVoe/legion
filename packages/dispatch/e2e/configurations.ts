@@ -249,8 +249,8 @@ export function tagged(tag: string): RegExp {
  *
  *  An empty list is a run that names no project, which is every DEFAULT project of its mode:
  *  the three wall-clock projects below carry `default: false` and are outside it. At this head
- *  `--list` alone lists 1,408 rows in 198 files, and `--list --project='*'` lists the whole
- *  suite's 1,459 in 201. Every
+ *  `--list` alone lists 1,425 rows in 199 files, and `--list --project='*'` lists the whole
+ *  suite's 1,476 in 202. Every
  *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
  *  (`e2e/playwright-argv.ts`), because a token that reads like a flag of this run may be some
  *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output

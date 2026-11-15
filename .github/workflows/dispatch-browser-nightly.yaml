@@ -87,8 +87,9 @@ jobs:
   # Both crons start both jobs, since a schedule starts a workflow and not a job, so the 13:41
   # run also runs the full lane. That is a second full lane a day on a repository whose nightly
   # is one, which is the price of keeping this job dispatchable before its own merge; it is
-  # the same six runners for the same ten minutes, and `concurrency` keeps it from overlapping
-  # the 02:17 run.
+  # the same eight machines for the same quarter of an hour, which the full lane's own runs at
+  # this tree read as 15 to 18 minutes of wall time, and `concurrency` keeps it from
+  # overlapping the 02:17 run.
   #
   # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a step's
   # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,

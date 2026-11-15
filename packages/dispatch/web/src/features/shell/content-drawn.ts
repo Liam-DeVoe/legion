@@ -28,10 +28,10 @@ import { afterNextPaint } from "./after-next-paint";
  * `preloadRouteChunk` in `app.tsx`, before React renders). Every other landing holds nothing,
  * and its shell starts them after its first paint, as before. The hold ends at the first of:
  *
- * - the live document drew, or it cannot draw: a failed admission, a failed load, a block
- *   schema that could not be read, or the document left the page (`contentDrawn`, from
- *   `ProofDocument.tsx`); the issue page and the document page end it too when their reads say
- *   they draw no document at all (`useEndHoldWhen`);
+ * - the live document drew, or it cannot draw: a failed admission, an admission that found
+ *   content this build cannot read yet, a failed load, or the document left the page
+ *   (`contentDrawn`, from `ProofDocument.tsx`); the issue page and the document page end it too
+ *   when their reads say they draw no document at all (`useEndHoldWhen`);
  * - the reader pressed a key or a pointer anywhere. That is the reader asking the page for
  *   something, and what they ask for may be the margin or a reference's card;
  * - `HOLD_LIMIT_MS` passed since the hold began. That is for a document that neither draws nor
@@ -110,9 +110,8 @@ export function contentDrawn(): void {
 }
 
 /** Ends the hold once `drawsNoDocument` is true. For a page that learns from its own reads that
- *  it will not draw the live document its address named - the issue page, the document page,
- *  and a document whose block schema could not be read - since nothing else would end the hold
- *  before the reader's first key or click. */
+ *  it will not draw the live document its address named - the issue page and the document page -
+ *  since nothing else would end the hold before the reader's first key or click. */
 export function useEndHoldWhen(drawsNoDocument: boolean): void {
   useEffect(() => {
     if (drawsNoDocument) contentDrawn();

@@ -23,18 +23,22 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * THIS BUDGET REFUSED THIS BRANCH'S OWN BUILD when it was written, on purpose: the entry was
  * 1,028,690 bytes then, and a budget written only once the number already fits is a budget
  * nobody has seen refuse anything. The shell was split after it (R13 of the same spec), and
- * `bun run build:web` at this head writes an entry of 497,173 bytes (the one
+ * `bun run build:web` at this head writes an entry of 486,666 bytes (the one
  * `web/dist/assets/index-*.js` that `dist/index.html` names, measured 2026-11-15), which leaves
- * 2,827 bytes of room under this budget. The split itself wrote 491,264; the 5,909 bytes since
- * are what lets an issue page wait for its document rather than fetch beside it: the loaders of
- * the issue page's tab chunks (`features/issue/tab-chunks.ts`), the shell's hold on its extras
- * (`features/shell/content-drawn.ts`), and the chunk component that draws a chunk already in
- * with no `Suspense` stage (`features/shell/chunk-component.tsx`). No hash is recorded with it: that hash carries the
- * build id, which falls back to the clock (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two
- * builds of one tree write the same bytes under two names. A change that adds to what every
- * page parses spends that room and then
- * fails `bun run check:asset-sizes`, which is the point: the next shell boundary is cheaper to
- * find now than the 233,923 bytes above were.
+ * 13,334 bytes of room under this budget. The split itself wrote 491,264; the 5,909 bytes after
+ * it are what lets an issue page wait for its document rather than fetch beside it: the loaders
+ * of the issue page's tab chunks (`features/issue/tab-chunks.ts`), the shell's hold on its
+ * extras (`features/shell/content-drawn.ts`), and the chunk component that draws a chunk already
+ * in with no `Suspense` stage (`features/shell/chunk-component.tsx`). A forward merge of the
+ * default branch then put 3,047 more in the shell's path, and this budget refused that build at
+ * 500,220 bytes, as it is here to. The boundary that answered it is the headless Markdown
+ * engine, whose one importer in the entry was the warm every page starts at boot: fetched there
+ * as a chunk of its own (`features/shell/DeploymentResilience.tsx`), it took 13,554 bytes out.
+ * No hash is recorded with it: that hash carries the build id, which falls back to the clock
+ * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
+ * under two names. A change that adds to what every page parses spends that room and then fails
+ * `bun run check:asset-sizes`, which is the point: the next shell boundary is cheaper to find
+ * now than the 233,923 bytes above were.
  *
  * The budget is the entry's alone and not every chunk's: the Mermaid worker (1,565,608 bytes)
  * and the ECharts chunk (1,134,772) are larger and no landing fetches either, so a budget over
@@ -42,7 +46,7 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * `MAX_ASSET_BYTES` above is what holds the whole build to what the server will keep.
  *
  * Read it again: `bun run build:web && bun run check:asset-sizes` in `packages/dispatch`. The
- * three sizes of this head were measured that way on 2026-11-12; the two older entry sizes are
+ * three sizes of this head were measured that way on 2026-11-15; the two older entry sizes are
  * `web/vite.config.ts`'s own record of 2026-10-29 and 2026-11-11.
  */
 export const MAX_ENTRY_BYTES = 500_000;

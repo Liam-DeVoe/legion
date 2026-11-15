@@ -1114,42 +1114,6 @@ test("a live document whose editor fails to download ends the hold", async ({ br
   });
 });
 
-// The editor is built from the server's block schema (`web/src/features/doc/ProofDocument.tsx`),
-// so a page that cannot read it draws no document, and says "Reload to edit." in its place. That
-// ends the shell's hold as a failed editor does, so the margin comes in within two seconds of the
-// page saying so and not at `HOLD_LIMIT_MS`.
-test("a live document whose block schema cannot be read ends the hold", async ({ browser }) => {
-  await createProject({ key: "NOSCHEMA", name: "No schema" });
-  const issue = await createIssue({ project: "NOSCHEMA", spec: "# Spec\n", title: "No schema" });
-
-  await withAlice(browser, async (page) => {
-    // Every read of the schema fails, the page's retries of it too.
-    await page.route(/\/api\/v1\/schema\/blocks(\?|$)/u, (route) =>
-      route.fulfill({
-        body: JSON.stringify({ code: "INTERNAL", error: "the schema could not be read" }),
-        contentType: "application/json",
-        status: 500,
-      })
-    );
-    // The page asks for the schema twice more, each `QUERY_RETRY_DELAY_MS` after the last,
-    // before it says it cannot (`web/src/api/query-client.ts`). The row moves the page's clock
-    // through those waits rather than wait.
-    await page.clock.install();
-    await page.goto(`/issues/${issue.key}`);
-    const reload = page.getByText("Reload to edit.");
-    await expect
-      .poll(async () => {
-        await page.clock.runFor(QUERY_RETRY_DELAY_MS);
-        return reload.isVisible();
-      })
-      .toBe(true);
-    // Well under `HOLD_LIMIT_MS`: a failed schema read that never ends the hold gets its margin
-    // only at that limit, and fails here.
-    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible({ timeout: 2_000 });
-    await expect(documentEditor(page).locator("[data-block-id]")).toHaveCount(0);
-  });
-});
-
 // While the shell holds the margin, the page keeps the margin's column empty and as wide as the
 // margin will be (`MarginFrame`, `web/src/features/margin/MarginColumn.tsx`), so a document drawn
 // before the margin keeps its width when the margin arrives. The row holds the margin's chunk on

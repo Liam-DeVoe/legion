@@ -50,9 +50,11 @@ var landingPages = []string{landingPageIssue, landingPageBoard, landingPageInbox
 // landingResponse is the body GET /api/v1/landing answers: the viewer, the shell every page
 // draws, and the page the caller opened.
 //
-// Every part but the viewer is answered null when it could not be read - a caller who may not
-// read it, an issue key that is no issue, a slug that is no document, a listener that did not
-// answer - rather than refusing the whole landing. The dashboard reads anything the landing left
+// Every part but the viewer is answered null when it could not be read - an issue key that is
+// no issue, a slug that is no document, a listener or a broker that did not answer, a read that
+// failed - rather than refusing the whole landing. No GET route of this server is
+// project-scoped (project_scope.go), so no null here says anything about what the caller may
+// see. The dashboard reads anything the landing left
 // null from the per-resource route it stands in for, so a null costs the page one wave and never
 // draws a wrong page. The viewer is the one part that is not optional: a caller with no identity
 // is answered the 401 the `me` routes answer, which the dashboard already reads as signed out,
@@ -386,8 +388,9 @@ func (s *server) landingCredentialRequests(ctx context.Context, caller model.Act
 	return &pending
 }
 
-// landingIssuePage reads what the issue page draws. An issue the caller cannot read leaves every
-// part of the page null but the ones that are not the issue's: their routes answer them anyway.
+// landingIssuePage reads what the issue page draws. A key that is no issue, or a read that
+// failed, leaves every part of the page null but the ones that are not the issue's: their
+// routes answer them anyway.
 func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key string, trees bool) *landingIssuePage {
 	page := &landingIssuePage{}
 

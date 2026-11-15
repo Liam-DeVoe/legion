@@ -10,7 +10,6 @@ import {
   primaryButtonHoverBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import * as markdownEngine from "../refs/markdown-engine";
 
 // The tab's recovery reloads, as a JSON array of the epoch-millisecond times they started: a chunk
 // that failed to download reloads the page while fewer than CHUNK_RELOAD_BUDGET of them fall in the
@@ -364,9 +363,32 @@ export function DeploymentResilience(): ReactNode {
   const dismissed = useRef(false);
   const lastVersionCheckAt = useRef(0);
 
+  // The headless Markdown engine, warmed once this component has painted. Its module
+  // (`features/refs/markdown-engine.ts`) is fetched here rather than imported, and with the
+  // typed-block drawing it alone imports it is a chunk of its own (`markdown-engine-*.js`, beside
+  // the parse worker's queue and the stored-tree builder it shares with the editor's chunks): this
+  // component is in the entry chunk, which every page parses before it draws anything, and this
+  // warm was the engine's one importer there. The entry fell by 13,554 bytes when it stopped
+  // importing it (measured 2026-11-15, dispatch://INFRA-1109). Every surface that draws a body
+  // imports the engine itself, from a route or a host that is a chunk of its own already, so a
+  // page that draws a body has the engine's chunk come down with that chunk, whatever this warm
+  // does.
+  //
+  // What a reader loses by its being late: nothing they can point at. The warm now waits on one
+  // more download, the engine module's own, which the chunk of a page that draws a body brings
+  // down with it anyway - on a cold landing beside the landing read (`app.tsx`,
+  // `preloadRouteChunk`) - and no body draws before that read has answered.
+  //
+  // Under `prefetchChunk`: nobody is waiting on this download, since a body that draws gets the
+  // engine through its own chunk, under `renderChunk`, and that failure is the one that reloads.
+  // The warm itself runs outside it, as it did when this module imported the engine statically.
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void markdownEngine.warmMarkdownRenderer().catch(() => undefined);
+      prefetchChunk(() =>
+        import("../refs/markdown-engine").then((markdownEngine) => {
+          void markdownEngine.warmMarkdownRenderer().catch(() => undefined);
+        })
+      );
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);

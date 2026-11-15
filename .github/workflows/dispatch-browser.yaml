@@ -166,6 +166,8 @@ jobs:
     # build rather than the warm one, as the multiprocess job's Playwright install step below
     # carries its own retry arithmetic rather than its measured maximum.
     timeout-minutes: 10
+    outputs:
+      connections: ${{ steps.connections.outputs.connections }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -251,6 +253,18 @@ jobs:
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-web"
           cp -R packages/dispatch/web/dist "$RUNNER_TEMP/dispatch-e2e-web/"
           [ -z "$rollout" ] || cp -R packages/dispatch/web/dist-b "$RUNNER_TEMP/dispatch-e2e-web/"
+      # The stacks' connection limit, which e2e/harness-postgres.ts would otherwise compile and
+      # print with `go run` (DISPATCH_E2E_PG_CONNECTIONS): read here, once for the run, and taken
+      # from this output by every job that starts stacks. The shard and alone jobs' containers
+      # have no Go, and the multiprocess, embedder and visual jobs set none up, so this is the
+      # one job of the file that runs it.
+      - name: Read the connections each stack's Postgres must allow
+        id: connections
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
       # One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
       # failed jobs re-runs a shard or an alone leg without this one, and that attempt must find
       # the artifact this job uploaded on the attempt before.
@@ -368,20 +382,18 @@ jobs:
     #   Complete job                                           0
     #   the whole job                                        835
     #
-    # The rule is in this file's head. The browser step's 769 s is shard 1 of run 43347417247
-    # (job 131631089585), and shard 2's own maximum is 750 s (job 131300609469, run
-    # 43251567200). One later run went further: shard 1 of run 43350453803 (job 131642902948,
-    # 2026-11-13, at the head before this budget) was stopped by the old 13 minutes, so its
-    # step took at least 780 s, and how much more nobody can read. Taken at that floor:
-    # 780 x 1.15 = 897 s -> 15 min. The job's budget is that 900 s plus the maxima
-    # above of every step without a budget, which sum to 112 s - each of the three uploads
-    # counted, since each is a step: 3 + 2 + 4, not 4. 900 + 112 = 1,012 s, 16 min 52 s, rounded
-    # up to the 17 minutes below. That is a backstop above the sum of the step budgets, as this
-    # file's head says a job budget is, and above the 860 s the slowest leg took whole: job
-    # 131642902948 itself, the leg the old 13 minutes stopped, from 02:19:36 to 02:33:56
-    # (`started_at` and `completed_at` of `gh api
-    # repos/cybermonklabs/legion/actions/jobs/131642902948`). Of the legs that ran to their end,
-    # the slowest took 835 s whole (job 131631089585).
+    # The rule is in this file's head. The step's maximum at this tree is 792 s: shard 1 of run
+    # 43674112121 (job 132690968751, 2026-11-15), above the 761 s of run 43676043057 (job
+    # 132697146313) and the 725 s of 43672161759 (job 132685197177), and above every earlier
+    # reading - 769 s in shard 1 of run 43347417247 (job 131631089585), 750 s in shard 2 (job
+    # 131300609469, run 43251567200), and the 780 s floor of job 131642902948, which the old
+    # 13 minutes stopped before its end. Taken at 792 s: 792 x 1.15 = 910.8 s -> 16 min. The
+    # job's budget is that 960 s plus the maxima above of every step without a budget, which
+    # sum to 112 s - each of the three uploads counted, since each is a step: 3 + 2 + 4, not 4.
+    # 960 + 112 = 1,072 s, 17 min 52 s, rounded up to the 18 minutes below. That is a backstop
+    # above the sum of the step budgets, as this file's head says a job budget is, and above
+    # the 862 s the slowest leg took whole at this tree (job 132690968751), and the 860 s of
+    # job 131642902948, the leg the old 13 minutes stopped.
     #
     # The readings these replace were taken at other shapes, and no number here rests on them
     # now. The browser step's 13 minutes were derived by halving the browser steps of four legs,
@@ -392,16 +404,16 @@ jobs:
     # the install runs, and `bun install --frozen-lockfile`, 62 s there and 11 s here.
     #
     # The rows: listed at this file's head with `bunx playwright test --config
-    # e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,477 rows in 202
+    # e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,476 rows in 202
     # files (`--project='*'`), which is two listings rather than one: the three `-alone`
     # projects are out of the default selection since dispatch://INFRA-1280, so a command that
-    # names no project lists 1,426 rows in 199 files and one that names those three lists the
+    # names no project lists 1,425 rows in 199 files and one that names those three lists the
     # other 51, in 3 files. The ten projects this job's shard command names on the full lane
-    # hold 1,404 rows in 198 files. The four the pull-request lane names hold 1,303 in 196, of
+    # hold 1,403 rows in 198 files. The four the pull-request lane names hold 1,302 in 196, of
     # which that lane's `@pr` grep selects 289, in 148 files. The two `visual` projects hold
     # 22, which the visual job runs one row at a time, and the 51 wall-clock rows are the alone
     # job's.
-    timeout-minutes: 17
+    timeout-minutes: 18
     strategy:
       fail-fast: false
       # Two legs. The count is written here, in the `--shard` denominator of the browser step
@@ -574,12 +586,13 @@ jobs:
         # checkout would leave it dirty afterwards. The blob report goes beside the list
         # reporter's output, so a green run reports what it ran too.
         #
-        # The budget below is the 15 minutes the job's head gives this step by the rule in this
-        # file's head: the step's floor in shard 1 of run 43350453803 (job 131642902948), which
-        # the old 13 minutes stopped, is 780 s, above the 769 s maximum of the legs that ran to
-        # their end (job 131631089585), and 780 x 1.15 = 897 s, which rounds up to 15 min. The
-        # job's head lists the runs and how the legs' times moved.
-        timeout-minutes: 15
+        # The budget below is the 16 minutes the job's head gives this step by the rule in this
+        # file's head: the step's maximum at this tree is 792 s, shard 1 of run 43674112121
+        # (job 132690968751), above the 761 s and 725 s of the other two full runs and above
+        # every earlier reading, the 780 s floor of job 131642902948 among them, and
+        # 792 x 1.15 = 910.8 s, which rounds up to 16 min. The job's head lists the runs and
+        # how the legs' times moved.
+        timeout-minutes: 16
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
           # makes (mkdtempSync in os.tmpdir(), e2e/harness-pool.ts:143) among it, which is what
@@ -603,6 +616,8 @@ jobs:
           # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
           # container has no docker to run the image provider's digest with.
           export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          # Read in the binaries job, since this container has no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
           # What the binaries job built, which run-server.sh and run-broker.sh
           # execute instead of building: the server by its path, the broker's three by the
           # directory that holds them.
@@ -989,6 +1004,8 @@ jobs:
           # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
           # container has no docker to run the image provider's digest with.
           export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          # Read in the binaries job, since this container has no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
           # What the binaries job built, which run-server.sh and run-broker.sh
           # execute instead of building: the server by its path, the broker's three by the
           # directory that holds them.
@@ -1287,6 +1304,8 @@ jobs:
           # body even in a comment, so none is written in one.
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          # Read in the binaries job, since this job sets up no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
           bun run e2e:multiprocess:run
         working-directory: packages/dispatch
       - name: Browser-test a sign-in across two server processes
@@ -1309,6 +1328,8 @@ jobs:
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          # Read in the binaries job, since this job sets up no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
           export DISPATCH_E2E_SIGNIN_ISSUER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dev-oidc-issuer"
           DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
         working-directory: packages/dispatch
@@ -1446,6 +1467,8 @@ jobs:
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
           export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+          # Read in the binaries job, since this job sets up no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
           bun run e2e:embedder:run
         working-directory: packages/dispatch
       # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
@@ -1626,6 +1649,8 @@ jobs:
           # the fake broker, which is what starts the real one (e2e/harness-real-broker.ts).
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
           export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+          # Read in the binaries job, since this job sets up no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
           # One stack, which e2e/visual-run.sh starts on the host and stops however it ends: the
           # Playwright run inside the container reads DISPATCH_E2E_REUSE_SERVERS=1 among that
           # stack's variables and starts none of its own. Each project of the two runs one
