@@ -5920,7 +5920,7 @@ A client waits `helper.BrokerCallWait` (30 s, the dial included) for the answer 
 `agent-secrets enroll --helper` on each of its `DRAINING` tries, `agent-secrets unenroll --helper`, and the `login` call of `agent-secrets machine login`.
 `login-status` reads the helper's own state and calls no broker, so each `login-status` call still waits 10 s.
 `DefaultBrokerCallBound` is `BrokerCallWait` less 10 s, so the answer reaches every client inside its 30 s: a dial of up to 2 s (`helper.Call`), the 20 s bound and the 5 s to write the answer come to 27 s.
-A released `agent-secrets` from before this answer also waits 30 s for `enroll --helper` and `unenroll --helper` (every release from `legion-envoy-v29.54.0` to `legion-envoy-v30.20.0`, read on 2026-11-15, `v30.18.1` among them, which the operator's dotfiles pinned that day), so it gets the answer too.
+A released `agent-secrets` from before this answer also waits 30 s for `enroll --helper` and `unenroll --helper` (every release that has them, `legion-envoy-v10.0.0` to `legion-envoy-v30.20.0`, read on 2026-11-15), so it gets the answer too.
 
 Each broker-call answer says whether the broker's outcome is known, by one rule (`requestReach.settle`, `broker.go`), which reads a trace on the op's request (`traceReach`).
 A 4xx is known, because the broker decides each refusal before it writes anything.
@@ -5967,7 +5967,7 @@ Against such a helper, a new `enroll --helper` or `unenroll --helper` prints its
 But that helper can still answer `ENROLL_FAILED` for a failure after the broker wrote, for example a 502 from a front door.
 A `machine login` from before `BrokerCallWait` waits 10 s for the `login` answer, the dial included, so against a broker slower than about 8 s it can close before the helper answers.
 If the broker answers within the bound, the helper records the login as pending, and the next `machine login` shows its code.
-An `enroll --helper` attempt now ends by about 23 s (a dial of up to 2 s and the answer at 21 s); against a helper from before these answers it lasted as long as the broker took, up to the client's 30 s.
+Against a helper with these answers, an `enroll --helper` attempt ends by about 23 s (a dial of up to 2 s and the answer at 21 s); against a helper from before them it lasts as long as the broker takes, up to the client's 30 s.
 A broker slower than the 20 s bound still leaves a launcher with no enrollment id, and a launcher's close revokes only an id that it recorded.
 So such an enrollment ends with its lease, unless the launcher runs the same enroll again.
 The same enroll answers the first enrollment only under the same launcher credential: under another (a person's sign-in revoked between two attempts) it makes a second enrollment, and the first one ends with its lease.

@@ -4,10 +4,9 @@
 // `agent-secrets enroll --helper` against a real helper and a real broker (brokertest.NewRig)
 // that is slow to answer. This file uses nothing a release before the helper's broker-call bound
 // lacks, so the same row also runs against such a release, where it fails: that helper gave itself
-// 5 s to write its answer but waited up to 30 s for each request it sent the broker, so when the
-// broker answered after those 5 s it could not write the answer and closed the connection without
-// one, while the broker made the enrollment the client was never told about. Linux-only for the
-// real helper's pidfd pinning.
+// 5 s to write its answer, so when the broker answered after those 5 s (8 s here) it could not
+// write the answer and closed the connection without one, while the broker made the enrollment
+// the client was never told about. Linux-only for the real helper's pidfd pinning.
 package main
 
 import (
