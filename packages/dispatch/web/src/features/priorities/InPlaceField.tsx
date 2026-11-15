@@ -10,8 +10,8 @@ import { useInPlaceDraft } from "./useInPlaceDraft";
 /**
  * A one-line field edited where it is read - a title, or an owner picked from what other rows
  * hold - saved as it is written (`useInPlaceDraft`), and at once on Enter, which leaves the
- * field and so writes once, as leaving it any other way does. A priority's description, which
- * is markdown a person writes, is the shared text field instead (`PriorityDescription`).
+ * field as leaving it any other way does. A priority's description, which is markdown a person
+ * writes, is the shared text field instead (`PriorityDescription`).
  */
 export function InPlaceField({
   autoFocus = false,

@@ -25,6 +25,7 @@ import { MentionField } from "../conversation/MentionField";
 import { useDialog } from "../shell/useDialog";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
+import { useQuestionLabel } from "./question-label";
 
 /**
  * What **Decline to answer** opens: the person's note, which is optional, and the two controls.
@@ -178,11 +179,14 @@ export function DeclineControl({
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
   const [open, setOpen] = useState(false);
+  const question = useQuestionLabel(ask);
   // The dialog shows a refused decline itself, over the note it keeps, so the write is inline:
-  // the shell's indicator carries it only while it is out.
+  // the shell's indicator carries it only while it is out. Its label holds the question's
+  // plain-text projection, the words the card draws: the reading list's `write-label`
+  // (`DISPATCH_READING_SURFACES`) says why.
   const write = useOutstandingAnswerWrite({
     askId: ask.id,
-    label: () => `Decline of “${ask.question}”`,
+    label: () => `Decline of “${question.line()}”`,
     write: (input: DeclineAskInput, bounds) => decline(ask.id, input, bounds),
     onSettled: () => submitGuard.release(),
     onSuccess: (declined) => {
@@ -201,6 +205,7 @@ export function DeclineControl({
 
   return (
     <div className="mt-3">
+      {question.reads}
       <button
         className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
         disabled={write.isPending}

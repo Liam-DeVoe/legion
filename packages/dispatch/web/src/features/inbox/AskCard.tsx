@@ -362,6 +362,7 @@ export function AskCard({
     mutation,
     otherSelected,
     questionChoice,
+    questionReads,
     reasonRequired,
     requiresReason,
     selectRealOption,
@@ -664,6 +665,7 @@ export function AskCard({
   if (completed !== null) {
     return (
       <>
+        {questionReads}
         <AskCompletionCard
           answers={answers}
           artifactSlug={artifactSlug}
@@ -711,6 +713,7 @@ export function AskCard({
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
+      {questionReads}
       {hasUrgencyNotch ? (
         <span
           aria-hidden="true"

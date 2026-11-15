@@ -29,6 +29,7 @@ import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useQuestionLabel } from "./question-label";
 import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
 
 export type CreateReply = (
@@ -100,6 +101,7 @@ export function AskReplyComposer({
   const { sending } = useSending(mutationKey);
   const upload = useDraftUpload((text) => setBody((current) => appendToDraft(current, text)));
   const uploading = upload.pending > 0;
+  const question = useQuestionLabel(ask);
   // The form shows a refused reply itself, with Retry, under the draft it kept.
   const submit = useKeyedWrite({
     write: (text: string, bounds) => {
@@ -112,9 +114,9 @@ export function AskReplyComposer({
       return reply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
     },
     inline: true,
-    // The question goes in as the characters its author wrote: the reading list's `write-label`
-    // (`DISPATCH_READING_SURFACES`) says why.
-    label: () => `Reply on “${ask.question}”`,
+    // The question goes in as its plain-text projection, the words the card draws: the reading
+    // list's `write-label` (`DISPATCH_READING_SURFACES`) says why.
+    label: () => `Reply on “${question.line()}”`,
     mutationKey,
     onSuccess: (_comment, text) => {
       clearReplyDraft(ask.id, text);
@@ -134,6 +136,7 @@ export function AskReplyComposer({
 
   return (
     <form className="flex flex-col gap-2" onSubmit={submitReply}>
+      {question.reads}
       <MentionField
         body={body}
         disabled={sending}

@@ -1,21 +1,31 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
+import { jump, realClock } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
 import { InPlaceField } from "./InPlaceField";
+import { SAVE_AFTER_MS } from "./useInPlaceDraft";
 
 /**
  * The field as a page holds it: `value` is the text the server answered with, and it moves only
  * when something writes it — the reader's own write coming back, or another writer's. The two
  * buttons stand for those two moments, so a test says when each happens rather than waiting on
- * a mutation it cannot see.
+ * a mutation it cannot see. Every text the field wrote is recorded in `saves`, in order.
  */
-function Field(): ReactNode {
+function Field({ saves = [] }: { saves?: string[] }): ReactNode {
   const [value, setValue] = useState("Old name");
   const [sent, setSent] = useState<string>();
   return (
     <>
-      <InPlaceField label="Title" onSave={setSent} value={value} />
+      <InPlaceField
+        label="Title"
+        onSave={(next) => {
+          saves.push(next);
+          setSent(next);
+        }}
+        value={value}
+      />
       <button onClick={() => setValue(sent ?? value)} type="button">
         Land the write
       </button>
@@ -81,4 +91,88 @@ test("leaving the field by Tab writes what the reader typed once", async () => {
   await user.tab();
   expect(saves).toEqual(["Old new"]);
   view.unmount();
+});
+
+// The rest writes the text, and the write is a round trip: `value` is still the old text until
+// its answer lands. A reader who leaves inside that trip has written nothing new, so leaving
+// must not send the same text again. The clock is the test's, so the rest is crossed rather than
+// waited out.
+test("Enter after the typing rested writes what the reader typed once", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { field, saves, view } = recordingField();
+  try {
+    await user.type(field, " new");
+    await jump(SAVE_AFTER_MS + 1);
+    expect(saves).toEqual(["Old new"]);
+    await user.keyboard("{Enter}");
+    expect(saves).toEqual(["Old new"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+test("leaving by Tab after the typing rested writes what the reader typed once", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { field, saves, view } = recordingField();
+  try {
+    await user.type(field, " new");
+    await jump(SAVE_AFTER_MS + 1);
+    expect(saves).toEqual(["Old new"]);
+    await user.tab();
+    expect(saves).toEqual(["Old new"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// Once the write lands the text is the server's again, so what the reader types next is a new
+// text, written once however many times they rest and leave.
+test("after the write lands, the next text typed is written once", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const saves: string[] = [];
+  const view = render(<Field saves={saves} />);
+  const page = within(view.container);
+  const field = page.getByRole("textbox", { name: "Title" });
+  try {
+    await user.type(field, " one");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.click(page.getByRole("button", { name: "Land the write" }));
+    await user.type(field, " two");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.tab();
+    expect(saves).toEqual(["Old name one", "Old name one two"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// What the field last wrote stops counting once `value` moves: another writer may have changed
+// the text since, and a reader who writes their text back is changing it again.
+test("a text written before the value moved is written again when the reader writes it back", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const saves: string[] = [];
+  const view = render(<Field saves={saves} />);
+  const page = within(view.container);
+  const field = page.getByRole("textbox", { name: "Title" });
+  try {
+    await user.type(field, " one");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.click(page.getByRole("button", { name: "Land the write" }));
+    await user.click(page.getByRole("button", { name: "Write it elsewhere" }));
+    expect((field as HTMLInputElement).value).toBe("Written elsewhere");
+    await user.clear(field);
+    await user.type(field, "Old name one");
+    await user.tab();
+    expect(saves).toEqual(["Old name one", "Old name one"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
 });

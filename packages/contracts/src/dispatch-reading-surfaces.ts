@@ -104,8 +104,8 @@ export interface DispatchReadingSurfaceRow {
 const BROADCAST_REASON =
   "A broadcast is no record of the reference graph - the graph holds the copy each recipient got, never the broadcast - so a `#id` in it declares nothing and names nothing.";
 
-/** Why a title bar, an `<option>` and a write's label hold the characters they are given: each
- *  is an element that can hold no markup, and what goes in it is one line of text already. */
+/** Why a title bar and an `<option>` hold the characters they are given: each is an element that
+ *  can hold no markup, and what goes in it is one line of text already. */
 const NO_MARKUP_REASON =
   "The element holds no markup, and the line it shows is one line of text already - no markdown body to render or strip - so it goes in as the characters it is.";
 
@@ -502,12 +502,15 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     files: [
+      "packages/dispatch/web/src/features/inbox/question-label.ts",
       "packages/dispatch/web/src/features/inbox/useAskAnswerForm.ts",
       "packages/dispatch/web/src/features/inbox/AskThread.tsx",
+      "packages/dispatch/web/src/features/inbox/DeclineControl.tsx",
       "packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx",
     ],
     reach: "Any route, the Writes indicator's line for a write that is out",
-    reason: `${NO_MARKUP_REASON} A write's label is one line the Writes indicator and its refusals read as text, and it names which write this is, so it stays the words the reader was shown - never a title drawn over them.`,
+    reason:
+      "A write's label is one line the Writes indicator and its refusals read as text, naming which write this is, so it holds no markup. An ask's question is markdown, so a label on an ask draws the question's plain-text projection (`usePlainHeadline`, through `useQuestionLabel`): the words the card draws, formatting gone and each `dispatch://` address read as its target's name, never the question's source. An issue's title is one line of text already, so a new issue's label holds it as the characters it is.",
     record: false,
     rendered: false,
     surface: "write-label",

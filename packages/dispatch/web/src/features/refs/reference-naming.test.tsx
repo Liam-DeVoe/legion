@@ -117,9 +117,9 @@ test("the plain-text projection names a reference by its resolved name", async (
 
 // The projection reads the whole text unless its caller asks for the first line alone, which a
 // closed priority row does: the line is read from the parsed document, so its references are
-// still named, and the lines and blocks after it are not read at all. A heading's line and a
-// list's first line read the same way, and so does a block of HTML: its first line reads as its
-// literal characters, which is how the projection draws HTML.
+// still named, and nothing after the first line is drawn or has its references named. A
+// heading's line and a list's first line read the same way, and so does a block of HTML: its
+// first line reads as its literal characters, which is how the projection draws HTML.
 test("the plain-text projection reads the first line alone where it is asked to", async () => {
   const markdown = "Tied to **dispatch://CORE-1**\nhere.\n\n- A list after it";
   const view = draw(

@@ -583,8 +583,8 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   event of its own), and any other write every ancestor's detail (every write moves the issue's
   `updated_at`, the newest of which each ancestor's Children tab shows as its child's activity,
   and a status rolls up into their progress and child counts); a title or status move refreshes
-  `["issue-summary", K]`, the Reference picker's `["issues", P]` and the Agents page's
-  `["agents", "issue-picker"]`, and the pinned list when it holds K; a title, priority or assignee
+  `["issue-summary", K]` and the Agents page's `["agents", "issue-picker"]`, and the pinned list
+  when it holds K; a title, priority or assignee
   move refreshes the Inbox's thread reads when one of their rows is a thread on K
   (`inboxThreadRowsOf`; the Inbox's threads, below); the Inbox is refreshed when it holds a row of
   K and the write moved its
