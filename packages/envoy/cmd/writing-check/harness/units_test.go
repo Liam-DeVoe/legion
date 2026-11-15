@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -96,7 +97,8 @@ func TestProbeRows(t *testing.T) {
 }
 
 // TestAReplysOwnChecksDecide: a check the grader marks true fails the verdict whatever the
-// verdict field says, and an item the grader marks defined is no finding.
+// verdict field says; an item the grader marks defined, an item the text does not hold and a
+// second item of one quote are no findings.
 func TestAReplysOwnChecksDecide(t *testing.T) {
 	var g Grade
 	reply := `{"1_asked":"what it means","2_given":"the words again","3_restates_question":true,"4_points_elsewhere":false,` +
@@ -108,13 +110,24 @@ func TestAReplysOwnChecksDecide(t *testing.T) {
 		t.Errorf("an answer that restates the question: %+v", g)
 	}
 	g = Grade{}
-	reply = `{"undefined":[{"1_word":"session","2_defined_in_text":false,"3_defined_in_record":false,"4_common_meaning":true,"5_why":"w"},` +
-		`{"1_word":"zork","2_defined_in_text":false,"3_defined_in_record":false,"4_common_meaning":false,"5_why":"made up"}]}`
-	if err := judgementSpecs[JUndefined].read([]byte(reply), &g, ""); err != nil {
+	item := func(word string, common, reference bool) string {
+		return fmt.Sprintf(`{"1_word":%q,"2_defined_in_text":false,"3_defined_in_record":false,"4_common_meaning":%t,"5_reference_only":%t,"6_why":"w"}`, word, common, reference)
+	}
+	reply = `{"undefined":[` + strings.Join([]string{item("session", true, false), item("Zork", false, false), item("zork", false, false),
+		item("run.sh", false, true), item("quux", false, false)}, ",") + `]}`
+	if err := judgementSpecs[JUndefined].read([]byte(reply), &g, "The session built the **zork** with `run.sh`."); err != nil {
 		t.Fatal(err)
 	}
-	if g.Count != 1 || g.Items[0].Quote != "zork" || g.Dropped != 1 {
+	if g.Count != 1 || g.Items[0].Quote != "Zork" || g.Items[0].Note != "w" || g.Dropped != 3 || g.NotInText != 1 {
 		t.Errorf("the undefined words: %+v", g)
+	}
+	// The phrases judgement's candidates: the sentences that hold a verb of the definition,
+	// outside code, with the sentences next to them; a table cell and a list item are sentences.
+	text := "The run is green. This lands the change today.\n\n- The page lists `names` only.\n\n| Step | It shows the gap |\n\n```\nit names nothing\n```\n> The quote names it."
+	cands := phraseCandidates(text)
+	if len(cands) != 2 || cands[0].Sentence != "This lands the change today." || cands[0].Before != "The run is green." ||
+		cands[1].Sentence != "It shows the gap" {
+		t.Errorf("the candidates: %+v", cands)
 	}
 	// A reply missing a check is no reply of the schema.
 	if err := judgementSpecs[JAnswered].read([]byte(`{"7_reason":"r","8_answers":true}`), &Grade{}, ""); err == nil {

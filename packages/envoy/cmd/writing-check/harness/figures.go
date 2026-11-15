@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -17,6 +18,9 @@ type Figures struct {
 	Models []ModelUse `json:"models"`
 	// Prices are the price table's sources.
 	Prices map[string]PriceSource `json:"price_sources"`
+	// Repeatability is the grader's repeatability that score --repeatability names, which
+	// scores.md gives beside each score.
+	Repeatability *Repeatability `json:"repeatability,omitempty"`
 }
 
 // FigureRun is what the figures were made from.
@@ -339,60 +343,84 @@ func (f Figures) markdown() string {
 	var b strings.Builder
 	p := f.Run.Params
 	fmt.Fprintf(&b, "# Change %s on the %s part\n\n", p.Change, p.Part)
-	fmt.Fprintf(&b, "Cases selected: %d; with a result: %d. Grader %s, fresh reader %s. Prompts SHA-256 %s.\n",
-		f.Run.Selected, f.Run.Results, p.Models[RoleGrader], p.Models[RoleReader], p.PromptsSHA256)
-	fmt.Fprintf(&b, "Every interval is 95%%: a cluster bootstrap over the split groups (%d draws, seed %d), or the exact bound over the groups where no failure or no success is seen.\n\n",
+	fmt.Fprintf(&b, "Cases selected: %d; with a result: %d. Grader %s (fallback %s), fresh reader %s. Prompts SHA-256 %s.\n",
+		f.Run.Selected, f.Run.Results, p.Models[RoleGrader], cmp.Or(p.Models[RoleGraderFallback], "none"), p.Models[RoleReader], p.PromptsSHA256)
+	fmt.Fprintf(&b, "Every interval is 95%%: a cluster bootstrap over the split groups (%d draws, seed %d), or the exact bound over the groups where no failure or no success is seen.\n",
 		f.Run.Draws, f.Run.Seed)
+	fmt.Fprintf(&b, "Grader inputs: %s.\n", p.GraderInputs)
+	if r := f.Repeatability; r != nil {
+		fmt.Fprintf(&b, "Repeatability: the share of %d cases on which two runs of the grader (%s and %s) agree: the same verdict; for a count, both counts within %d (\"texts with any\": both find some, or neither); for the answer's start, both find it within %d words, or neither.\n",
+			r.Cases, r.A.Dir, r.B.Dir, listSlack, answerStartSlack)
+	}
+	b.WriteString("\n")
 	for _, pop := range f.Populations {
 		fmt.Fprintf(&b, "## %s (%d cases)\n\n", pop.Name, pop.All.Cases)
-		b.WriteString("| Score | " + strings.Join(p.Groups, " | ") + " | all |\n")
-		b.WriteString("| --- |" + strings.Repeat(" --- |", len(p.Groups)+1) + "\n")
+		b.WriteString("| Score | " + strings.Join(p.Groups, " | ") + " | all | repeatability |\n")
+		b.WriteString("| --- |" + strings.Repeat(" --- |", len(p.Groups)+2) + "\n")
 		cols := make([]*GroupFigures, 0, len(p.Groups)+1)
 		for _, g := range p.Groups {
 			cols = append(cols, pop.Groups[g])
 		}
 		cols = append(cols, pop.All)
-		row := func(name string, cell func(*GroupFigures) string) {
+		// repOf is the repeatability of judgement j: its agreement, or, with whether set, a list
+		// judgement's agreement on whether a text has any finding ("-" with none measured).
+		repOf := func(j Judgement, whether bool) string {
+			a := f.Repeatability.of(j)
+			if a == nil {
+				return "-"
+			}
+			s := &a.Agreement
+			if whether {
+				s = a.AnyAgreement
+			}
+			if s == nil || s.Share == nil {
+				return "-"
+			}
+			return pct(*s.Share)
+		}
+		// row is one score of each group, with its repeatability rep.
+		row := func(name, rep string, cell func(*GroupFigures) string) {
 			cells := make([]string, len(cols))
 			for i, g := range cols {
 				cells[i] = cell(g)
 			}
-			b.WriteString("| " + name + " | " + strings.Join(cells, " | ") + " |\n")
+			b.WriteString("| " + name + " | " + strings.Join(cells, " | ") + " | " + rep + " |\n")
 		}
-		row("cases", func(g *GroupFigures) string { return fmt.Sprintf("%d", g.Cases) })
-		row("kinds", func(g *GroupFigures) string { return countsText(g.Kinds) })
-		row("conversation", func(g *GroupFigures) string { return countsText(g.Conversation) })
-		row("answered", func(g *GroupFigures) string { return shareText(g.Answered) })
-		row("first paragraph answered", func(g *GroupFigures) string { return shareText(g.FirstParagraph) })
-		row("an answering sentence found", func(g *GroupFigures) string { return shareText(g.AnswerFound) })
-		row("length (words)", func(g *GroupFigures) string { return meanText(g.Words, "") })
-		row("words before the answer", func(g *GroupFigures) string { return meanText(g.WordsBefore, "") })
-		row("harder to read", func(g *GroupFigures) string { return shareText(g.Harder) })
-		row("definition answers", func(g *GroupFigures) string { return shareText(g.Define) })
+		row("cases", "-", func(g *GroupFigures) string { return fmt.Sprintf("%d", g.Cases) })
+		row("kinds", "-", func(g *GroupFigures) string { return countsText(g.Kinds) })
+		row("conversation", "-", func(g *GroupFigures) string { return countsText(g.Conversation) })
+		row("answered", repOf(JAnswered, false), func(g *GroupFigures) string { return shareText(g.Answered) })
+		row("first paragraph answered", repOf(JFirstParagraph, false), func(g *GroupFigures) string { return shareText(g.FirstParagraph) })
+		row("an answering sentence found", repOf(JAnswerStart, false), func(g *GroupFigures) string { return shareText(g.AnswerFound) })
+		row("length (words)", "-", func(g *GroupFigures) string { return meanText(g.Words, "") })
+		row("words before the answer", repOf(JAnswerStart, false), func(g *GroupFigures) string { return meanText(g.WordsBefore, "") })
+		row("harder to read", repOf(JHarder, false), func(g *GroupFigures) string { return shareText(g.Harder) })
+		row("definition answers", repOf(JDefine, false), func(g *GroupFigures) string { return shareText(g.Define) })
 		for _, c := range []struct {
 			name  string
+			j     Judgement
 			count func(*GroupFigures) *Count
 		}{
-			{"facts lost", func(g *GroupFigures) *Count { return g.Lost }},
-			{"facts added", func(g *GroupFigures) *Count { return g.Added }},
-			{"phrases that state no fact", func(g *GroupFigures) *Count { return g.Phrases }},
-			{"undefined words and names", func(g *GroupFigures) *Count { return g.Undefined }},
+			{"facts lost", JLost, func(g *GroupFigures) *Count { return g.Lost }},
+			{"facts added", JAdded, func(g *GroupFigures) *Count { return g.Added }},
+			{"phrases that state no fact", JPhrases, func(g *GroupFigures) *Count { return g.Phrases }},
+			{"undefined words and names", JUndefined, func(g *GroupFigures) *Count { return g.Undefined }},
 		} {
-			row(c.name+": texts with any", func(g *GroupFigures) string {
+			row(c.name+": texts with any", repOf(c.j, true), func(g *GroupFigures) string {
 				if n := c.count(g); n != nil {
 					return shareText(&n.WithAny)
 				}
 				return "-"
 			})
-			row(c.name+": per text", func(g *GroupFigures) string {
+			row(c.name+": per text", repOf(c.j, false), func(g *GroupFigures) string {
 				if n := c.count(g); n != nil {
 					return meanText(&n.PerText, "")
 				}
 				return "-"
 			})
 		}
-		row("wait (seconds)", func(g *GroupFigures) string { return meanText(g.Wait, "") })
-		row("change's model cost per text (USD)", func(g *GroupFigures) string { return meanText(g.ChangeCost, "") })
+		row("wait (seconds)", "-", func(g *GroupFigures) string { return meanText(g.Wait, "") })
+		row("change's model cost per text (USD)", "-", func(g *GroupFigures) string { return meanText(g.ChangeCost, "") })
 		b.WriteString("\n")
 	}
 	b.WriteString("## Model calls\n\n| Model | Role | Use | Calls | Attempts | Input tokens | Output tokens | Cost (USD) | Served |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |\n")

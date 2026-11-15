@@ -10,6 +10,15 @@ roles:
   # The grading model: it reads every text, Dispatch's record and the writer's session. Each
   # reply gives what the grader found before its verdict (prompts/, judge.go's numbered fields).
   grader: {family: claude, id: claude-opus-5}
+  # The graders of a judgement claude-opus-5 refuses on every try, and only of that judgement,
+  # tried in this order; the grade names the one that graded it and each refused call. Claude
+  # models the gateway serves that are no candidate, play no other role, and wrote none of the
+  # outputs they grade. claude-opus-4-7 also refused one judgement of the development part
+  # (2026-11-15), so two older models follow it.
+  grader_fallbacks:
+    - {family: claude, id: claude-opus-4-7}
+    - {family: claude, id: claude-opus-4-6}
+    - {family: claude, id: claude-sonnet-4-5}
   # The writer, played with the writer's session (changes 2, 3, 5 and 6): the model most writer
   # sessions ran.
   writer: {family: claude, id: claude-opus-5-5}

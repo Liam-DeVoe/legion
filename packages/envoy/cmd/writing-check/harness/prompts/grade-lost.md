@@ -6,6 +6,8 @@ Find each fact of the original text that the new text lost.
 
 - "original_text": the original text.
 - "new_text": the new text.
+{{- template "question-tag" .}}
+{{- template "context-tags" .}}
 
 {{template "data" .}}
 

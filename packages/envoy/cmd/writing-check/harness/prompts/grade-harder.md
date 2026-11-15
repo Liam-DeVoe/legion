@@ -6,6 +6,8 @@ Decide whether the new text is harder to read for the reader than the original t
 
 - "original_text": the original text.
 - "new_text": the new text.
+{{- template "question-tag" .}}
+{{- template "context-tags" .}}
 
 {{template "data" .}}
 

@@ -1,11 +1,13 @@
 package harness
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"slices"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/claude"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/plainwords"
@@ -32,8 +35,10 @@ type promptData struct {
 	// Reply says the text is the agent's reply to the person's question (an answer case), not
 	// a text the person asked a question about.
 	Reply bool
-	// HasSession says the user message ends with the writer's session part.
-	HasSession bool
+	// HasQuestion, HasRecord and HasSession say the user message holds the person's question
+	// (as context, where the judgement is not of an answer to it), Dispatch's record, and, at its
+	// end, the writer's session part.
+	HasQuestion, HasRecord, HasSession bool
 	// WriterAnswer says the user message holds the writer's answer to a side question.
 	WriterAnswer bool
 	// Phrases is the table of the phrases the owner asked agents to stop.
@@ -115,13 +120,19 @@ var Judgements = []Judgement{JAnswered, JFirstParagraph, JLost, JAdded, JPhrases
 type judgementSpec struct {
 	// prompt is the template of its system prompt.
 	prompt string
-	// session says the call reads the writer's session part, where the case has one.
-	session bool
 	// list is the field of a judgement whose answer is a list, and its two item fields; empty
 	// for a judgement whose answer is a verdict. itemChecks are an item's true-or-false fields
 	// before its note: an item with any of them true is not a finding, and the harness drops it.
+	// inText says an item's quote is words of the text the person sees, so the harness drops an
+	// item whose quote the text does not hold, and a second item of the same quote.
 	list, itemQuote, itemNote string
 	itemChecks                []string
+	inText                    bool
+	// sentences says the judgement is given sentence by sentence (phrases.go): its prompt judges
+	// candidate sentences, and verdicts are the verdicts it gives, the first the one whose
+	// sentences are findings.
+	verdicts  []string
+	sentences bool
 	// verdict is the field of a judgement whose answer is true or false. notes are the
 	// sentences the reply gives first, and checks its true-or-false fields after them: a check
 	// that is true makes the verdict false, whatever the verdict field says.
@@ -134,16 +145,17 @@ type judgementSpec struct {
 var answerChecks = []string{"restates_question", "points_elsewhere", "other_question", "contradicts_record"}
 
 var judgementSpecs = map[Judgement]judgementSpec{
-	JAnswered:       {prompt: "grade-answered", session: true, verdict: "answers", notes: []string{"asked", "given"}, checks: answerChecks},
-	JFirstParagraph: {prompt: "grade-first-paragraph", session: true, verdict: "answers", notes: []string{"asked", "given"}, checks: answerChecks},
+	JAnswered:       {prompt: "grade-answered", verdict: "answers", notes: []string{"asked", "given"}, checks: answerChecks},
+	JFirstParagraph: {prompt: "grade-first-paragraph", verdict: "answers", notes: []string{"asked", "given"}, checks: answerChecks},
 	JLost:           {prompt: "grade-lost", list: "lost", itemQuote: "quote", itemNote: "fact"},
-	JAdded:          {prompt: "grade-added", session: true, list: "added", itemQuote: "quote", itemNote: "fact"},
-	JPhrases:        {prompt: "grade-phrases", list: "phrases", itemQuote: "quote", itemNote: "why"},
-	JUndefined: {prompt: "grade-undefined", list: "undefined", itemQuote: "word", itemNote: "why",
-		itemChecks: []string{"defined_in_text", "defined_in_record", "common_meaning"}},
+	JAdded:          {prompt: "grade-added", list: "added", itemQuote: "quote", itemNote: "fact"},
+	JPhrases: {prompt: "grade-phrases", list: "phrases", itemQuote: "quote", itemNote: "rewrite", sentences: true,
+		verdicts: []string{"vacuous", "not_vacuous", "unresolved"}},
+	JUndefined: {prompt: "grade-undefined", list: "undefined", itemQuote: "word", itemNote: "why", inText: true,
+		itemChecks: []string{"defined_in_text", "defined_in_record", "common_meaning", "reference_only"}},
 	JAnswerStart: {prompt: "grade-answer-start"},
 	JHarder:      {prompt: "grade-harder", verdict: "harder"},
-	JDefine: {prompt: "grade-define", session: true, verdict: "answers", notes: []string{"asked", "given"},
+	JDefine: {prompt: "grade-define", verdict: "answers", notes: []string{"asked", "given"},
 		checks: []string{"restates_words", "points_elsewhere", "other_words", "contradicts_record"}},
 }
 
@@ -234,12 +246,13 @@ func (s judgementSpec) schema() json.RawMessage {
 	})...))
 }
 
-// GradeInput is what one judgement reads. Each judgement reads its own fields of it.
+// GradeInput is what one judgement may read: its subject, and the case's context. The grader's
+// input modes (GraderInputs) decide which context parts a call reads.
 type GradeInput struct {
 	Judgement Judgement
 	// Reply says the text is the agent's reply to the person's question: an answer case.
 	Reply bool
-	// Question is the person's question: answered, first_paragraph, answer_start and define.
+	// Question is the person's question, "" for a case with none.
 	Question string
 	// Answer is the fresh reader's answer: answered and first_paragraph.
 	Answer string
@@ -248,14 +261,11 @@ type GradeInput struct {
 	Original, Text string
 	// Definition is the definition the person sees: define.
 	Definition string
-	// WriterAnswer is the writer's answer to a side question, where a change asked one: added
-	// and define.
+	// WriterAnswer is the writer's answer to a side question, where a change asked one.
 	WriterAnswer string
-	// Record is Dispatch's record as Dataset.RecordPart gives it: answered, first_paragraph,
-	// added, undefined and define.
+	// Record is Dispatch's record as Dataset.RecordPart gives it.
 	Record string
-	// Session is the writer's session part: answered, first_paragraph, added and define, where
-	// the case has one.
+	// Session is the writer's session part, where the case has one.
 	Session claude.SessionText
 }
 
@@ -264,39 +274,39 @@ func tag(name, text string) string {
 	return "<" + name + ">\n" + strings.TrimSpace(text) + "\n</" + name + ">\n"
 }
 
-// user is the judgement's user message, the session part aside.
-func (in GradeInput) user() string {
+// parts are the context a call reads: the parts c gives that the input has.
+func (in GradeInput) parts(c contextParts) contextParts {
+	return contextParts{
+		Question:     c.Question && in.Question != "",
+		Record:       c.Record && in.Record != "",
+		Session:      c.Session && !in.Session.Empty(),
+		WriterAnswer: c.WriterAnswer && in.WriterAnswer != "",
+	}
+}
+
+// user is the judgement's user message, the session part aside: its subject, then the context
+// parts p.
+func (in GradeInput) user(p contextParts) string {
 	var b strings.Builder
+	if p.Question {
+		b.WriteString(tag("question", in.Question))
+	}
 	switch in.Judgement {
 	case JAnswered, JFirstParagraph:
-		b.WriteString(tag("question", in.Question))
 		b.WriteString(tag("reader_answer", in.Answer))
-		b.WriteString(in.Record)
-	case JLost, JHarder:
+	case JLost, JAdded, JHarder:
 		b.WriteString(tag("original_text", in.Original))
 		b.WriteString(tag("new_text", in.Text))
-	case JAdded:
-		b.WriteString(tag("original_text", in.Original))
-		b.WriteString(tag("new_text", in.Text))
-		b.WriteString(in.Record)
-		if in.WriterAnswer != "" {
-			b.WriteString(tag("writer_answer", in.WriterAnswer))
-		}
-	case JPhrases:
-		b.WriteString(tag("text", in.Text))
-	case JUndefined:
-		b.WriteString(tag("text", in.Text))
-		b.WriteString(in.Record)
-	case JAnswerStart:
-		b.WriteString(tag("question", in.Question))
+	case JPhrases, JUndefined, JAnswerStart:
 		b.WriteString(tag("text", in.Text))
 	case JDefine:
-		b.WriteString(tag("question", in.Question))
 		b.WriteString(tag("definition", in.Definition))
+	}
+	if p.Record {
 		b.WriteString(in.Record)
-		if in.WriterAnswer != "" {
-			b.WriteString(tag("writer_answer", in.WriterAnswer))
-		}
+	}
+	if p.WriterAnswer {
+		b.WriteString(tag("writer_answer", in.WriterAnswer))
 	}
 	return b.String()
 }
@@ -348,14 +358,24 @@ type Grade struct {
 	Notes  map[string]string `json:"notes,omitempty"`
 	// Failed are the checks of a verdict judgement that the reply marked true, which make the
 	// verdict false; Dropped counts the items of a list judgement the reply's own checks rule
-	// out.
-	Failed  []string `json:"failed,omitempty"`
-	Dropped int      `json:"dropped,omitempty"`
+	// out, or that repeat a quote; NotInText the items whose quote the text does not hold.
+	Failed    []string `json:"failed,omitempty"`
+	Dropped   int      `json:"dropped,omitempty"`
+	NotInText int      `json:"not_in_text,omitempty"`
+	// Candidates and Unresolved are a sentence judgement's candidate sentences and those whose
+	// verdict the grader could not settle.
+	Candidates int `json:"candidates,omitempty"`
+	Unresolved int `json:"unresolved,omitempty"`
 	// ByConstruction marks a judgement the harness gives with no call: a change whose text is
 	// the original loses and adds no fact.
 	ByConstruction bool `json:"by_construction,omitempty"`
-	// Session says the call read the writer's session part.
+	// Inputs is the judgement's input mode, and Session says the call read the writer's
+	// session part.
+	Inputs  string `json:"inputs,omitempty"`
 	Session bool   `json:"session,omitempty"`
+	// Refused are the calls that ended on a refusal, the grader's first, where a fallback grader
+	// then gave the grade (Call is the one that graded).
+	Refused []Call `json:"refused,omitempty"`
 	Call    *Call  `json:"call,omitempty"`
 	Error   string `json:"error,omitempty"`
 	// Reply is the grader's reply as it came, for an audit of the fields above.
@@ -365,15 +385,20 @@ type Grade struct {
 // graderMaxTokens bounds one grading reply, the grader's reasoning included.
 const graderMaxTokens = 8192
 
-// Grader gives the judgements, with the grading model of candidates.yaml.
+// Grader gives the judgements, with the grading model of candidates.yaml. Fallbacks, in order,
+// grade a judgement that every model before them refuses on every try (llm's retries), and the
+// grade names the model that graded it.
 type Grader struct {
-	Model   *claude.Client
-	phrases string
+	Model     *claude.Client
+	Fallbacks []*claude.Client
+	Inputs    GraderInputs
+	phrases   string
 }
 
-// NewGrader is the grader of model.
-func NewGrader(model *claude.Client) *Grader {
-	return &Grader{Model: model, phrases: stoppedPhrases()}
+// NewGrader is the grader of model and its fallbacks, reading the context inputs gives each
+// judgement.
+func NewGrader(model *claude.Client, fallbacks []*claude.Client, inputs GraderInputs) *Grader {
+	return &Grader{Model: model, Fallbacks: fallbacks, Inputs: inputs, phrases: stoppedPhrases()}
 }
 
 // Grade gives one judgement. A call that fails is a Grade with its Error.
@@ -382,28 +407,54 @@ func (g *Grader) Grade(ctx context.Context, in GradeInput) Grade {
 	if !ok {
 		return Grade{Error: fmt.Sprintf("no judgement %q", in.Judgement)}
 	}
-	withSession := spec.session && !in.Session.Empty()
-	system, err := render(spec.prompt, promptData{HasSession: withSession, Reply: in.Reply, WriterAnswer: in.WriterAnswer != "", Phrases: g.phrases})
+	mode := cmp.Or(g.Inputs[in.Judgement], InputsTrimmed)
+	if spec.sentences {
+		return g.gradeSentences(ctx, spec, in)
+	}
+	p := in.parts(g.Inputs.context(in.Judgement))
+	data := promptData{
+		HasQuestion: p.Question, HasRecord: p.Record, HasSession: p.Session, WriterAnswer: p.WriterAnswer,
+		Reply: in.Reply, Phrases: g.phrases,
+	}
+	system, err := render(spec.prompt, data)
 	if err != nil {
 		return Grade{Error: err.Error()}
 	}
-	req := llm.Request{Purpose: "grade:" + string(in.Judgement), System: system, User: in.user(), Schema: spec.schema(), MaxTokens: graderMaxTokens}
-	var resp llm.Response
-	if withSession {
-		resp, err = g.Model.CallWithSession(ctx, req, in.Session)
-	} else {
-		resp, err = g.Model.Call(ctx, req)
+	req := llm.Request{Purpose: "grade:" + string(in.Judgement), System: system, User: in.user(p), Schema: spec.schema(), MaxTokens: graderMaxTokens}
+	call := func(model *claude.Client) (llm.Response, error) {
+		if p.Session {
+			return model.CallWithSession(ctx, req, in.Session)
+		}
+		return model.Call(ctx, req)
 	}
-	call := callOf(resp)
-	grade := Grade{Session: withSession, Call: &call, Reply: resp.Value}
+	resp, err := call(g.Model)
+	grade := Grade{Inputs: mode, Session: p.Session}
+	for _, fallback := range g.Fallbacks {
+		var callErr *llm.CallError
+		if !errors.As(err, &callErr) || callErr.Fault != agentloop.FaultRefusal {
+			break
+		}
+		grade.Refused = append(grade.Refused, callOf(resp))
+		resp, err = call(fallback)
+	}
+	c := callOf(resp)
+	grade.Call, grade.Reply = &c, resp.Value
 	if err != nil {
 		grade.Error = err.Error()
 		return grade
 	}
 	if err := spec.read(resp.Value, &grade, in.Text); err != nil {
 		grade.Error = fmt.Sprintf("the %s reply: %v", in.Judgement, err)
+		return grade
 	}
 	return grade
+}
+
+// quoteForm is text as a quote is looked up in it: lowercased, without Markdown's emphasis and
+// code marks, with typographic quotes made plain and each run of white space one space.
+func quoteForm(text string) string {
+	text = strings.NewReplacer("*", "", "`", "", "\u2019", "'", "\u2018", "'", "\u201c", "\"", "\u201d", "\"").Replace(strings.ToLower(text))
+	return strings.Join(strings.Fields(text), " ")
 }
 
 // read fills grade from a reply of the judgement's schema.
@@ -419,6 +470,8 @@ func (s judgementSpec) read(value json.RawMessage, grade *Grade, text string) er
 			return fmt.Errorf("%s: %w", s.list, err)
 		}
 		fields := s.itemFields()
+		seen := map[string]bool{}
+		plain := quoteForm(text)
 	items:
 		for _, it := range items {
 			for _, check := range s.itemChecks {
@@ -430,6 +483,18 @@ func (s judgementSpec) read(value json.RawMessage, grade *Grade, text string) er
 			var item Item
 			_ = json.Unmarshal(it[key(fields, s.itemQuote)], &item.Quote)
 			_ = json.Unmarshal(it[key(fields, s.itemNote)], &item.Note)
+			if s.inText {
+				q := quoteForm(item.Quote)
+				switch {
+				case q == "" || !strings.Contains(plain, q):
+					grade.NotInText++
+					continue items
+				case seen[q]:
+					grade.Dropped++
+					continue items
+				}
+				seen[q] = true
+			}
 			grade.Items = append(grade.Items, item)
 		}
 		grade.Count = len(grade.Items)
@@ -496,6 +561,9 @@ type Answer struct {
 	Text  string `json:"text"`
 	Call  Call   `json:"call"`
 	Error string `json:"error,omitempty"`
+	// Reused says the answer is another run's, graded again (score --readers-from); its call
+	// is that run's, not this one's.
+	Reused bool `json:"reused,omitempty"`
 }
 
 // Read answers question from text alone. reply says text is the agent's reply to the question,

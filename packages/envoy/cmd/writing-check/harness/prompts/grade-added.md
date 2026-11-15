@@ -6,9 +6,8 @@ Find each fact of the new text that its inputs do not hold.
 
 - "original_text": the original text.
 - "new_text": the new text.
-{{template "record-tag" .}}
-{{- template "writer-answer-tag" .}}
-{{- template "session-tag" .}}
+{{- template "question-tag" .}}
+{{- template "context-tags" .}}
 
 {{template "data" .}}
 

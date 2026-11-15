@@ -6,8 +6,7 @@ Decide whether the answer of the fresh reader answers the question of the reader
 
 - "question": the question of the reader.
 - "reader_answer": the answer of the fresh reader.
-{{template "record-tag" .}}
-{{- template "session-tag" .}}
+{{- template "context-tags" .}}
 
 {{template "data" .}}
 

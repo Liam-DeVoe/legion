@@ -23,6 +23,9 @@ subcommands:
   probe        call each role model and each candidate 20 times; fail on a route_not_found or an id the provider does not serve
   score        score a change over a part of the dataset, with every score's 95% interval, the wait and the cost
   grader-test  give the grader planted wrong outputs beside right ones, and report how many it marks correctly
+  compare      the agreement of two score runs of the same cases, by judgement: a grader's repeatability, or two graders' agreement
+  phrases-labels  the phrases judgement against a labeller round's sentence labels: precision and recall
+  asked-words  the undefined judgement of a score run against the words the owner asked about: recall
   local        start a local Dispatch (bun run dispatch:local) on a database of its own
   load         re-create each case's record in the local Dispatch
 
@@ -42,6 +45,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runScore(ctx, args[1:], stdout, stderr)
 	case "grader-test":
 		return runGraderTest(ctx, args[1:], stdout, stderr)
+	case "compare":
+		return runCompare(args[1:], stdout, stderr)
+	case "phrases-labels":
+		return runPhrasesLabels(ctx, args[1:], stdout, stderr)
+	case "asked-words":
+		return runAskedWords(args[1:], stdout, stderr)
 	case "local":
 		return runLocal(ctx, args[1:], stdout, stderr)
 	case "load":

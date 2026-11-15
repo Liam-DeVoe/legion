@@ -6,6 +6,7 @@ Find the first sentence of the text that answers the question.
 
 - "question": the question of the reader.
 - "text": the reply of the agent.
+{{- template "context-tags" .}}
 
 {{template "data" .}}
 

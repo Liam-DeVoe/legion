@@ -70,3 +70,20 @@ func (m *modelFlags) claudeClient(cfg Config, model ModelEntry, runner *llm.Runn
 	}
 	return claude.New(m.gateway, m.keyFile, model.ID, model.Effort, price.agentloop(), runner)
 }
+
+// grader is the grader of the config, with its fallbacks, reading the context inputs give.
+func (m *modelFlags) grader(cfg Config, inputs GraderInputs, runner *llm.Runner) (*Grader, error) {
+	model, err := m.claudeClient(cfg, cfg.Models.Roles.Grader, runner)
+	if err != nil {
+		return nil, err
+	}
+	var fallbacks []*claude.Client
+	for _, f := range cfg.Models.Roles.GraderFallbacks {
+		c, err := m.claudeClient(cfg, f, runner)
+		if err != nil {
+			return nil, err
+		}
+		fallbacks = append(fallbacks, c)
+	}
+	return NewGrader(model, fallbacks, inputs), nil
+}

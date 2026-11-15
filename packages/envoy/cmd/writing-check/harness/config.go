@@ -41,8 +41,10 @@ type PendingEntry struct {
 type Models struct {
 	Roles struct {
 		Grader ModelEntry `yaml:"grader"`
-		Writer ModelEntry `yaml:"writer"`
-		Reader ModelEntry `yaml:"reader"`
+		// GraderFallbacks grade, in order, a judgement the grader refuses on every try.
+		GraderFallbacks []ModelEntry `yaml:"grader_fallbacks"`
+		Writer          ModelEntry   `yaml:"writer"`
+		Reader          ModelEntry   `yaml:"reader"`
 	} `yaml:"roles"`
 	Candidates []ModelEntry   `yaml:"candidates"`
 	Pending    []PendingEntry `yaml:"pending"`
@@ -82,9 +84,10 @@ type Config struct {
 
 // role names.
 const (
-	RoleGrader = "grader"
-	RoleWriter = "writer"
-	RoleReader = "reader"
+	RoleGrader         = "grader"
+	RoleGraderFallback = "grader_fallback"
+	RoleWriter         = "writer"
+	RoleReader         = "reader"
 )
 
 // LoadConfig reads the embedded candidates.yaml and prices.yaml.
@@ -118,8 +121,17 @@ func (c Config) check() error {
 			return fmt.Errorf("candidates.yaml: the %s %q is also a candidate (R2)", r.name, r.model.ID)
 		}
 	}
-	if c.Models.Roles.Grader.ID == c.Models.Roles.Writer.ID {
-		return errors.New("candidates.yaml: the grader plays the writer (R2)")
+	r := c.Models.Roles
+	for _, f := range r.GraderFallbacks {
+		if f.ID == r.Writer.ID {
+			return errors.New("candidates.yaml: a grader plays the writer (R2)")
+		}
+		if f.ID == r.Grader.ID || f.ID == r.Reader.ID {
+			return fmt.Errorf("candidates.yaml: the fallback grader %q plays another role: it would grade outputs it wrote, or judgements it refused", f.ID)
+		}
+	}
+	if r.Grader.ID == r.Writer.ID {
+		return errors.New("candidates.yaml: a grader plays the writer (R2)")
 	}
 	seen := map[string]bool{}
 	for _, m := range c.AllModels() {
@@ -150,11 +162,11 @@ type namedRole struct {
 }
 
 func (c Config) roles() []namedRole {
-	return []namedRole{
-		{RoleGrader, c.Models.Roles.Grader},
-		{RoleWriter, c.Models.Roles.Writer},
-		{RoleReader, c.Models.Roles.Reader},
+	out := []namedRole{{RoleGrader, c.Models.Roles.Grader}}
+	for _, f := range c.Models.Roles.GraderFallbacks {
+		out = append(out, namedRole{RoleGraderFallback, f})
 	}
+	return append(out, namedRole{RoleWriter, c.Models.Roles.Writer}, namedRole{RoleReader, c.Models.Roles.Reader})
 }
 
 func (c Config) isRole(id string) bool {

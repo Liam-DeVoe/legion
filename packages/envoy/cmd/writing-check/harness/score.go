@@ -93,12 +93,17 @@ type CaseResult struct {
 func (r *CaseResult) calls() (change, measure []Call) {
 	change = r.ChangeCalls
 	for _, a := range []*Answer{r.Reader, r.FirstParagraphReader} {
-		if a != nil && a.Call.Model != "" {
+		if a != nil && a.Call.Model != "" && !a.Reused {
 			measure = append(measure, a.Call)
 		}
 	}
 	for _, j := range Judgements {
-		if g := r.Grades[j]; g != nil && g.Call != nil && g.Call.Model != "" {
+		g := r.Grades[j]
+		if g == nil {
+			continue
+		}
+		measure = append(measure, g.Refused...)
+		if g.Call != nil && g.Call.Model != "" {
 			measure = append(measure, *g.Call)
 		}
 	}
@@ -113,7 +118,15 @@ type scorer struct {
 	grader   *Grader
 	sessions map[string]claude.SessionText
 	places   map[string]claude.Place
+	// readersFrom are the results of the run --readers-from names, whose readers' answers
+	// this run grades again.
+	readersFrom map[string]CaseResult
+	// only are the judgements the run gives; empty, it gives every one.
+	only []Judgement
 }
+
+// wants is whether the run gives judgement j.
+func (s *scorer) wants(j Judgement) bool { return len(s.only) == 0 || slices.Contains(s.only, j) }
 
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
@@ -165,52 +178,79 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 			f()
 		}()
 	}
-	grade := func(in GradeInput) { set(in.Judgement, s.grader.Grade(ctx, in)) }
-	if question != "" {
+	// Every judgement gets the case's whole context; the grader's input modes decide what each
+	// call reads of it.
+	base := GradeInput{Reply: reply, Question: question, Original: c.Agent.Text, Text: text, Definition: applied.Definition,
+		WriterAnswer: applied.WriterAnswer, Record: record, Session: session}
+	grade := func(j Judgement, answer string) {
+		in := base
+		in.Judgement, in.Answer = j, answer
+		set(j, s.grader.Grade(ctx, in))
+	}
+	prior := s.readersFrom[c.ID]
+	if prior.TextSHA256 != res.TextSHA256 {
+		prior = CaseResult{}
+	}
+	// read is the fresh reader's answer, or the answer a run named by --readers-from gave to
+	// this case's same text, so two runs that compare graders grade the same answers.
+	read := func(done *Answer, text string, firstParagraph bool) Answer {
+		if done != nil && done.Error == "" {
+			a := *done
+			a.Reused = true
+			return a
+		}
+		return s.reader.Read(ctx, text, question, reply || firstParagraph, firstParagraph)
+	}
+	if question != "" && s.wants(JAnswered) {
 		run(func() {
-			a := s.reader.Read(ctx, text, question, reply, false)
+			a := read(prior.Reader, text, false)
 			mu.Lock()
 			res.Reader = &a
 			mu.Unlock()
 			if a.Error == "" {
-				grade(GradeInput{Judgement: JAnswered, Reply: reply, Question: question, Answer: a.Text, Record: record, Session: session})
+				grade(JAnswered, a.Text)
 			}
 		})
 	}
 	if reply && question != "" {
-		run(func() {
-			first := FirstParagraph(text)
-			if first == "" {
-				first = text
-			}
-			a := s.reader.Read(ctx, first, question, true, true)
-			mu.Lock()
-			res.FirstParagraphReader = &a
-			mu.Unlock()
-			if a.Error == "" {
-				grade(GradeInput{Judgement: JFirstParagraph, Reply: true, Question: question, Answer: a.Text, Record: record, Session: session})
-			}
-		})
-		run(func() { grade(GradeInput{Judgement: JAnswerStart, Question: question, Text: text}) })
+		if s.wants(JFirstParagraph) {
+			run(func() {
+				first := FirstParagraph(text)
+				if first == "" {
+					first = text
+				}
+				a := read(prior.FirstParagraphReader, first, true)
+				mu.Lock()
+				res.FirstParagraphReader = &a
+				mu.Unlock()
+				if a.Error == "" {
+					grade(JFirstParagraph, a.Text)
+				}
+			})
+		}
+		if s.wants(JAnswerStart) {
+			run(func() { grade(JAnswerStart, "") })
+		}
 	}
-	if c.Group == GroupPlain {
-		run(func() { grade(GradeInput{Judgement: JHarder, Original: c.Agent.Text, Text: text}) })
+	if c.Group == GroupPlain && s.wants(JHarder) {
+		run(func() { grade(JHarder, "") })
 	}
-	run(func() { grade(GradeInput{Judgement: JPhrases, Text: text}) })
-	run(func() { grade(GradeInput{Judgement: JUndefined, Text: text, Record: record}) })
-	if applied.Same {
-		set(JLost, Grade{ByConstruction: true})
-		set(JAdded, Grade{ByConstruction: true})
-	} else {
-		run(func() { grade(GradeInput{Judgement: JLost, Original: c.Agent.Text, Text: text}) })
-		run(func() {
-			grade(GradeInput{Judgement: JAdded, Original: c.Agent.Text, Text: text, Record: record, WriterAnswer: applied.WriterAnswer, Session: session})
-		})
+	for _, j := range []Judgement{JPhrases, JUndefined} {
+		if s.wants(j) {
+			run(func() { grade(j, "") })
+		}
 	}
-	if applied.Definition != "" {
-		run(func() {
-			grade(GradeInput{Judgement: JDefine, Question: question, Definition: applied.Definition, Record: record, WriterAnswer: applied.WriterAnswer, Session: session})
-		})
+	for _, j := range []Judgement{JLost, JAdded} {
+		switch {
+		case !s.wants(j):
+		case applied.Same:
+			set(j, Grade{ByConstruction: true})
+		default:
+			run(func() { grade(j, "") })
+		}
+	}
+	if applied.Definition != "" && s.wants(JDefine) {
+		run(func() { grade(JDefine, "") })
 	}
 	wg.Wait()
 
@@ -236,13 +276,19 @@ type RunParams struct {
 	Change string   `json:"change"`
 	Part   string   `json:"part"`
 	Groups []string `json:"groups"`
+	// Judgements are the judgements the run gives (--judgements), absent when it gives all.
+	Judgements []string `json:"judgements,omitempty"`
 	// Sample is the stratified sample the run scores, absent for the whole part.
-	Sample        *Sample           `json:"sample,omitempty"`
-	Models        map[string]string `json:"models"`
-	PromptsSHA256 string            `json:"prompts_sha256"`
-	CasesSHA256   string            `json:"cases_sha256"`
-	SessionsSHA   string            `json:"sessions_counts_sha256"`
-	SessionChars  int               `json:"session_chars"`
+	Sample *Sample           `json:"sample,omitempty"`
+	Models map[string]string `json:"models"`
+	// GraderInputs are the grader's input modes (--grader-inputs, every judgement named), and
+	// ReadersFrom the run whose readers' answers this run grades again.
+	GraderInputs  string `json:"grader_inputs"`
+	ReadersFrom   string `json:"readers_from,omitempty"`
+	PromptsSHA256 string `json:"prompts_sha256"`
+	CasesSHA256   string `json:"cases_sha256"`
+	SessionsSHA   string `json:"sessions_counts_sha256"`
+	SessionChars  int    `json:"session_chars"`
 }
 
 // readResults reads the last line of each case in a run's cases.jsonl; a line a crash cut short
@@ -360,6 +406,10 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	commit := fs.String("commit", "", "the commit of a held-out run, for the exposure log (default: git rev-parse HEAD)")
 	newRun := fs.String("new-run", "", "the reason for a second held-out run at one commit")
 	figuresOnly := fs.Bool("figures-only", false, "compute the figures from the results the output directory holds, calling no model")
+	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
+	readersFrom := fs.String("readers-from", "", "a run directory whose readers' answers this run grades again, for the cases whose text is the same")
+	repeatability := fs.String("repeatability", "", "a repeatability.json (harness compare) whose agreement scores.md gives beside each score")
+	judgementsFlag := fs.String("judgements", "", "the judgements to give, comma-separated (default: every one), for a measurement of a few")
 	mf := addModelFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -383,6 +433,8 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return usage("--part is development or held_out")
 	case slices.ContainsFunc(groups, func(g string) bool { return !slices.Contains(Groups, g) }):
 		return usage("--groups names a group that is not one of " + strings.Join(Groups, ", "))
+	case *judgementsFlag != "" && slices.ContainsFunc(strings.Split(*judgementsFlag, ","), func(j string) bool { return !slices.Contains(Judgements, Judgement(j)) }):
+		return usage("--judgements names a judgement that is not one of the judgements of R2")
 	case *draws < 1 || *sessionChars < 1 || *sampleSize < 0:
 		return usage("--draws and --session-chars must be above 0, and --sample not below 0")
 	case *part != PartHeldOut && (*newRun != "" || *commit != ""):
@@ -390,6 +442,22 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	if err := outsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
+	}
+	inputs, err := ParseGraderInputs(*inputsFlag)
+	if err != nil {
+		return usage(err.Error())
+	}
+	var priorReaders map[string]CaseResult
+	if *readersFrom != "" {
+		if priorReaders, err = readResults(filepath.Join(*readersFrom, "cases.jsonl")); err != nil || len(priorReaders) == 0 {
+			return usage(fmt.Sprintf("--readers-from %s holds no results (%v)", *readersFrom, err))
+		}
+	}
+	var agreement *Repeatability
+	if *repeatability != "" {
+		if agreement, err = readRepeatability(*repeatability); err != nil {
+			return usage(err.Error())
+		}
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -407,7 +475,11 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return fail(err)
 	}
-	models := map[string]string{RoleGrader: cfg.Models.Roles.Grader.ID, RoleReader: cfg.Models.Roles.Reader.ID}
+	var fallbacks []string
+	for _, f := range cfg.Models.Roles.GraderFallbacks {
+		fallbacks = append(fallbacks, f.ID)
+	}
+	models := map[string]string{RoleGrader: cfg.Models.Roles.Grader.ID, RoleGraderFallback: strings.Join(fallbacks, ","), RoleReader: cfg.Models.Roles.Reader.ID}
 	// A held-out run is in the exposure log before it reads a case of the part, so a run that
 	// stops after this line, for any reason, still counts as one that read it.
 	if *part == PartHeldOut && !*figuresOnly {
@@ -429,8 +501,17 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	selected := selectCases(ds.Cases, groups, 0, 0)
 	params := RunParams{
-		Change: change.Name(), Part: *part, Groups: groups, Models: models,
+		Change: change.Name(), Part: *part, Groups: groups, Models: models, GraderInputs: inputs.String(), ReadersFrom: *readersFrom,
 		PromptsSHA256: PromptsDigest(), CasesSHA256: casesSHA, SessionsSHA: sessionsSHA, SessionChars: *sessionChars,
+	}
+	var only []Judgement
+	if *judgementsFlag != "" {
+		for _, j := range Judgements {
+			if slices.Contains(strings.Split(*judgementsFlag, ","), string(j)) {
+				only = append(only, j)
+				params.Judgements = append(params.Judgements, string(j))
+			}
+		}
 	}
 	if *sampleSize > 0 {
 		var sample Sample
@@ -471,7 +552,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if err != nil {
 			return usage(err.Error())
 		}
-		graderModel, err := mf.claudeClient(cfg, cfg.Models.Roles.Grader, runner)
+		grader, err := mf.grader(cfg, inputs, runner)
 		if err != nil {
 			return usage(err.Error())
 		}
@@ -479,7 +560,8 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if err != nil {
 			return usage(err.Error())
 		}
-		s := &scorer{ds: ds, change: change, reader: &Reader{Model: readerModel}, grader: NewGrader(graderModel), sessions: sessions, places: places}
+		s := &scorer{ds: ds, change: change, reader: &Reader{Model: readerModel}, grader: grader,
+			sessions: sessions, places: places, readersFrom: priorReaders, only: only}
 		scored, failed, err = scoreAll(ctx, s, todo, resultsPath, mf.concurrency, stderr, started)
 		if err != nil {
 			return fail(err)
@@ -497,6 +579,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	figures := computeFigures(params, results, len(selected), *seed, *draws, cfg)
 	figures.Run.WallSeconds = time.Since(started).Seconds()
 	figures.Run.ScoredThisRun, figures.Run.FailedThisRun = scored, failed
+	figures.Repeatability = agreement
 	if err := writeJSON(filepath.Join(*out, "scores.json"), figures); err != nil {
 		return fail(err)
 	}

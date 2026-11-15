@@ -6,9 +6,7 @@ Decide whether the definition answers the question of the reader.
 
 - "question": the question of the reader, with the words he selected.
 - "definition": the definition that the reader sees.
-{{template "record-tag" .}}
-{{- template "writer-answer-tag" .}}
-{{- template "session-tag" .}}
+{{- template "context-tags" .}}
 
 {{template "data" .}}
 

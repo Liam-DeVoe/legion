@@ -185,6 +185,7 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	sessionsDir := fs.String("sessions", "", "the session directory `writing-check dataset sessions` wrote (required)")
 	out := fs.String("out", "", "the directory for the test's results (required; keep it under $TMPDIR)")
 	sessionChars := fs.Int("session-chars", 30000, "the bytes of a case's session, its newest, that a grading call reads")
+	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
 	mf := addModelFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -201,6 +202,10 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return usage("--planted, --cases, --sessions and --out are required, and nothing else")
 	}
 	if err := outsideRepository("--out", *out); err != nil {
+		return usage(err.Error())
+	}
+	inputs, err := ParseGraderInputs(*inputsFlag)
+	if err != nil {
 		return usage(err.Error())
 	}
 	cfg, err := LoadConfig()
@@ -250,11 +255,10 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		return usage(err.Error())
 	}
-	model, err := mf.claudeClient(cfg, cfg.Models.Roles.Grader, runner)
+	grader, err := mf.grader(cfg, inputs, runner)
 	if err != nil {
 		return usage(err.Error())
 	}
-	grader := NewGrader(model)
 	started := time.Now()
 	results := make([]PlantedResult, len(planted))
 	var wg sync.WaitGroup
@@ -269,7 +273,7 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	wg.Wait()
 	report := graderReport(results, cfg.Models.Roles.Grader.ID, time.Since(started))
-	if err := writeJSON(filepath.Join(*out, "grader-test.json"), map[string]any{"grader": cfg.Models.Roles.Grader.ID, "prompts_sha256": PromptsDigest(), "results": results}); err != nil {
+	if err := writeJSON(filepath.Join(*out, "grader-test.json"), map[string]any{"grader": cfg.Models.Roles.Grader.ID, "grader_inputs": inputs.String(), "prompts_sha256": PromptsDigest(), "results": results}); err != nil {
 		return fail(err)
 	}
 	if err := os.WriteFile(filepath.Join(*out, "grader-test.md"), []byte(report), 0o600); err != nil {

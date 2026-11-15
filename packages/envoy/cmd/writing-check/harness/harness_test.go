@@ -142,8 +142,8 @@ func asJSON(t *testing.T, v any) string {
 const (
 	markReader     = "You are a fresh reader."
 	markAnswered   = "Decide whether the answer of the fresh reader answers the question of the reader."
-	markPhrases    = "Find each phrase of the text that states no fact."
-	markUndefined  = "Find each word or name of the text that the reader cannot understand"
+	markPhrases    = "Find each phrase that states no fact"
+	markUndefined  = "Find each word or name of the text that the reader would have to ask about"
 	markStart      = "Find the first sentence of the text that answers the question."
 	markHarder     = "Decide whether the new text is harder to read"
 	markDefinition = "Decide whether the definition answers the question of the reader."
@@ -159,8 +159,8 @@ func graderRules(t *testing.T) []modeltest.Rule {
 			"5_other_question": false, "6_contradicts_record": false, "7_reason": "It answers.", "8_answers": true})}},
 		{Match: func(r modeltest.Request) bool {
 			return strings.Contains(r.Text, markPhrases) && strings.Contains(r.Text, "This names the problem.")
-		}, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"phrases": []map[string]string{{"1_quote": "names the problem", "2_why": "It says no problem."}}})}},
-		{Contains: markPhrases, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"phrases": []any{}})}},
+		}, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"candidates": []map[string]string{{"1_id": "s1", "2_reason": "It names no problem.", "3_rewrite": "This is a problem [the problem is not in the text].", "4_verdict": "vacuous"}}})}},
+		{Contains: markPhrases, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"candidates": []any{}})}},
 		{Contains: markUndefined, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"undefined": []any{}})}},
 		{Contains: markStart, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"2_found": true, "1_quote": "The blocker is the release of engine one."})}},
 		{Contains: markHarder, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"1_reason": "The texts are the same.", "2_harder": false})}},
@@ -220,8 +220,8 @@ func TestScoreChangeOneOverTheDevelopmentPart(t *testing.T) {
 	if q.Reader == nil || q.Grades[JAnswered] == nil || q.Grades[JAnswered].Verdict == nil || !*q.Grades[JAnswered].Verdict {
 		t.Errorf("the question case's answered judgement: %+v", q.Grades[JAnswered])
 	}
-	if !q.Session || !q.Grades[JAnswered].Session {
-		t.Error("the question case has a session, and its answered judgement did not read it")
+	if !q.Session || q.Grades[JAnswered].Session != (FinalInputs[JAnswered] == InputsFull) {
+		t.Errorf("the question case has a session, and its answered judgement read it: %v, under final inputs %s", q.Grades[JAnswered].Session, FinalInputs.String())
 	}
 	for _, j := range []Judgement{JLost, JAdded} {
 		if g := q.Grades[j]; g == nil || !g.ByConstruction || g.Call != nil {

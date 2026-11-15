@@ -30,8 +30,11 @@ go run ./cmd/writing-check dataset build (--snapshot <file> --verdicts <file> --
 go run ./cmd/writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
-go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--part development|held_out] [--sample N --sample-seed S] <model flags>
-go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> <model flags>
+go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--part development|held_out] [--sample N --sample-seed S] [--grader-inputs final|full|trimmed[,j=mode]...] [--readers-from <dir>] [--judgements j,...] [--repeatability <file>] <model flags>
+go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader-inputs ...] <model flags>
+go run ./cmd/writing-check harness compare --a <run dir> --b <run dir> --out <repeatability.json>
+go run ./cmd/writing-check harness phrases-labels --labels <labeller round dir> --out <dir> <model flags>
+go run ./cmd/writing-check harness asked-words --run <run dir> --cases <build dir> --out <file>
 go run ./cmd/writing-check harness local --out <dir> [--database <name> --keep] [--setting NAME=VALUE]... [--pass-through NAME,...]
 go run ./cmd/writing-check harness load --local <local.json> --cases <build dir> --verdicts <file> --out <dir> [--limit N]
 ```
@@ -1148,6 +1151,10 @@ writes the rows as JSON.
 | `--session-chars` | The bytes of a case's session that a grading call reads. |
 | `--exposure-log`, `--commit`, `--new-run` | The exposure log (default `$TMPDIR/infra-3231-impl/harness/exposure.log`), a held-out run's commit (default `git rev-parse HEAD`), and the reason for a second held-out run at one commit. |
 | `--figures-only` | Compute the figures from the results the directory holds, and call no model. |
+| `--grader-inputs` | The grader's input modes (see "Grader inputs"): `final` (the default), `full` or `trimmed`, then any `,<judgement>=full` or `,<judgement>=trimmed`. |
+| `--readers-from` | A run directory whose fresh readers' answers this run grades again, for each case whose text is the same: two runs that compare graders grade the same answers. A reused answer's call is that run's and is not counted again. |
+| `--judgements` | The judgements to give, comma-separated (default all): a measurement of a few, such as `undefined` on the question cases. A run gives no reader answer that no named judgement grades. |
+| `--repeatability` | A `repeatability.json` of `harness compare`, whose agreement `scores.md` gives beside each score. |
 
 For each case, the judgements are:
 
@@ -1162,14 +1169,36 @@ For each case, the judgements are:
   (`lost`) and the facts it added that its inputs do not hold (`added`). Under change 1 the text
   is the original, so `lost` and `added` are zero by construction, with no call.
 
-`answered`, `first_paragraph`, `added` and `define` read the session part where the case has
-one. The grader's reply gives what it found before its verdict: what the question asks, what the
+Each judgement reads its subject and the context its input mode gives (`inputs.go`). Full gives
+every judgement the person's question, Dispatch's record, the writer's session part and the
+writer's answer, as far as the case has them. Trimmed gives each the context it needs:
+`answered`, `first_paragraph` and `define` the question and the record (`define` also the writer's
+answer); `added` the record, the session and the writer's answer; `undefined` the record; `lost`
+and `harder` the two texts alone; `answer_start` the question. `final`, the default, is trimmed for
+`answered`, `first_paragraph`, `answer_start` and `harder` and full for the rest (see "Grader
+inputs").
+
+The grader's reply gives what it found before its verdict: what the question asks, what the
 answer gives, four checks (the answer only says the question again, says only where the answer
 is, answers another question, or is wrong by the record), its reason, and its verdict. A check
 that is true makes the verdict false. An undefined word that the grader marks defined in the
-text or the record, or a word of common meaning, is no finding. The provider writes a reply's
-fields in the order of their names, so each name starts with its place (`1_asked`, ...,
+text or the record, of common meaning, or a name given only as a reference, is no finding; so is
+an item whose quote the text does not hold, and a second item of one quote. The provider writes a
+reply's fields in the order of their names, so each name starts with its place (`1_asked`, ...,
 `8_answers`). Each grade keeps the grader's reply as it came.
+
+`phrases` follows the measured definition of a vacuous verb phrase (the rule of `label`'s
+rubric), sentence by sentence (`phrases.go`). The candidates are the sentences of the text, its
+table cells and list items among them, that hold a form of name, show, pay, carry, hold, land,
+arrive, unblock or surface outside inline code; code blocks and quotation lines are left out. The
+grader judges each candidate with the two sentences before it and the one after: vacuous, not
+vacuous or unresolved, with the literal rewrite. The findings are the vacuous sentences; a text
+with no candidate has none, and no call.
+
+A judgement the grader (`claude-opus-5`) refuses on every try goes to the fallback graders of
+`candidates.yaml` in order (`claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-5`), Claude
+models that are no candidate and play no other role. The grade keeps each refused call and names
+the model that graded it.
 
 `run.json` holds the parameters; `cases.jsonl` one line for each case, written as it ends, with
 the readers' answers, each grade and each call's tokens and cost. A case whose line holds an
@@ -1209,7 +1238,52 @@ an item that holds the marker for a wrong list output and nothing for a right on
 answer within 5 words of `words_before`. It writes `grader-test.json` and `grader-test.md`: for
 each judgement, the wrong and the right outputs it marked correctly. The planted outputs are
 written by hand from development cases and hold Dispatch text, so they are kept under `$TMPDIR`
-and never in the repository.
+and never in the repository. `--grader-inputs` sets the grader's input modes, as `score` takes
+them.
+
+### compare and repeatability
+
+`compare` reads two score runs of the same cases and writes, for each judgement, how often they
+agree on the cases both graded with no error: the same verdict; for a list judgement, counts
+within 1 of each other (beside it, whether both find any, and the mean count difference); for
+`answer_start`, both find the answer within 5 words, or neither. Each agreement has the 95%
+interval of the scores. Two runs of one grader on the same reader answers (`--readers-from`)
+give the grader's repeatability; a full-input and a trimmed run give their agreement. `score
+--repeatability` puts a judgement's repeatability beside each of its scores in `scores.md`.
+
+### Grader inputs
+
+`FinalInputs` (`inputs.go`) is trimmed for a judgement whose agreement with the full-input grader,
+on a development sample, is no more than 2 points below the full grader's agreement with itself,
+or whose planted outputs (`grader-test`) show that the full inputs make errors the trimmed inputs
+do not; it is full otherwise. Measured on 2026-11-15 on 312 development cases (`--sample 300`,
+seed 3231), each run on the same reader answers:
+
+| Judgement | Full against full | Full against trimmed | Planted outputs wrong: full / trimmed | Mode |
+| --- | ---: | ---: | --- | --- |
+| `answered` | 96.5% | 93.9% | 1 of 8 in 2 of 4 runs / 1 of 8 in 1 of 6 runs | trimmed |
+| `first_paragraph` | 94.7% | 94.1% | none / none | trimmed |
+| `undefined` | 86.9% | 79.8% | none / none | full |
+| `answer_start` | 95.9% | 88.2% | 1 or 2 of 8 in 4 of 4 runs / none in 6 runs | trimmed |
+| `harder` | 100% | 100% | none / none | trimmed |
+
+`lost`, `added` and `define` make no call under change 1, so no agreement was measured, and they
+take full inputs. `phrases` reads its candidate sentences alone, in either mode.
+
+### phrases-labels and asked-words
+
+Two measurements check the count judgements against references other than the grader's word.
+
+`phrases-labels` grades each write of a `label` round (its `cases.jsonl` and `labels.jsonl`) with
+the phrases judgement and places each finding in the labelled sentence that holds its words (code
+and addresses as the labels write them, `CODE` and `URL`). It reports the precision (found
+sentences labelled vacuous), the recall (vacuous sentences found) and the findings no sentence
+holds, each share with its interval over the writes' groups. A run continues the writes it holds
+no result for.
+
+`asked-words` reads a score run's `undefined` grades of the question cases and reports the recall
+of the words the owner asked about (`owner_reply.verdict.words`) that the agent text uses: an
+asked word counts when a finding's words hold its words, or its words hold the finding's.
 
 ### local and load
 
