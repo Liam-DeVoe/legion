@@ -113,6 +113,7 @@ var commands = map[string]commandEntry{
 	"skills-check":   {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
 	"controller":     {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
 	"git-credential": {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
+	"git":            {runGit, "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)"},
 	"gh":             {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
 	"leak-check":     {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
 }
@@ -663,8 +664,9 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	return 0
 }
 
-// blockedSummary is the one line an operator reads for the issues Legion is waiting to start
-// behind a Dispatch issue nobody has finished (api.Admission.Blocked): how many, and each by
+// blockedSummary is the one line an operator reads for the issues Legion waits on a Dispatch
+// issue nobody has finished for (api.Admission.Blocked), the ones it has still to start and the
+// ones it started that gave their slot back for the wait: how many, and each by
 // issue with what it waits on, in the state's own key order. Nothing here is the daemon's to
 // clear — a blocker is finished in Dispatch by a person — so the line names them and stops.
 func blockedSummary(blocked []api.BlockedIssue) string {
