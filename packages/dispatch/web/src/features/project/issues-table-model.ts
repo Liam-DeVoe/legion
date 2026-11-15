@@ -17,9 +17,12 @@ import {
   ACTIVITIES,
   activityLabel,
   legionPhaseIds,
+  phaseHours,
   phaseLabel,
   WAITING_REASONS,
   waitingLabel,
+  workPhaseIds,
+  workPhaseLabel,
 } from "./issues-legion";
 import { compressView, expandView, inWindow } from "./issues-views";
 
@@ -380,12 +383,9 @@ export const COLUMNS: readonly ColumnSpec[] = [
     board: true,
     filter: {
       kind: "picks",
-      values: (item) =>
-        Object.entries(item.facts?.hours_by_phase ?? {})
-          .filter(([, hours]) => hours > 0)
-          .map(([phase]) => phase),
-      order: legionPhaseIds,
-      show: phaseLabel,
+      values: (item) => phaseHours(item.facts).phases.map(([phase]) => phase),
+      order: workPhaseIds,
+      show: workPhaseLabel,
     },
   },
 ];
@@ -521,6 +521,15 @@ export function cardsByKey(board: LegionBoardResponse | undefined): Map<string, 
   return cards;
 }
 
+/** Whether a card stands in Legion's queue: in the queue column, or given a place in it. */
+const cardQueued = ({ card, column }: BoardCardRow) =>
+  (card.waiting_place ?? undefined) !== undefined || column === "queue";
+
+/** How many issues stand in Legion's queue, from the board alone: the Legion queue tab's count
+ *  on a view that reads no open listing (Done). The board gives cards to open issues only. */
+export const boardQueueLength = (board: LegionBoardResponse): number =>
+  [...cardsByKey(board).values()].filter(cardQueued).length;
+
 export function buildItems(
   issues: readonly IssueSummary[],
   label: (actor: Actor) => string,
@@ -565,7 +574,7 @@ export function buildItems(
       ...(card === undefined ? {} : { card }),
       ...(facts[issue.key] === undefined ? {} : { facts: facts[issue.key] }),
       place,
-      queued: place !== undefined || card?.column === "queue",
+      queued: card === undefined ? place !== undefined : cardQueued(card),
       mine: isMine(issue.created_by),
     };
   });

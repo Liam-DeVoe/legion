@@ -12,7 +12,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useUserPreference } from "../shell/userPreference";
-import { isLegionPhase, legionPhaseIds, phaseLabel } from "./issues-legion";
+import { phaseHours, type WorkPhase, workPhaseLabel } from "./issues-legion";
 
 /** How Time per phase draws its bars: each phase's part of that row's own total (Share), or each
  *  bar against the longest total on the current page, with the total written beside it (Hours). */
@@ -36,38 +36,22 @@ export function usePhaseHoursMode(): [PhaseHoursMode, (next: PhaseHoursMode) => 
   );
 }
 
-/** Where a phase stands in the daemon's order; a phase this bundle does not know goes last. */
-const phaseIndex = (phase: string) =>
-  isLegionPhase(phase) ? legionPhaseIds.indexOf(phase) : legionPhaseIds.length;
-
-/** The phases of a row with hours, in the daemon's phase order, and their sum. */
-export function phaseHours(facts: LegionBoardFacts | undefined): {
-  readonly phases: readonly (readonly [string, number])[];
-  readonly total: number;
-} {
-  const phases = Object.entries(facts?.hours_by_phase ?? {})
-    .filter(([, hours]) => hours > 0)
-    .sort(([a], [b]) => phaseIndex(a) - phaseIndex(b));
-  return { phases, total: phases.reduce((sum, [, hours]) => sum + hours, 0) };
-}
-
-/** A phase's colour; a phase this bundle does not know takes Held's gray. */
-const fillOf = (phase: string) =>
-  isLegionPhase(phase) ? legionPhaseFill[phase] : legionPhaseFill.held;
+/** A phase's colour. */
+const fillOf = (phase: WorkPhase) => legionPhaseFill[phase];
 
 const hoursText = (hours: number) => `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
 
 const TOOLTIP_CLASS = `z-50 rounded-lg border p-2 text-xs font-normal shadow-lg ${card}`;
 
-/** What the tooltip says: one line per phase, in the daemon's order, with its colour, its name,
- *  its hours and its share of the row's total. */
+/** What the tooltip says: one line per phase, in the daemon's order with Other last, with its
+ *  colour, its name, its hours and its share of the row's total. */
 function PhaseHoursTooltip({
   id,
   phases,
   total,
 }: {
   id: string;
-  phases: readonly (readonly [string, number])[];
+  phases: readonly (readonly [WorkPhase, number])[];
   total: number;
 }): ReactNode {
   return (
@@ -78,7 +62,7 @@ function PhaseHoursTooltip({
             <td>
               <span aria-hidden className={`block size-2.5 rounded-sm ${fillOf(phase)}`} />
             </td>
-            <td className="whitespace-nowrap">{phaseLabel(phase)}</td>
+            <td className="whitespace-nowrap">{workPhaseLabel(phase)}</td>
             <td className="text-right tabular-nums whitespace-nowrap">{hoursText(hours)}</td>
             <td className={`text-right tabular-nums ${textMutedOnCanvas}`}>
               {Math.round((hours / total) * 100)}%

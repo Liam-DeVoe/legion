@@ -6,6 +6,7 @@ import {
   legionBoardQuery,
   legionSettingsQuery,
   projectDonePageQuery,
+  projectOpenCountQuery,
   userStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
@@ -42,12 +43,8 @@ import {
   type ViewLayout,
 } from "./IssueViewTabs";
 import { useIssueFilters } from "./issue-filters";
-import {
-  PhaseHoursContext,
-  PhaseHoursModeToggle,
-  phaseHours,
-  usePhaseHoursMode,
-} from "./issues-phase-hours";
+import { phaseHours } from "./issues-legion";
+import { PhaseHoursContext, PhaseHoursModeToggle, usePhaseHoursMode } from "./issues-phase-hours";
 import { useIssueTableActions } from "./issues-table-actions";
 import { ViewBar } from "./issues-table-bar";
 import {
@@ -66,6 +63,7 @@ import {
 } from "./issues-table-data";
 import {
   ALL_ROWS,
+  boardQueueLength,
   COLUMNS,
   type ColumnId,
   columnMinimums,
@@ -594,12 +592,16 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
             offset: pagination.pageIndex * pagination.pageSize,
           },
         };
+  // A project's view that lists only done issues (Done) reads no open listing: its rows are
+  // the done reads, and the other tabs count from the server's total and the board.
+  const readsOpen = !(place.kind === "project" && doneOnly);
   const claimPicked = (filters.find((filter) => filter.id === "claim")?.value ?? []) as string[];
   const wantsFree = claimPicked.includes(UNCLAIMED_FACET);
   const registry = useAgentRegistry(wantsFree || openFilter === "claim");
-  const { all, allItems, doneIssues, doneLoaded, doneTotal, issues, listingError } =
+  const { all, allItems, doneIssues, doneLoaded, doneTotal, issues, listingError, openLoaded } =
     useIssueTableItems(listing, {
       done,
+      readsOpen,
       registry,
       board: board.data,
       hasLegion,
@@ -668,8 +670,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   };
 
   const listedRows = table.getFilteredRowModel().rows;
-  const listedKeys =
-    issues.data === undefined ? undefined : listedRows.map((row) => row.id).join(" ");
+  const listedKeys = !openLoaded ? undefined : listedRows.map((row) => row.id).join(" ");
   useEffect(() => {
     if (listedKeys === undefined) return;
     const listed = new Set(listedKeys === "" ? [] : listedKeys.split(" "));
@@ -712,11 +713,11 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   useEffect(() => {
     if (
       (done === undefined || doneIssues.data !== undefined) &&
-      issues.data &&
+      openLoaded &&
       pagination.pageIndex >= Math.max(pageCount, 1)
     )
       table.setPageIndex(Math.max(pageCount - 1, 0));
-  }, [done, doneIssues.data, issues.data, pagination.pageIndex, pageCount, table]);
+  }, [done, doneIssues.data, openLoaded, pagination.pageIndex, pageCount, table]);
   const openFacets = useMemo(
     () => (openFilter ? facetCounts(items, openFilter, filters, search) : EMPTY_FACETS),
     [items, openFilter, filters, search]
@@ -724,7 +725,9 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
 
   // Each tab's count, from the data the page holds: the open listing (and the board) for every
   // view but Done, whose count is the server's total of its first page, read once the view has
-  // been opened in the page (the same read Done itself makes as it opens).
+  // been opened in the page (the same read Done itself makes as it opens). A view that reads no
+  // open listing (Done) counts Open by the server's total of a one-row open page, and the Legion
+  // queue by the board alone.
   const [doneOpened, setDoneOpened] = useState(builtIn.id === "done");
   if (builtIn.id === "done" && !doneOpened) setDoneOpened(true);
   const doneCount = useQuery({
@@ -735,6 +738,10 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     ),
     enabled: doneOpened && project !== undefined,
   });
+  const openCount = useQuery({
+    ...projectOpenCountQuery(project ?? ""),
+    enabled: !readsOpen && project !== undefined,
+  });
   const counts = useMemo(() => {
     const result = new Map<string, number | undefined>();
     for (const entry of views) {
@@ -742,9 +749,20 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
         result.set(entry.id, doneCount.data?.total);
         continue;
       }
+      if (!readsOpen) {
+        result.set(
+          entry.id,
+          entry.id === "open"
+            ? openCount.data
+            : entry.id === "queue" && board.data !== undefined
+              ? boardQueueLength(board.data)
+              : undefined
+        );
+        continue;
+      }
       // A view whose rows come from data the page does not hold yet says no count, not 0.
       const needsBoard = hasLegion && entry.legionOnly === true;
-      if (issues.data === undefined || (needsBoard && board.data === undefined)) {
+      if (!openLoaded || (needsBoard && board.data === undefined)) {
         result.set(entry.id, undefined);
         continue;
       }
@@ -752,14 +770,24 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       result.set(entry.id, allItems.filter((item) => matchesFilters(item, own)).length);
     }
     return result;
-  }, [views, hasLegion, allItems, doneCount.data, board.data, issues.data]);
-  // A saved view that lists closed issues counts only while it is open (`tabSavedCounts`): the
-  // page holds its closed rows then alone.
+  }, [
+    views,
+    hasLegion,
+    allItems,
+    doneCount.data,
+    openCount.data,
+    board.data,
+    openLoaded,
+    readsOpen,
+  ]);
+  // A saved view counts from the open listing, so it says no count on a view that reads none;
+  // one that lists closed issues counts only while it is open (`tabSavedCounts`): the page
+  // holds its closed rows then alone.
   const savedCounts = useMemo(() => {
     const result = new Map<string, number | undefined>();
     for (const entry of saved) {
       const query = copyAddress(entry.query);
-      if (listsClosed(query, hasLegion)) {
+      if (!readsOpen || listsClosed(query, hasLegion)) {
         result.set(entry.name, undefined);
         continue;
       }
@@ -767,7 +795,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       result.set(entry.name, allItems.filter((item) => matchesFilters(item, own)).length);
     }
     return result;
-  }, [saved, hasLegion, allItems]);
+  }, [saved, hasLegion, allItems, readsOpen]);
 
   const selectView = (id: string) => {
     setChosenSaved(undefined);
@@ -958,7 +986,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   );
 
   const loading =
-    issues.isPending ||
+    (readsOpen && issues.isPending) ||
     userState.isPending ||
     (done !== undefined && doneIssues.isPending) ||
     (legionFiltered && board.isPending);
@@ -987,7 +1015,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       views={views}
     />
   );
-  const failed = (issues.isError && issues.data === undefined) || userState.isError;
+  const failed = (readsOpen && issues.isError && issues.data === undefined) || userState.isError;
   const boardFailed = legionFiltered && board.isError;
 
   const toolbarTrailing = embedded ? (
@@ -1033,7 +1061,8 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
           // Issues by status, as main draws them: a click shows only that status, a second
           // click every status.
           <IssueTableStatus items={allItems} table={table} />
-        ) : (
+        ) : layoutChoice === "board" ? null : (
+          // The table's bar; the Board draws none, since its columns carry their counts.
           <ViewBar
             by={barBy}
             items={loading ? [] : listedRows.map((row) => row.original)}

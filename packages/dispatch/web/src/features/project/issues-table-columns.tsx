@@ -32,11 +32,12 @@ import {
   ACTIVITIES,
   activityLabel,
   legionPhaseIds,
+  phaseHours,
   phaseLabel,
   WAITING_REASONS,
   waitingLabel,
 } from "./issues-legion";
-import { PhaseHoursCell, phaseHours } from "./issues-phase-hours";
+import { PhaseHoursCell } from "./issues-phase-hours";
 import type { IssueListing } from "./issues-table-data";
 import {
   COLUMNS,

@@ -105,6 +105,22 @@ function table(
               (issue.advances ?? []).some((relation) => options.advances?.includes(relation.id)))
         )
   );
+  // The same route asked for one page: the rows its narrowings match, cut to the page, with
+  // their count (`total`), which a view that reads no open listing counts Open by.
+  const page = spyOn(api, "listIssuePage").mockImplementation(async (options) => {
+    const rows = [...issues, ...parents].filter(
+      (issue) =>
+        (!options.open || issue.status !== "done") &&
+        (options.status === undefined || options.status.includes(issue.status))
+    );
+    const offset = options.offset ?? 0;
+    return {
+      issues: rows.slice(offset, offset + options.limit),
+      limit: options.limit,
+      offset,
+      total: rows.length,
+    };
+  });
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue({
@@ -139,6 +155,7 @@ function table(
     view.unmount();
     client.clear();
     listing.mockRestore();
+    page.mockRestore();
     state.mockRestore();
     agents.mockRestore();
     viewer.mockRestore();

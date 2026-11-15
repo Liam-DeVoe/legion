@@ -4,10 +4,10 @@ import type { IssueStatus } from "../project/board-model";
 import { ageOf, AGES as ISSUE_AGES, runningIssueStatuses } from "../project/issues-table-model";
 import { columnsById, type TableColumn, tableLayout } from "./priority-table-model";
 
-/** The statuses each count column adds up. In flight is the statuses an issue is being worked
- *  in, which the issues table's own status bar counts (`runningIssueStatuses`); waiting is work
- *  admitted and not started; parked is work that stands in the backlog or the icebox. The three
- *  together are every open status, so no open issue under a priority is uncounted. */
+/** The statuses each count column adds up. In progress is the statuses an issue is being worked
+ *  in, which the issues table's own status bar counts (`runningIssueStatuses`); Triage, Todo is
+ *  work admitted and not started; parked is work that stands in the backlog or the icebox. The
+ *  three together are every open status, so no open issue under a priority is uncounted. */
 const WAITING_STATUSES: readonly IssueStatus[] = ["todo", "triage"];
 /** The one list of the parked statuses: the parked count here and the parked fault list of the
  *  priorities page (`PrioritiesPage.tsx`) both read it. */
@@ -90,9 +90,10 @@ export const ownerOf = (item: PriorityItem): string =>
   item.priority.owner.trim() === "" ? "No owner" : item.priority.owner.trim();
 
 /** The count columns are alike: a number, filtered by picking the numbers the rows hold, which
- *  is how a reader asks for the priorities with nothing in flight. Each is as wide as its whole
- *  header with its sort mark and filter, which a 44 px target below 1280 px makes the widest. */
-const COUNT_WIDTH = { size: 132, min: 132 };
+ *  is how a reader asks for the priorities with nothing in progress. Each is as wide as its
+ *  whole header with its sort mark and filter, which a 44 px target below 1280 px makes the
+ *  widest. */
+const COUNT_WIDTH = { size: 152, min: 152 };
 
 /** Every column of the priorities table, left to right: the order and the title stay pinned at
  *  the left edge while the counts scroll. */
@@ -114,8 +115,8 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     values: (item) => [ownerOf(item)],
     group: ownerOf,
   },
-  { id: "in-flight", header: "In flight", ...COUNT_WIDTH, values: (i) => [String(i.inFlight)] },
-  { id: "waiting", header: "Waiting", ...COUNT_WIDTH, values: (i) => [String(i.waiting)] },
+  { id: "in-flight", header: "In progress", ...COUNT_WIDTH, values: (i) => [String(i.inFlight)] },
+  { id: "waiting", header: "Triage, Todo", ...COUNT_WIDTH, values: (i) => [String(i.waiting)] },
   {
     id: "parked",
     header: "Backlog, icebox",

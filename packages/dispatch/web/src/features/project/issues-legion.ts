@@ -1,4 +1,4 @@
-import type { LegionBoardColumnID } from "../../api/types";
+import type { LegionBoardColumnID, LegionBoardFacts } from "../../api/types";
 
 /**
  * The Legion daemon's phases, in the daemon's own order: the ten columns of the board route, which
@@ -34,6 +34,46 @@ export function isLegionPhase(value: string): value is LegionPhase {
 /** A phase's name, or the value as it is for one this bundle does not know. */
 export function phaseLabel(phase: string): string {
   return phaseLabels.get(phase) ?? phase;
+}
+
+/** The phases Time per phase draws, in the daemon's order: the Legion phases work is done in
+ *  (Queue holds none), and Other last, the hours the board puts in no phase (`other`). */
+export const WORK_PHASES = [
+  ...LEGION_PHASES.filter(
+    (phase): phase is Exclude<(typeof LEGION_PHASES)[number], { id: "queue" }> =>
+      phase.id !== "queue"
+  ),
+  { id: "other", label: "Other" },
+] as const;
+export type WorkPhase = Exclude<LegionPhase, "queue"> | "other";
+export const workPhaseIds: readonly WorkPhase[] = WORK_PHASES.map((phase) => phase.id);
+const workPhaseLabels: ReadonlyMap<string, string> = new Map(
+  WORK_PHASES.map((phase) => [phase.id, phase.label])
+);
+/** A work phase's name, or the value as it is for one this bundle does not know. */
+export const workPhaseLabel = (phase: string): string => workPhaseLabels.get(phase) ?? phase;
+
+/** The phase a key of `hours_by_phase` is drawn as: its own, or Other for one that is no work
+ *  phase (Queue, or a key this bundle does not know). */
+const workPhaseOf = (key: string): WorkPhase =>
+  workPhaseLabels.has(key) ? (key as WorkPhase) : "other";
+
+/** A row's hours by work phase, in `WORK_PHASES` order, only those with hours, and their sum. */
+export function phaseHours(facts: LegionBoardFacts | undefined): {
+  readonly phases: readonly (readonly [WorkPhase, number])[];
+  readonly total: number;
+} {
+  const hours = new Map<WorkPhase, number>();
+  for (const [key, value] of Object.entries(facts?.hours_by_phase ?? {})) {
+    if (!(value > 0)) continue;
+    const phase = workPhaseOf(key);
+    hours.set(phase, (hours.get(phase) ?? 0) + value);
+  }
+  const phases = workPhaseIds.flatMap((phase) => {
+    const value = hours.get(phase);
+    return value === undefined ? [] : [[phase, value] as const];
+  });
+  return { phases, total: phases.reduce((sum, [, value]) => sum + value, 0) };
 }
 
 /** Why a card waits, in the order the Legion queue's bar draws them: it is ready to start, the

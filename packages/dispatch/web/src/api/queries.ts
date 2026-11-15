@@ -357,6 +357,18 @@ export const projectDonePageQuery = (
     },
   });
 
+/** How many open issues a project has: the `total` of a one-row page of its open listing, which
+ *  the Open tab counts by on a view that reads no open listing (Done). Under the same prefix,
+ *  so the events that refresh the listing refresh the count too. */
+export const projectOpenCountQuery = (project: string) =>
+  queryOptions({
+    queryKey: [...projectIssuesQueryKey(project, []), "open-count"],
+    queryFn: async (context) => {
+      await boardMovesSettled(context, project);
+      return (await api.listIssuePage({ project, open: true, limit: 1 })).total;
+    },
+  });
+
 /** Resolves once no board move on `project` is pending; rejects if the fetch is cancelled first. */
 function boardMovesSettled(context: QueryFunctionContext, project: string): Promise<void> {
   const { client } = context;

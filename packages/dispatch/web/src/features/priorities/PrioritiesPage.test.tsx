@@ -203,13 +203,13 @@ test("the page draws the priorities table above both fault lists", async () => {
   );
   const priorities = await screen.findByRole("table", { name: "Priorities table" });
   const faults = await screen.findByRole("table", {
-    name: "Issues in flight under no priority table",
+    name: "Issues in progress under no priority table",
   });
   const parked = await screen.findByRole("table", {
     name: "Parked priority issues table",
   });
   const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
-  expect(headings).toEqual(["Priorities", "In flight under no priority", "Parked priority work"]);
+  expect(headings).toEqual(["Priorities", "In progress under no priority", "Parked priority work"]);
   // The priorities come first, which is what the page's own name says it is about.
   expect(priorities.compareDocumentPosition(faults) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
     Node.DOCUMENT_POSITION_FOLLOWING
@@ -243,7 +243,7 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     issue("OPS-4", ["legion-first", "oss-verify"], { status: "icebox" }),
   ]);
   const faults = await screen.findByRole("table", {
-    name: "Issues in flight under no priority table",
+    name: "Issues in progress under no priority table",
   });
   const parked = await screen.findByRole("table", {
     name: "Parked priority issues table",
@@ -334,7 +334,7 @@ test("each fault table asks the issue listing for its statuses, and the parked o
 
   // Nor does the list under no priority offer the parked columns among those a reader may show.
   await user.click(
-    within(screen.getByRole("region", { name: "In flight under no priority" })).getByRole(
+    within(screen.getByRole("region", { name: "In progress under no priority" })).getByRole(
       "button",
       { name: "Columns" }
     )
@@ -539,7 +539,7 @@ test("a fault row tells no reader that an issue nobody claims is claimed", async
     }),
   ]);
   const faults = await screen.findByRole("table", {
-    name: "Issues in flight under no priority table",
+    name: "Issues in progress under no priority table",
   });
   await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" });
   const headers = within(faults)
@@ -583,7 +583,7 @@ test("a grouped table counts each group in the plural its rows are called by", a
   ).toBeDefined();
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   // An embedded table's grouping is in its Group by menu (INFRA-3135's control row).
-  const unplaced = screen.getByRole("region", { name: "In flight under no priority" });
+  const unplaced = screen.getByRole("region", { name: "In progress under no priority" });
   await user.click(within(unplaced).getByRole("button", { name: "Group by" }));
   await user.click(screen.getByRole("radio", { name: "Status" }));
   expect(

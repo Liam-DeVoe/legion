@@ -161,7 +161,8 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
 - `board-open-1440`, `board-open-legion-phase-1440` and `board-queue-1440`: Open on the Board by
   Status, Open on the Board by Legion phase (`group=legion_phase`), and the Legion queue on the
   Board;
-- `group-by-menu-1440`: Open with the Group by menu open;
+- `group-by-menu-1440` and `board-group-by-menu-1440`: Open with the Group by menu open, in the
+  table and on the Board, where it offers Status and Legion phase;
 - `save-view-popover-1440` and `save-view-saved-tab-1440`: Open narrowed to the triage issues,
   the Save view panel with "Triage" typed, and then the saved tab it adds after Done;
 - `columns-menu-legion-columns-1440`: the Columns menu;
@@ -200,9 +201,9 @@ pictures taken against that page fail at the first one. The run fails if a pictu
 stub left a request unanswered, the page threw, the phone banner took more than two lines, or a
 check of what the page drew failed: the bar's legend drawing a scroll bar, the week the Closed
 filter writes, the count its Done tab reads, the tooltip naming no phase or standing over a
-table scrolled sideways, the Board not by Legion phase under `group=legion_phase`, the saved tab
-not standing open, or a failure flag left in the address. The report in the output lists all of
-it.
+table scrolled sideways, the Board's Group by menu not offering Status and Legion phase, the
+Board not by Legion phase under `group=legion_phase`, the saved tab not standing open, or a
+failure flag left in the address. The report in the output lists all of it.
 
 ## Build the single file
 

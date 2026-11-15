@@ -29,7 +29,7 @@ const PRIORITIES_PATH = "/priorities";
 /** The two fault tables, by the names the Issues table gives them: the `label` each fault list of
  *  `PrioritiesPage.tsx` passes, which `features/project/IssuesTable.tsx` names its table by with
  *  " table" after it. */
-const NO_PRIORITY_TABLE = "Issues in flight under no priority table";
+const NO_PRIORITY_TABLE = "Issues in progress under no priority table";
 const PARKED_TABLE = "Parked priority issues table";
 
 /** What the server says of a deployment with no live priority, in its own words
@@ -255,7 +255,7 @@ test("the priorities page draws the order first and the two fault lists under it
 
     // The agreed picture (dispatch://INFRA-2947/artifact/priorities-round10-png): the
     // priorities, then the work in flight under none, then the priority work parked.
-    const unplaced = section(page, "In flight under no priority");
+    const unplaced = section(page, "In progress under no priority");
     const parked = section(page, "Parked priority work");
     const tops = await Promise.all([topOf(priorities), topOf(unplaced), topOf(parked)]);
     expect(tops[0]).toBeLessThan(tops[1]);

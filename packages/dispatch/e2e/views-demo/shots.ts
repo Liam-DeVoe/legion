@@ -148,10 +148,15 @@ async function tabCount(page: Page, id: string): Promise<number> {
 }
 
 /** `/priorities` once its three tables have drawn their rows: the priorities and the two
- *  faults. The parked fault is "Parked priority work" in the design and "Priority work in
- *  backlog or icebox" on main, where the before pictures are taken. */
+ *  faults. The design names them "In progress under no priority" and "Parked priority work";
+ *  main, where the before pictures are taken, "In flight under no priority" and "Priority work
+ *  in backlog or icebox". */
 async function openPriorities(page: Page): Promise<void> {
-  await open(page, "/priorities", prioritySection(page, "In flight under no priority"));
+  await open(
+    page,
+    "/priorities",
+    prioritySection(page, "In progress under no priority", "In flight under no priority")
+  );
   await prioritySection(page, "Parked priority work", "Priority work in backlog or icebox").waitFor(
     { timeout: 30_000 }
   );
@@ -330,6 +335,25 @@ const afterShots: Shot[] = [
       await open(page, view("open"));
       await page.getByRole("button", { name: "Group by", exact: true }).click();
       await page.waitForTimeout(500);
+    },
+  },
+  // The same menu on the Board, where it picks the columns: by Status or by Legion phase.
+  {
+    name: "board-group-by-menu-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("open", "&layout=board"), page.locator("[data-board-card]").first());
+      await page.getByRole("button", { name: "Group by", exact: true }).click();
+      await page.waitForTimeout(500);
+      const picks = await page
+        .getByRole("radio")
+        .evaluateAll((radios) =>
+          radios.map((radio) => radio.closest("label")?.textContent?.trim() ?? "")
+        );
+      check(
+        picks.includes("Status") && picks.includes("Legion phase"),
+        `the Board's Group by menu offers ${picks.join(", ")}`
+      );
     },
   },
   { name: "save-view-popover-1440", viewport: DESKTOP, take: openSaveView },

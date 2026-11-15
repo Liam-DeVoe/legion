@@ -241,15 +241,16 @@ for (const [status, [, background, foreground]] of Object.entries(ISSUE_STATUS_S
   );
 
 /**
- * One colour per Legion phase (`features/project/issues-legion.ts`), for Time per phase: the
- * Okabe-Ito palette, built to stay apart for readers with each common colour-vision deficiency,
- * in an order where every two neighbouring phases differ in hue and in lightness (CIEDE2000 28
- * or more between neighbours for normal, deutan and protan vision). Waiting on a person is black
- * on a light page and white on a dark one. No text is drawn on these fills - every label sits
- * beside its swatch - so no contrast pair is registered for them.
+ * One colour per phase Time per phase draws (`WORK_PHASES` in
+ * `features/project/issues-legion.ts`): the Legion phases work is done in, from the Okabe-Ito
+ * palette, built to stay apart for readers with each common colour-vision deficiency, in an order
+ * where every two neighbouring phases differ in hue and in lightness (CIEDE2000 28 or more
+ * between neighbours for normal, deutan and protan vision), and a light gray for Other, the
+ * hours in no phase, drawn last. Queue holds no work, so it has no colour. Waiting on a person is
+ * black on a light page and white on a dark one. No text is drawn on these fills - every label
+ * sits beside its swatch - so no contrast pair is registered for them.
  */
 export const legionPhaseFill = {
-  queue: "bg-[#D9D9D9]",
   design: "bg-[#E69F00]",
   planning: "bg-[#56B4E9]",
   implementing: "bg-[#009E73]",
@@ -259,6 +260,7 @@ export const legionPhaseFill = {
   merging: "bg-[#CC79A7]",
   awaiting_person: "bg-[#000000] dark:bg-[#FFFFFF]",
   held: "bg-[#999999]",
+  other: "bg-[#D9D9D9]",
 } as const;
 /** The Legion queue's bar: its waiting reasons in steps of the status scale's hue, in the
  *  order of the reasons. */

@@ -317,7 +317,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     ready: (page) => [
       page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^P1 / }),
       page
-        .getByRole("table", { exact: true, name: "Issues in flight under no priority table" })
+        .getByRole("table", { exact: true, name: "Issues in progress under no priority table" })
         .getByRole("row", { name: /Broadcast recipients keep their send order/ }),
       page
         .getByRole("table", { exact: true, name: "Parked priority issues table" })

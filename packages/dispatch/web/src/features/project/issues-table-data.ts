@@ -79,12 +79,13 @@ export type DoneRead =
   | undefined;
 
 /**
- * One listing's issues as the table shows them: the open listing, and the done issues a view
- * that lists closed issues reads - only those closed in its window where it has one, and only
- * the page on screen where it reads a page (`total` then counts every done issue the window
- * holds). No view of a project reads the project's full listing. A scoped listing (`advances`)
- * is narrowed by the server already, so its done issues come from the listing read whole, and
- * a listing its open read answers whole (`answeredWhole`) reads no done issue at all.
+ * One listing's issues as the table shows them: the open listing, unless the view lists no open
+ * issue (`readsOpen` false: Done), and the done issues a view that lists closed issues reads -
+ * only those closed in its window where it has one, and only the page on screen where it reads
+ * a page (`total` then counts every done issue the window holds). No view of a project reads
+ * the project's full listing. A scoped listing (`advances`) is narrowed by the server already,
+ * so its done issues come from the listing read whole, and a listing its open read answers
+ * whole (`answeredWhole`) reads no done issue at all.
  *
  * A done read whose rows carry no `closed_at` (an older server during a rolling deploy, which
  * ignores `closed_since`) lists no row for a window, rather than every done issue.
@@ -93,12 +94,14 @@ export function useIssueTableItems(
   listing: IssueListing,
   {
     done,
+    readsOpen,
     registry,
     board,
     hasLegion,
     viewer,
   }: {
     done: DoneRead;
+    readsOpen: boolean;
     registry: AgentRegistry;
     board: LegionBoardResponse | undefined;
     hasLegion: boolean;
@@ -106,11 +109,13 @@ export function useIssueTableItems(
   }
 ) {
   const text = useAgentText();
-  const issues = useQuery(
-    "project" in listing
+  const issues = useQuery({
+    ...("project" in listing
       ? projectIssuesQuery(listing.project, [], true)
-      : advancesIssuesQuery(listing, true)
-  );
+      : advancesIssuesQuery(listing, true)),
+    enabled: readsOpen,
+  });
+  const openRows = readsOpen ? issues.data : NO_ISSUES;
   const reads = done !== undefined && !answeredWhole(listing);
   const closedWindow = {
     ...(done?.closed_since === undefined ? {} : { closed_since: done.closed_since }),
@@ -139,16 +144,17 @@ export function useIssueTableItems(
       ? (doneIssues.data ?? NO_ISSUES)
       : (donePage.data?.issues ?? NO_ISSUES);
   const doneLoaded = reads && doneRead.data !== undefined;
-  const listingError = issues.isError ? issues : doneRead.isError ? doneRead : undefined;
+  const listingError =
+    readsOpen && issues.isError ? issues : doneRead.isError ? doneRead : undefined;
   const all = useMemo(() => {
-    const open = issues.data ?? NO_ISSUES;
+    const open = openRows ?? NO_ISSUES;
     if (doneRows.length === 0) return open;
     const keys = new Set(open.map((issue) => issue.key));
     const closed = doneRows.filter(
       (issue) => !keys.has(issue.key) && (!windowed || issue.closed_at !== null)
     );
     return [...open, ...closed];
-  }, [issues.data, doneRows, windowed]);
+  }, [openRows, doneRows, windowed]);
   const allItems = useMemo(
     () =>
       buildItems(
@@ -168,5 +174,7 @@ export function useIssueTableItems(
     doneTotal: page === undefined ? undefined : donePage.data?.total,
     issues,
     listingError,
+    /** The open listing is answered, or the view does not read it. */
+    openLoaded: openRows !== undefined,
   };
 }

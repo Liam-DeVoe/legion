@@ -1085,12 +1085,12 @@ export class DispatchApiClient {
   /** One page of the issue list, with the count of every issue its narrowings match (`total`).
    *  `sort` orders the list by when each issue closed (`closed_at`, or `-closed_at` newest
    *  first) before the page is cut, which is what the Done view pages by; the route's contract
-   *  gains it with INFRA-3221's server change. A server that answers the plain list is read as
-   *  one page of everything. */
+   *  gains it with INFRA-3221's server change. A page with no `offset` is the first. A server
+   *  that answers the plain list is read as one page of everything. */
   async listIssuePage(
     query: Query<"/api/v1/issues", "get"> & {
       readonly limit: number;
-      readonly offset: number;
+      readonly offset?: number;
       readonly sort?: "closed_at" | "-closed_at";
     }
   ): Promise<IssueSummaryPage> {
