@@ -111,8 +111,8 @@ func limitedRig(t *testing.T, github *limitedGitHub, logs *syncBuffer, recorded 
 	}
 }
 
-// recordedOn is a done issue of the rig's project, recorded on repo at the default branch branch.
-func recordedOn(key, repo, branch string) record.Issue {
+// doneOn is a done issue of the rig's project, recorded on repo at the default branch branch.
+func doneOn(key, repo, branch string) record.Issue {
 	return record.Issue{Key: key, Tree: key, Project: "LEGION", Title: key, Phase: phase.Done, Generation: 1, Status: "done", Rank: "V",
 		Repo: repo, DefaultBranch: branch, GitHubRepo: repo}
 }
@@ -142,7 +142,7 @@ func TestABootServesARecordedDefaultBranchThroughARateLimitAndReadsItAgainAfterT
 	var reset atomic.Int64
 	github := newLimitedGitHub(t, limitedBoth, spendsOnce("zeta/tools", &reset))
 	logs := &syncBuffer{}
-	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs, recordedOn("LEGION-1", "zeta/tools", "main")))
+	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs, doneOn("LEGION-1", "zeta/tools", "main")))
 	resetAt := time.Unix(reset.Load(), 0)
 
 	stage := loggedLines(t, logs.String(), `"stage":"repositories"`)
@@ -269,7 +269,7 @@ func TestABootReadsARateLimitNamedOnlyByItsMessageAsARateLimit(t *testing.T) {
 		return true
 	})
 	logs := &syncBuffer{}
-	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs, recordedOn("LEGION-1", "zeta/tools", "main")))
+	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs, doneOn("LEGION-1", "zeta/tools", "main")))
 
 	held := loggedLines(t, logs.String(), "so the daemon serves it on the default branch it holds")
 	if len(held) != 1 || held[0]["repo"] != "zeta/tools" || held[0]["defaultBranch"] != "main" || held[0]["rateLimitRemaining"] != "14671" || held[0]["budget"] != "core" {
