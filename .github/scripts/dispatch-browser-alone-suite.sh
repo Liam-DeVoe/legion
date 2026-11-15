@@ -5,32 +5,37 @@
 #
 # Who runs it, and what it takes:
 #
-#   .github/scripts/dispatch-browser-alone-suite.sh <project>
+#   .github/scripts/dispatch-browser-alone-suite.sh <project> <connections>
 #
 # <project> is this leg's Playwright project, the alone job's `${{ matrix.project }}`, one of
 # the three `-alone` ones: it is the `--project` the run takes, and it names the blob report
 # this leg writes, the row count file beside it and the title of the sampler's readings.
+# <connections> is the connection limit the stack's Postgres must allow, which the binaries job
+# reads and hands on as `${{ needs.binaries.outputs.connections }}`, because this job's container
+# has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below.
 #
-# It is an argument rather than a key of the step's `env:`, for the reason the alone job's head
+# Both are arguments rather than keys of the step's `env:`, for the reason the alone job's head
 # gives: a step `env:` carrying an expression drops that job out of check-ci-filters.sh's
 # reduction of what a go command compiles.
 #
 # The step keeps its own `timeout-minutes` and its working directory, packages/dispatch, which
 # is the root the Playwright config path and the reporter path below are read from.
 #
-# Run from packages/dispatch: .github/scripts/dispatch-browser-alone-suite.sh webkit-alone
+# Run from packages/dispatch: .github/scripts/dispatch-browser-alone-suite.sh webkit-alone 100
 # CI runs it in dispatch-browser.yaml's alone job, at the step "Browser-test dispatch dashboard
 # (${{ matrix.project }})".
 set -euo pipefail
 
 usage() {
-  echo "::error::dispatch-browser-alone-suite.sh takes this leg's Playwright project:" \
-    ".github/scripts/dispatch-browser-alone-suite.sh <project>. It was given: $*"
+  echo "::error::dispatch-browser-alone-suite.sh takes this leg's Playwright project and the" \
+    "stack's connection limit: .github/scripts/dispatch-browser-alone-suite.sh <project>" \
+    "<connections>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 1 ] || usage "$@"
+[ "$#" -eq 2 ] || usage "$@"
 project=$1
+connections=$2
 
 # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
 # makes (mkdtempSync in os.tmpdir(), e2e/harness-pool.ts:143) among it, which is what
@@ -52,6 +57,8 @@ trap 'kill "$sampler" 2>/dev/null || true' EXIT
 # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
 # container has no docker to run the image provider's digest with.
 export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+# Read in the binaries job, since this container has no Go (e2e/harness-postgres.ts).
+export DISPATCH_E2E_PG_CONNECTIONS=$connections
 # What the binaries job built, which run-server.sh and run-broker.sh
 # execute instead of building: the server by its path, the broker's three by the
 # directory that holds them.

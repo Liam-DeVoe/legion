@@ -5,36 +5,40 @@
 #
 # Who runs it, and what it takes:
 #
-#   .github/scripts/dispatch-browser-shard-suite.sh <shard> <lane>
+#   .github/scripts/dispatch-browser-shard-suite.sh <shard> <lane> <connections>
 #
 # <shard> is this leg's number out of the job's four, the shard job's `${{ matrix.shard }}`: it
 # is the `--shard` numerator below, and it names the blob report this leg writes, the row count
 # file beside it and the title of the sampler's readings. <lane> is the run's lane, the
 # workflow's own `${{ inputs.lane }}`, `pull-request` or `full`: it decides which projects run
 # and whether the run is held to the `@pr` rows, and an unknown one ends this script below.
+# <connections> is the connection limit each stack's Postgres must allow, which the binaries job
+# reads and hands on as `${{ needs.binaries.outputs.connections }}`, because this job's container
+# has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below.
 #
-# Both are arguments rather than keys of the step's `env:`, for the reason the shard job's head
-# gives: a step `env:` carrying an expression drops that job out of check-ci-filters.sh's
+# All three are arguments rather than keys of the step's `env:`, for the reason the shard job's
+# head gives: a step `env:` carrying an expression drops that job out of check-ci-filters.sh's
 # reduction of what a go command compiles.
 #
 # The step keeps its own `timeout-minutes` and its working directory, packages/dispatch, which
 # is the root the Playwright config path and the reporter path below are read from.
 #
-# Run from packages/dispatch: .github/scripts/dispatch-browser-shard-suite.sh 1 full
+# Run from packages/dispatch: .github/scripts/dispatch-browser-shard-suite.sh 1 full 100
 # CI runs it in dispatch-browser.yaml's shard job, at the step "Browser-test dispatch dashboard
 # (shard ${{ matrix.shard }} of 4)".
 set -euo pipefail
 
 usage() {
-  echo "::error::dispatch-browser-shard-suite.sh takes this leg's shard number and the run's" \
-    "lane: .github/scripts/dispatch-browser-shard-suite.sh <shard> <pull-request|full>." \
-    "It was given: $*"
+  echo "::error::dispatch-browser-shard-suite.sh takes this leg's shard number, the run's" \
+    "lane and the stacks' connection limit: .github/scripts/dispatch-browser-shard-suite.sh" \
+    "<shard> <pull-request|full> <connections>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 2 ] || usage "$@"
+[ "$#" -eq 3 ] || usage "$@"
 shard=$1
 lane=$2
+connections=$3
 
 # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
 # makes (mkdtempSync in os.tmpdir(), e2e/harness-pool.ts:143) among it, which is what
@@ -58,6 +62,8 @@ trap 'kill "$sampler" 2>/dev/null || true' EXIT
 # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
 # container has no docker to run the image provider's digest with.
 export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+# Read in the binaries job, since this container has no Go (e2e/harness-postgres.ts).
+export DISPATCH_E2E_PG_CONNECTIONS=$connections
 # What the binaries job built, which run-server.sh and run-broker.sh
 # execute instead of building: the server by its path, the broker's three by the
 # directory that holds them.
