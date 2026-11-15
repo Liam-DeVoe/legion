@@ -29,13 +29,15 @@ test("each hook runs its own bundle, with the timeout its work needs: 20 s for t
   ])
 })
 
-// The open-asks hook's three waits run in series on its slow path: the jj chain for the overlay,
-// then the session's `!` token command, which `sessionDispatchSettings` runs, then the Dispatch
-// read for the summary (`openAsks` in hooks/session-hook.ts). Claude Code kills the hook at the
-// timeout the row above pins, and a killed hook loses the overlay's export and the summary, so a
-// raise of any one of the three without the others has to fail here and not in a session. The
-// sum must also leave Bun's own start-up room inside the timeout, which is why the check is a
-// strict one rather than an equality.
+// The open-asks hook's three waits run in series on its slow path with a `!` token credential:
+// the jj chain for the overlay, then the session's token command, which `sessionDispatchSettings`
+// runs, then the Dispatch read for the summary (`openAsks` in hooks/session-hook.ts). Claude Code
+// kills the hook at the timeout the row above pins, and a killed hook loses the overlay's export
+// and the summary, so a raise of any one of the three without the others has to fail here and not
+// in a session. The sum must also leave room for Bun's own start-up inside the timeout, and this
+// row does not check that room: `toBeLessThan` passes a sum 1 ms under the timeout. Today the three
+// sum to 16 s against 20 s, which leaves 4 s. A broker credential's route is not this sum
+// (hooks/session-hook-budgets.ts says why).
 test("the open-asks hook's jj chain, token command and Dispatch read fit inside the timeout hooks.json gives it", () => {
   const openAsks = hooks.hooks.SessionStart.flatMap((matcher) => matcher.hooks).find((hook) =>
     hook.args.includes("open-asks"),

@@ -3,15 +3,19 @@
  * can assert them: `session-hook.ts` runs its mode off `process.argv` at import, so importing that
  * file to read a constant would run a hook.
  *
- * On the slow path the hook waits for the jj chain (`JJ_BASE_CHAIN_TIMEOUT_MS`), then for the
- * session's `!` token command, which `sessionDispatchSettings` runs bounded by envoy-client's
- * `COMMAND_TIMEOUT_MS`, then for the Dispatch read (`OPEN_ASKS_TIMEOUT_MS`). All three are bounded
- * by something outside this package: Claude Code kills the hook at the `timeout`
+ * On the slow path of a `!` token credential the hook waits for the jj chain
+ * (`JJ_BASE_CHAIN_TIMEOUT_MS`), then for the session's token command, which
+ * `sessionDispatchSettings` runs bounded by envoy-client's `COMMAND_TIMEOUT_MS`, then for the
+ * Dispatch read (`OPEN_ASKS_TIMEOUT_MS`). Claude Code kills the hook at the `timeout`
  * `hooks/hooks.json` declares for it (20 s for `open-asks`). The hook appends `DISPATCH_HOST` and
  * `ENVOY_CONFIG_FILE` to the env file before any of the three, so what a kill costs the session is
- * the jj overlay's `export JJ_CONFIG=` line and the open-ask summary. So the sum of the three is
- * what has to stay inside that timeout, and `tests/hooks-timeout.test.ts` asserts it against the
- * number `hooks.json` itself carries.
+ * the jj overlay's `export JJ_CONFIG=` line and the open-ask summary. So on that route the sum of
+ * the three is what has to stay inside that timeout, and `tests/hooks-timeout.test.ts` asserts it
+ * against the number `hooks.json` itself carries. A broker credential (envoy-client's
+ * `brokerCredential`) runs no token command: `DispatchClient` awaits the credential's headers, the
+ * broker's token trade among them, before the fetch, and only the fetch takes
+ * `OPEN_ASKS_TIMEOUT_MS`, so the sum does not cover that trade and nothing in this module bounds
+ * it. By then the overlay's export is written, so a kill on that route costs only the summary.
  */
 
 /** The bound on the Dispatch read that prints the session's open asks. A Dispatch that does not
