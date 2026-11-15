@@ -4771,6 +4771,460 @@ check "charges zz-c.sh through zz-a.sh's three passes, once" \
   "$(contains "$out" 'its own retries take 3150 s to exhaust')"
 check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 53')"
 
+# The loop waits of the path a file is charged through are charged at every call of that path,
+# each multiplied by the passes above it, and not at its last call alone. The step runs l-a.sh
+# twice with `sleep 120` between the passes, l-a.sh runs l-b.sh three times with `sleep 20`
+# between them, and l-b.sh retries at 180 s, 5 x 180 + 150 = 1050 s. The step waits
+# 6 x 1050 = 6300 s for the attempts, 120 s in its own loop and 2 x 40 = 80 s in l-a.sh's,
+# 6500 s, which `timeout-minutes: 108`, 6480 s, does not exceed. A walk charging the waits of the
+# outer call alone (6420 s), of the inner call alone (6380 s), of neither (6300 s), or taking
+# them away (6100 s) passed it; round 36's mutation pass of dispatch://INFRA-1545 found all four
+# standing.
+echo "case: the loop waits along a nested path are charged at every call of it"
+root=$(fixture path-waits-nested)
+cat > "$root/.github/scripts/l-b.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+cat > "$root/.github/scripts/l-a.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+for pass in 1 2 3; do
+  .github/scripts/l-b.sh
+  sleep 20
+done
+SH
+chmod +x "$root/.github/scripts/l-a.sh" "$root/.github/scripts/l-b.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch through a nest of loops
+        timeout-minutes: 108
+        run: |
+          for pass in 1 2; do
+            .github/scripts/l-a.sh
+            sleep 120
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges both loops' waits along the path, once each" \
+  "$(contains "$out" 'its own retries take 6500 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 109')"
+
+# Two paths reaching one file with the same product of loop factors are told apart by their
+# waits, and the path waiting longer is the one charged (dispatch://INFRA-1545, round 36). The
+# step runs pa.sh and pz.sh ten times and pm.sh twenty times, in loops that do not sleep. pa.sh
+# runs pc1.sh twice with `sleep 9`, pm.sh runs it once: twenty runs either way, with
+# 10 x 9 = 90 s of waits through pa.sh and none through pm.sh, on the path's last call. pz.sh
+# runs pz2.sh twice with `sleep 9` and pz2.sh runs pc2.sh once, while pm.sh reaches pc2.sh
+# through pm2.sh: twenty runs either way again, the 90 s on the path's middle call this time. The
+# path waiting longer is walked first to pc1.sh and second to pc2.sh. Each fetch retries at 30 s
+# (300 s), so the step waits 2 x 20 x 300 + 2 x 90 = 12180 s, which `timeout-minutes: 203`,
+# 12180 s, does not exceed. Charging either file through pm.sh is 12090 s, and the step passed
+# under each walk round 36's mutation pass left standing: one comparing the products alone, one
+# letting a later path of the same product replace the first, and ones adding a call's wait to
+# its path as `-` or as `product + wait`. The loop counts are written so that the sum
+# `product + wait` makes is larger along the pm.sh paths: 20 against 10 + 9 on the last call,
+# 1 + 20 against 1 + 10 + 9 on the calls above it.
+echo "case: of two paths of one product, the one whose loops wait longer is charged"
+root=$(fixture path-waits-equal-product)
+cat > "$root/.github/scripts/pc1.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+SH
+cp "$root/.github/scripts/pc1.sh" "$root/.github/scripts/pc2.sh"
+cat > "$root/.github/scripts/pa.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+for pass in 1 2; do
+  .github/scripts/pc1.sh
+  sleep 9
+done
+SH
+cat > "$root/.github/scripts/pz.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+for pass in 1 2; do
+  .github/scripts/pz2.sh
+  sleep 9
+done
+SH
+cat > "$root/.github/scripts/pz2.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/pc2.sh
+SH
+cat > "$root/.github/scripts/pm.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/pc1.sh
+.github/scripts/pm2.sh
+SH
+cat > "$root/.github/scripts/pm2.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/pc2.sh
+SH
+chmod +x "$root/.github/scripts/pc1.sh" "$root/.github/scripts/pc2.sh" \
+  "$root/.github/scripts/pa.sh" "$root/.github/scripts/pz.sh" "$root/.github/scripts/pz2.sh" \
+  "$root/.github/scripts/pm.sh" "$root/.github/scripts/pm2.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch along paths of one product
+        timeout-minutes: 203
+        run: |
+          for pass in $(seq 1 10); do
+            .github/scripts/pa.sh
+            .github/scripts/pz.sh
+          done
+          for pass in $(seq 1 20); do
+            .github/scripts/pm.sh
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges each file through the path whose loops wait" \
+  "$(contains "$out" 'its own retries take 12180 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 204')"
+
+# Two paths of the same product and the same waits are told apart by name, the first being the
+# one charged, and the choice moves the step's figure where another file is charged through one
+# of them, because a call two charged paths share has its wait charged once. The step runs t-a.sh
+# twice with `sleep 100`, then t-b.sh twice with `sleep 100`. Both run t-c.sh, and t-b.sh runs
+# t-x.sh too, each retrying at 30 s (300 s). t-c.sh charged through t-a.sh charges the waits of
+# both loops, 4 x 300 + 200 = 1400 s, which `timeout-minutes: 23`, 1380 s, does not exceed;
+# charged through t-b.sh, the path t-x.sh is charged through, it is 1300 s, and the step passed
+# under round 36's surviving walks that let the later of two equal paths replace the first
+# (dispatch://INFRA-1545, round 36).
+echo "case: of two paths of one product and one wait, the first by name is charged"
+root=$(fixture path-tie-scripts)
+cat > "$root/.github/scripts/t-c.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+SH
+cp "$root/.github/scripts/t-c.sh" "$root/.github/scripts/t-x.sh"
+cat > "$root/.github/scripts/t-a.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/t-c.sh
+SH
+cat > "$root/.github/scripts/t-b.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/t-c.sh
+.github/scripts/t-x.sh
+SH
+chmod +x "$root/.github/scripts/t-a.sh" "$root/.github/scripts/t-b.sh" \
+  "$root/.github/scripts/t-c.sh" "$root/.github/scripts/t-x.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch along two equal paths
+        timeout-minutes: 23
+        run: |
+          for pass in 1 2; do
+            .github/scripts/t-a.sh
+            sleep 100
+          done
+          for pass in 1 2; do
+            .github/scripts/t-b.sh
+            sleep 100
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges t-c.sh through t-a.sh, the first name" \
+  "$(contains "$out" 'its own retries take 1400 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 24')"
+
+# The name decides that tie, not the order of the walk. A composite action's own script calls
+# are walked before the actions it `uses:`, and an action's path sorts before a script's, so
+# there the path walked second is the first by name. The step uses v-top, which runs v-s.sh twice
+# with `sleep 100` and then uses v-a. v-s.sh runs v-t.sh and v-x.sh once; v-a runs v-t.sh twice
+# with `sleep 100`. v-t.sh is run twice with 100 s of waits along either path. Charged through
+# v-a, the first by name, it charges v-a's loop beside v-s.sh's, which v-x.sh is charged through:
+# 4 x 300 + 200 = 1400 s, which `timeout-minutes: 23` does not exceed. Charged through v-s.sh,
+# the path walked first, it is 1300 s, and the step passed under round 36's surviving walks that
+# never read the name (dispatch://INFRA-1545, round 36).
+echo "case: of two equal paths, the first by name is charged where it is walked second"
+root=$(fixture path-tie-action)
+cat > "$root/.github/scripts/v-t.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+SH
+cp "$root/.github/scripts/v-t.sh" "$root/.github/scripts/v-x.sh"
+cat > "$root/.github/scripts/v-s.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/v-t.sh
+.github/scripts/v-x.sh
+SH
+chmod +x "$root/.github/scripts/v-s.sh" "$root/.github/scripts/v-t.sh" \
+  "$root/.github/scripts/v-x.sh"
+mkdir -p "$root/.github/actions/v-top" "$root/.github/actions/v-a"
+cat > "$root/.github/actions/v-top/action.yml" <<'YAML'
+name: V top
+description: Runs v-s.sh in a loop, then uses v-a.
+runs:
+  using: composite
+  steps:
+    - name: Run v-s.sh twice
+      shell: bash
+      run: |
+        for pass in 1 2; do
+          .github/scripts/v-s.sh
+          sleep 100
+        done
+    - uses: ./.github/actions/v-a
+YAML
+cat > "$root/.github/actions/v-a/action.yml" <<'YAML'
+name: V a
+description: Runs v-t.sh in a loop.
+runs:
+  using: composite
+  steps:
+    - name: Run v-t.sh twice
+      shell: bash
+      run: |
+        for pass in 1 2; do
+          .github/scripts/v-t.sh
+          sleep 100
+        done
+YAML
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch along two equal paths
+        uses: ./.github/actions/v-top
+        timeout-minutes: 23
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges v-t.sh through v-a, the first name" \
+  "$(contains "$out" 'its own retries take 1400 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 24')"
+
+# And the name decides nothing else: a path first by name and walked second replaces the path
+# found first only where the two tie. w-top runs w-s.sh, which runs w-t.sh twice with `sleep 100`,
+# and uses w-a, which runs w-t.sh twice with no sleep. Through w-s.sh the step waits
+# 2 x 300 + 100 = 700 s, which `timeout-minutes: 11`, 660 s, does not exceed; charging w-t.sh
+# through w-a, which waits less, is 600 s, and the step passed under round 36's surviving walks
+# that let the first name replace a longer wait (dispatch://INFRA-1545, round 36).
+echo "case: a path first by name and waiting less is not charged in place of one waiting more"
+root=$(fixture path-name-not-wait)
+cat > "$root/.github/scripts/w-t.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+SH
+cat > "$root/.github/scripts/w-s.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+for pass in 1 2; do
+  .github/scripts/w-t.sh
+  sleep 100
+done
+SH
+chmod +x "$root/.github/scripts/w-s.sh" "$root/.github/scripts/w-t.sh"
+mkdir -p "$root/.github/actions/w-top" "$root/.github/actions/w-a"
+cat > "$root/.github/actions/w-top/action.yml" <<'YAML'
+name: W top
+description: Runs w-s.sh, then uses w-a.
+runs:
+  using: composite
+  steps:
+    - name: Run w-s.sh
+      shell: bash
+      run: .github/scripts/w-s.sh
+    - uses: ./.github/actions/w-a
+YAML
+cat > "$root/.github/actions/w-a/action.yml" <<'YAML'
+name: W a
+description: Runs w-t.sh in a loop that does not sleep.
+runs:
+  using: composite
+  steps:
+    - name: Run w-t.sh twice
+      shell: bash
+      run: |
+        for pass in 1 2; do
+          .github/scripts/w-t.sh
+        done
+YAML
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch along a waiting path and a named one
+        uses: ./.github/actions/w-top
+        timeout-minutes: 11
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges w-t.sh through w-s.sh, whose loop waits" \
+  "$(contains "$out" 'its own retries take 700 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 12')"
+
+# The waits charged are those of the paths charging a file whose own arithmetic is above 0. A
+# loop sleeping 100 s between its three passes around q-quiet.sh, which retries nothing, sits
+# beside q-fetch.sh's 1050 s, and the step's figure is 1050 s, which `timeout-minutes: 18`,
+# 1080 s, exceeds. A walk charging the waits of q-quiet.sh's path as well refused it at 1250 s
+# (dispatch://INFRA-1545, round 36).
+echo "case: the waits of a loop around a script that retries nothing are not charged"
+root=$(fixture path-waits-costless)
+cat > "$root/.github/scripts/q-fetch.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+cat > "$root/.github/scripts/q-quiet.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "nothing to fetch"
+SH
+chmod +x "$root/.github/scripts/q-fetch.sh" "$root/.github/scripts/q-quiet.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Wait around nothing, then fetch
+        timeout-minutes: 18
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/q-quiet.sh
+            sleep 100
+          done
+          .github/scripts/q-fetch.sh
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "does not judge the budget against the quiet loop's waits" \
+  "$(is "$(contains "$out" 'does not strictly exceed')" false)"
+
+# A call of a priced script inside a loop whose passes this check cannot read leaves the walk
+# with no figure, and the walk still reaches every file beside that call. The step loops,
+# uncounted, over r-a.sh; r-a.sh loops, uncounted, over r-b.sh, which retries at 30 s, and then
+# runs r-c.sh, which loops, uncounted, over r-b.sh too. One run of r-a.sh has no figure, and the
+# refusal says so where a walk going on past the unread call printed `takes 0 s`, the figure of
+# what is left; and it names r-c.sh's loop, which a walk stopping at the first unread call never
+# reached (dispatch://INFRA-1545, round 36).
+echo "case: a script reaching a priced script through an unread loop has no figure, and its other calls are read"
+root=$(fixture path-unread)
+cat > "$root/.github/scripts/r-b.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+SH
+cat > "$root/.github/scripts/r-a.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+while read -r id; do
+  .github/scripts/r-b.sh "$id"
+done <<<"$ids"
+.github/scripts/r-c.sh
+SH
+cat > "$root/.github/scripts/r-c.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+while read -r id; do
+  .github/scripts/r-b.sh "$id"
+done <<<"$more"
+SH
+chmod +x "$root/.github/scripts/r-a.sh" "$root/.github/scripts/r-b.sh" \
+  "$root/.github/scripts/r-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 30
+        run: |
+          while read -r id; do
+            .github/scripts/r-a.sh "$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "is refused once" \
+  "$(is "$(printf '%s\n' "$out" | grep -c 'this check can put no figure on it')" 1)"
+check "says one run of r-a.sh reaches an uncounted loop" \
+  "$(contains "$out" 'One run of ..github/scripts/r-a.sh. reaches a loop, its own or one in a script it calls')"
+check "prints no figure for a cost it cannot compute" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+check "names r-a.sh's own loop" \
+  "$(contains "$out" '..github/scripts/r-b.sh. at .github/scripts/r-a.sh:4, inside the loop at line 3')"
+check "names r-c.sh's loop, beside the unread call" \
+  "$(contains "$out" '..github/scripts/r-b.sh. at .github/scripts/r-c.sh:4, inside the loop at line 3')"
+
+# A job writing its own `timeout-minutes` around a step with no figure: the step is refused for
+# its uncounted loop, and the job's slowest retried step is read from the steps that have a
+# figure, of which there is none here. Comparing that step's None with a figure ended the check
+# in a TypeError (dispatch://INFRA-1545, round 36).
+echo "case: a job whose only retried step has no figure is refused for that step alone"
+root=$(fixture job-key-unread-step)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Cancel every run the decision named
+        timeout-minutes: 30
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the cancel of run $id" 30 -- \
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "is refused once, for the loop it cannot count" \
+  "$(is "$(printf '%s\n' "$out" | grep -c 'this check can put no figure on it')" 1)"
+check "names the loop's file and line" \
+  "$(contains "$out" '.gh api. at .github/workflows/case.yaml:12, inside the loop at line 11')"
+
 # The promise rule 8 exists to keep: no retried job whose key is below its own sum reaches main.
 # Every case above proves one shape on a fixture written for it, which leaves open whether a shape
 # this repository's own tree holds hides a key, so this case drives the promise on a copy of the
