@@ -6,7 +6,8 @@ body: |-
   session's broker calls with words that name `agent-secrets login`, and the session never trades
   the machine in its place. A process whose environment sets `PERSON_SIGNIN_TRADE=off`, as
   `legion controller start` sets it for the controller, trades the machine even where a person
-  signed in; `off` is that variable's one value, and any other value fails every call.
+  signed in; `off` is that variable's one value: unset or blank leaves the person trade on, and
+  any other value written there fails every call.
   `AGENT_SECRETS_MACHINE_IDENTITY=pool` trades as well. The bundled `dispatch` command
   gains `dispatch review`. After `agent-secrets login`, start a new session rather than resume one
   that traded at the broker as the machine.

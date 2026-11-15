@@ -176,11 +176,10 @@ export function lostDispatchUrlNotice(
  * `dispatch.token` — and a machine that can trade nothing turns Dispatch off with an error saying
  * so, rather than presenting whatever bearer the box happens to hold. It is a deployment's word
  * about the session it launches, which `legion controller start` sets under `dispatch_token_broker`
- * so that the operator's own envoy.json cannot write Dispatch as the operator. Under every
- * configuration the start also sets `PERSON_SIGNIN_TRADE=off` (`@legion/broker-client`'s
- * `PERSON_TRADE_VAR`), so that the broker route trades this machine's identity rather than the
- * operator's sign-in, which stays in the operator's own sign-in directory, the one the controller
- * keeps. A value of `DISPATCH_TOKEN_BROKER` other than `1` is a mistake in the deployment, refused
+ * so that the operator's own envoy.json cannot write Dispatch as the operator, and beside it
+ * `PERSON_SIGNIN_TRADE=off` (`@legion/broker-client`'s `PERSON_TRADE_VAR`), so that route trades
+ * this machine's identity and never the operator's sign-in. `DISPATCH_TOKEN_BROKER` unset or blank
+ * reads as off, and a value other than `1` written there is a mistake in the deployment, refused
  * rather than read as on or as off.
  */
 export function dispatchSettings(
