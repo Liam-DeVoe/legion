@@ -574,12 +574,12 @@ func TestTokenFramesRoundTrip(t *testing.T) {
 const memoryGuardAckLine = `{"type":"launcher_hello_ack","memoryGuard":{"actPercent":85,"floorPercent":10,"waitSeconds":5,"intervalMilliseconds":100}}`
 
 // memoryKillLine is a launcher's report of one kill, as it crosses the wire.
-const memoryKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"command":"python3 grow.py",` +
+const memoryKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"executable":"python3",` +
 	`"sizeBytes":1048576000,"readingBytes":3774873600,"counterBytes":4089446400,"limitBytes":4294967296,"at":"2026-11-14T03:00:00Z"}`
 
 func memoryKill() LauncherMemoryKill {
 	return LauncherMemoryKill{
-		Guard: "3f2a9c1d5e7b8a60", Sequence: 1, PID: 4242, Command: "python3 grow.py",
+		Guard: "3f2a9c1d5e7b8a60", Sequence: 1, PID: 4242, Executable: "python3",
 		SizeBytes: 1000 << 20, ReadingBytes: 3600 << 20, CounterBytes: 3900 << 20, LimitBytes: 4 << 30,
 		At: time.Date(2026, 11, 14, 3, 0, 0, 0, time.UTC),
 	}
@@ -709,13 +709,13 @@ func TestMemoryGuardSettingsValidateRefusesEachSideOfEachBound(t *testing.T) {
 }
 
 // A kill report is refused where the daemon could not apply it once or tell a role of it: no
-// guard, a sequence below 1, no process, no limit, or a command over its bound, which is taken
-// at the bound itself.
+// guard, a sequence below 1, no process, no limit, or an executable over its bound, which is
+// taken at the bound itself.
 func TestMemoryGuardKillValidateRefusesWhatTheDaemonCannotApply(t *testing.T) {
 	atBound := memoryKill()
-	atBound.Command = strings.Repeat("c", MemoryKillCommandBytes)
+	atBound.Executable = strings.Repeat("c", MemoryKillExecutableBytes)
 	if err := atBound.Validate(); err != nil {
-		t.Fatalf("a command of %d bytes is refused: %v", MemoryKillCommandBytes, err)
+		t.Fatalf("an executable of %d bytes is refused: %v", MemoryKillExecutableBytes, err)
 	}
 	for _, tc := range []struct {
 		name   string
@@ -727,7 +727,7 @@ func TestMemoryGuardKillValidateRefusesWhatTheDaemonCannotApply(t *testing.T) {
 		{"pid 0", func(k *LauncherMemoryKill) { k.PID = 0 }, "pid is 0"},
 		{"a negative pid", func(k *LauncherMemoryKill) { k.PID = -1 }, "pid is -1"},
 		{"no limit", func(k *LauncherMemoryKill) { k.LimitBytes = 0 }, "carries no limitBytes"},
-		{"a command over its bound", func(k *LauncherMemoryKill) { k.Command = strings.Repeat("c", MemoryKillCommandBytes+1) }, "command is 257 bytes, limit 256"},
+		{"an executable over its bound", func(k *LauncherMemoryKill) { k.Executable = strings.Repeat("c", MemoryKillExecutableBytes+1) }, "executable is 257 bytes, limit 256"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			k := memoryKill()

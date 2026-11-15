@@ -243,16 +243,19 @@ const (
 //
 // Guard is the identifier the guard minted for itself when the launcher process started, and
 // Sequence the guard's own count of its kills, from 1: together they name the kill once, so a
-// report sent twice is applied once. Command is the process's arguments as the guard printed
-// them, credentials masked and cut to MemoryKillCommandBytes. SizeBytes is the process's
-// anonymous memory as the guard measured it, ReadingBytes the pod's anonymous memory
+// report sent twice is applied once. Executable names the process as every line of the guard
+// does: the base name of its executable, or its stat name where the guard could not read that,
+// each character that does not print escaped and the whole cut to MemoryKillExecutableBytes. It
+// carries none of the process's arguments, which may hold a credential no masking rule names, such
+// as a positional password; the role that started the process has them. SizeBytes is the
+// process's anonymous memory as the guard measured it, ReadingBytes the pod's anonymous memory
 // (/proc/meminfo's AnonPages) when it acted, CounterBytes the cgroup's memory counter then, and
 // LimitBytes the container's memory limit.
 type LauncherMemoryKill struct {
 	Guard        string    `json:"guard"`
 	Sequence     uint64    `json:"sequence"`
 	PID          int       `json:"pid"`
-	Command      string    `json:"command"`
+	Executable   string    `json:"executable"`
 	SizeBytes    uint64    `json:"sizeBytes"`
 	ReadingBytes uint64    `json:"readingBytes"`
 	CounterBytes uint64    `json:"counterBytes"`
@@ -260,10 +263,10 @@ type LauncherMemoryKill struct {
 	At           time.Time `json:"at"`
 }
 
-// MemoryKillCommandBytes is the most bytes of a process's command a launcher_memory_kill carries:
-// enough to tell a reader what ran, and a bound on what one report puts into a role's note, since
-// an agent's own arguments can hold its whole system prompt.
-const MemoryKillCommandBytes = 256
+// MemoryKillExecutableBytes is the most bytes of a process's name a launcher_memory_kill carries:
+// a base name on Linux is at most 255 bytes, so the bound holds whole any name that needs no
+// escape, and it bounds what one report puts into a role's note whatever its sender wrote.
+const MemoryKillExecutableBytes = 256
 
 // LauncherChild is the actual worker-shim child the launcher has running, if any.
 type LauncherChild struct {
@@ -1277,7 +1280,7 @@ func (g LauncherMemoryGuard) Validate() error {
 
 // Validate refuses a kill report the daemon could not apply once or tell a role of: one naming no
 // guard or a sequence below the 1 the guard counts from, which together are the report's
-// identity; one naming no process or no limit; and one whose command is longer than the bound a
+// identity; one naming no process or no limit; and one whose executable is longer than the bound a
 // role's note is held to.
 func (f LauncherMemoryKill) Validate() error {
 	switch {
@@ -1289,8 +1292,8 @@ func (f LauncherMemoryKill) Validate() error {
 		return fmt.Errorf("%w: launcher_memory_kill pid is %d", ErrMalformedFrame, f.PID)
 	case f.LimitBytes == 0:
 		return fmt.Errorf("%w: launcher_memory_kill carries no limitBytes", ErrMalformedFrame)
-	case len(f.Command) > MemoryKillCommandBytes:
-		return fmt.Errorf("%w: launcher_memory_kill command is %d bytes, limit %d", ErrMalformedFrame, len(f.Command), MemoryKillCommandBytes)
+	case len(f.Executable) > MemoryKillExecutableBytes:
+		return fmt.Errorf("%w: launcher_memory_kill executable is %d bytes, limit %d", ErrMalformedFrame, len(f.Executable), MemoryKillExecutableBytes)
 	}
 	return nil
 }

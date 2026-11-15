@@ -1040,26 +1040,28 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 // memoryGuardNote is what a role reads when the memory guard ended one of its processes: which
 // process, how much it held, how near the limit the pod was, that nothing else of the role
 // stopped, and where heavy work runs instead. The sizes are binary units a reader can compare at
-// a glance (binarySize); the command is the launcher's text, already redacted and cut to
-// shimwire.MemoryKillCommandBytes there, set as a code span nothing in it can end (codeSpan).
+// a glance (binarySize); the process is named by its executable as the launcher sent it, the base
+// name escaped and cut to shimwire.MemoryKillExecutableBytes there, with none of its arguments,
+// which the role that started it already has, set as a code span nothing in it can end
+// (codeSpan).
 func memoryGuardNote(report shimwire.LauncherMemoryKill) string {
 	return fmt.Sprintf("The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: "+
 		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+
 		"The pod's other processes and your session go on. "+
 		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: "+
 		"read skill://legion-worker/references/tools.md before you run it again.",
-		codeSpan(report.Command), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
+		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
 }
 
 // codeSpan is text as one Markdown code span that nothing in text ends early or spreads over
 // lines. The fence is one backtick longer than the longest run of backticks text holds, so a
-// backtick in a command is text inside the span; text that begins or ends with a backtick, or
+// backtick in a file name is text inside the span; text that begins or ends with a backtick, or
 // that begins and ends with a space, is padded with one space on each side, which a Markdown
 // reader strips, and empty text is one space, since two backticks alone are no span. Every
 // character that does not print is written as its Go escape (`\n`, `\x1b`, `\u202e`): the
-// launcher sends none (it reads control characters away and escapes the rest), but the note is
-// read into an agent's prompt, so its shape rests on this daemon and not on the sender being
-// Legion's own launcher, as the session facts' quoted details do (sessionLost).
+// launcher sends none (it escapes each), but the note is read into an agent's prompt, so its
+// shape rests on this daemon and not on the sender being Legion's own launcher, as the session
+// facts' quoted details do (sessionLost).
 func codeSpan(text string) string {
 	var inner strings.Builder
 	longest, run := 0, 0

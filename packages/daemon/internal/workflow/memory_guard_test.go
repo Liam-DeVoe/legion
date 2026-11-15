@@ -21,7 +21,7 @@ import (
 
 // memoryGuardKillReport is a kill whose sizes print as 812.40 MiB, 3.13 GiB and 4.00 GiB.
 func memoryGuardKillReport() shimwire.LauncherMemoryKill {
-	return shimwire.LauncherMemoryKill{Guard: "guard-7f3a", Sequence: 3, PID: 4242, Command: "python3 -m pytest tests/",
+	return shimwire.LauncherMemoryKill{Guard: "guard-7f3a", Sequence: 3, PID: 4242, Executable: "python3",
 		SizeBytes: 851862979, ReadingBytes: 3360811909, CounterBytes: 3500000000, LimitBytes: 4 << 30,
 		At: time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)}
 }
@@ -37,9 +37,9 @@ func outboxRowsOf(t *testing.T, pool *pgxpool.Pool, issue string) int {
 }
 
 // The kill is told to the role whose connection reported it, as one role message addressed to its
-// claim token: the note names the command, its size, the pod's reading and its limit, and points
-// to where heavy work runs. Nothing else is queued for the issue: no architect notice, no Dispatch
-// message.
+// claim token: the note names the process by its executable, its size, the pod's reading and its
+// limit, and points to where heavy work runs. Nothing else is queued for the issue: no architect
+// notice, no Dispatch message.
 func TestMemoryGuardAKillIsToldToTheReportingRoleAlone(t *testing.T) {
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
@@ -53,7 +53,7 @@ func TestMemoryGuardAKillIsToldToTheReportingRoleAlone(t *testing.T) {
 	}
 
 	want := "The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: " +
-		"`python3 -m pytest tests/` (pid 4242) held 812.40 MiB of anonymous memory while the pod's anonymous memory read 3.13 GiB of its 4.00 GiB limit. " +
+		"`python3` (pid 4242) held 812.40 MiB of anonymous memory while the pod's anonymous memory read 3.13 GiB of its 4.00 GiB limit. " +
 		"The pod's other processes and your session go on. " +
 		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
 		"read skill://legion-worker/references/tools.md before you run it again."
@@ -84,11 +84,12 @@ func TestMemoryGuardAKillOfAnIssueTheDaemonDoesNotRecordIsLoggedAndDropped(t *te
 	}
 }
 
-// The command sits in a code span that nothing in it can end or spread over lines: the fence is
-// longer than any run of backticks the command holds, a command that begins or ends with a
-// backtick is padded, and a character that does not print is written as its escape.
-func TestMemoryGuardTheNoteKeepsTheCommandInsideItsCodeSpan(t *testing.T) {
-	for _, tc := range []struct{ command, want string }{
+// The executable's name sits in a code span that nothing in it can end or spread over lines: a file
+// name can hold any character but `/` and NUL, so the fence is longer than any run of backticks the
+// name holds, a name that begins or ends with a backtick is padded, and a character that does not
+// print is written as its escape.
+func TestMemoryGuardTheNoteKeepsTheExecutableInsideItsCodeSpan(t *testing.T) {
+	for _, tc := range []struct{ name, want string }{
 		{"python3 grow.py", "`python3 grow.py`"},
 		{"sh -c 'echo `id`'", "``sh -c 'echo `id`'``"},
 		{"bash -c 'a ``` b'", "````bash -c 'a ``` b'````"},
@@ -99,8 +100,8 @@ func TestMemoryGuardTheNoteKeepsTheCommandInsideItsCodeSpan(t *testing.T) {
 		{"reorder\u202etext", "`reorder\\u202etext`"},
 		{"", "` `"},
 	} {
-		if got := codeSpan(tc.command); got != tc.want {
-			t.Errorf("codeSpan(%q) = %q, want %q", tc.command, got, tc.want)
+		if got := codeSpan(tc.name); got != tc.want {
+			t.Errorf("codeSpan(%q) = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

@@ -104,9 +104,9 @@ type Class struct {
 // run at the same time. A pid absent from the map is a process the guard may end, of no role.
 type Classifier func(t *Table) map[int]Class
 
-// Kill is one process the guard ended: the report its role is sent, whose Command is cut to
-// shimwire.MemoryKillCommandBytes, and Role, the role whose process it was, "" outside every
-// role.
+// Kill is one process the guard ended: the report its role is sent, which names the process by
+// processName and carries none of its arguments, and Role, the role whose process it was, ""
+// outside every role.
 type Kill struct {
 	shimwire.LauncherMemoryKill
 	Role string
@@ -197,10 +197,10 @@ type window struct {
 
 // largest is the largest process one scan found.
 type largest struct {
-	pid     int
-	role    string
-	size    uint64
-	command string
+	pid        int
+	role       string
+	size       uint64
+	executable string
 }
 
 // largestScan is a finished scan for the largest process, and the start of the window it was
@@ -282,15 +282,9 @@ type Guard struct {
 	scanBusy bool
 	scanDone *largestScan
 	// The rest is scanLargest's own, one scan at a time, since startScan starts none while one
-	// runs: its smaps buffer and the memfds its sizes have counted, and the command text of the
-	// largest process the last scan found with the name and arguments it was made from, so a scan
-	// that finds the same process again does not redact its arguments again.
-	scanSmaps   []byte
-	scanMemfds  map[memfdID]bool
-	scanName    string
-	scanArgs    []string
-	scanCut     bool
-	scanCommand string
+	// runs: its smaps buffer and the memfds its sizes have counted.
+	scanSmaps  []byte
+	scanMemfds map[memfdID]bool
 }
 
 // New is a guard of cfg, at the default settings and on, with an id of its own.
@@ -555,14 +549,14 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
 	at := g.clock.Now()
 	counter := g.readCounter(at)
 	shmem, _ := meminfoBytes(g.meminfoData, "Shmem")
-	command := commandText(target.Process)
+	executable := processName(target.Process)
 	g.sequence++
-	g.logf(endedLine, target.PID, roleName(target.role), target.size, reading, counter, shmem, limit, cut(command, logCommandBytes))
+	g.logf(endedLine, target.PID, roleName(target.role), target.size, reading, counter, shmem, limit, executable)
 	if g.sink != nil {
 		g.sink(Kill{
 			LauncherMemoryKill: shimwire.LauncherMemoryKill{
 				Guard: g.id, Sequence: g.sequence, PID: target.PID,
-				Command: cut(command, shimwire.MemoryKillCommandBytes), SizeBytes: target.size,
+				Executable: executable, SizeBytes: target.size,
 				ReadingBytes: reading, CounterBytes: counter, LimitBytes: limit, At: at,
 			},
 			Role: target.role,
@@ -813,7 +807,7 @@ func (g *Guard) closeWindow() {
 		return
 	}
 	g.logf(hourLine, stamp(w.start), stamp(w.end), w.readingHigh, stamp(w.readingHighAt), w.readingLow,
-		w.counterHigh, w.counterLow, w.largest.pid, roleName(w.largest.role), w.largest.size, w.largest.command)
+		w.counterHigh, w.counterLow, w.largest.pid, roleName(w.largest.role), w.largest.size, w.largest.executable)
 }
 
 // readCounter reads the cgroup's counter into the window, and answers it: 0 when it cannot be
@@ -892,24 +886,12 @@ func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 		if len(read) > 0 {
 			biggest := read[0]
 			found.pid, found.role, found.size = biggest.PID, biggest.role, biggest.size
-			found.command = g.largestCommand(biggest.Process)
+			found.executable = processName(biggest.Process)
 		}
 	}
 	g.scanMu.Lock()
 	g.scanDone, g.scanBusy = &found, false
 	g.scanMu.Unlock()
-}
-
-// largestCommand is p's command as the hourly line carries it, made again only when p's name or
-// arguments, or whether they were cut (argsCut), differ from those of the last scan's largest
-// process, since commandText reads nothing else: the same agent found the largest scan after scan
-// is not redacted again each time.
-func (g *Guard) largestCommand(p *Process) string {
-	if g.scanCommand == "" || p.Name != g.scanName || p.argsCut != g.scanCut || !slices.Equal(p.Args, g.scanArgs) {
-		g.scanName, g.scanArgs, g.scanCut = p.Name, p.Args, p.argsCut
-		g.scanCommand = cut(commandText(p), logCommandBytes)
-	}
-	return g.scanCommand
 }
 
 // classes is the classifier's answer for t, or none.

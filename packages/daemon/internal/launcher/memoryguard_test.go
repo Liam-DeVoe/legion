@@ -886,8 +886,8 @@ func (g *roleConn) noMemoryKill(what string) {
 }
 
 // A kill of a role's process is reported on that role's connection, once, with what the guard
-// saw; another role's connection carries none of it, and a kill of a process in no role is
-// reported nowhere.
+// saw and the process named by its executable's base name alone; another role's connection
+// carries none of it, and a kill of a process in no role is reported nowhere.
 func TestMemoryGuardReportsAKillOnTheConnectionOfTheProcesssRoleAlone(t *testing.T) {
 	const none, testers, reviewers = 700, 701, 702
 	pod := newGuardPod(t)
@@ -912,7 +912,7 @@ func TestMemoryGuardReportsAKillOnTheConnectionOfTheProcesssRoleAlone(t *testing
 	at := rig.clock.Now()
 	report := f.role("tester").nextMemoryKill()
 	want := shimwire.LauncherMemoryKill{
-		Guard: rig.id(), Sequence: 2, PID: testers, Command: "python3 grow.py --tester", SizeBytes: 800 * guardMiB,
+		Guard: rig.id(), Sequence: 2, PID: testers, Executable: "python3.13", SizeBytes: 800 * guardMiB,
 		ReadingBytes: guardHigh, CounterBytes: guardCounter, LimitBytes: guardLimit,
 	}
 	if report.At.IsZero() || report.At.After(at) {
@@ -1042,7 +1042,7 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 	const first = 900
 	report := func(sequence int) shimwire.LauncherMemoryKill {
 		return shimwire.LauncherMemoryKill{Guard: "0123456789abcdef", Sequence: uint64(sequence), PID: first + sequence - 1,
-			Command: "python3 grow.py", SizeBytes: 600 * guardMiB, ReadingBytes: 3500 * guardMiB, LimitBytes: 4096 * guardMiB, At: time.Now()}
+			Executable: "python3", SizeBytes: 600 * guardMiB, ReadingBytes: 3500 * guardMiB, LimitBytes: 4096 * guardMiB, At: time.Now()}
 	}
 	stderr := &lockedBuffer{}
 	m := &manager{role: "tester", stderr: stderr}

@@ -481,7 +481,7 @@ func (r *liveRun) awaitEnded() string {
 	}
 	if k.PID != root {
 		r.finishScenario()
-		return fmt.Sprintf(`the guard ended pid %d and not the scenario's root %d: command="%s"`, k.PID, root, k.Command)
+		return fmt.Sprintf(`the guard ended pid %d and not the scenario's root %d: executable="%s"`, k.PID, root, k.Executable)
 	}
 	select {
 	case <-r.scenario.done:
@@ -597,7 +597,7 @@ func (r *liveRun) awaitKept() string {
 }
 
 func liveKeptKillReason(k watchedKill) string {
-	return fmt.Sprintf(`the guard ended pid %d: command="%s"`, k.PID, k.Command)
+	return fmt.Sprintf(`the guard ended pid %d: executable="%s"`, k.PID, k.Executable)
 }
 
 // liveSIGKILL is whether state is a process ended by SIGKILL.
@@ -690,9 +690,7 @@ func relayLines(out *liveLog, name string, r *os.File, onLine func(string)) {
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
-		var b strings.Builder
-		escape(&b, line)
-		out.printf("%s: %s", name, cut(b.String(), liveRelayLineBytes))
+		out.printf("%s: %s", name, escaped(line, liveRelayLineBytes))
 		if onLine != nil {
 			onLine(line)
 		}

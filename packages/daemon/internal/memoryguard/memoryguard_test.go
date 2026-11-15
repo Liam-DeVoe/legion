@@ -19,7 +19,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
@@ -1480,9 +1479,9 @@ func TestMemoryGuardHourlyLine(t *testing.T) {
 	h.tickAfter(time.Hour)
 
 	want := []string{
-		fmt.Sprintf(`launcher: memory guard: hour start=2026-11-14T03:00:00Z end=2026-11-14T04:00:00Z reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d largest_pid=200 largest_role=tester largest_size=%d largest_command="python3 -c work()"`,
+		fmt.Sprintf(`launcher: memory guard: hour start=2026-11-14T03:00:00Z end=2026-11-14T04:00:00Z reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d largest_pid=200 largest_role=tester largest_size=%d largest_executable="python3"`,
 			3000*mib, highAt.Format(time.RFC3339), 1200*mib, 3584*mib, 1536*mib, 1500*mib),
-		fmt.Sprintf(`launcher: memory guard: hour start=2026-11-14T04:00:00Z end=2026-11-14T05:00:00Z reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d largest_pid=100 largest_role=tester largest_size=%d largest_command="omp --mode rpc"`,
+		fmt.Sprintf(`launcher: memory guard: hour start=2026-11-14T04:00:00Z end=2026-11-14T05:00:00Z reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d largest_pid=100 largest_role=tester largest_size=%d largest_executable="omp"`,
 			2200*mib, secondStart.Format(time.RFC3339), 2200*mib, 2*gib, 2*gib, gib),
 	}
 	if got := h.log.with("hour"); !slices.Equal(got, want) {
@@ -1490,10 +1489,13 @@ func TestMemoryGuardHourlyLine(t *testing.T) {
 	}
 }
 
-func TestMemoryGuardLinesCarryTheirFieldsAndAnEscapedRedactedCutCommand(t *testing.T) {
+// The start line and the kill's line carry their fields, and the kill's line and its report name
+// the process by the base name of its executable alone: no argument shows in any line, a token
+// among them, and neither does a control character or a character that does not print.
+func TestMemoryGuardLinesCarryTheirFieldsAndTheExecutableWithNoArgument(t *testing.T) {
 	token := "ghp_" + strings.Repeat("A1", 18)
 	pod := newFakePod(t)
-	pod.add(agent(2*gib), fakeProcess{pid: 900, ppid: 100, anon: 1500 * mib, args: []string{
+	pod.add(agent(2*gib), fakeProcess{pid: 900, ppid: 100, exe: "/usr/bin/python3.13", anon: 1500 * mib, args: []string{
 		"python3", "-c", "import os\nprint(1)", "\x1b[31mred", "\u202eabc", "--token", token, strings.Repeat("é", 400),
 	}})
 	pod.setShmem(64 * mib)
@@ -1506,22 +1508,13 @@ func TestMemoryGuardLinesCarryTheirFieldsAndAnEscapedRedactedCutCommand(t *testi
 	if got := h.log.with("started"); !slices.Equal(got, []string{started}) {
 		t.Fatalf("the start lines are %q, want %q", got, started)
 	}
-	// The newline is one space, the colour sequence is read away, and the right-to-left override,
-	// which is no control character and does not print, shows escaped.
-	prefix := `python3 -c import os print(1) red \u202eabc --token ghp_*** `
-	commandOf := func(max int) string {
-		return prefix + strings.Repeat("é", (max-len(prefix)-len(ellipsis))/2) + ellipsis
-	}
-	ended := fmt.Sprintf(`launcher: memory guard: ended pid=900 role=tester size=%d reading=%d counter=%d shmem=%d limit=%d command="%s"`,
-		1500*mib, 3600*mib, 3900*mib, 64*mib, podLimit, commandOf(logCommandBytes))
+	ended := fmt.Sprintf(`launcher: memory guard: ended pid=900 role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3.13"`,
+		1500*mib, 3600*mib, 3900*mib, 64*mib, podLimit)
 	if got := h.log.with("ended"); !slices.Equal(got, []string{ended}) {
 		t.Fatalf("the kill lines are\n%q\nwant\n%q", got, ended)
 	}
 	k := h.killed()[0]
-	if k.Command != commandOf(shimwire.MemoryKillCommandBytes) || len(k.Command) > shimwire.MemoryKillCommandBytes || !utf8.ValidString(k.Command) {
-		t.Fatalf("the report's command is %q (%d bytes), want %q", k.Command, len(k.Command), commandOf(shimwire.MemoryKillCommandBytes))
-	}
-	want := Kill{LauncherMemoryKill: shimwire.LauncherMemoryKill{Guard: h.g.ID(), Sequence: 1, PID: 900, Command: k.Command,
+	want := Kill{LauncherMemoryKill: shimwire.LauncherMemoryKill{Guard: h.g.ID(), Sequence: 1, PID: 900, Executable: "python3.13",
 		SizeBytes: 1500 * mib, ReadingBytes: 3600 * mib, CounterBytes: 3900 * mib, LimitBytes: podLimit, At: testStart}, Role: "tester"}
 	if k != want {
 		t.Fatalf("the report is %+v, want %+v", k, want)
@@ -1533,53 +1526,69 @@ func TestMemoryGuardLinesCarryTheirFieldsAndAnEscapedRedactedCutCommand(t *testi
 		t.Fatalf("the kill does not make a valid report: %v", err)
 	}
 	for _, line := range h.log.all() {
-		if strings.Contains(line, token) || strings.ContainsAny(line, "\n\t\x1b\u202e") {
-			t.Fatalf("a line holds the token, a control character or a rune that does not print: %q", line)
+		if strings.Contains(line, token) || strings.Contains(line, "import os") || strings.Contains(line, "é") || strings.ContainsAny(line, "\n\t\x1b\u202e") {
+			t.Fatalf("a line holds an argument, a control character or a rune that does not print: %q", line)
 		}
 	}
 }
 
-// A token after any whitespace, or right after a control sequence, in a process's arguments is
-// masked in the kill's line and in its report. The arguments are made the line a capability
-// report's detail is made before the credential rules read it, each run of whitespace one space and
-// each control sequence read away, since the rules are written for that line: on the raw text a
-// tab after `Bearer` keeps the bearer rule from matching, and a colour sequence's final `m` joins
-// the token after it, so the GitHub rule finds no word boundary for it to start at.
-func TestMemoryGuardMasksATokenAfterWhitespaceOrAControlSequence(t *testing.T) {
+// requireKillNamesAlone has the guard end fp as pid 900, a child of a protected agent that holds
+// most of pod's memory, at a reading of 3600 MiB and a counter of 3900 MiB, and fails, naming
+// label, unless the kill's line and its report name the process by want alone. The line is matched
+// whole, so it holds none of fp's arguments; hidden are texts of those arguments that no other line
+// of the guard's may hold either.
+func requireKillNamesAlone(t *testing.T, label string, pod *fakePod, fp fakeProcess, want string, hidden ...string) {
+	t.Helper()
+	fp.pid, fp.ppid, fp.anon = 900, 100, 1500*mib
+	pod.add(agent(2*gib), fp)
+	pod.setAnon(3600 * mib)
+	pod.setCounter(3900 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	defer h.stop()
+	h.requireKilled(900)
+	ended := fmt.Sprintf(`launcher: memory guard: ended pid=900 role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="%s"`,
+		1500*mib, 3600*mib, 3900*mib, pod.shmem, podLimit, want)
+	if got := h.log.with("ended"); !slices.Equal(got, []string{ended}) {
+		t.Fatalf("%s: the kill lines are\n%q\nwant\n%q", label, got, ended)
+	}
+	if k := h.killed()[0]; k.Executable != want {
+		t.Fatalf("%s: the report names %q, want %q", label, k.Executable, want)
+	}
+	for _, line := range h.log.all() {
+		for _, text := range hidden {
+			if strings.Contains(line, text) {
+				t.Fatalf("%s: a line shows %q: %q", label, text, line)
+			}
+		}
+	}
+}
+
+// No argument of a process shows in its kill's line or its report, whatever whitespace or control
+// sequence comes before a token in it: a token after a newline, a tab or a space, a bearer value
+// after a tab, and a token right after a colour sequence. The masking rules the guard once ran over
+// its arguments read none of these until the arguments were made the line a capability report's
+// detail is made; the guard now names the process by its executable alone, and masks nothing.
+func TestMemoryGuardKillShowsNoArgumentWithATokenAfterWhitespaceOrAControlSequence(t *testing.T) {
 	token := "ghp_" + strings.Repeat("A1", 18)
 	bearer := "opaque" + strings.Repeat("Z9", 12)
-	for _, tc := range []struct {
-		name, script, want string
-	}{
-		{"newline", "echo hi\n" + token, `sh -c echo hi ghp_***`},
-		{"tab", "x\t" + token, `sh -c x ghp_***`},
-		{"space", "x " + token, `sh -c x ghp_***`},
-		{"bearer after a tab", "curl -H Bearer\t" + bearer, `sh -c curl -H Bearer ***`},
-		{"colour sequence", "echo \x1b[1m" + token, `sh -c echo ghp_***`},
+	for _, tc := range []struct{ name, script string }{
+		{"newline", "echo hi\n" + token},
+		{"tab", "x\t" + token},
+		{"space", "x " + token},
+		{"bearer after a tab", "curl -H Bearer\t" + bearer},
+		{"colour sequence", "echo \x1b[1m" + token},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pod := newFakePod(t)
-			pod.add(agent(2*gib), fakeProcess{pid: 900, ppid: 100, anon: 1500 * mib, args: []string{"sh", "-c", tc.script}})
-			pod.setAnon(3600 * mib)
-			h := newHarness(t, pod, protect("tester", 100)).run()
-			h.requireKilled(900)
-			ended := h.log.with("ended")
-			if len(ended) != 1 || !strings.HasSuffix(ended[0], ` command="`+tc.want+`"`) {
-				t.Fatalf("the kill lines are %q, want one whose command is %q", ended, tc.want)
-			}
-			if k := h.killed()[0]; k.Command != tc.want {
-				t.Fatalf("the report's command is %q, want %q", k.Command, tc.want)
-			}
+			requireKillNamesAlone(t, tc.name, newFakePod(t), fakeProcess{args: []string{"sh", "-c", tc.script}}, "sh", token, bearer, "Bearer", "-c")
 		})
 	}
 }
 
-// A command line cut short shows no part of a credential that the whole line masks: for every
-// detail of the shared fixture (packages/contracts/fixtures/capability-redaction.json) as one
-// argument, cut at every bound short of its length, the line without its ellipsis is the first
-// words of the whole line, so each word the cut leaves is one the whole line shows, never the head
-// of a credential it masks. At the detail's own length nothing is cut, and the line is the whole.
-func TestMemoryGuardCutCommandShowsNoPartOfACredentialTheWholeLineMasks(t *testing.T) {
+// No argument of a process shows in its kill's line or its report, whatever credential it holds:
+// each detail of the shared fixture (packages/contracts/fixtures/capability-redaction.json), a
+// credential of each shape the masking rules know, is an argument of `sh`, and the kill names the
+// process `sh` alone.
+func TestMemoryGuardKillShowsNoArgumentWithACredentialTheRulesKnow(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "capability-redaction.json"))
 	if err != nil {
 		t.Fatalf("read the fixture: %v", err)
@@ -1594,78 +1603,23 @@ func TestMemoryGuardCutCommandShowsNoPartOfACredentialTheWholeLineMasks(t *testi
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatalf("decode the fixture: %v", err)
 	}
-	cuts := 0
+	pod := newFakePod(t)
 	for _, tc := range fixture.Patterns {
-		whole := capabilities.RedactedLine(tc.Detail)
-		words := strings.Fields(whole)
-		p := &Process{Name: "sh", Args: []string{tc.Detail}}
-		if got := commandLine(p, len(tc.Detail)); got != whole {
-			t.Errorf("%s: %s: at its own length the line is %q, want the whole %q", tc.Pattern, tc.Name, got, whole)
-		}
-		for bound := 1; bound < len(tc.Detail); bound++ {
-			cuts++
-			line := commandLine(p, bound)
-			shown, cut := strings.CutSuffix(line, ellipsis)
-			if got := strings.Fields(shown); !cut || len(got) > len(words) || !slices.Equal(got, words[:len(got)]) {
-				t.Errorf("%s: %s: cut at %d bytes the line is %q, which is not the first words of the whole line %q, ending in %q",
-					tc.Pattern, tc.Name, bound, line, whole, ellipsis)
-			}
-		}
+		requireKillNamesAlone(t, tc.Pattern+": "+tc.Name, pod, fakeProcess{args: []string{"sh", tc.Detail}}, "sh")
 	}
-	t.Logf("%d cuts of %d details", cuts, len(fixture.Patterns))
+	t.Logf("%d details", len(fixture.Patterns))
 }
 
-// A cut command shows no part of a userinfo whose `@` lies past the cut. Past a control rune, which
-// the rules read across, a value another rule masks across spaces (an Authorization value that runs
-// to a `)`, a quoted password) joins a userinfo to an `@` that only the whole line holds, and a
-// userinfo masked at an `@` before the cut runs on to a later `@` past it. The scan reads each
-// command as it reads a cmdline past rawCommandBytes (argsCut): the reviewer's own, and each tail
-// after a pad that puts the cut at each of its bytes, the userinfo's scheme among them. Each
-// command, and its cut for the log, shows none of the userinfo, and its words without its ellipsis
-// are the whole line's first words.
-func TestMemoryGuardCutCommandShowsNoPartOfAUserinfoWhoseAtSignIsPastTheCut(t *testing.T) {
+// No part of a userinfo in a process's arguments shows in its kill's line or its report, wherever
+// the scan's read of the arguments ends: the reviewer's command, whose `@` lies far past that end
+// after a control rune, and each tail after a pad that ends the read at each of its bytes, the
+// userinfo's scheme among them. The masking rules the guard once ran over a cut command showed
+// such a userinfo where, past a control rune, another rule's mask joined it to an `@` past the cut.
+func TestMemoryGuardKillShowsNoArgumentWithAUserinfoWhereverTheScanCutsIt(t *testing.T) {
 	pod := newFakePod(t)
-	// brief is a line as an error shows it: each word longer than 64 bytes, a pad, by its length.
-	brief := func(line string) string {
-		words := strings.Fields(line)
-		for i, word := range words {
-			if len(word) > 64 {
-				words[i] = fmt.Sprintf("<%d bytes>", len(word))
-			}
-		}
-		return strings.Join(words, " ")
-	}
-	check := func(label string, args []string, hidden []string) {
-		t.Helper()
-		pod.add(fakeProcess{pid: 900, ppid: 1, args: args})
-		table, err := scan(pod.proc)
-		if err != nil {
-			t.Fatal(err)
-		}
-		p, ok := table.Get(900)
-		if !ok || !p.argsCut {
-			t.Fatalf("%s: the scan read %+v, want arguments it cut", label, p)
-		}
-		var whole strings.Builder
-		escape(&whole, capabilities.RedactedLine(strings.Join(args, " ")))
-		words := strings.Fields(whole.String())
-		command := commandText(p)
-		shown, cutShort := strings.CutSuffix(command, ellipsis)
-		if got := strings.Fields(shown); !cutShort || len(got) > len(words) || !slices.Equal(got, words[:len(got)]) {
-			t.Errorf("%s: the command is %q, which is not the first words of the whole line %q, ending in %q",
-				label, brief(command), brief(whole.String()), ellipsis)
-		}
-		for _, text := range []string{command, cut(command, logCommandBytes)} {
-			for _, secret := range hidden {
-				if strings.Contains(text, secret) {
-					t.Errorf("%s: the command shows %q: %q", label, secret, brief(text))
-				}
-			}
-		}
-	}
-	check("the reviewer's command",
-		slices.Concat([]string{"curl", "http://user:SECRETPASS\x07Authorization:a"}, slices.Repeat([]string{"w"}, 3000), []string{"b)@h"}),
-		[]string{"SECRETPASS", "user:"})
+	requireKillNamesAlone(t, "the reviewer's command", pod, fakeProcess{args: slices.Concat(
+		[]string{"curl", "http://user:SECRETPASS\x07Authorization:a"}, slices.Repeat([]string{"w"}, 3000), []string{"b)@h"})},
+		"curl", "SECRETPASS", "user:")
 	for _, tc := range []struct {
 		name   string
 		tail   []string
@@ -1678,23 +1632,23 @@ func TestMemoryGuardCutCommandShowsNoPartOfAUserinfoWhoseAtSignIsPastTheCut(t *t
 	} {
 		tail := strings.Join(tc.tail, " ")
 		for at := 0; at <= len(tail); at++ {
-			// `curl`, a space, the pad and a space come before the tail, six bytes and the pad's, so
-			// the scan's cut at rawCommandBytes lands on the tail's byte at.
-			pad := strings.Repeat("w", rawCommandBytes-6-at)
-			check(fmt.Sprintf("%s, cut at its byte %d", tc.name, at), slices.Concat([]string{"curl", pad}, tc.tail, []string{"end"}), tc.hidden)
+			// `curl`, a NUL, the pad and a NUL come before the tail in `cmdline`, six bytes and the
+			// pad's, so the scan's read of classifierArgsBytes ends before the tail's byte at.
+			pad := strings.Repeat("w", classifierArgsBytes-6-at)
+			requireKillNamesAlone(t, fmt.Sprintf("%s, read up to its byte %d", tc.name, at), pod,
+				fakeProcess{args: slices.Concat([]string{"curl", pad}, tc.tail, []string{"end"})}, "curl", tc.hidden...)
 		}
 	}
 }
 
-// The kill line shows no password of a URL after an API-key or bearer label whose value glues
-// other value characters to the URL's scheme (`Bearer _http://…`, `api-key: 1http://…`), whether
-// the guard holds the whole command or cut it before the `@`. The shared rules mask such a value
-// with the scheme in it, and `***://` is no scheme for the userinfo rule, so where a control rune
-// parts the userinfo from its `@` the password shows. Measured in a gVisor issue pod on 2026-11-14
-// at e9af0140: capabilities.RedactedLine gave `curl -H Bearer ***://u:SECRETPASS
-// Authorization:***)@h` for `curl -H Bearer _http://u:SECRETPASS\x07Authorization:a b)@h`, and
-// `curl _http://***@h` for the same text without the label.
-func TestMemoryGuardCommandShowsNoPasswordOfAURLAfterALabelWhoseValueGluesTextToItsScheme(t *testing.T) {
+// No password of a URL after an API-key or bearer label whose value glues other value characters
+// to the URL's scheme (`Bearer _http://…`, `api-key: 1http://…`) shows in the kill's line or its
+// report, whole or before a long argument list the scan's read ends in, and neither does the label.
+// Measured in a gVisor issue pod on 2026-11-14 at e9af0140, the masking rules the guard then ran
+// over its arguments gave `curl -H Bearer ***://u:SECRETPASS Authorization:***)@h` for
+// `curl -H Bearer _http://u:SECRETPASS\x07Authorization:a b)@h`, and `curl _http://***@h` for the
+// same text without the label.
+func TestMemoryGuardKillShowsNoArgumentWithAURLWhosePasswordFollowsALabelGluedToItsScheme(t *testing.T) {
 	pod := newFakePod(t)
 	for _, label := range [][]string{{"-H", "Bearer"}, {"-H", "api-key:"}, {"-H", "x-subscription-token:"}} {
 		for _, glued := range []string{"_", "x_", "~", "/", "1", "+"} {
@@ -1706,32 +1660,20 @@ func TestMemoryGuardCommandShowsNoPasswordOfAURLAfterALabelWhoseValueGluesTextTo
 				{"whole", slices.Concat([]string{"curl"}, label, []string{userinfo, "b)@h"})},
 				{"cut before the at sign", slices.Concat([]string{"curl"}, label, []string{userinfo}, slices.Repeat([]string{"w"}, 3000), []string{"b)@h"})},
 			} {
-				pod.add(fakeProcess{pid: 900, ppid: 1, args: tc.args})
-				table, err := scan(pod.proc)
-				if err != nil {
-					t.Fatal(err)
-				}
-				p, ok := table.Get(900)
-				if !ok {
-					t.Fatal("the scan did not read pid 900")
-				}
-				command := commandText(p)
-				for _, text := range []string{command, cut(command, logCommandBytes)} {
-					if strings.Contains(text, "SECRETPASS") {
-						t.Errorf("%s %s%s, %s: the command shows the password: %.200q", label[1], glued, "http://…", tc.name, text)
-					}
-				}
+				requireKillNamesAlone(t, fmt.Sprintf("%s %shttp://…, %s", label[1], glued, tc.name), pod, fakeProcess{args: tc.args},
+					"curl", "SECRETPASS", label[0], label[1])
 			}
 		}
 	}
 }
 
-// The kill line shows no part of a token that is a URL whose word holds no `@`, after an API-key
-// or bearer label, whole or cut before a later word: the text after `host:` is the token's, not a
-// port. Measured in a gVisor issue pod on 2026-11-15 at 63bf5151 by the implementer (its handoff,
-// version 8): capabilities.RedactedLine gave `Bearer ***://u:SECRETPASS` for
+// No token that is a URL whose word holds no `@`, after an API-key or bearer label, shows in the
+// kill's line or its report, whole or before a long argument list the scan's read ends in, and
+// neither does the label: the guard prints no argument (dispatch://INFRA-3557, W4). Measured in a
+// gVisor issue pod on 2026-11-15 at 63bf5151 by the implementer (its handoff, version 8), the
+// masking rules the guard then ran over its arguments gave `Bearer ***://u:SECRETPASS` for
 // `Bearer http://u:SECRETPASS`, as on main.
-func TestMemoryGuardCommandShowsNoTokenThatIsAURLWithNoAtSignAfterALabel(t *testing.T) {
+func TestMemoryGuardKillShowsNoArgumentWithATokenThatIsAURLWithNoAtSignAfterALabel(t *testing.T) {
 	pod := newFakePod(t)
 	for _, label := range [][]string{{"-H", "Bearer"}, {"-H", "api-key:"}} {
 		// The `@` is joined on, so no line of the source holds a URL's userinfo shape.
@@ -1743,22 +1685,60 @@ func TestMemoryGuardCommandShowsNoTokenThatIsAURLWithNoAtSignAfterALabel(t *test
 				{"whole", slices.Concat([]string{"curl"}, label, value)},
 				{"cut after it", slices.Concat([]string{"curl"}, label, value, slices.Repeat([]string{"w"}, 3000))},
 			} {
-				pod.add(fakeProcess{pid: 900, ppid: 1, args: tc.args})
-				table, err := scan(pod.proc)
-				if err != nil {
-					t.Fatal(err)
-				}
-				p, ok := table.Get(900)
-				if !ok {
-					t.Fatal("the scan did not read pid 900")
-				}
-				command := commandText(p)
-				for _, text := range []string{command, cut(command, logCommandBytes)} {
-					if strings.Contains(text, "SECRETPASS") {
-						t.Errorf("%s %q, %s: the command shows the token: %.200q", label[1], value, tc.name, text)
-					}
-				}
+				requireKillNamesAlone(t, fmt.Sprintf("%s %q, %s", label[1], value, tc.name), pod, fakeProcess{args: tc.args},
+					"curl", "SECRETPASS", "Bearer", "-H", "api-key")
 			}
+		}
+	}
+}
+
+// A process is named by the base name of its executable where the scan read its `exe` link, and by
+// its stat name where it could not, and never by an argument. Each character of either that does
+// not print is escaped, and a name longer than shimwire.MemoryKillExecutableBytes, its escapes
+// counted, is cut after the last character or escape that leaves room for the ellipsis.
+func TestMemoryGuardNamesAProcessByItsExecutablesBaseNameOrItsStatName(t *testing.T) {
+	longest := strings.Repeat("a", 255)
+	for _, tc := range []struct {
+		name string
+		p    Process
+		want string
+	}{
+		{"the executable's base name", Process{Name: "python3", Exe: "/usr/bin/python3.13", Args: []string{"python3", "-c", "SECRETPASS"}}, "python3.13"},
+		{"the stat name where the exe link is unread", Process{Name: "grow", Args: []string{"/opt/bin/grow", "--password", "SECRETPASS"}}, "grow"},
+		{"a control character in the executable", Process{Name: "grow", Exe: "/tmp/gr\x1b[31mow\n"}, `gr\x1b[31mow\n`},
+		{"a control character in the stat name", Process{Name: "gr\tow\u202e"}, `gr\tow\u202e`},
+		{"a byte that is not UTF-8", Process{Name: "grow", Exe: "/tmp/gr\xffow"}, `gr\xffow`},
+		{"the longest base name, whole", Process{Name: "aaa", Exe: "/usr/bin/" + longest}, longest},
+		{"an overlong name, cut between characters", Process{Name: "é", Exe: "/tmp/" + strings.Repeat("é", 200)}, strings.Repeat("é", 126) + ellipsis},
+		{"an overlong name, cut between escapes", Process{Name: "x", Exe: "/tmp/" + strings.Repeat("\x01", 100)}, strings.Repeat(`\x01`, 63) + ellipsis},
+	} {
+		got := processName(&tc.p)
+		if got != tc.want || len(got) > shimwire.MemoryKillExecutableBytes || !utf8.ValidString(got) {
+			t.Errorf("%s: the name is %q (%d bytes), want %q", tc.name, got, len(got), tc.want)
+		}
+	}
+
+	// The scan gives each its source: the link it read, and the stat of a process whose link it
+	// could not read.
+	pod := newFakePod(t)
+	pod.add(
+		fakeProcess{pid: 900, ppid: 1, exe: "/opt/tool/bin/gr\now", args: []string{"grow", "SECRETPASS"}},
+		fakeProcess{pid: 901, ppid: 1, name: "gr\x1bow", unreadableExe: true, args: []string{"grow", "SECRETPASS"}},
+	)
+	table, err := scan(pod.proc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		pid  int
+		want string
+	}{{900, `gr\now`}, {901, `gr\x1bow`}} {
+		p, ok := table.Get(tc.pid)
+		if !ok {
+			t.Fatalf("the scan did not read pid %d", tc.pid)
+		}
+		if got := processName(p); got != tc.want {
+			t.Errorf("pid %d is named %q, want %q", tc.pid, got, tc.want)
 		}
 	}
 }
@@ -1779,12 +1759,12 @@ func (c *timedClock) After(d time.Duration) <-chan time.Time {
 }
 
 // The guard's work after a kill does not grow with the killed process's arguments, which it does
-// on its loop before the next reading: a linker's arguments run to a mebibyte, and with a colour
-// sequence among the first of them every credential rule reads the text four times over, yet the
-// decision that killed the linker ends well within the default interval of the kill, so the next
-// reading comes when it is due. Under the race detector that time is logged and not held
-// (raceEnabled says why). The kill line carries the start of the link line, cut and within its
-// bound.
+// on its loop before the next reading: a linker's arguments run to a mebibyte, of which the scan
+// reads the first classifierArgsBytes alone and no line prints any, so the decision that killed
+// the linker ends well within the default interval of the kill, with a colour sequence among its
+// first arguments or without one, and the next reading comes when it is due. Under the race
+// detector that time is logged and not held (raceEnabled says why). The kill line names the linker
+// by its executable alone.
 func TestMemoryGuardDecidesWithinAnIntervalOfKillingAProcessWithAMebibyteOfArguments(t *testing.T) {
 	for _, tc := range []struct{ name, output string }{
 		{"plain", "app"},
@@ -1818,16 +1798,9 @@ func TestMemoryGuardDecidesWithinAnIntervalOfKillingAProcessWithAMebibyteOfArgum
 			if took >= Defaults().Interval && !raceEnabled {
 				t.Errorf("the decision ended %v after the kill, want under the interval of %v", took, Defaults().Interval)
 			}
-			ended := h.log.with("ended")
-			if len(ended) != 1 {
-				t.Fatalf("the kill lines are %q, want one", ended)
-			}
-			_, command, _ := strings.Cut(ended[0], ` command="`)
-			command = strings.TrimSuffix(command, `"`)
-			if !strings.HasPrefix(command, "/usr/bin/ld -o app build/obj/module00000.o build/obj/module00001.o ") ||
-				!strings.HasSuffix(command, ellipsis) || len(command) > logCommandBytes {
-				t.Errorf("the kill line's command is %q (%d bytes), want the link line's start cut with %q within %d bytes",
-					command, len(command), ellipsis, logCommandBytes)
+			want := ` executable="ld"`
+			if ended := h.log.with("ended"); len(ended) != 1 || !strings.HasSuffix(ended[0], want) || strings.Contains(ended[0], "build/obj") {
+				t.Errorf("the kill lines are %q, want one that ends%s and shows no argument", ended, want)
 			}
 		})
 	}

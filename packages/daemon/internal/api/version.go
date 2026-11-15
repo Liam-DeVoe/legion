@@ -1678,7 +1678,10 @@ package api
 // alone (sandbox's Runtime.launcherHelloAck), and leaves it out where that block's `enabled` is
 // false. The launcher sends the daemon one `launcher_memory_kill` frame
 // (`shimwire.LauncherMemoryKill`) for each process its guard ended with SIGKILL, on the connection
-// of the role whose process it was. The daemon applies it once, under the event id
+// of the role whose process it was. The frame names that process by `executable`, the base name of
+// its executable (its stat name where the guard could not read that), escaped and cut to 256 bytes,
+// and carries no command: none of the process's arguments, which may hold a credential no masking
+// rule names. The daemon applies it once, under the event id
 // `memory-guard-kill:<guard>:<sequence>`, and tells that role why on its role topic as a
 // `record.RoleMessage` row (workflow's memoryGuardNote): an outbox kind earlier releases already
 // decode, so this change adds no store migration and owes no rollback statement for the note.

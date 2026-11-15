@@ -18,6 +18,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// classifierArgsBytes is the most bytes of a process's `cmdline` the scan reads (readProcess): a
+// classifier reads a process's first arguments, and nothing else of the guard reads them, since no
+// line and no report prints an argument (processName). It is a bound, so the scan of a process
+// with a linker's mebibyte of arguments, which the guard's loop runs before its next reading after
+// a kill, costs no more than the scan of any other.
+const classifierArgsBytes = 4096
+
 // Process is one process as the guard's scan read it: its parent and start time from
 // `/proc/<pid>/stat`, its executable from the `exe` link, its arguments from `cmdline` and its PID
 // namespace from the `ns/pid` link. A classifier knows a process by these alone: its place in the
@@ -29,13 +36,15 @@ type Process struct {
 	// StartTime is the process's start in clock ticks since boot, the field the kill reads again
 	// to know the pid still names this process and not one that took the pid after it.
 	StartTime uint64
-	// Name is the command name between the parentheses of stat, which can hold spaces and `)`.
+	// Name is the command name between the parentheses of stat, which can hold spaces and `)`: the
+	// name a line gives a process whose `exe` link the scan could not read (processName).
 	Name string
-	// Exe is the target of the `exe` link, empty when the scan could not read it.
+	// Exe is the target of the `exe` link, empty when the scan could not read it. Its base name is
+	// the name every line and report gives the process (processName).
 	Exe string
 	// Args are the NUL-separated arguments of `cmdline`, nil for a process that shows none: of its
-	// first rawCommandBytes+1 bytes alone, which is all the scan reads of it (argsCut), enough for
-	// a classifier, which reads a process's first arguments.
+	// first classifierArgsBytes bytes alone, the last of them perhaps part of an argument, since a
+	// classifier reads a process's first arguments and nothing else reads them.
 	Args []string
 	// PIDNamespace is the target of the `ns/pid` link (`pid:[4026531836]`), empty when the scan
 	// could not read it.
@@ -44,11 +53,6 @@ type Process struct {
 	// for a dead process, both of which the scan leaves out unless other threads of the process
 	// still run (readProcess).
 	state byte
-	// argsCut is whether `cmdline` ran past rawCommandBytes, which the scan tells by reading one
-	// byte more and finding that byte there: then Args are what it read, the last of them perhaps
-	// part of an argument, and the command line masks no more than rawCommandBytes of them
-	// (commandLine).
-	argsCut bool
 }
 
 // Table is every process one scan read, keyed by pid. A process whose stat the scan read is in it
@@ -101,7 +105,7 @@ func scan(proc string) (*Table, error) {
 		return nil, err
 	}
 	t := &Table{proc: proc, byPID: map[int]*Process{}, children: map[int][]*Process{}, unread: map[int]error{}}
-	cmdline := make([]byte, rawCommandBytes+1)
+	cmdline := make([]byte, classifierArgsBytes)
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 {
@@ -134,7 +138,7 @@ func scan(proc string) (*Table, error) {
 var errExited = errors.New("the process has exited")
 
 // readProcess reads one process's stat, exe, ns/pid and cmdline, the last into the start of buf
-// and no further (argsCut). A process whose stat reads it exited (exited) answers errExited, and
+// and no further. A process whose stat reads it exited (exited) answers errExited, and
 // nothing more of it is read: what its other files answer differs by kernel, and a zombie's exe
 // link answers ENOENT on Linux and EACCES under gVisor, measured in a gVisor pod on 2026-11-14,
 // where the scan counted unread a pool worker the guard had just ended and its parent had not
@@ -157,7 +161,7 @@ func readProcess(proc string, pid int, buf []byte) (*Process, error) {
 	}
 	p.PID = pid
 	if cmdline, err := readHead(filepath.Join(dir, "cmdline"), buf); err == nil {
-		p.Args, p.argsCut = splitCmdline(cmdline), len(cmdline) == len(buf)
+		p.Args = splitCmdline(cmdline)
 	}
 	exe, err := os.Readlink(filepath.Join(dir, "exe"))
 	if err != nil {

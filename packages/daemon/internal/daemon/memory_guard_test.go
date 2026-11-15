@@ -26,7 +26,7 @@ const memoryGuardIssue = "LEGION-209"
 
 // memoryGuardKill is one kill of memoryGuardIssue's pod, as its launcher reports it.
 func memoryGuardKill() shimwire.LauncherMemoryKill {
-	return shimwire.LauncherMemoryKill{Guard: "guard-7f3a", Sequence: 3, PID: 4242, Command: "python3 -m pytest tests/",
+	return shimwire.LauncherMemoryKill{Guard: "guard-7f3a", Sequence: 3, PID: 4242, Executable: "python3",
 		SizeBytes: 851862979, ReadingBytes: 3360811909, CounterBytes: 3500000000, LimitBytes: 4 << 30,
 		At: time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)}
 }
@@ -109,7 +109,7 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 		t.Fatalf("the note was published to %q, want once to %q alone", got, topic)
 	}
 	message := publisher.publishes()[0].message
-	for _, part := range []string{"SIGKILL", "`python3 -m pytest tests/` (pid 4242)", "812.40 MiB", "3.13 GiB", "4.00 GiB", "skill://legion-worker/references/tools.md"} {
+	for _, part := range []string{"SIGKILL", "`python3` (pid 4242)", "812.40 MiB", "3.13 GiB", "4.00 GiB", "skill://legion-worker/references/tools.md"} {
 		if !strings.Contains(message, part) {
 			t.Fatalf("the note %q does not name %q", message, part)
 		}

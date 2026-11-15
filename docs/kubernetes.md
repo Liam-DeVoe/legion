@@ -4668,10 +4668,11 @@ A dropped connection leaves the settings in force.
 
 **The lines.**
 Every line of the guard starts `launcher: memory guard: ` in the `roles` container's log and carries `key=value` fields (`packages/daemon/internal/memoryguard/lines.go`):
-sizes in bytes, times in RFC 3339 UTC, `wait` and `interval` as Go durations (`5s`, `100ms`), and a command last and in quotes, made one line (each run of whitespace one space, each control character or control sequence read away), each credential masked by the rules of a capability report's detail ([The deployment's capability report](#the-deployments-capability-report)), each other character that does not print escaped, and the text cut to 512 bytes with `…` where it was cut.
-The guard masks at most the first 4 KiB of a process's arguments and leaves the rest out, so the work after a kill does not grow with the arguments.
-When the arguments run past 4 KiB, it also leaves out the last word of that 4 KiB, before the masking and again after it, and ends the command with `…`, so a cut shows nothing the whole command's masking would mask.
-The one masking rule whose match can run past the cut is a URL's user part, which needs an `@` that another rule's mask can bring next to it from beyond the cut, so in a cut command the guard also masks everything from the first `scheme://` whose user part no `/`, `?` or `#` ends, to the end (`RedactedCutLine`, `packages/daemon/internal/capabilities/capabilities.go`).
+sizes in bytes, times in RFC 3339 UTC, `wait` and `interval` as Go durations (`5s`, `100ms`), and a process's name last and in quotes.
+A line names a process by the base name of its executable, the target of its `/proc/<pid>/exe` link, or by its `comm`, the name in its `stat`, where that link cannot be read (`processName`).
+Each character of the name that does not print is escaped (`\n`, `\x1b`, `\u202e`), and the name is cut to 256 bytes with `…` where it was cut.
+No line prints an argument of a process, because an argument is text the process chose, and it may hold a credential that no masking rule names, such as a positional password.
+The role that started the process already has its arguments.
 The guard's own lines carry no role prefix, since it watches every role's processes and the launcher's together, and `role=none` names a process of no role.
 
 ```text
@@ -4679,9 +4680,9 @@ launcher: memory guard: started act_percent=<n> floor_percent=<n> wait=<d> inter
 launcher: memory guard: settings act_percent=<n> floor_percent=<n> wait=<d> interval=<d>
 launcher: memory guard: off: the daemon's acknowledgement carries no settings
 launcher: memory guard: settings refused: <why>; nothing changes
-launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> command="<command>"
+launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
 launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n>
-launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<role> largest_size=<bytes> largest_command="<command>"
+launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<role> largest_size=<bytes> largest_executable="<name>"
 launcher: memory guard: off reason=<why>
 launcher: memory guard: unread pid=<pid> reason=<why>
 launcher: memory guard: kill failed pid=<pid> reason=<why>
@@ -4715,16 +4716,17 @@ The launcher writes three lines of its own about the reports below, each behind 
 
 **The report and the note.**
 For each process of a role that it ends, the guard gives a report to that role's part of the launcher, which sends it to the daemon as one `launcher_memory_kill` frame on the role's connection:
-the guard's own id, its count of kills, the pid, the command cut to 256 bytes, the process's size, the reading, the counter and the limit.
+the guard's own id, its count of kills, the pid, the process's name as its lines give it (`executable`, at most 256 bytes and no argument), the process's size, the reading, the counter and the limit.
 The launcher sends a report only on a connection whose answer carried settings, since a daemon built before the guard closes a connection on a frame it does not know, and it drops a report waiting for any other connection with a line.
 Up to 32 reports wait while the role has no connection, and a 33rd drops the oldest with a line, or the next oldest while the oldest is being written.
 A process of no role has its `ended` line and no report.
 The daemon applies each report once, under the event id `memory-guard-kill:<guard>:<sequence>`, so a report sent twice tells the role once.
 It credits the report to the issue, the role and the pod that the connection authenticated as, and never to anything the report says.
-It then queues one message to that role's topic, `notifications.role.<role token>` (`memoryGuardNote`, `packages/daemon/internal/workflow/engine.go`), with the sizes in binary units (`3.13 GiB`):
+It then queues one message to that role's topic, `notifications.role.<role token>` (`memoryGuardNote`, `packages/daemon/internal/workflow/engine.go`), with the sizes in binary units (`3.13 GiB`).
+The message names the process as the lines do, by its executable's base name or its `comm`, escaped and cut, and prints no argument, since an argument may hold a credential that no masking rule names, and the role that started the process already has its arguments:
 
 ```text
-The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: `<command>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
+The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: `<name>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
 ```
 
 A note can be lost in each of these cases, and in each the `ended` line stays in the container's log:
@@ -4771,7 +4773,7 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
 - It does not bound the reads of a decision by what a process holds.
   Each decision walks the descriptors of every process the guard may end, to find the memfds they hold, at about 12.5 µs a descriptor in a gVisor pod (measured on 2026-11-14), so a process holding 20,000 descriptors adds about 250 ms to a decision, the one after a kill included.
   It reads each such process's `smaps` whole as well, and under gVisor `vm.max_map_count` reads 2147483647, so the kernel's mapping limit does not bound that read either.
-  What it does bound is a process's arguments: it reads and masks at most their first 4 KiB ("The lines", above).
+  What it does bound is a process's arguments: it reads at most their first 4 KiB, more than the rules of "What it protects, and why" read of them, and prints none of them.
 
 - It does not see the memory of a process whose main thread alone has exited.
   Such a process reads `Z` in its `stat` while its other threads run on and hold all of its memory, and the guard reads it as a live process ("What it ends", above).

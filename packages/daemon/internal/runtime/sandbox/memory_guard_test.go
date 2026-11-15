@@ -90,7 +90,7 @@ func recordedMemoryKills() (runtime.MemoryGuardKilled, <-chan memoryKillCall) {
 
 // memoryKillReport is a kill report the frame's own rule accepts.
 func memoryKillReport(sequence uint64) shimwire.LauncherMemoryKill {
-	return shimwire.LauncherMemoryKill{Guard: "guard-1", Sequence: sequence, PID: 4242, Command: "python3 grow.py",
+	return shimwire.LauncherMemoryKill{Guard: "guard-1", Sequence: sequence, PID: 4242, Executable: "python3",
 		SizeBytes: 812 << 20, ReadingBytes: 3 << 30, CounterBytes: 3<<30 + 1<<28, LimitBytes: 4 << 30, At: rigNow}
 }
 
@@ -150,7 +150,7 @@ func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueR
 	}
 
 	tooLong := memoryKillReport(2)
-	tooLong.Command = strings.Repeat("x", shimwire.MemoryKillCommandBytes+1)
+	tooLong.Executable = strings.Repeat("x", shimwire.MemoryKillExecutableBytes+1)
 	sendFrame(t, w, tooLong)
 	second := memoryKillReport(2)
 	sendFrame(t, w, second)
