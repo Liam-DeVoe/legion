@@ -23,11 +23,11 @@ func TestARestoreLeavesTheRescueBranchWhereThePodFetchedItAfterARescuePush(t *te
 	f := newBundleFixture(t)
 
 	// Work no remote holds, with the rescue bookmark set on it locally.
-	f.write(filepath.Join(f.ws, "r1.txt"), "r1\n")
-	f.run(f.ws, "jj", "describe", "-R", f.ws, "-m", "r1")
-	f.run(f.ws, "jj", "new", "-R", f.ws)
-	f.run(f.ws, "jj", "bookmark", "set", "-R", f.ws, rescue, "-r", "@-")
-	r1 := f.run(f.ws, "jj", "log", "-R", f.ws, "-r", "@-", "--no-graph", "-T", "commit_id")
+	f.Write(filepath.Join(f.Dir, "r1.txt"), "r1\n")
+	f.Run(f.Dir, "jj", "describe", "-R", f.Dir, "-m", "r1")
+	f.Run(f.Dir, "jj", "new", "-R", f.Dir)
+	f.Run(f.Dir, "jj", "bookmark", "set", "-R", f.Dir, rescue, "-r", "@-")
+	r1 := f.Run(f.Dir, "jj", "log", "-R", f.Dir, "-r", "@-", "--no-graph", "-T", "commit_id")
 
 	// The cadence copies the workspace, and the copy holds the local rescue bookmark on r1.
 	copied := f.bundleWorkspaceOne()
@@ -37,12 +37,12 @@ func TestARestoreLeavesTheRescueBranchWhereThePodFetchedItAfterARescuePush(t *te
 	}
 
 	// The pod goes on and pushes a rescue past r1, so GitHub's rescue branch is ahead of the copy.
-	f.write(filepath.Join(f.ws, "r2.txt"), "r2\n")
-	f.run(f.ws, "jj", "describe", "-R", f.ws, "-m", "r2")
-	f.run(f.ws, "jj", "new", "-R", f.ws)
-	f.run(f.ws, "jj", "bookmark", "set", "-R", f.ws, rescue, "-r", "@-")
-	f.run(f.ws, "jj", "git", "push", "-R", f.ws, "--bookmark", rescue)
-	r2 := strings.TrimSpace(f.run(f.remote, "git", "--git-dir="+f.remote, "rev-parse", "refs/heads/"+rescue))
+	f.Write(filepath.Join(f.Dir, "r2.txt"), "r2\n")
+	f.Run(f.Dir, "jj", "describe", "-R", f.Dir, "-m", "r2")
+	f.Run(f.Dir, "jj", "new", "-R", f.Dir)
+	f.Run(f.Dir, "jj", "bookmark", "set", "-R", f.Dir, rescue, "-r", "@-")
+	f.Run(f.Dir, "jj", "git", "push", "-R", f.Dir, "--bookmark", rescue)
+	r2 := strings.TrimSpace(f.Run(f.Remote, "git", "--git-dir="+f.Remote, "rev-parse", "refs/heads/"+rescue))
 	if r2 == r1 {
 		t.Fatalf("the rescue push left GitHub's %s on r1 %s, want it on r2", rescue, r1)
 	}
@@ -50,7 +50,7 @@ func TestARestoreLeavesTheRescueBranchWhereThePodFetchedItAfterARescuePush(t *te
 	// The pod is replaced. Its fetch brings the rescue branch where GitHub holds it, and it tracks
 	// it, so its own rescue bookmark sits on r2.
 	workspace, created := f.replacementPod("ws2")
-	f.run(workspace, "jj", "bookmark", "track", "-R", workspace, rescue+"@origin")
+	f.Run(workspace, "jj", "bookmark", "track", "-R", workspace, rescue+"@origin")
 	if got := rescueTarget(f, workspace, rescue); got != r2 {
 		t.Fatalf("the replacement pod's %s is on %q after its fetch, want it on r2 %s", rescue, got, r2)
 	}
@@ -74,6 +74,6 @@ func TestARestoreLeavesTheRescueBranchWhereThePodFetchedItAfterARescuePush(t *te
 // rescueTarget is the commit workspace's local bookmark branch is on, and "" when it has none.
 func rescueTarget(f *bundleFixture, workspace, branch string) string {
 	f.t.Helper()
-	return strings.TrimSpace(f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy",
+	return strings.TrimSpace(f.Run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy",
 		"-r", `bookmarks(exact:"`+branch+`")`, "--no-graph", "-T", `commit_id`))
 }
