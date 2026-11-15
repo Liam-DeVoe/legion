@@ -1611,7 +1611,8 @@ Structural relations stay in the columns that own them and the `graph_edges` vie
 `mentions`, `child_of` (`issues.parent_key`), `blocked_by` (`issue_links`), `attached_to` (`artifacts.issue_key`), `anchored_to` (ask/comment anchors), `owned_by` (project-document asks/comments), `replies_to` (comment and message threads), `followed_by` (`ask_followers`), since migration 0121 a block's `mentions` (`block_refs`) and its `part_of` edge to its document (`document_blocks`), since migration 0142 the same two for a block of a comment or message (`comment_block_refs` and `message_block_refs`, `comment_blocks` and `message_blocks`) and a reply's `replies_to` edge to the block it names (`replies_to_block`), since migration 20261101143211 the same two for a part of an ask (`ask_block_refs` and `ask_blocks`), which a reply naming the ask answers (`ask_id` with `reply_to_block`), since migration 20261101144855 a typed block's `block[]` attribute makes `block_refs` edges of a kind named by the attribute (below the typed block rules), and since migration 20261105014808 `answers` (`comments.answers`), a reply's edge to the comment it answers;
 20261101143211 splits the reply arm by the node id `replies_to_block` holds, so one starting `ask/` is an edge to an `ask_block` and every other to a `comment_block`.
 20261101143211 and 20261101144855 each re-stated the view from 0142's arms, so the later of the two dropped the other's; 20261101183525 states it once with every arm of both, and 20261105014808 re-states that list with the `answers` arm added, so it is the arm list a later migration re-states from.
-An issue may wait only on issues in its own project through `blocked_by`.
+An issue may wait on an issue of any project through `blocked_by`, so a wait on work tracked elsewhere is recorded where the waiting issue is.
+A caller whose credential names one project is refused a target outside it with `403 PROJECT_SCOPE`, written inside the write rather than in the pre-handler project-scope check, which reads the project of the object the path names and no key in the body.
 For cycle checks an issue has two halves:
 it starts after its `blocked_by` targets are done and after its parent starts, and it is done after it starts and after its children are done.
 A write that would make either half wait on itself is `409 DEPENDENCY_CYCLE`.
@@ -1907,8 +1908,21 @@ a document is owed a block index instead (`document_block_versions.version` null
 and a `scope` row goes through its document's sources, each read with no lock first (`refs.SourceText`) and locked only where its text holds a `#id` candidate at all, so the sources the drain passes over - most of a scope - never wait behind an edit nor hold one up, settled once they are all re-read.
 A row the drain cannot index is logged and left owed without holding back its batch.
 
-Blocker-list and parent changes serialize per project through `lockProjectIssueDependencies` (`api/issue_parent.go`), using the two-key advisory-lock namespace `dispatch-issue-dependencies`.
-That transaction lock comes before any row or rank lock.
+Every dependency write - a `blocked_by` write and a reparent alike - takes its locks in one order (`lockIssueDependencyWrite`, `api/issue_parent.go`): the project lock of the issue's own project and of each foreign target's project, each through `lockProjectIssueDependencies` (the two-key advisory namespace `dispatch-issue-dependencies`, second key the project's `hashtext`), with the projects read from Postgres once each, ordered by `hashtext` of the key and then by the key (`docs.ProjectsInLockOrder`, the one helper the copy lock takes its order from too);
+then the deployment's own dependency lock, always and exclusively (`lockDeploymentIssueDependencies`, the namespace `dispatch-issue-dependencies-deployment`);
+then the number, the rank and the row locks; then the write, whose own walk under those locks decides the cycle.
+Every writer of this build takes that one deployment lock exclusively, so no two dependency walks of this build ever run at once and no ring can be closed by two writes of this build that each walk a graph the other is changing - whatever projects their components touch, and with nothing read before a lock deciding it.
+The deployment lock serializes every dependency write only while one build serves, because a server of the build before this one takes only its own project's dependency lock and never the deployment lock.
+The deployment this repository describes holds that: `gcp:Dispatch` rolls the app Deployment with the Recreate strategy at one replica (`infra/gcp/dispatch.go`, `dispatchStrategyFor`, `minDispatchReplicas`), so the old pod stops before the new one starts.
+A deployment that serves two builds at once - a rolling update above one replica - must not serve a build before this one beside it, since such a writer shares no lock with a writer of this build across three projects.
+The order never inverts, because every dependency write takes its project locks first, in lock id order, and the deployment lock last, so no two writes can hold what the other waits for.
+The order is the lock id's because Postgres orders the waits on the id; key order breaks when two keys collide in `hashtext`, and two keys that collide take the same id twice in a row, which is harmless because an advisory lock is re-entrant within one session.
+What it costs is that dependency writes serialize across the deployment rather than per project; every other write takes neither lock.
+Beside the exclusive deployment lock, the project locks decide nothing among writers of this build.
+They still fence a writer of an earlier build, which holds only its project's lock, on every project this write names (its own and each target's), so even with two builds serving only a ring through a project this write does not name could close.
+The test gates use them too: a caller that holds a project's dependency lock fences that project's dependency writes (`TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks`, `issue_dependencies_test.go`).
+Each target's project is read before any lock is taken, which is sound because no route moves an issue between projects and `writeBlockedBy`'s own read inside the transaction refuses an unknown key;
+a caller whose credential names one project is refused a target outside it there, before the deployment lock is taken, and again under the locks in `writeBlockedBy`, both through the one wording `refuseBlockedByOutsideCallerProject` writes.
 A PATCH then locks every issue row it names `for no key update` in one key order, the order `LockOwners` takes event owners (`lockPatchRows`, `lockIssueRows`):
 the issue; its current parent when a status change or a reparent appends to it; the proposed parent; and the rank neighbours.
 `LockOwners` then re-locks rows already held, so no PATCH holds one of these rows while waiting for another that a second write holds.
@@ -1916,7 +1930,7 @@ The current parent is read before the lock and again under it:
 a parent a concurrent reparent moved in between releases the attempt's locks (a savepoint) and is locked again in key order, and one that moves at both attempts is `409 PARENT_CONTENDED`, with nothing applied.
 The bounded dependency walk uses plain reads rather than contending on unrelated issue rows.
 Status-only, title, labels and rank writes take no dependency lock.
-Creation takes it with non-empty `blocked_by` or a `parent`, before allocating the issue number or rank;
+Creation takes these locks with non-empty `blocked_by` or a `parent`, before allocating the issue number or rank, and only its blockers can name another project, since a parent is of the issue's own project;
 creation without either takes no dependency lock, and no creation takes an explicit parent-row lock.
 An issue sits at most `parentDepthCap` (32) links below its root:
 a create under a parent, or a reparent whose subtree's deepest issue would sit deeper, is `409 PARENT_INPUT` (`refuseParentTooDeep`, under the dependency lock, so two writes cannot each pass alone and together pass it), and every recursive issue walk stops at that depth.
@@ -2494,7 +2508,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - Every issue has a nullable `parent_key` (`graph_edges.child_of` is a live view over it).
   `POST /api/v1/issues` validates a supplied `parent` exists in the same project (`400 PARENT_INPUT`) and leaves the new issue at most `parentDepthCap` (32) links below its root (`409 PARENT_INPUT`), and `PATCH /api/v1/issues/{key}` accepts a tri-state `parent`:
   absent leaves it, `null` clears it, a key reparents.
-  Parent changes, and creates with a parent, take the project's dependency advisory lock, serializing with blocker writes;
+  Parent changes, and creates with a parent, take the project's dependency advisory lock and then the deployment's, serializing with blocker writes;
   a parent change then locks the issue, its old parent and the proposed parent together in one key order, as a status write locks the issue and its parent (`409 PARENT_CONTENDED` when a concurrent reparent moves the parent at both attempts).
   Plain, depth-capped reads refuse a missing, self, or foreign-project parent (`400 PARENT_INPUT`), a parent cycle (`409 PARENT_INPUT`), a parent that would put the deepest issue under the moved one more than 32 links below its root (`409 PARENT_INPUT`), or a wait cycle through parent and `blocked_by` edges (`409 DEPENDENCY_CYCLE`); unrelated row activity adds no refusal.
   A reparent of a closed issue is `409 ISSUE_CLOSED` (a closed issue takes only `rank`, `components`, a reopening `status` — any status but `done` — and an `external_links` write that adds no new URL, so a link can move to the issue that replaced it;
@@ -5458,7 +5472,7 @@ broker AGENT_SECRETS_URL names (GCP Secret Manager)`;
 `request`, `status` and `self` print it as `source:`, and every denial, pending request and refusal carries it, so no answer or refusal of this CLI's is read as another secrets CLI's about the same name.
 None of these lines names the broker's host or the store's account, region or project, since an agent's output is quoted wherever it goes, a public pull request among them;
 only a broker that could not be reached is named, by its URL through `redact.URL`, so a stale address reads as one.
-Only the secret forms, which a person runs under their own cloud sign-in, name the store's account or project (`AWS Secrets Manager account
+Only the secret forms, which call the store itself, name the store's account or project (`AWS Secrets Manager account
 <id> in <region>`, `GCP Secret Manager project <number>`): `secret show` as `store:`, `secret list` one line on stderr, with `store` on each row under `--json`.
 No line names a secret's version: a grant's release carries names and values alone, and a session holds no sign-in of its own to the store.
 No output of `agent-secrets`, `agent-secrets-helper` (`internal/broker/helper`'s broker calls included) or `agent-secrets-devrelay` prints a credential the broker's URL carries:
@@ -5482,7 +5496,7 @@ The other secrets CLI a box may hold, `secrets`, is secretsd, shipped from `sjaw
 it reads its agent tier from local sops files and its human tier through the local secretsd daemon, which asks for a YubiKey touch, and it never reads this broker.
 One key name can hold different values in the two stores.
 `agent-secrets` names its store in output and every refusal; `secrets` names none today.
-`agent-secrets secret` forms are how a person manages the agent secrets themselves, in the broker's own store (AWS Secrets Manager or GCP Secret Manager) under their own cloud sign-in (below); the broker writes no secret.
+`agent-secrets secret` forms are how people and agents manage the agent secrets themselves, in the broker's own store (AWS Secrets Manager or GCP Secret Manager) under whatever cloud credential their environment gives them, which the store's IAM decides (below); the broker writes no secret.
 The broker opens no Dispatch ask anywhere and issues nothing in Dispatch;
 all it reads there is its model judge's read of one issue, at `BROKER_JUDGE_DISPATCH_URL` and with the broker's own projected ServiceAccount token: two GETs, one for the issue, which it reads for the key, title and status, and one for the whole markdown of that issue's spec document, and it writes nothing there.
 The model is shown those three fields and an extract of that markdown — the spec's Summary and Requirements sections, at most 12,000 runes (`judge.specExtract`) — and nothing else of Dispatch.
@@ -5716,44 +5730,41 @@ the catch-up available there is a whole-namespace read on every redial, and the 
 A failed notify is one WARN in `cmd/broker` and nothing else.
 The miss path (`requests/machine_state.go`) does not fan out, and `RefreshOne` itself does not notify: only this public route does.
 
-`agent-secrets secret list|show|create|set|retag|delete|restore` (`cmd/agent-secrets/secret.go`, its AWS side in `secret_aws.go`, its GCP side in `secret_gcp.go`) is the person's side of that reread.
+`agent-secrets secret list|show|create|set|retag|delete|restore` (`cmd/agent-secrets/secret.go`, its AWS side in `secret_aws.go`, its GCP side in `secret_gcp.go`) is the writer's side of that reread.
 Each form reads the broker's settings from `AGENT_SECRETS_URL`, whose `store` field (`aws-secrets-manager` or absent, `gcp-secret-manager`) chooses the backend (`openSecretBackend`), both behind one `secretBackend` interface the forms call through.
-AWS: loads the person's AWS sign-in (`--profile`, else `AWS_PROFILE`, else the SDK's default chain) pinned to the key's region, and calls Secrets Manager itself, so IAM in that account, not the broker, decides what the person may read or write; it needs no session identity.
-`GetCallerIdentity` runs before anything else:
-every form refuses a sign-in in another account than the key's, naming both (`requireAccount`, so a read never lists another account's secrets as if they were the agent secrets), and a write also refuses any ARN but `assumed-role/AWSReservedSSO_*/<session>` in that account (`requireWriteSignIn`, naming the ARN, in any AWS partition).
-`--owner me` is that session name lowercased; create and retag refuse it before writing unless it matches the broker's email rule (`policy.ValidPersonOwner`).
-GCP: loads the person's Application Default Credentials (`google.FindDefaultCredentials`:
-the file `GOOGLE_APPLICATION_CREDENTIALS` names whenever it is set, else `~/.config/gcloud/application_default_credentials.json` whatever `CLOUDSDK_CONFIG` says, else the metadata server) and calls Secret Manager itself under `cloud.google.com/go/secretmanager`, so IAM in that project decides what the person may read or write.
-A load that fails while `GOOGLE_APPLICATION_CREDENTIALS` is set names that variable and advises no sign-in, since no other file is read while it is set;
-one that fails while it is unset signs every form, a read included, in with the person's gcloud login instead (`gcloudLogin`), then, only when gcloud cannot supply that login, with the raw `CLOUDSDK_AUTH_ACCESS_TOKEN` lent to the command (one stderr line names that fallback and gcloud's error, never the token).
+Every form, a read and a write alike, runs under the cloud credential its environment gives it and refuses none for the kind of identity it is, a person's or a machine's:
+the store's own IAM decides what that credential may read and write, so the CLI checks only what IAM cannot, the account a sign-in is in.
+AWS: loads the AWS sign-in (`--profile`, else `AWS_PROFILE`, else the SDK's default chain) pinned to the key's region, and calls Secrets Manager itself; it needs no session identity.
+`GetCallerIdentity` runs before anything else (`openSession`, `requireAccount`):
+every form refuses a sign-in in another account than the key's, naming both, so a read never lists another account's secrets as if they were the agent secrets.
+GCP: signs in with `CLOUDSDK_AUTH_ACCESS_TOKEN` when it is set, which is the caller's own choice and so outranks every other source;
+else with the Application Default Credentials, of any type (`google.FindDefaultCredentials`:
+the file `GOOGLE_APPLICATION_CREDENTIALS` names whenever it is set, else `~/.config/gcloud/application_default_credentials.json` whatever `CLOUDSDK_CONFIG` says, else the metadata server);
+else, where none load and `GOOGLE_APPLICATION_CREDENTIALS` is unset, with the gcloud login (`gcloudLogin`);
+and calls Secret Manager itself under `cloud.google.com/go/secretmanager` (`newGCPBackend`).
+A load that fails while `GOOGLE_APPLICATION_CREDENTIALS` is set names that variable and advises no sign-in, since no other file is read while it is set.
 GCP's requireAccount is a no-op, unlike AWS's:
 every call already names `projects/<project number>/...` explicitly, so a wrong-project identity gets a real refusal from the API itself rather than silently reading another project's secrets - the hazard AWS's `ListSecrets` (which takes no project parameter) has and GCP's calls do not.
-A write runs only under a person's own Google Account sign-in (`gcpBackend.requireWriteSignIn`, reached only through `connectWriter`):
-ADC of type `authorized_user` write as they are;
-under any other ADC - a service account key file, a workload identity federation credential (a dev box's own), a workforce identity federation sign-in, or a GCE/GKE metadata-server identity (GKE Workload Identity's too), whose ADC carries no JSON at all - it signs the backend in with the person's gcloud login, or with the lent raw token only when gcloud cannot supply that login, redialing Secret Manager under it (`signIn`) and leaving the machine's ADC as they are, unless `GOOGLE_APPLICATION_CREDENTIALS` named them, a choice it refuses rather than overrides.
-Reads under a machine's ADC run under it.
-On a write under that lent token, `gcpUserinfo` must name a `personAccount`; an empty email or service account is refused, and its lowercased email is `--owner me`.
-`create` requires its owner tag to equal that person. A lent token may only create a new secret it owns: `set`, both retag annotation paths, `delete`, and `restore` refuse before any Secret Manager call.
-After the `create` version add, a lent token re-reads the owner and destroys the exact returned version if the owner changed or that read failed, refusing the write and naming the left version if that undo fails. Because `AddSecretVersion` takes no Etag, that version can exist momentarily between its add and the undo.
-One race is accepted, not prevented: between `CreateSecret` and the version add, a second writer whose IAM grants already reach the new secret (a project-level role does) can add its own version and change the owner. The undo then destroys this create's version, the newest, so `versions/latest` names a destroyed version while the other writer's version stays enabled, and a read of `latest` fails. The window is the time between those two calls, and entering it takes permission to add versions and update the metadata of a secret that did not exist a moment earlier. A predefined role that grants both, such as Secret Manager Admin, also grants destroying versions; a custom role can separate them, and then the race lets that writer make `latest` unreadable: an availability loss, never a read of any value.
-A person who finds `latest` naming a destroyed version runs `agent-secrets secret show NAME` to list its versions, then re-adds the value with `agent-secrets secret set NAME` under their own gcloud sign-in (a lent token refuses `set`). The owner tag is Legion's rule, not Google's access control: its person can still have IAM rights independently.
+A refusal of the store's own (`AccessDeniedException`, `PermissionDenied`) names the identity the form called the store as (`secretSession.refusedAs`, `secretBackend.identity`):
+the AWS sign-in's ARN, or on GCP the lent token, the gcloud login's account, or what the Application Default Credentials are (`adcIdentity`: their `type` and the service account they act as, or the metadata server, never a file path).
+`--owner` takes `me`, `shared` or a person's email, which create and retag lowercase and refuse before writing unless it matches the broker's email rule (`checkOwnerTier`, `policy.ValidPersonOwner`).
+`--owner me` is the one place a form asks whom the credential names (`secretSession.ownerTag`, `secretBackend.personEmail`):
+on AWS the session name of an `assumed-role/AWSReservedSSO_*/<session>` ARN, in any AWS partition, lowercased;
+on GCP the Google userinfo endpoint's `email` for the token, lowercased, which must be a person's (`personAccount`: no `.gserviceaccount.com` account).
+Where the credential names no person - a machine's role, a service account, a token minted without an email scope, which Google's userinfo endpoint answers 401 - `--owner me` is refused (exit 2) naming `--owner <email>`, before the value is read, and the same credential still reads and writes with any other `--owner`.
 `gcloudLogin` borrows the login through gcloud's own interface, never its credential files:
 the first `gcloud` on PATH (`exec.LookPath`) lists its logins (`gcloud auth list --format=json`);
-a person's is an account named by a plain email the broker accepts as a person owner (`personAccount`:
-`policy.ValidPersonOwner`), never a `.gserviceaccount.com` one or a workload or workforce identity federation login, which gcloud names by a `principal://` identifier;
-it takes the one `CLOUDSDK_CORE_ACCOUNT` names when that is one of them, else the only one, refusing none (naming `gcloud auth login`) or several (naming each, and `CLOUDSDK_CORE_ACCOUNT`).
+of every login it lists, whatever kind of account (a person's, a service account's, or a workload or workforce identity federation login's `principal://` identifier), it takes the one `CLOUDSDK_CORE_ACCOUNT` names, else the one gcloud marks active, else the only one;
+it refuses a `CLOUDSDK_CORE_ACCOUNT` that names a login gcloud does not hold (naming it and each login gcloud holds), rather than run as another login, and refuses none (naming `gcloud auth login`) and several of which none is active (naming each, and `CLOUDSDK_CORE_ACCOUNT`).
 Its tokens are `gcloudTokenArgs`, `gcloud auth print-access-token --format=value[private](token) --impersonate-service-account=
 --access-token-file= --credential-file-override= <account>`, behind `oauth2.ReuseTokenSource`, each taken to last `gcloudTokenLife` (5 minutes:
 gcloud prints no expiry, and refreshes a token within 300 s of its expiry before printing it).
 gcloud prints a command's output through its logger, whose file handler keeps a copy in `logs/` under gcloud's configuration directory, so the `private` format attribute writes the token to the console stream alone, and every gcloud run has `CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1` and `CLOUDSDK_CORE_DISABLE_PROMPTS=1`.
-The empty flags clear impersonation, an access token file and a credential file override, whichever of the environment and the configuration file sets them (a flag outranks both, and an empty value turns the property off), and `gcloudEnv` drops `gcloudIdentityOverrides` (`CLOUDSDK_AUTH_ACCESS_TOKEN`, which gcloud reads directly, and the three properties' variables);
-a write still refuses a token whose userinfo `email` is not the chosen account, compared case-insensitively.
+The empty flags clear impersonation, an access token file and a credential file override, whichever of the environment and the configuration file sets them (a flag outranks both, and an empty value turns the property off), and `gcloudEnv` drops `gcloudIdentityOverrides`, the three properties' variables.
 gcloud reads `/dev/null`, never the CLI's standard input (a secret's value), and no error carries its token.
-A refusal names what it found (`gcpCredsFound`:
-the credentials' `type` or the metadata server, never a file path) and never advises `gcloud auth application-default login`, which replaces a machine's own ADC for every program that uses it.
-`--owner me` is the Google userinfo endpoint's `email` for the sign-in the write runs under, lowercased.
-A command a form prints for running again starts with `GOOGLE_APPLICATION_CREDENTIALS=…` when that was set, and with `CLOUDSDK_CORE_ACCOUNT=…` when it chose the gcloud login (`signInPrefix`).
-`create` and `set` check the sign-in before they read the value:
+No refusal advises `gcloud auth application-default login`, which replaces a machine's own ADC for every program that uses it.
+A command a form prints for running again starts with `GOOGLE_APPLICATION_CREDENTIALS=…` when that was set, and with `CLOUDSDK_CORE_ACCOUNT=…` when it chose the gcloud login (`signInPrefix`), and never carries `CLOUDSDK_AUTH_ACCESS_TOKEN`.
+`create` and `set` refuse a sign-in in another account, and `create` resolves `--owner me`, before they read the value:
 at a terminal they read one line with echo off (`readHidden`, `secret_prompt_unix.go`), printing the label on stderr only once the reader holds the terminal with echo off, so a prompt started with `&` shows nothing over the shell's line until `fg`.
 Canonical mode is off, so no terminal line limit cuts the value.
 Enter or the terminal's end-of-file character ends it; erase, word erase and kill edit it.
