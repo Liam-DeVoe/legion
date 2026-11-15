@@ -15797,6 +15797,40 @@ test("a comment edit refused INVALID_JSON naming another field keeps that refusa
   expect((error as Error).message).not.toContain("predates post corrections");
 });
 
+// A build from main's #2461 on ignores a member its input does not declare, so the actor this
+// client sends is no longer refused there, and a person's own credential reaches that build's
+// comment edit, which a person has always had: the edit lands. Such a build predates post
+// corrections and keeps no earlier body (it has no post_body_history and no /history route), and
+// its comment row carries no deleted_at or deleted_by. Production ran exactly such a build,
+// 3aef4ebb, on 2026-11-15, and a person signed in on a machine reaches it through this command
+// (main's #4029). Telling that person "Dispatch keeps the body it replaced" is false: the words
+// they replaced are gone (INFRA-1523, R4, and the older-server reading of review round 6).
+test("an edit an older build takes does not say Dispatch keeps the body it replaced", async () => {
+  const { result } = await runCorrection(
+    "dispatch_edit_comment",
+    { comment: `dispatch://DSP-42/comment/${correctedComment}`, body: "corrected text" },
+    (pathname, method) => {
+      if (pathname !== `/api/v1/comments/${correctedComment}`) {
+        throw new Error(`unexpected request: ${pathname}`);
+      }
+      // The older build's comment row: every field of today's but the two a delete writes.
+      const {
+        deleted_at: _at,
+        deleted_by: _by,
+        ...older
+      } = commentRow({
+        edited_at: "2026-11-15T21:00:00Z",
+      });
+      return method === "GET"
+        ? { comment: { ...older, body: "first text", edited_at: null }, replies: [] }
+        : older;
+    }
+  );
+
+  expect(result.text).toContain(`Edited comment ${correctedComment} on DSP-42.`);
+  expect(result.text).not.toContain("Dispatch keeps the body it replaced");
+});
+
 test("dispatch delete-comment against a Dispatch without the route says that server predates corrections", async () => {
   await expect(
     olderDispatch("dispatch_delete_comment", { comment: correctedComment })
