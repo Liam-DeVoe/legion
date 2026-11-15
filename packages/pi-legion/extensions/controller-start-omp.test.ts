@@ -1645,17 +1645,17 @@ test.skipIf(skip)(
 );
 
 // The daemon's controller reports ready once it holds the role and the controller topic, and the
-// daemon writes its start prompt then, which RPC mode reads only once Oh My Pi's startup is over. A
-// card that reached the session during that startup is a follow-up that starts no turn, and the
-// wake for it fired once the host was idle after the startup, which can be before the prompt
-// arrives, so the wake's turn was the first. The claim marks the start turn sent right before its
-// ready (src/controller-session.ts), which holds the wake behind the start turn. The stand-in holds
-// that ready, inside the claim `session_start` awaits, while the card arrives. RPC mode answers
-// its first command only once its startup drain has returned, when the card's follow-up is in the
-// context and the check its `message_end` armed is on the host's 0 ms timer; the second
-// `get_state`, written after that answer, is read on a later turn of omp's event loop, after that
-// timer ran, so a wake that check sent has started its turn by then. Only then does the case
-// deliver the start prompt.
+// daemon writes its start prompt then, which RPC mode runs only once Oh My Pi's startup is over,
+// since it starts a turn (rpc-mode.ts `waitsForStartup`). A card that reached the session during
+// that startup is a follow-up that starts no turn, and the wake for it fires once the host is idle
+// after the startup, which can be before the prompt arrives, so the wake's turn would be the
+// first. The claim marks the start turn sent right before its ready (src/controller-session.ts),
+// which holds the wake behind the start turn. The stand-in holds that ready, inside the claim
+// `session_start` awaits, while the card arrives, and the case reads `get_state` twice after
+// releasing it before it delivers the start prompt. RPC mode answers a `get_state` during startup
+// too, so those reads order nothing by themselves; on the pinned build the case fails with that
+// mark removed (the supervised `markStartupTurnSent` in src/controller-session.ts), three runs in
+// three, so it still tells a held wake from one that runs first.
 test.skipIf(skip)(
   "the daemon-launched controller's start prompt is its first turn, and a startup card's wake runs after it",
   async () => {
@@ -1707,8 +1707,8 @@ test.skipIf(skip)(
 // interrupt stopped: the card stays folded for the next turn instead. So the session settles with
 // no model request after the start turn's, and a probe prompt is the next request, carrying the
 // card and no wake. A `get_state` after the settle is read once the check the start turn's
-// `agent_end` armed has run (as in the case above), so a wake that check sent is under way before
-// the probe goes.
+// `agent_end` armed has run, since that check is on the host's 0 ms timer and the read comes on a
+// later turn of omp's event loop, so a wake that check sent is under way before the probe goes.
 test.skipIf(skip)(
   "an RPC abort of the daemon-launched controller's start turn leaves its startup card folded, with no wake",
   async () => {
