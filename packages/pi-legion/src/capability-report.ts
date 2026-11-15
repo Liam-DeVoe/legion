@@ -467,20 +467,44 @@ function truncateUtf8(text: string, max: number): string {
   return text.slice(0, end);
 }
 
+/** A value's scheme-shaped tail, from the leftmost position where what the userinfo rule takes
+ * before its `://` runs on to the value's end, as its group: the daemon's `urlSchemeTail`. Like the
+ * userinfo rule it starts only where a run of scheme characters starts and skips that run's
+ * leading digits and signs, so JavaScriptCore, which backtracks, reads each run once rather than
+ * once per start in it. */
+const URL_SCHEME_TAIL = /(?<![a-z0-9+.-])[0-9+.-]*([a-z][a-z0-9+.-]*)$/i;
+
+/** An API-key or bearer rule match redacted, as the daemon's `redactLabeledValue`, whose comment
+ * explains it: a value before `://` keeps its scheme-shaped tail for the userinfo rule, the match
+ * given back unchanged where that tail is the whole value and with what is glued before the tail
+ * masked otherwise; any other value is masked, and any `://` after it kept. */
+function redactLabeledValue(
+  match: string,
+  label: string,
+  value: string,
+  scheme: string | undefined
+): string {
+  if (scheme === undefined) return `${label}***`;
+  const tail = URL_SCHEME_TAIL.exec(value)?.[1];
+  if (tail === undefined) return `${label}***${scheme}`;
+  return tail.length === value.length ? match : `${label}***${tail}${scheme}`;
+}
+
 /**
  * The credential shapes `cleanDetail` replaces, as the daemon's `credentialRules` in
  * `packages/daemon/internal/capabilities` and in its order, which its comment explains; the shared
  * fixture names each with an example. A value class runs across a `HELD_SEQUENCE`, and a separator
  * takes a space or `HELD`. The userinfo rule starts only where a run of scheme characters starts.
- * The API-key and bearer rules stand back from a URL after their label (`api-key:
- * http://user:pw@host`, `Bearer http://user:pw@host`): their value takes no `:`, so masking
- * it would mask the scheme the userinfo rule anchors on, since `***://` is no scheme, and the
- * userinfo would never be masked. A rule whose value class stops at a `:`, so that a URL's
- * scheme can be its whole value, must stand back before `://` the same way, and a new such rule
- * must too. Their negative lookahead for a scheme and `://` reads like the daemon's rules,
- * which have no lookahead and so take that `://` into their match and give such a match back
- * unchanged (`redactLabeledValue`). The JWT rule starts nowhere its
- * first segment's class could have run on from: not after held, a C1 introducer or a value
+ * The API-key and bearer rules leave a URL's scheme after their label (`api-key:
+ * http://user:pw@host`, `Bearer _http://user:pw@host`) to the userinfo rule: their value takes no
+ * `:`, so before such a URL it ends with that scheme, and masking it would mask what the userinfo
+ * rule anchors on, since `***://` is no scheme, and the userinfo would never be masked. So, like
+ * the daemon's rules, which have no lookahead, each takes the `://` after its value into its
+ * match, and `redactLabeledValue` leaves the value's scheme-shaped tail for the userinfo rule and
+ * masks what is glued before it. A rule whose value class stops at a `:`, so that a URL's scheme
+ * can end its value, must leave that tail before `://` the same way, and a new such rule must
+ * too. The JWT rule starts nowhere its first segment's class could have run on from: not after
+ * held, a C1 introducer or a value
  * character, and not after a held `[` and its parameters, followed by any final byte or by a
  * `\uXXXX` escape whose backslash is that final byte. Its one lookbehind for the held prefix reads
  * like the daemon's rule, which matches that prefix with `eyJ` and gives it back. It may start
@@ -493,7 +517,7 @@ function truncateUtf8(text: string, max: number): string {
  * JavaScriptCore backtracks, where the daemon's RE2 does not, and a start inside a run its first
  * segment reads through would read that run once per start.
  */
-const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
+const CREDENTIAL_RULES: readonly (readonly [RegExp, string | typeof redactLabeledValue])[] = [
   [/(?<![a-z0-9+.-])([0-9+.-]*[a-z][a-z0-9+.-]*:\/\/)[^ /?#]+@/gi, "$1***@"],
   [
     /([?&](?:token|key|secret|password|access_token|accesstoken|refresh_token|id_token|auth_token|private_token|api_key|apikey|client_secret|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^ &#"'<>]+/gi,
@@ -509,10 +533,10 @@ const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
   ],
   [
     new RegExp(
-      String.raw`((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \ufffe\uffff]*[:=][ \ufffe\uffff]*\\?["']?)(?![a-z][a-z0-9+.-]*://)(?:[A-Za-z0-9._~+/=*-]|${HELD_SEQUENCE})+`,
+      String.raw`((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \ufffe\uffff]*[:=][ \ufffe\uffff]*\\?["']?)((?:[A-Za-z0-9._~+/=*-]|${HELD_SEQUENCE})+)(://)?`,
       "gi"
     ),
-    "$1***",
+    redactLabeledValue,
   ],
   [
     /(\\?["'](?:api_key|access_token)\\?["'][ \ufffe\uffff]*:[ \ufffe\uffff]*\\?["'])[^"'\\]+/gi,
@@ -520,10 +544,10 @@ const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
   ],
   [
     new RegExp(
-      String.raw`\b(bearer[ \ufffe\uffff]+)(?![a-z][a-z0-9+.-]*://)(?:[A-Za-z0-9._~+/=*-]|${HELD_SEQUENCE})+`,
+      String.raw`\b(bearer[ \ufffe\uffff]+)((?:[A-Za-z0-9._~+/=*-]|${HELD_SEQUENCE})+)(://)?`,
       "gi"
     ),
-    "$1***",
+    redactLabeledValue,
   ],
   [
     new RegExp(String.raw`\b(gh[pousr]_|github_pat_)(?:[A-Za-z0-9._-]|${HELD_SEQUENCE}){20,}`, "g"),
@@ -555,8 +579,12 @@ const MAX_REDACTION_PASSES = 8;
 function redactCredentials(text: string): string {
   let line = text;
   for (let pass = 0; pass < MAX_REDACTION_PASSES; pass++) {
+    // One `replace` call per overload: TypeScript takes a pattern or a function, never either.
     const next = CREDENTIAL_RULES.reduce(
-      (redacted, [pattern, replacement]) => redacted.replace(pattern, replacement),
+      (redacted, [pattern, replacement]) =>
+        typeof replacement === "string"
+          ? redacted.replace(pattern, replacement)
+          : redacted.replace(pattern, replacement),
       line
     );
     if (next === line) break;

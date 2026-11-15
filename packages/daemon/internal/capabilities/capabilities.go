@@ -414,8 +414,9 @@ var apiKeyRule = regexp.MustCompile(`(?i)((?:api-key|application-key|ocp-apim-su
 
 var bearerRule = regexp.MustCompile(`(?i)\b(bearer[ \x{FFFE}\x{FFFF}]+)((?:[A-Za-z0-9._~+/=*-]|` + heldSequence + `)+)(://)?`)
 
-// urlScheme is a whole value that is a URL scheme: what the userinfo rule takes before its `://`.
-var urlScheme = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*$`)
+// urlSchemeTail is a value's scheme-shaped tail: from the leftmost position where what the
+// userinfo rule takes before its `://` runs on to the value's end.
+var urlSchemeTail = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*$`)
 
 // credentialRules are the credential shapes redactCredentials replaces, each keeping what names
 // the credential and replacing the secret with `***`; the shared fixture names each with an
@@ -426,13 +427,14 @@ var urlScheme = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*$`)
 // header under any scheme loses its whole value and keeps a listed scheme's label, and the GitHub
 // rule before the JWT rule, so a stateless installation token (`ghs_<app id>_<JWT>`) reads
 // `ghs_***`. Where one rule's mask would take what another rule reads, the mask stands back:
-// an API-key value and a bare bearer value take no `:`, so a URL after either label (`api-key:
-// http://user:pw@host`, `Bearer http://user:pw@host`) would be the value `http`, and masking
-// it would take the scheme the userinfo rule anchors on, since `***://` is no scheme — the
-// userinfo would never be masked at all. So both rules take the `://` after their value as well,
-// and redactLabeledValue gives such a match back unchanged; a new rule whose value class stops
-// at a `:`, so that a URL's scheme can be its whole value, must stand back before `://` in the
-// same way. The passes then do the rest, as they do for a userinfo the Authorization rule opens:
+// an API-key value and a bare bearer value take no `:`, so before a URL after either label
+// (`api-key: http://user:pw@host`, `Bearer _http://user:pw@host`) the value ends with the URL's
+// scheme, and masking it would take the scheme the userinfo rule anchors on, since `***://` is
+// no scheme — the userinfo would never be masked at all. So both rules take the `://` after
+// their value as well, and redactLabeledValue leaves the value's scheme-shaped tail for the
+// userinfo rule and masks what is glued before it; a new rule whose value class stops at a `:`,
+// so that a URL's scheme can end its value, must leave that tail before `://` in the same way.
+// The passes then do the rest, as they do for a userinfo the Authorization rule opens:
 // where a control rune parts a userinfo from its `@` (`Bearer http://u:pw`, a control rune,
 // an Authorization value that runs across spaces to a `)` before the `@`), the Authorization
 // rule masks what stood between them on the first pass and the userinfo rule reaches its `@`
@@ -506,16 +508,26 @@ var credentialRules = []struct {
 }
 
 // redactLabeledValue is an API-key or bearer rule match redacted. Each rule takes the `://` after
-// its value into its match, since RE2 has no lookahead. A value that is a URL scheme followed by
-// `://` is no credential but the head of a URL (`api-key: http://user:pw@host`, `Bearer
-// http://user:pw@host`), and masking it would leave `***://`, which is no scheme for the userinfo
-// rule to anchor on, so such a match is given back unchanged and the userinfo rule masks the
-// userinfo instead. Any other match keeps its label, and the `://` after its value, which is text
-// of its own, and replaces the value.
+// its value into its match, since RE2 has no lookahead. A value followed by `://` can end with a
+// URL's scheme (`api-key: http://user:pw@host`, `Bearer _http://user:pw@host`), and masking that
+// scheme would leave `***://`, which is no scheme for the userinfo rule to anchor on. So the
+// value's scheme-shaped tail (urlSchemeTail) stays: a match whose whole value is that tail is
+// given back unchanged, and one with other value characters glued before the tail, which may be
+// part of a token, keeps its label, `***` for those characters, the tail and the `://`. The
+// userinfo rule has no left anchor, so it finds the scheme after that `***` and masks the
+// userinfo. The next pass gives either back as it is: `*` is in the value class, and the tail of
+// `***` and a scheme is that scheme. Any other match, one with no `://` or a value with no such
+// tail, keeps its label and any `://` after its value, which is text of its own, and replaces the
+// value.
 func redactLabeledValue(rule *regexp.Regexp, match string) string {
 	parts := rule.FindStringSubmatch(match)
-	if parts[3] != "" && urlScheme.MatchString(parts[2]) {
-		return match
+	if parts[3] != "" {
+		if tail := urlSchemeTail.FindStringIndex(parts[2]); tail != nil {
+			if tail[0] == 0 {
+				return match
+			}
+			return parts[1] + "***" + parts[2][tail[0]:] + parts[3]
+		}
 	}
 	return parts[1] + "***" + parts[3]
 }

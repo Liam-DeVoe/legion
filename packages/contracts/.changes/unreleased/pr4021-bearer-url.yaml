@@ -3,4 +3,5 @@ custom:
   Issue: pr4021
 body: |-
   The shared redaction fixture (`capability-redaction.json`) holds a URL after a `Bearer` and an
-  `api-key` label, plain and with a control character between its user part and its `@`.
+  `api-key` label, plain, with a control character between its user part and its `@`, and with
+  other value characters glued before its scheme.

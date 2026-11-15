@@ -723,9 +723,87 @@
     },
     {
       "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign, its scheme glued to an underscore",
+      "detail": "Bearer _http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "Bearer ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign, its scheme glued to a letter and an underscore",
+      "detail": "Bearer x_http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "Bearer ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign, its scheme glued to a tilde",
+      "detail": "Bearer ~http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "Bearer ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign, its scheme glued to a slash",
+      "detail": "Bearer /http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "Bearer ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign, its scheme glued to an equals sign",
+      "detail": "Bearer =http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "Bearer ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign, its scheme glued to an asterisk",
+      "detail": "Bearer *http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "Bearer ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign, its scheme glued to a plus sign",
+      "detail": "Bearer +http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "Bearer ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign, its scheme glued to a dot",
+      "detail": "Bearer .http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "Bearer ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign, its scheme glued to a hyphen",
+      "detail": "Bearer -http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "Bearer ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after a bearer label, a userinfo a control character parts from its at sign, its scheme glued to a digit",
+      "detail": "Bearer 1http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "Bearer ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
       "name": "rules that run until nothing changes: after an api-key label, a userinfo a control character parts from its at sign",
       "detail": "api-key: http://u:SECRET\u0007Authorization:a b)@h",
       "want": "api-key: http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after an api-key label, a userinfo a control character parts from its at sign, its scheme glued to an underscore",
+      "detail": "api-key: _http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after an api-key label, a userinfo a control character parts from its at sign, its scheme glued to a digit",
+      "detail": "api-key: 1http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: ***http://***@h"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "rules that run until nothing changes: after an api-key label, a userinfo a control character parts from its at sign, its scheme glued to a plus sign",
+      "detail": "api-key: +http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: ***http://***@h"
     },
     {
       "pattern": "cleanup",
