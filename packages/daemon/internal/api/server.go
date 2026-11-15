@@ -796,9 +796,11 @@ func statementBound(bound time.Duration) int64 {
 // contract that named the issues the daemon's record holds in the workflow and queues nowhere,
 // is served it without `admission.held` (withoutHeld); a caller below quietTimeContract, the
 // contract that added each issue's measure of its tree's quiet time, is served it without
-// `treeMovedAt` and `quietHours` (withoutQuietTime); and a caller below assignmentsContract,
-// the contract that added the experiment answers each issue runs under, is served every issue
-// without `assignments` (withoutAssignments).
+// `treeMovedAt` and `quietHours` (withoutQuietTime); a caller below waitingOnIssueContract, the
+// contract that added `waiting_on_issue` to the line's `kind`, is served every member of that
+// kind without its `kind` (withoutWaitingOnIssue), a word and not a key; and a caller below
+// assignmentsContract, the contract that added the experiment answers each issue runs under, is
+// served every issue without `assignments` (withoutAssignments).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they take, the line's own fields being fields of a view such a
@@ -891,17 +893,20 @@ type stateNarrowing struct {
 // stateNarrowings are the narrowings, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
 // order is the history of the route and nothing a strip depends on, so a row added at the end
-// needs no reading of the rows before it. One pair does touch one key, and it is the reason
-// this sentence names a pair rather than claiming none: waitingLineContract's row drops the
-// issues' `waitingLine` whole, and whyAndLineFieldsContract's takes the members that contract
-// added from inside that same field. They still do not depend on their order, because a caller
-// below both is served no `waitingLine` at all whichever runs first — the later one then finds
-// the key gone and does nothing — and a caller below only the higher one keeps the field with
-// its `place` and its `length`, which is what the lower row's own contract describes. A
-// further row that takes something out of a field an earlier row drops whole is sound on
-// those same terms; one that puts a key back, or reads what an earlier row left, is not, and
-// this table is the wrong shape for it. The order is kept beyond that so a reader of this
-// table and a reader of version.go walk the contracts the same way.
+// needs no reading of the rows before it. Three rows do touch one key, and they are the reason
+// this sentence names them rather than claiming none: waitingLineContract's row drops the
+// issues' `waitingLine` whole, whyAndLineFieldsContract's takes the members that contract added
+// from inside that same field, `kind` among them, and waitingOnIssueContract's takes `kind` from
+// the members of one kind. They still do not depend on their order, because each takes something
+// out and none puts anything back or reads what another left: a caller below the lowest is
+// served no `waitingLine` at all whichever runs first, the later ones then finding the key gone
+// and doing nothing; a caller between the lowest and the middle one keeps the field with its
+// `place` and its `length` alone, which no word of `kind` is left in; and a caller below only
+// the highest keeps every field but that one word. A later row that takes something out of a
+// field an earlier row drops whole is sound on those same terms; one that puts a key back, or
+// reads what an earlier row left, is not, and this table is the wrong shape for it. The order is
+// kept beyond that so a reader of this table and a reader of version.go walk the contracts the
+// same way.
 var stateNarrowings = []stateNarrowing{
 	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
 	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},
@@ -922,6 +927,8 @@ var stateNarrowings = []stateNarrowing{
 	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry"},
 	{heldContract, carriesHeld, withoutHeld, "admission.held"},
 	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours"},
+	{waitingOnIssueContract, carriesWaitingOnIssue, withoutWaitingOnIssue, "the waiting line's kind " +
+		"of every member waiting on another issue"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 }
 
@@ -995,11 +1002,11 @@ const backwardMovesContract = 62
 // that did not ask for it rather than what keeps such a caller reading at all. It was the
 // highest of the bands when it was taken, this daemon's own contract then; recordFieldsContract,
 // whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract, heldContract,
-// quietTimeContract and assignmentsContract stand above it now, so a caller in a pod from it to
-// below recordFieldsContract is served the count and neither the decided record's keys, nor
-// each issue's answer with the line's own fields, nor a claim view's `leakCheckCause`, nor the
-// two entry numbers, nor `admission.held`, nor the tree's quiet time, nor the issues'
-// `assignments`.
+// quietTimeContract, waitingOnIssueContract and assignmentsContract stand above it now, so a
+// caller in a pod from it to below recordFieldsContract is served the count and neither the
+// decided record's keys, nor each issue's answer with the line's own fields, nor a claim view's
+// `leakCheckCause`, nor the two entry numbers, nor `admission.held`, nor the tree's quiet time,
+// nor any word of the line's `kind`, nor the issues' `assignments`.
 const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and
@@ -1049,10 +1056,11 @@ const leakCheckCauseContract = 87
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
-// reading at all. Its band stands below heldContract's, quietTimeContract's and
-// assignmentsContract's, the last this daemon's own contract, so a caller in a pod from it to
-// below heldContract is served the two keys and none of `admission.held`, the tree's quiet time
-// and `assignments`, a caller from heldContract to below quietTimeContract the two keys and
+// reading at all. Its band stands below heldContract's, quietTimeContract's,
+// waitingOnIssueContract's and assignmentsContract's, the last this daemon's own contract, and
+// waitingOnIssueContract's strip takes a word and no key, so a caller in a pod from it to below
+// heldContract is served the two keys and none of `admission.held`, the tree's quiet time and
+// `assignments`, a caller from heldContract to below quietTimeContract the two keys and
 // `admission.held` and neither the quiet time nor `assignments`, a caller from
 // quietTimeContract to below assignmentsContract all of those but `assignments`, and a caller at
 // assignmentsContract all of them.
@@ -1067,18 +1075,30 @@ const phaseEntriesContract = 94
 // it rather than what keeps such a caller reading at all. The two are one gate because they are
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. Its band stands below
+// waitingOnIssueContract's, whose strip takes a word of the line's `kind` and no key, and
 // assignmentsContract's, this daemon's own contract, so a caller from it to below
 // assignmentsContract is served the measure and no `assignments`.
 const quietTimeContract = 111
 
+// waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
+// line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
+// another issue (record.LineWaitingOnIssue). A plugin from 85 up to it, INFRA-714's 86,
+// INFRA-3219's 87, INFRA-2800's 94, INFRA-3107's 98, INFRA-3161's 104, INFRA-2560's 111 and
+// INFRA-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
+// refuses a word it does not name and with it the whole state body, so a caller below 132 is
+// served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
+// optional. Its band stands below assignmentsContract's, this daemon's own contract, so a caller
+// from it to below assignmentsContract is served the word and no `assignments`.
+const waitingOnIssueContract = 132
+
 // assignmentsContract is the daemon contract that added each issue's experiment assignments to
-// the state (version.go's 131). A plugin before it is served the state without the field: one
+// the state (version.go's 134). A plugin before it is served the state without the field: one
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the key instead. The three memory
 // fields keep their own gate at memoryContract beside this one, so a caller from memoryContract
 // to below this one is served the one experiment's answer in the three keys it has read since 49
 // and no assignments, whatever else its own band gives it, and a caller below 49 neither.
-const assignmentsContract = 131
+const assignmentsContract = 134
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1532,6 +1552,45 @@ func withoutWhyAndLineFields(state State) State {
 		issue.Why = nil
 		if line := issue.WaitingLine; line != nil && lineFieldsCarried(*line) {
 			issue.WaitingLine = &WaitingLineView{Place: line.Place, Length: line.Length}
+		}
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// waitingOnIssueKind is the word record.LineWaitingOnIssue writes on the wire, named once for
+// the question and the strip of waitingOnIssueContract below.
+var waitingOnIssueKind = record.LineWaitingOnIssue.String()
+
+// carriesWaitingOnIssue is whether any member of the waiting line in state is of the kind
+// waitingOnIssueContract added. It is asked of the state, as carriesWhyAndLineFields is, because
+// only an issue that gave its slot back for a wait carries that word, and a state with none of
+// them is the body an older caller reads already.
+func carriesWaitingOnIssue(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.WaitingLine != nil && issue.WaitingLine.Kind == waitingOnIssueKind {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutWaitingOnIssue is state with every member of the waiting line whose kind is
+// `waiting_on_issue` served without its `kind`, the one word waitingOnIssueContract added; the
+// rest of the member stays, since every other field of it is a field of the contract before, and
+// `kind` is omitempty, so the emptied field writes no key. The issue map is copied and the member
+// is a new view rather than a write through the pointer the snapshot holds, so the state the
+// source answered is left as it was for the next caller, as withoutWhyAndLineFields leaves it. A
+// caller below whyAndLineFieldsContract is below this contract too and has lost `kind` already,
+// so this finds nothing to take there.
+func withoutWaitingOnIssue(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		if line := issue.WaitingLine; line != nil && line.Kind == waitingOnIssueKind {
+			member := *line
+			member.Kind = ""
+			issue.WaitingLine = &member
 		}
 		issues[key] = issue
 	}

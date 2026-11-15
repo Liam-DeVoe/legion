@@ -402,20 +402,25 @@ type Admission struct {
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
 	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
 	// past its review — accepting, retro and merging hold none — or until it is done or
-	// Dispatch takes it out of the workflow (record.KeepsSlot). So one tree with three started
-	// children holds three of these, and an issue at work, one held and one waiting on a person
-	// are each here, while one past its review — a merger at work in merging, one in merging
-	// whose start a closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a
-	// merged root standing in merging while the rest of its tree runs — and one whose phase has
-	// left the workflow, done or a status Dispatch took it out of the workflow with, are in
-	// neither list.
+	// Dispatch takes it out of the workflow, except while it waits on another issue before that
+	// point (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
+	// three of these, and an issue at work, one held and one waiting on a person are each here,
+	// while one past its review — a merger at work in merging, one in merging whose start a
+	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
+	// standing in merging while the rest of its tree runs — and one whose phase has left the
+	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
+	// An issue the daemon has started that waits on another issue before its review is missing
+	// from here too, other than the three roots that keep their slot through such a wait
+	// (blockers.waitsOf): it holds no slot while it waits (record.Issue.ReleasedForWaitAt,
+	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
+	// tells it from an issue a person parked, which stands in none of the three.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
 	// rank. It carries children as well as roots, for the same reason `active` does. An owed
-	// start in it holds no row and waits for one; an issue in it that holds a row already (the
-	// kinds record.LineEntry.Holds names) stands in both lists until the pass that promotes it,
-	// which takes no second row.
+	// start in it holds no row and waits for one, as does an issue released for what it waits
+	// on; an issue in it that holds a row already (the kinds record.LineEntry.Holds names)
+	// stands in both lists until the pass that promotes it, which takes no second row.
 	Waiting []string `json:"waiting"`
 	// Trees is the root of every live tree the daemon judges (record.TreeLive), sorted by key: a
 	// tree whose lifecycle stands open under the workflow and does not linger, one whose root
@@ -424,10 +429,11 @@ type Admission struct {
 	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
 	// a reader such as the controller which trees run. Never null; empty when no tree is live.
 	Trees []string `json:"trees,omitzero"`
-	// Blocked is every issue Legion is waiting to start that waits on a Dispatch issue nobody has
-	// finished (INFRA-225), by issue key: a waiting root admission skips and a child the workflow
-	// holds at `admitted`, together in one list, each with what it still waits on. A blocked issue
-	// the line carries is in Waiting too. Never null; empty when nothing waits on a link.
+	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for
+	// (INFRA-225), by issue key: a waiting root admission skips, a child the workflow holds at
+	// `admitted`, and an issue the daemon has started that gave its slot back for the wait,
+	// together in one list, each with what it still waits on. A blocked issue the line carries
+	// is in Waiting too. Never null; empty when nothing waits on a link.
 	Blocked []BlockedIssue `json:"blocked"`
 	// Held is every issue the daemon's record holds in the workflow that stands in neither
 	// `active` nor `waiting`: the work the daemon runs nothing of and queues nowhere, each row
@@ -584,12 +590,12 @@ type Issue struct {
 	// and only where that row records a draw: `memory` for a tree whose roles run with the
 	// project's memory overlays and instructions, and `none` for one that runs without them —
 	// the control arm `none` as much as the empty arm an experiment at mode off draws, which the
-	// memory draw before contract 131 wrote as the word `none`. MemoryDrawMode is the mode in
+	// memory draw before contract 134 wrote as the word `none`. MemoryDrawMode is the mode in
 	// force at that draw (config.ExperimentMode's words) and MemoryDrawnAt the instant of it.
 	// All three are absent together for an issue no `memory` answer applies to — a tree first
 	// opened before the setting existed, or one the draw never reached — and for one whose only
 	// `memory` answer records no draw, which is a hand-over settling a unit at no arm: that tree
-	// answered none of the three before contract 131 and answers none of them now, so a reader
+	// answered none of the three before contract 134 and answers none of them now, so a reader
 	// counting the trees a group reached counts the same trees it did. The draw is made once, for
 	// the unit, and every issue of a tree shows its tree's: an issue's memory group is its tree's
 	// (contract 49). They are the one experiment's answer spelled out for the readers that knew
@@ -639,9 +645,9 @@ type Issue struct {
 	// declares the experiments (config.Project.ExperimentsDeclared): the `memory` block's
 	// experiment first, unless `experiments.memory` declares it instead, then the experiments
 	// `settings.projects.<KEY>.experiments` names, in its order, then any experiment the file no
-	// longer names, in the order of their names (contract 131). Absent for an issue no experiment
+	// longer names, in the order of their names (contract 134). Absent for an issue no experiment
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
-	// the body the route serves a caller below 131 (stateFor, withoutAssignments).
+	// the body the route serves a caller below 134 (stateFor, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
 }
 

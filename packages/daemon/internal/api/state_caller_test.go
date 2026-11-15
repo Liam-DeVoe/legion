@@ -415,18 +415,23 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true},
 		// The newest contract that strips a key of the claim views, which is what a pod must
 		// record to be served every one of them: the entry numbers, the held list, the tree quiet
-		// time and the assignments are the bands left above it.
+		// time and the assignments are the key-carrying bands left above it.
 		{name: "a pod at leakCheckCauseContract, the newest contract that strips a claim view's key", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true},
 		// The band from phaseEntriesContract to below heldContract: the entry numbers are
-		// served too, and the held list, the tree quiet time and the assignments are the bands
-		// left above it.
+		// served too, and the held list, the tree quiet time and the assignments are the
+		// key-carrying bands left above it.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true},
 		// The band from heldContract to below quietTimeContract: the held list is served too,
-		// and the tree quiet time and the assignments are the bands left above it.
+		// and the tree quiet time and the assignments are the key-carrying bands left above it.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true},
-		// The band from quietTimeContract to below assignmentsContract: the tree quiet time is
-		// served too, and the assignments are the one band left above it.
+		// The band from quietTimeContract to below waitingOnIssueContract: the tree quiet time is
+		// served too, and the assignments are the one key-carrying band left above it.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
+		// The band from waitingOnIssueContract to below assignmentsContract: that contract's
+		// strip takes a word of the line's `kind` and no key, so this row and the one before it
+		// read alike here (waiting_on_issue_test.go reads that word), and the assignments are the
+		// one band left above it.
+		{name: "a pod at waitingOnIssueContract", remote: statePodAddr + ":41000", claims: podClaims(waitingOnIssueContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, assigned: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, assigned: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, assigned: true},
@@ -521,7 +526,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go holds
 			// that half), with the two keys contract 111 added gone, each issue of a live tree's
 			// `treeMovedAt` and `quietHours` (withoutQuietTime), and with each issue's
-			// `assignments` gone, the experiment answers contract 131 added
+			// `assignments` gone, the experiment answers contract 134 added
 			// (withoutAssignments). Every row that reaches here is below all of them, so each of
 			// those keys, the keys stateFor names, goes whatever the row is.
 			var want, got map[string]any

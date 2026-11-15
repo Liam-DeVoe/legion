@@ -2237,7 +2237,7 @@ A caller in a pod whose claims record a contract below 49 is served the state wi
 Store migration 20261104073148_issue_memory_group adds the three columns they are read from to `issues` — `memory_group`, `memory_draw_mode` and `memory_drawn_at` — written once, when the tree's lifecycle row is first created, and backfilled for no row.
 Store migration 20261104153554_issue_memory_carried adds `memory_carried` beside them, the hand-over's own answer about a root handed over out of another tree, which no caller of the state reads.
 It backfills the hand-overs the release before it recorded: a row whose `handed_over_from` names a tree that holds a `tree_lifecycles` row of the project's normalized token, and that carries no draw of its own, is marked carried.
-Those old trees ran with no memory, the setting having not existed then, so the mark is written and no group with it, which is the answer the hand-over wrote from then on: `record.Store.CarryMemory` until daemon API contract 131, and `record.Store.CarryAssignments` since, which settles the child at no variant (contract 131, below).
+Those old trees ran with no memory, the setting having not existed then, so the mark is written and no group with it, which is the answer the hand-over wrote from then on: `record.Store.CarryMemory` until daemon API contract 134, and `record.Store.CarryAssignments` since, which settles the child at no variant (contract 134, below).
 A child handed over out of a tree nothing ever opened keeps the column's default, false, and is drawn at its own first open like any other new tree.
 
 To roll this release back to contract 48, put `legion.yaml` back without `projects.<KEY>.memory`, which the earlier release refuses as a key it does not know, and re-pin it.
@@ -2331,8 +2331,8 @@ The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABL
 After them the three assignment columns stood, none of the six entry columns did, `claims.leak_check_cause` still stood, `schema_version` held 132 rows with none of 20261111225552 and its highest still at 20261112180548, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
 Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the six entry columns stood on the three tables again, the three assignment columns were dropped again, and `schema_version` held 133 rows, 20261111225552 among them and 20261112180548 still the highest.
 
-**Each issue's experiment assignments in the state (daemon API contract 131).**
-A release at contract 131 carries, on every issue of `GET /legion/v1/state`, `assignments`:
+**Each issue's experiment assignments in the state (daemon API contract 134).**
+A release at contract 134 carries, on every issue of `GET /legion/v1/state`, `assignments`:
 one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue, in the order the project's file declares the experiments:
 first the `memory` block's experiment, `settings.projects.<KEY>.memory`, which every project declares — at mode `off` where its file writes no block — unless `settings.projects.<KEY>.experiments` names `memory` itself;
 then the experiments `settings.projects.<KEY>.experiments` names, in its order;
@@ -2340,7 +2340,7 @@ then any experiment the file no longer names, in the order of their names.
 An issue carries its tree's answer for an experiment whose unit is the tree, and its own answer for one whose unit is the issue.
 `variant` and `mode` ride whatever they hold, the empty string included, and `drawnAt` is absent where the row holds no instant:
 that row — no arm, no mode, no instant — is a hand-over settling a child at no arm for an experiment the tree it left held no row for, which is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
-The key is absent from an issue no experiment holds an answer for, so the wire carries no empty list, and absent from every issue of the body a caller in a pod whose claims record a contract below 131 is served.
+The key is absent from an issue no experiment holds an answer for, so the wire carries no empty list, and absent from every issue of the body a caller in a pod whose claims record a contract below 134 is served.
 The three memory fields of contract 49 answer exactly as they did and no reader of them changes:
 they are now read off the answer of the experiment named `memory`, whichever spelling declared it, and only where that row records a draw.
 `settings.projects.<KEY>.experiments` is a key new in this release, and every project carries it: `[]` for a project whose file declares no experiment under that key.
@@ -2348,19 +2348,19 @@ Store migration 20261111045636_experiment_assignments adds the table those answe
 every root holding a draw (`memory_drawn_at` is not null) or a hand-over's mark (`memory_carried`) takes one row, experiment `memory`, unit `tree`, with its mode, its instant and its mark verbatim and its group as the variant, but for one normalisation: a group drawn under mode `off`, which that column holds as the word `none`, becomes the empty variant.
 The four columns stay in the schema exactly as they stand, this release writes none of them, and a later release drops them.
 
-To roll this release back to contract 123, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
+To roll this release back to contract 132, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
 There is no SQL to run and no table to drop:
 the earlier release names neither `experiment_assignments` nor its rows, so it boots with the table in place, reads nothing of it and writes nothing to it, and an upgrade back to this release reads the rows it left.
 A `legion` of this release kept through the rollback reads the rolled-back daemon's `memory` line as the earlier release's own `legion state` prints it: that daemon serves no `assignments`, so the line counts every issue whose `memoryGroup` is set, by that group and its `memoryDrawMode` (`experimentLines` in `packages/daemon/cmd/legion/main.go`).
 What the rollback costs is the arm of every tree drawn after the upgrade, and the record of it.
-The earlier release draws into `issues.memory_*` only where it creates a tree's lifecycle row (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`, `internal/admit/admit.go` at `legion-v20.15.0`), and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
+The earlier release draws into `issues.memory_*` only where it creates a tree's lifecycle row (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`, `internal/admit/admit.go` at `legion-v20.16.0`), and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
 it changes arms all the same.
 That release decides a launch's memory from `issues.memory_group` alone (its `treeMemoryGroup`, `issue.MemoryGroup == "memory"`), and this release writes no `memory_*` column, so a tree drawn into the `memory` arm after the upgrade has an empty `memory_group`:
 its next role starts without the memory overlays and without the memory instructions, and the tree runs the rest of its life in the other arm than the one it was drawn into.
 The record goes with it: that tree's answer is in `experiment_assignments`, which the earlier release names nowhere, so it reads as undrawn there for the rest of its life — its lifecycle row is never created again, so nothing ever writes the columns for it — and the measurement job loses its exposure.
 The trees drawn before the upgrade are untouched: their columns are the back-fill's source and still hold their draw, so they keep their arm and read exactly as they did.
 The earlier release writes `issues.memory_*` in a second place, the hand-over, and that costs the children handed over out of those trees too.
-Its `(*Admission).readmit`, in the same file, calls `record.Store.CarryMemory` (`internal/record/store.go` at `legion-v20.15.0`) for every child that leaves another tree, and `CarryMemory` copies the old tree's root's `issues.memory_*` onto the child and marks it carried wherever that tree holds a lifecycle row.
+Its `(*Admission).readmit`, in the same file, calls `record.Store.CarryMemory` (`internal/record/store.go` at `legion-v20.16.0`) for every child that leaves another tree, and `CarryMemory` copies the old tree's root's `issues.memory_*` onto the child and marks it carried wherever that tree holds a lifecycle row.
 A tree this release drew holds one and holds empty columns, so a child handed over out of it while the rollback holds is copied no group, no mode and no instant, and marked carried:
 it is settled at no group, and the earlier release never draws it, since its `DrawMemory` passes over a carried root.
 Rolling forward does not undo that for a child whose own tree the earlier release opened during the window, and does for one whose own tree no release has opened yet.
@@ -4513,8 +4513,8 @@ Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform r
 Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
 at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
-`admission_cap` counts the issues the daemon has started, not the pods: an issue holds one of the cap's slots from the moment the daemon starts it until its work is past its review — `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out of the workflow, and its pod can stand where it holds no slot — through its acceptance, its retro and its merge, after a merge sends it back to work until it takes a slot again, and, past the close, during each look of its production check.
-So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing past their review, in `accepting`, `retro` or `merging`, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
+`admission_cap` counts the issues the daemon has started, not the pods: an issue holds no admission slot past its review, in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue before then (root `AGENTS.md`, "Admission" in the Issue Lifecycle section), and its pod can stand where it holds no slot — through its acceptance, its retro and its merge; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
+So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing past their review, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
 Fewer run than that bound, for two reasons.
 Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
 And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
@@ -4524,7 +4524,7 @@ once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 250m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods an issue past its review and a production check keep.
+Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue past its review, by an issue that released its slot to wait on another issue and by a production check.
 
 A pool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;
@@ -5486,7 +5486,7 @@ each issue's pod (every role of it alike) and the image probe's.
   To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session.
   `legion claims stop` is not a second way to do that:
   it ends the agent's process and retires its claim, and for a phase worker no pass the daemon makes on its own starts that claim again, not even the one that refills a slot whose worker holds no task.
-  The stop leaves the issue where it stood, in its phase, and if it held an admission slot it keeps that slot, with no worker in it;
+  The stop leaves the issue where it stood, in its phase, and the stop frees no slot: an admission slot the issue held stays held, with no worker in it;
   an issue still waiting for a slot leaves the waiting line, because the next admission pass ends the start it was owed, unless a relaunch of that worker queued before the stop is still waiting to run.
   A retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
   What starts a stopped phase worker again is the workflow's own next start of its role:
@@ -5765,7 +5765,7 @@ each issue's pod (every role of it alike) and the image probe's.
   Nothing else says that the generation ran outside the arm its record names, so an analysis reads those lines and counts such a unit out of its exposure.
 
 - **Where an arm shows.**
-  Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments: the `memory` block's experiment first, unless `experiments.memory` declares it instead, then the `experiments` key's own in the file's order, then any the file no longer names (daemon API contract 131, [Rolling back the upgrade](#rolling-back-the-upgrade)).
+  Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments: the `memory` block's experiment first, unless `experiments.memory` declares it instead, then the `experiments` key's own in the file's order, then any the file no longer names (daemon API contract 134, [Rolling back the upgrade](#rolling-back-the-upgrade)).
   `settings.projects.<KEY>.experiments` carries the `experiments` key's declaration itself, and `settings.projects.<KEY>.memory` the block's.
   `legion state` prints one line per declared experiment, counting the issues that hold each arm; every project declares the `memory` experiment — one that writes neither the `memory` block nor `experiments.memory` declares it at mode `off`, and one that writes `experiments.memory` declares it at that key's own mode — so there is always a line, and `memory: none` is what a deployment reads until a tree is drawn.
   `legion config-reference --json` prints every key of the block with its default, whether it is required and what it does, and reads no `legion.yaml`, no daemon and no cluster.

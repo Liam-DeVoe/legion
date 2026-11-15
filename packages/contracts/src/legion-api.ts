@@ -422,13 +422,17 @@ const legionSlotView = z.object({
  * one declares a new contract for it, as the ninth answer did at contract 68, which is what keeps
  * this reader away from a body that carries it. Nothing older reaches them either: both words are
  * rendered afresh from `record.LinePart` and `record.LineKind` at each read and never stored, so no
- * retired word comes back off a row, and naming the four kinds is what lets a reader branch on
- * them. */
+ * retired word comes back off a row, and naming the five kinds is what lets a reader branch on
+ * them. `waiting_on_issue`, a started issue that gave its admission slot back to wait on another
+ * issue, is the fifth, added at contract 132; a caller below 132 is served such a member without
+ * its `kind`. */
 const legionWaitingLineView = z.object({
   place: z.number().int().positive(),
   length: z.number().int().positive(),
   part: z.enum(["returned", "starting"]).optional(),
-  kind: z.enum(["returning", "answered", "queued_root", "first_phase"]).optional(),
+  kind: z
+    .enum(["returning", "answered", "queued_root", "first_phase", "waiting_on_issue"])
+    .optional(),
   partPlace: z.number().int().positive().optional(),
   partLength: z.number().int().positive().optional(),
   holdsSlot: z.boolean().optional(),
@@ -603,7 +607,7 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
-/** `api.AssignmentView` — one experiment's answer for an issue (contract 131): the name the
+/** `api.AssignmentView` — one experiment's answer for an issue (contract 134): the name the
  * project declares the experiment under, the arm the draw gave the unit, the mode in force at
  * that draw and the instant of it. `variant` and `mode` are strings and not enums: the arms are
  * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
@@ -696,7 +700,7 @@ const legionIssue = z.object({
    * off draws — is `none`. They are absent together while no `memory` answer applies to the
    * issue — a tree first opened before the setting existed — and while its only `memory` answer
    * records no draw, which is a hand-over settling the tree at no arm and which answered none
-   * of the three before contract 131 as well. Every issue of a tree carries its tree's, since
+   * of the three before contract 134 as well. Every issue of a tree carries its tree's, since
    * the draw is made once, for the unit (contract 49). */
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
@@ -725,7 +729,7 @@ const legionIssue = z.object({
    * over, which is why the bound here is `nonnegative` and no ceiling. */
   treeMovedAt: timestamp.optional(),
   quietHours: z.number().nonnegative().optional(),
-  /** Every experiment answer that applies to the issue (contract 131): its tree's, for an
+  /** Every experiment answer that applies to the issue (contract 134): its tree's, for an
    * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
    * order the project's file declares the experiments. That is the `memory` block's experiment
    * first (`settings.projects.<KEY>.memory`, which every project declares, at mode `off` where its
@@ -737,7 +741,7 @@ const legionIssue = z.object({
    * for an experiment the tree it left held no row for, which is how a reader tells a unit
    * settled at no arm from a unit never drawn, which carries no row at all. The key is absent
    * from an issue no experiment holds an answer for, and from every issue of the body the route
-   * serves a caller before 131, so a reader takes it as optional. */
+   * serves a caller before 134, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
 });
 
@@ -770,8 +774,9 @@ const legionContract = z.object({
 });
 
 /** `api.BlockedIssue` (`record.BlockedIssue`, and `api.HeldChild` on a wave release) — one issue
- * Legion is waiting to start and the issues it waits on that are not done, in the order Dispatch
- * lists them. A blocker the daemon has not yet observed as an issue of its own counts as
+ * Legion waits on another issue for, one it has still to start or one it started that gave its
+ * admission slot back for the wait, and the issues it waits on that are not done, in the order
+ * Dispatch lists them. A blocker the daemon has not yet observed as an issue of its own counts as
  * unfinished, so `blockedBy` can name a key the state's `issues` does not. */
 const legionBlockedIssue = z.object({
   issue: issueKey,
@@ -824,18 +829,24 @@ const legionHeldIssue = z.object({
  * person, while an issue past its review — a merger at work in `merging`, one in `merging`
  * whose start a closed design gate holds, a merged root standing in `merging` while the rest
  * of its tree runs — and one whose phase has left the workflow, `done` or a status Dispatch
- * took it out of the workflow with, are in neither list. An issue holding a slot is
- * in `waiting` as well while its work comes back to it, an answered root until the pass that
- * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a running
- * tree may hold no slot at all — the controller reads it where it read `active` as the running
+ * took it out of the workflow with, are in neither list. A started issue that waits on another
+ * issue before its review is missing from `active` too, other than the three roots that keep
+ * their slot through such a wait: it holds no slot while it waits and stands in `waiting` and in
+ * `blocked`, which is how a reader tells it from an issue a person parked, which stands in none
+ * of the three (the rule: "Admission" in the root AGENTS.md). An issue holding a slot is in
+ * `waiting` as well while its work comes back to it, an answered root until the pass that
+ * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a
+ * running tree may hold no slot at all — the controller reads it where it read `active` as the
+ * running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose
  * claims record a contract below 51 (`api.stateFor`, `withoutTrees`). A reader that finds it
  * absent has been served that stripped body and learns nothing about which trees run; it is
  * never a daemon older than this plugin, whom the boot gate and `legion probe-image` refuse.
- * `blocked` is every root and every child Legion is waiting to start behind a Dispatch
- * issue nobody has finished, by issue key; a blocked issue the line carries is in `waiting` too.
+ * `blocked` is every issue Legion waits on a Dispatch issue nobody has finished for, by issue
+ * key: a root or a child Legion is waiting to start, and a started issue that gave its slot back
+ * for the wait; a blocked issue the line carries is in `waiting` too.
  * The controller names them in the day's report and takes nothing for them.
  * `held` is every issue the daemon's record holds in the workflow that stands in neither
  * `active` nor `waiting`, sorted by key: the work the daemon runs nothing of and queues nowhere,
