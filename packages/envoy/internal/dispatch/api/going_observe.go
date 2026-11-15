@@ -103,10 +103,13 @@ func (e goingRefusal) after(landed []goingWriteRequest, sender string) goingRefu
 }
 
 // goingReader makes the reads a translation, a before or an after, or an undo needs, through the
-// caller's own Doer: every read is the caller's own.
+// caller's own Doer: every read is the caller's own. knownSession is the listener's own lookup of
+// one session, running or not (server.goingKnownSession), which a send's recipient is read by;
+// nil for a call to another server's table, whose reads go through its routes alone.
 type goingReader struct {
-	doer GoingDoer
-	base string
+	doer         GoingDoer
+	base         string
+	knownSession func(ctx context.Context, id string) (bool, error)
 }
 
 // get reads path into into, nil reading nothing; any answer but 200 is the route's refusal.
@@ -375,8 +378,10 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 		}
 		return goingObservation{target: target, fields: fields, issue: issue, value: value}, nil
 	case "dispatch_send_to_agent":
-		// The route answers 201 even when the delivery failed, so the line carries the message's
-		// last delivery, its state and its error, for the bar to tell a failed send.
+		// The route answers 201 even when the delivery failed, and when the listener queued it
+		// for a session that is not running, so the line carries the message's last delivery, its
+		// state and its error, for the bar to tell a failed or a queued send from one that
+		// reached the session.
 		var sent struct {
 			ID         string          `json:"id"`
 			Deliveries []goingDelivery `json:"deliveries"`

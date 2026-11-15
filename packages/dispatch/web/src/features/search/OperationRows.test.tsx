@@ -27,6 +27,7 @@ import {
 import { forgetTurns } from "./going-turns";
 import { OPERATION_OPTION_ID, offerOptionId, useGoingOperations } from "./OperationRows";
 import { optionId } from "./search-model";
+import type { SendToAgentOutcome } from "./send-to-agent";
 import { forgetAnsweredRun, type GoingAnswer } from "./useGoingAnswer";
 import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
 
@@ -678,7 +679,10 @@ test("a new issue the run made is the issue its write names, with no read of it 
   }
 });
 
-test("a send through the run whose delivery failed answers why, as the direct send does", async () => {
+// The send through the run says what the direct send says of the same delivery: a failed one is
+// refused with its reason, one the listener stored for a session that has stopped is queued, and
+// only one that reached the session is sent.
+test("a send through the run answers what became of its delivery, as the direct send does", async () => {
   const words = "tell the agent";
   // Each send is its own run's: a run writes each of its invocations once.
   const answerOf = (runId: string): GoingAnswer => ({
@@ -744,7 +748,7 @@ test("a send through the run whose delivery failed answers why, as the direct se
     hook.rerender({ runId });
     const sendToAgent = hook.result.current.sendToAgent;
     expect(sendToAgent).toBeDefined();
-    let said: string | undefined;
+    let said: SendToAgentOutcome | undefined;
     await act(async () => {
       said = await sendToAgent?.(writesOf(client), {
         block: undefined,
@@ -757,11 +761,16 @@ test("a send through the run whose delivery failed answers why, as the direct se
   };
   try {
     delivered({ error: "the session takes no aside", state: "failed" }, "m-1");
-    expect(await send("run-1")).toBe("the session takes no aside");
+    expect(await send("run-1")).toEqual({
+      kind: "refused",
+      refusal: "the session takes no aside",
+    });
     delivered({ error: null, state: "failed" }, "m-2");
-    expect(await send("run-2")).toBe("Dispatch gave no reason.");
-    delivered({ error: null, state: "delivered" }, "m-3");
-    expect(await send("run-3")).toBeUndefined();
+    expect(await send("run-2")).toEqual({ kind: "refused", refusal: "Dispatch gave no reason." });
+    delivered({ error: null, state: "queued" }, "m-3");
+    expect(await send("run-3")).toEqual({ kind: "queued" });
+    delivered({ error: null, state: "sent" }, "m-4");
+    expect(await send("run-4")).toEqual({ kind: "sent" });
   } finally {
     hook.unmount();
     client.clear();

@@ -352,8 +352,9 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		session = resolved
 	}
 	performer := GoingCaller{Catalogue: s.going, Session: session, Doer: doer,
-		landings:    &goingLandings{s: s, run: run.ID, login: caller.ID, write: write.ID},
-		resumeAfter: func(specs []goingSend) []goingWriteRequest { return goingResumeAfter(run, input, specs) }}
+		landings:     &goingLandings{s: s, run: run.ID, login: caller.ID, write: write.ID},
+		resumeAfter:  func(specs []goingSend) []goingWriteRequest { return goingResumeAfter(run, input, specs) },
+		knownSession: s.goingKnownSession}
 	prepared, err := performer.prepare(ctx, input.Offer, arguments)
 	if err != nil {
 		claim.refuse(goingObservation{}, err)

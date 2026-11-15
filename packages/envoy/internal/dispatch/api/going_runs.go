@@ -107,7 +107,8 @@ type goingRunWrite struct {
 	Sends int `json:"sends,omitempty"`
 	// Delivery is the last delivery of the message a send to an agent wrote, absent for every
 	// other write and for a message that has none: the route answers a send 201 even where its
-	// delivery failed, so this is what tells a failed send.
+	// delivery failed, and where the listener queued it for a session that is not running, so
+	// this is what tells a failed send, and a queued one, from one that reached the session.
 	Delivery *goingDelivery `json:"delivery,omitempty"`
 	// Undo is the undo the catalogue row the write went through states (GoingUndo.Kind), which
 	// is the undo it gets: the rows of one action may state different undos. It is absent for a
@@ -164,8 +165,10 @@ func goingSameSend(recorded goingWriteRequest, spec goingSend) bool {
 		recorded.BodySHA256 != "" && recorded.BodySHA256 == spec.digest()
 }
 
-// goingDelivery is one delivery of a message as a send to an agent records it: its state
-// (`delivered`, `failed`, ...) and the error a failed one gave, null for none.
+// goingDelivery is one delivery of a message as a send to an agent records it: its state, as the
+// route answered it (model.DeliveryStatePending, ...Sent, ...Queued or ...Failed - queued for a
+// session the listener knows and that is not running, which gets the message when it runs
+// again), and the error a failed one gave, null for none.
 type goingDelivery struct {
 	State string  `json:"state"`
 	Error *string `json:"error"`

@@ -35,7 +35,7 @@ import {
 import type { FileNewIssue } from "./NewIssueOffer";
 import { fileNewIssue, newIssueFields } from "./new-issue";
 import { barNoteClassName, type OfferRow, useWordsState } from "./offer";
-import { handoffBody, type SendToAgent } from "./send-to-agent";
+import { handoffBody, type SendToAgent, sendOutcome } from "./send-to-agent";
 import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
 
 /** The group the bar's operation rows sit in, above the hits, and the operation row's own id. */
@@ -493,11 +493,10 @@ export function useGoingOperations({
             target: invocation?.target_argument ?? "",
             words: current.words,
           });
-          // Dispatch writes the message under a 201 even where its delivery failed, so the line's
-          // record of that delivery says whether the words reached the session.
-          const delivery = written?.delivery;
-          if (delivery?.state !== "failed") return undefined;
-          return delivery.error ?? "Dispatch gave no reason.";
+          // Dispatch writes the message under a 201 whatever became of its delivery - failed, or
+          // queued for a session that has stopped - so the line's record of that delivery says
+          // what became of the words, read as the direct send reads its own answer.
+          return sendOutcome(written?.delivery);
         };
 
   const stageShown = stage !== undefined && stage.kind !== "idle";

@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -34,6 +35,7 @@ import (
 
 	"github.com/google/uuid"
 
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -213,7 +215,8 @@ func (r goingReader) projectDocument(ctx context.Context, project, reference str
 // know it by. None is 404 GOING_SESSION_NOT_FOUND and more than one 409
 // GOING_SESSION_AMBIGUOUS, each naming what was asked for. A whole id is taken as it is when the
 // roster cannot be read, so a write naming a session exactly is refused by its own route rather
-// than by the roster.
+// than by the roster. It is the session a write acts as (the @session fill), which must be
+// running to act; a send's recipient, which need not be, is read by recipient.
 func (r goingReader) session(ctx context.Context, name string) (string, error) {
 	var sessions []struct {
 		SessionID string `json:"session_id"`
@@ -245,6 +248,56 @@ func (r goingReader) session(ctx context.Context, name string) (string, error) {
 	slices.Sort(titled)
 	return "", goingRefusal{Status: http.StatusConflict, Code: codeGoingSessionAmbiguous,
 		Message: fmt.Sprintf("%d live sessions are titled %q (%s): name one by its id", len(titled), wanted, strings.Join(titled, ", "))}
+}
+
+// recipient is the id of the session a send to an agent goes to, name naming it by its id or its
+// title. A session the roster lists resolves as session resolves it. One the roster does not list
+// - it lists running sessions alone - is read by its id as the send's own route reads its target
+// (resolveDeliveryTarget): through the listener's registry and its known-session records
+// (goingReader.knownSession). So a session the listener knows and that is not running, one that
+// stopped since the bar offered it, reaches the route, which stores the message for it and records
+// the attempt queued, and so does every other session the route knows, which the route then
+// sends to or refuses in its own words. A name the listener knows no session by keeps session's
+// refusal and nothing is written: it may be a title, and the listener finds no session by its
+// title. A listener that could not be asked is that refusal instead (goingKnownSession), never
+// a session that does not exist. A reader with no knownSession, a call to another server's table,
+// reads the roster alone.
+func (r goingReader) recipient(ctx context.Context, name string) (string, error) {
+	resolved, err := r.session(ctx, name)
+	var refused goingRefusal
+	if err == nil || r.knownSession == nil || errors.As(err, &refused) && refused.Code == codeGoingSessionAmbiguous {
+		return resolved, err
+	}
+	wanted := strings.TrimSpace(name)
+	if wanted == "" {
+		return "", err
+	}
+	known, lookup := r.knownSession(ctx, wanted)
+	if lookup != nil {
+		return "", lookup
+	}
+	if !known {
+		return "", err
+	}
+	return wanted, nil
+}
+
+// goingKnownSession reports whether the Envoy listener knows id as a session, running or not, by
+// the lookup the send route makes of its target (resolveDeliveryTarget): its registry entry, or
+// its known-session record (SessionIncludingStopped). A listener that knows no such session, or
+// none configured, answers false; one that could not be asked is refused 503 ENVOY_UNAVAILABLE, as
+// the agents route answers it (writeEnvoyError).
+func (s *server) goingKnownSession(ctx context.Context, id string) (bool, error) {
+	if s.deps.Envoy == nil {
+		return false, nil
+	}
+	if _, err := s.deps.Envoy.SessionIncludingStopped(ctx, id); err != nil {
+		if errors.Is(err, dispatchenvoy.ErrNotFound) {
+			return false, nil
+		}
+		return false, goingRefusal{Status: http.StatusServiceUnavailable, Code: "ENVOY_UNAVAILABLE", Message: err.Error()}
+	}
+	return true, nil
 }
 
 // The refusals of a session the person named.
@@ -725,9 +778,9 @@ func goingTranslateMessageReply(_ context.Context, _ goingReader, call goingCall
 	return goingCall{path: map[string]string{"id": id}, query: url.Values{"follow_up": {"true"}}, body: body}, nil
 }
 
-// goingTranslateSendToAgent sends to the session the call names by id or by title.
+// goingTranslateSendToAgent sends to the session the call names by id or by title (recipient).
 func goingTranslateSendToAgent(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
-	session, err := read.session(ctx, call.path["session_id"])
+	session, err := read.recipient(ctx, call.path["session_id"])
 	if err != nil {
 		return goingCall{}, err
 	}

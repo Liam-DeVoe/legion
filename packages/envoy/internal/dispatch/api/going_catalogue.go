@@ -680,6 +680,11 @@ type GoingCaller struct {
 	// landed (goingResumeAfter), which a translation's own refusal words for what of the write
 	// already stands (goingCallInput.resumes); nil for none.
 	resumeAfter func(specs []goingSend) []goingWriteRequest
+	// knownSession is the listener's own lookup of one session, running or not
+	// (server.goingKnownSession), which a send to an agent resolves its recipient by
+	// (goingReader.recipient); nil for a call to another server's table, which reads the roster
+	// alone.
+	knownSession func(ctx context.Context, id string) (bool, error)
 }
 
 // GoingUnknownActionError is the refusal of an action the catalogue does not hold. It is the
@@ -811,9 +816,10 @@ func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []
 	return nil, sent, nil
 }
 
-// reader is the reads a translation makes, through the caller's own Doer.
+// reader is the reads a translation makes, through the caller's own Doer, and the listener's own
+// lookup of a send's recipient where the caller carries one.
 func (c GoingCaller) reader() goingReader {
-	return goingReader{doer: c.Doer, base: c.BaseURL}
+	return goingReader{doer: c.Doer, base: c.BaseURL, knownSession: c.knownSession}
 }
 
 // chooseGoingRoute is the row a call performs and the value of each placeholder of its path: the

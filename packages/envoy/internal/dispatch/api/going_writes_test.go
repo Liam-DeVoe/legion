@@ -14,8 +14,10 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,7 +49,8 @@ func (i goingCookieOrHeader) Login(r *http.Request) (string, error) {
 }
 
 // goingWritesRig is a server whose people sign in with a session cookie, beside the header the
-// fixtures write with, and whose stand-in listener holds one live session, s1, titled planner.
+// fixtures write with, and whose stand-in listener holds one live session, s1, titled planner,
+// and records every send to it in sent (newGoingWritesRigOn reaches another listener instead).
 // mux is the route table as register mounts it; network is the same behind the cross-site origin
 // check routes.New puts in front of the whole server, which is what a browser reaches.
 type goingWritesRig struct {
@@ -79,6 +82,15 @@ func newGoingWritesRigServing(t *testing.T, serving func(*store.Store) *store.St
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
 	t.Cleanup(listener.Close)
+	rig := newGoingWritesRigOn(t, listener.URL, serving)
+	rig.sent = &sent
+	return rig
+}
+
+// newGoingWritesRigOn is the rig whose server reaches the Envoy listener at envoyURL rather than
+// the stand-in holding planner, and keeps no record of the sends (sent is nil).
+func newGoingWritesRigOn(t *testing.T, envoyURL string, serving func(*store.Store) *store.Store) goingWritesRig {
+	t.Helper()
 	database := storetest.Open(t)
 	sessions := store.NewPgSessionStore(database.Pool)
 	people := goingCookieOrHeader{
@@ -86,10 +98,10 @@ func newGoingWritesRigServing(t *testing.T, serving func(*store.Store) *store.St
 		header: headerIdentity(database),
 	}
 	app, githubAPIBase := goingFixtureArchitectureGitHub(t)
-	mux, _, _, served := newRegisteredTestServer(t, testServerOptions{store: serving(database), identity: people, envoyURL: listener.URL, app: app, githubAPIBase: githubAPIBase})
+	mux, _, _, served := newRegisteredTestServer(t, testServerOptions{store: serving(database), identity: people, envoyURL: envoyURL, app: app, githubAPIBase: githubAPIBase})
 	return goingWritesRig{
 		mux: mux, network: EnforceCookieOrigin(testServerURL, mux), served: served,
-		database: database, sessions: sessions, sent: &sent,
+		database: database, sessions: sessions,
 	}
 }
 
@@ -904,6 +916,142 @@ func TestGoingWriteOfASendToAgentRecordsItsLastDeliverysState(t *testing.T) {
 	if after.target != "msg-1" || after.delivery == nil || after.delivery.State != "failed" ||
 		after.delivery.Error == nil || *after.delivery.Error != "no live session s1" {
 		t.Errorf("the send's delivery after = %+v (target %q), want msg-1 with its last delivery failed and why", after.delivery, after.target)
+	}
+}
+
+// The bar's send to an agent reaches the send's own route for every session that route knows, and
+// answers what the person's direct send to that session answers, on the line the write answers
+// and on the run's record a reload of the bar reads: sent to a running session; queued for one
+// that is not running, whether its registry entry still stands while its process has gone or it
+// stopped cleanly and the roster lists it no more, so the bar says the words wait for it and not
+// that they reached it; and failed, under the route's 201 and in the route's own words, for one
+// that does not take the mode. A name the listener knows no session by is refused before anything
+// is written: it may be a title, and only a running session is found by its title.
+func TestGoingWriteOfASendToAgentAnswersWhatTheDirectSendAnswers(t *testing.T) {
+	modes := []string{"aside", "btw", "steer"}
+	listener := newQueueingListener(t, map[string]fakeSession{
+		"s1":      {title: "planner", capabilities: modes, stopped: true},
+		"s2":      {title: "tester", capabilities: modes},
+		"crashed": {title: "crashed", capabilities: modes, crashed: true},
+		"s3":      {title: "reviewer", capabilities: []string{"btw"}, stopped: true},
+	})
+	rig := newGoingWritesRigOn(t, listener.url, func(database *store.Store) *store.Store { return database })
+	const body = "Pick this up when you can."
+	send := func(t *testing.T, session string) (string, *httptest.ResponseRecorder) {
+		t.Helper()
+		run := rig.proposed(t, "alice", true, "dispatch_send_to_agent", map[string]any{
+			"session": session, "body": body, "delivery": "aside",
+		})
+		return run, rig.write(t, "alice", run, map[string]any{"offer": "dispatch_send_to_agent", "invocation": 0, "approved": goingApprovedPerson})
+	}
+	for _, test := range []struct{ name, session, id, state string }{
+		{"a running session, named by its title", "tester", "s2", model.DeliveryStateSent},
+		{"a session whose process has gone", "crashed", "crashed", model.DeliveryStateQueued},
+		{"a session that stopped cleanly, named by its id", "s1", "s1", model.DeliveryStateQueued},
+		{"a stopped session that does not take the mode", "s3", "s3", model.DeliveryStateFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			direct := decodeBody[model.Message](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/agents/"+test.id+"/messages",
+				map[string]any{"body": body, "delivery": "aside"}))
+			if len(direct.Deliveries) != 1 || direct.Deliveries[0].State != test.state {
+				t.Fatalf("the direct send to %s recorded %+v, want one attempt %s", test.id, direct.Deliveries, test.state)
+			}
+			want := goingDelivery{State: direct.Deliveries[0].State, Error: direct.Deliveries[0].Error}
+			run, response := send(t, test.session)
+			if response.Code != http.StatusOK {
+				t.Fatalf("the bar's send to %s: status=%d body=%s, want the route's own answer", test.session, response.Code, response.Body.String())
+			}
+			line := decodeBody[goingWriteLine](t, response)
+			if !line.Outcome.OK || line.Delivery == nil || !reflect.DeepEqual(*line.Delivery, want) {
+				t.Fatalf("the bar's send to %s answered the line %+v, delivery %+v, want the direct send's %+v", test.session, line, line.Delivery, want)
+			}
+			writes := rig.record(t, "alice", run).Writes
+			if len(writes) != 1 || writes[0].Delivery == nil || !reflect.DeepEqual(*writes[0].Delivery, want) {
+				t.Fatalf("the run's record of the send to %s holds %+v, want one write whose delivery is %+v", test.session, writes, want)
+			}
+		})
+	}
+	t.Run("a name the listener knows no session by", func(t *testing.T) {
+		_, response := send(t, "nobody")
+		if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), codeGoingSessionNotFound) {
+			t.Fatalf("the bar's send to nobody: status=%d body=%s, want 404 %s", response.Code, response.Body.String(), codeGoingSessionNotFound)
+		}
+		if sends := listener.sentTo("nobody"); len(sends) != 0 {
+			t.Fatalf("the listener took %v for nobody, want nothing sent", sends)
+		}
+	})
+}
+
+// A send to a session the roster does not list, while the listener's read of one session does not
+// answer, is refused 503 ENVOY_UNAVAILABLE and sends nothing: the bar cannot tell whether the
+// session is one the listener would queue the message for, and never says it is no session at all.
+func TestGoingWriteOfASendToAgentTheListenerCouldNotBeAskedOfIsUnavailable(t *testing.T) {
+	var sends atomic.Int32
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"envoy: the message bus did not answer: timeout"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			sends.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(listener.Close)
+	rig := newGoingWritesRigOn(t, listener.URL, func(database *store.Store) *store.Store { return database })
+	run := rig.proposed(t, "alice", true, "dispatch_send_to_agent", map[string]any{
+		"session": "s1", "body": "Pick this up when you can.", "delivery": "aside",
+	})
+	response := rig.write(t, "alice", run, map[string]any{"offer": "dispatch_send_to_agent", "invocation": 0, "approved": goingApprovedPerson})
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"ENVOY_UNAVAILABLE"`) {
+		t.Fatalf("the bar's send with the listener unreadable: status=%d body=%s, want 503 ENVOY_UNAVAILABLE", response.Code, response.Body.String())
+	}
+	if sent := sends.Load(); sent != 0 {
+		t.Fatalf("the listener was sent %d messages, want none", sent)
+	}
+}
+
+// The run offers a send to a session the listener knows and that is not running, as the direct
+// send would queue for it, and the person's pick of it is queued: the proposal holds the send to
+// the model's arguments and reads no roster, and the write reaches the route, which stores the
+// message for that session.
+func TestGoingRunOffersASendToAStoppedSessionAndItsPickIsQueued(t *testing.T) {
+	threshold, _ := measuredThresholds(t)
+	standIn := newDecisionStandIn(t)
+	standIn.answer(t, decidedAnswer{
+		action: "dispatch_send_to_agent", confidence: min(threshold+0.2, 1),
+		probabilities: map[string]float64{"dispatch_send_to_agent": 0.9, going.ActionNone: 0.1},
+		about:         going.ContextNamed, display: going.DisplayProse, displayConfidence: 0.9,
+	})
+	arguments := `{"dispatch_send_to_agent":[{"session":"s1","body":"Pick up the rota when you are back.","delivery":"aside"}]}`
+	answerer, _ := newGoingModelAnswerer(t, goingtest.Reply{Final: &goingtest.Final{Answer: "I can send it.", Arguments: arguments}})
+	listener := stoppedAndLive(t)
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{
+		answerer: answerer, answerModel: "going-test-deployment", decider: standIn.decider(t, staticToken), envoyURL: listener.url,
+	})
+	rig := goingRoutesRig{handler: handler, server: directServer(deps), database: database}
+
+	id := askRun(t, rig, "alice", map[string]any{"words": "tell s1 to pick up the rota when it is back"})
+	var proposal goingProposal
+	if !frameData(t, storedGoingFrames(t, rig, id), contracts.GoingEventProposal, &proposal) ||
+		len(proposal.Offers) != 1 || !proposal.Offers[0].Offered || len(proposal.Offers[0].Invocations) != 1 ||
+		proposal.Offers[0].Invocations[0].Arguments["session"] != "s1" {
+		t.Fatalf("the run proposed %+v, want the send to s1 offered", proposal)
+	}
+	written := dispatchRequest(t, handler, http.MethodPost, "/api/v1/going/runs/"+id+"/writes",
+		map[string]any{"offer": "dispatch_send_to_agent", "invocation": 0, "approved": goingApprovedPerson}, "alice")
+	if written.Code != http.StatusOK {
+		t.Fatalf("the person's pick of the send: status=%d body=%s, want it sent to the route", written.Code, written.Body.String())
+	}
+	if line := decodeBody[goingWriteLine](t, written); line.Delivery == nil || line.Delivery.State != model.DeliveryStateQueued {
+		t.Fatalf("the pick answered the line %+v, delivery %+v, want it queued", line, line.Delivery)
+	}
+	if sends := listener.sentTo("s1"); len(sends) != 1 {
+		t.Fatalf("the listener took %d sends for s1, want one", len(sends))
 	}
 }
 
