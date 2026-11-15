@@ -287,8 +287,9 @@ writes, and a request the starting gate turns away while the routes are still op
 `DELETE /v1/interests/{session_id}` and `DELETE /v1/sessions/{session_id}` do every store read and
 write inside the same 3.5 s budget taken from the request's own context, where a silent bus held
 each for the 10 s JetStream wait: nats.go's KV reads, writes and deletes take no context, so each
-bucket call waits through `bus.Bounded` (`internal/bus/kv.go`), which stops waiting when the
-context ends. Store work that did not answer, whatever it names, is
+bucket call waits through `bus.BoundedOn` (`internal/bus/kv.go`), which stops waiting when the
+context ends, and ends the call at the reconnect of the connection it went out on, with
+`bus.ErrRequestLostWithConnection`. Store work that did not answer, whatever it names, is
 `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1`
 (`writeStoreError`, `cmd/listener/api.go`). The store's own answers keep the answers they had: a
 refused key its 413 or 400, a held role its 409, and no key, an undecodable record or a lost

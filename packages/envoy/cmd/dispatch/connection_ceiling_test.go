@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -28,7 +29,7 @@ import (
 // the process to the server it meets (testlimits.PoolBudget). A server that allows
 // testlimits.ServerConnections beyond its superuser reserve runs every process at production's
 // pool sizes; every CI lane's server is sized to it (.github/scripts/pg-connection-ceiling.sh), so
-// CI tests the pools production runs. A smaller server, such as a pod's at Postgres's default of
+// CI tests the pools production runs. A smaller server, such as a Postgres at its default of
 // 100, gives each process its share of the server, which the start hands the process as
 // DISPATCH_TEST_POOL_BUDGET and the process scales its pools to (store.OpenWithin). A server too
 // small for even the smallest pools refuses the start, naming the max_connections it needs. A row
@@ -72,23 +73,51 @@ func requireConnectionCeiling(t *testing.T, databaseURL string) (release func(),
 // server needs.
 func serverPoolBudget(t *testing.T, databaseURL string) int {
 	t.Helper()
-	ctx := context.Background()
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
 		t.Fatalf("read the test database's URL: %v", err)
 	}
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		t.Fatalf("connect to the test database to read its connection ceiling: %v", err)
+	server := net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port)))
+	read, ok := serverCeilings.Load(server)
+	if !ok {
+		read = readServerCeiling(t, config)
+		serverCeilings.Store(server, read)
 	}
-	defer conn.Close(ctx)
-	budget, err := testlimits.PoolBudget(serverInt(t, conn, "max_connections"), serverInt(t, conn, "superuser_reserved_connections"))
+	ceiling := read.(serverCeiling)
+	budget, err := testlimits.PoolBudget(ceiling.maxConnections, ceiling.reserved)
 	if err != nil {
 		t.Fatalf("this test would run Dispatch processes against a Postgres too small for the suite's smallest "+
 			"pools: %v. A server smaller still does not fail here but later, as 53300 refusals inside a room, a "+
 			"lease or a socket.", err)
 	}
 	return budget
+}
+
+// serverCeiling is a Postgres server's max_connections and superuser_reserved_connections.
+type serverCeiling struct {
+	maxConnections, reserved int
+}
+
+// serverCeilings is each server's serverCeiling, by host and port, as serverPoolBudget first read
+// it: Postgres reads both settings only as it starts, so every later start against that server is
+// fitted to it without a connection of its own.
+var serverCeilings sync.Map
+
+// readServerCeiling reads the serverCeiling of the server config connects to, in one query.
+func readServerCeiling(t *testing.T, config *pgx.ConnConfig) serverCeiling {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("connect to the test database to read its connection ceiling: %v", err)
+	}
+	defer conn.Close(ctx)
+	var ceiling serverCeiling
+	if err := conn.QueryRow(ctx, "select current_setting('max_connections')::int, current_setting('superuser_reserved_connections')::int").
+		Scan(&ceiling.maxConnections, &ceiling.reserved); err != nil {
+		t.Fatalf("read the server's max_connections and superuser_reserved_connections: %v", err)
+	}
+	return ceiling
 }
 
 // requireProductionPools refuses a row whose processes would run their pools scaled to budget, the
@@ -110,15 +139,28 @@ func requireProductionPools(t *testing.T, budget int, why string) {
 
 // readsPoolBudget reports whether binary, an envoy-dispatch build, reads DISPATCH_TEST_POOL_BUDGET:
 // whether `envoy-dispatch settings` lists it. A build from before the setting existed ignores it and
-// opens its pools at its own production sizes, whatever budget its start was given.
+// opens its pools at its own production sizes, whatever budget its start was given. The answer of
+// a run of the binary that succeeded is kept for every later start of it (budgetReaders).
 func readsPoolBudget(t *testing.T, binary string) bool {
 	t.Helper()
+	if reads, ok := budgetReaders.Load(binary); ok {
+		return reads.(bool)
+	}
 	command := exec.Command(binary, "settings")
 	command.Dir = t.TempDir()
 	command.Env = []string{"HOME=" + command.Dir}
 	listed, err := command.Output()
-	return err == nil && strings.Contains(string(listed), `"DISPATCH_TEST_POOL_BUDGET"`)
+	if err != nil {
+		return false
+	}
+	reads := strings.Contains(string(listed), `"DISPATCH_TEST_POOL_BUDGET"`)
+	budgetReaders.Store(binary, reads)
+	return reads
 }
+
+// budgetReaders is readsPoolBudget's answer for each binary whose settings it listed, by path: the
+// settings a build lists do not change while its file stands.
+var budgetReaders sync.Map
 
 // serverInt is one integer setting of the server this test's database is on.
 func serverInt(t *testing.T, conn *pgx.Conn, name string) int {

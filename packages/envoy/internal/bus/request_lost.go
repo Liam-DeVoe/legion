@@ -23,8 +23,9 @@ import (
 // once rather than after a backoff: the failure says nothing about the request itself.
 // Client.requestConfirmed returns it (every session consumer call, the stream read behind them
 // and the stored-message reads), and so do Client.RequestCore (the send route's connection probe),
-// a KV call BoundedOn waits for and a JetStream request RequestOnConnection makes (the stream's
-// ensure on each connection event, and Dispatch's delivery intake taking its durable over).
+// a KV call BoundedOn waits for, a call BoundedOnConnection waits for (roles.Buckets' reads) and a
+// JetStream request RequestOnConnection makes (the stream's ensure on each connection event, and
+// Dispatch's delivery intake taking its durable over).
 var ErrRequestLostWithConnection = errors.New("bus: the request was lost with its NATS connection")
 
 // connWatch follows the connection one request, or one pull's requests (SessionPull), went out on,
@@ -49,11 +50,13 @@ type connWatch struct {
 // the two is seen rather than leaving the request waiting on an answer the server dropped. An
 // event before the request is sent, which nats.go then sends on the connection that came back,
 // ends it too: the cost is one request sent again, where the cost of missing the event is a wait
-// to the request's deadline.
+// to the request's deadline. A client with no connection answers a watch whose conn is nil.
 func (c *Client) watchConnection() connWatch {
-	changed := c.ConnectionChanged()
-	conn := c.Connection()
-	return connWatch{client: c, conn: conn, reconnects: conn.Stats().Reconnects, changed: changed}
+	watch := connWatch{client: c, changed: c.ConnectionChanged()}
+	if watch.conn = c.Connection(); watch.conn != nil {
+		watch.reconnects = watch.conn.Stats().Reconnects
+	}
+	return watch
 }
 
 // lost reports whether a connection event of the client (ConnectionChanged) has dropped the
@@ -91,8 +94,8 @@ func (w *connWatch) lostRequest() bool {
 // bound returns ctx ended, with ErrRequestLostWithConnection as its cause (lostWithConnection),
 // as soon as the watched request is lost, and the func that releases the goroutine watching for
 // that, which the caller defers. A wait that takes no channel but a context - a sync
-// subscription's NextMsgWithContext, a call bounded by Bounded - waits on it to end at the
-// connection event rather than at ctx's deadline.
+// subscription's NextMsgWithContext, a JetStream request handed a context (RequestOnConnection) -
+// waits on it to end at the connection event rather than at ctx's deadline.
 func (w connWatch) bound(ctx context.Context) (context.Context, context.CancelFunc) {
 	bounded, cancel := context.WithCancelCause(ctx)
 	go func() {

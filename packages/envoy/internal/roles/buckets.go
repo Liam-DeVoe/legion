@@ -20,14 +20,6 @@ import (
 // that has not answered by then is left to finish on its own.
 const readTimeout = 2 * time.Second
 
-// JetStream is the client Buckets reads through: its JetStream context on the current connection
-// (bus.Client.JS) and that connection itself (bus.Client.Connection), which a bucket handle's
-// watch side is opened on (bus.OpenKeyValue).
-type JetStream interface {
-	JS() nats.JetStreamContext
-	Connection() *nats.Conn
-}
-
 // Buckets is a ClaimStore and a SessionLookup that read the role bucket and the session bucket
 // themselves, one direct read per call, with no watcher and no cache: what Dispatch's outbox
 // resolves a role-routed event's holder through. Each bucket is opened on the client's connection
@@ -43,7 +35,7 @@ type JetStream interface {
 type Buckets struct {
 	Windows
 
-	client JetStream
+	client *bus.Client
 
 	mu       sync.Mutex
 	js       nats.JetStreamContext
@@ -51,13 +43,15 @@ type Buckets struct {
 	sessions *bus.KeyValue
 }
 
-// NewBuckets returns Buckets reading through client and judging a holder's record by windows. It
+// NewBuckets returns Buckets reading through client, its JetStream context on the current
+// connection (bus.Client.JS) and that connection itself (bus.Client.Connection), which a bucket
+// handle's watch side is opened on (bus.OpenKeyValue), and judging a holder's record by windows. It
 // takes the windows rather than defaulting them, so no caller reaches the package's compiled
 // windows by forgetting to say which it means: a process judging a holder on windows its
 // deployment did not set calls a holder the listener still calls unresponsive gone, and marks
 // its event published with nothing sent. A caller that does mean the compiled windows passes a
 // zero Windows, whose own zero fields are session.LiveWindow and session.GoneHorizon.
-func NewBuckets(client JetStream, windows Windows) *Buckets {
+func NewBuckets(client *bus.Client, windows Windows) *Buckets {
 	return &Buckets{Windows: windows, client: client}
 }
 
@@ -93,7 +87,7 @@ func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
 func within[T any](ctx context.Context, b *Buckets, what string, read func() (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
-	value, answered, err := bus.BoundedOnConnection(ctx, b.client.Connection(), read)
+	value, answered, err := bus.BoundedOnConnection(ctx, b.client, read)
 	if !answered {
 		return value, fmt.Errorf("%s: %w", what, err)
 	}

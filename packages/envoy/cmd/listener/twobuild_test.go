@@ -241,7 +241,9 @@ func TestTwoBuildsAnOlderPodRelaysATopicOnlyTheNewerBuildsSubjectCaptures(t *tes
 	newerB := mpStartPod(t, newer, uri, "pod-b")
 	mpWaitStandby(t, newerB, 30*time.Second)
 	added := time.Now()
-	tbRequireStreamSubject(t, uri, tbNewerSubject)
+	reader := tbStreamReader(t, uri)
+	tbRequireStreamSubject(t, reader, tbNewerSubject)
+	reader.Close()
 
 	tbAwaitCaptured(t, plainA, serving, probeID, probe, tbSubjectsRead)
 	t.Logf("%s (plain) judged %s captured %s after %s (envoy_twobuild) was standby, %s after %s started",
@@ -251,18 +253,12 @@ func TestTwoBuildsAnOlderPodRelaysATopicOnlyTheNewerBuildsSubjectCaptures(t *tes
 	}
 
 	tbRequireRoles(t, plainA, newerB, "at the publish")
-	published := time.Now()
-	body := fmt.Sprintf(`{"topic":%q,"message":%q}`, topic, "a message the newer build publishes mp-event="+event)
-	if answer := newerB.call(http.MethodPost, "/v1/messages/publish", body); answer.status != http.StatusOK {
-		t.Fatalf("publish %s through %s: status %d %s %v", body, newerB.instance, answer.status, answer.body, answer.err)
-	}
-	m := mpMessage{event: event, session: sessionID, published: published}
-	mpJournalOf(t).publish(m, topic)
+	m := tbPublishThrough(t, newerB, sessionID, topic, event)
 	serving.awaitAll(t, []mpMessage{m}, mpGracefulBound)
 	tbRequireRoles(t, plainA, newerB, "at the receipt")
 	if at, took := serving.first(sessionID, event); took {
 		t.Logf("%s reached %s %s after %s (envoy_twobuild, standby) published it on %s, relayed by %s (plain, active)",
-			event, sessionID, at.Sub(published).Round(time.Millisecond), newerB.instance, topic, plainA.instance)
+			event, sessionID, at.Sub(m.published).Round(time.Millisecond), newerB.instance, topic, plainA.instance)
 	}
 	time.Sleep(mpQuiet)
 	serving.requireKnown(t, []mpMessage{m})
@@ -301,12 +297,14 @@ func tbStartRoll(t *testing.T) *tbRoll {
 	roll.aStarted = time.Now()
 	roll.plainA = mpStartPodBehindLanes(t, plain, roll.uri, "pod-a")
 	mpWaitActive(t, roll.plainA, 30*time.Second)
-	if subjects := tbStreamSubjects(t, roll.uri); slices.Contains(subjects, tbNewerSubject) {
+	reader := tbStreamReader(t, roll.uri)
+	defer reader.Close()
+	if subjects := tbStreamSubjects(t, reader); slices.Contains(subjects, tbNewerSubject) {
 		t.Fatalf("the stream %s carries %v before %s (envoy_twobuild) started; the row needs %s's own read without %s", bus.Stream, subjects, "pod-b", roll.plainA.instance, tbNewerSubject)
 	}
 	roll.newerB = mpStartPod(t, newer, roll.uri, "pod-b")
 	mpWaitStandby(t, roll.newerB, 30*time.Second)
-	tbRequireStreamSubject(t, roll.uri, tbNewerSubject)
+	tbRequireStreamSubject(t, reader, tbNewerSubject)
 	t.Logf("%s (envoy_twobuild) is standby and the stream carries %s, %s after %s (plain) started",
 		roll.newerB.instance, tbNewerSubject, time.Since(roll.aStarted).Round(time.Millisecond), roll.plainA.instance)
 	return roll
@@ -327,14 +325,21 @@ func (r *tbRoll) requireInsideRefresh(t *testing.T, when string) {
 }
 
 // publishThroughNewer publishes a message on topic for sessionID through B's own POST
-// /v1/messages/publish, as TestTwoBuildsAnOlderPodRelaysATopicOnlyTheNewerBuildsSubjectCaptures
-// does: B's client holds tbNewerSubject, so it stores the message.
+// /v1/messages/publish (tbPublishThrough): B's client holds tbNewerSubject, so it stores the
+// message.
 func (r *tbRoll) publishThroughNewer(t *testing.T, sessionID, topic, event string) mpMessage {
+	t.Helper()
+	return tbPublishThrough(t, r.newerB, sessionID, topic, event)
+}
+
+// tbPublishThrough publishes a message on topic for sessionID through the pod's own POST
+// /v1/messages/publish, as the newer build publishes it, requires a 200, and journals it.
+func tbPublishThrough(t *testing.T, pod *mpPod, sessionID, topic, event string) mpMessage {
 	t.Helper()
 	published := time.Now()
 	body := fmt.Sprintf(`{"topic":%q,"message":%q}`, topic, "a message the newer build publishes mp-event="+event)
-	if answer := r.newerB.call(http.MethodPost, "/v1/messages/publish", body); answer.status != http.StatusOK {
-		t.Fatalf("publish %s through %s: status %d %s %v", body, r.newerB.instance, answer.status, answer.body, answer.err)
+	if answer := pod.call(http.MethodPost, "/v1/messages/publish", body); answer.status != http.StatusOK {
+		t.Fatalf("publish %s through %s: status %d %s %v", body, pod.instance, answer.status, answer.body, answer.err)
 	}
 	m := mpMessage{event: event, session: sessionID, published: published}
 	mpJournalOf(t).publish(m, topic)
@@ -518,7 +523,8 @@ func TestTwoBuildsTheOlderPodStoresAPublishOnATopicTheNewerBuildAddedInsideTheRe
 
 // tbRequireStored fails the test unless the stream's last message on topic, as the row's own
 // client reads the stream, is the envelope a publish route answered with answer, and returns its
-// stream sequence. A message sent over core NATS is stored by no stream, so the read finds none.
+// stream sequence. The read cannot tell which transport the publish took: the stream stores a core
+// NATS publish on a subject it captures as it stores a JetStream one.
 func tbRequireStored(t *testing.T, publisher *mpPublisher, topic, answer string) uint64 {
 	t.Helper()
 	var answered contracts.Envelope
@@ -564,27 +570,33 @@ func tbAwaitRelayPull(t *testing.T, publisher *mpPublisher, sessionID string, wi
 	return filter
 }
 
-// tbStreamSubjects is the subjects the deployed stream carries, as a client of the test's own
-// reads the stream.
-func tbStreamSubjects(t *testing.T, natsURL string) []string {
+// tbStreamReader is a client of the test's own on natsURL, which reads the deployed stream
+// (tbStreamSubjects); the caller closes it.
+func tbStreamReader(t *testing.T, natsURL string) *bus.Client {
 	t.Helper()
 	client, err := bus.Connect([]string{natsURL})
 	if err != nil {
 		t.Fatalf("connect the stream's reader: %v", err)
 	}
-	defer client.Close()
-	info, err := client.JS().StreamInfo(bus.Stream)
+	return client
+}
+
+// tbStreamSubjects is the subjects the deployed stream carries, as reader, a client of the test's
+// own (tbStreamReader), reads the stream.
+func tbStreamSubjects(t *testing.T, reader *bus.Client) []string {
+	t.Helper()
+	info, err := reader.JS().StreamInfo(bus.Stream)
 	if err != nil {
 		t.Fatalf("read the stream %s: %v", bus.Stream, err)
 	}
 	return info.Config.Subjects
 }
 
-// tbRequireStreamSubject fails the test unless the deployed stream carries subject, as a client of
-// the test's own reads the stream.
-func tbRequireStreamSubject(t *testing.T, natsURL, subject string) {
+// tbRequireStreamSubject fails the test unless the deployed stream carries subject, as reader, a
+// client of the test's own (tbStreamReader), reads the stream.
+func tbRequireStreamSubject(t *testing.T, reader *bus.Client, subject string) {
 	t.Helper()
-	if subjects := tbStreamSubjects(t, natsURL); !slices.Contains(subjects, subject) {
+	if subjects := tbStreamSubjects(t, reader); !slices.Contains(subjects, subject) {
 		t.Fatalf("the stream %s carries %v, without %s", bus.Stream, subjects, subject)
 	}
 }
@@ -618,11 +630,7 @@ func tbAwaitCaptured(t *testing.T, pod *mpPod, serving *mpNATSSession, sessionID
 // a 200, and returns the topics the answer stored and its warnings.
 func tbRegisterOn(t *testing.T, pod *mpPod, serving *mpNATSSession, sessionID, topic string) (topics, warnings []string) {
 	t.Helper()
-	body := mpNATSRegistration(t, serving, sessionID, topic)
-	answer := pod.call(http.MethodPost, "/v1/interests/subscribe", body)
-	if answer.status != http.StatusOK {
-		t.Fatalf("subscribe %s through %s: status %d %s %v", body, pod.instance, answer.status, answer.body, answer.err)
-	}
+	answer := pod.subscribe(t, mpNATSRegistration(t, serving, sessionID, topic))
 	var registered struct {
 		Topics   []string `json:"topics"`
 		Warnings []string `json:"warnings"`

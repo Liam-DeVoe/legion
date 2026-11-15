@@ -77,6 +77,7 @@ func TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget(t *testing
 
 	var failures sync.Map
 	var load sync.WaitGroup
+	t.Cleanup(load.Wait)
 	for i, process := range processes {
 		project := fmt.Sprintf("BUDGET%d", i)
 		process.createProject(t, project, "Budget")
@@ -127,6 +128,9 @@ func TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget(t *testing
 			t.Errorf("process %d opened %d connections to its database at once, over its budget of %d", i, byDatabase[i], budget)
 		}
 	}
+	// Implied by the per-process checks above: PoolBudget gives each process at most ceiling /
+	// testlimits.MaxProcessesAtOnce, so the processes together pass ceiling only when one passes
+	// its budget, which those checks report. It stays to fail if the two come to disagree.
 	if together > ceiling {
 		t.Errorf("the processes opened %d connections at once, over the %d a %d-connection server leaves them", together, ceiling, postgresDefaultMaxConnections)
 	}
@@ -140,7 +144,8 @@ func TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget(t *testing
 // sampleConnections reads pg_stat_activity through conn every budgetSampleEvery, counting the
 // connections on each of databases, until the returned stop is called; stop answers the highest
 // count each database reached, the highest their sum reached in one read, and how many reads were
-// made. conn's own connection is left out of the count.
+// made. conn's own connection is left out of the count. The test's cleanup stops the reads too,
+// before conn closes, for a test that ends before it calls stop.
 func sampleConnections(t *testing.T, conn *pgx.Conn, databases []string) (stop func() (byDatabase []int, together, samples int)) {
 	t.Helper()
 	done, finished := make(chan struct{}), make(chan struct{})
@@ -158,18 +163,12 @@ func sampleConnections(t *testing.T, conn *pgx.Conn, databases []string) (stop f
 				where datname = any($1) and pid <> pg_backend_pid()
 				group by datname`, databases)
 			if err == nil {
-				for rows.Next() {
-					var name string
-					var count int
-					if err = rows.Scan(&name, &count); err != nil {
-						break
-					}
+				var name string
+				var count int
+				_, err = pgx.ForEachRow(rows, []any{&name, &count}, func() error {
 					counts[name] = count
-				}
-				rows.Close()
-				if err == nil {
-					err = rows.Err()
-				}
+					return nil
+				})
 			}
 			if err != nil {
 				failed = err
@@ -189,9 +188,13 @@ func sampleConnections(t *testing.T, conn *pgx.Conn, databases []string) (stop f
 			}
 		}
 	}()
-	return func() ([]int, int, int) {
+	halt := sync.OnceFunc(func() {
 		close(done)
 		<-finished
+	})
+	t.Cleanup(halt)
+	return func() ([]int, int, int) {
+		halt()
 		if failed != nil {
 			t.Fatalf("read pg_stat_activity: %v", failed)
 		}

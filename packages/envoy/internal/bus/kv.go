@@ -722,46 +722,83 @@ func BoundedOn[T any](ctx context.Context, kv KeyValue, call func() (T, error)) 
 	if kv.streams == nil {
 		return Bounded(ctx, call)
 	}
-	return BoundedOnConnection(ctx, kv.streams.Conn(), call)
-}
-
-// BoundedOnConnection is BoundedOn for a call that reaches its bucket through a handle it opens
-// itself, on conn, the connection the caller reads before the call (roles.Buckets opens its
-// handle inside the read it bounds), or for any other JetStream call on conn (RequestOnConnection).
-// A connection no client owns is waited for as Bounded waits.
-func BoundedOnConnection[T any](ctx context.Context, conn *nats.Conn, call func() (T, error)) (T, bool, error) {
-	watch, ok := watchOwnedConnection(conn)
+	watch, ok := watchOwnedConnection(kv.streams.Conn())
 	if !ok {
 		return Bounded(ctx, call)
 	}
-	callCtx, stopWatching := watch.bound(ctx)
-	defer stopWatching()
-	value, answered, err := Bounded(callCtx, call)
-	if answered {
-		return value, true, err
-	}
-	if ended := ctx.Err(); ended != nil {
-		return value, false, ended
-	}
-	if lostWithConnection(callCtx) {
-		return value, false, fmt.Errorf("bus: a JetStream call: %w", ErrRequestLostWithConnection)
-	}
-	return value, false, err
+	return boundedWatching(ctx, watch, call)
 }
 
-// RequestOnConnection is BoundedOnConnection for request, a JetStream request on conn that waits
-// on the context it is handed (a nats.Context option of the legacy JetStream context): it answers
-// request's own answer, ctx's error when ctx ends first, and an error wrapping
-// ErrRequestLostWithConnection as soon as conn is lost (replaced, closed, or reconnected in place)
-// before the answer comes, so a caller that retries sends it again on the connection that came
-// back at once rather than at the request's deadline. The context request is handed ends when this
-// returns, so a request given up on stops waiting then rather than running on to its own deadline.
-// It takes no deadline of its own: a deadline ctx carries is request's bound, and a request on a
-// context without one waits the JetStream context's MaxWait, as it does without this.
-func RequestOnConnection[T any](ctx context.Context, conn *nats.Conn, request func(context.Context) (T, error)) (T, error) {
-	requestCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	value, _, err := BoundedOnConnection(requestCtx, conn, func() (T, error) { return request(requestCtx) })
+// BoundedOnConnection is BoundedOn for a call on client's connection, the one client serves with
+// as the call starts, from a caller that holds the client rather than a handle opened on that
+// connection: a call that reaches its bucket through a handle it opens itself (roles.Buckets opens
+// its handle inside the read it bounds), or any other JetStream call. A client with no connection
+// is waited for as Bounded waits.
+func BoundedOnConnection[T any](ctx context.Context, client *Client, call func() (T, error)) (T, bool, error) {
+	watch := client.watchConnection()
+	if watch.conn == nil {
+		return Bounded(ctx, call)
+	}
+	return boundedWatching(ctx, watch, call)
+}
+
+// boundedWatching is the wait of BoundedOn and BoundedOnConnection once they watch the connection
+// call goes out on: call runs in a goroutine of its own, and the wait ends at the first of its
+// answer, ctx's end and the loss of that connection (connWatch.lost). ctx wins over a loss seen at
+// the same event, and the abandoned call runs on to its own end, as Bounded's does.
+func boundedWatching[T any](ctx context.Context, watch connWatch, call func() (T, error)) (T, bool, error) {
+	var zero T
+	if err := ctx.Err(); err != nil {
+		return zero, false, err
+	}
+	type answer struct {
+		value T
+		err   error
+	}
+	answers := make(chan answer, 1)
+	go func() {
+		value, err := call()
+		answers <- answer{value: value, err: err}
+	}()
+	for {
+		select {
+		case got := <-answers:
+			return got.value, true, got.err
+		case <-ctx.Done():
+			return zero, false, ctx.Err()
+		case <-watch.changed:
+			if err := ctx.Err(); err != nil {
+				return zero, false, err
+			}
+			if watch.lost() {
+				return zero, false, fmt.Errorf("bus: a JetStream call: %w", ErrRequestLostWithConnection)
+			}
+		}
+	}
+}
+
+// RequestOnConnection makes request, a JetStream request on client's connection that waits on the
+// context it is handed (a nats.Context option of the legacy JetStream context), in the caller's
+// goroutine: it answers request's own answer, ctx's error when ctx ends first, and an error
+// wrapping ErrRequestLostWithConnection as soon as the connection is lost (replaced, closed, or
+// reconnected in place) before the answer comes, so a caller that retries sends it again on the
+// connection that came back at once rather than at the request's deadline. The context request is
+// handed ends at that loss, and request returns when its context ends, so nothing it sent waits on
+// past this call. It takes no deadline of its own: a deadline ctx carries is request's bound, and a
+// request on a context without one waits the JetStream context's MaxWait, as it does without this.
+// A client with no connection hands request ctx itself.
+func RequestOnConnection[T any](ctx context.Context, client *Client, request func(context.Context) (T, error)) (T, error) {
+	watch := client.watchConnection()
+	if watch.conn == nil {
+		return request(ctx)
+	}
+	requestCtx, stopWatching := watch.bound(ctx)
+	defer stopWatching()
+	value, err := request(requestCtx)
+	if err != nil && ctx.Err() == nil && lostWithConnection(requestCtx) {
+		var zero T
+		return zero, fmt.Errorf("bus: a JetStream call: %w", ErrRequestLostWithConnection)
+	}
 	return value, err
 }
 
@@ -770,7 +807,7 @@ func RequestOnConnection[T any](ctx context.Context, conn *nats.Conn, request fu
 // time the watch reads it.
 func watchOwnedConnection(conn *nats.Conn) (connWatch, bool) {
 	owner := clientOwning(conn)
-	if conn == nil || owner == nil {
+	if owner == nil {
 		return connWatch{}, false
 	}
 	watch := owner.watchConnection()

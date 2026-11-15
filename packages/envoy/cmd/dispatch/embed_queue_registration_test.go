@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -209,17 +211,12 @@ func seedWindowVectors(t *testing.T, database *store.Store, identity string, cou
 	if err != nil {
 		t.Fatalf("seed %d vectors of %s: %v", count, identity, err)
 	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			t.Fatalf("seed %d vectors of %s: %v", count, identity, err)
-		}
-		ids = append(ids, id)
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("seed %d vectors of %s: %v", count, identity, err)
 	}
-	if err := rows.Err(); err != nil || len(ids) != count {
-		t.Fatalf("seed %d vectors of %s: wrote %d: %v", count, identity, len(ids), err)
+	if len(ids) != count {
+		t.Fatalf("seed %d vectors of %s: wrote %d", count, identity, len(ids))
 	}
 	return ids
 }
@@ -236,16 +233,8 @@ func droppedVectors(t *testing.T, database *store.Store, ids []string, identity 
 	if err != nil {
 		t.Fatalf("read the seeded vectors of %s: %v", identity, err)
 	}
-	defer rows.Close()
-	var dropped []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			t.Fatalf("read the seeded vectors of %s: %v", identity, err)
-		}
-		dropped = append(dropped, id)
-	}
-	if err := rows.Err(); err != nil {
+	dropped, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		t.Fatalf("read the seeded vectors of %s: %v", identity, err)
 	}
 	return dropped
@@ -310,12 +299,8 @@ func (f *azureEmbeddingsFake) settings(deployment string) map[string]string {
 const fakeAzureEmbedKey = "azure-fake-key"
 
 // identity is the identity a process given settings(deployment) registers and embeds as, read
-// from the client that setting builds.
+// from the embedder that setting builds (azureEmbedderFor), as the process builds it.
 func (f *azureEmbeddingsFake) identity(t *testing.T, deployment string) string {
 	t.Helper()
-	client, err := embed.NewAzure(embed.AzureConfig{Endpoint: f.endpoint, Deployment: deployment, TokensPerMinute: 1, APIKey: fakeAzureEmbedKey})
-	if err != nil {
-		t.Fatalf("build the fake's %s client: %v", deployment, err)
-	}
-	return client.Identity()
+	return azureEmbedderFor(t, f.settings(deployment)).Identity()
 }

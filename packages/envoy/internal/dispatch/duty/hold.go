@@ -74,13 +74,15 @@ const (
 	lapseHold = `with lapsed as (
 			update duty_holds set expires_at = now() where name = $1 and holder = $2 returning name)
 		select pg_notify('` + HoldReleasedChannel + `', name) from lapsed`
-	// holdExpiry is how long name's hold has left, in microseconds on the database's clock.
-	holdExpiry = `select (extract(epoch from expires_at - now()) * 1000000)::bigint
+	// holdLeft is how long name's hold has left, in microseconds on the database's clock, read
+	// from its row: what holdExpiry and holdToken select.
+	holdLeft = `(extract(epoch from expires_at - now()) * 1000000)::bigint
 		from duty_holds where name = $1`
+	// holdExpiry is how long name's hold has left, in microseconds on the database's clock.
+	holdExpiry = `select ` + holdLeft
 	// holdToken is the token name's row records, and how long it has left, in microseconds on the
 	// database's clock.
-	holdToken = `select token, (extract(epoch from expires_at - now()) * 1000000)::bigint
-		from duty_holds where name = $1`
+	holdToken = `select token, ` + holdLeft
 )
 
 // Hold is one process's hold on a name: a row of duty_holds naming this holder, which the hold
@@ -209,8 +211,8 @@ func (h *Hold) Release(ctx context.Context) error {
 // Lapse is Release for a holder whose token the next holder must read: it stops the renewal and
 // closes Lost as Release does, but keeps the row while it still names this holder, with its expiry
 // set to the database's now(), and notifies HoldReleasedChannel in the same transaction. The name
-// is free at once, and HoldToken still answers the token, not held. A row another holder has taken
-// is left alone and wakes nobody.
+// is free at once, and HoldToken still answers the token, with no time left. A row another holder
+// has taken is left alone and wakes nobody.
 func (h *Hold) Lapse(ctx context.Context) error {
 	return h.end(ctx, "lapse", lapseHold)
 }

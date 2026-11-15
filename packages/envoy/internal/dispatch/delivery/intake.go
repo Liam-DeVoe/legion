@@ -93,7 +93,12 @@ func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, gi
 // them. Routed rather than ignored because it is the only live-update path for the fork case,
 // which does reach it.
 func (in *Intake) Run(ctx context.Context) {
-	in.run(ctx, in.settings.Changed, func() bool { return in.settings.Load() != nil })
+	in.run(ctx, in.settings.Changed, in.ready)
+}
+
+// ready reports whether the intake has settings to route by: Run attempts the durable only then.
+func (in *Intake) ready() bool {
+	return in.settings.Load() != nil
 }
 
 // route dispatches one envelope payload by its kind field: a pull request to

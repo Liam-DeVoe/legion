@@ -966,16 +966,7 @@ func (p *dispatchProcess) outboxLines(t *testing.T) []outboxLine {
 		if !whole || !strings.Contains(text, `msg="`+outboxLogPrefix) {
 			continue
 		}
-		attributes := map[string]string{}
-		for _, match := range logAttribute.FindAllStringSubmatch(text, -1) {
-			value := match[2]
-			if unquoted, err := strconv.Unquote(value); err == nil {
-				value = unquoted
-			}
-			if _, ok := attributes[match[1]]; !ok {
-				attributes[match[1]] = value
-			}
-		}
+		attributes := logAttributes(text)
 		at, err := time.Parse(time.RFC3339Nano, attributes["time"])
 		if err != nil {
 			t.Fatalf("read the time of the line %q: %v", text, err)
@@ -2694,7 +2685,7 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 	peer.waitHealthy(t)
 
 	waiting := startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{NATSURL: pair.nats, SigningKey: "a-key-the-peer-does-not-share", Env: app, Binary: binary})
-	waiting.waitForLog(t, 30*time.Second, "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse")
+	waiting.waitForLog(t, 30*time.Second, admissionRefusedLine)
 	for _, durable := range deliveryDurables {
 		waiting.waitForLog(t, 10*time.Second, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
 	}
@@ -3951,18 +3942,11 @@ func requireLeasedOncePerPeriod(t *testing.T, pair *dispatchPair, lease string) 
 // pass served (duty.Exclusive).
 func leasePeriodOf(t *testing.T, line string) string {
 	t.Helper()
-	for _, match := range logAttribute.FindAllStringSubmatch(line, -1) {
-		if match[1] != "period" {
-			continue
-		}
-		value := match[2]
-		if unquoted, err := strconv.Unquote(value); err == nil {
-			value = unquoted
-		}
-		return value
+	period, ok := logAttributes(line)["period"]
+	if !ok {
+		t.Fatalf("a leased pass line carries no period=: %s", line)
 	}
-	t.Fatalf("a leased pass line carries no period=: %s", line)
-	return ""
+	return period
 }
 
 // lockTables holds every table named in mode (`exclusive`, or `access exclusive`) in a transaction

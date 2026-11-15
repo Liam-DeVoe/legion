@@ -151,10 +151,8 @@ func TestABurstOfUncapturedJudgementsReadsTheDeployedSubjectsOnce(t *testing.T) 
 // captures - a newer build's start adding its own during a roll - reads them again and answers
 // captured, and keeps what it read, so DeployedStreamCaptures answers captured from then on too.
 func TestAnUncapturedJudgementReadsASubjectAddedSinceTheLastRead(t *testing.T) {
-	const topic = "notifications.x.y"
-	if StreamCaptures(topic) {
-		t.Fatalf("this build compiles a subject capturing %s; the row needs a topic only a newer build's subject captures", topic)
-	}
+	const topic = newerTopic
+	requireOnlyNewerCaptures(t)
 	client, js, _ := freshSubjectsClient(t)
 	addNewerSubject(t, js)
 	if client.DeployedStreamCaptures(topic) {
@@ -168,13 +166,30 @@ func TestAnUncapturedJudgementReadsASubjectAddedSinceTheLastRead(t *testing.T) {
 	}
 }
 
-// addNewerSubject plays a newer build's start during a roll: it adds notifications.x.> to the
-// stream freshSubjectsClient created, through js.
+const (
+	// newerSubject is the subject a newer build's start adds to the stream during a roll
+	// (addNewerSubject).
+	newerSubject = "notifications.x.>"
+	// newerTopic is a topic only newerSubject captures (requireOnlyNewerCaptures).
+	newerTopic = "notifications.x.y"
+)
+
+// requireOnlyNewerCaptures fails the row when a subject this build compiles captures newerTopic:
+// the row needs a topic only a newer build's subject captures.
+func requireOnlyNewerCaptures(t *testing.T) {
+	t.Helper()
+	if StreamCaptures(newerTopic) {
+		t.Fatalf("this build compiles a subject capturing %s; the row needs a topic only a newer build's subject captures", newerTopic)
+	}
+}
+
+// addNewerSubject plays a newer build's start during a roll: it adds newerSubject to the stream
+// freshSubjectsClient created, through js.
 func addNewerSubject(t *testing.T, js nats.JetStreamContext) {
 	t.Helper()
 	newer := *streamCfg
 	newer.Replicas = 1
-	newer.Subjects = append(slices.Clone(streamCarriedSubjects), "notifications.x.>")
+	newer.Subjects = append(slices.Clone(streamCarriedSubjects), newerSubject)
 	newer.Metadata = map[string]string{generationKey: "2"}
 	if _, err := js.UpdateStream(&newer); err != nil {
 		t.Fatalf("the newer build adds its subject: %v", err)
@@ -192,10 +207,8 @@ func addNewerSubject(t *testing.T, js nats.JetStreamContext) {
 // kept its answer when it ended, so R1 put back the subjects as they stood before the newer
 // build's start, and the client judged the topic uncaptured until its next read.
 func TestASubjectsReadThatEndsAfterALaterOneKeepsTheLaterOnesSubjects(t *testing.T) {
-	const topic = "notifications.x.y"
-	if StreamCaptures(topic) {
-		t.Fatalf("this build compiles a subject capturing %s; the row needs a topic only a newer build's subject captures", topic)
-	}
+	const topic = newerTopic
+	requireOnlyNewerCaptures(t)
 	client, js, _ := freshSubjectsClient(t)
 	conn := client.ConnectedConn()
 	if conn == nil {
@@ -228,7 +241,7 @@ func TestASubjectsReadThatEndsAfterALaterOneKeepsTheLaterOnesSubjects(t *testing
 		t.Fatalf("DeployedStreamCapturesFresh(%s) = false after the newer build added notifications.x.>", topic)
 	}
 	r2 := client.deployedSubjects.Load()
-	if !slices.Contains(r2.subjects, "notifications.x.>") {
+	if !slices.Contains(r2.subjects, newerSubject) {
 		t.Fatalf("the fresh read kept %v, without notifications.x.>", r2.subjects)
 	}
 
@@ -240,7 +253,7 @@ func TestASubjectsReadThatEndsAfterALaterOneKeepsTheLaterOnesSubjects(t *testing
 	}
 	if kept := client.deployedSubjects.Load(); kept != r2 {
 		t.Fatalf("after the periodic read that started first ended last, the client keeps %v (read %d), not the fresh read's %v (read %d)",
-			kept.subjects, kept.started, r2.subjects, r2.started)
+			kept.subjects, kept.seq, r2.subjects, r2.seq)
 	}
 	if !client.DeployedStreamCaptures(topic) {
 		t.Fatalf("DeployedStreamCaptures(%s) = false after the periodic read that started first ended last", topic)
@@ -252,10 +265,8 @@ func TestASubjectsReadThatEndsAfterALaterOneKeepsTheLaterOnesSubjects(t *testing
 // subjects and keeps them; a newer build adds its subject; R2, started after R1 ended, keeps the
 // subjects with it.
 func TestASubjectsReadThatStartsAfterTheKeptOneReplacesIt(t *testing.T) {
-	const topic = "notifications.x.y"
-	if StreamCaptures(topic) {
-		t.Fatalf("this build compiles a subject capturing %s; the row needs a topic only a newer build's subject captures", topic)
-	}
+	const topic = newerTopic
+	requireOnlyNewerCaptures(t)
 	client, js, _ := freshSubjectsClient(t)
 	conn := client.ConnectedConn()
 	if conn == nil {
@@ -265,7 +276,7 @@ func TestASubjectsReadThatStartsAfterTheKeptOneReplacesIt(t *testing.T) {
 		t.Fatal("the first read of the stream's subjects was refused")
 	}
 	r1 := client.deployedSubjects.Load()
-	if slices.Contains(r1.subjects, "notifications.x.>") {
+	if slices.Contains(r1.subjects, newerSubject) {
 		t.Fatalf("the first read kept %v before the newer build added notifications.x.>", r1.subjects)
 	}
 
@@ -274,9 +285,9 @@ func TestASubjectsReadThatStartsAfterTheKeptOneReplacesIt(t *testing.T) {
 		t.Fatal("the second read of the stream's subjects was refused")
 	}
 	r2 := client.deployedSubjects.Load()
-	if r2 == r1 || !slices.Contains(r2.subjects, "notifications.x.>") {
+	if r2 == r1 || !slices.Contains(r2.subjects, newerSubject) {
 		t.Fatalf("the read that started after the kept one (read %d) ended keeps %v (read %d), without notifications.x.>",
-			r1.started, r2.subjects, r2.started)
+			r1.seq, r2.subjects, r2.seq)
 	}
 	if !client.DeployedStreamCaptures(topic) {
 		t.Fatalf("DeployedStreamCaptures(%s) = false after a read that started after the kept one", topic)
@@ -296,10 +307,8 @@ func TestASubjectsReadThatStartsAfterTheKeptOneReplacesIt(t *testing.T) {
 // a subject it captures, but under no Nats-Msg-Id and with no acknowledgement, so the repeat was
 // stored again and neither store was confirmed to the publisher.
 func TestAPublishJudgesItsTransportOnAFreshReadOfTheSubjects(t *testing.T) {
-	const topic = "notifications.x.y"
-	if StreamCaptures(topic) {
-		t.Fatalf("this build compiles a subject capturing %s; the row needs a topic only a newer build's subject captures", topic)
-	}
+	const topic = newerTopic
+	requireOnlyNewerCaptures(t)
 	client, js, uri := freshSubjectsClient(t)
 	reads := streamInfoReads(t, uri)
 	addNewerSubject(t, js)
@@ -307,7 +316,7 @@ func TestAPublishJudgesItsTransportOnAFreshReadOfTheSubjects(t *testing.T) {
 	if kept == nil {
 		t.Fatal("the client holds no read of the stream's subjects; the row needs the one it made at its connect")
 	}
-	if slices.Contains(kept.subjects, "notifications.x.>") || !client.UsesCoreTransport(topic) {
+	if slices.Contains(kept.subjects, newerSubject) || !client.UsesCoreTransport(topic) {
 		t.Fatalf("the client holds %v and judges %s core %t before the publish; the row needs the subjects it read at its connect, without notifications.x.>",
 			kept.subjects, topic, client.UsesCoreTransport(topic))
 	}
@@ -370,17 +379,15 @@ func TestAPublishJudgesItsTransportOnAFreshReadOfTheSubjects(t *testing.T) {
 // before R did, so R's older list, kept first, stood over it, and the client judged a topic under
 // the subject its own ensure had added uncaptured until its next read.
 func TestAnEnsureKeepsItsSubjectsOverAReadAnsweredBeforeItsUpdate(t *testing.T) {
-	const topic = "notifications.x.y"
-	if StreamCaptures(topic) {
-		t.Fatalf("this build compiles a subject capturing %s; the row needs a topic only a newer build's subject captures", topic)
-	}
+	const topic = newerTopic
+	requireOnlyNewerCaptures(t)
 	client, _, _ := freshSubjectsClient(t)
 	conn := client.ConnectedConn()
 	if conn == nil {
 		t.Fatal("the client is not connected")
 	}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
-	cfg.Subjects = append(slices.Clone(streamCarriedSubjects), "notifications.x.>")
+	cfg.Subjects = append(slices.Clone(streamCarriedSubjects), newerSubject)
 	client.streamConfig = &cfg
 	var r *subjectsRead
 	interleaved := &interleavedJetStream{JetStreamContext: client.JS(), beforeUpdate: func() {
@@ -395,13 +402,13 @@ func TestAnEnsureKeepsItsSubjectsOverAReadAnsweredBeforeItsUpdate(t *testing.T) 
 	if r == nil {
 		t.Fatal("the ensure sent no update; the row needs one that adds notifications.x.>")
 	}
-	if slices.Contains(r.subjects, "notifications.x.>") {
+	if slices.Contains(r.subjects, newerSubject) {
 		t.Fatalf("the read inside the ensure kept %v, with notifications.x.> before the ensure's update added it", r.subjects)
 	}
 	kept := client.deployedSubjects.Load()
-	if kept == r || !slices.Contains(kept.subjects, "notifications.x.>") {
+	if kept == r || !slices.Contains(kept.subjects, newerSubject) {
 		t.Fatalf("after the ensure that added notifications.x.> ended, the client keeps %v (read %d), the read answered before the ensure's update, not the subjects the ensure left",
-			kept.subjects, kept.started)
+			kept.subjects, kept.seq)
 	}
 	if !client.DeployedStreamCaptures(topic) {
 		t.Fatalf("DeployedStreamCaptures(%s) = false after the ensure that added notifications.x.>", topic)

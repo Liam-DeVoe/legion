@@ -11,8 +11,8 @@ import (
 // A server that allows ServerConnections beyond its reserve gives no budget, so every process runs
 // production's pool sizes; a smaller one gives each of MaxProcessesAtOnce processes its share
 // beside SuiteHeadroom, rounded down; and one whose share is below the smallest pools is refused,
-// naming the max_connections it needs. A pod's server at Postgres's default of 100, with the
-// default reserve of 3, gives each process (100 - 3 - 20) / 4 = 19.
+// naming the max_connections it needs. A Postgres at its default of 100, with the default reserve
+// of 3, gives each process (100 - 3 - 20) / 4 = 19.
 func TestPoolBudgetIsEachProcessesShareOfTheServer(t *testing.T) {
 	const reserve = postgresSuperuserReserve
 	for _, row := range []struct {
@@ -55,6 +55,8 @@ func TestEveryPoolBudgetFitsItsServer(t *testing.T) {
 				t.Fatalf("max_connections=%d, reserve %d: a budget of %d opens %d with the suite and the reserve",
 					maxConnections, reserve, budget, opened)
 			}
+			// PoolBudget refuses a share below store.MinBudget, the least ScaledPoolSizes takes, so
+			// this holds while the two agree on that floor; it is here to fail if they drift apart.
 			if _, err := store.ScaledPoolSizes(budget); err != nil {
 				t.Fatalf("max_connections=%d, reserve %d: a budget of %d: %v", maxConnections, reserve, budget, err)
 			}

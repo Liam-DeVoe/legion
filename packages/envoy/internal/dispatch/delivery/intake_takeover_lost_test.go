@@ -16,8 +16,8 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// lostReplyPoll is how often the row below reads the hold, the standby's connection and the
-// durable: fine enough that what it measures is the take-over and not its own polling.
+// lostReplyPoll is how often these rows read the hold, the standby's connection and the durable:
+// fine enough that what they measure is the take-over and not their own polling.
 const lostReplyPoll = 5 * time.Millisecond
 
 // A holder that dies is replaced within the bound held_durable.go states, intakeHoldTTL plus one
@@ -52,7 +52,7 @@ func TestATakeOverThatLosesAReplyWithItsConnectionReplacesADeadHolderWithinTheSt
 	// relay passes, and its second the take-over's read under the lease, which the relay drops.
 	relay.PassThenDrop(1, 1)
 
-	awaitHalfwayThroughARenewal(t, ctx, pool)
+	renewal := awaitHalfwayThroughARenewal(t, ctx, pool)
 	abandoned := time.Now()
 	holder.leases.cut.Store(true)
 	holder.client.Close()
@@ -71,7 +71,7 @@ func TestATakeOverThatLosesAReplyWithItsConnectionReplacesADeadHolderWithinTheSt
 		time.Sleep(lostReplyPoll)
 	}
 
-	took := awaitTakenOver(t, publisher, held, abandoned).Sub(abandoned)
+	took := awaitTakenOver(t, publisher, held, abandoned, renewal.lapse).Sub(abandoned)
 	if bound := intakeHoldTTL + durableBindInterval; took > bound {
 		t.Fatalf("the standby took the durable over %s after the holder died, with one reply of its take-over lost with its connection; want within intakeHoldTTL plus one durableBindInterval (%s)",
 			took.Round(time.Millisecond), bound)
@@ -81,31 +81,37 @@ func TestATakeOverThatLosesAReplyWithItsConnectionReplacesADeadHolderWithinTheSt
 
 // awaitHalfwayThroughARenewal waits until the delivery durable's hold was last renewed at least
 // half a renewal period ago (intakeHoldRenew) and its next renewal is still half a second off, as
-// the hold's row on the database's clock says.
-func awaitHalfwayThroughARenewal(t *testing.T, ctx context.Context, pool *store.Pool) {
+// the hold's row on the database's clock says, and answers the row it read then. It reads the row
+// every 100 ms: that window is two seconds wide, so the read that finds the hold inside it still
+// leaves the death the row deals next mid-renewal.
+func awaitHalfwayThroughARenewal(t *testing.T, ctx context.Context, pool *store.Pool) holdRow {
 	t.Helper()
 	deadline := time.Now().Add(2 * intakeHoldTTL)
 	for {
-		var seconds float64
-		if err := pool.QueryRow(ctx, `select extract(epoch from expires_at - now())::float8 from duty_holds where name = $1`, intakeHold).Scan(&seconds); err != nil {
-			t.Fatalf("read the holder's hold: %v", err)
-		}
-		left := time.Duration(seconds * float64(time.Second))
-		if left <= intakeHoldTTL-intakeHoldRenew/2 && left >= intakeHoldTTL-intakeHoldRenew+500*time.Millisecond {
-			return
+		row := readHold(t, ctx, pool)
+		if row.left <= intakeHoldTTL-intakeHoldRenew/2 && row.left >= intakeHoldTTL-intakeHoldRenew+500*time.Millisecond {
+			return row
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the holder's hold had %s left at the last read; it never came halfway through a renewal", left)
+			t.Fatalf("the holder's hold had %s left at the last read; it never came halfway through a renewal", row.left)
 		}
-		time.Sleep(lostReplyPoll)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
+// takenOverSlack is how long before the dead holder's hold lapses awaitTakenOver starts reading
+// the durable: far more than a read of the hold's row errs by, so no take-over finishes before its
+// first read.
+const takenOverSlack = 250 * time.Millisecond
+
 // awaitTakenOver waits for the durable to be push-bound to a deliver subject other than held's,
-// reading it every lostReplyPoll, and answers when it first read it so: the take-over's
-// completion, which a holder that died at abandoned has not seen within 40 s fails.
-func awaitTakenOver(t *testing.T, publisher *bus.Client, held *natsgo.ConsumerInfo, abandoned time.Time) time.Time {
+// and answers when it first read it so: the take-over's completion, which a holder that died at
+// abandoned has not seen within 40 s fails. No take-over finishes before lapse, when the dead
+// holder's hold lapses, so it reads nothing until takenOverSlack before then, and reads the
+// durable every lostReplyPoll from there.
+func awaitTakenOver(t *testing.T, publisher *bus.Client, held *natsgo.ConsumerInfo, abandoned, lapse time.Time) time.Time {
 	t.Helper()
+	time.Sleep(time.Until(lapse.Add(-takenOverSlack)))
 	for {
 		if time.Since(abandoned) > 40*time.Second {
 			t.Fatalf("the standby has not taken the durable over 40s after the holder died: %s", consumerState(publisher))
@@ -176,13 +182,13 @@ func TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase(t *testing.T) 
 	holder.leases.cut.Store(true)
 	holder.client.Close()
 
-	took := awaitTakenOver(t, publisher, held, abandoned).Sub(abandoned)
+	took := awaitTakenOver(t, publisher, held, abandoned, last.lapse).Sub(abandoned)
 	died := abandoned.Sub(last.landed())
-	var fromLapse []time.Duration
+	sent := reads.times()
+	fromLapse := durations(sent, last.lapse)
 	live := -1
-	for i, sent := range reads.times() {
-		fromLapse = append(fromLapse, sent.Sub(last.lapse))
-		if sent.Before(last.lapse) {
+	for i, at := range sent {
+		if at.Before(last.lapse) {
 			live = i
 		}
 	}
@@ -319,17 +325,19 @@ func (r *holdReads) awaitRead(t *testing.T, from time.Time, within time.Duration
 }
 
 // holdRow is the delivery durable's hold as one read of its row found it: the expiry the last
-// renewal wrote, on the database's clock, and that lapse on this process's clock, read as the
-// time the hold had left from halfway through the read.
+// renewal wrote, on the database's clock, how long the hold had left then, on the database's
+// clock too, and that lapse on this process's clock, read as the time the hold had left from
+// halfway through the read.
 type holdRow struct {
 	expires time.Time
+	left    time.Duration
 	lapse   time.Time
 }
 
 // landed is when the renewal that wrote the row landed, on this process's clock.
 func (r holdRow) landed() time.Time { return r.lapse.Add(-intakeHoldTTL) }
 
-// readHold reads the delivery durable's hold's row.
+// readHold reads the delivery durable's hold's row, and fails the test when there is none.
 func readHold(t *testing.T, ctx context.Context, pool *store.Pool) holdRow {
 	t.Helper()
 	var row holdRow
@@ -339,7 +347,8 @@ func readHold(t *testing.T, ctx context.Context, pool *store.Pool) holdRow {
 		intakeHold).Scan(&row.expires, &seconds); err != nil {
 		t.Fatalf("read the holder's hold: %v", err)
 	}
-	row.lapse = sent.Add(time.Since(sent) / 2).Add(time.Duration(seconds * float64(time.Second)))
+	row.left = time.Duration(seconds * float64(time.Second))
+	row.lapse = sent.Add(time.Since(sent) / 2).Add(row.left)
 	return row
 }
 

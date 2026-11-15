@@ -260,8 +260,8 @@ type spentProofs struct {
 func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, _ time.Time) (bool, error) {
 	key := sha256.Sum256([]byte(jti + "\x00" + htu))
 	// BoundedOn ends the wait with the request, or with the connection the create went out on, as
-	// every other bucket call this listener makes does; the abandoned create may still land, which
-	// is the right way round for a record whose whole purpose is to be there.
+	// the session, interest and role-claim bucket calls a request makes do; the abandoned create
+	// may still land, which is the right way round for a record whose whole purpose is to be there.
 	_, _, err := bus.BoundedOn(ctx, s.kv, func() (uint64, error) {
 		return s.kv.Create(hex.EncodeToString(key[:]), nil)
 	})

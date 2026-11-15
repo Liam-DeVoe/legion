@@ -578,8 +578,9 @@ const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSi
 // pool and the separate pools Pool opens on demand. Every deployment runs productionPoolSizes, the
 // constants above. Only a test process given a connection budget runs smaller ones (OpenWithin,
 // ScaledPoolSizes), so that the Dispatch processes a test suite starts fit a test server too small
-// for production's. The health probe's, the listener's and the registry's pools are one connection
-// each in every process, so none of them is here.
+// for production's. The health probe's and the registry's pools, one connection each, and the
+// listener connections (listenerConnections) are the same in every process, so none of them is
+// here.
 type PoolSizes struct {
 	Shared      int32
 	Rooms       int32
@@ -641,27 +642,25 @@ func MinBudget() int { return unscaledConnections + minimumPoolSizes.total() }
 // pools it took most from, so the sizes use the whole budget. A budget that holds production's
 // sizes gets exactly them. A budget below MinBudget is refused.
 func ScaledPoolSizes(budget int) (PoolSizes, error) {
-	if budget < MinBudget() {
+	least := MinBudget()
+	if budget < least {
 		return PoolSizes{}, fmt.Errorf("a budget of %d connections is below the %d one Dispatch process opens with every pool at its smallest (store.MinBudget)",
-			budget, MinBudget())
+			budget, least)
 	}
-	sizes, full := minimumPoolSizes, productionPoolSizes
-	scaled, production := sizes.fields(), full.fields()
-	given := 0
-	for i, size := range scaled {
-		given += int(*production[i] - *size)
-	}
-	spare := budget - MinBudget()
-	if spare >= given {
+	givenUp := productionPoolSizes.total() - minimumPoolSizes.total()
+	spare := budget - least
+	if spare >= givenUp {
 		return productionPoolSizes, nil
 	}
+	sizes := minimumPoolSizes
+	scaled, production := sizes.fields(), productionPoolSizes.fields()
 	handed := 0
 	remainders := make([]int, len(scaled))
 	for i, size := range scaled {
 		share := spare * int(*production[i]-*size)
-		*size += int32(share / given)
-		handed += share / given
-		remainders[i] = share % given
+		*size += int32(share / givenUp)
+		handed += share / givenUp
+		remainders[i] = share % givenUp
 	}
 	// The order the fields are in breaks a tie, so one budget always gives the same sizes.
 	order := make([]int, len(scaled))

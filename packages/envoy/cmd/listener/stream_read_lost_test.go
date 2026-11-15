@@ -54,7 +54,15 @@ func TestARegistrationBehindAnotherSessionsLostStreamReadIsAnswered(t *testing.T
 		t.Fatalf("create the restarting session's consumer: %v", err)
 	}
 	relay.stallFirst(1, "$JS.API.STREAM.INFO."+bus.Stream)
-	go func() { _, _ = delivery.consumers.RestartAtFloor(ctx, restarting, agent) }()
+	restarted := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-restarted
+	})
+	go func() {
+		defer close(restarted)
+		_, _ = delivery.consumers.RestartAtFloor(ctx, restarting, agent)
+	}()
 	waitFor(t, 5*time.Second, "the restart's stream read to be dropped", func() bool { return relay.droppedRequests() == 1 })
 
 	body, err := json.Marshal(subscribeBody{SessionID: registering, Topics: []string{contracts.AgentSubject(registering)}, SelfSubscribed: true,

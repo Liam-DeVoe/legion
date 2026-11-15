@@ -324,7 +324,7 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   the server's time of the write that took the lease when no pod of the machine was serving (no record, or one last written more than two TTLs before).
   A claim stored before `service_since` keeps its grace for one session TTL after it; every pod answers a claim alike, whenever it started.
 
-- **Registry writes** are compare-and-set at the revision the pod read, all but a hard role claim, and what each answers once it loses that race differs:
+- **Registry writes** are compare-and-set at the revision the pod read, all but a hard role claim with no `if_claim_revision`, and what each answers once it loses that race differs:
 
   - A session registration and an interest are merged again over the bucket's value on a conflict, and a role claim's release or hand-back weighs the claim again at the revision it now stands at.
     Each answers `503` with `Retry-After: 1` once its attempts are spent:
@@ -334,7 +334,7 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
     A renewal that a claim landed under is dropped and logged, the registration that sent it still answers `200`, and the next registration renews the claim that stands.
 
   - A role claim itself is not retried by the store.
-    A hard claim is an unconditional `Put`, so the last write wins.
+    A hard claim with no `if_claim_revision` is an unconditional `Put`, so the last write wins.
     A soft claim, or one that carries `if_claim_revision`, that a claim landed under is refused with `409` (`ErrRoleHeld`, `ErrRoleClaimRevisionMismatch`, `internal/store/roles.go`);
     `/v1/roles/set` decides a soft claim that named no revision once more first, on the claim that replaced the one it read.
 

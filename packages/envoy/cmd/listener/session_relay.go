@@ -450,10 +450,6 @@ func (r *relayRun) dropWake() {
 // run, and reports whether the run goes on. A wake sent before the pause does not end it: the pause
 // drops it as it begins (dropWake), so only a registration heard once the pause began cuts the
 // backoff short.
-//
-// No row pins that. A wake sent before a pause began must not cut that pause short, yet with
-// r.dropWake() taken out of waitPause alone all 162 relay rows still passed at 58755896, so the
-// next change to this function should pin it with a row.
 func (r *relayRun) waitPause(ctx context.Context, d time.Duration) bool {
 	r.dropWake()
 	timer := time.NewTimer(d)
@@ -798,10 +794,11 @@ func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 // (relayPaused), with a wait that doubles from pauseFirst to pauseMax, both cut short by the
 // session's next registration. Both only while the session is still this listener's.
 //
-// A pull the connection's reconnect ended (relayReconnected) waits for neither: the relay
-// restarts at the session's ack floor at once, and the wait a run's earlier failures had raised
-// starts again from relayRetryFirst, since a lost pull request says nothing about the session or
-// its consumer. Without that, a run that had met a handful of failures would cost its session
+// A pull the connection's reconnect ended, or a restart's call lost with its connection
+// (relayReconnected: pullEnded, restartFailed), waits for neither: the relay restarts at the
+// session's ack floor at once, and the wait a run's earlier failures had raised starts again from
+// relayRetryFirst, since a request lost with its connection says nothing about the session or its
+// consumer. Without that, a run that had met a handful of failures would cost its session
 // relayRetryMax, 30 s, at every later reconnect.
 //
 // The pause is logged once an episode: the line is written for the first pause since the session

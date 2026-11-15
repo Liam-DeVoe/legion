@@ -352,9 +352,9 @@ func (d *heldDurable) stopDeliveringWithin(budget time.Duration) {
 // waits for a process of the build before holds to let go takes no lease on every poll. It
 // answers how long the hold another process holds live has left, as its read found it
 // (takeHold), and zero when this intake holds the hold, or found it free, or could not read it.
-func (d *heldDurable) attempt(ctx context.Context) (lapsesIn time.Duration) {
+func (d *heldDurable) attempt(ctx context.Context) (left time.Duration) {
 	if d.hold == nil {
-		if took, left := d.takeHold(ctx); !took {
+		if left = d.takeHold(ctx); d.hold == nil {
 			return left
 		}
 	}
@@ -372,9 +372,13 @@ func (d *heldDurable) attempt(ctx context.Context) (lapsesIn time.Duration) {
 func (d *heldDurable) lookupDurable(ctx context.Context) (*natsgo.ConsumerInfo, error) {
 	lookup, cancel := context.WithTimeout(ctx, intakeHoldRenew)
 	defer cancel()
-	return onConnection(lookup, d.nats, func(call context.Context) (*natsgo.ConsumerInfo, error) {
-		return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(call))
-	})
+	return onConnection(lookup, d.nats, d.consumerInfo)
+}
+
+// consumerInfo is the take-over's request for the durable's state, on the context call: the
+// request onConnection makes for lookupDurable and readDurable.
+func (d *heldDurable) consumerInfo(call context.Context) (*natsgo.ConsumerInfo, error) {
+	return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(call))
 }
 
 // onConnection makes request, a JetStream request of the take-over on the client's connection,
@@ -385,7 +389,7 @@ func (d *heldDurable) lookupDurable(ctx context.Context) (*natsgo.ConsumerInfo, 
 // once: the take-over's read of the durable (readDurable), and each step of finishTakeOver
 // (retryHeld).
 func onConnection[T any](ctx context.Context, client *bus.Client, request func(context.Context) (T, error)) (T, error) {
-	return bus.RequestOnConnection(ctx, client.Connection(), request)
+	return bus.RequestOnConnection(ctx, client, request)
 }
 
 // readDurable is the take-over's read of the durable's state, under its consumer lease. A read lost
@@ -393,9 +397,7 @@ func onConnection[T any](ctx context.Context, client *bus.Client, request func(c
 // this intake holds its hold: the loss says nothing about the durable.
 func (d *heldDurable) readDurable(ctx context.Context) (*natsgo.ConsumerInfo, error) {
 	for {
-		info, err := onConnection(ctx, d.nats, func(call context.Context) (*natsgo.ConsumerInfo, error) {
-			return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(call))
-		})
+		info, err := onConnection(ctx, d.nats, d.consumerInfo)
 		if !errors.Is(err, bus.ErrRequestLostWithConnection) || !d.holds() {
 			return info, err
 		}
@@ -407,11 +409,11 @@ func (d *heldDurable) readDurable(ctx context.Context) (*natsgo.ConsumerInfo, er
 const heldElsewhere = "dispatch delivery: NATS consumer held by another process; standing by"
 
 // takeHold takes the durable's hold when no holder holds it live, keeping the token its row
-// records, and reports whether this intake holds it now. While another process holds it live, it
+// records, and sets d.hold once this intake holds it. While another process holds it live, it
 // answers how long that hold has left on the database's clock, as the read found it, and zero
 // otherwise. duty.TryHold records its own token as it takes a lapsed hold, so the lapsed hold's
 // token is read first (duty.HoldToken), in the read that says how long the hold has left.
-func (d *heldDurable) takeHold(ctx context.Context) (took bool, lapsesIn time.Duration) {
+func (d *heldDurable) takeHold(ctx context.Context) (left time.Duration) {
 	holdName := intakeHoldName(d.name)
 	bounded, cancel := context.WithTimeout(ctx, intakeHoldRenew)
 	defer cancel()
@@ -421,10 +423,10 @@ func (d *heldDurable) takeHold(ctx context.Context) (took bool, lapsesIn time.Du
 		if ctx.Err() == nil {
 			slog.Error("dispatch delivery: read the intake's hold", "name", d.name, "hold", holdName, "error", err)
 		}
-		return false, 0
+		return 0
 	case left > 0:
 		d.throttle.reportStandby(d.name, heldElsewhere)
-		return false, left
+		return left
 	}
 	hold, err := duty.TryHold(bounded, d.leases, holdName, d.holder, duty.HoldOptions{
 		TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: token,
@@ -433,15 +435,15 @@ func (d *heldDurable) takeHold(ctx context.Context) (took bool, lapsesIn time.Du
 		if ctx.Err() == nil {
 			slog.Error("dispatch delivery: take the intake's hold", "name", d.name, "hold", holdName, "error", err)
 		}
-		return false, 0
+		return 0
 	}
 	if hold == nil {
 		d.throttle.reportStandby(d.name, heldElsewhere)
-		return false, 0
+		return 0
 	}
 	d.hold, d.recorded = hold, parseIntakeHoldToken(token)
 	slog.Info("dispatch delivery: took the intake's hold", "name", d.name, "hold", holdName)
-	return true, 0
+	return 0
 }
 
 // boundElsewhere reports whether info is a durable bound to a subject the hold does not record: a

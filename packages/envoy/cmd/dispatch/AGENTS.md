@@ -887,8 +887,8 @@ superuser reserve, as every CI lane's does (`.github/scripts/pg-connection-ceili
 Postgres at its default `max_connections` of 100, gives each of `testlimits.MaxProcessesAtOnce`
 processes its share of the server beside `testlimits.SuiteHeadroom` (`testlimits.PoolBudget`: 19
 connections at 100 with the default reserve of 3). The start hands the process that share as
-`DISPATCH_TEST_POOL_BUDGET`, and the process scales its pools to it, each kept at the smallest size
-that still serves its callers (`store.ScaledPoolSizes`);
+`DISPATCH_TEST_POOL_BUDGET`, and the process scales its pools to it, each scaled down toward, never
+below, the smallest size that still serves its callers (`store.ScaledPoolSizes`);
 `TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget` holds four such processes under
 load to it. A server too small for even those refuses every start, naming the `max_connections` it
 needs (`testlimits.MinServerConnections` plus the reserve: 95 with the default reserve). A row that

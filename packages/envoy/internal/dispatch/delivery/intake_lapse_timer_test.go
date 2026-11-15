@@ -470,7 +470,7 @@ func runNotingAttempts(t *testing.T, intake *Intake) *notedRun {
 			noted.mu.Lock()
 			noted.at = append(noted.at, time.Now())
 			noted.mu.Unlock()
-			return intake.settings.Load() != nil
+			return intake.ready()
 		})
 	}()
 	noted.stop = sync.OnceFunc(func() {
@@ -494,16 +494,20 @@ func (r *notedRun) attempts() []time.Time {
 func awaitGoroutinesBackTo(t *testing.T, before int) int {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
+	buffer := make([]byte, 1<<22)
 	for {
-		stacks := make([]byte, 1<<22)
-		stacks = stacks[:runtime.Stack(stacks, true)]
-		running := strings.Contains(string(stacks), "runNotingAttempts")
-		if n := runtime.NumGoroutine(); n <= before && !running {
-			return n
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("five seconds on, this process still runs %d goroutines, %d before the standby's run, the standby's run among them %t:\n%s",
-				runtime.NumGoroutine(), before, running, stacks)
+		n := runtime.NumGoroutine()
+		late := time.Now().After(deadline)
+		if n <= before || late {
+			stacks := buffer[:runtime.Stack(buffer, true)]
+			running := strings.Contains(string(stacks), "runNotingAttempts")
+			if n <= before && !running {
+				return n
+			}
+			if late {
+				t.Fatalf("five seconds on, this process still runs %d goroutines, %d before the standby's run, the standby's run among them %t:\n%s",
+					runtime.NumGoroutine(), before, running, stacks)
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

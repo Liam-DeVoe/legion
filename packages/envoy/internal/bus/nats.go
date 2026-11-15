@@ -394,10 +394,10 @@ type Client struct {
 	// (DeployedStreamCaptures, keepSubjects): the subjects that read answered, and when it started
 	// among the client's reads; nil until the client has kept one.
 	deployedSubjects atomic.Pointer[subjectsRead]
-	// subjectsReads numbers the client's reads of the deployed stream's subjects in the order they
+	// subjectsReadSeq numbers the client's reads of the deployed stream's subjects in the order they
 	// start, an ensure's (ensureStream) among them, so a read that ends after one that started
 	// after it keeps nothing over it (keepSubjects).
-	subjectsReads atomic.Uint64
+	subjectsReadSeq atomic.Uint64
 	// beforeSubjectsKept, when not nil, runs once a read of the deployed stream's subjects has its
 	// answer and before keepSubjects keeps it. It is nil outside tests: a test sets it to hold a
 	// read there while a read that started after it ends.
@@ -670,21 +670,24 @@ const streamSubjectsRereadGap = 250 * time.Millisecond
 // ensureStream ensures the stream through js and keeps the subjects it carries afterwards as a read
 // of them like any other: numbered as it starts, and kept unless the client already keeps a read
 // that started after it (keepSubjects). The ensure's own list is what it wrote, after a read of its
-// own, and a read the client began between the two can be answered before the write lands, so the
-// subjects are read back once the ensure ends, numbered as that read-back starts: a read answered
-// before the write started before it and keeps nothing over it. A read-back that fails keeps the
-// ensure's own list, numbered as the ensure started. defaultsAnUnsetCap is what the connected
-// server is, read from the version it answers (serverDefaultsAnUnsetCap): whether a deployed
-// stream with no consumer cap is one the server caps at a default of its own.
+// own, and a read the client began between the two can be answered before the write lands, so when
+// a read began while the ensure ran, the subjects are read back once the ensure ends, numbered as
+// that read-back starts: a read answered before the write started before it and keeps nothing over
+// it. An ensure no read began during keeps its own list, numbered as the ensure started, as does
+// one whose read-back fails. defaultsAnUnsetCap is what the connected server is, read from the
+// version it answers (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is
+// one the server caps at a default of its own.
 func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool) error {
-	started := c.subjectsReads.Add(1)
+	started := c.subjectsReadSeq.Add(1)
 	subjects, err := ensureStreamWithConfig(js, c.streamConfig, defaultsAnUnsetCap)
 	if err != nil {
 		return err
 	}
-	readBack := c.subjectsReads.Add(1)
-	if read, err := readStreamSubjects(js); err == nil {
-		started, subjects = readBack, read
+	if c.subjectsReadSeq.Load() != started {
+		readBack := c.subjectsReadSeq.Add(1)
+		if read, err := readStreamSubjects(js); err == nil {
+			started, subjects = readBack, read
+		}
 	}
 	c.keepSubjects(started, subjects)
 	return nil
@@ -702,7 +705,7 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 func (c *Client) ensureStreamOn(conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
-		err = c.ensureStream(connectionBoundJetStream{JetStreamContext: js, conn: conn}, serverDefaultsAnUnsetCap(conn.ConnectedServerVersion()))
+		err = c.ensureStream(connectionBoundJetStream{JetStreamContext: js, client: c}, serverDefaultsAnUnsetCap(conn.ConnectedServerVersion()))
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
@@ -710,53 +713,63 @@ func (c *Client) ensureStreamOn(conn *nats.Conn) error {
 	return nil
 }
 
-// connectionBoundJetStream is a JetStream context on conn whose requests the stream's ensure makes
-// (ensureStreamWithConfig: the stream's read, create, update and purge, and the consumer reads and
-// updates of the role-lane migration) each end with ErrRequestLostWithConnection as soon as conn
-// is lost before the answer comes (RequestOnConnection), rather than waiting out MaxWait for an
-// answer the server dropped with the old socket. The ensure counts such a request as unanswered:
-// a read or a create is sent again at once on the connection that came back (sentAgain), and an
-// update is read back there (updateStream). Every other call, the role-lane migration's consumer
-// listing among them, is the JetStream context's own.
+// connectionBoundJetStream is a JetStream context on the client's connection whose requests the
+// stream's ensure makes (ensureStreamWithConfig: the stream's read, create, update and purge, and
+// the consumer reads and updates of the role-lane migration) each end with
+// ErrRequestLostWithConnection as soon as that connection is lost before the answer comes
+// (RequestOnConnection), rather than waiting out MaxWait for an answer the server dropped with the
+// old socket. The ensure counts such a request as unanswered: a read or a create is sent again at
+// once on the connection that came back (sentAgain), and an update is read back there
+// (updateStream). Every other call, the role-lane migration's consumer listing among them, is the
+// JetStream context's own.
 type connectionBoundJetStream struct {
 	nats.JetStreamContext
-	conn *nats.Conn
+	client *Client
+}
+
+// boundRequest makes call, a request of js's JetStream context, on its client's connection
+// (RequestOnConnection), handing call opts with the request's context appended in a slice of its
+// own, so the caller's opts are left as they were.
+func boundRequest[T any](js connectionBoundJetStream, opts []nats.JSOpt, call func(...nats.JSOpt) (T, error)) (T, error) {
+	return RequestOnConnection(context.Background(), js.client, func(ctx context.Context) (T, error) {
+		return call(append(slices.Clip(opts), nats.Context(ctx))...)
+	})
 }
 
 func (js connectionBoundJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	return RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (*nats.StreamInfo, error) {
-		return js.JetStreamContext.StreamInfo(stream, append(slices.Clip(opts), nats.Context(ctx))...)
+	return boundRequest(js, opts, func(opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+		return js.JetStreamContext.StreamInfo(stream, opts...)
 	})
 }
 
 func (js connectionBoundJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	return RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (*nats.StreamInfo, error) {
-		return js.JetStreamContext.AddStream(cfg, append(slices.Clip(opts), nats.Context(ctx))...)
+	return boundRequest(js, opts, func(opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+		return js.JetStreamContext.AddStream(cfg, opts...)
 	})
 }
 
 func (js connectionBoundJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	return RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (*nats.StreamInfo, error) {
-		return js.JetStreamContext.UpdateStream(cfg, append(slices.Clip(opts), nats.Context(ctx))...)
+	return boundRequest(js, opts, func(opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+		return js.JetStreamContext.UpdateStream(cfg, opts...)
 	})
 }
 
 func (js connectionBoundJetStream) PurgeStream(name string, opts ...nats.JSOpt) error {
-	_, err := RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (struct{}, error) {
-		return struct{}{}, js.JetStreamContext.PurgeStream(name, append(slices.Clip(opts), nats.Context(ctx))...)
+	_, err := boundRequest(js, opts, func(opts ...nats.JSOpt) (struct{}, error) {
+		return struct{}{}, js.JetStreamContext.PurgeStream(name, opts...)
 	})
 	return err
 }
 
 func (js connectionBoundJetStream) ConsumerInfo(stream, name string, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
-	return RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (*nats.ConsumerInfo, error) {
-		return js.JetStreamContext.ConsumerInfo(stream, name, append(slices.Clip(opts), nats.Context(ctx))...)
+	return boundRequest(js, opts, func(opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+		return js.JetStreamContext.ConsumerInfo(stream, name, opts...)
 	})
 }
 
 func (js connectionBoundJetStream) UpdateConsumer(stream string, cfg *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
-	return RequestOnConnection(context.Background(), js.conn, func(ctx context.Context) (*nats.ConsumerInfo, error) {
-		return js.JetStreamContext.UpdateConsumer(stream, cfg, append(slices.Clip(opts), nats.Context(ctx))...)
+	return boundRequest(js, opts, func(opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+		return js.JetStreamContext.UpdateConsumer(stream, cfg, opts...)
 	})
 }
 
@@ -766,7 +779,7 @@ func (js connectionBoundJetStream) UpdateConsumer(stream string, cfg *nats.Consu
 // when the server refused the read under the NATS user's permissions: such a user cannot read them
 // later either, so the client keeps deciding by what it holds, and reads no more (subjectsRefused).
 func (c *Client) readDeployedSubjects(conn *nats.Conn, timeout time.Duration) bool {
-	started := c.subjectsReads.Add(1)
+	started := c.subjectsReadSeq.Add(1)
 	js, err := conn.JetStream(nats.MaxWait(timeout))
 	if err == nil {
 		var subjects []string
@@ -786,14 +799,14 @@ func (c *Client) readDeployedSubjects(conn *nats.Conn, timeout time.Duration) bo
 }
 
 // subjectsRead is a read of the deployed stream's subjects the client keeps: the subjects it
-// answered, and started, its number among the client's reads, taken as it started
-// (Client.subjectsReads).
+// answered, and seq, its number among the client's reads, taken as it started
+// (Client.subjectsReadSeq).
 type subjectsRead struct {
-	started  uint64
+	seq      uint64
 	subjects []string
 }
 
-// keepSubjects keeps subjects, the answer of the read numbered started (subjectsReads), for
+// keepSubjects keeps subjects, the answer of the read numbered started (subjectsReadSeq), for
 // DeployedStreamCaptures, unless the client already keeps the answer of a read that started after
 // it. The client's reads overlap - a fresh read (rereadDeployedSubjects), the periodic one
 // (followDeployedSubjects) and an ensure's (ensureStream) - and end in any order, so a read that
@@ -805,10 +818,10 @@ func (c *Client) keepSubjects(started uint64, subjects []string) {
 	if c.beforeSubjectsKept != nil {
 		c.beforeSubjectsKept()
 	}
-	read := &subjectsRead{started: started, subjects: subjects}
+	read := &subjectsRead{seq: started, subjects: subjects}
 	for {
 		kept := c.deployedSubjects.Load()
-		if kept != nil && kept.started > started {
+		if kept != nil && kept.seq > started {
 			return
 		}
 		if c.deployedSubjects.CompareAndSwap(kept, read) {
@@ -1925,7 +1938,7 @@ func (c *Client) rereadDeployedSubjects(ctx context.Context) {
 	reading := c.subjectsRereading
 	if reading == nil {
 		conn := c.ConnectedConn()
-		if conn == nil || (!c.subjectsRereadAt.IsZero() && time.Since(c.subjectsRereadAt) < streamSubjectsRereadGap) {
+		if conn == nil || time.Since(c.subjectsRereadAt) < streamSubjectsRereadGap {
 			c.subjectsRereadMu.Unlock()
 			return
 		}

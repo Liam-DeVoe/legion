@@ -83,8 +83,10 @@ func TestAStreamEnsureWhoseReadIsLostWithItsConnectionFinishesAtTheReconnect(t *
 		if ensured.IsZero() && deployedStream(t, adminJS).Config.MaxAge == streamCfg.MaxAge {
 			ensured = time.Now()
 		}
-		if run, ok := firstHookRunAfter(reconnected); ok && hooked.IsZero() {
-			hooked = run
+		if hooked.IsZero() {
+			if run, ok := firstHookRunAfter(reconnected); ok {
+				hooked = run
+			}
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

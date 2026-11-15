@@ -719,13 +719,15 @@ func mpOnConsumer(t *testing.T, body string) string {
 	return string(encoded)
 }
 
-// subscribe posts body to the pod's /v1/interests/subscribe, a registration or its heartbeat, and
-// requires a 200.
-func (p *mpPod) subscribe(t *testing.T, body string) {
+// subscribe posts body to the pod's /v1/interests/subscribe, a registration or its heartbeat,
+// requires a 200, and returns the pod's answer.
+func (p *mpPod) subscribe(t *testing.T, body string) mpAnswer {
 	t.Helper()
-	if answer := p.call(http.MethodPost, "/v1/interests/subscribe", body); answer.status != http.StatusOK {
+	answer := p.call(http.MethodPost, "/v1/interests/subscribe", body)
+	if answer.status != http.StatusOK {
 		t.Fatalf("subscribe %s through %s: status %d %s %v", body, p.instance, answer.status, answer.body, answer.err)
 	}
+	return answer
 }
 
 // mpEventMark carries a message's event id in the text of the frame its session receives.

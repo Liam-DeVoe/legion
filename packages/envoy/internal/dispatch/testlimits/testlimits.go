@@ -59,8 +59,8 @@ func MinServerConnections() int { return MaxProcessesAtOnce*store.MinBudget() + 
 // PoolBudget is how many connections each Dispatch process a test starts may open on a server that
 // allows maxConnections with reserved of them kept for superusers. It is zero on a server that
 // allows ServerConnections beyond its reserve, as every CI lane's does: there every process runs
-// production's pool sizes. On a smaller server, such as a pod's that allows Postgres's default of
-// 100, it is that server's share for one of MaxProcessesAtOnce processes beside SuiteHeadroom,
+// production's pool sizes. On a smaller server, such as a Postgres at its default of 100, it is
+// that server's share for one of MaxProcessesAtOnce processes beside SuiteHeadroom,
 // (maxConnections - reserved - SuiteHeadroom) / MaxProcessesAtOnce rounded down, which the test
 // harness hands each process it starts (DISPATCH_TEST_POOL_BUDGET) and the process scales its pools
 // to (store.OpenWithin). A share below store.MinBudget is refused, and the error names the

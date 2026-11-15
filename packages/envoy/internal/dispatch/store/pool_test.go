@@ -350,7 +350,7 @@ func TestRoomAppendsIsAPoolOfItsOwnThatUseCounts(t *testing.T) {
 	if again, err := database.Pool.RoomAppends(); err != nil || again != appends {
 		t.Fatalf("a second RoomAppends = %p, %v; want the pool the first opened, %p", again, err, appends)
 	}
-	if got, want := appends.Config().MaxConns, database.Pool.Sizes().RoomAppends; got != want {
+	if got, want := appends.Config().MaxConns, int32(roomAppendsPoolSize); got != want {
 		t.Fatalf("room-appends pool holds at most %d connections, want %d", got, want)
 	}
 

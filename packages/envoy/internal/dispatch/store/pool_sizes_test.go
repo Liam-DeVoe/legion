@@ -6,9 +6,10 @@ import (
 	"testing"
 )
 
-// PoolSizes holds every pool ConnectionsPerProcess counts beyond the three that are one connection
-// in every process, the health probe's, the registry's and the listeners': a pool added to the sum
-// and not here would open at production's size in a test process whatever its budget.
+// PoolSizes holds every pool ConnectionsPerProcess counts beyond the ones every process opens at
+// the same size, the health probe's and the registry's pools of one connection each and the
+// listener connections (listenerConnections): a pool added to the sum and not here would open at
+// production's size in a test process whatever its budget.
 func TestPoolSizesHoldEveryPoolConnectionsPerProcessCounts(t *testing.T) {
 	if got := productionPoolSizes.total() + healthPoolSize + registryPoolSize + listenerConnections; got != ConnectionsPerProcess {
 		t.Fatalf("production's PoolSizes and the unscaled pools hold %d connections, ConnectionsPerProcess %d", got, ConnectionsPerProcess)
@@ -17,9 +18,9 @@ func TestPoolSizesHoldEveryPoolConnectionsPerProcessCounts(t *testing.T) {
 
 // A budget scales every pool between its minimum and its production size and uses the whole
 // budget, the test hooks' listener counted; a budget that holds production's sizes gets exactly
-// them; and one below the minimums is refused. The pod's test server at 100 connections gives each
-// process 19 (testlimits.PoolBudget): every pool at its minimum, and the one connection left over
-// to the shared pool, which gives up the most of production's size.
+// them; and one below the minimums is refused. A Postgres at its default of 100 connections gives
+// each process 19 (testlimits.PoolBudget): every pool at its minimum, and the one connection left
+// over to the shared pool, which gives up the most of production's size.
 func TestScaledPoolSizesUseTheBudgetAndKeepEveryMinimum(t *testing.T) {
 	production := ConnectionsPerProcess + testHooksListenerConnections
 	for budget := MinBudget(); budget <= production+10; budget++ {

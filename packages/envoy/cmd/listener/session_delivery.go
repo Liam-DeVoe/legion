@@ -994,17 +994,15 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 // topic among them. Those are the subjects /v1/interests/subscribe judges a registration's topics
 // on (m.splitUncapturedTopics), so a topic only a newer build's subjects capture, which this build
 // stores on the session's row while the two builds run, is in the filter too, and a message stored
-// on it is delivered. A
-// Legion controller's notice lane (notifications.legion.<project>.controller) is one of those
-// topics while the session holds that project's controller role, and this filter is the whole of
-// how it now reaches the controller: the lane's live core subscription, which handed the session
-// only what was published while it was subscribed, went with the rest of the core receive path
-// (INFRA-771), so a notice published while the controller was away is delivered from the stream
-// when it returns. A topic the stream does not store reaches the session on no path of its own: a
-// role lane reaches its holder as a forward on the holder's agent subject, and a topic an earlier
-// build's row still names, which /v1/interests/subscribe drops from a registration with a
-// warning now, reaches nothing.
-// SessionConsumers reduces the list to filters that do not overlap.
+// on it is delivered. A Legion controller's notice lane (notifications.legion.<project>.controller)
+// is one of those topics while the session holds that project's controller role, and this filter is
+// the whole of how it now reaches the controller: the lane's live core subscription, which handed
+// the session only what was published while it was subscribed, went with the rest of the core
+// receive path (INFRA-771), so a notice published while the controller was away is delivered from
+// the stream when it returns. A topic the stream does not store reaches the session on no path of
+// its own: a role lane reaches its holder as a forward on the holder's agent subject, and a topic
+// an earlier build's row still names, which /v1/interests/subscribe drops from a registration with
+// a warning now, reaches nothing. SessionConsumers reduces the list to filters that do not overlap.
 //
 // The read again is what keeps a roll from losing a message: a newer build's start adds its
 // subjects to the stream, and a registration through that build stores a topic on one of them,
@@ -1022,7 +1020,7 @@ func (m *sessionDelivery) sessionConsumerFilter(ctx context.Context, sessionID s
 	filter := make([]string, 0, len(topics)+1)
 	filter = append(filter, contracts.AgentSubject(sessionID))
 	for _, topic := range topics {
-		if m.stream.DeployedStreamCapturesFresh(ctx, topic) && bus.CheckFilterSubject(topic) == nil {
+		if bus.CheckFilterSubject(topic) == nil && m.stream.DeployedStreamCapturesFresh(ctx, topic) {
 			filter = append(filter, topic)
 		}
 	}
