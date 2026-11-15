@@ -18,7 +18,8 @@
 # that proves a refusal adds a workflow, an action or a Dockerfile of its own beside that
 # baseline, so a refusal is the case's own and not a hole in the baseline, and the baseline's
 # own case proves it passes. The last of rule 8's cases is the one that builds no miniature: it
-# copies this repository's own tree and lowers its real keys.
+# copies this repository's own tree and lowers its real keys, each below the sum of the block the
+# gate's --jobs says prices it, through .github/scripts/download_retry_real_tree.py.
 #
 # Run from anywhere: .github/scripts/check-download-retry.test.sh
 # CI runs it in ci.yaml's test job.
@@ -1350,9 +1351,9 @@ check "prices no run of that script at nothing" \
 # one, so the item blocked_calls lists is that inner call rather than the step's own. The one
 # reading drops it there too, because the step's list and the lists of every script and
 # action it reaches take the same filter (review round 5 of dispatch://INFRA-1545). What leaves the step
-# with a figure rather than none is carried(), which answers 0 for a call of a script that
-# costs nothing however many passes are above it; the case below holding a priced script
-# beside such a loop is the one that pins that answer.
+# with a figure rather than none is reached_arithmetic(), which charges nothing for a call inside
+# an uncounted loop where the script it reaches, with what that script calls, costs 0 s; the case
+# below holding a priced script beside such a loop is the one that pins that answer.
 echo "case: a loop around a script that calls a script that fetches nothing passes"
 root=$(fixture script-no-fetch-two-deep)
 cat > "$root/.github/scripts/zz-g.sh" <<'SH'
@@ -1667,10 +1668,10 @@ check "prices no run of either script at nothing" \
 
 # A script this check does price, holding beside that ladder a loop it cannot count around a
 # costless script. The ladder is 450 s the step waits for and the costless loop takes nothing
-# off it, so the budget is held to the 450 s. carried()'s answer of 0 for a call of a script
-# that costs nothing is what keeps that figure readable: without it the costless call answers
-# None, the whole script's arithmetic answers None with it, and the step is compared with
-# nothing and passes in silence (review round 6 of dispatch://INFRA-1545).
+# off it, so the budget is held to the 450 s. reached_arithmetic() charging nothing for an
+# uncounted call of a script that costs 0 s is what keeps that figure readable: without it the
+# costless call answers None, the whole script's arithmetic answers None with it, and the step is
+# compared with nothing and passes in silence (review round 6 of dispatch://INFRA-1545).
 echo "case: a priced script that also loops, uncounted, over a costless one keeps its figure"
 root=$(fixture script-priced-beside-costless-loop)
 cat > "$root/.github/scripts/zz-l.sh" <<'SH'
@@ -2736,6 +2737,35 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "refuses b, which no block of its own prices" \
   "$(contains "$out" "line=12::job 'b' carries .timeout-minutes: 29. and holds a retried step")"
+
+# The one id a block passes is written on the line directly below the block's last line. A file's
+# header comment sits at column 0, no deeper than the first job's id, so with `below == number`
+# dropped from the job-id stop the header's `-> 30 min` priced the first job's key, though `name:`,
+# `on:` and `jobs:` stand between the two. Review round 29 of dispatch://INFRA-1545 found that
+# mutant, and in round 36 the harness still passed 469 of 469 checks under it.
+echo "case: a file's header comment does not price the first job's key"
+root=$(fixture job-id-file-header)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+# The nightly run -> 30 min.
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses build, which no block of its own prices" \
+  "$(contains "$out" "line=7::job 'build' carries .timeout-minutes: 30. and holds a retried step")"
+check "says no comment block prices that key" \
+  "$(contains "$out" "no comment block prices that key")"
 
 # A key is paired by its file and its line. The two files below put their job keys on the same
 # line, and only the first prices its own; compared by the line alone, the pairing the first file
@@ -4682,6 +4712,65 @@ YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+# A script two paths reach is charged once, at its most expensive path, whatever the files are
+# named. Review round 29 of dispatch://INFRA-1545 drove this input: the step runs zz-a.sh three
+# times in a loop and zz-b.sh once, both call zz-c.sh, whose 180 s retry is 5 x 180 + 150 =
+# 1050 s, and the step's key is 20 minutes, 1200 s. Through zz-a.sh, zz-c.sh costs
+# 3 x 1050 = 3150 s. A walk charging zz-c.sh through the first path it visited charged 3150 s
+# here, and with zz-b.sh renamed zz-0.sh, which sorts before zz-a.sh, it charged 1050 s and
+# passed the step. Both names are refused with the same 3150 s.
+echo "case: a script two paths reach is charged at its most expensive path"
+root=$(fixture shared-script-most-expensive)
+cat > "$root/.github/scripts/zz-c.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+cat > "$root/.github/scripts/zz-a.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/zz-c.sh
+SH
+cp "$root/.github/scripts/zz-a.sh" "$root/.github/scripts/zz-b.sh"
+chmod +x "$root/.github/scripts/zz-a.sh" "$root/.github/scripts/zz-b.sh" \
+  "$root/.github/scripts/zz-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch through both scripts
+        timeout-minutes: 20
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/zz-a.sh
+          done
+          .github/scripts/zz-b.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges zz-c.sh through zz-a.sh's three passes, once" \
+  "$(contains "$out" 'its own retries take 3150 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 53')"
+
+echo "case: the same step with zz-b.sh renamed zz-0.sh, which sorts first, is charged the same"
+root=$(fixture shared-script-renamed)
+cp "$work/shared-script-most-expensive/.github/scripts/zz-a.sh" \
+  "$work/shared-script-most-expensive/.github/scripts/zz-c.sh" "$root/.github/scripts/"
+cp "$work/shared-script-most-expensive/.github/scripts/zz-b.sh" "$root/.github/scripts/zz-0.sh"
+chmod +x "$root/.github/scripts/zz-a.sh" "$root/.github/scripts/zz-0.sh" \
+  "$root/.github/scripts/zz-c.sh"
+sed 's/zz-b\.sh/zz-0.sh/' "$work/shared-script-most-expensive/.github/workflows/case.yaml" \
+  > "$root/.github/workflows/case.yaml"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges zz-c.sh through zz-a.sh's three passes, once" \
+  "$(contains "$out" 'its own retries take 3150 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 53')"
+
 # The promise rule 8 exists to keep: no retried job whose key is below its own sum reaches main.
 # Every case above proves one shape on a fixture written for it, which leaves open whether a shape
 # this repository's own tree holds hides a key, so this case drives the promise on a copy of the
@@ -4689,9 +4778,13 @@ check "exits 0" "$(is "$status" 0)"
 # sum, which is at or under that sum, and asks the gate to refuse that job's key by name. The sum
 # is the gate's: the largest of the slowest retried step's cost and, where the block that prices
 # the key holds a derivation whose arrow names the key and adds up, the last such derivation's
-# total and its measured term plus that cost. A mutant of the gate is then judged by whether it
-# can hide a real key, not by whether some fixture happened to hold the shape. The shapes are
-# seven ways a lowered key can be written:
+# total and its measured term plus that cost. That block is the one --jobs names in its sixth and
+# seventh columns: the case reads the gate's pairing and walks to no block of its own, since review
+# round 29 of dispatch://INFRA-1545 found it re-implementing the gate's pairing walk. Its program,
+# .github/scripts/download_retry_real_tree.py, reads the derivation inside that block, which is
+# the case's oracle for the sum. A mutant of the gate is then judged by whether it can hide a real
+# key, not by whether some fixture happened to hold the shape. The shapes are seven ways a lowered
+# key can be written:
 #   key           the key alone, its block left naming the old figure;
 #   arrows        the key, and every arrow of its block naming the old key moved to the new one;
 #   decoy-after   arrows, and a derivation whose arrow names another key appended to the block;
@@ -4704,11 +4797,12 @@ check "exits 0" "$(is "$status" 0)"
 #                 id, which ends its reach (only where nothing but YAML lies between that block
 #                 and this job's key, since a comment line there ends the reach anyway).
 # A refusal of one of the job's STEP keys does not count: the promise is about the job's key. Each
-# shape prints how many jobs it lowered, and must lower one, so a shape that silently lowers
-# nothing is seen; and the list the case walks is first held to the tree, so it is not narrower
-# than it: every workflow job that writes its own whole-number `timeout-minutes` and holds a site
-# --list prints must be in --jobs. A key written as an expression is outside, as the gate's header
-# says under A CEILING WRITTEN AS AN EXPRESSION (e2e.yaml's `proof`).
+# shape prints how many jobs it lowered. `key`, `arrows` and both decoys lower every job --jobs
+# lists and must lower exactly that many, and the other three must lower one at least, so a shape
+# that silently lowers fewer is seen; and the list the case walks is first held to the tree, so it
+# is not narrower than it: every workflow job that writes its own whole-number `timeout-minutes`
+# and holds a site --list prints must be in --jobs. A key written as an expression is outside, as
+# the gate's header says under A CEILING WRITTEN AS AN EXPRESSION (e2e.yaml's `proof`).
 # THIS CASE FOUND A GAP THE FIXTURES DID NOT: at the head before round 35, `arrows`, both decoys
 # and `split` left `download-retry`, `download-retry-images`, `re-record`, `embedder` and
 # `visual` unnamed, because the derivation clause read only the comment block directly above the
@@ -4724,270 +4818,19 @@ for dockerfile in packages/daemon/docker/worker.Dockerfile packages/envoy/docker
   packages/envoy/infra/host/heldportwrapper/Dockerfile; do
   cp "$repository/$dockerfile" "$tree/$dockerfile"
 done
-cat > "$work/real-tree.py" <<'PY'
-"""The real-tree case's four readings of a copy of this repository's tree.
-
-  rows <jobs>                         how many rows --jobs printed
-  cover <tree> <jobs> <sites>         the workflow jobs that write their own whole-number
-                                      `timeout-minutes`, hold a site --list prints and are not
-                                      in --jobs, on one line
-  shape <tree> <jobs> <shape> <copy>  rewrites the copy's workflows into the shape, and prints
-                                      `lowered <path> <job>` for each job whose key it lowered
-                                      and `split <path> <job>` for each derivation it split
-  unnamed <done> <gate output>        the lowered jobs no refusal of their own key names, on
-                                      one line
-
-<jobs> and <sites> are what the gate's --jobs and --list print over <tree>, and <done> is what
-`shape` printed; every line of them is tab-separated. A gate that refuses the tree prints its
-problems there instead of rows, so a line is read as a row only where it has a row's fields:
-round 35's mutation pass ended the harness with a traceback here, and no `Results:` line, under
-62 mutants that made the gate refuse the tree (dispatch://INFRA-1545, round 35).
-"""
-import re
-import sys
-from pathlib import Path
-
-import yaml
-
-DERIVATION = re.compile(r"(\d+)\s*\+\s*(\d+)\s*=\s*(\d+)\s*s\s*->\s*(\d+)\s*min")
-KEY = re.compile(r"^(\s*timeout-minutes:\s*)(\d+)(.*)$")
-SHAPES = ("key", "arrows", "decoy-after", "decoy-before", "split", "neighbour", "more-figures")
-
-
-def is_comment(text):
-    return text.lstrip().startswith("#")
-
-
-def lead(text):
-    return text[:len(text) - len(text.lstrip())]
-
-
-def workflow_jobs(text):
-    """Each job of a workflow, as id -> (its id's line, the line its value ends on, whether it
-    writes its own `timeout-minutes` as a whole number), lines counted from 0. A key written as
-    an expression is one the gate does not read, as its header says, so it is not counted."""
-    root = yaml.compose(text)
-    jobs = next(value for key, value in root.value if key.value == "jobs")
-    return {key.value: (key.start_mark.line, value.end_mark.line,
-                        isinstance(value, yaml.MappingNode)
-                        and any(name.value == "timeout-minutes"
-                                and isinstance(minutes, yaml.ScalarNode)
-                                and re.fullmatch(r"[0-9]+", minutes.value) is not None
-                                for name, minutes in value.value))
-            for key, value in jobs.value}
-
-
-def job_rows(jobs_file):
-    """The rows --jobs printed, as (path, job, key line counted from 0, minutes, cost): its lines
-    of eight tab-separated fields whose third, fourth and fifth are whole numbers."""
-    for line in Path(jobs_file).read_text().splitlines():
-        fields = line.split("\t")
-        if len(fields) == 8 and all(re.fullmatch(r"-?[0-9]+", field) for field in fields[2:5]):
-            path, job, key, minutes, cost, _first, _last, _step = fields
-            yield path, job, int(key) - 1, int(minutes), int(cost)
-
-
-def rows(jobs_file):
-    print(sum(1 for _ in job_rows(jobs_file)))
-
-
-def cover(tree, jobs_file, sites_file):
-    listed = {(path, job) for path, job, *_ in job_rows(jobs_file)}
-    sites: dict[str, set[int]] = {}
-    for line in Path(sites_file).read_text().splitlines():
-        # A site --list prints is four tab-separated fields: its path, line, verb and step.
-        fields = line.split("\t")
-        if len(fields) != 4 or not re.fullmatch(r"[0-9]+", fields[1]):
-            continue
-        path, number = fields[:2]
-        if path.startswith(".github/workflows/"):
-            sites.setdefault(path, set()).add(int(number) - 1)
-    omitted = []
-    for path, numbers in sorted(sites.items()):
-        jobs = workflow_jobs(Path(tree, path).read_text())
-        holders = set()
-        for number in numbers:
-            # The job a site is in: the last one whose id is at or above it and whose value
-            # reaches it.
-            held = [(start, job) for job, (start, end, _own) in jobs.items()
-                    if start <= number <= end]
-            if held:
-                holders.add(max(held)[1])
-        omitted += [f"{job} of {path}" for job in sorted(holders)
-                    if jobs[job][2] and (path, job) not in listed]
-    if omitted:
-        print(", ".join(omitted))
-
-
-def pricing_block(lines, key, id_line):
-    """The comment block that prices the key, as the gate pairs it: the nearest one above the
-    key, read past the job's own id only to a block directly above that id. As (first line,
-    last line), or None."""
-    index = key - 1
-    while index >= 0 and not is_comment(lines[index]):
-        if index == id_line and not (index > 0 and is_comment(lines[index - 1])):
-            return None
-        index -= 1
-    if index < 0:
-        return None
-    last = index
-    while index >= 0 and is_comment(lines[index]):
-        index -= 1
-    return index + 1, last
-
-
-def own_sum(block, minutes, cost):
-    """The job's own sum, as the gate holds its key to it: the slowest retried step's cost, and
-    where the block's last derivation whose arrow names the key adds up, its total and its
-    measured term plus that cost."""
-    stated = [match for match in DERIVATION.finditer(block)
-              if int(match.group(4)) == minutes
-              and int(match.group(1)) + int(match.group(2)) == int(match.group(3))]
-    if not stated:
-        return cost
-    measured, total = int(stated[-1].group(1)), int(stated[-1].group(3))
-    return max(cost, total, measured + cost)
-
-
-def shape_file(lines, jobs, shape):
-    """Rewrites one workflow's lines, in place, into the shape, and returns what it did, as
-    (`lowered` or `split`, job) pairs."""
-    ids = {job: start for job, (start, _end, _own) in workflow_jobs("\n".join(lines)).items()}
-    plans = []
-    for job, key, minutes, cost in jobs:
-        block = pricing_block(lines, key, ids[job])
-        text = " ".join(lines[index].lstrip().lstrip("#").strip()
-                        for index in range(block[0], block[1] + 1)) if block else ""
-        low = own_sum(text, minutes, cost) // 60
-        if low < 1 or low >= minutes or (block is None and shape != "key"):
-            continue
-        # A neighbour's price needs a job above this one to be its neighbour.
-        if shape in ("neighbour", "more-figures") and ids[job] == min(ids.values()):
-            continue
-        plans.append((job, key, minutes, low, block))
-
-    # Every edit is keyed by the original line it applies at, and the file is rebuilt in one
-    # pass: a line's new text, lines inserted before a line, and a block replaced whole.
-    text_at: dict[int, str] = {}
-    before: dict[int, list[str]] = {}
-    replace: dict[int, tuple[int, list[str]]] = {}
-    gone = set()
-    if shape in ("neighbour", "more-figures"):
-        gone = {index for _job, _key, _minutes, _low, (first, last) in plans
-                for index in range(first, last + 1)}
-    done = []
-    for job, key, minutes, low, block in plans:
-        if shape == "more-figures":
-            # The last comment line above this job's key once its own block is gone. Where that
-            # ends a block of the previous job, with YAML between it and this job's id, the block
-            # is given arrows naming the lowered key, more of them than the keys left below it
-            # before that id: no comment line stands between it and this key, so only the id ends
-            # its reach, and a gate that let it run on would price this job's key with it.
-            # Elsewhere a comment line ends the reach whatever the gate does with the id, so the
-            # job proves nothing about the id and is left alone. The block need not have held an
-            # arrow before: in round 35 none of this tree's blocks so placed held one, so a shape
-            # asking for one lowered nothing, and the last arrow block before the id, which an
-            # earlier draft of this case took, hid no key even from a gate whose pairing walk does
-            # not stop at the id (dispatch://INFRA-1545, round 35).
-            previous = max(start for start in ids.values() if start < ids[job])
-            end = key - 1
-            while end > previous and (end in gone or not is_comment(lines[end])):
-                end -= 1
-            if not previous < end < ids[job] - 1:
-                continue
-            keys = sum(1 for index in range(end + 1, ids[job]) if KEY.match(lines[index]))
-            text_at[end] = (lines[end] + " The property case's floors: "
-                            + " ".join([f"-> {low} min"] * (keys + 1)) + ".")
-        text_at[key] = KEY.sub(lambda found: f"{found.group(1)}{low}{found.group(3)}", lines[key])
-        done.append(("lowered", job))
-        if shape == "key":
-            continue
-        first, last = block
-        if shape == "neighbour":
-            # The job's own price goes, and a step-depth comment stands directly over its id
-            # with the lowered key's arrow, deeper than the id, so it prices no job.
-            before.setdefault(ids[job], []).append(
-                f"{lead(lines[ids[job]])}    # The neighbour step's own price -> {low} min.")
-        if shape in ("neighbour", "more-figures"):
-            replace[first] = (last, [])
-            continue
-        arrow = re.compile(rf"->\s*{minutes}\s*min")
-        new = [arrow.sub(f"-> {low} min", lines[index]) for index in range(first, last + 1)]
-        if shape == "decoy-after":
-            new.append(f"{lead(lines[last])}# A decoy the property case adds: "
-                       f"1 + 1 = 2 s -> {low + 500} min.")
-        elif shape == "decoy-before":
-            new.insert(0, f"{lead(lines[first])}# A decoy the property case adds: "
-                          f"1 + 1 = 2 s -> {low} min.")
-        elif shape == "split":
-            # The derivation the gate reads, the last naming the key, broken after its `=`.
-            sum_of = re.compile(rf"\d+\s*\+\s*\d+\s*=\s*(?=\d+\s*s\s*->\s*{low}\s*min)")
-            for index in reversed(range(len(new))):
-                found = list(sum_of.finditer(new[index]))
-                if found:
-                    cut = found[-1].end()
-                    new[index:index + 1] = [new[index][:cut].rstrip(),
-                                            f"{lead(new[index])}# {new[index][cut:].lstrip()}"]
-                    done.append(("split", job))
-                    break
-        replace[first] = (last, new)
-
-    out: list[str] = []
-    index = 0
-    while index < len(lines):
-        out.extend(before.get(index, []))
-        if index in replace:
-            end, new = replace[index]
-            out.extend(new)
-            index = end + 1
-            continue
-        out.append(text_at.get(index, lines[index]))
-        index += 1
-    lines[:] = out
-    return done
-
-
-def reshape(tree, jobs_file, shape, copy):
-    if shape not in SHAPES:
-        raise SystemExit(f"no shape {shape!r}: the shapes are {', '.join(SHAPES)}")
-    by_path: dict[str, list[tuple[str, int, int, int]]] = {}
-    for path, job, key, minutes, cost in job_rows(jobs_file):
-        by_path.setdefault(path, []).append((job, key, minutes, cost))
-    for path, jobs in sorted(by_path.items()):
-        lines = Path(tree, path).read_text().split("\n")
-        for kind, job in shape_file(lines, jobs, shape):
-            print(f"{kind}\t{path}\t{job}")
-        Path(copy, path).write_text("\n".join(lines))
-
-
-def unnamed(done_file, output_file):
-    output = Path(output_file).read_text().splitlines()
-    missing = []
-    for line in Path(done_file).read_text().splitlines():
-        kind, path, job = line.split("\t")
-        if kind == "lowered" and not any(
-                refusal.startswith(f"::error file={path},")
-                and (f"job '{job}' carries" in refusal or f"the key of job '{job}'," in refusal)
-                for refusal in output):
-            missing.append(f"{job} of {path}")
-    if missing:
-        print(", ".join(missing))
-
-
-{"rows": rows, "cover": cover, "shape": reshape, "unnamed": unnamed}[sys.argv[1]](*sys.argv[2:])
-PY
+real_tree="$script_dir/download_retry_real_tree.py"
 set +e
 run_gate null "$tree" --jobs
 set -e
 jobs_status=$status
 check "--jobs over the tree exits 0" "$(is "$jobs_status" 0)"
 if [ -n "$out" ]; then printf '%s\n' "$out"; fi > "$work/real-tree.jobs"
-listed=$(python3 "$work/real-tree.py" rows "$work/real-tree.jobs")
+listed=$(python3 "$real_tree" rows "$work/real-tree.jobs")
 check "--jobs lists at least one job (it lists $listed)" "$([ "$listed" -ge 1 ] && echo true || echo false)"
 list_check "$tree"
 check "--list over the tree exits 0" "$(is "$status" 0)"
 if [ -n "$out" ]; then printf '%s\n' "$out"; fi > "$work/real-tree.sites"
-omitted=$(python3 "$work/real-tree.py" cover "$tree" "$work/real-tree.jobs" "$work/real-tree.sites")
+omitted=$(python3 "$real_tree" cover "$tree" "$work/real-tree.jobs" "$work/real-tree.sites")
 check "--jobs omits no workflow job that writes its own whole-number key and holds a site --list prints${omitted:+; it omits $omitted}" \
   "$(is "$omitted" "")"
 # The shapes lower the jobs --jobs lists, so where it refused the tree or listed none there is
@@ -4999,18 +4842,28 @@ else
   for shape in key arrows decoy-after decoy-before split neighbour more-figures; do
     copy="$work/real-tree-$shape"
     cp -R "$tree" "$copy"
-    python3 "$work/real-tree.py" shape "$tree" "$work/real-tree.jobs" "$shape" "$copy" > "$copy.done"
+    python3 "$real_tree" shape "$tree" "$work/real-tree.jobs" "$shape" "$copy" > "$copy.done"
     lowered=$(grep -c '^lowered' "$copy.done" || true)
     if [ "$shape" = split ]; then
       echo "  $shape: lowered $lowered job(s), split $(grep -c '^split' "$copy.done" || true) derivation(s)"
     else
       echo "  $shape: lowered $lowered job(s)"
     fi
-    check "$shape: lowers at least one job" "$([ "$lowered" -ge 1 ] && echo true || echo false)"
+    # These four shapes lower every job --jobs lists, so each is held to that number and cannot
+    # shrink in silence; the other three lower only the jobs their shape fits, and are held to
+    # one at least.
+    case "$shape" in
+      key | arrows | decoy-after | decoy-before)
+        check "$shape: lowers every job --jobs lists ($lowered of $listed)" "$(is "$lowered" "$listed")"
+        ;;
+      *)
+        check "$shape: lowers at least one job" "$([ "$lowered" -ge 1 ] && echo true || echo false)"
+        ;;
+    esac
     run_check "$copy"
     check "$shape: exits 1" "$(is "$status" 1)"
     printf '%s\n' "$out" > "$copy.out"
-    unnamed=$(python3 "$work/real-tree.py" unnamed "$copy.done" "$copy.out")
+    unnamed=$(python3 "$real_tree" unnamed "$copy.done" "$copy.out")
     check "$shape: a refusal of its own key names every job it lowered${unnamed:+; none names $unnamed}" \
       "$(is "$unnamed" "")"
   done
