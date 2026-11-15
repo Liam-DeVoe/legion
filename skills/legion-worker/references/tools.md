@@ -606,7 +606,10 @@ something to count.
   A server with JetStream on a fixed store loads its streams again when it starts again, and a
   stream left over `notifications.>` captures and acknowledges the relay frames these suites wait
   for: 40 cases of five `-omp` files failed against one, and all 40 passed on a server without
-  JetStream.
+  JetStream. `pi-legion`'s real-binary suite measured the same on 2026-11-13: 12 cases failed
+  against a JetStream server started again on an earlier run's store, whose `ENVOY_NOTIFICATIONS`
+  stream answered a relay frame, and 914 of 914 passed on an empty store
+  (cybermonklabs/legion#4041).
 - **The rest, by package**, for a named run the pod does make. A Postgres unpacked from Debian
   packages (the harness under **The worked case** of `withheld-capability.md`) has only the
   `C`, `C.utf8` and `POSIX` locales, so its default collation is byte order, and
