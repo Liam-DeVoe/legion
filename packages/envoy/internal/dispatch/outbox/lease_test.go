@@ -564,20 +564,26 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // (lease.go:500-503), and only that timer firing with the client still down ends the turn as NATS
 // lost (lease.go:551-557), so a release inside the grace is a holder that gave the hold up early.
 // Load can only make that bound safer, since a loaded machine delays the release and never
-// hastens it. Above, the release must come within 500 ms of the grace, and the event written
-// after it must be published within 10 s of the cut: the cut closes the connection, so the loss
+// hastens it. Above, the release must come within releaseAfterLoss of the grace, and the event
+// written
+// after it must be published within 15 s of the cut: the cut closes the connection, so the loss
 // is reported by the client's own connection event (bus.Client.Connected reads the connection's
 // status, nats.go:573-577) and nothing polls on an interval, which leaves between the grace and
 // the release only a run of goroutine wakes - the client's callback, the holder's wake, the
 // timer, serve's return and publish's clearing of the hold (lease.go:443-451). A release well
 // past the grace is a holder that kept the hold through an outage it should have given up, and a
-// wait on eventWait would pass it. Those 500 ms ran out once under CI's eight concurrent go test
-// calls (run 42949344199); the row keeps them all the same. Running serial keeps this package's
+// wait on eventWait would pass it. What that upper bound must not be is a reading of the
+// machine: at 500 ms it failed twice under the lane's own load, once under CI's eight concurrent
+// go test calls (run 42949344199) and once with 111 test binaries running at once (run
+// 43716631673, job 132819560357), each time on goroutine wakes rather than on the product. The
+// bound is therefore sized for a loaded runner and still far below eventWait, which is what it
+// has to beat to mean anything. Running serial keeps this package's
 // parallel tests from running beside it, though the other packages' tests still share the
 // machine.
 //
-// Serial: its assertion is a time - the release must fall between natsLossGrace and 500 ms past
-// it, and the publish within 10 s of the cut (docs/testing.md). Besides, a holder whose renewals
+// Serial: its assertion is a time - the release must fall between natsLossGrace and
+// releaseAfterLoss past it, and the publish within 15 s of the cut (docs/testing.md). Besides, a
+// holder whose renewals
 // a parallel batch starves for the 4 s from a confirmed renewal to the loss deadline
 // (publisherHoldOptions, TTL less Margin) reports the hold lost and ends its turn before the
 // grace runs out, and the row would then be reading that load rather than the product.
@@ -597,7 +603,7 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	// wait's own start, just after the cut.
 	downAt := time.Now()
 	proxy.Cut()
-	waitFor(t, natsLossGrace+500*time.Millisecond, "the cut process releasing the publisher hold within 500 ms of natsLossGrace", func() bool {
+	waitFor(t, natsLossGrace+releaseAfterLoss, "the cut process releasing the publisher hold within "+releaseAfterLoss.String()+" of natsLossGrace", func() bool {
 		return cut.outbox.hold.Load() == nil
 	})
 	released := time.Since(downAt)
@@ -607,7 +613,7 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 			released.Round(time.Millisecond), natsLossGrace)
 	}
 	event := writeMessage(t, working, "after the cut")
-	waitForPublished(t, 10*time.Second-time.Since(downAt), database, counter, event)
+	waitForPublished(t, 15*time.Second-time.Since(downAt), database, counter, event)
 	if !working.outbox.Publishing() || cut.outbox.Publishing() {
 		t.Fatalf("publishing %v after the cut, want only the process whose NATS works", publishing(cut, working))
 	}
