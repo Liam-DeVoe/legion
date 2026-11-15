@@ -214,3 +214,39 @@ func TestAWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestAMinNPastWhatTheStoreHoldsIsRefusedNamingItsField: a series' min_n is a whole number the
+// register write takes on a computed eval and a logged one alike (R5), and the store holds it as
+// a 32-bit integer. A min_n past 2,147,483,647 is refused with a stable {code, error} and stores
+// no version, as a min_n below 0 is, rather than reaching the store and answering 500; the largest
+// value the store holds is still taken.
+func TestAMinNPastWhatTheStoreHoldsIsRefusedNamingItsField(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals",
+		map[string]any{"slug": "logged-min-n", "series": []any{map[string]any{"series": "value"}}}, "logged-min-n")
+	if logged.Code != http.StatusCreated {
+		t.Fatalf("register logged-min-n: status %d, body %s", logged.Code, logged.Body.String())
+	}
+	for _, eval := range []struct{ slug, series string }{{"pr-ci", "job:*"}, {"logged-min-n", "value"}} {
+		versions := func() int64 {
+			return countRows(t, database, `select count(*) from eval_series where eval_id = $1 and series = $2`, "EVL/"+eval.slug, eval.series)
+		}
+		for _, minN := range []int64{2147483648, 3000000000, 9223372036854775807} {
+			before := versions()
+			response := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals", map[string]any{
+				"slug": eval.slug, "series": []any{map[string]any{"series": eval.series, "min_n": minN}},
+			}, fmt.Sprintf("%s-min-n-%d", eval.slug, minN))
+			checkRefusedWithACode(t, fmt.Sprintf("%s's series %s with min_n %d", eval.slug, eval.series, minN), response.Code, response.Body.Bytes())
+			if after := versions(); after != before {
+				t.Errorf("%s's refused min_n %d wrote versions of %s: %d before, %d after", eval.slug, minN, eval.series, before, after)
+			}
+		}
+		held := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals", map[string]any{
+			"slug": eval.slug, "series": []any{map[string]any{"series": eval.series, "min_n": 2147483647}},
+		}, eval.slug+"-min-n-largest")
+		if held.Code != http.StatusCreated {
+			t.Errorf("%s's series %s with min_n 2147483647: status %d, body %.300s; want 201", eval.slug, eval.series, held.Code, held.Body.String())
+		}
+	}
+}
