@@ -857,6 +857,84 @@ func TestGoingUndoOfAnApprovalRequestWhoseRecordDoesNotDecodeRetractsNothing(t *
 	}
 }
 
+// TestGoingUndoOfAnApprovalRequestWhoseRecordNamesNoAskRetractsNothing (the class of review round
+// 2's finding D): an approval request whose record says it opened an ask and does not name that
+// ask as text cannot tell which ask to retract, so its undo is the server's own failure, 500,
+// which settles nothing, rather than an undo answered ok for an ask it never retracted; the ask
+// stays open.
+func TestGoingUndoOfAnApprovalRequestWhoseRecordNamesNoAskRetractsNothing(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Approval, its ask garbled", "The spec.\n").Key
+	run, opened := rig.runOne(t, "dispatch_request_approval", map[string]any{"issue": issue, "artifact": "spec", "summary": "Ready."}, nil)
+	if _, err := rig.database.Pool.Exec(context.Background(),
+		`update going_runs set writes = jsonb_set(writes, '{0,after,ask}', '7') where id = $1::uuid`, run); err != nil {
+		t.Fatalf("garble the record's value after: %v", err)
+	}
+	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	if line.Outcome.Status != http.StatusInternalServerError || goingUndoSettles(line.Outcome) {
+		t.Fatalf("the undo of a request whose record names no ask answered %+v, want the server's own 500, unsettled", line.Outcome)
+	}
+	if state := decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+opened.Item, nil)).Ask.State; state != "open" {
+		t.Fatalf("the approval ask is %s after the failed undo, want open", state)
+	}
+}
+
+// TestGoingUndoOfAnAdvancesRelationWhoseRecordDoesNotDecodeClearsNothing (the class of review round
+// 2's finding D): a write of an issue's advances relation whose record holds a value before that
+// does not decode holds no ids to put back, so its undo refuses the relation, naming why, and
+// writes nothing: the relation the turn left stands, rather than an empty set written back over
+// it.
+func TestGoingUndoOfAnAdvancesRelationWhoseRecordDoesNotDecodeClearsNothing(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Advancing, garbled", "The spec.\n").Key
+	first := createTestPriority(t, rig.mux, map[string]any{"title": "Ship the daemon"}, "alice").ID
+	second := createTestPriority(t, rig.mux, map[string]any{"title": "Cut the queue"}, "alice").ID
+	rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"advances": []string{first}})
+	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{
+		"issue": issue, "advances": []any{second}, "advances_revision": rig.issueRead(t, issue).AdvancesRevision,
+	}, nil)
+	if _, err := rig.database.Pool.Exec(context.Background(),
+		`update going_runs set writes = jsonb_set(writes, '{0,before,advances,ids}', '"not a list"') where id = $1::uuid`, run); err != nil {
+		t.Fatalf("garble the record's value before: %v", err)
+	}
+	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	if len(line.Fields) != 1 || line.Fields[0].Field != goingAdvances || line.Fields[0].OK || !strings.Contains(line.Fields[0].Message, "advances") {
+		t.Fatalf("the undo answered %+v, want advances refused, naming why", line)
+	}
+	if read := rig.issueRead(t, issue); !slices.Equal(advanceEntries(read.Advances), []string{second + " own"}) {
+		t.Fatalf("the undo left %s advancing %v, want the %s the turn left kept", issue, advanceEntries(read.Advances), second)
+	}
+}
+
+// TestGoingUndoOfACreatedIssueWhoseRecordDoesNotDecodeClosesNothing (the class of review round 2's
+// finding D): an issue the turn created whose record holds a value after that does not decode
+// does not say the status the turn left it in, so its undo is the server's own failure, 500,
+// which settles nothing, and posts no reason and closes nothing, rather than holding the issue to
+// the status it reads now.
+func TestGoingUndoOfACreatedIssueWhoseRecordDoesNotDecodeClosesNothing(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
+	run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made, its record garbled", "force": true}, nil)
+	status := rig.issueRead(t, made.Item).Status
+	if _, err := rig.database.Pool.Exec(context.Background(),
+		`update going_runs set writes = jsonb_set(writes, '{0,after,status}', '7') where id = $1::uuid`, run); err != nil {
+		t.Fatalf("garble the record's value after: %v", err)
+	}
+	const reason = "Undone from a garbled record."
+	line := oneLine(t, rig.undo(t, "alice", run, map[string]any{"reason": reason}), false)
+	if line.Outcome.Status != http.StatusInternalServerError || goingUndoSettles(line.Outcome) {
+		t.Fatalf("the undo of a create whose record does not decode answered %+v, want the server's own 500, unsettled", line.Outcome)
+	}
+	if now := rig.issueRead(t, made.Item).Status; now != status {
+		t.Fatalf("the created issue is %s after the failed undo, want it %s still", now, status)
+	}
+	var posted int
+	if err := rig.database.Pool.QueryRow(context.Background(),
+		`select count(*) from messages where issue_key = $1 and body = $2`, made.Item, reason).Scan(&posted); err != nil || posted != 0 {
+		t.Fatalf("the created issue holds %d messages saying %q (%v), want no reason posted", posted, reason, err)
+	}
+}
+
 // TestGoingUndoMadeAndNotRecordedKeepsItsClaim (review round 2, finding E): an undo that put the
 // newest write back and whose record the database refused keeps that write's undo claimed, as a
 // write whose record failed keeps its claim, while the claim of the write it never reached is

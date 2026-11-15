@@ -500,7 +500,11 @@ func (o goingObserver) issueFields(ctx context.Context, key string, fields []str
 			values[field] = place
 			continue
 		}
-		values[field] = goingIssueFieldValue(issue, field)
+		value, err := goingIssueFieldValue(issue, field)
+		if err != nil {
+			return goingObservation{target: key, fields: fields, issue: key}, fmt.Errorf("read %s's %s: %w", key, field, err)
+		}
+		values[field] = value
 	}
 	return goingObservation{target: key, fields: fields, issue: key, value: values}, nil
 }
@@ -508,8 +512,9 @@ func (o goingObserver) issueFields(ctx context.Context, key string, fields []str
 // goingIssueUpdated is what an update of the issue's fields found and left, read off its route's
 // answer (issueUpdated): each field before.fields names as the update left it (value), and as the
 // update found it under the issue's lock (stood), the rank as the places the update answers. An
-// answer that does not say what the update found of a field it writes is the value after unread,
-// so the undo puts nothing back.
+// answer that does not say what the update found of a field it writes, or says what it found or
+// left in a value that does not decode (goingIssueFieldValue), is the value after unread, so the
+// undo puts nothing back.
 func goingIssueUpdated(answer []byte, before goingObservation) (goingObservation, error) {
 	observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue}
 	var issue map[string]json.RawMessage
@@ -537,7 +542,15 @@ func goingIssueUpdated(answer []byte, before goingObservation) (goingObservation
 			left[field], found[field] = to, from
 			continue
 		}
-		left[field], found[field] = goingIssueFieldValue(issue, field), goingIssueFieldValue(previous, field)
+		value, err := goingIssueFieldValue(issue, field)
+		if err != nil {
+			return observed, fmt.Errorf("the update's answer does not say what it left of %s: %w", field, err)
+		}
+		stood, err := goingIssueFieldValue(previous, field)
+		if err != nil {
+			return observed, fmt.Errorf("the update's answer does not say what it found of %s: %w", field, err)
+		}
+		left[field], found[field] = value, stood
 	}
 	observed.value, observed.stood = left, goingJSONOrNull(found)
 	return observed, nil
@@ -589,15 +602,24 @@ func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared,
 // goingIssueFieldValue is one field of an issue's read as an update writes it. The advances
 // relation is the issue's own priority ids and its revision (goingAdvancesValue): a write replaces
 // the own set, so inherited entries are no part of its value and the revision is what the undo's
-// write back carries.
-func goingIssueFieldValue(issue map[string]json.RawMessage, field string) any {
+// write back carries. A value that does not decode, an advances relation with no revision beside
+// it among them, is an error, never an empty value: recorded as the value a write found or left,
+// an empty set at revision 0 would be what an undo writes back over the relation.
+func goingIssueFieldValue(issue map[string]json.RawMessage, field string) (any, error) {
 	raw := issue[field]
 	if field == goingAdvances {
 		var entries []model.IssueAdvance
-		_ = json.Unmarshal(raw, &entries)
-		var revision int64
-		_ = json.Unmarshal(issue["advances_revision"], &revision)
-		return goingAdvancesValue{IDs: ownAdvances(entries), Revision: revision}
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return nil, fmt.Errorf("decode advances: %w", err)
+		}
+		var revision *int64
+		if err := json.Unmarshal(issue["advances_revision"], &revision); err != nil {
+			return nil, fmt.Errorf("decode advances_revision: %w", err)
+		}
+		if revision == nil {
+			return nil, errors.New("advances_revision is null")
+		}
+		return goingAdvancesValue{IDs: ownAdvances(entries), Revision: *revision}, nil
 	}
 	if field == "components" {
 		var components model.IssueComponents
@@ -606,17 +628,17 @@ func goingIssueFieldValue(issue map[string]json.RawMessage, field string) any {
 			if ids == nil {
 				ids = []string{}
 			}
-			return map[string]any{"mode": components.Mode, "ids": ids, "reason": components.Reason}
+			return map[string]any{"mode": components.Mode, "ids": ids, "reason": components.Reason}, nil
 		}
 	}
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	var value any
-	if json.Unmarshal(raw, &value) != nil {
-		return nil
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", field, err)
 	}
-	return value
+	return value, nil
 }
 
 // claim is who holds the issue's claim, nil for nobody.

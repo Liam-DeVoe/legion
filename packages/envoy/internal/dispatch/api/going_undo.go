@@ -498,9 +498,11 @@ const goingRank = "rank"
 // issue's own priority ids before the write, carrying the revision the write left as the route's
 // own compare-and-set (advances_revision, refuseAdvancesRevision): a second writer who changed the
 // relation since moved its revision, so the write back is refused, 409 ADVANCES_REVISION, and
-// nothing is written. Every other field the update expects to hold what the write left
-// (goingCondition.Expect, which the write back carries on the request's context), its rank the
-// rank string, so a change another writer makes after the read is refused by the update itself.
+// nothing is written. A rank or an advances relation whose recorded values do not decode is left
+// as it is, refused naming why, and never written back as an empty value in their place. Every
+// other field the update expects to hold what the write left (goingCondition.Expect, which the
+// write back carries on the request's context), its rank the rank string, so a change another
+// writer makes after the read is refused by the update itself.
 func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome, []goingUndoField) {
 	read := func(fields []string) (map[string]any, error) {
 		current, err := u.observer.issueFields(ctx, write.Target, fields)
@@ -519,13 +521,14 @@ func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any,
 			if heldValue.Revision != afterValue.Revision {
 				return nil, fmt.Sprintf("advances holds revision %d now, which another write left", heldValue.Revision), nil
 			}
+			// The record's own ids before the write are what is written back: a value before that
+			// does not decode, or names no ids, holds nothing to put back, and writing back an empty
+			// set in its place would clear the relation.
 			var beforeValue goingAdvancesValue
-			_ = json.Unmarshal(before, &beforeValue)
-			ids := beforeValue.IDs
-			if ids == nil {
-				ids = []string{}
+			if json.Unmarshal(before, &beforeValue) != nil || beforeValue.IDs == nil {
+				return nil, "advances: the write's record holds no priority ids to write back", nil
 			}
-			return ids, "", nil
+			return beforeValue.IDs, "", nil
 		case goingRank:
 			var heldPlace, beforePlace, afterPlace issueRankPlace
 			if json.Unmarshal(held, &heldPlace) != nil || json.Unmarshal(before, &beforePlace) != nil || json.Unmarshal(after, &afterPlace) != nil {
@@ -976,9 +979,9 @@ func (u goingUndoer) comment(ctx context.Context, write goingRunWrite) (any, goi
 // retract undoes an ask the turn opened, an approval request's among them, by retracting it while
 // it is still open. An approval request its route answered opened no ask (opened false in the
 // record's value after) - it renewed one already open, or the documents stood approved - is
-// undone by nothing. A record whose value after does not decode, or does not say whether an
-// approval request opened its ask, is the server's own failure, as claim answers one, and
-// retracts nothing: it leaves the write undoable.
+// undone by nothing. A record whose value after does not decode, does not say whether an
+// approval request opened its ask, or says it opened one and does not name it as text, is the
+// server's own failure, as claim answers one, and retracts nothing: it leaves the write undoable.
 func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome) {
 	var after struct {
 		ID     string `json:"id"`
@@ -990,7 +993,6 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 	}
 	ask := after.ID
 	if write.Action == "dispatch_request_approval" {
-		ask, _ = after.Ask.(string)
 		if after.Opened == nil {
 			return nil, goingFailed(errors.New("the write's record does not say whether the approval request opened its ask"))
 		}
@@ -998,6 +1000,11 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 			return nil, goingWriteOutcome{OK: true, Status: http.StatusOK,
 				Message: "the approval route answered that this write opened no ask - it renewed one already open - so there is none to retract"}
 		}
+		opened, named := after.Ask.(string)
+		if !named || opened == "" {
+			return nil, goingFailed(errors.New("the write's record says the approval request opened an ask and does not name it"))
+		}
+		ask = opened
 	}
 	if ask == "" {
 		return nil, goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "this write opened no ask, so there is none to retract"}
@@ -1023,7 +1030,9 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 // GOING_UNDO_CHANGED, before anything is posted, and the close expects that status too
 // (goingCondition.Expect, on the request's context), decided under the issue's lock, so a move
 // made after the undo's read is never closed over either: that refusal, 409 ISSUE_CHANGED, is
-// the issue changed, and settles.
+// the issue changed, and settles. A record whose value after does not decode is the server's own
+// failure, as retract answers one: nothing is read, posted or closed, and the write stays
+// undoable.
 // Where an earlier undo of the write posted the reason (landed) and its close was refused, the
 // reason is not posted again: the undo resumes at the close. A close refused after the reason
 // landed is answered naming the reason that stands (goingRefusal.after), as a write's refused line
@@ -1037,6 +1046,12 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 		return nil, goingWriteOutcome{OK: true, Status: http.StatusOK, Message: fmt.Sprintf(
 			"this create made no issue: Dispatch already held %s for the external issue it named, so nothing was closed", write.Target)}, nil
 	}
+	var made struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(write.After, &made); err != nil {
+		return nil, goingFailed(fmt.Errorf("the write's record holds no status the issue was left in: %w", err)), nil
+	}
 	var issue struct {
 		Status   string  `json:"status"`
 		ClosedAt *string `json:"closed_at"`
@@ -1047,14 +1062,10 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 	if issue.ClosedAt != nil {
 		return issue.Status, goingChanged([]string{"the issue is closed already, at " + *issue.ClosedAt}, nil), nil
 	}
-	var made struct {
-		Status string `json:"status"`
-	}
-	_ = json.Unmarshal(write.After, &made)
 	left := made.Status
 	if left == "" {
-		// A record whose value after names no status - one written before the write recorded
-		// it - is held to the status the undo reads, as before.
+		// A record whose value after decodes and names no status - one written before the write
+		// recorded it - is held to the status the undo reads, as before.
 		left = issue.Status
 	}
 	if issue.Status != left {

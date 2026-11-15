@@ -1611,6 +1611,77 @@ func TestGoingWriteWhoseValueAfterWasNotReadIsNeverUndoneAsNothing(t *testing.T)
 	}
 }
 
+// TestGoingWriteOfAdvancesWhoseAnswerDoesNotDecodeIsRecordedUnread (the class of review round 2's
+// finding D, in the record): an update whose route's answer holds an advances relation or a
+// revision, found or left, that does not decode says nothing of what the write did to the
+// relation, so the write is recorded with its value after unread and its undo is refused, 409
+// GOING_UNDO_AFTER_UNREAD, writing nothing back, rather than recorded as an empty set at revision
+// 0, which an undo would compare with or write back over the relation.
+func TestGoingWriteOfAdvancesWhoseAnswerDoesNotDecodeIsRecordedUnread(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
+	first := createTestPriority(t, rig.mux, map[string]any{"title": "Ship the daemon"}, "alice").ID
+	second := createTestPriority(t, rig.mux, map[string]any{"title": "Cut the queue"}, "alice").ID
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, tc := range []struct {
+		name  string
+		field string
+		// found garbles what the update found (previous) rather than what it left.
+		found bool
+	}{
+		{"the relation it left", "advances", false},
+		{"the revision it left", "advances_revision", false},
+		{"the relation it found", "advances", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := rig.issue(t, "Advancing, answered garbled: "+tc.name)
+			rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"advances": []string{first}})
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/issues/"+issue {
+					inner.ServeHTTP(w, r)
+					return
+				}
+				served := httptest.NewRecorder()
+				inner.ServeHTTP(served, r)
+				var answer, previous map[string]json.RawMessage
+				if err := json.Unmarshal(served.Body.Bytes(), &answer); err != nil {
+					t.Errorf("read the update's answer: %v", err)
+				}
+				if err := json.Unmarshal(answer["previous"], &previous); err != nil {
+					t.Errorf("read what the update found: %v", err)
+				}
+				garbled := answer
+				if tc.found {
+					garbled = previous
+				}
+				garbled[tc.field] = json.RawMessage(`"not a list or a number"`)
+				answer["previous"] = goingJSONOrNull(previous)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(served.Code)
+				_ = json.NewEncoder(w).Encode(answer)
+			})
+			run, line := rig.runOne(t, "dispatch_issue_update", map[string]any{
+				"issue": issue, "advances": []any{second}, "advances_revision": rig.issueRead(t, issue).AdvancesRevision,
+			}, nil)
+			rig.served.inProcess = inner
+			if !line.Outcome.OK {
+				t.Fatalf("the write answered %+v, want it landed", line)
+			}
+			if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || !writes[0].AfterUnread {
+				t.Fatalf("the run keeps %+v, want the write marked with its value after unread", writes)
+			}
+			undone := oneLine(t, rig.undo(t, "alice", run, nil), false)
+			if undone.Outcome.Code != codeGoingUndoAfterUnread {
+				t.Fatalf("the undo answered %+v, want 409 %s", undone.Outcome, codeGoingUndoAfterUnread)
+			}
+			if read := rig.issueRead(t, issue); !slices.Equal(advanceEntries(read.Advances), []string{second + " own"}) {
+				t.Fatalf("the refused undo left %s advancing %v, want the %s the turn left kept", issue, advanceEntries(read.Advances), second)
+			}
+		})
+	}
+}
+
 // goingRefusalSeen is a refusal's status and code, which ruling A holds alike on both paths.
 type goingRefusalSeen struct {
 	Status int

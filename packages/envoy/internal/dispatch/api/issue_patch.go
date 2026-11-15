@@ -83,7 +83,11 @@ func issueExpectationRefusal(issue model.Issue, expect map[string]json.RawMessag
 		if !issueExpectableFields[field] {
 			return errorf(http.StatusBadRequest, "INVALID_ISSUE", "the condition names %q, which is no field of an issue an update writes", field)
 		}
-		if now := goingJSONOrNull(goingIssueFieldValue(held, field)); !goingSameJSON(now, expect[field]) {
+		value, err := goingIssueFieldValue(held, field)
+		if err != nil {
+			return err
+		}
+		if now := goingJSONOrNull(value); !goingSameJSON(now, expect[field]) {
 			changed = append(changed, fmt.Sprintf("%s holds %s", field, now))
 		}
 	}
