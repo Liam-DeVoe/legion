@@ -469,10 +469,17 @@ function truncateUtf8(text: string, max: number): string {
 
 /** The value of the API-key and bare bearer rules: the whole word after the label, whatever its
  * shape, held markers included, as the daemon's `labeledWord`, whose comment explains it. It runs
- * to the next space or quote, and takes a run of backslashes and closing brackets only where
- * another of its characters follows, so a quoted value keeps its closing quote, escaped or not, and
- * a header the Authorization rule masked keeps its closing bracket. */
-const LABELED_WORD = String.raw`(?:[^ "'\\)\]}>]|[\\)\]}>]+[^ "'\\)\]}>])+`;
+ * to the next space or quote, and a backslash or a closing bracket starts a run of backslashes,
+ * closing brackets and the punctuation `,;:.!?` that it takes only where a character that is none
+ * of these, and no space or quote, follows the run. So a quoted value keeps its closing quote,
+ * escaped or not, and a header the Authorization rule masked keeps its closing bracket and the text
+ * after it, such as `): 401` or `), retrying`, while a run that another of the word's characters
+ * follows (`ab).x`, `ab).)x`) is masked with the rest of the word. Only the run's alternative takes
+ * a backslash or a bracket, and the run shares no character with the one that must follow it, so
+ * the word reads each run once, from the backslash or bracket that starts it: JavaScriptCore
+ * backtracks, where the daemon's RE2 does not, and an alternative that could start inside a run
+ * would read that run once per start. */
+const LABELED_WORD = String.raw`(?:[^ "'\\)\]}>]|[\\)\]}>][\\)\]}>,;:.!?]*[^ "'\\)\]}>,;:.!?])+`;
 
 /**
  * The credential shapes `cleanDetail` replaces, as the daemon's `credentialRules` in

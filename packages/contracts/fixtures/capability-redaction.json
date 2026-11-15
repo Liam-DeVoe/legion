@@ -81,6 +81,24 @@
     },
     {
       "pattern": "authorization-header",
+      "name": "a bearer credential, up to the parenthesis that closes it, with a colon and text after the parenthesis kept",
+      "detail": "upstream said (Authorization: Bearer x): 401 invalid token",
+      "want": "upstream said (Authorization: Bearer ***): 401 invalid token"
+    },
+    {
+      "pattern": "authorization-header",
+      "name": "a bearer credential, up to the parenthesis that closes it, with a comma and text after the parenthesis kept",
+      "detail": "request failed (Authorization: Bearer abc123secret), retrying",
+      "want": "request failed (Authorization: Bearer ***), retrying"
+    },
+    {
+      "pattern": "authorization-header",
+      "name": "a bearer credential, up to the parenthesis that closes it, with a space and text after the parenthesis kept",
+      "detail": "upstream said (Authorization: Bearer x) 401 invalid token",
+      "want": "upstream said (Authorization: Bearer ***) 401 invalid token"
+    },
+    {
+      "pattern": "authorization-header",
       "name": "an unquoted value, to the end of the detail",
       "detail": "authorization: token 0123abcd rejected",
       "want": "authorization: token ***"
@@ -194,6 +212,90 @@
       "want": "api-key: ***"
     },
     {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign after an api-key label, masked whole as the word it is",
+      "detail": "api-key: http://u:SECRET",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign and a path after an api-key label, masked whole as the word it is",
+      "detail": "api-key: https://u:SECRET/x",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign and a query after an api-key label, masked whole as the word it is",
+      "detail": "api-key: http://u:SECRET?q=1",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign after an api-key label, its scheme glued to an underscore, masked whole as the word it is",
+      "detail": "api-key: _http://u:SECRET",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign after an api-key label, masked whole as the word it is, an at sign after a tab left as it is",
+      "detail": "api-key: http://u:SECRET\t\u0040h",
+      "want": "api-key: *** @h"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign after an api-key label, masked whole as the word it is, an at sign after a space left as it is",
+      "detail": "api-key: http://u:SECRET @h",
+      "want": "api-key: *** @h"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with a numeric port after an api-key label, masked whole as the word it is",
+      "detail": "api-key: http://h:8080/x",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign after an X-Subscription-Token label, masked whole as the word it is",
+      "detail": "x-subscription-token: http://u:SECRET",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign and a path after an X-Subscription-Token label, masked whole as the word it is",
+      "detail": "x-subscription-token: https://u:SECRET/x",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign and a query after an X-Subscription-Token label, masked whole as the word it is",
+      "detail": "x-subscription-token: http://u:SECRET?q=1",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign after an X-Subscription-Token label, its scheme glued to an underscore, masked whole as the word it is",
+      "detail": "x-subscription-token: _http://u:SECRET",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign after an X-Subscription-Token label, masked whole as the word it is, an at sign after a tab left as it is",
+      "detail": "x-subscription-token: http://u:SECRET\t\u0040h",
+      "want": "x-subscription-token: *** @h"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with no at sign after an X-Subscription-Token label, masked whole as the word it is, an at sign after a space left as it is",
+      "detail": "x-subscription-token: http://u:SECRET @h",
+      "want": "x-subscription-token: *** @h"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL with a numeric port after an X-Subscription-Token label, masked whole as the word it is",
+      "detail": "x-subscription-token: http://h:8080/x",
+      "want": "x-subscription-token: ***"
+    },
+    {
       "pattern": "json-member",
       "name": "an api_key member",
       "detail": "{\"api_key\":\"jsonSecret123\",\"model\":\"x\"}",
@@ -221,6 +323,60 @@
       "pattern": "bearer",
       "name": "a URL after the label, masked whole as the word it is",
       "detail": "Bearer http://u:SECRET@h",
+      "want": "Bearer ***"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a URL with no at sign after the label, masked whole as the word it is",
+      "detail": "Bearer http://u:SECRET",
+      "want": "Bearer ***"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a URL with no at sign and a path after the label, masked whole as the word it is",
+      "detail": "Bearer https://u:SECRET/x",
+      "want": "Bearer ***"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a URL with no at sign and a query after the label, masked whole as the word it is",
+      "detail": "Bearer http://u:SECRET?q=1",
+      "want": "Bearer ***"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a URL with no at sign after the label, its scheme glued to an underscore, masked whole as the word it is",
+      "detail": "Bearer _http://u:SECRET",
+      "want": "Bearer ***"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a URL with no at sign after the label, masked whole as the word it is, an at sign after a tab left as it is",
+      "detail": "Bearer http://u:SECRET\t\u0040h",
+      "want": "Bearer *** @h"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a URL with no at sign after the label, masked whole as the word it is, an at sign after a space left as it is",
+      "detail": "Bearer http://u:SECRET @h",
+      "want": "Bearer *** @h"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a URL with a numeric port after the label, masked whole as the word it is",
+      "detail": "Bearer http://h:8080/x",
+      "want": "Bearer ***"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a closing bracket and a dot inside the word, masked with the rest of it",
+      "detail": "Bearer ab).SECRET",
+      "want": "Bearer ***"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a closing bracket, a dot and another closing bracket inside the word, masked with the rest of it",
+      "detail": "Bearer ab).)SECRET",
       "want": "Bearer ***"
     },
     {
@@ -804,6 +960,228 @@
       "name": "after an api-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a plus sign",
       "detail": "api-key: +http://u:SECRET\u0007Authorization:a b)@h",
       "want": "api-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an api-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a letter and an underscore",
+      "detail": "api-key: x_http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an api-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a tilde",
+      "detail": "api-key: ~http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an api-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a slash",
+      "detail": "api-key: /http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an api-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an equals sign",
+      "detail": "api-key: =http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an api-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an asterisk",
+      "detail": "api-key: *http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an api-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a dot",
+      "detail": "api-key: .http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an api-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a hyphen",
+      "detail": "api-key: -http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "api-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an application-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an underscore",
+      "detail": "application-key=_http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "application-key=***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an application-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a letter and an underscore",
+      "detail": "application-key=x_http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "application-key=***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an application-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a tilde",
+      "detail": "application-key=~http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "application-key=***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an application-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a slash",
+      "detail": "application-key=/http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "application-key=***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an application-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an equals sign",
+      "detail": "application-key==http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "application-key=***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an application-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an asterisk",
+      "detail": "application-key=*http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "application-key=***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an application-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a plus sign",
+      "detail": "application-key=+http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "application-key=***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an application-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a dot",
+      "detail": "application-key=.http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "application-key=***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an application-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a hyphen",
+      "detail": "application-key=-http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "application-key=***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an application-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a digit",
+      "detail": "application-key=1http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "application-key=***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an ocp-apim-subscription-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an underscore",
+      "detail": "ocp-apim-subscription-key: _http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "ocp-apim-subscription-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an ocp-apim-subscription-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a letter and an underscore",
+      "detail": "ocp-apim-subscription-key: x_http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "ocp-apim-subscription-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an ocp-apim-subscription-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a tilde",
+      "detail": "ocp-apim-subscription-key: ~http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "ocp-apim-subscription-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an ocp-apim-subscription-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a slash",
+      "detail": "ocp-apim-subscription-key: /http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "ocp-apim-subscription-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an ocp-apim-subscription-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an equals sign",
+      "detail": "ocp-apim-subscription-key: =http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "ocp-apim-subscription-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an ocp-apim-subscription-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an asterisk",
+      "detail": "ocp-apim-subscription-key: *http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "ocp-apim-subscription-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an ocp-apim-subscription-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a plus sign",
+      "detail": "ocp-apim-subscription-key: +http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "ocp-apim-subscription-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an ocp-apim-subscription-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a dot",
+      "detail": "ocp-apim-subscription-key: .http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "ocp-apim-subscription-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an ocp-apim-subscription-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a hyphen",
+      "detail": "ocp-apim-subscription-key: -http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "ocp-apim-subscription-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an ocp-apim-subscription-key label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a digit",
+      "detail": "ocp-apim-subscription-key: 1http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "ocp-apim-subscription-key: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an x-subscription-token label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an underscore",
+      "detail": "x-subscription-token: _http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an x-subscription-token label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a letter and an underscore",
+      "detail": "x-subscription-token: x_http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an x-subscription-token label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a tilde",
+      "detail": "x-subscription-token: ~http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an x-subscription-token label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a slash",
+      "detail": "x-subscription-token: /http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an x-subscription-token label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an equals sign",
+      "detail": "x-subscription-token: =http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an x-subscription-token label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to an asterisk",
+      "detail": "x-subscription-token: *http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an x-subscription-token label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a plus sign",
+      "detail": "x-subscription-token: +http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an x-subscription-token label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a dot",
+      "detail": "x-subscription-token: .http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an x-subscription-token label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a hyphen",
+      "detail": "x-subscription-token: -http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "x-subscription-token: ***"
+    },
+    {
+      "pattern": "cleanup",
+      "name": "after an x-subscription-token label, a URL a control character parts from its at sign, masked whole as the word it is, its scheme glued to a digit",
+      "detail": "x-subscription-token: 1http://u:SECRET\u0007Authorization:a b)@h",
+      "want": "x-subscription-token: ***"
     },
     {
       "pattern": "cleanup",
