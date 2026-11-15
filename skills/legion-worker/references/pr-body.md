@@ -127,11 +127,16 @@ reading the document that describes it, is not a run, and a procedure no surface
 you can run is reported under *When no surface reaches the changed path* below, never passed.
 
 **A result proves the head it was recorded at.** A `before_merge` result proves its commit while
-that commit is still the head of an open pull request of the check's issue, or the final head of
-a merged one, and while the check's words have not changed since; an `after_merge` result proves
-a commit the branch its own issue's pull request merged into carries, or the repository's default
-branch does — that default branch alone where Dispatch knows of no merge of that issue — and a
-`default_branch` result only a commit the repository's default branch carries.
+that commit is still the head of an open pull request Dispatch attributes to the check's issue, or
+the final head of a merged one, and while the check's block, its attributes as well as its words,
+has not changed since; an `after_merge` result proves a commit the branch its own issue's pull
+request merged into carries, or the repository's default branch does — that default branch alone
+where Dispatch knows of no merge of that issue — and a `default_branch` result only a commit the
+repository's default branch carries.
+Dispatch attributes a pull request by ranked sources, and a key in its title or body can be the
+one that decides, so the title names no other issue's key and the body names its own key before
+any other: a pull request attributed to another issue proves no result of yours, at a head that
+never moved.
 A push moves the head, with no Dispatch write of anyone's, so each check with no `ci_check` is
 recorded again at the new head. `dispatch results --issue <issue>` prints each check with the
 results recorded against it and the commit each one was recorded at;
