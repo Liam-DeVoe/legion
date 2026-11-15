@@ -73,9 +73,11 @@ type Kubernetes struct {
 	// SessionStore is `runtime.kubernetes.session_store`, settled: where every pod's Oh My Pi keeps
 	// its sessions. The database whose whole postgres:// URL the providers Secret key
 	// `session_dsn_secret` holds under `postgres`; the Cloud SQL database `session_database` names,
-	// which each pod signs in to as itself and no password reaches, under `cloudsql-iam`. The key is
-	// required under `runtime: kubernetes` and `pvc` is refused (readSessionStore), so the settled
-	// store always keeps sessions in a database (InDatabase): no issue disk holds a session.
+	// which no password reaches, under `cloudsql-iam`: each pod signs in to it as itself, or, when
+	// the block's optional `impersonate_service_account` names a Google service account, as that
+	// account, which the pod impersonates. The key is required under `runtime: kubernetes` and `pvc`
+	// is refused (readSessionStore), so the settled store always keeps sessions in a database
+	// (InDatabase): no issue disk holds a session.
 	SessionStore ompsessions.Store
 	// Plugins is `runtime.kubernetes.plugins`: the exact pi-legion/pi-envoy pair a stale-plugin
 	// relaunch installs into a kept pod, when the file names one. Nil when the file sets none and
@@ -321,7 +323,7 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", agentSecretsKey)
 	}
-	fields, err := members(value, agentSecretsKey, "url", "token_file", "operator", "audience", "token_expiry_seconds")
+	fields, err := describedMembers(value, agentSecretsKey, agentSecretsKey)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +389,7 @@ func readPlugins(value *yaml.Node) (*PluginsConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", pluginsKey)
 	}
-	fields, err := members(value, pluginsKey, "pi_legion", "pi_envoy")
+	fields, err := describedMembers(value, pluginsKey, pluginsKey)
 	if err != nil {
 		return nil, err
 	}
@@ -501,10 +503,7 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, errors.New("runtime.kubernetes must be a mapping")
 	}
-	fields, err := members(value, kubernetesKey, "namespace", "image", "storage_class", "issue_volume", "tree_volume",
-		"kubeconfig", "context", "scheduling", "resources", "gateway", "pod", "session_store", "session_dsn_secret",
-		"session_database", "role_profiles", "agent_secrets", "plugins", "repository_cache", "setup",
-		"skills_repository", "test_postgres", "idle_release")
+	fields, err := describedMembers(value, kubernetesKey, kubernetesKey)
 	if err != nil {
 		return nil, err
 	}
@@ -644,7 +643,7 @@ func readRepositoryCache(value *yaml.Node) (RepositoryCacheConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return RepositoryCacheConfig{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "volume", "refresh_minutes", "retain_hours", "resources")
+	fields, err := describedMembers(value, key, kubernetesKey+".repository_cache")
 	if err != nil {
 		return RepositoryCacheConfig{}, err
 	}
@@ -670,7 +669,7 @@ func readRepositoryCache(value *yaml.Node) (RepositoryCacheConfig, error) {
 		if resources.Kind != yaml.MappingNode {
 			return RepositoryCacheConfig{}, fmt.Errorf("%s must be a mapping of cpu, memory and ephemeral storage", field)
 		}
-		parts, err := members(resources, field, "cpu", "cpu_request", "memory", "memory_request", "ephemeral_storage", "ephemeral_storage_request")
+		parts, err := describedMembers(resources, field, kubernetesKey+".repository_cache.resources")
 		if err != nil {
 			return RepositoryCacheConfig{}, err
 		}
@@ -706,7 +705,7 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return IdleReleaseConfig{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "idle_minutes", "backstop_minutes")
+	fields, err := describedMembers(value, key, kubernetesKey+".idle_release")
 	if err != nil {
 		return IdleReleaseConfig{}, err
 	}
@@ -769,7 +768,7 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return PodConfig{}, fmt.Errorf("%s must be a mapping", podKey)
 	}
-	fields, err := members(value, podKey, "env", "volumes", "volume_mounts", "service_account")
+	fields, err := describedMembers(value, podKey, podKey)
 	if err != nil {
 		return PodConfig{}, err
 	}
@@ -889,7 +888,7 @@ func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 		if entry.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s must be a mapping", field)
 		}
-		fields, err := members(entry, field, append([]string{"name"}, volumeSources...)...)
+		fields, err := describedMembers(entry, field, podKey+".volumes[]")
 		if err != nil {
 			return nil, err
 		}
@@ -907,11 +906,11 @@ func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 		var source objectSource
 		switch {
 		case fields["secret"] != nil:
-			if source, err = readObjectSource(fields["secret"], field+".secret", true); err == nil {
+			if source, err = readObjectSource(fields["secret"], field+".secret", volumeSecretMembers); err == nil {
 				volume.Secret = &corev1.SecretVolumeSource{SecretName: source.name, Items: source.items, DefaultMode: source.mode}
 			}
 		case fields["config_map"] != nil:
-			if source, err = readObjectSource(fields["config_map"], field+".config_map", true); err == nil {
+			if source, err = readObjectSource(fields["config_map"], field+".config_map", volumeConfigMapMembers); err == nil {
 				volume.ConfigMap = &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{Name: source.name}, Items: source.items, DefaultMode: source.mode,
 				}
@@ -942,7 +941,10 @@ func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 
 // volumeSources are the sources a `pod.volumes` entry may name, exactly one each: an object of the
 // daemon's namespace (secret, config_map, projected), or an existing share — a
-// PersistentVolumeClaim of the namespace, or an NFS export the nodes reach.
+// PersistentVolumeClaim of the namespace, or an NFS export the nodes reach. The entry's own
+// mapping is the key table's `runtime.kubernetes.pod.volumes[]` group, which carries these five
+// names beside `name` and is what readPodVolumes accepts, so a source added here is a line added
+// there.
 var volumeSources = []string{"secret", "config_map", "projected", "persistent_volume_claim", "nfs"}
 
 // readClaimSource is a PersistentVolumeClaim source: the name of a claim the operator made in the
@@ -953,7 +955,7 @@ func readClaimSource(value *yaml.Node, key string) (*corev1.PersistentVolumeClai
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "name")
+	fields, err := describedMembers(value, key, podKey+".volumes[].persistent_volume_claim")
 	if err != nil {
 		return nil, err
 	}
@@ -976,7 +978,7 @@ func readNFSSource(value *yaml.Node, key string) (*corev1.NFSVolumeSource, error
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "server", "path")
+	fields, err := describedMembers(value, key, podKey+".volumes[].nfs")
 	if err != nil {
 		return nil, err
 	}
@@ -1039,18 +1041,19 @@ type objectSource struct {
 	mode  *int32
 }
 
-// readObjectSource is a Secret or ConfigMap source. A volume's own source (withMode) also takes
-// default_mode; a projected volume's source does not, since Kubernetes sets the mode of a projected
-// volume's files for the whole volume, never per source.
-func readObjectSource(value *yaml.Node, key string, withMode bool) (objectSource, error) {
+// readObjectSource is a Secret or ConfigMap source, read under the mapping its place in the block
+// makes it: described is that place's own key-table group, read by the call site's own reader
+// below, since the four places a source stands in are four groups — a volume's `secret` and its
+// `config_map`, which take default_mode, and a projected source's two, which do not, Kubernetes
+// setting the mode of a projected volume's files for the whole volume and never per source. The
+// group decides which names the mapping may carry, so deriving it from one of the four, as this
+// read did, left the other three's keys out of `legion config-reference` and the page generated
+// from it.
+func readObjectSource(value *yaml.Node, key string, described func(*yaml.Node, string) (map[string]*yaml.Node, error)) (objectSource, error) {
 	if value.Kind != yaml.MappingNode {
 		return objectSource{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	known := []string{"name", "items"}
-	if withMode {
-		known = append(known, "default_mode")
-	}
-	fields, err := members(value, key, known...)
+	fields, err := described(value, key)
 	if err != nil {
 		return objectSource{}, err
 	}
@@ -1075,7 +1078,7 @@ func readObjectSource(value *yaml.Node, key string, withMode bool) (objectSource
 		if entry.Kind != yaml.MappingNode {
 			return objectSource{}, fmt.Errorf("%s must be a mapping", field)
 		}
-		item, err := members(entry, field, "key", "path")
+		item, err := describedMembers(entry, field, podKey+".volumes[].secret.items[]")
 		if err != nil {
 			return objectSource{}, err
 		}
@@ -1089,6 +1092,28 @@ func readObjectSource(value *yaml.Node, key string, withMode bool) (objectSource
 		source.items = append(source.items, one)
 	}
 	return source, nil
+}
+
+// The four members readers a source's place names (readObjectSource): a volume's own `secret` and
+// `config_map`, which take default_mode, and a projected source's `secret` and `config_map`,
+// which do not. Each names its group as a constant of its own, which is what carries every one of
+// those keys into `legion config-reference` and holds the four to the key table
+// (TestNoKeyBypassesTheKeyTable).
+
+func volumeSecretMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].secret")
+}
+
+func volumeConfigMapMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].config_map")
+}
+
+func projectedSecretMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].projected.sources[].secret")
+}
+
+func projectedConfigMapMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].projected.sources[].config_map")
 }
 
 // readFileMode is a volume's default_mode: octal digits after YAML 1.1's leading 0 (kubectl's
@@ -1124,7 +1149,7 @@ func readProjected(value *yaml.Node, key string) (*corev1.ProjectedVolumeSource,
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "sources")
+	fields, err := describedMembers(value, key, podKey+".volumes[].projected")
 	if err != nil {
 		return nil, err
 	}
@@ -1141,7 +1166,7 @@ func readProjected(value *yaml.Node, key string) (*corev1.ProjectedVolumeSource,
 		if entry.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s must be a mapping", field)
 		}
-		kinds, err := members(entry, field, "service_account_token", "secret", "config_map")
+		kinds, err := describedMembers(entry, field, podKey+".volumes[].projected.sources[]")
 		if err != nil {
 			return nil, err
 		}
@@ -1154,11 +1179,11 @@ func readProjected(value *yaml.Node, key string) (*corev1.ProjectedVolumeSource,
 		case kinds["service_account_token"] != nil:
 			source.ServiceAccountToken, err = readTokenProjection(kinds["service_account_token"], field+".service_account_token")
 		case kinds["secret"] != nil:
-			if object, err = readObjectSource(kinds["secret"], field+".secret", false); err == nil {
+			if object, err = readObjectSource(kinds["secret"], field+".secret", projectedSecretMembers); err == nil {
 				source.Secret = &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: object.name}, Items: object.items}
 			}
 		default:
-			if object, err = readObjectSource(kinds["config_map"], field+".config_map", false); err == nil {
+			if object, err = readObjectSource(kinds["config_map"], field+".config_map", projectedConfigMapMembers); err == nil {
 				source.ConfigMap = &corev1.ConfigMapProjection{LocalObjectReference: corev1.LocalObjectReference{Name: object.name}, Items: object.items}
 			}
 		}
@@ -1183,7 +1208,7 @@ func readTokenProjection(value *yaml.Node, key string) (*corev1.ServiceAccountTo
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "audience", "expiration_seconds", "path")
+	fields, err := describedMembers(value, key, podKey+".volumes[].projected.sources[].service_account_token")
 	if err != nil {
 		return nil, err
 	}
@@ -1233,7 +1258,7 @@ func readPodMounts(value *yaml.Node, volumes []corev1.Volume) ([]corev1.VolumeMo
 		if entry.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s must be a mapping", field)
 		}
-		fields, err := members(entry, field, "volume", "mount_path", "sub_path", "read_only")
+		fields, err := describedMembers(entry, field, podKey+".volume_mounts[]")
 		if err != nil {
 			return nil, err
 		}
@@ -1348,10 +1373,11 @@ const (
 
 // readSessionStore reads `session_store` with the one key its kind carries: `session_dsn_secret`,
 // the providers Secret's key holding the session database's whole URL, under `postgres`;
-// `session_database`, the Cloud SQL instance, database and IAM login each pod signs in as, under
-// `cloudsql-iam`. Each kind names its own key and refuses the other's: an inert key is refused,
-// never ignored. The store is required, and must keep sessions in a database: `pvc`, which an
-// omitted `session_store` also settles to, is refused rather than taken as a silent default
+// `session_database`, the Cloud SQL instance, database and IAM login each pod signs in as, and
+// the Google service account, if the block names one, that the pod impersonates to sign in as that
+// login, under `cloudsql-iam`. Each kind names its own key and refuses the other's: an inert key is
+// refused, never ignored. The store is required, and must keep sessions in a database: `pvc`,
+// which an omitted `session_store` also settles to, is refused rather than taken as a silent default
 // (INFRA-80). It kept each session as a file on the issue's disk, and that disk is now the pod's
 // own generic ephemeral volume, deleted with it: the file would die with the pod, the next
 // launch's resume would fail on the missing file (internal/launcher's sessionWritten), and three
@@ -1409,8 +1435,13 @@ func inertSessionKey(key string, kind ompsessions.StoreKind) error {
 // readSessionDatabase reads `session_database` under `cloudsql-iam`: the instance's connection
 // name, project:region:instance or domain:project:region:instance, which the pod's proxy dials
 // (internal/sessionproxy) and which must pass ompsessions.ValidInstance, the connector's own rule;
-// the database in it; and the IAM login the pod signs in as. All three are required, since no pod
-// can reach the database without them.
+// the database in it; the IAM login the pod signs in as; and `impersonate_service_account`, the
+// Google service account the pod's proxy impersonates with the pod's own credentials and signs in
+// as. The first three are required, since no pod can reach the database without them; the fourth
+// is optional, and without it each pod signs in as itself. A named account must be a service
+// account's email by ompsessions.ServiceAccountLogin, the rule the proxy holds to as well, and
+// `user` must then be that account's login: the proxy signs in as the account it impersonates, so
+// any other login, let through here, would fail every generation's first dial instead.
 func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	if value == nil {
 		return ompsessions.Database{}, errors.New(sessionDatabaseKey +
@@ -1419,7 +1450,7 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	if value.Kind != yaml.MappingNode {
 		return ompsessions.Database{}, errors.New(sessionDatabaseKey + " must be a mapping")
 	}
-	fields, err := members(value, sessionDatabaseKey, "instance", "name", "user")
+	fields, err := describedMembers(value, sessionDatabaseKey, sessionDatabaseKey)
 	if err != nil {
 		return ompsessions.Database{}, err
 	}
@@ -1436,8 +1467,22 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 		": the IAM login each pod signs in as"); err != nil {
 		return ompsessions.Database{}, err
 	}
+	if database.ImpersonateServiceAccount, err = optionalString(fields["impersonate_service_account"],
+		sessionDatabaseKey+".impersonate_service_account"); err != nil {
+		return ompsessions.Database{}, err
+	}
 	if !ompsessions.ValidInstance(database.Instance) {
 		return ompsessions.Database{}, fmt.Errorf("%s.instance %q must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project", sessionDatabaseKey, database.Instance)
+	}
+	if database.ImpersonateServiceAccount == "" {
+		return database, nil
+	}
+	login, ok := ompsessions.ServiceAccountLogin(database.ImpersonateServiceAccount)
+	if !ok {
+		return ompsessions.Database{}, fmt.Errorf("%s.impersonate_service_account %q must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com", sessionDatabaseKey, database.ImpersonateServiceAccount)
+	}
+	if database.User != login {
+		return ompsessions.Database{}, fmt.Errorf("%s.user %q must be %q: Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com", sessionDatabaseKey, database.User, login)
 	}
 	return database, nil
 }
@@ -1465,7 +1510,7 @@ func readScheduling(value *yaml.Node) (Scheduling, error) {
 	if value.Kind != yaml.MappingNode {
 		return Scheduling{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "node_selector", "tolerations", "priority_class")
+	fields, err := describedMembers(value, key, kubernetesKey+".scheduling")
 	if err != nil {
 		return Scheduling{}, err
 	}
@@ -1528,7 +1573,7 @@ func readTolerations(value *yaml.Node, key string) ([]Toleration, error) {
 		if entry.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s must be a mapping", field)
 		}
-		fields, err := members(entry, field, "key", "operator", "value", "effect")
+		fields, err := describedMembers(entry, field, kubernetesKey+".scheduling.tolerations[]")
 		if err != nil {
 			return nil, err
 		}
@@ -1605,7 +1650,7 @@ func readResources(value *yaml.Node) (PodResources, bool, error) {
 		if entry.Kind != yaml.MappingNode {
 			return resources, false, fmt.Errorf("%s must be a mapping of cpu and memory", field)
 		}
-		fields, err := members(entry, field, "cpu", "cpu_request", "memory", "memory_request", "ephemeral_storage", "ephemeral_storage_request", "requests", "limits")
+		fields, err := describedMembers(entry, field, kubernetesKey+".resources.<POD>")
 		if err != nil {
 			return resources, false, err
 		}

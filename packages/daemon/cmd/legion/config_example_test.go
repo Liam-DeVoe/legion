@@ -72,11 +72,65 @@ func TestShippedLegionYAMLExamplesMemoryPassesCheckConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	memory := cfg.Projects["WIDGETS"].Memory
-	if memory.Mode != configpkg.MemoryOn || !slices.Equal(memory.ConfigFiles, []string{"/etc/legion-memory/memory.yml"}) {
+	if memory.Mode != configpkg.ExperimentOn || !slices.Equal(memory.ConfigFiles, []string{"/etc/legion-memory/memory.yml"}) {
 		t.Errorf("the WIDGETS memory block = %+v, want mode on with the operator-memory overlay alone", memory)
 	}
 	if memory.InstructionsPath != "" {
 		t.Errorf("the WIDGETS memory instructions = %q, want none: the example leaves that key commented", memory.InstructionsPath)
+	}
+}
+
+// The example's commented experiments block, uncommented with the operator-experiments volume and
+// mount its one arm's overlay points to, passes the same check, and names the experiment the
+// project declares: its mode, its unit, and the two arms it compares. The arm that names no file
+// is the control, which is why only one of the two carries an overlay.
+func TestShippedLegionYAMLExamplesExperimentsPassCheckConfig(t *testing.T) {
+	config := checkShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"  # WIDGETS:",
+			"  #   experiments:",
+			"  #     plan-length:",
+			"  #       mode: random",
+			"  #       unit: issue",
+			"  #       variants:",
+			"  #         - name: long",
+			"  #           weight: 1",
+			"  #           config_files: [/etc/legion-experiments/plan-length.yml]",
+			"  #         - name: control",
+			"        # - name: operator-experiments",
+			"        #   config_map: {name: legion-operator-experiments}",
+			"        # - {volume: operator-experiments, mount_path: /etc/legion-experiments}",
+		)
+		// The example's two forms of the project entry are alternatives, as the memory test says:
+		// the active empty one is commented out so the uncommented one is the project's whole entry.
+		return strings.Replace(example, "\n  WIDGETS: {}", "\n  # WIDGETS: {}", 1)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := cfg.Projects["WIDGETS"].Experiments
+	if len(declared) != 1 {
+		t.Fatalf("the WIDGETS experiments = %+v, want the plan-length experiment alone", declared)
+	}
+	plan := declared[0]
+	if plan.Name != "plan-length" || plan.Mode != configpkg.ExperimentRandom || plan.Unit != configpkg.ExperimentIssue {
+		t.Errorf("the WIDGETS experiment = %+v, want plan-length at mode random over the issue", plan)
+	}
+	want := []configpkg.Variant{
+		{Name: "long", Weight: 1, ConfigFiles: []string{"/etc/legion-experiments/plan-length.yml"}},
+		{Name: "control", Weight: 1},
+	}
+	if !slices.EqualFunc(plan.Variants, want, func(got, want configpkg.Variant) bool {
+		return got.Name == want.Name && got.Weight == want.Weight &&
+			slices.Equal(got.ConfigFiles, want.ConfigFiles) && got.InstructionsPath == want.InstructionsPath
+	}) {
+		t.Errorf("the plan-length variants = %+v, want %+v: the control arm names no file", plan.Variants, want)
+	}
+	// The `memory` block stays commented beside it, so the project declares the one experiment:
+	// a project writing the block and experiments.memory together is refused.
+	if memory := cfg.Projects["WIDGETS"].Memory; memory.Mode != "" {
+		t.Errorf("the WIDGETS memory block = %+v, want none: this test uncomments the experiments block alone", memory)
 	}
 }
 
@@ -178,6 +232,64 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 	}
 }
 
+// The example's commented session_database block, uncommented under `session_store: cloudsql-iam`
+// with session_dsn_secret taken out, passes the same check as shipped, with the same stdout. Its
+// impersonate_service_account set to the account's login form rather than its email is refused,
+// naming the member and the value, and a user that is not the account's login is refused, naming
+// the login the account has. The block is where an operator reads what each member takes, so a
+// member it showed wrongly would be an operator's file refused on their first check; here it is
+// this test that fails instead. The block stays commented in the file itself: the shipped store is
+// postgres, and the stdout TestShippedLegionYAMLExamplePassesCheckConfig holds is that store's.
+func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAccountsEmailAndLogin(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		edit           [][2]string
+		code           int
+		stdout, stderr string
+	}{
+		{name: "as shipped", code: 0, stdout: shippedExampleCheckOK},
+		{name: "impersonate_service_account as the account's login",
+			edit: [][2]string{{"impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com", "impersonate_service_account: legion-sessions@example-project.iam"}},
+			code: 1,
+			stderr: `legion start: runtime.kubernetes.session_database.impersonate_service_account "legion-sessions@example-project.iam" must be a Google service account's email,` +
+				" such as <name>@<project>.iam.gserviceaccount.com\n"},
+		{name: "user as another login",
+			edit: [][2]string{{"user: legion-sessions@example-project.iam ", "user: other@example-project.iam "}},
+			code: 1,
+			stderr: `legion start: runtime.kubernetes.session_database.user "other@example-project.iam" must be "legion-sessions@example-project.iam":` +
+				" Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := stageShippedExample(t, func(example string) string {
+				example = uncommentExample(t, example,
+					"    # session_database:",
+					"    #   instance: example-project:us-central1:example-instance",
+					"    #   name: legion_sessions",
+					"    #   user: legion-sessions@example-project.iam",
+					"    #   impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com",
+				)
+				for _, edit := range append([][2]string{
+					{"\n    session_store: postgres ", "\n    session_store: cloudsql-iam "},
+					{"\n    session_dsn_secret: ", "\n    # session_dsn_secret: "},
+				}, tc.edit...) {
+					if !strings.Contains(example, edit[0]) {
+						t.Fatalf("the example has no %q", edit[0])
+					}
+					example = strings.Replace(example, edit[0], edit[1], 1)
+				}
+				return example
+			})
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+			if code != tc.code || out.String() != tc.stdout || errb.String() != tc.stderr {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want %d, %q and %q", code, out.String(), errb.String(), tc.code, tc.stdout, tc.stderr)
+			}
+		})
+	}
+}
+
 // uncommentExample is the example with each named line uncommented, each line the start of one of
 // the example's own commented lines: the file comments a block out line by line, so turning it on
 // is one `# ` removed per line, and a line the example does not hold is the test's own mistake.
@@ -236,6 +348,13 @@ current-context: legion-daemon
 	return config
 }
 
+// shippedExampleCheckOK is the whole stdout of `legion start --check-config` on the shipped
+// example, the same under either session store the example shows.
+const shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n" +
+	"projects.WIDGETS.production_check: tester — a merge that closes one of its issues opens a production check the tester works\n" +
+	defaultCacheLine +
+	"plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+
 // checkShippedExample runs `legion start --check-config` on the shipped example as edit leaves
 // it, beside the files it names, and answers the file's path.
 func checkShippedExample(t *testing.T, edit func(string) string) string {
@@ -245,12 +364,8 @@ func checkShippedExample(t *testing.T, edit func(string) string) string {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
 
-	want := "Config OK: project=WIDGETS design-gate-steps=spec\n" +
-		"projects.WIDGETS.production_check: tester — a merge that closes one of its issues opens a production check the tester works\n" +
-		defaultCacheLine +
-		"plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
-	if code != 0 || out.String() != want {
-		t.Fatalf("legion start --check-config on the shipped example = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	if code != 0 || out.String() != shippedExampleCheckOK {
+		t.Fatalf("legion start --check-config on the shipped example = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), shippedExampleCheckOK)
 	}
 	return config
 }

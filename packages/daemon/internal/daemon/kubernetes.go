@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
@@ -300,9 +301,11 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // stream's address, the connection directory and the token source, which boot hands the factory.
 // The issue pod's one container gets runtime.kubernetes.resources.issue as its requirements, and
 // the daemon-launched controller's container runtime.kubernetes.resources.controller (requirements).
-// The project's memory overlays (`memory.config_files`) reach the runtime whatever its mode is,
-// as they reach tmuxOptions: a tree already drawn into the memory group names them under any
-// mode, and a project with no block hands over none.
+// Every arm of every experiment the project declares reaches the runtime whatever the
+// experiment's mode is (experiment.DeclaredVariants), as they reach tmuxOptions: a unit already
+// drawn into an arm names that arm's overlays under any mode. A project that declares no
+// experiment of its own still declares the memory experiment and hands over its two arms, which
+// name no file where the project writes no `memory` block and so add nothing to a launch.
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
 func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
@@ -360,7 +363,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		RepositoryCache:         cache,
 		Log:                     log,
 	}
-	opts.MemoryConfigFiles = cfg.Projects[cfg.Project].Memory.ConfigFiles
+	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts, nil
 }
 
@@ -543,9 +546,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every
 // pod's workspace-fetch clones with an installation token minted for the owner of the repository
-// it fetches and narrowed to reading (contents, pull requests, Actions and metadata at read,
-// appauth.Tokens.ReadToken), which is all a clone, a fetch and a repository cache do. Every
-// refusal is returned as it came, with no second mint: GitHub's trouble
+// it fetches and narrowed to reading (contents, pull requests, issues, Actions and metadata at
+// read, appauth.Tokens.ReadToken), nothing a clone, a fetch or a repository cache could write
+// with. Every refusal is returned as it came, with no second mint: GitHub's trouble
 // (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the
 // owner (appauth.ErrNotInstalled), and an installation that is not granted what the reading
 // lease asks for (appauth.ErrNarrowingRefused) alike.
@@ -614,7 +617,7 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 }
 
 // leakCheckToken mints the token the shared public leak check is read with: the implement App's
-// read lease on the check's owner (appauth.Tokens.ReadToken, whose four read permissions are all a
+// read lease on the check's owner (appauth.Tokens.ReadToken, whose read permissions hold all a
 // tarball read needs). No request names a repository any longer (INFRA-2543), so the lease reaches
 // every repository that owner's installation holds and the reading permissions are the whole of
 // what keeps it from writing. It mints nothing else: an installation the account has not granted
