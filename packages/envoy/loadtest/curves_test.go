@@ -1166,7 +1166,7 @@ func TestCurvesVoidAStepThatRecordedNoGenerator(t *testing.T) {
 func TestCurvesSetAsideAStepWhoseGeneratorBrokeItsSchedule(t *testing.T) {
 	root := t.TempDir()
 	stalled := goodSummary(2)
-	_, stalled.SetAside = judgePacing(arrivalsFile{Window: []arrivalSecond{{Second: 95, RequestsScheduled: 120, RequestsSent: 1800}}})
+	_, stalled.SetAside = judgePacing(arrivalsFile{Window: []arrivalSecond{{Second: 95, RequestsScheduled: 120, RequestsSent: 1800}}}, paceTargets{requests: true})
 	out := curves(t,
 		curveFixture(t, root, "1x", goodSummary(1), fixtureCgroup(2)),
 		curveFixture(t, root, "2x", stalled, fixtureCgroup(2)),
@@ -1178,7 +1178,7 @@ func TestCurvesSetAsideAStepWhoseGeneratorBrokeItsSchedule(t *testing.T) {
 	md := readText(t, filepath.Join(out, "CURVES.md"))
 	for _, want := range []string{
 		"| 2x (set aside) | 2 | ok | ok | ok | ok | ok | ok | set aside |",
-		"`set aside`: in a second of the window the step's generator sent more than 10% over that second's schedule",
+		"`set aside`: nothing shows the step's generator delivered the load the step claims (summary.json `set_aside`): in a second of the window it sent more than 10% over that second's schedule",
 		"- 2x (set aside): " + stalled.SetAside.Why + ".",
 	} {
 		if !strings.Contains(md, want) {
@@ -1187,7 +1187,7 @@ func TestCurvesSetAsideAStepWhoseGeneratorBrokeItsSchedule(t *testing.T) {
 	}
 	knees := readText(t, filepath.Join(out, "KNEES.md"))
 	for _, want := range []string{
-		"- 2x (step 2x): set aside (" + stalled.SetAside.Why + "): its generator did not deliver the load the step claims",
+		"- 2x (step 2x): set aside (" + stalled.SetAside.Why + "): nothing shows its generator delivered the load the step claims",
 		"## Knee at 3x (step 3x)",
 		"- Bracket: (1, 3): last passing factor 1 (step 1x), failing factor 3.",
 	} {

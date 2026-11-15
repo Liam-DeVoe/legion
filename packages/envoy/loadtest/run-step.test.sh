@@ -17,7 +17,11 @@
 # run-series.sh holds it; (d) once the first run has exited, a new run on the root is not refused;
 # (e) a --replay step refuses --events, a --dispatch-commit that names no commit, and a missing
 # LOADTEST_REPLAY_ISSUE, before its build; (f) a step and a series refuse two CPU lists that
-# overlap, and a step a CPU list taskset refuses, before their build.
+# overlap, and a step a CPU list taskset refuses, before their build; (g) a step, a --replay step
+# and a series refuse a LOADTEST_GOMAXPROCS (--gomaxprocs) other than the server list's CPU count,
+# naming both numbers, before their build; (h) a step whose loadgen run refused it before its
+# window, for a GOMAXPROCS (meta.json) other than the server list's CPU count, closes on that
+# refusal and not on the generic failure.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -173,3 +177,55 @@ expect_refused_before_build "a step with a CPU list taskset refuses" "LOADTEST_G
   env LOADTEST_GENERATOR_CPUS=4095 bash "$run_step" cpu-step "${step_args[@]}"
 expect_refused_before_build "a series with overlapping CPU lists" "overlap on CPU 0" \
   env LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=0 bash "$run_series"
+expect_refused_before_build "a step whose LOADTEST_GOMAXPROCS is not the server list's CPU count" \
+  "LOADTEST_GOMAXPROCS=2 (run-step.sh --gomaxprocs) differs from LOADTEST_SERVER_CPUS='0', 1 CPU" \
+  env LOADTEST_SERVER_CPUS=0 LOADTEST_GOMAXPROCS=2 bash "$run_step" cpu-step "${step_args[@]}"
+expect_refused_before_build "a --replay step whose --gomaxprocs is not the server list's CPU count" \
+  "LOADTEST_GOMAXPROCS=2 (run-step.sh --gomaxprocs) differs from LOADTEST_SERVER_CPUS='0', 1 CPU" \
+  env LOADTEST_SERVER_CPUS=0 LOADTEST_REPLAY_ISSUE=INFRA-1 bash "$run_step" replay-step --replay --gomaxprocs 2
+expect_refused_before_build "a series whose LOADTEST_GOMAXPROCS is not the server list's CPU count" \
+  "LOADTEST_GOMAXPROCS=2 (run-step.sh --gomaxprocs) differs from LOADTEST_SERVER_CPUS='0', 1 CPU" \
+  env LOADTEST_SERVER_CPUS=0 LOADTEST_GOMAXPROCS=2 bash "$run_series"
+
+# A step that loadgen run refused before its window, its meta.json recording a GOMAXPROCS other
+# than the server list's CPU count, closes on that refusal, naming both numbers, and not on the
+# generic failure. The stack is faked: run-step.sh and common.sh are copied beside a stack.sh
+# whose every command succeeds but `loadgen run`, which writes that meta.json and exits 1.
+readonly relay_dir="${temporary_dir}/relay"
+readonly relay_root="${temporary_dir}/root-d"
+mkdir -p "$relay_dir" "${relay_root}/replay" "${relay_root}/logs"
+cp "$run_step" "${here}/common.sh" "$relay_dir/"
+cat >"${relay_dir}/stack.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  build-info) echo "abc123 false" ;;
+  loadgen)
+    case "$2" in
+      box-busy) echo 0 ;;
+      run)
+        shift 2
+        while [ "$1" != -out ]; do shift; done
+        printf '%s\n' '{"gomaxprocs":"32","server_cpus":"0-1","server_cpu_count":2}' >"$2/meta.json"
+        echo "loadgen run: refused before the window" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+EOF
+chmod +x "${relay_dir}/stack.sh"
+: >"${relay_root}/replay/last-reset.json"
+: >"${relay_root}/logs/listener.out"
+: >"${relay_root}/logs/nats.out"
+rc=0
+env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS -u LOADTEST_GOMAXPROCS LOADTEST_ROOT="$relay_root" \
+  LOADTEST_REPLAY_ISSUE=INFRA-1 bash "${relay_dir}/run-step.sh" relay-step --replay >"${temporary_dir}/relay-output" 2>&1 || rc=$?
+last=$(tail -n 1 "${temporary_dir}/relay-output")
+if ((rc == 0)) || grep -q 'failed: loadgen run exited' "${temporary_dir}/relay-output" ||
+  [[ $last != "run-step.sh: STEP relay-step IS REFUSED before its window opened, so nothing was measured: Dispatch ran with GOMAXPROCS 32 (meta.json gomaxprocs) pinned to LOADTEST_SERVER_CPUS='0-1', 2 CPUs: "* ]]; then
+  cat "${temporary_dir}/relay-output" >&2
+  printf 'FAIL: a step loadgen run refused for its GOMAXPROCS did not close on that refusal (exit %d)\n' "$rc" >&2
+  exit 1
+fi
+printf 'PASS: a step refused for a GOMAXPROCS other than the server list'"'"'s CPU count closes on that refusal\n'

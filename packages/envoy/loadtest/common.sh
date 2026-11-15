@@ -32,10 +32,12 @@
 # stack.sh starts each server-side process (Postgres, the latency proxies, NATS, the listener and
 # Dispatch) under `taskset -c LOADTEST_SERVER_CPUS` and every loadgen under `taskset -c
 # LOADTEST_GENERATOR_CPUS` (pin_words). check_cpu_lists refuses a list taskset refuses and two
-# lists that share a CPU, naming both; check_cpu_affinity refuses a runtime that does not enforce
-# the pin (gVisor sets the mask and ignores it), timing two busy loops pinned to one CPU against
-# the same two unpinned (affinity_verdict decides from the two times). run-step.sh and
-# run-series.sh run both before anything starts.
+# lists that share a CPU, naming both; gomaxprocs gives Dispatch's GOMAXPROCS, the server list's
+# CPU count when it is set (server_cpu_count), and refuses a LOADTEST_GOMAXPROCS that differs from
+# that count; check_cpu_affinity refuses a runtime that does not enforce the pin (gVisor sets the
+# mask and ignores it), timing two busy loops pinned to one CPU against the same two unpinned
+# (affinity_verdict decides from the two times). run-step.sh and run-series.sh run all three
+# before anything starts (check_cpu_pinning).
 #
 # lock_root ROOT: one run at a time per root (README.md, "One run at a time"). It takes an
 # exclusive, non-blocking flock on ROOT/.run.lock and keeps it on file descriptor 9. The lock lasts
@@ -246,6 +248,49 @@ check_cpu_lists() {
     die "LOADTEST_SERVER_CPUS='$LOADTEST_SERVER_CPUS' and LOADTEST_GENERATOR_CPUS='$LOADTEST_GENERATOR_CPUS' overlap on CPU $shared: the generator must have CPUs of its own, apart from the server side's"
 }
 
+# server_cpu_count: the number of distinct CPUs in LOADTEST_SERVER_CPUS, read as cpu_list_cpus
+# reads it; nothing when the list is unset, status 1 for a list it cannot read.
+server_cpu_count() {
+  [ -n "${LOADTEST_SERVER_CPUS:-}" ] || return 0
+  local cpus cpu
+  local -A distinct=()
+  cpus=$(cpu_list_cpus "$LOADTEST_SERVER_CPUS") || return 1
+  for cpu in $cpus; do distinct[$cpu]=1; done
+  printf '%s\n' "${#distinct[@]}"
+}
+
+# gomaxprocs: Dispatch's GOMAXPROCS. With LOADTEST_SERVER_CPUS set it is the number of CPUs in
+# that list, the CPUs Dispatch is pinned to: stack.sh sets GOMAXPROCS in Dispatch's environment,
+# which overrides Go's own default (since Go 1.25 the CPU affinity mask and the cgroup quota), and
+# nproc is the unpinned shell's count, which gave a Dispatch pinned to two CPUs GOMAXPROCS 32 and
+# 48. Without the list it is nproc. LOADTEST_GOMAXPROCS (run-step.sh --gomaxprocs) overrides the
+# default; it is refused unless a positive integer, and, with the list set, refused unless it is
+# the list's count, naming both: a Dispatch pinned to N CPUs with M processors is not the bed any
+# reading names.
+gomaxprocs() {
+  local cpus n what=CPUs
+  cpus=$(server_cpu_count) ||
+    die "LOADTEST_SERVER_CPUS='$LOADTEST_SERVER_CPUS' is a list this script cannot read; write it as N, N-M or N-M:S items separated by commas"
+  n=${LOADTEST_GOMAXPROCS:-${cpus:-$(nproc)}}
+  [[ $n =~ ^[1-9][0-9]*$ ]] || die "LOADTEST_GOMAXPROCS='$n' is not a positive integer"
+  [ "$cpus" != 1 ] || what=CPU
+  [ -z "$cpus" ] || [ "$n" = "$cpus" ] ||
+    die "LOADTEST_GOMAXPROCS=$n (run-step.sh --gomaxprocs) differs from LOADTEST_SERVER_CPUS='$LOADTEST_SERVER_CPUS', $cpus $what: a Dispatch pinned to $cpus $what with GOMAXPROCS $n is not the bed any reading names. Leave LOADTEST_GOMAXPROCS unset, and GOMAXPROCS follows the list, or set it to $cpus"
+  printf '%s\n' "$n"
+}
+
+# gomaxprocs_refusal META: why the step whose meta.json is META is refused, when META records a
+# server CPU list and Dispatch's GOMAXPROCS, read back from its environment, is not that list's CPU
+# count or could not be read (`loadgen run` refuses such a step before its window). It prints why
+# and returns 0; it returns non-zero for any other META, and for one that cannot be read.
+gomaxprocs_refusal() {
+  jq -er 'select(.server_cpu_count != null and .gomaxprocs != (.server_cpu_count | tostring)) |
+    (if .server_cpu_count == 1 then "CPU" else "CPUs" end) as $what |
+    (if .gomaxprocs == "" then "unread (\(.gomaxprocs_error))" else .gomaxprocs end) as $procs |
+    "Dispatch ran with GOMAXPROCS \($procs) (meta.json gomaxprocs) pinned to LOADTEST_SERVER_CPUS='"'"'\(.server_cpus)'"'"', \(.server_cpu_count) \($what): a Dispatch pinned to \(.server_cpu_count) \($what) with GOMAXPROCS \($procs) is not the bed any reading names"' \
+    "$1" 2>/dev/null
+}
+
 # pin_words LIST: the words that start a process pinned to LIST (`taskset -c LIST`), one a line;
 # nothing for an empty LIST, which pins nothing.
 pin_words() { [ -z "$1" ] || printf '%s\n' taskset -c "$1"; }
@@ -309,9 +354,11 @@ check_cpu_affinity() {
   note "CPU affinity binds: two busy loops pinned to CPU ${cpus[0]} took $pinned s against $unpinned s unpinned (${ratio}x)"
 }
 
-# check_cpu_pinning: check_cpu_lists, then check_cpu_affinity.
+# check_cpu_pinning: check_cpu_lists, then gomaxprocs (a LOADTEST_GOMAXPROCS other than the server
+# list's CPU count is refused), then check_cpu_affinity.
 check_cpu_pinning() {
   check_cpu_lists
+  gomaxprocs >/dev/null
   check_cpu_affinity
 }
 

@@ -59,14 +59,19 @@
 # non-zero naming why, and so does this script; it still renders TABLES.md, where the row carries
 # the mark.
 #
-# A step whose generator sent more than a tenth over its schedule in a second of the window is set
-# aside (README.md, "The set-aside rule"): neither a pass nor a failure. This script says so first
-# in its closing lines, and TABLES.md says so before its first table; it exits 0 for it, as for a
-# step that ran, so a series goes on to its next step.
+# A step whose generator sent more than a tenth over its schedule in a second of the window, or
+# recorded nothing scheduled of a kind it was to send, is set aside (README.md, "The set-aside
+# rule"): neither a pass nor a failure. This script says so first in its closing lines, and
+# TABLES.md says so before its first table; it exits 0 for it, as for a step that ran, so a series
+# goes on to its next step.
 #
 # LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS (common.sh, CPU pinning) pin the stack and
-# loadgen to two CPU lists. Before anything starts, a list taskset refuses, two lists that overlap
-# and a runtime that does not enforce the pin (gVisor) are refused.
+# loadgen to two CPU lists. Before anything starts, a list taskset refuses, two lists that overlap,
+# a LOADTEST_GOMAXPROCS (--gomaxprocs) other than the server list's CPU count and a runtime that
+# does not enforce the pin (gVisor) are refused. Dispatch's GOMAXPROCS is the server list's CPU
+# count when the list is set (common.sh gomaxprocs); meta.json records the GOMAXPROCS the running
+# Dispatch was started with, read back from its environment, and a step where it is not the list's
+# count is refused before its window opens (loadgen run), which this script says first.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -182,6 +187,7 @@ if $replay; then
   [ -n "${LOADTEST_REPLAY_ISSUE:-}" ] ||
     die "LOADTEST_REPLAY_ISSUE is required for a --replay step: set it to the issue the replay's parts are file artifacts of"
 fi
+[ -z "$gomaxprocs" ] || export LOADTEST_GOMAXPROCS=$gomaxprocs
 check_cpu_pinning
 
 lock_root "$ROOT"
@@ -195,7 +201,6 @@ started=$SECONDS
 if $replay; then
   # The caller's LOADTEST_PG_DIRECT wins; meta.json's pg_direct records what Dispatch used.
   export LOADTEST_PG_DIRECT=${LOADTEST_PG_DIRECT-1}
-  [ -z "$gomaxprocs" ] || export LOADTEST_GOMAXPROCS=$gomaxprocs
   [ -z "$dispatch_rev" ] || export LOADTEST_DISPATCH_COMMIT=$dispatch_commit
   get_args=()
   [ -z "$manifest" ] || get_args=(--manifest "$manifest")
@@ -239,12 +244,16 @@ cp -- "$ROOT/logs/nats.out" "$out/nats.log"
 set_aside_note() {
   local why
   why=$(jq -er '.set_aside.why // empty' "$out/summary.json" 2>/dev/null) || return 0
-  note "STEP $name IS SET ASIDE, neither a pass nor a failure: $why. Its rows describe the test bed, not Dispatch (summary.json set_aside, $out/arrivals.json); run it again where the generator keeps its schedule"
+  note "STEP $name IS SET ASIDE, neither a pass nor a failure: $why. Its rows describe the test bed, not Dispatch (summary.json set_aside, $out/arrivals.json); run it again where the generator keeps, and records, its schedule"
 }
 
 if ((rc != 0)); then
-  # loadgen run printed why above (a stack process that exited during the step, commit rows it
-  # could not read, or its error).
+  # loadgen run printed why above (a Dispatch whose GOMAXPROCS is not the server list's CPU count,
+  # refused before the window; a stack process that exited during the step, commit rows it could
+  # not read, or its error).
+  if why=$(gomaxprocs_refusal "$out/meta.json"); then
+    die "STEP $name IS REFUSED before its window opened, so nothing was measured: $why. stack.sh starts Dispatch with GOMAXPROCS at the list's CPU count unless a GOMAXPROCS line of LOADTEST_DISPATCH_ENV says otherwise (see $out/meta.json and $out/run.log)"
+  fi
   [ -f "$out/summary.json" ] || die "step $name failed: loadgen run exited $rc before it wrote summary.json (its message above says why); see $out/run.log"
   "$stack" loadgen tables "$out" || true
   set_aside_note

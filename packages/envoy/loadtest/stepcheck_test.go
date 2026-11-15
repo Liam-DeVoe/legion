@@ -537,7 +537,7 @@ func TestStepCheckReadsCriterionFFromWhatTheStepHolds(t *testing.T) {
 func TestStepCheckSetsAsideAStepWhoseGeneratorBrokeItsSchedule(t *testing.T) {
 	const rule = "R8 set-aside rule: no second of the window over its schedule by more than 10%"
 	f := newStepFixture()
-	_, f.sum.SetAside = judgePacing(arrivalsFile{Window: []arrivalSecond{{Second: 95, RequestsScheduled: 640, RequestsSent: 3540}}})
+	_, f.sum.SetAside = judgePacing(arrivalsFile{Window: []arrivalSecond{{Second: 95, RequestsScheduled: 640, RequestsSent: 3540}}}, paceTargets{requests: true})
 	out, failed := f.check(t, "2x-stalled")
 	if failed != 0 {
 		t.Errorf("%d clauses failed on a set-aside step, want none: set aside is no failure:\n%s", failed, out)

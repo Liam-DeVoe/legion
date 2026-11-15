@@ -32,7 +32,9 @@
 # two CPU lists that share a CPU, are refused naming them, and one list alone passes; (l) a CPU pin
 # is taken to bind only when it slows two busy loops 1.6x (affinity_verdict over two given
 # durations, no loop timed), and the refusal gives the measurement and names gVisor when
-# /proc/version or dmesg shows it.
+# /proc/version or dmesg shows it; (m) Dispatch's GOMAXPROCS is the server list's CPU count when the
+# list is set, nproc otherwise, a LOADTEST_GOMAXPROCS that differs from the count is refused naming
+# both, and a step's meta.json that records a GOMAXPROCS other than its list's count is refused.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -546,7 +548,7 @@ case_ephemeral_ports() {
 }
 
 # in_common [NAME=VALUE...] -- CMD...: CMD in a shell that sourced common.sh, without the two CPU
-# lists but the ones given. Sets out to what it printed and rc to its status.
+# lists and LOADTEST_GOMAXPROCS but the ones given. Sets out to what it printed and rc to its status.
 in_common() {
   local envs=()
   while [ "$1" != -- ]; do
@@ -555,7 +557,7 @@ in_common() {
   done
   shift
   rc=0
-  out=$(env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS "${envs[@]}" \
+  out=$(env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS -u LOADTEST_GOMAXPROCS "${envs[@]}" \
     bash -c 'source "$1"; shift; "$@"' common "$helper" "$@" 2>&1) || rc=$?
 }
 
@@ -617,6 +619,55 @@ case_cpu_affinity() {
   printf 'PASS: a pin that does not slow two busy loops 1.6x is refused, with the measurement and gVisor when it shows\n'
 }
 
+# case_gomaxprocs: Dispatch's GOMAXPROCS is the number of CPUs in LOADTEST_SERVER_CPUS, each CPU
+# counted once, when the list is set, and nproc otherwise. A LOADTEST_GOMAXPROCS equal to the count
+# passes; one that differs is refused naming both numbers, and so is one that is not a positive
+# integer. A step's meta.json that records a GOMAXPROCS other than its server list's count, or one
+# that could not be read, is refused naming both (gomaxprocs_refusal); one on the count, an
+# unpinned one and a missing one are not.
+case_gomaxprocs() {
+  in_common LOADTEST_SERVER_CPUS=0-6:3 -- server_cpu_count
+  ((rc == 0)) && [ "$out" = 3 ] || { fail "(m) server_cpu_count of 0-6:3 is '$out' (rc $rc), want 3"; return; }
+  in_common LOADTEST_SERVER_CPUS=0 -- gomaxprocs
+  ((rc == 0)) && [ "$out" = 1 ] || { fail "(m) LOADTEST_SERVER_CPUS=0 gave GOMAXPROCS '$out' (rc $rc), want 1, not nproc"; return; }
+  in_common LOADTEST_SERVER_CPUS=0,0-6:3,3 -- gomaxprocs
+  ((rc == 0)) && [ "$out" = 3 ] || { fail "(m) 0,0-6:3,3 gave GOMAXPROCS '$out' (rc $rc), want each CPU once: 3"; return; }
+  in_common -- gomaxprocs
+  ((rc == 0)) && [ "$out" = "$(nproc)" ] || { fail "(m) no server list gave GOMAXPROCS '$out' (rc $rc), want nproc"; return; }
+  in_common LOADTEST_GOMAXPROCS=5 -- gomaxprocs
+  ((rc == 0)) && [ "$out" = 5 ] || { fail "(m) LOADTEST_GOMAXPROCS=5 with no server list gave '$out' (rc $rc)"; return; }
+  in_common LOADTEST_SERVER_CPUS=0 LOADTEST_GOMAXPROCS=1 -- gomaxprocs
+  ((rc == 0)) && [ "$out" = 1 ] || { fail "(m) LOADTEST_GOMAXPROCS=1 on a one-CPU list was refused: $out"; return; }
+  in_common LOADTEST_SERVER_CPUS=0-1 LOADTEST_GOMAXPROCS=32 -- gomaxprocs
+  ((rc != 0)) && [[ $out == *"LOADTEST_GOMAXPROCS=32 (run-step.sh --gomaxprocs) differs from LOADTEST_SERVER_CPUS='0-1', 2 CPUs: a Dispatch pinned to 2 CPUs with GOMAXPROCS 32 is not the bed any reading names"* ]] ||
+    { fail "(m) LOADTEST_GOMAXPROCS=32 on a two-CPU list was not refused naming both: $out"; return; }
+  in_common LOADTEST_SERVER_CPUS=0 LOADTEST_GOMAXPROCS=2 -- gomaxprocs
+  ((rc != 0)) && [[ $out == *"LOADTEST_SERVER_CPUS='0', 1 CPU: a Dispatch pinned to 1 CPU with GOMAXPROCS 2"* ]] ||
+    { fail "(m) LOADTEST_GOMAXPROCS=2 on a one-CPU list was not refused naming both: $out"; return; }
+  in_common LOADTEST_GOMAXPROCS=x -- gomaxprocs
+  ((rc != 0)) && [[ $out == *"LOADTEST_GOMAXPROCS='x' is not a positive integer"* ]] || { fail "(m) LOADTEST_GOMAXPROCS=x was not refused: $out"; return; }
+
+  local meta="${temporary_dir}/meta.json"
+  printf '%s\n' '{"gomaxprocs":"32","server_cpus":"0-1","server_cpu_count":2}' >"$meta"
+  in_common -- gomaxprocs_refusal "$meta"
+  ((rc == 0)) && [ "$out" = "Dispatch ran with GOMAXPROCS 32 (meta.json gomaxprocs) pinned to LOADTEST_SERVER_CPUS='0-1', 2 CPUs: a Dispatch pinned to 2 CPUs with GOMAXPROCS 32 is not the bed any reading names" ] ||
+    { fail "(m) meta.json's GOMAXPROCS 32 on a two-CPU list was not refused naming both (rc $rc): $out"; return; }
+  printf '%s\n' '{"gomaxprocs":"","gomaxprocs_error":"no Dispatch pid","server_cpus":"0","server_cpu_count":1}' >"$meta"
+  in_common -- gomaxprocs_refusal "$meta"
+  ((rc == 0)) && [[ $out == *"GOMAXPROCS unread (no Dispatch pid)"*"'0', 1 CPU:"* ]] ||
+    { fail "(m) a GOMAXPROCS meta.json could not read on a pinned step was not refused (rc $rc): $out"; return; }
+  local passes
+  for passes in '{"gomaxprocs":"2","server_cpus":"0-1","server_cpu_count":2}' '{"gomaxprocs":"32","server_cpus":"","server_cpu_count":null}'; do
+    printf '%s\n' "$passes" >"$meta"
+    in_common -- gomaxprocs_refusal "$meta"
+    ((rc != 0)) || { fail "(m) meta.json $passes was refused: $out"; return; }
+  done
+  in_common -- gomaxprocs_refusal "${temporary_dir}/no-such-meta.json"
+  ((rc != 0)) || { fail "(m) a missing meta.json was refused: $out"; return; }
+  out=""
+  printf 'PASS: GOMAXPROCS follows the server list, and one that differs from its count is refused\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -631,7 +682,8 @@ case_stack_ports || failed=$((failed + 1))
 case_ephemeral_ports || failed=$((failed + 1))
 case_cpu_lists || failed=$((failed + 1))
 case_cpu_affinity || failed=$((failed + 1))
+case_gomaxprocs || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 13 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 14 cases failed\n' "$failed" >&2
   exit 1
 fi

@@ -108,7 +108,10 @@ type runConfig struct {
 	buildDirty  bool
 	// serverCPUs and generatorCPUs are LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS, the CPU
 	// lists stack.sh pinned the stack and this loadgen to, recorded in summary.json; "" unpinned.
+	// serverCPUCount is the server list's CPU count (serverCPUCountOf), 0 unpinned: the GOMAXPROCS
+	// Dispatch must run with (gomaxprocsRefusal).
 	serverCPUs, generatorCPUs string
+	serverCPUCount            int
 	// boxBusyBefore is the box's busy fraction read before Dispatch started (run-step.sh reads it
 	// with `loadgen box-busy` before its reset); negative means collectMeta reads it itself.
 	boxBusyBefore float64
@@ -410,6 +413,11 @@ func runLoad(args []string) error {
 	if *name == "" {
 		*name = filepath.Base(filepath.Clean(*out))
 	}
+	serverCPUs := os.Getenv("LOADTEST_SERVER_CPUS")
+	serverCPUCount, err := serverCPUCountOf(serverCPUs, os.Getenv("LOADTEST_SERVER_CPU_COUNT"))
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return err
 	}
@@ -427,7 +435,7 @@ func runLoad(args []string) error {
 		heapSamples: *heapSamples, unitStarts: *unitStarts, unitLife: *unitLife,
 		loopListeners: loopEndpoints, driverTopics: *driverTopics, receiptDeadline: *receiptDeadline,
 		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore,
-		serverCPUs: os.Getenv("LOADTEST_SERVER_CPUS"), generatorCPUs: os.Getenv("LOADTEST_GENERATOR_CPUS"),
+		serverCPUs: serverCPUs, serverCPUCount: serverCPUCount, generatorCPUs: os.Getenv("LOADTEST_GENERATOR_CPUS"),
 		// Fewer editors than documents edit only as many documents as there are editors.
 		editors:  editorConfig{editors: *editors, rate: *editorRate, docs: min(*editorDocs, max(*editors, 1))},
 		args:     recordedArgs(fs),
@@ -717,7 +725,16 @@ type metaFile struct {
 	// step, from /proc/stat; null when /proc/stat gave no ticks.
 	BoxBusyBefore        *float64 `json:"box_busy_before"`
 	BoxBusyBeforeWindowS float64  `json:"box_busy_before_window_s"`
-	GOMAXPROCS           string   `json:"gomaxprocs"`
+	// GOMAXPROCS is the GOMAXPROCS Dispatch runs with, read back from the running process's
+	// /proc/<pid>/environ (readDispatchGOMAXPROCS): "unset" when its environment holds none, and
+	// Go's own default holds; "" when it could not be read, and GOMAXPROCSError says why.
+	// ServerCPUs and ServerCPUCount are the server CPU list Dispatch is pinned to
+	// (LOADTEST_SERVER_CPUS) and its CPU count, "" and null unpinned; with the list set, a step
+	// whose GOMAXPROCS is not that count is refused before its window (gomaxprocsRefusal).
+	GOMAXPROCS      string `json:"gomaxprocs"`
+	GOMAXPROCSError string `json:"gomaxprocs_error,omitempty"`
+	ServerCPUs      string `json:"server_cpus"`
+	ServerCPUCount  *int   `json:"server_cpu_count"`
 	// PostgresVersion is select version() on -pg, "" when it could not be read, and then
 	// PostgresVersionError is why.
 	PostgresVersion      string `json:"postgres_version"`
@@ -793,6 +810,11 @@ func execute(cfg runConfig, sf seedFile) error {
 	meta := collectMeta(ctx, cfg, lg)
 	meta.MarkerNonce = formatNonce(nonce)
 	writeJSONFile(filepath.Join(cfg.out, "meta.json"), meta, metaMode, lg)
+	lg.Printf("meta: Dispatch's GOMAXPROCS %s on server CPUs %q", meta.gomaxprocsText(), meta.ServerCPUs)
+	if err := gomaxprocsRefusal(meta); err != nil {
+		lg.Print(err)
+		return err
+	}
 	logSamplerStart(lg, cfg.ep)
 	st := newStep(cfg, sf, lg, nonce)
 	for _, p := range st.pops {
@@ -1518,7 +1540,7 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 	writeJSONFile(filepath.Join(cfg.out, "samples.json"), ss, 0o644, st.lg)
 	arrivals := st.arrivals()
 	writeJSONFile(filepath.Join(cfg.out, "arrivals.json"), arrivals, 0o644, st.lg)
-	pacing, aside := judgePacing(arrivals)
+	pacing, aside := judgePacing(arrivals, st.paceTargets())
 	sum.Pacing, sum.SetAside = &pacing, aside
 	writeJSONFile(filepath.Join(cfg.out, "accept-backlog.json"), pr.acc.file(), 0o644, st.lg)
 	accept := pr.acc.summary()
@@ -1558,6 +1580,21 @@ func (st *step) arrivals() arrivalsFile {
 		events = append(events, p.eventPace)
 	}
 	return arrivalsOf(requests, events)
+}
+
+// paceTargets are the kinds the step was to send (judgePacing): the requests when a population's
+// request rate is above 0 or the replay's plan holds an action, the event writes when a
+// population's event rate is above 0.
+func (st *step) paceTargets() paceTargets {
+	var t paceTargets
+	for _, p := range st.pops {
+		t.requests = t.requests || p.requests > 0
+		t.events = t.events || p.events > 0
+	}
+	if st.replay != nil && len(st.replay.setup.plan.Actions) > 0 {
+		t.requests = true
+	}
+	return t
 }
 
 // sent snapshots what each population sent, into that population's own ws and rs, and answers
@@ -1764,7 +1801,8 @@ const (
 func collectMeta(ctx context.Context, cfg runConfig, lg *log.Logger) metaFile {
 	m := metaFile{
 		Step: cfg.name, Args: cfg.args, Nproc: runtime.NumCPU(), BuildCommit: cfg.buildCommit, BuildDirty: cfg.buildDirty,
-		Stack: cfg.ep.stack, PGDirect: cfg.ep.pgDirect, EnvoyRTT: cfg.ep.envoyRTT, AllowForeign: cfg.allowForeign, PIDs: cfg.ep.pids, GOMAXPROCS: "unset",
+		Stack: cfg.ep.stack, PGDirect: cfg.ep.pgDirect, EnvoyRTT: cfg.ep.envoyRTT, AllowForeign: cfg.allowForeign, PIDs: cfg.ep.pids,
+		ServerCPUs: cfg.serverCPUs,
 	}
 	if b, err := os.ReadFile("/proc/cpuinfo"); err == nil {
 		for line := range strings.SplitSeq(string(b), "\n") {
@@ -1791,19 +1829,9 @@ func collectMeta(ctx context.Context, cfg runConfig, lg *log.Logger) metaFile {
 	} else {
 		lg.Printf("meta: box busy before: /proc/stat gave no ticks")
 	}
-	// GOMAXPROCS as Dispatch was started with it, from its environment when its pid is known.
-	if v, ok := os.LookupEnv("GOMAXPROCS"); ok {
-		m.GOMAXPROCS = v
-	}
-	if pid := cfg.ep.pids["dispatch"]; pid > 0 {
-		if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid)); err == nil {
-			m.GOMAXPROCS = "unset"
-			for kv := range strings.SplitSeq(string(b), "\x00") {
-				if v, ok := strings.CutPrefix(kv, "GOMAXPROCS="); ok {
-					m.GOMAXPROCS = v
-				}
-			}
-		}
+	m.GOMAXPROCS, m.GOMAXPROCSError = readDispatchGOMAXPROCS(cfg.ep.pids["dispatch"])
+	if cfg.serverCPUs != "" {
+		m.ServerCPUCount = &cfg.serverCPUCount
 	}
 	pgCtx, pgCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer pgCancel()
@@ -1828,6 +1856,67 @@ func collectMeta(ctx context.Context, cfg runConfig, lg *log.Logger) metaFile {
 		lg.Printf("meta: no Dispatch build record at %s", filepath.Join(loadtestRoot(), "bin", "envoy-dispatch.json"))
 	}
 	return m
+}
+
+// readDispatchGOMAXPROCS is the GOMAXPROCS the running Dispatch of pid runs with, read back from
+// its /proc/<pid>/environ: the first GOMAXPROCS entry, the one Go's runtime reads, or "unset" when
+// its environment holds none. Dispatch serves no GOMAXPROCS on its /metrics (dispatch_go_* holds
+// the heap, the goroutines and the GC pauses) nor on its pprof listener's /debug/vars, and never
+// sets GOMAXPROCS itself, so the value its runtime read from its environment at start is the one
+// it runs with. why says why it could not be read: no pid (a foreign Dispatch, -allow-foreign), or
+// the read failed.
+func readDispatchGOMAXPROCS(pid int) (value, why string) {
+	if pid <= 0 {
+		return "", "no Dispatch pid (a foreign Dispatch, -allow-foreign), so its environment cannot be read"
+	}
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	if err != nil {
+		return "", fmt.Sprintf("read Dispatch's environment: %v", err)
+	}
+	for kv := range strings.SplitSeq(string(b), "\x00") {
+		if v, ok := strings.CutPrefix(kv, "GOMAXPROCS="); ok {
+			return v, ""
+		}
+	}
+	return "unset", ""
+}
+
+// gomaxprocsText is meta.json's GOMAXPROCS as run.log and a refusal give it: the value, or why it
+// was not read.
+func (m metaFile) gomaxprocsText() string {
+	if m.GOMAXPROCS == "" {
+		return "unread (" + m.GOMAXPROCSError + ")"
+	}
+	return m.GOMAXPROCS
+}
+
+// gomaxprocsRefusal refuses a step whose Dispatch, pinned to the server CPU list, does not run
+// with as many processors as the list holds CPUs (meta.json gomaxprocs against server_cpu_count),
+// or whose GOMAXPROCS could not be read back, since nothing then shows it does: a Dispatch pinned
+// to N CPUs with M processors is not the bed any reading names (admission sizes its lanes by
+// runtime.GOMAXPROCS). execute calls it before the window opens; nil without a server list.
+func gomaxprocsRefusal(m metaFile) error {
+	if m.ServerCPUCount == nil || m.GOMAXPROCS == strconv.Itoa(*m.ServerCPUCount) {
+		return nil
+	}
+	n := *m.ServerCPUCount
+	return fmt.Errorf("refused before the window: Dispatch runs with GOMAXPROCS %s (meta.json gomaxprocs, read from its /proc/<pid>/environ) and is pinned to LOADTEST_SERVER_CPUS='%s', %s: a Dispatch pinned to %s with GOMAXPROCS %s is not the bed any reading names",
+		m.gomaxprocsText(), m.ServerCPUs, plural(n, "CPU"), plural(n, "CPU"), m.gomaxprocsText())
+}
+
+// serverCPUCountOf is the server list's CPU count, which stack.sh's loadgen_env passes as
+// LOADTEST_SERVER_CPU_COUNT beside LOADTEST_SERVER_CPUS, counted by the same reading of the list
+// that gives Dispatch its GOMAXPROCS (common.sh server_cpu_count); 0 without a list. A list
+// without a positive count is refused, since the step could not hold Dispatch's GOMAXPROCS to it.
+func serverCPUCountOf(list, count string) (int, error) {
+	if list == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(count)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("LOADTEST_SERVER_CPUS='%s' is set without its CPU count (LOADTEST_SERVER_CPU_COUNT='%s'): stack.sh loadgen sets the two together, so run loadgen run through it", list, count)
+	}
+	return n, nil
 }
 
 // dispatchBuild is $LOADTEST_ROOT/bin/envoy-dispatch.json, stack.sh's record of the Dispatch binary

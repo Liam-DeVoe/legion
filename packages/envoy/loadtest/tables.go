@@ -153,8 +153,8 @@ func p50(s stat) float64  { return s.P50 }
 func p99(s stat) float64  { return s.P99 }
 func smax(s stat) float64 { return s.Max }
 
-// label is the step's name in a table row, marked setAsideMark when its generator broke its
-// schedule (summary.json set_aside), "(<names> exited)" when a stack process exited during the
+// label is the step's name in a table row, marked setAsideMark when the step is set aside
+// (summary.json set_aside), "(<names> exited)" when a stack process exited during the
 // step, and failedMark when its directory holds step-failed.json.
 func (s stepData) label() string {
 	label := s.name
@@ -344,27 +344,25 @@ func eventsTable(md *markdown, steps []stepData) {
 }
 
 // pacingTable is one row per step: what its generators sent against their schedule in the
-// window, whether that set it aside (pacing.go), and the API listener's accept backlog and the
-// box's TCP opens per second (accept.go). A summary.json from before these readings has none,
-// and its cells are `-`.
+// window, how late its latest arrival of each kind was, whether that set it aside (pacing.go),
+// and the API listener's accept backlog and the box's TCP opens per second (accept.go). A
+// summary.json from before these readings has none, and its cells are `-`.
 func pacingTable(md *markdown, steps []stepData) {
 	md.line("\n## Generator pacing and accept backlog\n")
-	md.line("Sent is when the generator let an arrival go, scheduled when its schedule put it; a second is judged against at least %d scheduled arrivals, and a step whose generator sent more than %s over a second's schedule in the window is set aside.\n",
-		minJudgedSchedule, percent(overScheduleLimit))
-	md.header("step", "requests sent / scheduled", "requests most over schedule", "events sent / scheduled", "events most over schedule",
+	md.line("Sent is when the generator let an arrival go, scheduled when its schedule put it: an arrival counts in its scheduled second unless it was sent more than %s late, and then in the second it was sent. A second is judged against at least %d scheduled arrivals, and a step whose generator sent more than %s over a second's schedule in the window, or recorded nothing scheduled of a kind the step was to send, is set aside. Max lateness is the most any arrival the window's schedule held was sent after its time.\n",
+		lateTolerance, minJudgedSchedule, percent(overScheduleLimit))
+	md.header("step", "requests sent / scheduled", "requests most over schedule", "requests max lateness ms",
+		"events sent / scheduled", "events most over schedule", "events max lateness ms",
 		"set aside", "accept backlog max / limit", "seconds above half the limit", "opens max/s active / passive")
 	var unmeasured []string
 	for _, s := range steps {
 		cells := []string{s.label()}
 		if p := s.sum.Pacing; p != nil {
-			aside := "no"
-			if a := s.sum.SetAside; a != nil {
-				aside = "yes: " + plural(len(a.Seconds), "second")
-			}
-			cells = append(cells, p.Requests.sentCell(), overCell(p.Requests.MaxOver, p.Requests.MaxOverSecond),
-				p.Events.sentCell(), overCell(p.Events.MaxOver, p.Events.MaxOverSecond), aside)
+			cells = append(cells, p.Requests.sentCell(), overCell(p.Requests.MaxOver, p.Requests.MaxOverSecond), latenessCell(p.Requests.MaxLatenessMs),
+				p.Events.sentCell(), overCell(p.Events.MaxOver, p.Events.MaxOverSecond), latenessCell(p.Events.MaxLatenessMs),
+				s.sum.SetAside.cell())
 		} else {
-			cells = append(cells, "-", "-", "-", "-", "-")
+			cells = append(cells, "-", "-", "-", "-", "-", "-", "-")
 		}
 		a := s.sum.Accept
 		cells = append(cells, a.backlogCell(), a.aboveHalfCell(), a.opensCell())

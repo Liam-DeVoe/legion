@@ -487,8 +487,9 @@ func (s *curveStep) markVoid() error {
 // passes is true when no criterion the step's series judges is FAIL. A void step is no pass: its
 // files do not show its generator keeping up, so it measured nothing to pass by (markVoid), and
 // every renderer says void of it rather than yes or no (passWord). Nor is a set-aside step, whose
-// generator sent a burst over its schedule (summary.json set_aside, pacing.go): every renderer
-// says set aside of it, neither a pass nor a failure.
+// generator sent a burst over its schedule, or recorded nothing of a kind the step was to send
+// (summary.json set_aside, pacing.go): every renderer says set aside of it, neither a pass nor a
+// failure.
 func (s *curveStep) passes() bool {
 	if s.void || s.setAside() {
 		return false
@@ -501,8 +502,9 @@ func (s *curveStep) passes() bool {
 	return true
 }
 
-// setAside is set when the step's generator broke its schedule in a second of the window
-// (summary.json set_aside), which every series reads the same way.
+// setAside is set when the step is set aside (summary.json set_aside): its generator broke its
+// schedule in a second of the window, or recorded nothing of a kind the step was to send. Every
+// series reads it the same way.
 func (s *curveStep) setAside() bool { return s.sum.SetAside != nil }
 
 // tripped are the criteria of the step's series that it fails, in the series' order.
@@ -1209,7 +1211,7 @@ func setAsideNoteMD(md *markdown, steps []*curveStep) {
 	if len(aside) == 0 {
 		return
 	}
-	md.line("\n`%s`: in a second of the window the step's generator sent more than %s over that second's schedule, the burst of a generator the box stalled, so the step did not deliver the load it claims (summary.json `set_aside`). A set-aside step is neither a pass nor a failure: it ends no knee bracket, and it is run again where the generator keeps its schedule.", setAsideWord, percent(overScheduleLimit))
+	md.line("\n`%s`: nothing shows the step's generator delivered the load the step claims (summary.json `set_aside`): in a second of the window it sent more than %s over that second's schedule, the burst of a generator the box stalled, or it recorded nothing scheduled of a kind the step was to send, which the rule refuses to judge. A set-aside step is neither a pass nor a failure: it ends no knee bracket, and it is run again where the generator keeps, and records, its schedule.", setAsideWord, percent(overScheduleLimit))
 	for _, s := range aside {
 		md.line("- %s: %s.", s.label(), s.sum.SetAside.Why)
 	}
@@ -1254,8 +1256,9 @@ func voidSteps(steps []*curveStep) []*curveStep {
 // cell, and curves.csv's passes column.
 const voidWord = "void"
 
-// passWord is the Pass column of s: set aside for a step whose generator broke its schedule, void
-// for a step whose files do not show its generator keeping up, else yes or no.
+// passWord is the Pass column of s: set aside for a step whose generator broke its schedule or
+// did not record it, void for a step whose files do not show its generator keeping up, else yes
+// or no.
 func passWord(s *curveStep) string {
 	switch {
 	case s.setAside():
@@ -1367,7 +1370,7 @@ func renderKnees(series []*curveStep, knees []knee) string {
 	if aside := setAsideSteps(series); len(aside) > 0 {
 		md.line("")
 		for _, s := range aside {
-			md.line("- %sx (step %s): %s (%s): its generator did not deliver the load the step claims, so it is neither a pass nor a failure and ends no bracket; run it again where the generator keeps its schedule.",
+			md.line("- %sx (step %s): %s (%s): nothing shows its generator delivered the load the step claims, so it is neither a pass nor a failure and ends no bracket; run it again where the generator keeps, and records, its schedule.",
 				fmtFloat(s.factor), s.name, setAsideWord, s.sum.SetAside.Why)
 		}
 	}

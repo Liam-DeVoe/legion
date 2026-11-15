@@ -99,13 +99,16 @@
 # LOADTEST_PG_DIRECT=1 starts Dispatch on Postgres without the proxy;
 # LOADTEST_ENVOY_RTT=<duration> starts Dispatch with ENVOY_URL through a latency proxy
 # (envoy_proxy) in front of the listener;
-# LOADTEST_DISPATCH_COMMIT (setup, above); LOADTEST_GOMAXPROCS, Dispatch's GOMAXPROCS (default: nproc);
+# LOADTEST_DISPATCH_COMMIT (setup, above); LOADTEST_GOMAXPROCS, Dispatch's GOMAXPROCS (default: the
+# number of CPUs in LOADTEST_SERVER_CPUS when it is set, else nproc; common.sh gomaxprocs);
 # LOADTEST_REPLAY_ISSUE, the issue the replay's parts are file artifacts of (replay-get, above);
 # LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS, two CPU lists (common.sh, CPU pinning), empty
 # by default: every stack process starts under `taskset -c LOADTEST_SERVER_CPUS` (spawn), which
 # refuses a list other than the one the processes still running started on, and every loadgen
 # runs under `taskset -c LOADTEST_GENERATOR_CPUS`; every command but stop, status and build-info
-# refuses a list taskset refuses and two lists that overlap.
+# refuses a list taskset refuses and two lists that overlap, and every command that starts
+# Dispatch refuses a LOADTEST_GOMAXPROCS other than the server list's CPU count, before it stops
+# anything.
 #
 # Every stack process starts under `env -i` with an explicit environment, so this shell's
 # DISPATCH_URL, ENVOY_URL, ENVOY_NATS_URL, AWS_*, HOME and XDG_* never reach it, and every process is
@@ -164,7 +167,9 @@ base_env=(
 # loadgen_env adds what loadgen needs: the root, the go toolchain for `loadgen tables`
 # (`go tool pprof`), this script's path and the run's lock token, for `loadgen run -restart-at`'s
 # `stack.sh restart-dispatch`, LOADTEST_NO_RESUME when it is set, and the two CPU lists, which
-# `loadgen run` records and its restart-dispatch pins Dispatch to.
+# `loadgen run` records and its restart-dispatch pins Dispatch to, with the server list's CPU
+# count (LOADTEST_SERVER_CPU_COUNT, server_cpu_count), which `loadgen run` holds Dispatch's
+# GOMAXPROCS to.
 loadgen_env() {
   local gobin
   gobin=$(command -v go || true)
@@ -173,7 +178,8 @@ loadgen_env() {
   printf '%s\n' "${base_env[@]:1}" "PATH=$path" "LOADTEST_ROOT=$ROOT" "LOADTEST_STACK_SH=$here/stack.sh"
   [ -z "${LOADTEST_LOCK_TOKEN:-}" ] || printf '%s\n' "LOADTEST_LOCK_TOKEN=$LOADTEST_LOCK_TOKEN"
   [ -z "${LOADTEST_NO_RESUME:-}" ] || printf '%s\n' "LOADTEST_NO_RESUME=$LOADTEST_NO_RESUME"
-  [ -z "${LOADTEST_SERVER_CPUS:-}" ] || printf '%s\n' "LOADTEST_SERVER_CPUS=$LOADTEST_SERVER_CPUS"
+  [ -z "${LOADTEST_SERVER_CPUS:-}" ] ||
+    printf '%s\n' "LOADTEST_SERVER_CPUS=$LOADTEST_SERVER_CPUS" "LOADTEST_SERVER_CPU_COUNT=$(server_cpu_count)"
   [ -z "${LOADTEST_GENERATOR_CPUS:-}" ] || printf '%s\n' "LOADTEST_GENERATOR_CPUS=$LOADTEST_GENERATOR_CPUS"
 }
 
@@ -545,13 +551,6 @@ start_envoy_proxy() {
   wait_for "the listener's latency proxy" 30 envoy_proxy "$log" port_open "$(port envoy_proxy)"
   set_pid envoy_proxy "$(pid_of envoy_proxy)"
   note "envoy_proxy pid $(pid_of envoy_proxy) on 127.0.0.1:$(port envoy_proxy) toward the listener (rtt $rtt)"
-}
-
-# gomaxprocs: LOADTEST_GOMAXPROCS (default: nproc), refused unless a positive integer.
-gomaxprocs() {
-  local n=${LOADTEST_GOMAXPROCS:-$(nproc)}
-  [[ $n =~ ^[1-9][0-9]*$ ]] || die "LOADTEST_GOMAXPROCS='$n' is not a positive integer"
-  printf '%s\n' "$n"
 }
 
 # start_dispatch LOG [BINARY [DB [SECONDS]]]: BINARY (default $BIN/envoy-dispatch) on database DB
@@ -1056,11 +1055,15 @@ case ${1:-} in
   *) check_cpu_lists ;;
 esac
 # A command that starts stack processes is refused on another server list than the running
-# processes' before it stops any of them (a reset stops NATS, the listener and Dispatch first).
+# processes' before it stops any of them (a reset stops NATS, the listener and Dispatch first), and
+# one that starts Dispatch on a LOADTEST_GOMAXPROCS that is not that list's CPU count (gomaxprocs).
 case ${1:-} in
   start | seed | reset | restart-dispatch | replay-seed | replay-get | replay-prepare)
     [ ! -f "$STACK" ] || server_cpus_check "stack.sh $1"
     ;;
+esac
+case ${1:-} in
+  seed | reset | restart-dispatch | replay-seed | replay-prepare) gomaxprocs >/dev/null ;;
 esac
 case ${1:-} in
   setup) cmd_setup ;;

@@ -1064,9 +1064,10 @@ func (sc *stepCheck) voidClause() stepClause {
 }
 
 // setAsideClause is the set-aside rule (pacing.go): set aside, neither a pass nor a failure, when
-// a second of the window ran more than overScheduleLimit over its schedule (summary.json
-// set_aside); FAIL when the step records no pacing at all, since then nothing says its generator
-// kept its schedule, as the void rule holds of a step that records no generator.
+// a second of the window ran more than overScheduleLimit over its schedule, or a kind the step was
+// to send recorded nothing scheduled (summary.json set_aside); FAIL when the step records no
+// pacing at all, since then nothing says its generator kept its schedule, as the void rule holds
+// of a step that records no generator.
 func (sc *stepCheck) setAsideClause() stepClause {
 	name := fmt.Sprintf("R8 set-aside rule: no second of the window over its schedule by more than %s", percent(overScheduleLimit))
 	s := sc.step.sum

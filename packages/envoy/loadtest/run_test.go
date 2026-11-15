@@ -11,6 +11,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -355,6 +356,99 @@ func TestMetaRecordsTheDispatchBuildOfEveryStep(t *testing.T) {
 	meta = collectMeta(context.Background(), cfg, log.New(&logged, "", 0))
 	if meta.DispatchCommit != "" || meta.DispatchBuild != nil || !strings.Contains(logged.String(), "no Dispatch build record") {
 		t.Fatalf("without the record: dispatch_commit %q, log %q", meta.DispatchCommit, logged.String())
+	}
+}
+
+// TestMetaRecordsTheGOMAXPROCSDispatchRunsWith: meta.json's gomaxprocs is read back from the
+// running Dispatch's /proc/<pid>/environ, not from a variable of loadgen's own, beside the server
+// CPU list and its count. A step pinned to a list whose count Dispatch's GOMAXPROCS is not, or
+// whose GOMAXPROCS could not be read, is refused before its window, naming both numbers; one on
+// the list's count, or unpinned, is not.
+func TestMetaRecordsTheGOMAXPROCSDispatchRunsWith(t *testing.T) {
+	t.Setenv("LOADTEST_ROOT", t.TempDir())
+	t.Setenv("GOMAXPROCS", "7") // loadgen's own, which is not Dispatch's
+	// dispatch starts a process with env, standing in for a running Dispatch.
+	dispatch := func(env ...string) int {
+		cmd := exec.Command("sleep", "60")
+		cmd.Env = append([]string{"PATH=/usr/bin:/bin"}, env...)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		})
+		return cmd.Process.Pid
+	}
+	meta := func(serverCPUs string, count, pid int) metaFile {
+		cfg := runConfig{boxBusyBefore: 0, serverCPUs: serverCPUs, serverCPUCount: count,
+			ep: endpoints{pg: unreachablePG, pids: map[string]int{"dispatch": pid}}}
+		return collectMeta(context.Background(), cfg, log.New(io.Discard, "", 0))
+	}
+	two, thirtyTwo, unset := dispatch("GOMAXPROCS=2"), dispatch("GOMAXPROCS=32"), dispatch()
+
+	onList := meta("0-1", 2, two)
+	if onList.GOMAXPROCS != "2" || onList.GOMAXPROCSError != "" || onList.ServerCPUs != "0-1" || onList.ServerCPUCount == nil || *onList.ServerCPUCount != 2 {
+		t.Fatalf("meta.json gomaxprocs %q (%q) on server CPUs %q (%v); want 2, Dispatch's own, on 0-1, 2 CPUs",
+			onList.GOMAXPROCS, onList.GOMAXPROCSError, onList.ServerCPUs, onList.ServerCPUCount)
+	}
+	if err := gomaxprocsRefusal(onList); err != nil {
+		t.Errorf("a Dispatch on GOMAXPROCS 2 pinned to 2 CPUs is refused: %v", err)
+	}
+	b, err := json.Marshal(onList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{`"gomaxprocs":"2"`, `"server_cpus":"0-1"`, `"server_cpu_count":2`} {
+		if !strings.Contains(string(b), w) {
+			t.Errorf("meta.json lacks %s:\n%s", w, b)
+		}
+	}
+
+	for _, c := range []struct {
+		name string
+		m    metaFile
+		want []string
+	}{
+		{"GOMAXPROCS 32", meta("0-1", 2, thirtyTwo), []string{"refused before the window", "Dispatch runs with GOMAXPROCS 32", "LOADTEST_SERVER_CPUS='0-1', 2 CPUs", "pinned to 2 CPUs with GOMAXPROCS 32 is not the bed any reading names"}},
+		{"no GOMAXPROCS", meta("3", 1, unset), []string{"GOMAXPROCS unset", "LOADTEST_SERVER_CPUS='3', 1 CPU:"}},
+		{"no Dispatch pid", meta("0-1", 2, 0), []string{"GOMAXPROCS unread (no Dispatch pid"}},
+	} {
+		err := gomaxprocsRefusal(c.m)
+		if err == nil {
+			t.Errorf("%s: a Dispatch pinned to %s CPUs is not refused (meta.json gomaxprocs %q)", c.name, c.m.ServerCPUs, c.m.GOMAXPROCS)
+			continue
+		}
+		for _, w := range c.want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: the refusal %q lacks %q", c.name, err, w)
+			}
+		}
+	}
+
+	unpinned := meta("", 0, thirtyTwo)
+	if unpinned.GOMAXPROCS != "32" || unpinned.ServerCPUCount != nil || gomaxprocsRefusal(unpinned) != nil {
+		t.Errorf("unpinned: gomaxprocs %q, server_cpu_count %v, refusal %v; want 32, null and none", unpinned.GOMAXPROCS, unpinned.ServerCPUCount, gomaxprocsRefusal(unpinned))
+	}
+	if b, err := json.Marshal(unpinned); err != nil || !strings.Contains(string(b), `"server_cpus":"","server_cpu_count":null`) {
+		t.Errorf("unpinned meta.json %s (%v) lacks an empty server list and a null count", b, err)
+	}
+}
+
+// TestServerCPUCountComesWithTheList: loadgen run takes the server list's CPU count from
+// LOADTEST_SERVER_CPU_COUNT, which stack.sh loadgen sets beside the list; a list without a
+// positive count is refused, naming both, and no list needs none.
+func TestServerCPUCountComesWithTheList(t *testing.T) {
+	if n, err := serverCPUCountOf("", ""); n != 0 || err != nil {
+		t.Errorf("no list: %d, %v; want 0 and no error", n, err)
+	}
+	if n, err := serverCPUCountOf("0-1", "2"); n != 2 || err != nil {
+		t.Errorf("0-1 with count 2: %d, %v", n, err)
+	}
+	for _, count := range []string{"", "0", "two"} {
+		if _, err := serverCPUCountOf("0-1", count); err == nil || !strings.Contains(err.Error(), "LOADTEST_SERVER_CPUS='0-1' is set without its CPU count (LOADTEST_SERVER_CPU_COUNT='"+count+"')") {
+			t.Errorf("0-1 with count %q: %v; want it refused naming both", count, err)
+		}
 	}
 }
 

@@ -33,6 +33,20 @@ const overScheduleLimit = 0.10
 // a tenth.
 const minJudgedSchedule = 10
 
+// lateTolerance is how late an arrival may be sent and still count in the second its schedule put
+// it in; an arrival sent later than that counts in the second it was sent. It is 100 ms, the
+// architect's decision (dispatch://INFRA-592, open-items.md, 2026-11-15), because it lies far
+// above the lateness of a generator on time and far below that of a stalled one. A generator on
+// time sends each arrival a few milliseconds after its time (sleepUntil's wake-up and its
+// goroutine's turn), and at a rate drop those milliseconds carry the faster second's last arrivals
+// into the slower second after it: counted in the second each was sent, the tester's recovery step
+// read 60 sent against 57 scheduled in its drop second, and 1x:60s,10x:60s,1x:60s at a constant
+// 5 ms lateness was set aside in 18 of 400 seeds, at 12 ms in 241. A generator the box stalled is
+// seconds late, and the second it catches up in holds 5.5 to 18 times its schedule. So 100 ms
+// moves the rate edge's carry-over back to the second it belongs to, and leaves a stalled
+// generator's burst in the second it lands in.
+const lateTolerance = 100 * time.Millisecond
+
 // The two kinds of arrival the rule judges, as summary.json and arrivals.json name them.
 const (
 	paceRequests = "requests"
@@ -47,13 +61,30 @@ type secondCount struct {
 
 // pacer counts one generator's arrivals per second of the step, by when the schedule put each one
 // (scheduled) and by when the generator let it go (sent), the warm-up's seconds counted from the
-// step's start and the window's from the window's start. An arrival sent at or after the window's
-// end is counted in late. A pacer belongs to the one goroutine that walks its generator's
-// schedule, and is read once that goroutine has returned, so it takes no lock.
+// step's start and the window's from the window's start. An arrival counts as sent in its
+// scheduled second unless it was sent more than lateTolerance after its time, and then in the
+// second it was sent; such an arrival sent at or after the window's end is counted in afterWindow.
+// warmupLatest and windowLatest are the largest lateness of the arrivals the warm-up's schedule
+// and the window's held. A pacer belongs to the one goroutine that walks its generator's schedule,
+// and is read once that goroutine has returned, so it takes no lock.
 type pacer struct {
-	start, winStart, winEnd time.Time
-	warmup, window          []secondCount
-	late                    int
+	start, winStart, winEnd    time.Time
+	warmup, window             []secondCount
+	afterWindow                int
+	warmupLatest, windowLatest latest
+}
+
+// latest is the largest lateness, sent minus scheduled, of the arrivals of one span; ok is false
+// while the span has none.
+type latest struct {
+	lateness time.Duration
+	ok       bool
+}
+
+func (l *latest) add(lateness time.Duration) {
+	if !l.ok || lateness > l.lateness {
+		l.lateness, l.ok = lateness, true
+	}
 }
 
 func newPacer(start, winStart, winEnd time.Time) *pacer {
@@ -88,15 +119,28 @@ func (p *pacer) slot(t time.Time) *secondCount {
 	return nil
 }
 
-// record counts one arrival the schedule put at scheduled and the generator sent at sent.
+// record counts one arrival the schedule put at scheduled and the generator sent at sent: as
+// scheduled in scheduled's second, and as sent there too unless it was sent more than
+// lateTolerance late, when it counts as sent in sent's second.
 func (p *pacer) record(scheduled, sent time.Time) {
-	if c := p.slot(scheduled); c != nil {
+	lateness := sent.Sub(scheduled)
+	c := p.slot(scheduled)
+	if c != nil {
 		c.scheduled++
+		if scheduled.Before(p.winStart) {
+			p.warmupLatest.add(lateness)
+		} else {
+			p.windowLatest.add(lateness)
+		}
 	}
-	if c := p.slot(sent); c != nil {
+	if c == nil || lateness > lateTolerance {
+		c = p.slot(sent)
+	}
+	switch {
+	case c != nil:
 		c.sent++
-	} else if !sent.Before(p.winEnd) {
-		p.late++
+	case !sent.Before(p.winEnd):
+		p.afterWindow++
 	}
 }
 
@@ -112,12 +156,18 @@ type arrivalSecond struct {
 }
 
 // arrivalsFile is arrivals.json: the step's arrivals per second of the warm-up and of the window,
-// and those sent once the window had ended.
+// those sent once the window had ended, and each kind's largest lateness (sent minus scheduled,
+// in ms) of the arrivals the warm-up's schedule held and of the window's, null for a span that
+// held none.
 type arrivalsFile struct {
-	Warmup                  []arrivalSecond `json:"warmup"`
-	Window                  []arrivalSecond `json:"window"`
-	RequestsSentAfterWindow int             `json:"requests_sent_after_window"`
-	EventsSentAfterWindow   int             `json:"events_sent_after_window"`
+	Warmup                      []arrivalSecond `json:"warmup"`
+	Window                      []arrivalSecond `json:"window"`
+	RequestsSentAfterWindow     int             `json:"requests_sent_after_window"`
+	EventsSentAfterWindow       int             `json:"events_sent_after_window"`
+	RequestsMaxLatenessMs       *float64        `json:"requests_max_lateness_ms"`
+	RequestsWarmupMaxLatenessMs *float64        `json:"requests_warmup_max_lateness_ms"`
+	EventsMaxLatenessMs         *float64        `json:"events_max_lateness_ms"`
+	EventsWarmupMaxLatenessMs   *float64        `json:"events_warmup_max_lateness_ms"`
 }
 
 // arrivalsOf sums the pacers of each kind into arrivals.json. Every pacer of a step has the
@@ -129,15 +179,31 @@ func arrivalsOf(requests, events []*pacer) arrivalsFile {
 			f.Warmup = addSeconds(f.Warmup, p.warmup, kind)
 			f.Window = addSeconds(f.Window, p.window, kind)
 			if kind == paceRequests {
-				f.RequestsSentAfterWindow += p.late
+				f.RequestsSentAfterWindow += p.afterWindow
+				f.RequestsMaxLatenessMs = laterMs(f.RequestsMaxLatenessMs, p.windowLatest)
+				f.RequestsWarmupMaxLatenessMs = laterMs(f.RequestsWarmupMaxLatenessMs, p.warmupLatest)
 			} else {
-				f.EventsSentAfterWindow += p.late
+				f.EventsSentAfterWindow += p.afterWindow
+				f.EventsMaxLatenessMs = laterMs(f.EventsMaxLatenessMs, p.windowLatest)
+				f.EventsWarmupMaxLatenessMs = laterMs(f.EventsWarmupMaxLatenessMs, p.warmupLatest)
 			}
 		}
 	}
 	add(requests, paceRequests)
 	add(events, paceEvents)
 	return f
+}
+
+// laterMs is the larger of ms and l, in ms; nil while neither holds a lateness.
+func laterMs(ms *float64, l latest) *float64 {
+	if !l.ok {
+		return ms
+	}
+	v := float64(l.lateness) / float64(time.Millisecond)
+	if ms != nil && *ms >= v {
+		return ms
+	}
+	return &v
 }
 
 // addSeconds adds one pacer's seconds of kind into rows.
@@ -174,18 +240,20 @@ func (c secondCount) overSchedule() (ratio float64, breaks bool) {
 }
 
 // pacingSummary is summary.json's pacing: what the generators delivered against their schedule,
-// per kind, and the rule's two constants.
+// per kind, and the rule's three constants.
 type pacingSummary struct {
 	OverScheduleLimit float64    `json:"over_schedule_limit"`
 	MinJudgedSchedule int        `json:"min_judged_schedule"`
+	LateToleranceMs   float64    `json:"late_tolerance_ms"`
 	Requests          pacingKind `json:"requests"`
 	Events            pacingKind `json:"events"`
 }
 
 // pacingKind is one kind's arrivals: the window's scheduled and sent counts and those sent after
-// it, and the second of the window, and of the warm-up, that ran furthest over its schedule
-// (overSchedule's ratio). A kind that had nothing scheduled or sent in a span has no such second,
-// and its two fields are null.
+// it, the second of the window, and of the warm-up, that ran furthest over its schedule
+// (overSchedule's ratio), and the largest lateness of the arrivals each span's schedule held
+// (arrivals.json). A kind that had nothing scheduled or sent in a span has no such second, and
+// one whose span held no arrival no lateness: those fields are null.
 type pacingKind struct {
 	Scheduled           int      `json:"scheduled"`
 	Sent                int      `json:"sent"`
@@ -194,13 +262,18 @@ type pacingKind struct {
 	MaxOverSecond       *int     `json:"max_over_second"`
 	WarmupMaxOver       *float64 `json:"warmup_max_over"`
 	WarmupMaxOverSecond *int     `json:"warmup_max_over_second"`
+	MaxLatenessMs       *float64 `json:"max_lateness_ms"`
+	WarmupMaxLatenessMs *float64 `json:"warmup_max_lateness_ms"`
 }
 
-// setAsideSummary is summary.json's set_aside: why the step is set aside and every second of the
-// window that broke the rule, in order. It is absent for a step that kept to its schedule.
+// setAsideSummary is summary.json's set_aside: why the step is set aside, every second of the
+// window that broke the rule, in order, and the kinds the rule refused to judge (paceTargets:
+// a target above zero, nothing scheduled recorded). It is absent for a step that kept to its
+// schedule.
 type setAsideSummary struct {
-	Why     string       `json:"why"`
-	Seconds []overSecond `json:"seconds"`
+	Why        string       `json:"why"`
+	Seconds    []overSecond `json:"seconds"`
+	Unrecorded []string     `json:"unrecorded,omitempty"`
 }
 
 // overSecond is one second of the window, counted from its start, in which one kind's sent
@@ -213,12 +286,23 @@ type overSecond struct {
 	Over      float64 `json:"over"`
 }
 
+// paceTargets are the kinds a step was to send, those whose target is above zero. The rule
+// judges a kind by what its pacer recorded, so a kind the step was to send whose pacer recorded
+// nothing scheduled, in the warm-up or the window, never reached the rule: a generator that does
+// not feed its pacer would otherwise read as on time with empty counts.
+type paceTargets struct {
+	requests, events bool
+}
+
 // judgePacing reads arrivals.json's counts into summary.json's pacing, and set_aside when a
-// second of the window broke the rule (nil otherwise). The warm-up is recorded and not judged:
-// nothing in it is measured.
-func judgePacing(f arrivalsFile) (pacingSummary, *setAsideSummary) {
-	sum := pacingSummary{OverScheduleLimit: overScheduleLimit, MinJudgedSchedule: minJudgedSchedule}
+// second of the window broke the rule or a kind of targets recorded nothing scheduled, which the
+// rule then refuses to judge (nil otherwise). The warm-up is recorded and not judged: nothing in
+// it is measured.
+func judgePacing(f arrivalsFile, targets paceTargets) (pacingSummary, *setAsideSummary) {
+	sum := pacingSummary{OverScheduleLimit: overScheduleLimit, MinJudgedSchedule: minJudgedSchedule,
+		LateToleranceMs: float64(lateTolerance) / float64(time.Millisecond)}
 	var over []overSecond
+	var unrecorded []string
 	for _, kind := range []string{paceRequests, paceEvents} {
 		k := pacingKind{}
 		k.WarmupMaxOver, k.WarmupMaxOverSecond, _ = maxOver(f.Warmup, kind)
@@ -230,30 +314,50 @@ func judgePacing(f arrivalsFile) (pacingSummary, *setAsideSummary) {
 			k.Scheduled += c.scheduled
 			k.Sent += c.sent
 		}
+		warmupScheduled := 0
+		for _, s := range f.Warmup {
+			warmupScheduled += s.of(kind).scheduled
+		}
+		want := targets.events
 		if kind == paceRequests {
+			want = targets.requests
 			k.SentAfterWindow = f.RequestsSentAfterWindow
+			k.MaxLatenessMs, k.WarmupMaxLatenessMs = f.RequestsMaxLatenessMs, f.RequestsWarmupMaxLatenessMs
 			sum.Requests = k
 		} else {
 			k.SentAfterWindow = f.EventsSentAfterWindow
+			k.MaxLatenessMs, k.WarmupMaxLatenessMs = f.EventsMaxLatenessMs, f.EventsWarmupMaxLatenessMs
 			sum.Events = k
 		}
-	}
-	if len(over) == 0 {
-		return sum, nil
-	}
-	// The seconds in order, a second's requests before its events ("requests" > "events").
-	slices.SortStableFunc(over, func(a, b overSecond) int {
-		return cmp.Or(cmp.Compare(a.Second, b.Second), strings.Compare(b.Kind, a.Kind))
-	})
-	worst := over[0]
-	for _, s := range over[1:] {
-		if s.Over > worst.Over {
-			worst = s
+		if want && k.Scheduled+warmupScheduled == 0 {
+			unrecorded = append(unrecorded, kind)
 		}
 	}
-	why := fmt.Sprintf("the generator sent more than %s over its schedule in %s of the window; the worst, second %d: %d %s sent against %d scheduled (%sx)",
-		percent(overScheduleLimit), plural(len(over), "second"), worst.Second, worst.Sent, worst.Kind, worst.Scheduled, num(worst.Over, 2))
-	return sum, &setAsideSummary{Why: why, Seconds: over}
+	if len(over) == 0 && len(unrecorded) == 0 {
+		return sum, nil
+	}
+	var why []string
+	if len(over) > 0 {
+		// The seconds in order, a second's requests before its events ("requests" > "events").
+		slices.SortStableFunc(over, func(a, b overSecond) int {
+			return cmp.Or(cmp.Compare(a.Second, b.Second), strings.Compare(b.Kind, a.Kind))
+		})
+		worst := over[0]
+		for _, s := range over[1:] {
+			if s.Over > worst.Over {
+				worst = s
+			}
+		}
+		why = append(why, fmt.Sprintf("the generator sent more than %s over its schedule in %s of the window; the worst, second %d: %d %s sent against %d scheduled (%sx)",
+			percent(overScheduleLimit), plural(len(over), "second"), worst.Second, worst.Sent, worst.Kind, worst.Scheduled, num(worst.Over, 2)))
+	} else {
+		over = []overSecond{}
+	}
+	if len(unrecorded) > 0 {
+		why = append(why, fmt.Sprintf("nothing scheduled was recorded of the %s, though the step's target for them is above 0: the rule has nothing to judge them by, so it refuses to judge the step rather than read it as on time",
+			strings.Join(unrecorded, " or the ")))
+	}
+	return sum, &setAsideSummary{Why: strings.Join(why, "; "), Seconds: over, Unrecorded: unrecorded}
 }
 
 // maxOver is the second of secs that ran furthest over kind's schedule, nil for a span with
@@ -295,10 +399,35 @@ func overCell(ratio *float64, second *int) string {
 	return fmt.Sprintf("%sx (s %d)", num(*ratio, 2), *second)
 }
 
+// latenessCell is a span's largest lateness in ms, "12", or "-" for a span that held no arrival.
+func latenessCell(ms *float64) string {
+	if ms == nil {
+		return "-"
+	}
+	return num(*ms, 0)
+}
+
 // text is the kind's pacing as run.log writes it.
 func (k pacingKind) text() string {
-	return fmt.Sprintf("sent %s scheduled in the window, most over schedule %s (warm-up %s), %d sent after the window",
-		k.sentCell(), overCell(k.MaxOver, k.MaxOverSecond), overCell(k.WarmupMaxOver, k.WarmupMaxOverSecond), k.SentAfterWindow)
+	return fmt.Sprintf("sent %s scheduled in the window, most over schedule %s (warm-up %s), latest %s ms (warm-up %s ms), %d sent after the window",
+		k.sentCell(), overCell(k.MaxOver, k.MaxOverSecond), overCell(k.WarmupMaxOver, k.WarmupMaxOverSecond),
+		latenessCell(k.MaxLatenessMs), latenessCell(k.WarmupMaxLatenessMs), k.SentAfterWindow)
+}
+
+// cell is the pacing table's set-aside cell: "no", or "yes:" with the seconds that broke the rule
+// and each kind the rule refused to judge.
+func (a *setAsideSummary) cell() string {
+	if a == nil {
+		return "no"
+	}
+	var parts []string
+	if len(a.Seconds) > 0 {
+		parts = append(parts, plural(len(a.Seconds), "second"))
+	}
+	for _, kind := range a.Unrecorded {
+		parts = append(parts, "no "+kind+" recorded")
+	}
+	return "yes: " + strings.Join(parts, ", ")
 }
 
 // setAsideMark marks the step's name in every table of TABLES.md when the step is set aside.
@@ -320,7 +449,7 @@ func setAsideNote(md *markdown, steps []stepData) {
 	if len(aside) == 0 {
 		return
 	}
-	md.line("**SET ASIDE: no pass and no failure.** In a second of its window the generator of each step below sent more than %s over that second's schedule: the burst of a generator the box stalled, which then fires every arrival it owes at once. Such a step did not deliver the load it claims, so its rows below describe the test bed and not Dispatch (summary.json `set_aside`, arrivals.json). Run it again where the generator keeps its schedule.\n",
-		percent(overScheduleLimit))
+	md.line("**SET ASIDE: no pass and no failure.** Nothing shows that the generator of each step below delivered the load the step claims: in a second of its window it sent more than %s over that second's schedule (counted in its scheduled second unless sent more than %s late), the burst of a generator the box stalled, which then fires every arrival it owes at once; or it recorded nothing scheduled of a kind the step was to send, which the rule then refuses to judge. So its rows below describe the test bed and not Dispatch (summary.json `set_aside`, arrivals.json). Run it again where the generator keeps, and records, its schedule.\n",
+		percent(overScheduleLimit), lateTolerance)
 	md.line("%s\n", strings.Join(aside, "\n"))
 }
