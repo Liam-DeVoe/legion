@@ -208,6 +208,7 @@ describe("drawSlices", () => {
     expect(draw.undrawable[0]?.reason).toMatch(/cannot be judged as a choice/);
     expect(draw.undrawableByKind).toEqual({
       "group-before-cut": 0,
+      "tree-unknown": 0,
       "too-few-options": 2,
       "no-option-chosen": 0,
       "rule-unreadable": 0,
@@ -224,6 +225,7 @@ describe("drawSlices", () => {
     expect(draw.undrawable[0]?.reason).toMatch(/cannot be scored by set equality/);
     expect(draw.undrawableByKind).toEqual({
       "group-before-cut": 0,
+      "tree-unknown": 0,
       "too-few-options": 0,
       "no-option-chosen": 1,
       "rule-unreadable": 0,
@@ -285,13 +287,18 @@ describe("drawSlices", () => {
     expect(where.get("a-1")).toBe(where.get("q-1"));
   });
 
-  test("a case naming no issue is its own group", () => {
+  test("approvals naming no issue are grouped by their document, questions each on its own", () => {
     const cases = [
       drawCase({ ...caseRow("a-1", "approval", "ISSUE-7"), issueKey: null }),
       drawCase({ ...caseRow("a-2", "approval", "ISSUE-7"), issueKey: null }),
+      drawCase({ ...caseRow("a-3", "approval", "ISSUE-8"), issueKey: null }),
+      drawCase({ ...caseRow("q-1", "question", "ISSUE-7"), issueKey: null }),
+      drawCase({ ...caseRow("q-2", "question", "ISSUE-7"), issueKey: null }),
     ];
     const draw = drawSlices(cases, 3, {});
-    expect(draw.groupCount).toBe(2);
+    expect(draw.groupCount).toBe(4);
+    const where = placement(draw);
+    expect(where.get("a-2")).toBe(where.get("a-1"));
   });
 
   test("the cases of a parent and of its child are one group, so they land in one slice", () => {
@@ -331,17 +338,42 @@ describe("the side of the cut a group stands on", () => {
       "ROOT-2": null,
       "CHILD-2": "ROOT-2",
     };
-    const split = splitAtCut(rows, cut, parents);
+    const split = splitAtCut(rows, cut, { parents, missing: [] });
     expect(split.post.map((row) => row.caseId)).toEqual(["a-new-tree", "a-new-child"]);
-    expect(split.beforeCut.map((one) => one.caseId)).toEqual([
+    expect(split.leftOut.map((one) => one.caseId)).toEqual([
       "a-root-new",
       "a-child",
       "q-grandchild",
     ]);
-    for (const one of split.beforeCut) {
+    for (const one of split.leftOut) {
       expect(one.undrawableKind).toBe("group-before-cut");
-      expect(one.reason).toMatch(/issue tree:ROOT-1 holds the case a-root-old of ROOT-1/);
+      expect(one.reason).toMatch(/issue tree:ROOT-1 holds the case a-root-old, answered at/);
     }
+  });
+
+  test("a case on a tree Dispatch lacks an issue of reaches no slice", () => {
+    const rows = [
+      answered(caseRow("a-root-old", "approval", "ROOT-1"), "2026-11-04T10:00:00Z"),
+      answered(caseRow("a-orphan", "approval", "GONE-1"), "2026-11-06T11:00:00Z"),
+      answered(caseRow("a-under-gone", "approval", "CHILD-9"), "2026-11-06T12:00:00Z"),
+      answered(caseRow("a-fine", "approval", "ROOT-3"), "2026-11-06T13:00:00Z"),
+    ];
+    const parents = { "ROOT-1": null, "GONE-1": null, "CHILD-9": "GONE-1", "ROOT-3": null };
+    const split = splitAtCut(rows, cut, { parents, missing: ["GONE-1"] });
+    expect(split.post.map((row) => row.caseId)).toEqual(["a-fine"]);
+    expect(split.leftOut.map((one) => [one.caseId, one.undrawableKind])).toEqual([
+      ["a-orphan", "tree-unknown"],
+      ["a-under-gone", "tree-unknown"],
+    ]);
+    expect(split.leftOut[1]?.reason).toMatch(/404 for GONE-1, on the chain of parents of CHILD-9/);
+  });
+
+  test("an approval with no option chosen stops the split, even on a tree before the cut", () => {
+    const rows = [
+      answered(caseRow("a-root-old", "approval", "ROOT-1"), "2026-11-04T10:00:00Z"),
+      answered(caseRow("a-empty", "approval", "ROOT-1", 2, []), "2026-11-06T10:00:00Z"),
+    ];
+    expect(() => splitAtCut(rows, cut, { parents: {}, missing: [] })).toThrow(/a-empty/);
   });
 
   test("grouped by issue alone, the child's case would have been drawn", () => {
@@ -349,8 +381,10 @@ describe("the side of the cut a group stands on", () => {
       answered(caseRow("a-root-old", "approval", "ROOT-1"), "2026-11-04T10:00:00Z"),
       answered(caseRow("a-child", "approval", "CHILD-1"), "2026-11-06T11:00:00Z"),
     ];
-    expect(splitAtCut(rows, cut, {}).post.map((row) => row.caseId)).toEqual(["a-child"]);
-    expect(splitAtCut(rows, cut, { "ROOT-1": null, "CHILD-1": "ROOT-1" }).post).toEqual([]);
+    const none = { parents: {}, missing: [] };
+    expect(splitAtCut(rows, cut, none).post.map((row) => row.caseId)).toEqual(["a-child"]);
+    const tree = { parents: { "ROOT-1": null, "CHILD-1": "ROOT-1" }, missing: [] };
+    expect(splitAtCut(rows, cut, tree).post).toEqual([]);
   });
 
   test("the earliest case before the cut is the one named, whatever order the corpus holds", () => {
@@ -359,8 +393,8 @@ describe("the side of the cut a group stands on", () => {
       answered(caseRow("a-earlier", "approval", "ROOT-1"), "2026-11-01T10:00:00Z"),
       answered(caseRow("a-new", "approval", "ROOT-1"), "2026-11-06T10:00:00Z"),
     ];
-    const [one] = splitAtCut(rows, cut, {}).beforeCut;
-    expect(one?.reason).toMatch(/holds the case a-earlier of ROOT-1/);
+    const [one] = splitAtCut(rows, cut, { parents: {}, missing: [] }).leftOut;
+    expect(one?.reason).toMatch(/holds the case a-earlier, answered at 2026-11-01T10:00:00Z/);
   });
 
   test("a chain of parents that comes back on itself stops the draw", () => {
@@ -412,6 +446,22 @@ describe("the trees a draw is given from a file", () => {
   test("refuses a parent that is no key", async () => {
     const path = await fixture({ ...trees, parents: { "CHILD-1": 7, "ROOT-1": null } });
     await expect(pinnedIssueTrees(path, ["CHILD-1"])).rejects.toThrow(/neither an issue's key/);
+  });
+
+  test("refuses a missing issue that is not one it names with no parent", async () => {
+    for (const missing of [[7], ["CHILD-1"], ["OTHER-9"]]) {
+      const path = await fixture({ ...trees, missing });
+      await expect(pinnedIssueTrees(path, ["CHILD-1"])).rejects.toThrow(/as missing/);
+    }
+  });
+
+  test("keeps an issue keyed __proto__ as an issue of its own", async () => {
+    // An object literal's `__proto__` sets its prototype; JSON.parse makes it an own key.
+    const parents = JSON.parse('{"__proto__": null, "CHILD-1": "__proto__"}');
+    const path = await fixture({ ...trees, parents });
+    const read = await pinnedIssueTrees(path, ["CHILD-1"]);
+    expect(Object.hasOwn(read.parents, "__proto__")).toBe(true);
+    expect(treeRootOf("CHILD-1", read.parents)).toBe("__proto__");
   });
 });
 

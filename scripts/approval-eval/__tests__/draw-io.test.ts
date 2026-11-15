@@ -110,6 +110,7 @@ function draw(overrides: Partial<DrawRecord> = {}): DrawRecord {
         total: 0,
         byKind: {
           "group-before-cut": 0,
+          "tree-unknown": 0,
           "too-few-options": 0,
           "no-option-chosen": 0,
           "rule-unreadable": 0,
