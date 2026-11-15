@@ -19,3 +19,7 @@ body: |-
   The per-issue Legion facts also store parked, queued and slot-wait hours, the role bars with
   their segments, idle hours by role, the hours after the first review, the children and the
   started and merged times, and the filings a Legion session made are stored in `issue_filings`.
+  An issue's merged time, its facts' and its Legion items' `merged_at`, is the merge time Dispatch
+  stores for its pull request and nothing else: where none is stored it is null, and no read
+  fetches it from GitHub any more, where the Legion section's read fetched up to 50 missing merge
+  times from GitHub on each request.

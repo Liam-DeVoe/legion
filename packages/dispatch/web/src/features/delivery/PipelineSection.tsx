@@ -1,9 +1,9 @@
 // The Delivery page's Pipeline section, the prototype's web/src/pages/Pipeline.tsx ported as it is
 // (Dispatch's own `/pipeline` page until INFRA-1077 folded it in): the header line, six cards, the
 // slowest-jobs table and the failed-in-24-hours table, each with the prototype's data-* attributes.
-// Every number, every target and every day comes from GET /api/v1/delivery/pipeline; nothing is
-// computed here but the two lead-time cards' met/missed, which the prototype judges on the page as
-// this does, against the targets the response carries. Differences, each from LEGION-567's slice 3
+// Every number, every target, every verdict and every day comes from GET /api/v1/delivery/pipeline;
+// nothing is computed here. The two lead-time cards' met/missed, which the prototype judged on the
+// page, is the response's `status`, each card's eval's own verdict. Differences, each from LEGION-567's slice 3
 // plan or for the same reason as the measures panel's: Dispatch's sidebar replaces the
 // prototype's row of page links; the cards take the prototype's column counts at the prototype's
 // content widths (one column, two from 46rem, six from 78rem: its `md:grid-cols-2
@@ -65,6 +65,7 @@ import {
 } from "./Chart";
 import { formatDue, formatDuration, formatRate } from "./lib/format";
 import { formatAge } from "./lib/freshness";
+import { type Target, targetLabel } from "./lib/target";
 import { liveWindow } from "./lib/window";
 import { SpreadBars } from "./SpreadBars";
 import { TargetBadge } from "./TargetBadge";
@@ -147,10 +148,17 @@ function timingSeries(days: readonly DeliveryTimingDay[]): ChartSeries[] {
 }
 
 /** What a lead-time card's chart draws: each merge day's lead time, median and p90, against the
- *  target the response carries. */
-function leadTimeSeries(days: readonly DeliveryLeadTimeDay[], target: number): ChartSeries[] {
+ *  target the response carries, none where it is off. */
+function leadTimeSeries(days: readonly DeliveryLeadTimeDay[], target: Target): ChartSeries[] {
   return [
-    { kind: "spread", days, format: formatDuration, label: "Lead time", noun: "PRs", target },
+    {
+      kind: "spread",
+      days,
+      format: formatDuration,
+      label: "Lead time",
+      noun: "PRs",
+      target: target?.value,
+    },
   ];
 }
 
@@ -277,6 +285,7 @@ export function PipelineView({
             dayCount={dayCount}
             detail="DORA lead time, PRs by the day they merged"
             judged="longest"
+            met={pipeline.status.merge_to_production}
             metric="merge_to_production"
             range={range}
             target={pipeline.targets.merge_to_production_minutes}
@@ -288,6 +297,7 @@ export function PipelineView({
             dayCount={dayCount}
             detail="Opened to merged, every merged PR, by the day it merged"
             judged="median"
+            met={pipeline.status.opened_to_merge}
             metric="opened_to_merge"
             range={range}
             target={pipeline.targets.opened_to_merge_median_minutes}
@@ -508,8 +518,8 @@ function TimingCard(props: {
 }
 
 /** One of the two lead-time cards: merge to production is judged on the window's longest change,
- *  PR open to merge on its median, each strictly under the response's target (the
- *  prototype's Pipeline.tsx MergeCard and OpenedToMergeCard). */
+ *  PR open to merge on its median (the prototype's Pipeline.tsx MergeCard and OpenedToMergeCard),
+ *  each met or missed as the response's `status` states, its eval's own verdict by its target. */
 function LeadTimeCard(props: {
   metric: string;
   title: string;
@@ -518,20 +528,21 @@ function LeadTimeCard(props: {
     readonly days: readonly DeliveryLeadTimeDay[] | null;
     readonly total: DeliveryLeadTimeCell;
   };
-  target: number;
+  target: Target;
+  met: boolean | null;
   judged: "longest" | "median";
   range: ChartRange;
   compare: ChartCompare | undefined;
   dayCount: number;
 }): ReactNode {
-  const { timing, target, judged } = props;
+  const { timing, target, judged, met } = props;
   const today = lastDay(timing);
   const total = timing.total;
   // Built once per run of days rather than on every render of the section, since `Chart` builds
   // its table of every number from the series it is handed.
   const series = useMemo(() => leadTimeSeries(timing.days ?? [], target), [timing.days, target]);
   const judgedValue = judged === "longest" ? total.max_minutes : total.median_minutes;
-  const met = judgedValue === null ? null : judgedValue < target;
+  const label = targetLabel(target, "lower", (v) => `${v}m`);
   return (
     <div className={CARD} data-metric={props.metric}>
       <div className="flex items-start justify-between gap-2">
@@ -566,9 +577,11 @@ function LeadTimeCard(props: {
         </span>
       </div>
       <div className={`text-[11px] ${textMutedOnSurface}`}>
-        {judged === "longest"
-          ? `target under ${target}m for every change (the dashed line)`
-          : `target median under ${target}m (the dashed line)`}
+        {target === null
+          ? "no target"
+          : judged === "longest"
+            ? `target ${label} for every change (the dashed line)`
+            : `target median ${label} (the dashed line)`}
       </div>
     </div>
   );

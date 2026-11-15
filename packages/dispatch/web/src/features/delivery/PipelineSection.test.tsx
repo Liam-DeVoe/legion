@@ -220,13 +220,16 @@ const PIPELINE: DeliveryPipelineResponse = {
     { n: 2, median: 59.95, p90: 59.99, max: 60 }
   ),
   targets: {
-    deploys_per_day: 20,
-    change_failure_rate: 0.05,
-    merge_to_production_minutes: 45,
-    opened_to_merge_median_minutes: 60,
-    deploy_run_success_rate: 0.9,
-    unowned_p0: 0,
+    deploys_per_day: { value: 20, inclusive: true },
+    change_failure_rate: { value: 0.05, inclusive: false },
+    merge_to_production_minutes: { value: 45, inclusive: false },
+    opened_to_merge_median_minutes: { value: 60, inclusive: false },
+    deploy_run_success_rate: { value: 0.9, inclusive: true },
+    unowned_p0: { value: 0, inclusive: true },
   },
+  // The server's verdicts of the two cards: the longest change, 52m, misses "under 45m"; the
+  // median from open to merge, 59.95m, meets "under 60m".
+  status: { merge_to_production: false, opened_to_merge: true },
   freshness: {
     last_event_at: "2026-10-02T11:59:00Z",
     last_reconcile_at: "2026-10-02T11:58:00Z",
@@ -290,52 +293,62 @@ test("a pipeline with no staging end-to-end gate omits that card and keeps the o
   }
 });
 
-test("merge to production is judged on the seven days' longest change against the response's target", () => {
+test("merge to production shows the response's verdict and its target as its eval holds it", () => {
   view();
   const merge = card("merge_to_production");
   expect(merge.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("false");
   expect(merge.innerHTML).toContain("target missed");
   expect(merge.innerHTML).toContain("p90 38m · 1 PR<");
-  expect(merge.innerHTML).toContain("target under 45m for every change");
+  expect(merge.innerHTML).toContain("target &lt; 45m for every change");
   for (const metric of ["pr_ci", "staging_e2e", "staging_apply", "production_apply"]) {
     expect(card(metric).innerHTML).not.toContain("target");
   }
   cleanup();
 
+  // The verdict is the server's, its eval's own: the page does not compare the longest change,
+  // 52m, with the target itself.
   view({
     ...PIPELINE,
-    merge_to_production: leadTimes(
-      { n: 1, median: 38, p90: 38, max: 38 },
-      { n: 2, median: 41, p90: 44.5, max: 44.9 }
-    ),
+    targets: { ...PIPELINE.targets, merge_to_production_minutes: { value: 52, inclusive: true } },
+    status: { ...PIPELINE.status, merge_to_production: true },
   });
-  expect(
-    card("merge_to_production").querySelector("[data-target-met]")?.getAttribute("data-target-met")
-  ).toBe("true");
+  const inclusive = card("merge_to_production");
+  expect(inclusive.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe(
+    "true"
+  );
+  expect(inclusive.innerHTML).toContain("target \u2264 52m for every change");
+  cleanup();
+
+  view({
+    ...PIPELINE,
+    targets: { ...PIPELINE.targets, merge_to_production_minutes: null },
+    status: { ...PIPELINE.status, merge_to_production: null },
+  });
+  const off = card("merge_to_production");
+  expect(off.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("none");
+  expect(off.innerHTML).toContain("no target");
 });
 
-test("PR open to merge is judged on the seven days' median: under 60m is met, 60m is missed", () => {
+test("PR open to merge shows the response's verdict of its median", () => {
   view();
   const opened = card("opened_to_merge");
   expect(opened.innerHTML).toContain("PR open to merge");
   expect(opened.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("true");
   expect(opened.innerHTML).toContain("target met");
-  expect(opened.innerHTML).toContain("target median under 60m");
+  expect(opened.innerHTML).toContain("target median &lt; 60m");
   cleanup();
 
-  view({
-    ...PIPELINE,
-    opened_to_merge: leadTimes(
-      { n: 1, median: 60, p90: 60, max: 60 },
-      { n: 1, median: 60, p90: 60, max: 60 }
-    ),
-  });
+  view({ ...PIPELINE, status: { ...PIPELINE.status, opened_to_merge: false } });
   const missed = card("opened_to_merge");
   expect(missed.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("false");
   expect(missed.innerHTML).toContain("target missed");
   cleanup();
 
-  view({ ...PIPELINE, opened_to_merge: leadTimes(null, null) });
+  view({
+    ...PIPELINE,
+    opened_to_merge: leadTimes(null, null),
+    status: { ...PIPELINE.status, opened_to_merge: null },
+  });
   const none = card("opened_to_merge");
   expect(none.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("none");
   expect(none.innerHTML).toContain("no data");

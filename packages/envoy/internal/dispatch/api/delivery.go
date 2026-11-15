@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -263,10 +264,14 @@ type deliveryPopulation struct {
 	windowJobs    map[int64][]delivery.DeliveryRunJob
 	windowShipped map[int64]int
 	unownedP0     []delivery.UnownedIssue
-	groups        []delivery.SessionGroup
-	titles        map[string]string
-	issues        map[string]deliveryIssue
-	components    map[string]delivery.DeliveryComponentView
+	// targetEvals is the evals whose targets the measures judge them by (evals.DeliveryTargetSlugs),
+	// as the project the deploy repository is mapped to holds them (evals.Store.DeployRepoEvals),
+	// read with the window's rows, so a narrowed population judges by the targets it was read with.
+	targetEvals map[string]evals.Entry
+	groups      []delivery.SessionGroup
+	titles      map[string]string
+	issues      map[string]deliveryIssue
+	components  map[string]delivery.DeliveryComponentView
 	// unfetchable is how many population pull requests can no longer be fetched from GitHub.
 	unfetchable int
 }
@@ -308,8 +313,9 @@ type deliveryWaitingRow struct {
 
 // readDeliveryPopulation is every read the timeline's and the measures' answers for one window and
 // query make (the population pull requests, the deploy runs on main GitHub created at or after
-// `from` with their jobs, the measures' runs started in the window with their jobs, and the
-// unowned P0 list); nothing that computes from it reads again. With withWaiting it also reads the
+// `from` with their jobs, the measures' runs started in the window with their jobs, the unowned
+// P0 list and the evals whose targets judge the measures); nothing that computes from it reads
+// again. With withWaiting it also reads the
 // deploy repository's pull requests still waiting at `from` (ListPullRequestsWaitingAt), resolved
 // through the same issue and session lookups so the timeline's waiting line filters them alike;
 // the measures read none. withWaiting is the timeline's read, the one that lists the deploy runs,
@@ -321,7 +327,7 @@ func (s *server) readDeliveryPopulation(ctx context.Context, settings delivery.D
 }
 
 // readDeliveryRows is readDeliveryPopulation, and with withMeasures false leaves out the measures'
-// runs and unowned P0 list, which the Pipeline page's lead times do not read.
+// runs, unowned P0 list and target evals, which the Pipeline page's lead times do not read.
 func (s *server) readDeliveryRows(ctx context.Context, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
 	pool := s.deps.Store.Pool
 	pop := deliveryPopulation{query: query, withWaiting: withWaiting, jobsByRun: map[int64][]delivery.DeliveryRunJob{}, windowJobs: map[int64][]delivery.DeliveryRunJob{}}
@@ -376,6 +382,10 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 			// Every project's: the delivery measures follow no project.
 			func(ctx context.Context) (err error) {
 				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool, "")
+				return err
+			},
+			func(ctx context.Context) (err error) {
+				pop.targetEvals, err = s.registry().DeployRepoEvals(ctx, settings.DeployRepo, evals.DeliveryTargetSlugs)
 				return err
 			})
 	}

@@ -180,6 +180,7 @@ const PIPELINE_FIELDS: Readonly<Record<PipelineField, true>> = {
   production_apply: true,
   staging_apply: true,
   staging_e2e: true,
+  status: true,
   targets: true,
 };
 /** The board's columns, issues and settings: every field but computed_at, which a live body

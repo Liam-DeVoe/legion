@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -16,8 +17,9 @@ import (
 // seven ending on `at`, or the window `from` and `to` name), the PR-checks workflow's run timing
 // with its slowest and recently failing jobs, the deploy workflow's staging end-to-end, staging
 // deploy and production deploy jobs (the first two null when the settings name none), the
-// merge-to-production and open-to-merge lead times per merge day, the targets the two lead-time
-// cards are judged against, and the timeline's freshness.
+// merge-to-production and open-to-merge lead times per merge day, the targets of the delivery
+// evals (deliveryTargets) and whether each lead-time card meets its eval's (status), and the
+// timeline's freshness.
 // Mirrors packages/contracts/src/dispatch-api.ts's DeliveryPipelineResponse exactly. It lives here
 // beside deliveryMeasuresResponse, since the measures package imports delivery.
 type deliveryPipelineResponse struct {
@@ -30,7 +32,18 @@ type deliveryPipelineResponse struct {
 	MergeToProduction measures.LeadTimeTiming        `json:"merge_to_production"`
 	OpenedToMerge     measures.LeadTimeTiming        `json:"opened_to_merge"`
 	Targets           measures.Targets               `json:"targets"`
+	Status            deliveryPipelineStatus         `json:"status"`
 	Freshness         delivery.DeliveryFreshnessView `json:"freshness"`
+}
+
+// deliveryPipelineStatus is whether each lead-time card of the Pipeline meets its eval's target:
+// merge-to-production's and pr-open-to-merge's verdict of the card's figures over the shown days
+// (evals.LeadTimeStatistics, deliveryVerdict), so the page states the eval's own verdict rather
+// than comparing a figure with the target itself. Null where the eval's target is off or no figure
+// it judges has a value.
+type deliveryPipelineStatus struct {
+	MergeToProduction *bool `json:"merge_to_production"`
+	OpenedToMerge     *bool `json:"opened_to_merge"`
 }
 
 // deliveryPipelinePRChecks is the PR-checks workflow's part of the Pipeline page: its whole runs'
@@ -38,7 +51,7 @@ type deliveryPipelineResponse struct {
 // null, and the timed results over the shown days a job needed to be ranked among the slowest:
 // the min_n of pr-ci's job series in the project the deploy repository is mapped to, or
 // measures.SlowestMinResults where it maps to none or that project holds no pr-ci eval yet
-// (evals.Store.PipelineSlowestJobsMinN), so the page says what it ranked by.
+// (evals.PipelineMinN), so the page says what it ranked by.
 type deliveryPipelinePRChecks struct {
 	Run               measures.Timing       `json:"run"`
 	SlowestJobs       []measures.JobTiming  `json:"slowest_jobs"`
@@ -140,16 +153,18 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 
 // pipelinePopulation is every read the Pipeline page's answer for one window makes: the PR-checks
 // pull_request runs and the deploy push runs on main started in the shown days, each with its
-// jobs, the population pull requests merged in them (their lead times), and the timed results a
-// job needs to be ranked among the slowest (evals.Store.PipelineSlowestJobsMinN).
+// jobs, the population pull requests merged in them (their lead times), and the evals of
+// evals.PipelineSlugs the project the deploy repository is mapped to holds
+// (evals.Store.DeployRepoEvals): the targets the page states and its lead-time cards are judged
+// by, and pr-ci, whose job series' min_n its slowest jobs are ranked by (evals.PipelineMinN).
 type pipelinePopulation struct {
 	checks, deploys delivery.RunsWithJobs
 	leadTimes       deliveryPopulation
-	slowestMinN     int
+	deployRepoEvals map[string]evals.Entry
 }
 
 // readPipelinePopulation reads the Pipeline page's runs and pull requests for the window's days,
-// and the min_n its slowest jobs are ranked by. Runs are read by start over the whole of those
+// and the evals it judges and ranks by. Runs are read by start over the whole of those
 // days, the last one included past the window's end, by delivery.ReadCIRows, the read the CI
 // evals' day rows make: the PR-checks runs with every job, which their job timings and failing
 // jobs tally whatever their names (measures.PRChecks), and the deploy runs with the jobs the
@@ -169,7 +184,7 @@ func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.D
 			return err
 		},
 		func(ctx context.Context) (err error) {
-			pop.slowestMinN, err = s.registry().PipelineSlowestJobsMinN(ctx, settings.DeployRepo)
+			pop.deployRepoEvals, err = s.registry().DeployRepoEvals(ctx, settings.DeployRepo, evals.PipelineSlugs)
 			return err
 		},
 	); err != nil {
@@ -182,34 +197,43 @@ func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.D
 // read for it or narrowed to it. It reads nothing; now is only computed_at. The PR checks, the
 // deploy cards and the lead times build each shown day's rows into day parts and fold them with
 // the folds the CI and delivery evals read stored parts with (measures.PRChecks, DeployJobs and
-// LeadTimes), the slowest jobs ranked by the population's min_n through the ranking pr-ci's items
-// sorted by median read (measures.FoldSlowestJobs); the failing-jobs table is read from the run
-// jobs themselves (measures.FailingJobs).
+// LeadTimes), the slowest jobs ranked by pr-ci's min_n through the ranking pr-ci's items sorted by
+// median read (measures.FoldSlowestJobs), and each lead-time card judged by its eval's target over
+// the shown days' figures (deliveryVerdict); the failing-jobs table is read from the run jobs
+// themselves (measures.FailingJobs).
 func deliveryPipelineCompute(settings delivery.DeliverySettings, pop pipelinePopulation, window pipelineWindow, now time.Time) deliveryPipelineResponse {
 	days := window.days()
 	rollup := ""
 	if settings.PRChecksRollupJobName != nil {
 		rollup = *settings.PRChecksRollupJobName
 	}
-	run, slowest, failing := measures.PRChecks(pop.checks.Runs, pop.checks.Jobs, days, window.end, rollup, pop.slowestMinN)
+	minN := evals.PipelineMinN(pop.deployRepoEvals[evals.SlugPRCI])
+	run, slowest, failing := measures.PRChecks(pop.checks.Runs, pop.checks.Jobs, days, window.end, rollup, minN)
 	timings := measures.DeployJobs(pop.deploys.Runs, pop.deploys.Jobs, measures.DeployCards(settings), days)
 	stagingE2E := optionalDeployJobTiming(timings, measures.CardStagingE2E)
 	stagingApply := optionalDeployJobTiming(timings, measures.CardStagingApply)
 	derived := pop.leadTimes.derive(settings)
 	mergeToProduction, openedToMerge := measures.LeadTimes(derived.measuresPRs(), days)
+	leadTime := func(slug string, timing measures.LeadTimeTiming) *bool {
+		return deliveryVerdict(pop.deployRepoEvals, slug, map[string]evals.Statistics{measures.SeriesMinutes: evals.LeadTimeStatistics(timing.Total)})
+	}
 	return deliveryPipelineResponse{
 		Days:       days,
 		ComputedAt: now,
 		PRChecks: deliveryPipelinePRChecks{
-			Run: run, SlowestJobs: slowest, SlowestMinResults: pop.slowestMinN, FailingJobs: failing,
+			Run: run, SlowestJobs: slowest, SlowestMinResults: minN, FailingJobs: failing,
 		},
 		StagingE2E:        stagingE2E,
 		StagingApply:      stagingApply,
 		ProductionApply:   timings[measures.CardProductionApply],
 		MergeToProduction: mergeToProduction,
 		OpenedToMerge:     openedToMerge,
-		Targets:           measures.DefaultTargets,
-		Freshness:         derived.freshness,
+		Targets:           deliveryTargets(pop.deployRepoEvals),
+		Status: deliveryPipelineStatus{
+			MergeToProduction: leadTime(evals.SlugMergeToProduction, mergeToProduction),
+			OpenedToMerge:     leadTime(evals.SlugPROpenToMerge, openedToMerge),
+		},
+		Freshness: derived.freshness,
 	}
 }
 
@@ -224,11 +248,11 @@ func optionalDeployJobTiming(timings map[measures.DeployJobCardID]measures.Deplo
 // narrowedTo is the population for a later window: when its last day moved, the runs started
 // before the new first shown day leave and the lead times' pull requests narrow to it; the
 // failing-jobs table needs nothing taken out, since deliveryPipelineCompute reads its 24 hours
-// from the window's end, and the min_n is the one the population was read with.
+// from the window's end, and the evals are the ones the population was read with.
 func (p pipelinePopulation) narrowedTo(settings delivery.DeliverySettings, window pipelineWindow) pipelinePopulation {
 	start := window.start()
 	startedInShownDays := func(run delivery.DeliveryRun) bool { return !run.StartedAt.Before(start) }
-	narrowed := pipelinePopulation{leadTimes: p.leadTimes.narrowedTo(settings, start), slowestMinN: p.slowestMinN}
+	narrowed := pipelinePopulation{leadTimes: p.leadTimes.narrowedTo(settings, start), deployRepoEvals: p.deployRepoEvals}
 	narrowed.checks.Runs, narrowed.checks.Jobs = runsWhere(p.checks.Runs, p.checks.Jobs, startedInShownDays)
 	narrowed.deploys.Runs, narrowed.deploys.Jobs = runsWhere(p.deploys.Runs, p.deploys.Jobs, startedInShownDays)
 	return narrowed

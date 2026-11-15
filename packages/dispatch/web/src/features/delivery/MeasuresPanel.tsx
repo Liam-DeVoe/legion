@@ -36,26 +36,28 @@ import {
   PENDING,
 } from "./Chart";
 import { formatMinutes, NO_VALUE, pct } from "./lib/format";
+import { meetsTarget, targetLabel } from "./lib/target";
 import { TargetBadge } from "./TargetBadge";
 
 const UNOWNED_P0_SHOWN = 6;
 
-/** The deploys-a-day card's chart: one bar a day against the target. */
+/** The deploys-a-day card's chart: one bar a day against the target, each day toned by it. */
 function deploySeries(response: DeliveryMeasuresResponse): ChartSeries[] {
   const target = response.targets.deploys_per_day;
+  const daily = response.measures.daily ?? [];
   return [
     {
       kind: "spark",
       format: (v) => `${v} deploys`,
       label: "Deploys",
-      max: target,
-      met: (v) => v >= target,
-      points: (response.measures.daily ?? []).map((d) => ({
+      max: target === null ? Math.max(1, ...daily.map((d) => d.deploys)) : target.value,
+      met: target === null ? undefined : (v) => meetsTarget(v, target, "higher") === true,
+      points: daily.map((d) => ({
         label: d.day,
         value: d.deploys,
         partial: d.partial,
       })),
-      target,
+      target: target?.value,
     },
   ];
 }
@@ -70,13 +72,13 @@ function runSuccessSeries(response: DeliveryMeasuresResponse): ChartSeries[] {
       format: pct,
       label: "Run success",
       max: 1,
-      met: (v) => v >= target,
+      met: target === null ? undefined : (v) => meetsTarget(v, target, "higher") === true,
       points: (response.measures.daily ?? []).map((d) => ({
         label: d.day,
         value: d.run_success_rate,
         partial: d.partial,
       })),
-      target,
+      target: target?.value,
     },
   ];
 }
@@ -137,8 +139,9 @@ function DefinitionCard(props: { title: string; value: string; children: ReactNo
   );
 }
 
-/** The delivery measures for the page's window and facets: Sami's six KPI targets, then one
- *  compact strip of the DORA headline numbers; every alternative definition and breakdown lives
+/** The delivery measures for the page's window and facets: the six KPI targets, each its eval's
+ *  target and verdict as the server states them, then one compact strip of the DORA headline
+ *  numbers; every alternative definition and breakdown lives
  *  behind the "Definitions & alternatives" fold, so the timeline keeps the bulk of the page.
  *  `data` is undefined while the read is pending, when the cards show their frame. The two
  *  cards that draw a measure over the window draw it through `Chart`, which gives each the
@@ -227,7 +230,11 @@ export function MeasuresPanel({
       >
         <KpiCard
           met={status?.deploys_per_day}
-          target={targets === undefined ? PENDING : `\u2265 ${targets.deploys_per_day}/day`}
+          target={
+            targets === undefined
+              ? PENDING
+              : targetLabel(targets.deploys_per_day, "higher", (v) => `${v}/day`)
+          }
           title="Deploys a day"
         >
           <div className="flex items-baseline gap-2">
@@ -253,7 +260,9 @@ export function MeasuresPanel({
         <KpiCard
           met={status?.change_failure_rate}
           target={
-            targets === undefined ? PENDING : `< ${pct(targets.change_failure_rate, 0)} per deploy`
+            targets === undefined
+              ? PENDING
+              : `${targetLabel(targets.change_failure_rate, "lower", (v) => pct(v, 0))} per deploy`
           }
           title="Change failure rate"
         >
@@ -301,7 +310,7 @@ export function MeasuresPanel({
           target={
             targets === undefined
               ? PENDING
-              : `< ${targets.merge_to_production_minutes}m for every change`
+              : `${targetLabel(targets.merge_to_production_minutes, "lower", (v) => `${v}m`)} for every change`
           }
           title={"Merge \u2192 production"}
         >
@@ -329,7 +338,9 @@ export function MeasuresPanel({
         <KpiCard
           met={status?.opened_to_merge}
           target={
-            targets === undefined ? PENDING : `median < ${targets.opened_to_merge_median_minutes}m`
+            targets === undefined
+              ? PENDING
+              : `median ${targetLabel(targets.opened_to_merge_median_minutes, "lower", (v) => `${v}m`)}`
           }
           title={"PR open \u2192 merge"}
         >
@@ -353,7 +364,9 @@ export function MeasuresPanel({
         <KpiCard
           met={status?.deploy_run_success}
           target={
-            targets === undefined ? PENDING : `\u2265 ${pct(targets.deploy_run_success_rate, 0)}`
+            targets === undefined
+              ? PENDING
+              : targetLabel(targets.deploy_run_success_rate, "higher", (v) => pct(v, 0))
           }
           title="Deploy runs reaching production"
         >
@@ -389,7 +402,11 @@ export function MeasuresPanel({
 
         <KpiCard
           met={status?.unowned_p0}
-          target={targets === undefined ? PENDING : `${targets.unowned_p0}`}
+          target={
+            targets === undefined
+              ? PENDING
+              : targetLabel(targets.unowned_p0, "lower", (v) => `${v}`)
+          }
           title="P0 issues with no owner"
         >
           <div className="flex items-baseline gap-2">
@@ -568,7 +585,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                     {d.partial ? " (partial)" : ""}
                   </td>
                   <td
-                    className={`px-2 py-0.5 text-right ${d.partial ? "" : tone(d.deploys >= targets.deploys_per_day)}`}
+                    className={`px-2 py-0.5 text-right ${d.partial ? "" : tone(meetsTarget(d.deploys, targets.deploys_per_day, "higher"))}`}
                   >
                     {d.deploys}
                   </td>
@@ -578,7 +595,13 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                     className={`px-2 py-0.5 text-right ${
                       d.partial || d.run_success_rate === null
                         ? ""
-                        : tone(d.run_success_rate >= targets.deploy_run_success_rate)
+                        : tone(
+                            meetsTarget(
+                              d.run_success_rate,
+                              targets.deploy_run_success_rate,
+                              "higher"
+                            )
+                          )
                     }`}
                   >
                     {d.run_success_rate === null ? NO_VALUE : pct(d.run_success_rate)}

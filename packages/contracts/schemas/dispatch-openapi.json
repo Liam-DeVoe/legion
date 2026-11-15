@@ -17114,7 +17114,10 @@
             ]
           },
           "deploys_per_day": {
-            "type": "boolean"
+            "type": [
+              "null",
+              "boolean"
+            ]
           },
           "merge_to_production": {
             "type": [
@@ -17135,7 +17138,10 @@
             ]
           },
           "unowned_p0": {
-            "type": "boolean"
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         },
         "required": [
@@ -17574,6 +17580,9 @@
               }
             ]
           },
+          "status": {
+            "$ref": "#/components/schemas/DeliveryPipelineStatus"
+          },
           "targets": {
             "$ref": "#/components/schemas/DeliveryTargets"
           }
@@ -17588,7 +17597,29 @@
           "merge_to_production",
           "opened_to_merge",
           "targets",
+          "status",
           "freshness"
+        ],
+        "type": "object"
+      },
+      "DeliveryPipelineStatus": {
+        "properties": {
+          "merge_to_production": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "opened_to_merge": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          }
+        },
+        "required": [
+          "merge_to_production",
+          "opened_to_merge"
         ],
         "type": "object"
       },
@@ -18057,30 +18088,83 @@
         ],
         "type": "object"
       },
+      "DeliveryTarget": {
+        "properties": {
+          "inclusive": {
+            "type": "boolean"
+          },
+          "value": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "value",
+          "inclusive"
+        ],
+        "type": "object"
+      },
       "DeliveryTargets": {
         "properties": {
           "change_failure_rate": {
-            "format": "double",
-            "type": "number"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryTarget"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "deploy_run_success_rate": {
-            "format": "double",
-            "type": "number"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryTarget"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "deploys_per_day": {
-            "format": "double",
-            "type": "number"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryTarget"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "merge_to_production_minutes": {
-            "format": "double",
-            "type": "number"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryTarget"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "opened_to_merge_median_minutes": {
-            "format": "double",
-            "type": "number"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryTarget"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "unowned_p0": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryTarget"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [

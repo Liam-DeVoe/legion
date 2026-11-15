@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -459,33 +458,6 @@ func SlowestJobsMinN(jobsMinN *int) int {
 		return 0
 	}
 	return *jobsMinN
-}
-
-// PipelineSlowestJobsMinN is SlowestJobsMinN for the deployment-wide Pipeline, which ranks the
-// jobs of the deploy repository's PR-checks runs whatever project they count for: the min_n of
-// pr-ci's job series in the project deployRepo is mapped to, by the rule a CI run's project is
-// (repoProjects.of), so the Pipeline and that project's items sorted by median rank by one min_n.
-// It is measures.SlowestMinResults, the min_n the catalogue seeds, where no mapping names
-// deployRepo or that project holds no pr-ci job series yet.
-func (s *Store) PipelineSlowestJobsMinN(ctx context.Context, deployRepo string) (int, error) {
-	mapped, err := readRepoProjects(ctx, s)
-	if err != nil {
-		return 0, err
-	}
-	project := mapped.of(deployRepo)
-	if project == "" {
-		return measures.SlowestMinResults, nil
-	}
-	evalID := EvalID(project, SlugPRCI)
-	var minN *int
-	err = s.database.Pool.QueryRow(ctx, `select min_n from eval_series_current where eval_id = $1 and series = $2`, evalID, SeriesJobs).Scan(&minN)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return measures.SlowestMinResults, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read the min_n of %s's series %s: %w", evalID, SeriesJobs, err)
-	}
-	return SlowestJobsMinN(minN), nil
 }
 
 // countedFor is every project the day counts the item member for (a pull request, a deploy run or

@@ -365,13 +365,13 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	if len(body.UnownedP0) != 1 || body.UnownedP0[0] != (delivery.UnownedIssue{Key: "ACME-103", Title: "Production deploy gate flakes"}) {
 		t.Errorf("unowned_p0 = %+v, want [{ACME-103 Production deploy gate flakes}]", body.UnownedP0)
 	}
-	if body.Status.UnownedP0 {
-		t.Error("status.unowned_p0 = true, want false (ACME-103 has no owner)")
+	if body.Status.UnownedP0 == nil || *body.Status.UnownedP0 {
+		t.Errorf("status.unowned_p0 = %v, want false (ACME-103 has no owner)", body.Status.UnownedP0)
 	}
-	if body.Targets != measures.DefaultTargets {
+	if !reflect.DeepEqual(body.Targets, measures.DefaultTargets) {
 		t.Errorf("targets = %+v, want %+v", body.Targets, measures.DefaultTargets)
 	}
-	if body.Status.DeploysPerDay || body.Status.MergeToProduction == nil || *body.Status.MergeToProduction {
+	if body.Status.DeploysPerDay == nil || *body.Status.DeploysPerDay || body.Status.MergeToProduction == nil || *body.Status.MergeToProduction {
 		t.Errorf("status = %+v, want the fixture to miss deploys a day and merge to production", body.Status)
 	}
 	if verdict, upper := body.Status.ChangeFailureRate, body.Status.ChangeFailureRateUpperBound; verdict != nil || upper != nil {

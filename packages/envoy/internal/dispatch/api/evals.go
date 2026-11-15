@@ -105,6 +105,119 @@ func undeclaredQueryKey(query url.Values, declared []string) error {
 	return nil
 }
 
+// bodyKeys is the keys a JSON object of one Go struct takes, each spelled exactly as its field's
+// `json` tag spells it, with the keys the value under each takes in turn: nil for a value whose
+// keys are not checked here (a scalar, a map, a time, json.RawMessage). A list's value, and a
+// pointer's, takes the keys of what it holds, so `series` takes evalSeriesInput's in each element.
+type bodyKeys map[string]bodyKeys
+
+// The keys each eval write's body takes (bodyKeysOf), read once when the package starts: the
+// register write's, every field the registry can set, and the readings write's, whose rows the
+// registry reads key by key itself (evals.Batch).
+var (
+	evalRegisterBodyKeys = bodyKeysOf(reflect.TypeFor[evalRegisterInput]())
+	evalReadingsBodyKeys = bodyKeysOf(reflect.TypeFor[evalReadingsBody]())
+)
+
+// bodyKeysOf is the keys a JSON value of shape takes: each exported field's `json` name, or its Go
+// name where its tag names none, with the keys of that field's own type; an embedded struct with
+// no name of its own lends its fields, as encoding/json promotes them. A type that decodes itself
+// (json.Unmarshaler) takes keys of its own making, so it is not checked.
+func bodyKeysOf(shape reflect.Type) bodyKeys {
+	for shape.Kind() == reflect.Pointer || shape.Kind() == reflect.Slice {
+		shape = shape.Elem()
+	}
+	if shape.Kind() != reflect.Struct || reflect.PointerTo(shape).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+		return nil
+	}
+	keys := bodyKeys{}
+	for field := range shape.Fields() {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		switch {
+		case name == "-" || (!field.IsExported() && !field.Anonymous):
+		case field.Anonymous && name == "":
+			maps.Copy(keys, bodyKeysOf(field.Type))
+		case name == "":
+			keys[field.Name] = bodyKeysOf(field.Type)
+		default:
+			keys[name] = bodyKeysOf(field.Type)
+		}
+	}
+	return keys
+}
+
+// unspelledBodyKey refuses a JSON body holding a key its type does not spell exactly (keys): 400
+// INVALID_JSON naming the first such key, by where it stands, in name order; nil where every key
+// at every depth keys checks is one keys holds. encoding/json matches a key to a field without
+// regard to case, so `"Target": 10` would set the target the typed decode reads while the write,
+// which reads the keys a body names to tell a field it sets from one it leaves out
+// (decodeEvalRegistration's fieldOf), found no `target` and answered 200 with the target it had:
+// a write accepted and then ignored (R5). raw is a body the typed decode already took, so a value
+// that is no object or list is one keys does not check.
+func unspelledBodyKey(raw json.RawMessage, keys bodyKeys, at string) error {
+	value := bytes.TrimLeft(raw, " \t\r\n")
+	if len(value) == 0 {
+		return nil
+	}
+	switch value[0] {
+	case '[':
+		var elements []json.RawMessage
+		if json.Unmarshal(raw, &elements) != nil {
+			return nil
+		}
+		for index, element := range elements {
+			if err := unspelledBodyKey(element, keys, fmt.Sprintf("%s[%d]", at, index)); err != nil {
+				return err
+			}
+		}
+	case '{':
+		var named map[string]json.RawMessage
+		if json.Unmarshal(raw, &named) != nil {
+			return nil
+		}
+		where := "the body"
+		if at != "" {
+			where = at
+		}
+		for _, key := range slices.Sorted(maps.Keys(named)) {
+			inner, spelled := keys[key]
+			if !spelled {
+				return errorf(http.StatusBadRequest, "INVALID_JSON", "%s holds the key %q, which is none of the keys it takes, each spelled exactly so: %s",
+					where, key, strings.Join(slices.Sorted(maps.Keys(keys)), ", "))
+			}
+			if inner == nil {
+				continue
+			}
+			path := key
+			if at != "" {
+				path = at + "." + key
+			}
+			if err := unspelledBodyKey(named[key], inner, path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// decodeEvalBody reads an eval write's JSON body into value, whose keys are keys
+// (evalRegisterBodyKeys, evalReadingsBodyKeys), and answers the body as sent. A body that is no
+// JSON value of value's type, or one holding a key keys does not spell exactly (unspelledBodyKey),
+// is 400 INVALID_JSON.
+func decodeEvalBody(r *http.Request, value any, keys bodyKeys) (json.RawMessage, error) {
+	var raw json.RawMessage
+	if err := decodeJSON(r, &raw); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, value); err != nil {
+		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+	}
+	if err := unspelledBodyKey(raw, keys, ""); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 // evalRange is a range of whole UTC days an answer folded: [from, to), both UTC midnights, and how
 // many days that is.
 type evalRange struct {
@@ -168,26 +281,6 @@ type evalSeriesValues struct {
 	Days          []evalDayPoint   `json:"days"`
 }
 
-// evalJudge is one statistic a target judges, `<series>.<stat>`, its value over the window and
-// whether it meets the target (null where it has no value, or the eval names no direction).
-type evalJudge struct {
-	Judge string   `json:"judge"`
-	Value *float64 `json:"value"`
-	Met   *bool    `json:"met"`
-}
-
-// evalVerdict is an eval's target judged over the window: the target, its direction and
-// inclusiveness, each statistic it judges (target_judges, or the primary series' headline
-// statistic where it names none), and met, false where any judge misses, true where every judge
-// meets, null where none misses and one cannot be judged.
-type evalVerdict struct {
-	Target    float64     `json:"target"`
-	Direction string      `json:"direction"`
-	Inclusive bool        `json:"inclusive"`
-	Met       *bool       `json:"met"`
-	Judges    []evalJudge `json:"judges"`
-}
-
 // evalItem is one eval as the list read states it, and one version of one as the detail read
 // does: the definition (every field of eval_versions, R1), its owner, each listed series with its
 // values, and the verdict of its target (null where the target is off). The detail read states
@@ -196,7 +289,7 @@ type evalItem struct {
 	Definition evals.Definition   `json:"definition"`
 	Owner      evalOwner          `json:"owner"`
 	Series     []evalSeriesValues `json:"series"`
-	Verdict    *evalVerdict       `json:"verdict"`
+	Verdict    *evals.Verdict     `json:"verdict"`
 }
 
 // evalListItem is one eval of the list read: its id, `<project_key>/<slug>` (the definition's
@@ -442,11 +535,15 @@ type evalReadQuery struct {
 
 // parseEvalReadQuery reads what every eval read takes of its query; declared is the keys the
 // reading route takes (evalListQueryKeys, evalsQueryKeys, evalDetailQueryKeys,
-// evalItemsQueryKeys), any other of which is refused (undeclaredQueryKey). A malformed key is 400
+// evalItemsQueryKeys), any other of which is refused (undeclaredQueryKey), as is a key named more
+// than once that the read takes one value of (repeatedQueryKey). A malformed key is 400
 // INVALID_QUERY naming it; the page is limit, 1 to evalPageMax (evalPageDefault where absent), and
 // offset, from 0.
 func parseEvalReadQuery(query url.Values, declared []string) (evalReadQuery, error) {
 	if err := undeclaredQueryKey(query, declared); err != nil {
+		return evalReadQuery{}, err
+	}
+	if err := repeatedQueryKey(query); err != nil {
 		return evalReadQuery{}, err
 	}
 	ranges, err := parseEvalRanges(query)
@@ -467,6 +564,25 @@ func parseEvalReadQuery(query url.Values, declared []string) (evalReadQuery, err
 // invalidEvalQuery is err as the 400 INVALID_QUERY an eval read answers a malformed key with.
 func invalidEvalQuery(err error) error {
 	return errorf(http.StatusBadRequest, "INVALID_QUERY", "%s", err.Error())
+}
+
+// evalRepeatableQueryKeys are the query keys an eval route takes any number of values of: the
+// projects of the cross-project read and the repositories of every read. Every other key it takes
+// is one value.
+var evalRepeatableQueryKeys = []string{"project", "repo"}
+
+// repeatedQueryKey refuses a query naming more than once a key the eval routes take one value of:
+// 400 INVALID_QUERY naming the first such key in name order, nil where none is. Such a key is read
+// as its first value, so `?kind=legion&kind=ci` would be answered the Legion evals alone: a
+// question other than the one asked, as a key the route does not take would be
+// (undeclaredQueryKey).
+func repeatedQueryKey(query url.Values) error {
+	for _, key := range slices.Sorted(maps.Keys(query)) {
+		if named := len(query[key]); named > 1 && !slices.Contains(evalRepeatableQueryKeys, key) {
+			return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is named %d times, and this route reads one value of it", key, named)
+		}
+	}
+	return nil
 }
 
 // parseEvalRepos reads `repo`, repeatable: the repositories whose day rows a read folds in place
@@ -691,7 +807,7 @@ func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries
 			Definition: entry.Definition,
 			Owner:      evalOwnerOf(entry.Definition),
 			Series:     series,
-			Verdict:    evalVerdictOf(entry, series),
+			Verdict:    evals.VerdictOf(entry, windowStatistics(series)),
 		}
 	}
 	return items, oldest, nil
@@ -795,61 +911,14 @@ func evalChange(window, compare evals.Statistics) evals.Statistics {
 	return change
 }
 
-// evalVerdictOf judges entry's target over its series' window statistics, null where the target
-// is off. Each judge is `<series>.<stat>`, of target_judges or, where those are empty, of the
-// primary series' headline statistic (evals.HeadlineStatistic); a judge naming a series or a
-// statistic the read does not state has no value. A higher_better eval meets its target at or
-// above it where it is inclusive and above it where it is strict, a lower_better eval at or below
-// it and below it; an eval with no direction judges nothing.
-func evalVerdictOf(entry evals.Entry, series []evalSeriesValues) *evalVerdict {
-	definition := entry.Definition
-	if definition.Target == nil {
-		return nil
+// windowStatistics is each of series' statistics over the window, by series name: what the eval's
+// verdict judges (evals.VerdictOf).
+func windowStatistics(series []evalSeriesValues) map[string]evals.Statistics {
+	window := make(map[string]evals.Statistics, len(series))
+	for _, one := range series {
+		window[one.Series.Series] = one.Window
 	}
-	judges := definition.TargetJudges
-	if len(judges) == 0 {
-		if index := slices.IndexFunc(entry.Series, func(one evals.Series) bool { return one.IsPrimary }); index >= 0 {
-			primary := entry.Series[index]
-			judges = []string{primary.Series + "." + evals.HeadlineStatistic(definition, primary)}
-		}
-	}
-	target := *definition.Target
-	verdict := &evalVerdict{Target: target, Direction: definition.Direction, Inclusive: definition.TargetInclusive, Judges: []evalJudge{}}
-	missed, unknown := false, len(judges) == 0
-	for _, judge := range judges {
-		name, stat, _ := strings.Cut(judge, ".")
-		judged := evalJudge{Judge: judge}
-		if index := slices.IndexFunc(series, func(one evalSeriesValues) bool { return one.Series.Series == name }); index >= 0 {
-			judged.Value = series[index].Window[stat]
-		}
-		if judged.Value != nil {
-			value := *judged.Value
-			switch {
-			case definition.Direction == evals.DirectionHigherBetter && definition.TargetInclusive:
-				judged.Met = new(value >= target)
-			case definition.Direction == evals.DirectionHigherBetter:
-				judged.Met = new(value > target)
-			case definition.Direction == evals.DirectionLowerBetter && definition.TargetInclusive:
-				judged.Met = new(value <= target)
-			case definition.Direction == evals.DirectionLowerBetter:
-				judged.Met = new(value < target)
-			}
-		}
-		switch {
-		case judged.Met == nil:
-			unknown = true
-		case !*judged.Met:
-			missed = true
-		}
-		verdict.Judges = append(verdict.Judges, judged)
-	}
-	switch {
-	case missed:
-		verdict.Met = new(false)
-	case !unknown:
-		verdict.Met = new(true)
-	}
-	return verdict
+	return window
 }
 
 // getProjectEval answers GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,
@@ -969,16 +1038,21 @@ func (s *server) writeEvalError(w http.ResponseWriter, err error) {
 // and a reading under a computed eval's slug is stored and never folded into its value. The write
 // needs an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED), so a retry is answered from the keyed
 // layer (keyedWrites) rather than written twice (R4). It takes no query key but the `session`
-// parameter every operation carries (actingPerson): a window means nothing to a write, so any
-// other key is 400 INVALID_QUERY naming it (R7). The body's actor follows Dispatch's bearer rule
-// (bearerSessionActor); the server sets recorded_by and recorded_at, and a row carrying either is
-// refused (READING_FIELD_SERVER_SET). The day rows the write keeps record s.deps.Build as the
-// build that wrote them.
+// parameter every operation carries (actingPerson), once: a window means nothing to a write, so
+// any other key, and that one named twice, is 400 INVALID_QUERY naming it (R7). The body's actor
+// follows Dispatch's bearer rule (bearerSessionActor); the server sets recorded_by and
+// recorded_at, and a row carrying either is refused (READING_FIELD_SERVER_SET). The day rows the
+// write keeps record s.deps.Build as the build that wrote them.
 func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	if err := undeclaredQueryKey(r.URL.Query(), nil); err != nil {
+	query := r.URL.Query()
+	if err := undeclaredQueryKey(query, nil); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := repeatedQueryKey(query); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -989,7 +1063,7 @@ func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body evalReadingsBody
-	if err := decodeJSON(r, &body); err != nil {
+	if _, err := decodeEvalBody(r, &body, evalReadingsBodyKeys); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1061,17 +1135,13 @@ func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 // decodeEvalRegistration reads a register write's body into the registration it asks for: each
 // field the body names is set, `null` included (a null target is off), and each it leaves out is
 // left unset, so the registry copies it forward. The body is decoded twice, once into its type,
-// which refuses a key no field has, and once by key, which says which keys it named.
+// which refuses a key no field spells exactly (decodeEvalBody), and once by key, which says which
+// keys it named.
 func decodeEvalRegistration(r *http.Request) (evals.Registration, *model.Actor, error) {
-	var raw json.RawMessage
-	if err := decodeJSON(r, &raw); err != nil {
-		return evals.Registration{}, nil, err
-	}
 	var input evalRegisterInput
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil {
-		return evals.Registration{}, nil, errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+	raw, err := decodeEvalBody(r, &input, evalRegisterBodyKeys)
+	if err != nil {
+		return evals.Registration{}, nil, err
 	}
 	var named map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &named); err != nil {

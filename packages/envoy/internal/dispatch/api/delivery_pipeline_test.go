@@ -394,8 +394,8 @@ func TestGetDeliveryPipelineComputesTheFixture(t *testing.T) {
 	if opened := body.OpenedToMerge.Total; opened.N != 2 || opened.MedianMinutes == nil || math.Abs(*opened.MedianMinutes-35) > 1e-9 {
 		t.Errorf("opened_to_merge.total = %+v, want n 2, median 35", opened)
 	}
-	if body.Targets.MergeToProductionMinutes != 45 || body.Targets.OpenedToMergeMedianMinutes != 60 {
-		t.Errorf("targets = %+v, want the measures' DefaultTargets", body.Targets)
+	if !reflect.DeepEqual(body.Targets, measures.DefaultTargets) {
+		t.Errorf("targets = %+v, want the catalogue's, measures.DefaultTargets", body.Targets)
 	}
 	if _, ok := raw["freshness"]; !ok {
 		t.Error("no freshness")

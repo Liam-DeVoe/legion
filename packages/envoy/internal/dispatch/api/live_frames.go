@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
@@ -275,6 +276,11 @@ type deliveryLiveClasses struct {
 	// registry's rows, so it judges none either, and the changes that touch it are its project's
 	// readings, versions and day rows.
 	delivery bool
+	// evalVersions are the evals whose current version the view's answer reads, by slug: the
+	// targets the timeline's and the measures' KPIs and the Pipeline's lead-time cards are judged
+	// by, and pr-ci's min_n the Pipeline ranks its slowest jobs by, each of the project the deploy
+	// repository is mapped to. A new version of one in any project marks the view (touchedBy).
+	evalVersions []string
 	// unconfigured is what this kind's read answers for a deployment that configured nothing it
 	// reads, or for a project no row holds, with the code and message its subscribers are refused
 	// with.
@@ -302,6 +308,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		out:                 []string{"freshness"},
 		unownedP0:           true,
 		delivery:            true,
+		evalVersions:        evals.DeliveryTargetSlugs,
 		unconfigured:        delivery.ErrNoSettings,
 		unconfiguredCode:    deliveryNotConfiguredCode,
 		unconfiguredMessage: deliveryNotConfiguredMessage,
@@ -315,6 +322,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		out:                 []string{"computed_at", "freshness"},
 		unownedP0:           true,
 		delivery:            true,
+		evalVersions:        evals.DeliveryTargetSlugs,
 		unconfigured:        delivery.ErrNoSettings,
 		unconfiguredCode:    deliveryNotConfiguredCode,
 		unconfiguredMessage: deliveryNotConfiguredMessage,
@@ -325,10 +333,11 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		body: reflect.TypeFor[deliveryPipelineResponse](),
 		whole: map[string][]string{
 			"days": nil, "pr_checks": nil, "staging_e2e": nil, "staging_apply": nil, "production_apply": nil,
-			"merge_to_production": nil, "opened_to_merge": nil, "targets": nil,
+			"merge_to_production": nil, "opened_to_merge": nil, "targets": nil, "status": nil,
 		},
 		out:                 []string{"computed_at", "freshness"},
 		delivery:            true,
+		evalVersions:        evals.PipelineSlugs,
 		unconfigured:        delivery.ErrNoSettings,
 		unconfiguredCode:    deliveryNotConfiguredCode,
 		unconfiguredMessage: deliveryNotConfiguredMessage,
@@ -379,9 +388,9 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 			"freshness": {"refresher_age_seconds"},
 		},
 		project:             true,
-		unconfigured:        errEvalsNoProject,
-		unconfiguredCode:    evalsNoProjectCode,
-		unconfiguredMessage: evalsNoProjectMessage,
+		unconfigured:        errProjectNotFound,
+		unconfiguredCode:    errProjectNotFound.code,
+		unconfiguredMessage: errProjectNotFound.message,
 		parse:               parseEvalsLiveView,
 		read:                (*deliveryHub).readEvalsView,
 	},

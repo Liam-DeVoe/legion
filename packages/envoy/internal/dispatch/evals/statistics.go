@@ -114,6 +114,12 @@ func FoldStatistics(definition Definition, series []Series, parts []measures.Day
 			folded[one.Series] = aggStatistics(one.Agg, parts, one.Series)
 		}
 	}
+	return writable(folded)
+}
+
+// writable is folded with every figure outside what a float holds made nil, in place: no answer
+// can write one.
+func writable(folded map[string]Statistics) map[string]Statistics {
 	for _, stats := range folded {
 		for name, value := range stats {
 			if value != nil && (math.IsInf(*value, 0) || math.IsNaN(*value)) {
@@ -208,8 +214,14 @@ func holds(parts []measures.DayPart, series string) bool {
 // deploy-frequency's `deploys` (measures.FoldDeployFrequency): per_day, deploys, with_prs,
 // with_prs_per_day.
 func deployFrequencyStatistics(parts []measures.DayPart, days Range) Statistics {
+	return deployFrequencyOf(measures.FoldDeployFrequency(parts, measures.Window{From: days.From, To: days.To}))
+}
+
+// deployFrequencyOf is deploy-frequency's `deploys` statistics of a folded deploy frequency, every
+// figure nil where folded is (no part).
+func deployFrequencyOf(folded *measures.DeployFrequency) Statistics {
 	stats := blank("per_day", "deploys", "with_prs", "with_prs_per_day")
-	if folded := measures.FoldDeployFrequency(parts, measures.Window{From: days.From, To: days.To}); folded != nil {
+	if folded != nil {
 		stats["per_day"], stats["deploys"] = new(folded.PerDay), new(float64(folded.SuccessfulDeploys))
 		stats["with_prs"], stats["with_prs_per_day"] = new(float64(folded.DeploysWithPRs)), new(folded.WithPRsPerDay)
 	}
@@ -219,8 +231,14 @@ func deployFrequencyStatistics(parts []measures.DayPart, days Range) Statistics 
 // deploy-run-success's `runs` (measures.FoldDeployRunSuccess): rate, concluded,
 // reached_production, cancelled.
 func deployRunSuccessStatistics(parts []measures.DayPart, _ Range) Statistics {
+	return deployRunSuccessOf(measures.FoldDeployRunSuccess(parts))
+}
+
+// deployRunSuccessOf is deploy-run-success's `runs` statistics of a folded run success, every
+// figure nil where folded is (no part).
+func deployRunSuccessOf(folded *measures.DeployRunSuccess) Statistics {
 	stats := blank("rate", "concluded", "reached_production", "cancelled")
-	if folded := measures.FoldDeployRunSuccess(parts); folded != nil {
+	if folded != nil {
 		stats["rate"], stats["concluded"] = folded.Rate, new(float64(folded.Concluded))
 		stats["reached_production"], stats["cancelled"] = new(float64(folded.ReachedProduction)), new(float64(folded.Cancelled))
 	}
@@ -229,12 +247,17 @@ func deployRunSuccessStatistics(parts []measures.DayPart, _ Range) Statistics {
 
 // A lead time's `minutes` (measures.FoldLeadTime): n, median, p90, max.
 func leadTimeStatistics(parts []measures.DayPart, _ Range) Statistics {
-	stats := blank("n", "median", "p90", "max")
-	if holds(parts, measures.SeriesMinutes) {
-		folded := measures.FoldLeadTime(parts)
-		stats["n"], stats["median"], stats["p90"], stats["max"] = new(float64(folded.N)), folded.MedianMinutes, folded.P90Minutes, folded.MaxMinutes
+	if !holds(parts, measures.SeriesMinutes) {
+		return blank("n", "median", "p90", "max")
 	}
-	return stats
+	return LeadTimeStatistics(measures.FoldLeadTime(parts))
+}
+
+// LeadTimeStatistics is a lead time eval's `minutes` statistics of a folded lead time (n, median,
+// p90, max): what merge-to-production and pr-open-to-merge state of the cell the Pipeline's two
+// lead-time cards fold, which those cards are judged by (VerdictOf).
+func LeadTimeStatistics(cell measures.LeadTimeCell) Statistics {
+	return Statistics{"n": new(float64(cell.N)), "median": cell.MedianMinutes, "p90": cell.P90Minutes, "max": cell.MaxMinutes}
 }
 
 // rework-share's `prs` (measures.FoldReworkShare): rate.
@@ -246,10 +269,24 @@ func reworkShareStatistics(parts []measures.DayPart, _ Range) Statistics {
 // each its rate, confirmed, pending, rejected and total (and per_pr its reverts), and
 // `upper_bound`, its rate and confirmed_or_pending.
 func changeFailureRateStatistics(parts []measures.DayPart, _ Range, names []string) map[string]Statistics {
+	shares := changeFailureRateOf(measures.FoldChangeFailureRate(parts))
+	folded := make(map[string]Statistics, len(names))
+	for _, name := range names {
+		folded[name] = shares[name]
+		if folded[name] == nil {
+			folded[name] = Statistics{}
+		}
+	}
+	return folded
+}
+
+// changeFailureRateOf is change-fail-rate's three shares' statistics of a folded failure rate, by
+// series, every figure nil where folded is (no part: no failure source).
+func changeFailureRateOf(folded *measures.ChangeFailureRate) map[string]Statistics {
 	perDeploy := blank("rate", "confirmed", "pending", "rejected", "total")
 	perPR := blank("rate", "confirmed", "pending", "rejected", "reverts", "total")
 	upperBound := blank("rate", "confirmed_or_pending")
-	if folded := measures.FoldChangeFailureRate(parts); folded != nil {
+	if folded != nil {
 		flagged := func(stats Statistics, flags measures.FlagCounts) {
 			stats["rate"], stats["confirmed"], stats["pending"] = new(flags.Rate), new(float64(flags.Confirmed)), new(float64(flags.Pending))
 			stats["rejected"], stats["total"] = new(float64(flags.Rejected)), new(float64(flags.Total))
@@ -259,15 +296,7 @@ func changeFailureRateStatistics(parts []measures.DayPart, _ Range, names []stri
 		perPR["reverts"] = new(float64(folded.PerPR.Reverts))
 		upperBound["rate"], upperBound["confirmed_or_pending"] = new(folded.PerDeploy.UpperBoundRate), new(float64(folded.PerDeploy.ConfirmedOrPending))
 	}
-	shares := map[string]Statistics{measures.SeriesPerDeploy: perDeploy, measures.SeriesPerPR: perPR, measures.SeriesUpperBound: upperBound}
-	folded := make(map[string]Statistics, len(names))
-	for _, name := range names {
-		folded[name] = shares[name]
-		if folded[name] == nil {
-			folded[name] = Statistics{}
-		}
-	}
-	return folded
+	return map[string]Statistics{measures.SeriesPerDeploy: perDeploy, measures.SeriesPerPR: perPR, measures.SeriesUpperBound: upperBound}
 }
 
 // failed-deploy-recovery's `minutes` (measures.FoldTimeToRestore): median.

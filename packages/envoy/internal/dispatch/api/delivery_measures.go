@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 )
 
 // deliveryFlagsSource is flags_source: whether stored failed-change flags fed the change failure
@@ -20,8 +21,9 @@ type deliveryFlagsSource string
 const deliveryFlagsSourceNone deliveryFlagsSource = "none"
 
 // deliveryMeasuresResponse is GET /api/v1/delivery/measures, and the timeline's `measures`: the
-// measures for the window over the pull requests the timeline's search and facets select, Sami's
-// targets, whether each is met, the open P0 issues with no owner, and the timeline's freshness.
+// measures for the window over the pull requests the timeline's search and facets select, the
+// target of the eval that states each (deliveryTargets), whether each is met by that eval's own
+// verdict (measuresStatus), the open P0 issues with no owner, and the timeline's freshness.
 // Mirrors packages/contracts/src/dispatch-api.ts's DeliveryMeasuresResponse exactly. It lives
 // here rather than beside the timeline's views in delivery/model.go because the measures package
 // imports delivery.
@@ -98,7 +100,7 @@ func deliveryMeasuresCompute(settings delivery.DeliverySettings, pop deliveryPop
 // and the timeline both answer through it,
 // so the two never disagree. measures.Compute builds the window's rows into day parts with the
 // day builders and folds them with the folds the delivery evals read stored parts with, one fold
-// per measure.
+// per measure, and each KPI is judged by its eval's target as the population read it.
 func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopulation, derived deliveryDerived, from, to, now time.Time) deliveryMeasuresResponse {
 	applies := delivery.ProductionApplies(pop.windowRuns, pop.windowJobs, settings.Production()).Applies
 	reached := map[int64]bool{}
@@ -123,8 +125,66 @@ func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopula
 		Measures:    result,
 		FlagsSource: deliveryFlagsSourceNone,
 		UnownedP0:   unowned,
-		Targets:     measures.DefaultTargets,
-		Status:      measures.KPIStatus(result, len(unowned), measures.DefaultTargets),
+		Targets:     deliveryTargets(pop.targetEvals),
+		Status:      measuresStatus(pop.targetEvals, evals.ResultStatistics(result, len(unowned))),
 		Freshness:   derived.freshness,
+	}
+}
+
+// measuresStatus judges each KPI of a measures answer by its eval's target: figures is the
+// answer's own statistics of each eval (evals.ResultStatistics), so each verdict is the one the
+// eval's read states of the same figures (deliveryVerdict).
+func measuresStatus(entries map[string]evals.Entry, figures map[string]map[string]evals.Statistics) measures.Status {
+	verdict := func(slug string, judges ...string) *bool {
+		return deliveryVerdict(entries, slug, figures[slug], judges...)
+	}
+	return measures.Status{
+		DeploysPerDay:               verdict(evals.SlugDeployFrequency),
+		ChangeFailureRate:           verdict(evals.SlugChangeFailRate),
+		ChangeFailureRateUpperBound: verdict(evals.SlugChangeFailRate, measures.SeriesUpperBound+".rate"),
+		MergeToProductionMedian:     verdict(evals.SlugMergeToProduction, measures.SeriesMinutes+".median"),
+		MergeToProduction:           verdict(evals.SlugMergeToProduction),
+		OpenedToMerge:               verdict(evals.SlugPROpenToMerge),
+		DeployRunSuccess:            verdict(evals.SlugDeployRunSuccess),
+		UnownedP0:                   verdict(evals.SlugUnownedP0),
+	}
+}
+
+// deliveryVerdict is whether figures, a delivery answer's own statistics of slug's eval, meet that
+// eval's target, by the rule every eval read judges by (evals.VerdictOf): null where entries, the
+// evals the answer's population read (evals.Store.DeployRepoEvals), holds no such eval, its target
+// is off, or no figure it judges has a value. judges, where given, are judged in place of the
+// eval's own target_judges: one more figure of the eval held to the same target.
+func deliveryVerdict(entries map[string]evals.Entry, slug string, figures map[string]evals.Statistics, judges ...string) *bool {
+	entry, held := entries[slug]
+	if !held {
+		return nil
+	}
+	if len(judges) > 0 {
+		entry.Definition.TargetJudges = judges
+	}
+	if verdict := evals.VerdictOf(entry, figures); verdict != nil {
+		return verdict.Met
+	}
+	return nil
+}
+
+// deliveryTargets is the target of each eval of evals.DeliveryTargetSlugs entries holds, its value
+// and inclusiveness, null where its target is off.
+func deliveryTargets(entries map[string]evals.Entry) measures.Targets {
+	target := func(slug string) *measures.Target {
+		definition := entries[slug].Definition
+		if definition.Target == nil {
+			return nil
+		}
+		return &measures.Target{Value: *definition.Target, Inclusive: definition.TargetInclusive}
+	}
+	return measures.Targets{
+		DeploysPerDay:              target(evals.SlugDeployFrequency),
+		ChangeFailureRate:          target(evals.SlugChangeFailRate),
+		MergeToProductionMinutes:   target(evals.SlugMergeToProduction),
+		OpenedToMergeMedianMinutes: target(evals.SlugPROpenToMerge),
+		DeployRunSuccessRate:       target(evals.SlugDeployRunSuccess),
+		UnownedP0:                  target(evals.SlugUnownedP0),
 	}
 }

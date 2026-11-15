@@ -232,7 +232,14 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		{name: "an eval's versions with a kind", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci?kind=ci", status: 400, code: "INVALID_QUERY", names: `"kind"`},
 		{name: "an eval's items with the old scope", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci/items?scope=roots", status: 400, code: "INVALID_QUERY", names: `"scope"`},
 		{name: "an eval's items with a kind", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci/items?kind=ci", status: 400, code: "INVALID_QUERY", names: `"kind"`},
+		{name: "a list read with two kinds", method: http.MethodGet, path: "/api/v1/projects/EVL/evals?kind=legion&kind=ci", status: 400, code: "INVALID_QUERY", names: `"kind"`},
+		{name: "a cross-project read with two window ends", method: http.MethodGet, path: "/api/v1/evals?project=EVL&to=2026-11-02T00:00:00Z&to=2026-11-03T00:00:00Z", status: 400, code: "INVALID_QUERY", names: `"to"`},
+		{name: "an eval's versions with two compare starts", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci?compare_from=2026-10-01T00:00:00Z&compare_from=2026-10-02T00:00:00Z&compare_to=2026-10-03T00:00:00Z", status: 400, code: "INVALID_QUERY", names: `"compare_from"`},
+		{name: "an eval's items with two sorts", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci/items?sort=median&sort=failures", status: 400, code: "INVALID_QUERY", names: `"sort"`},
+		{name: "an eval's items with two series", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci/items?series=jobs&series=minutes", status: 400, code: "INVALID_QUERY", names: `"series"`},
+		{name: "an eval's items with two rows", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci/items?row_kind=job&row=a&row=b", status: 400, code: "INVALID_QUERY", names: `"row"`},
 		{name: "a readings write with a window", method: http.MethodPost, path: readings + "?from=2026-11-01T00:00:00Z", body: map[string]any{"readings": []any{good}}, key: "r-query", status: 400, code: "INVALID_QUERY", names: `"from"`},
+		{name: "a readings write naming its session twice", method: http.MethodPost, path: readings + "?session=s-1&session=s-2", body: map[string]any{"readings": []any{good}}, key: "r-sessions", status: 400, code: "INVALID_QUERY", names: `"session"`},
 		{name: "a readings write with no Idempotency-Key", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{good}}, status: 400, code: codeIdempotencyKeyRequired},
 		{name: "a reading carrying recorded_by", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_by": map[string]any{"kind": "user", "id": "mallory"}})}}, key: "r-by", status: 400, code: evals.CodeFieldServerSet, names: "recorded_by"},
 		{name: "a reading carrying recorded_at", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_at": at.Format(time.RFC3339)})}}, key: "r-at", status: 400, code: evals.CodeFieldServerSet, names: "recorded_at"},
@@ -245,6 +252,13 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		{name: "a reading whose row_key no index entry holds", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"row_key": strings.Repeat("k", 513)})}}, key: "r-long", status: 400, code: evals.CodeKeyTooLong, names: "row_key"},
 		{name: "a register write naming a computed eval's unit", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "pr-ci", "unit": "mins"}, key: "g-unit", status: 400, code: evals.CodeFieldComputed, names: "unit"},
 		{name: "a register write naming a computed eval's series fold", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "pr-ci", "series": []any{map[string]any{"series": evals.SeriesJobs, "agg": "max"}}}, key: "g-agg", status: 400, code: evals.CodeFieldComputed, names: "series[0].agg"},
+		{name: "a register write naming the target in another case", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "pr-ci", "Target": 10}, key: "g-case-target", status: 400, code: "INVALID_JSON", names: `"Target"`},
+		{name: "a register write naming a series' min_n in another case", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "pr-ci", "series": []any{map[string]any{"series": evals.SeriesJobs, "Min_N": 3}}}, key: "g-case-min-n", status: 400, code: "INVALID_JSON", names: `series[0] holds the key "Min_N"`},
+		{name: "a register write naming a link's rel in another case", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "pr-ci", "links": []any{map[string]any{"Rel": "describedby", "href": "https://example.com/method"}}}, key: "g-case-rel", status: 400, code: "INVALID_JSON", names: `links[0] holds the key "Rel"`},
+		{name: "a register write naming a failure mode in another case", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "review-time", "failure_modes": []any{map[string]any{"Mode": "a slow reviewer", "guard": "a second reviewer"}}}, key: "g-case-mode", status: 400, code: "INVALID_JSON", names: `failure_modes[0] holds the key "Mode"`},
+		{name: "a readings write naming its readings in another case", method: http.MethodPost, path: readings, body: map[string]any{"Readings": []any{good}}, key: "r-case-readings", status: 400, code: "INVALID_JSON", names: `"Readings"`},
+		{name: "a reading naming its series in another case", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"Series": "hours"})}}, key: "r-case-series", status: 400, code: evals.CodeReadingInvalid, names: `"Series"`},
+		{name: "a reading's link naming its rel in another case", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"links": []any{map[string]any{"Rel": "via", "href": "https://example.com/run"}}})}}, key: "r-case-rel", status: 400, code: evals.CodeReadingInvalid, names: "links[0].Rel"},
 		{name: "a PUT of a reading", method: http.MethodPut, path: readings + "/5d4a3b2c-1e0f-4a9b-8c7d-6e5f4a3b2c1d", body: good, status: 405, code: codeReadingAppendOnly},
 		{name: "a DELETE of a reading", method: http.MethodDelete, path: readings + "/5d4a3b2c-1e0f-4a9b-8c7d-6e5f4a3b2c1d", status: 405, code: codeReadingAppendOnly},
 	}
@@ -288,12 +302,15 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 	if got := countRows(t, database, countReadings); got != readingsAfter+1 {
 		t.Errorf("the write with ?session= stored %d readings, want 1", got-readingsAfter)
 	}
-	// And each read takes it beside the keys its shape declares.
+	// And each read takes it beside the keys its shape declares, and takes project and repo, the
+	// two it reads every value of, more than once.
 	for _, path := range []string{
 		"/api/v1/projects/EVL/evals?session=s-1",
 		"/api/v1/evals?project=EVL&session=s-1",
 		"/api/v1/projects/EVL/evals/review-time?session=s-1",
 		"/api/v1/projects/EVL/evals/review-time/items?session=s-1",
+		"/api/v1/evals?project=EVL&project=EVL&repo=acme/widgets&repo=acme/gadgets",
+		"/api/v1/projects/EVL/evals/review-time/items?repo=acme/widgets&repo=acme/gadgets",
 	} {
 		if read := evalRequest(t, handler, http.MethodGet, path, nil, ""); read.Code != http.StatusOK {
 			t.Errorf("GET %s: status %d, body %s, want 200", path, read.Code, read.Body.String())

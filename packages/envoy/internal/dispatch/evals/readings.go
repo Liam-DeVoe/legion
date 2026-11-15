@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -22,10 +23,8 @@ import (
 // ones the server sets included; who writes them; and BuiltBy, the running build, which the day
 // rows the write keeps record (eval_days.built_by).
 //
-// A row's keys are a reading's own: series, row_key, row_kind, col, value, value_absent_reason,
-// unit, n, n_unit, ci_low, ci_high, ci_level, attributes, links, measured_at, source, note and
-// replaces. series, row_kind and measured_at are required, and value or value_absent_reason.
-// A link is {rel, href, label}.
+// A row's keys are a reading's own (ReadingKeys), and a link's ReadingLinkKeys. series, row_kind
+// and measured_at are required, and value or value_absent_reason.
 type Batch struct {
 	Project string
 	Slug    string
@@ -362,16 +361,34 @@ func rowsRefusal(refused []RowError) *Error {
 	}
 }
 
-// readingKeys are the keys a row may carry, and serverSetKeys the keys of a reading the server
-// sets, which a row is refused for carrying (R4).
+// readingKeys are the keys a row may carry and linkKeys those of each of its links, the json tags
+// of the types a row and a link are decoded into (readingBody, readingLink), read once when the
+// package starts, so the keys a row is held to are the keys it is decoded by; serverSetKeys are
+// the keys of a reading the server sets, which a row is refused for carrying (R4).
 var (
-	readingKeys = []string{
-		"series", "row_key", "row_kind", "col", "value", "value_absent_reason", "unit", "n", "n_unit",
-		"ci_low", "ci_high", "ci_level", "attributes", "links", "measured_at", "source", "note", "replaces",
-	}
+	readingKeys   = jsonKeysOf(reflect.TypeFor[readingBody]())
+	linkKeys      = jsonKeysOf(reflect.TypeFor[readingLink]())
 	serverSetKeys = []string{"id", "eval_id", "recorded_by", "recorded_at", "superseded_at"}
-	linkKeys      = []string{"rel", "href", "label"}
 )
+
+// ReadingKeys is the keys a reading's row may carry, and ReadingLinkKeys the keys of each of its
+// links: readingKeys and linkKeys. The readings route documents a row and a link in types of its
+// own, whose keys a test holds to these.
+func ReadingKeys() []string { return slices.Clone(readingKeys) }
+
+// ReadingLinkKeys is the keys of each link of a reading's row (ReadingKeys).
+func ReadingLinkKeys() []string { return slices.Clone(linkKeys) }
+
+// jsonKeysOf is the keys a JSON object of shape, a struct whose every field names its key, takes:
+// each field's json name.
+func jsonKeysOf(shape reflect.Type) []string {
+	keys := make([]string, 0, shape.NumField())
+	for field := range shape.Fields() {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		keys = append(keys, name)
+	}
+	return keys
+}
 
 // readingBody is the decoding of one row's keys.
 type readingBody struct {
@@ -393,6 +410,13 @@ type readingBody struct {
 	Source            string            `json:"source"`
 	Note              string            `json:"note"`
 	Replaces          *string           `json:"replaces"`
+}
+
+// readingLink is the decoding of one link of a row.
+type readingLink struct {
+	Rel   string `json:"rel"`
+	Href  string `json:"href"`
+	Label string `json:"label"`
 }
 
 // parseRows decodes and checks every row of a batch, with no database read, and answers the
@@ -499,11 +523,7 @@ func parseRow(evalID string, index int, raw json.RawMessage, now time.Time) (Rea
 				refuse(CodeReadingInvalid, field+"."+key, "no link has the key %q", key)
 			}
 		}
-		var link struct {
-			Rel   string `json:"rel"`
-			Href  string `json:"href"`
-			Label string `json:"label"`
-		}
+		var link readingLink
 		if err := json.Unmarshal(rawLink, &link); err != nil {
 			refuse(CodeReadingInvalid, field, "the link cannot be decoded: %v", err)
 			continue

@@ -284,7 +284,7 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 
 // rankedByMinN reports whether a read ranks the series series of definition's eval by its min_n:
 // the job series of the catalogue's pr-ci, whose jobs the items route sorted by median and the
-// Pipeline rank among the slowest (SlowestJobsMinN, PipelineSlowestJobsMinN). No read of any other
+// Pipeline rank among the slowest (SlowestJobsMinN, PipelineMinN). No read of any other
 // series, a logged eval's included, reads a min_n, so a register write of one elsewhere would be
 // stored and then ignored (R5) and is refused instead.
 func rankedByMinN(definition Definition, series string) bool {
@@ -489,6 +489,11 @@ func validateRegistration(change Registration) error {
 			series, stat, found := strings.Cut(judge, ".")
 			if !found || validSeriesName(series) != nil || stat == "" {
 				return fieldRefusal(CodeFieldInvalid, fmt.Sprintf("target_judges[%d]", index), "target judge %q is not <series>.<stat>", judge)
+			}
+			if taken, delivered := deliveryJudges[change.Slug]; delivered && !slices.Contains(taken, judge) {
+				return fieldRefusal(CodeFieldInvalid, fmt.Sprintf("target_judges[%d]", index),
+					"target judge %q names no figure the delivery measures and the Pipeline state of %s, which they judge by its target, so they could not judge it: %s takes %s",
+					judge, change.Slug, change.Slug, strings.Join(taken, ", "))
 			}
 		}
 	}

@@ -146,10 +146,10 @@ func TestEveryCatalogueEvalIsComputedAndRestatesNoRule(t *testing.T) {
 	t.Logf("%d computed evals, every one with no number rule", len(catalogue))
 }
 
-// TestTheSeededTargetsAreMainsDefaultTargets: each eval main judges (measures.DefaultTargets and
-// KPIStatus's comparisons) is seeded with main's target, inclusive where main's test is "at least"
-// or "exactly" and strict where it is "under", in the direction the test reads; every other eval's
-// target is off.
+// TestTheSeededTargetsAreMainsDefaultTargets: each eval main judges (measures.DefaultTargets, read
+// as the prototype's dora.ts:280-295 compares) is seeded with main's target, inclusive where main's
+// test is "at least" or "exactly" and strict where it is "under", in the direction the test reads;
+// every other eval's target is off.
 func TestTheSeededTargetsAreMainsDefaultTargets(t *testing.T) {
 	main := measures.DefaultTargets
 	want := map[string]struct {
@@ -157,12 +157,12 @@ func TestTheSeededTargetsAreMainsDefaultTargets(t *testing.T) {
 		inclusive bool
 		direction string
 	}{
-		SlugDeployFrequency:   {main.DeploysPerDay, true, DirectionHigherBetter},
-		SlugChangeFailRate:    {main.ChangeFailureRate, false, DirectionLowerBetter},
-		SlugMergeToProduction: {main.MergeToProductionMinutes, false, DirectionLowerBetter},
-		SlugPROpenToMerge:     {main.OpenedToMergeMedianMinutes, false, DirectionLowerBetter},
-		SlugDeployRunSuccess:  {main.DeployRunSuccessRate, true, DirectionHigherBetter},
-		SlugUnownedP0:         {float64(main.UnownedP0), true, DirectionLowerBetter},
+		SlugDeployFrequency:   {main.DeploysPerDay.Value, true, DirectionHigherBetter},
+		SlugChangeFailRate:    {main.ChangeFailureRate.Value, false, DirectionLowerBetter},
+		SlugMergeToProduction: {main.MergeToProductionMinutes.Value, false, DirectionLowerBetter},
+		SlugPROpenToMerge:     {main.OpenedToMergeMedianMinutes.Value, false, DirectionLowerBetter},
+		SlugDeployRunSuccess:  {main.DeployRunSuccessRate.Value, true, DirectionHigherBetter},
+		SlugUnownedP0:         {main.UnownedP0.Value, true, DirectionLowerBetter},
 	}
 	compared := 0
 	for _, entry := range catalogue {

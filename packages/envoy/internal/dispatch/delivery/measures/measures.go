@@ -70,9 +70,12 @@ type Flag struct {
 	State       string // "pending" | "confirmed" | "rejected"
 }
 
-// Spread is a set of durations' median, 90th percentile and maximum, in minutes; all three are
-// nil for an empty set.
+// Spread is a set of durations' median, 90th percentile and maximum, in minutes, all three nil for
+// an empty set, and N, how many durations the set holds. N is no figure the measures panel shows,
+// so the answer does not send it; it is the lead-time evals' `n`, which a person may name as a
+// judge of their target, so the measures answer judges it as the eval does (evals.ResultStatistics).
 type Spread struct {
+	N             int      `json:"-"`
 	MedianMinutes *float64 `json:"median_minutes"`
 	P90Minutes    *float64 `json:"p90_minutes"`
 	MaxMinutes    *float64 `json:"max_minutes"`
@@ -160,38 +163,56 @@ type Result struct {
 	Daily             []DailyPoint       `json:"daily"`
 }
 
-// Targets are Sami's engineering targets (the prototype's KPI_TARGETS, CONTRACT.md "KPI targets",
-// set 2026-09-28): "under" is strictly below, "at least" is >=.
+// Target is one measure's target as the eval that states it holds it: its value and whether the
+// value itself meets it (inclusive: at least or at most, rather than above or under). Which way is
+// better is the eval's direction, fixed by its code: more deploys a day and more run success,
+// fewer failures, minutes and unowned P0 issues.
+type Target struct {
+	Value     float64 `json:"value"`
+	Inclusive bool    `json:"inclusive"`
+}
+
+// Targets are the targets a delivery answer judges its measures by: each the target of the eval
+// that states the measure in the project the deploy repository is mapped to, which a person may
+// set (R5), null where that eval's target is off.
 type Targets struct {
-	DeploysPerDay              float64 `json:"deploys_per_day"`                // at least
-	ChangeFailureRate          float64 `json:"change_failure_rate"`            // under, per deploy
-	MergeToProductionMinutes   float64 `json:"merge_to_production_minutes"`    // under, for every change (the max)
-	OpenedToMergeMedianMinutes float64 `json:"opened_to_merge_median_minutes"` // under, the median
-	DeployRunSuccessRate       float64 `json:"deploy_run_success_rate"`        // at least
-	UnownedP0                  int     `json:"unowned_p0"`                     // exactly
+	DeploysPerDay              *Target `json:"deploys_per_day"`                // deploy-frequency's
+	ChangeFailureRate          *Target `json:"change_failure_rate"`            // change-fail-rate's
+	MergeToProductionMinutes   *Target `json:"merge_to_production_minutes"`    // merge-to-production's
+	OpenedToMergeMedianMinutes *Target `json:"opened_to_merge_median_minutes"` // pr-open-to-merge's
+	DeployRunSuccessRate       *Target `json:"deploy_run_success_rate"`        // deploy-run-success's
+	UnownedP0                  *Target `json:"unowned_p0"`                     // unowned-p0's
 }
 
-// DefaultTargets are the targets every measures response is judged against (the prototype's
-// web/src/lib/dora.ts:11-18).
+// DefaultTargets are Sami's engineering targets (the prototype's KPI_TARGETS, web/src/lib/dora.ts
+// 11-18, CONTRACT.md "KPI targets", set 2026-09-28), which the catalogue seeds each delivery eval's
+// target from: at least 20 deploys a day and 90% run success, under 5% failures per deploy, 45
+// minutes for every change to reach production and a 60-minute median from open to merge, and no
+// more than 0 unowned P0 issues.
 var DefaultTargets = Targets{
-	DeploysPerDay:              20,
-	ChangeFailureRate:          0.05,
-	MergeToProductionMinutes:   45,
-	OpenedToMergeMedianMinutes: 60,
-	DeployRunSuccessRate:       0.9,
-	UnownedP0:                  0,
+	DeploysPerDay:              &Target{Value: 20, Inclusive: true},
+	ChangeFailureRate:          &Target{Value: 0.05},
+	MergeToProductionMinutes:   &Target{Value: 45},
+	OpenedToMergeMedianMinutes: &Target{Value: 60},
+	DeployRunSuccessRate:       &Target{Value: 0.9, Inclusive: true},
+	UnownedP0:                  &Target{Value: 0, Inclusive: true},
 }
 
-// Status is whether each KPI meets its target; nil when the window has nothing to measure.
+// Status is whether each KPI meets its target, its eval's verdict of the answer's figures
+// (evals.VerdictOf), null where the eval's target is off or no figure it judges has a value. Each
+// is its eval's verdict (MergeToProduction merge-to-production's, of the longest change and the
+// median), but MergeToProductionMedian and ChangeFailureRateUpperBound, each one more figure of an
+// eval (the median merge to production, the failure rate's upper bound) judged by that eval's
+// target.
 type Status struct {
-	DeploysPerDay               bool  `json:"deploys_per_day"`
+	DeploysPerDay               *bool `json:"deploys_per_day"`
 	ChangeFailureRate           *bool `json:"change_failure_rate"`
 	ChangeFailureRateUpperBound *bool `json:"change_failure_rate_upper_bound"`
 	MergeToProductionMedian     *bool `json:"merge_to_production_median"`
 	MergeToProduction           *bool `json:"merge_to_production"`
 	OpenedToMerge               *bool `json:"opened_to_merge"`
 	DeployRunSuccess            *bool `json:"deploy_run_success"`
-	UnownedP0                   bool  `json:"unowned_p0"`
+	UnownedP0                   *bool `json:"unowned_p0"`
 }
 
 // Quantile is p's quantile of ascending, non-empty sorted, linear between the two nearest ranks:
@@ -673,7 +694,7 @@ func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
 	}
 	spread := func(parts []DayPart) Spread {
 		cell := FoldLeadTime(parts)
-		return Spread{MedianMinutes: cell.MedianMinutes, P90Minutes: cell.P90Minutes, MaxMinutes: cell.MaxMinutes}
+		return Spread{N: cell.N, MedianMinutes: cell.MedianMinutes, P90Minutes: cell.P90Minutes, MaxMinutes: cell.MaxMinutes}
 	}
 	// deliveryDays answers at least one day, the window's, and each day has a part of every
 	// series but the two failure measures', so no other fold below reads "no data".
@@ -691,41 +712,5 @@ func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
 		ReworkShare:      ValueOrZero(FoldReworkShare(rework)),
 		DeployRunSuccess: *FoldDeployRunSuccess(success),
 		Daily:            DailySeries(frequency, success, window),
-	}
-}
-
-// KPIStatus judges result and the count of unowned P0 issues against targets (the prototype's
-// dora.ts:280-295): "at least" targets are met at the target, "under" targets are missed at it,
-// and a measure with nothing to measure is nil rather than met: a change failure rate with no
-// value (no failure source) or over no deploy among them.
-func KPIStatus(result Result, unownedP0 int, targets Targets) Status {
-	under := func(value *float64, target float64) *bool {
-		if value == nil {
-			return nil
-		}
-		met := *value < target
-		return &met
-	}
-	var cfrMet, cfrUpperMet *bool
-	if result.ChangeFailureRate != nil && result.ChangeFailureRate.PerDeploy.Total > 0 {
-		cfr := result.ChangeFailureRate.PerDeploy
-		cfrMet = under(&cfr.Rate, targets.ChangeFailureRate)
-		cfrUpperMet = under(&cfr.UpperBoundRate, targets.ChangeFailureRate)
-	}
-	var runSuccessMet *bool
-	if rate := result.DeployRunSuccess.Rate; rate != nil {
-		met := *rate >= targets.DeployRunSuccessRate
-		runSuccessMet = &met
-	}
-	merge := result.LeadTime.MergeToProduction
-	return Status{
-		DeploysPerDay:               result.DeployFrequency.PerDay >= targets.DeploysPerDay,
-		ChangeFailureRate:           cfrMet,
-		ChangeFailureRateUpperBound: cfrUpperMet,
-		MergeToProductionMedian:     under(merge.MedianMinutes, targets.MergeToProductionMinutes),
-		MergeToProduction:           under(merge.MaxMinutes, targets.MergeToProductionMinutes),
-		OpenedToMerge:               under(result.LeadTime.OpenedToMerge.MedianMinutes, targets.OpenedToMergeMedianMinutes),
-		DeployRunSuccess:            runSuccessMet,
-		UnownedP0:                   unownedP0 == targets.UnownedP0,
 	}
 }

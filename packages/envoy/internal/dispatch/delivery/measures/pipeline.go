@@ -44,7 +44,7 @@ const SlowestJobs = 5
 // eval states another, so a one-task matrix entry with a handful of results is not
 // (pipeline.py:27-29): the min_n the catalogue seeds pr-ci's job series with, which a person may
 // change, and the one the deployment-wide Pipeline ranks by where its deploy repository's project
-// holds no pr-ci eval to read one from (evals.Store.PipelineSlowestJobsMinN).
+// holds no pr-ci eval to read one from (evals.PipelineMinN).
 const SlowestMinResults = 50
 
 // FailingWindow is how far back the failing-jobs table looks from the window's end: its last day,

@@ -82,12 +82,12 @@ const emptyMeasures: DeliveryMeasuresResponse = {
   flags_source: "none",
   unowned_p0: [],
   targets: {
-    deploys_per_day: 20,
-    change_failure_rate: 0.05,
-    merge_to_production_minutes: 45,
-    opened_to_merge_median_minutes: 60,
-    deploy_run_success_rate: 0.9,
-    unowned_p0: 0,
+    deploys_per_day: { value: 20, inclusive: true },
+    change_failure_rate: { value: 0.05, inclusive: false },
+    merge_to_production_minutes: { value: 45, inclusive: false },
+    opened_to_merge_median_minutes: { value: 60, inclusive: false },
+    deploy_run_success_rate: { value: 0.9, inclusive: true },
+    unowned_p0: { value: 0, inclusive: true },
   },
   status: {
     deploys_per_day: false,

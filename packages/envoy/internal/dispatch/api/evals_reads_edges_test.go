@@ -361,6 +361,26 @@ func TestAnEvalWindowWhoseDaysEndPastTheYear9999IsRefused(t *testing.T) {
 	}
 }
 
+// TestAnEvalsLiveViewWhoseDaysEndPastTheYear9999IsRefused: an evals view whose own custom window
+// ends its days past the year 9999 is refused INVALID_QUERY when it is subscribed, as the list
+// route refuses the same window, and nothing is sent after the refusal. Its window is the view's,
+// not its query's, so a check of the query alone passed it, and the hub held a view whose every
+// read failed and was tried again every deliveryLiveRetry, its subscriber told nothing.
+func TestAnEvalsLiveViewWhoseDaysEndPastTheYear9999IsRefused(t *testing.T) {
+	rig := newHubRig(t, nil)
+	createTestProject(t, rig.handler, "EVL")
+	from, to := "9999-12-30T00:00:00Z", "9999-12-31T23:00:00Z"
+	route := evalRequest(t, rig.handler, http.MethodGet, "/api/v1/projects/EVL/evals?"+url.Values{"from": {from}, "to": {to}}.Encode(), nil, "")
+	if response := decodeBody[evalRefusal](t, route); route.Code != http.StatusBadRequest || response.Code != "INVALID_QUERY" {
+		t.Fatalf("GET the list over %s..%s: status %d, body %s; want 400 INVALID_QUERY", from, to, route.Code, route.Body.String())
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("late", evalsLiveView("EVL", DeliveryLiveWindow{From: &from, To: &to}, "")))
+	refusal := conn.refusal(t, 5*time.Second, "late", "INVALID_QUERY")
+	conn.none(t, time.Second, "the refusal of a window whose days end past the year 9999")
+	t.Logf("the view over %s..%s: %s %q", from, to, refusal.Code, refusal.Message)
+}
+
 // TestAWindowWhoseSumPassesWhatAFloatHoldsAnswersItNull: readings of 1e308 on two days of a sum
 // series are each accepted, since each day's row holds a finite sum, but a window over both days
 // sums past the largest float, which no answer can write. Every read of that window - the

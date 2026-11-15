@@ -71,12 +71,12 @@ const fixtureMeasures: DeliveryMeasuresResponse = {
   flags_source: "none",
   unowned_p0: [{ key: "ACME-103", title: "Production deploy gate flakes" }],
   targets: {
-    deploys_per_day: 20,
-    change_failure_rate: 0.05,
-    merge_to_production_minutes: 45,
-    opened_to_merge_median_minutes: 60,
-    deploy_run_success_rate: 0.9,
-    unowned_p0: 0,
+    deploys_per_day: { value: 20, inclusive: true },
+    change_failure_rate: { value: 0.05, inclusive: false },
+    merge_to_production_minutes: { value: 45, inclusive: false },
+    opened_to_merge_median_minutes: { value: 60, inclusive: false },
+    deploy_run_success_rate: { value: 0.9, inclusive: true },
+    unowned_p0: { value: 0, inclusive: true },
   },
   status: {
     deploys_per_day: false,
@@ -165,6 +165,28 @@ test("met, missed and no-data badges follow the response's status", () => {
   expect(within(card("Deploys a day")).getByText("\u2713 met")).toBeDefined();
   expect(within(card("Deploy runs reaching production")).getByText("no data")).toBeDefined();
   expect(within(card("Change failure rate")).getByText("no data")).toBeDefined();
+});
+
+test("each target reads as its eval holds it: its sign follows inclusive, and one turned off reads off", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...fixtureMeasures.targets,
+      deploys_per_day: { value: 4, inclusive: false },
+      merge_to_production_minutes: { value: 45, inclusive: true },
+      unowned_p0: { value: 0, inclusive: true },
+      deploy_run_success_rate: null,
+    },
+    status: { ...fixtureMeasures.status, deploy_run_success: null },
+  });
+  expect(within(card("Deploys a day")).getByText("target > 4/day")).toBeDefined();
+  expect(
+    within(card("Merge \u2192 production")).getByText("target \u2264 45m for every change")
+  ).toBeDefined();
+  expect(within(card("P0 issues with no owner")).getByText("target \u2264 0")).toBeDefined();
+  const runs = within(card("Deploy runs reaching production"));
+  expect(runs.getByText("target off")).toBeDefined();
+  expect(runs.getByText("no data")).toBeDefined();
 });
 
 test("with stored flags the change failure rate card shows the upper bound and the breakdown", () => {

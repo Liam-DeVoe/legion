@@ -20,10 +20,14 @@ import (
 // rows and from the phase-work rule rather than from the feeds.
 
 // legionProjects is every project this loop computes, by key, each with whether its facts are to
-// be computed whole on this pass. A project is one of them once a Legion daemon has been read of
-// it (its sampler's observations) or once it holds a stored row. An event of a project neither
-// answers for is no work of this loop: its first observation brings the project in, and the
-// backfill then computes it.
+// be computed whole on this pass. A project is one of them once it names a Legion daemon (its
+// row of legion_settings), once that daemon has been read (its sampler's observations) or once
+// it holds a stored row. The setting is enough on its own: a daemon the sampler has never read is
+// still a daemon working the project, whose issues carry phase work the event log holds, and four
+// of the six Legion evals (work time, phase time, rework and splitting) read the facts of that
+// work and no observation. An event of a project none of the three answers for is no work of this
+// loop: its setting or its first observation brings the project in, and the backfill then
+// computes it.
 //
 // A project is a backfill - a pass of this same loop that runs ComputeProject over the project
 // rather than Compute over a key set - where this build has not read it whole, where the rows
@@ -101,7 +105,8 @@ func legionProjects(ctx context.Context, q Querier, build string, lost bool) (ma
 		           and not exists (select 1 from issue_facts where project_key = project.key))
 		from projects project
 		left join issue_facts_computed mark on mark.project_key = project.key
-		where exists (select 1 from legion_observations where project = project.key)
+		where exists (select 1 from legion_settings where project = project.key)
+		   or exists (select 1 from legion_observations where project = project.key)
 		   or exists (select 1 from issue_facts where project_key = project.key)
 	`, build)
 	if err != nil {

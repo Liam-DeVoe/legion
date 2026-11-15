@@ -144,6 +144,12 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 				}
 				values, thresholds = values+1, thresholds+1
 			}
+			named, difference := takeTargets(got, want, strings.HasPrefix(target, "/api/v1/delivery/pipeline?"))
+			values += named
+			if difference != "" {
+				differing++
+				t.Errorf("%s: GET %s: %s", window.File, target, difference)
+			}
 			compared, difference := compareDeliveryOracleTrees("", got, want)
 			requests, values = requests+1, values+compared
 			if difference != "" {
@@ -319,6 +325,61 @@ func takeSlowestMinResults(got, want any) string {
 	}
 	delete(gotChecks, "slowest_min_results")
 	return ""
+}
+
+// takeTargets checks got's targets, a measures or Pipeline answer's, against want's, the base
+// head's, and takes them out of both: the base head stated each target as its value alone, and
+// this answer states it as its eval holds it, so each must be want's value with the catalogue's
+// inclusiveness (measures.DefaultTargets), the targets of the history's evals, which no person
+// set. A Pipeline answer's status, which the base head left to the page, must be the page's own
+// judgement of the base head's figures, the longest change strictly under the merge target and
+// the median from open to merge under its own, null where the figure is; it is taken out of got.
+// It answers how many of the base head's values the check named and, where any is off, what is.
+func takeTargets(got, want any, pipeline bool) (int, string) {
+	gotTargets, _ := got.(map[string]any)["targets"].(map[string]any)
+	wantTargets, _ := want.(map[string]any)["targets"].(map[string]any)
+	catalogue := map[string]*measures.Target{
+		"deploys_per_day": measures.DefaultTargets.DeploysPerDay, "change_failure_rate": measures.DefaultTargets.ChangeFailureRate,
+		"merge_to_production_minutes":    measures.DefaultTargets.MergeToProductionMinutes,
+		"opened_to_merge_median_minutes": measures.DefaultTargets.OpenedToMergeMedianMinutes,
+		"deploy_run_success_rate":        measures.DefaultTargets.DeployRunSuccessRate, "unowned_p0": measures.DefaultTargets.UnownedP0,
+	}
+	if len(gotTargets) != len(catalogue) || len(wantTargets) != len(catalogue) {
+		return 0, fmt.Sprintf("targets hold %d and the base head's %d, want the %d delivery targets", len(gotTargets), len(wantTargets), len(catalogue))
+	}
+	named := 0
+	for key, inclusive := range catalogue {
+		gotTarget, _ := gotTargets[key].(map[string]any)
+		if gotTarget == nil || fmt.Sprint(gotTarget["value"]) != fmt.Sprint(wantTargets[key]) || gotTarget["inclusive"] != inclusive.Inclusive {
+			return named, fmt.Sprintf("targets.%s is %v, want the base head's %v, inclusive %t", key, gotTargets[key], wantTargets[key], inclusive.Inclusive)
+		}
+		named++
+	}
+	delete(got.(map[string]any), "targets")
+	delete(want.(map[string]any), "targets")
+	if !pipeline {
+		return named, ""
+	}
+	status, _ := got.(map[string]any)["status"].(map[string]any)
+	for _, card := range []struct{ key, figure, target string }{
+		{"merge_to_production", "max_minutes", "merge_to_production_minutes"},
+		{"opened_to_merge", "median_minutes", "opened_to_merge_median_minutes"},
+	} {
+		var judged any
+		if figure, held := want.(map[string]any)[card.key].(map[string]any)["total"].(map[string]any)[card.figure].(json.Number); held {
+			value, err := figure.Float64()
+			if err != nil {
+				return named, fmt.Sprintf("the base head's %s.total.%s is %v, want a number", card.key, card.figure, figure)
+			}
+			judged = value < catalogue[card.target].Value
+		}
+		if verdict, held := status[card.key]; !held || verdict != judged {
+			return named, fmt.Sprintf("status.%s is %v, and the page judged the base head's %s %v", card.key, verdict, card.figure, judged)
+		}
+		named++
+	}
+	delete(got.(map[string]any), "status")
+	return named, ""
 }
 
 func readDeliveryOracleFile(t *testing.T, path string, into any) {

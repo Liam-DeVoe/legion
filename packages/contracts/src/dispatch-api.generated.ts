@@ -4058,11 +4058,11 @@ export interface components {
       change_failure_rate: null | boolean;
       change_failure_rate_upper_bound: null | boolean;
       deploy_run_success: null | boolean;
-      deploys_per_day: boolean;
+      deploys_per_day: null | boolean;
       merge_to_production: null | boolean;
       merge_to_production_median: null | boolean;
       opened_to_merge: null | boolean;
-      unowned_p0: boolean;
+      unowned_p0: null | boolean;
     };
     DeliveryLeadTimeCell: {
       max_minutes: null | number;
@@ -4149,7 +4149,12 @@ export interface components {
       production_apply: components["schemas"]["DeliveryDeployJobTiming"];
       staging_apply: components["schemas"]["DeliveryDeployJobTiming"] | null;
       staging_e2e: components["schemas"]["DeliveryDeployJobTiming"] | null;
+      status: components["schemas"]["DeliveryPipelineStatus"];
       targets: components["schemas"]["DeliveryTargets"];
+    };
+    DeliveryPipelineStatus: {
+      merge_to_production: null | boolean;
+      opened_to_merge: null | boolean;
     };
     DeliveryRun: {
       /** Format: date-time */
@@ -4245,18 +4250,18 @@ export interface components {
       median_minutes: null | number;
       p90_minutes: null | number;
     };
+    DeliveryTarget: {
+      inclusive: boolean;
+      /** Format: double */
+      value: number;
+    };
     DeliveryTargets: {
-      /** Format: double */
-      change_failure_rate: number;
-      /** Format: double */
-      deploy_run_success_rate: number;
-      /** Format: double */
-      deploys_per_day: number;
-      /** Format: double */
-      merge_to_production_minutes: number;
-      /** Format: double */
-      opened_to_merge_median_minutes: number;
-      unowned_p0: number;
+      change_failure_rate: components["schemas"]["DeliveryTarget"] | null;
+      deploy_run_success_rate: components["schemas"]["DeliveryTarget"] | null;
+      deploys_per_day: components["schemas"]["DeliveryTarget"] | null;
+      merge_to_production_minutes: components["schemas"]["DeliveryTarget"] | null;
+      opened_to_merge_median_minutes: components["schemas"]["DeliveryTarget"] | null;
+      unowned_p0: components["schemas"]["DeliveryTarget"] | null;
     };
     DeliveryTimelineWithMeasures: {
       color_counts: {
@@ -14042,6 +14047,7 @@ export type DeliveryMeasuresResponse = components["schemas"]["DeliveryMeasuresRe
 export type DeliveryPR = components["schemas"]["DeliveryPR"];
 export type DeliveryPipelinePRChecks = components["schemas"]["DeliveryPipelinePRChecks"];
 export type DeliveryPipelineResponse = components["schemas"]["DeliveryPipelineResponse"];
+export type DeliveryPipelineStatus = components["schemas"]["DeliveryPipelineStatus"];
 export type DeliveryRun = components["schemas"]["DeliveryRun"];
 export type DeliveryRunDetail = components["schemas"]["DeliveryRunDetail"];
 export type DeliveryRunJob = components["schemas"]["DeliveryRunJob"];
@@ -14052,6 +14058,7 @@ export type DeliverySettings = components["schemas"]["DeliverySettings"];
 export type DeliverySettingsInput = components["schemas"]["DeliverySettingsInput"];
 export type DeliveryShippedPRView = components["schemas"]["DeliveryShippedPRView"];
 export type DeliverySpread = components["schemas"]["DeliverySpread"];
+export type DeliveryTarget = components["schemas"]["DeliveryTarget"];
 export type DeliveryTargets = components["schemas"]["DeliveryTargets"];
 export type DeliveryTimelineWithMeasures = components["schemas"]["DeliveryTimelineWithMeasures"];
 export type DeliveryTiming = components["schemas"]["DeliveryTiming"];

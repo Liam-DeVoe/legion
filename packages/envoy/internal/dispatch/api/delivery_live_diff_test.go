@@ -262,7 +262,7 @@ func liveMeasuresOf(window delivery.DeliveryWindowView, computedAt time.Time, de
 		Window: window, ComputedAt: computedAt,
 		Measures:    measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}},
 		FlagsSource: deliveryFlagsSourceNone, UnownedP0: []delivery.UnownedIssue{}, Targets: measures.DefaultTargets,
-		Status:    measures.Status{UnownedP0: true},
+		Status:    measures.Status{UnownedP0: new(true)},
 		Freshness: delivery.DeliveryFreshnessView{LastEventAt: &computedAt},
 	}
 }
@@ -873,7 +873,7 @@ func TestAChangedMeasureSendsTheMeasuresWhole(t *testing.T) {
 	// An unowned P0 moves unowned_p0 and its status, not the measures.
 	nextBody = liveMeasuresOf(window, at, 1)
 	nextBody.UnownedP0 = []delivery.UnownedIssue{{Key: "ACME-7", Title: "Outage"}}
-	nextBody.Status.UnownedP0 = false
+	nextBody.Status.UnownedP0 = new(false)
 	if delta, ok := liveDiff(t, held, mustEncodeLive(t, deliveryLiveMeasures, nextBody)); !ok {
 		t.Error("an unowned P0 sent no delta")
 	} else if set, _, _, _ := liveSections(delta); !slices.Equal(set, []string{"status", "unowned_p0"}) {

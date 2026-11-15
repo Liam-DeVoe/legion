@@ -80,8 +80,9 @@ func requireTheListRead(t *testing.T, handler http.Handler, project string, body
 // day row each mark the evals views of their eval's project and no other view at all, and no other
 // kind of change marks an evals view. A filing marks no view: the refresher's rewrite of the day's
 // rows is what wakes the evals view. None of the four kinds reaches the delivery switch's closing
-// `return true`, which would mark every timeline, measures and pipeline view. The one version that
-// marks a pipeline view, pr-ci's, is TestAPRCIVersionMarksEveryPipelineViewAndNoOtherDeliveryView's.
+// `return true`, which would mark every timeline, measures and pipeline view. The versions that
+// mark a delivery view, those of the evals it judges or ranks by, are
+// TestAVersionOfAnEvalADeliveryViewReadsMarksIt's; rework-share is none of them.
 func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	today := measures.Midnight(now)
@@ -103,7 +104,7 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	}
 	evalChanges := []delivery.Change{
 		evalsChange("eval_readings", "INFRA", "pr-size", &dayAgo, &hourAgo),
-		evalsChange("eval_versions", "INFRA", "deploy-frequency", nil, nil),
+		evalsChange("eval_versions", "INFRA", evals.SlugReworkShare, nil, nil),
 		evalsChange("eval_days", "INFRA", "deploy-frequency", &today, &today),
 	}
 	for _, change := range evalChanges {
@@ -154,37 +155,50 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 		filingMarks, len(views), len(others), evalsMarks)
 }
 
-// TestAPRCIVersionMarksEveryPipelineViewAndNoOtherDeliveryView: the Pipeline ranks its slowest jobs
-// by the min_n of pr-ci's job series in the project its deploy repository is mapped to, which no
-// view holds, so a new version of pr-ci (a register write of that min_n, a project's seed) in any
-// project marks every pipeline view, beside the evals views of its project; pr-ci's readings and
-// day rows, which the Pipeline does not read, mark none, and neither does another eval's version.
-// No timeline or measures view is marked by any of them.
-func TestAPRCIVersionMarksEveryPipelineViewAndNoOtherDeliveryView(t *testing.T) {
+// TestAVersionOfAnEvalADeliveryViewReadsMarksIt: the timeline's and the measures' KPIs and the
+// Pipeline's lead-time cards are judged by the targets of the delivery evals, and the Pipeline
+// ranks its slowest jobs by the min_n of pr-ci's job series, each of the project the deploy
+// repository is mapped to, which no view holds. So a new version of a delivery target's eval (a
+// register write of its target, a project's seed) in any project marks every timeline, measures
+// and pipeline view, and one of pr-ci every pipeline view alone; their readings and day rows mark
+// none, and neither does a version of an eval no delivery view reads or of a slug that only ends
+// like one.
+func TestAVersionOfAnEvalADeliveryViewReadsMarksIt(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	today := measures.Midnight(now)
-	pipeline := deliveryViewShowing(deliveryLivePipeline)
-	others := []*deliveryView{deliveryViewShowing(deliveryLiveTimeline), deliveryViewShowing(deliveryLiveMeasures)}
-	for _, change := range []struct {
+	views := map[string]*deliveryView{
+		deliveryLiveTimeline: deliveryViewShowing(deliveryLiveTimeline), deliveryLiveMeasures: deliveryViewShowing(deliveryLiveMeasures),
+		deliveryLivePipeline: deliveryViewShowing(deliveryLivePipeline),
+	}
+	every := []string{deliveryLiveTimeline, deliveryLiveMeasures, deliveryLivePipeline}
+	cases := []struct {
 		change delivery.Change
-		marks  bool
+		marks  []string
 	}{
-		{evalsChange("eval_versions", "INFRA", evals.SlugPRCI, nil, nil), true},
-		{evalsChange("eval_versions", "OTHER", evals.SlugPRCI, nil, nil), true},
-		{evalsChange("eval_versions", "INFRA", "deploy-frequency", nil, nil), false},
-		{evalsChange("eval_versions", "INFRA", "x-"+evals.SlugPRCI, nil, nil), false},
-		{evalsChange("eval_readings", "INFRA", evals.SlugPRCI, &today, &today), false},
-		{evalsChange("eval_days", "INFRA", evals.SlugPRCI, &today, &today), false},
-	} {
-		if got := pipeline.touchedBy(change.change, now); got != change.marks {
-			t.Errorf("%s of %s: touchedBy(a pipeline view) = %t, want %t", change.change.Kind, change.change.Ref, got, change.marks)
-		}
-		for _, view := range others {
-			if view.touchedBy(change.change, now) {
-				t.Errorf("%s of %s marks a %s view, want none", change.change.Kind, change.change.Ref, view.spec.kind)
+		{evalsChange("eval_versions", "INFRA", evals.SlugPRCI, nil, nil), []string{deliveryLivePipeline}},
+		{evalsChange("eval_versions", "OTHER", evals.SlugPRCI, nil, nil), []string{deliveryLivePipeline}},
+		{evalsChange("eval_versions", "INFRA", evals.SlugReworkShare, nil, nil), nil},
+		{evalsChange("eval_versions", "INFRA", "x-"+evals.SlugPRCI, nil, nil), nil},
+		{evalsChange("eval_versions", "INFRA", "x-"+evals.SlugMergeToProduction, nil, nil), nil},
+		{evalsChange("eval_readings", "INFRA", evals.SlugPRCI, &today, &today), nil},
+		{evalsChange("eval_days", "INFRA", evals.SlugPRCI, &today, &today), nil},
+		{evalsChange("eval_readings", "INFRA", evals.SlugMergeToProduction, &today, &today), nil},
+		{evalsChange("eval_days", "INFRA", evals.SlugMergeToProduction, &today, &today), nil},
+	}
+	for _, slug := range evals.DeliveryTargetSlugs {
+		cases = append(cases, struct {
+			change delivery.Change
+			marks  []string
+		}{evalsChange("eval_versions", "OTHER", slug, nil, nil), every})
+	}
+	for _, c := range cases {
+		for _, kind := range every {
+			if got, want := views[kind].touchedBy(c.change, now), slices.Contains(c.marks, kind); got != want {
+				t.Errorf("%s of %s: touchedBy(a %s view) = %t, want %t", c.change.Kind, c.change.Ref, kind, got, want)
 			}
 		}
 	}
+	t.Logf("%d changes checked against the timeline, measures and pipeline views", len(cases))
 }
 
 // TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs: the live Pipeline view ranks its slowest jobs
@@ -535,7 +549,7 @@ func TestAnEvalsViewsSnapshotIsTheListRead(t *testing.T) {
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("new", evalsLiveView("NEWP", DeliveryLiveWindow{Preset: new(7)}, "")))
-	conn.refusal(t, 5*time.Second, "new", evalsNoProjectCode)
+	conn.refusal(t, 5*time.Second, "new", errProjectNotFound.code)
 	conn.none(t, time.Second, "the refusal of a project no row holds")
 	createTestProject(t, rig.handler, "NEWP")
 	snapshot := conn.snapshot(t, 5*time.Second, "new")

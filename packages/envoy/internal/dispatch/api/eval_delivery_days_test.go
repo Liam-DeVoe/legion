@@ -230,7 +230,7 @@ func dayLeadTiming(parts []measures.DayPart, days []string) measures.LeadTimeTim
 
 func leadSpread(parts []measures.DayPart) measures.Spread {
 	cell := measures.FoldLeadTime(parts)
-	return measures.Spread{MedianMinutes: cell.MedianMinutes, P90Minutes: cell.P90Minutes, MaxMinutes: cell.MaxMinutes}
+	return measures.Spread{N: cell.N, MedianMinutes: cell.MedianMinutes, P90Minutes: cell.P90Minutes, MaxMinutes: cell.MaxMinutes}
 }
 
 // foldedMeasures is the measures route's measures folded from parts, one cut's day rows of a

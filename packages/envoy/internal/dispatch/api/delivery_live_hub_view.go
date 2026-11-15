@@ -1,6 +1,7 @@
 package api
 
 import (
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -120,8 +121,11 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 // timeline view names one, and its query, the query string GET /api/v1/projects/{key}/evals
 // would be sent without from and to: the compare range (compare_from and compare_to), the
 // repositories (repo), the kind (kind) and the page (limit and offset). A query the route
-// refuses, a key it does not take among them, is refused here, by the route's own reading of it
-// (parseEvalListQuery), before the view is held.
+// refuses, a key it does not take among them, is refused here, by the route's own reading of the
+// query the view's read sends it (evalsQuery, parseEvalListQuery), before the view is held. That
+// query holds the view's own from and to: a custom window readWindow takes can still end its days
+// past the year 9999, which the route refuses (evalDaysAnswerable), and a view held with it would
+// read and fail every deliveryLiveRetry for as long as it stood, its subscribers told nothing.
 func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	project, refusal := readLiveProject(view, "an evals view")
 	if refusal != nil {
@@ -131,12 +135,25 @@ func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErro
 	if refusal != nil {
 		return refusal
 	}
-	if _, err := parseEvalListQuery(spec.query, evalListQueryKeys); err != nil {
+	if _, err := parseEvalListQuery(spec.evalsQuery(time.Now().UTC()), evalListQueryKeys); err != nil {
 		return invalidLiveView("INVALID_QUERY", err.Error())
 	}
 	spec.project = project
 	spec.key = evalsView + "|" + project + "|" + named + "|" + spec.query.Encode()
 	return nil
+}
+
+// evalsQuery is the query an evals view's read sends GET /api/v1/projects/{key}/evals at now: the
+// view's own query, with its window's from and to, a preset's ending at now.
+func (spec deliveryLiveSpec) evalsQuery(now time.Time) url.Values {
+	from, to := spec.from, spec.to
+	if spec.preset > 0 {
+		from, to = now.Add(-spec.days()), now
+	}
+	query := maps.Clone(spec.query)
+	query.Set("from", from.Format(time.RFC3339Nano))
+	query.Set("to", to.Format(time.RFC3339Nano))
+	return query
 }
 
 // readLiveProject reads the project a view names, as the project routes read the key in their

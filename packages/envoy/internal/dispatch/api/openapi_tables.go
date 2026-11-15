@@ -104,6 +104,7 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.SessionGroup{}):              "DeliverySessionGroup",
 	reflect.TypeOf(measures.Spread{}):                    "DeliverySpread",
 	reflect.TypeOf(measures.Targets{}):                   "DeliveryTargets",
+	reflect.TypeOf(measures.Target{}):                    "DeliveryTarget",
 	reflect.TypeOf(measures.Timing{}):                    "DeliveryTiming",
 	reflect.TypeOf(measures.Cell{}):                      "DeliveryTimingCell",
 	reflect.TypeOf(measures.Day{}):                       "DeliveryTimingDay",
@@ -128,6 +129,8 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(evals.Error{}):       "EvalReadingsRefusal",
 	reflect.TypeOf(evals.RowError{}):    "EvalRowRefusal",
 	reflect.TypeOf(evals.Statistics{}):  "EvalStatistics",
+	reflect.TypeOf(evals.Verdict{}):     "EvalVerdict",
+	reflect.TypeOf(evals.Judge{}):       "EvalJudge",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an
