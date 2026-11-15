@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as headlessModule from "@legion/proof-editor/headless";
+import type { Node as ProseMirrorNode } from "prosemirror-model";
 
-import serverBlockSchema from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
+import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { fixture, type PmdocFixture } from "../../__tests__/pmdoc-fixtures";
-import type { BlockSchema } from "../../api/types";
-import * as schemaModule from "../doc/schema";
 import {
+  forgetTheEngine,
   loadedEngine,
   type MarkdownRendering,
   parseAheadOfTheRender,
@@ -17,23 +17,57 @@ import {
 import { markdownWorkerThreshold } from "./markdown-worker-threshold";
 import { flushTasks, installFakeParseWorker, restoreParseWorker } from "./parse-worker-fixture";
 
-const blockSchema = serverBlockSchema as unknown as BlockSchema;
-
 /** Renders `markdown` through the shared engine as a surface would, under `rawHtml` (`"refuse"`,
- *  as a document takes it, by default), and answers the parsed document's plain text, or
- *  `undefined` where the engine answered nothing for it. */
-function parseThroughSharedEngine(
+ *  as a document takes it, by default), and answers the parsed document, or `undefined` where the
+ *  engine answered nothing for it. */
+function parsedThroughSharedEngine(
   markdown: string,
   rawHtml: RawHtml = "refuse"
-): Promise<string | undefined> {
-  const { promise, resolve } = Promise.withResolvers<string | undefined>();
+): Promise<ProseMirrorNode | undefined> {
+  const { promise, resolve } = Promise.withResolvers<ProseMirrorNode | undefined>();
   // A text Dispatch does not store carries no tree, so this is the parsing path.
   renderWithEngine(markdown, undefined, "space", rawHtml, ({ engine }) => {
-    const doc = engine?.parse(markdown, "space", rawHtml);
-    resolve(doc === undefined ? undefined : doc.textBetween(0, doc.content.size, " ", " "));
+    resolve(engine?.parse(markdown, "space", rawHtml));
   });
   return promise;
 }
+
+/** The plain text of `markdown` parsed through the shared engine under `rawHtml`, or `undefined`
+ *  where the engine answered nothing for it. */
+async function parseThroughSharedEngine(
+  markdown: string,
+  rawHtml: RawHtml = "refuse"
+): Promise<string | undefined> {
+  const doc = await parsedThroughSharedEngine(markdown, rawHtml);
+  return doc === undefined ? undefined : doc.textBetween(0, doc.content.size, " ", " ");
+}
+
+// During a release the process that answers the page can be of the other build, and its schema
+// route names that build's manifest. The engine parses with the manifest this page was built
+// with, so a typed block that manifest declares reads as that block whatever the route would say,
+// and the engine asks no server for a schema.
+test("the engine parses with the manifest the page was built with and reads none from the server", async () => {
+  const realFetch = globalThis.fetch;
+  const schemaReads: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = input.toString();
+    if (path.startsWith("/api/v1/schema/blocks")) {
+      schemaReads.push(path);
+      return Response.json({ ...manifest, types: [], version: manifest.version + 1 });
+    }
+    return realFetch(input, init);
+  }) as unknown as typeof fetch;
+
+  try {
+    const doc = await parsedThroughSharedEngine(':::callout{kind="warning"}\nRead this.\n:::\n');
+    expect(doc?.firstChild?.type.name).toBe("callout");
+    expect(doc?.firstChild?.attrs.kind).toBe("warning");
+    expect(doc?.textContent).toBe("Read this.");
+    expect(schemaReads).toEqual([]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
 
 /**
  * What `parseThroughSharedEngine` must answer for `entry`, derived from the table's own reading
@@ -77,19 +111,14 @@ const unrelatedBodies = [
 // no longer do), so it drives the recovery this test guards; removing the drop-on-throw in
 // `@legion/proof-editor`'s headless parser fails the assertions after the refused parse.
 test("a parse the engine refuses leaves the next parses of unrelated text intact", async () => {
-  const load = spyOn(schemaModule, "loadBlockSchema").mockResolvedValue(blockSchema);
-  try {
-    const warm = fixture("emphasis");
-    expect(await parseThroughSharedEngine(warm.markdown)).toBe(wholeText(warm));
-    // A span of a mark kind this schema has no parser for: the parser throws mid-paragraph.
-    expect(
-      await parseThroughSharedEngine('see <span data-dispatch="bogus">this</span> now')
-    ).toBeUndefined();
-    for (const entry of unrelatedBodies) {
-      expect(await parseThroughSharedEngine(entry.markdown), entry.name).toBe(wholeText(entry));
-    }
-  } finally {
-    load.mockRestore();
+  const warm = fixture("emphasis");
+  expect(await parseThroughSharedEngine(warm.markdown)).toBe(wholeText(warm));
+  // A span of a mark kind this schema has no parser for: the parser throws mid-paragraph.
+  expect(
+    await parseThroughSharedEngine('see <span data-dispatch="bogus">this</span> now')
+  ).toBeUndefined();
+  for (const entry of unrelatedBodies) {
+    expect(await parseThroughSharedEngine(entry.markdown), entry.name).toBe(wholeText(entry));
   }
 });
 
@@ -214,14 +243,14 @@ describe("the answer cache and the raw-HTML policy", () => {
   });
 });
 
-// What the warm-up is for, and what it is not. It loads the schema and the headless chunk and
-// builds the engine from them, early, where nothing waits; it parses nothing. It used to take
-// a body of its own through the fresh engine, so that the first parse's parser build - 469 ms
-// of a React commit on a phone at 4x CPU throttling (dispatch://INFRA-341, R11) - was spent
-// off every commit. That parse is gone: a page that draws stored texts parses no markdown at
-// all now (`e2e/parse-count.e2e.ts` counts the parses of fifteen surfaces and holds every one
-// of them to zero), and the one body still parsed on R11's own path is parsed off the commit
-// by `parseAheadOfTheRender` below. This row is what keeps the load silent.
+// What the warm-up is for, and what it is not. It loads the headless chunk and builds the engine
+// from it and the manifest the page was built with, early, where nothing waits; it parses
+// nothing. It used to take a body of its own through the fresh engine, so that the first parse's
+// parser build - 469 ms of a React commit on a phone at 4x CPU throttling (dispatch://INFRA-341,
+// R11) - was spent off every commit. That parse is gone: a page that draws stored texts parses
+// no markdown at all now (`e2e/parse-count.e2e.ts` counts the parses of fifteen surfaces and
+// holds every one of them to zero), and the one body still parsed on R11's own path is parsed off
+// the commit by `parseAheadOfTheRender` below. This row is what keeps the load silent.
 describe("the engine's warm-up", () => {
   test("builds the engine without parsing anything, so a page that draws trees parses nothing", async () => {
     const built = headlessModule.createHeadlessProof;
@@ -238,12 +267,9 @@ describe("the engine's warm-up", () => {
         };
       }
     );
-    // A schema version of its own, so the warm-up builds an engine rather than being answered
-    // with the one an earlier row left behind (`engines`, keyed by the schema's version).
-    const load = spyOn(schemaModule, "loadBlockSchema").mockResolvedValue({
-      ...blockSchema,
-      version: blockSchema.version + 1,
-    });
+    // An engine of its own, so the warm-up builds one rather than being answered with the one an
+    // earlier row left behind: a page builds one engine and keeps it.
+    forgetTheEngine();
     try {
       await warmMarkdownRenderer();
 
@@ -252,7 +278,7 @@ describe("the engine's warm-up", () => {
       expect(loadedEngine()).toBeDefined();
     } finally {
       create.mockRestore();
-      load.mockRestore();
+      forgetTheEngine();
     }
   });
 });
@@ -279,12 +305,9 @@ describe("a body parsed ahead of the render", () => {
         };
       }
     );
-    // A schema version of its own, so this row builds an engine of its own rather than being
-    // answered with one an earlier row left behind (`engines`, keyed by the schema's version).
-    const load = spyOn(schemaModule, "loadBlockSchema").mockResolvedValue({
-      ...blockSchema,
-      version: blockSchema.version + 2,
-    });
+    // An engine of its own, so this row builds one rather than being answered with one an
+    // earlier row left behind: a page builds one engine and keeps it.
+    forgetTheEngine();
     const body = "# The lease ledger\n\nThe paragraph a reader meets first.\n";
     try {
       await parseAheadOfTheRender(body);
@@ -308,7 +331,7 @@ describe("a body parsed ahead of the render", () => {
       }
     } finally {
       create.mockRestore();
-      load.mockRestore();
+      forgetTheEngine();
     }
   });
 });

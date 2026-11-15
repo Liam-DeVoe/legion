@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import * as Y from "yjs";
 
 import { bindRemoteMarks, constructEditor, editorAttributes, type StoredMark } from "./editor";
-import { blockSchemaCache } from "./schema";
+import { compiledBlockSchema } from "./schema";
 
 test("editorAttributes expose the editor as a multiline textbox", () => {
   expect(editorAttributes).toEqual({
@@ -46,12 +46,11 @@ function replaceSuggestion(status: "pending" | "accepted"): StoredMark {
 test("bindRemoteMarks keeps an accepted suggestion's text when its projection arrives in the same update", async () => {
   const { browser, server } = linkedDocs();
   const root = document.body.appendChild(document.createElement("div"));
-  const blockSchema = await blockSchemaCache.load(() => Promise.reject(new Error("no schema")));
   // The document is in hand, so the two phases run back to back (`constructEditor`).
   const handle = await (
     await constructEditor(root, {
       awareness: null,
-      blockSchema,
+      blockSchema: compiledBlockSchema,
       // This row reads the marks binding, never the document's decision blocks.
       onAskBlockHosts: () => {},
       // No picture in this row's document, so nothing ever asks for a latest version.
@@ -97,11 +96,10 @@ test("bindRemoteMarks keeps an accepted suggestion's text when its projection ar
 // what it holds for a reader who never sees it.
 test("a document keeps an inline HTML comment byte for byte when another block is edited", async () => {
   const root = document.body.appendChild(document.createElement("div"));
-  const blockSchema = await blockSchemaCache.load(() => Promise.reject(new Error("no schema")));
   const handle = await (
     await constructEditor(root, {
       awareness: null,
-      blockSchema,
+      blockSchema: compiledBlockSchema,
       // This row reads what a save writes back, never the document's decision blocks.
       onAskBlockHosts: () => {},
       // No picture in this row's document, so nothing ever asks for a latest version.

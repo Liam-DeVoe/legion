@@ -74,13 +74,14 @@ const issue: IssueDetails = {
 const text: ArtifactText = { markdown: "# The lease ledger\n", token: "", version: null };
 
 // What a document address starts before any page has rendered: the two chunks the document's
-// editor is built from, and the schema its surface draws with and its socket is admitted
-// under. Each is bytes that arrive while the page renders, and each used to wait for
-// `ProofDocument`'s admission - the editor's half of the load began 5,920 ms into a throttled
-// phone's (dispatch://INFRA-341, R11). The socket is not among them, by measurement: opened
-// from here it put the sync's apply and the editor's build in front of the page's own draw of
-// the document, which is the draw the reader reads while they wait (`openDocumentEarly`).
-test("a document address asks for the transport chunk, the editor chunk and the block schema", async () => {
+// editor is built from. Each is bytes that arrive while the page renders, and each used to wait
+// for `ProofDocument`'s admission - the editor's half of the load began 5,920 ms into a throttled
+// phone's (dispatch://INFRA-341, R11). The block schema is not among them: the page carries the
+// manifest it was built with (`compiledBlockSchema`) and reads none. The socket is not among them
+// either, by measurement: opened from here it put the sync's apply and the editor's build in
+// front of the page's own draw of the document, which is the draw the reader reads while they
+// wait (`openDocumentEarly`).
+test("a document address asks for the transport chunk and the editor chunk", async () => {
   // The asks themselves are what this row reads, so each is held where it is made: the chunks
   // behind them are the browser's business, and the transport's connect is never called here.
   const transport = spyOn(connection, "loadDocumentTransport").mockImplementation(() =>
@@ -102,7 +103,6 @@ test("a document address asks for the transport chunk, the editor chunk and the 
 
     expect(transport).toHaveBeenCalled();
     await waitFor(() => expect(editorChunk).toHaveBeenCalled());
-    await waitFor(() => expect(client.getQueryData(["block-schema"])).toBeDefined());
     // And the read the document's own admission takes, which is the schema admission check the
     // socket it opens waits for: made here, so the reader's text is downloaded once.
     await waitFor(() => expect(takeEarlyTextRead(artifact.id)).toBeDefined());

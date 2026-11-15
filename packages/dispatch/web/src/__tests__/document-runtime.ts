@@ -65,6 +65,8 @@ interface FakeConnection extends DocumentConnection {
 
 export interface FakeDocumentRuntime {
   admit(readOnly: boolean): void;
+  /** What the page asked of each connection it opened, in order. */
+  callbacks: ConnectionCallbacks[];
   connections: FakeConnection[];
   /** Every editor the host has built, in order, bound or not: the real one is constructed
    *  while its socket syncs and bound when the state frame has been applied
@@ -84,21 +86,6 @@ export interface FakeDocumentRuntime {
   sync(): void;
   text: string;
 }
-
-const blockSchema = {
-  types: [
-    {
-      attributes: {
-        kind: { choices: ["note", "warning"], default: "note", kind: "enum" as const },
-        title: { default: "", kind: "string" as const },
-      },
-      content: "paragraph+" as const,
-      name: "callout",
-      render: "host" as const,
-    },
-  ],
-  version: 1,
-};
 
 /** The words of a document as JSON, its top-level blocks a line each: what the fake editor puts
  *  into its root for a document the host drew, as `setMarkdown` puts the markdown it was
@@ -290,6 +277,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         callback.onAdmission(readOnly);
       }
     },
+    callbacks,
     connections,
     constructions,
     editors,
@@ -304,11 +292,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
     refuse() {
       callbacks.at(-1)?.onOutsideSchema();
     },
-    runtime: {
-      blockSchema,
-      constructEditor,
-      loadTransport: async () => connect,
-    },
+    runtime: { constructEditor, loadTransport: async () => connect },
     status(state) {
       for (const callback of callbacks) {
         callback.onStatus(state);

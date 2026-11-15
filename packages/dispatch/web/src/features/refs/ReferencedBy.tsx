@@ -11,6 +11,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useAfterTheFirstBatch } from "../doc/first-batch";
+import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { referenceTriggerProps } from "./ref-preview-state";
 import { referencesQuery } from "./reference-target";
@@ -47,6 +48,34 @@ const STRUCTURAL_LABELS: Partial<Record<GraphEdge["kind"], string>> = {
   replies_to: "Reply",
   serves: "served by",
 };
+
+/** Every structural edge kind the page renders: all the ones `GraphEdgeKind` names. */
+const RENDERED_EDGE_KINDS: Record<GraphEdge["kind"], true> = {
+  affects: true,
+  anchored_to: true,
+  answers: true,
+  attached_to: true,
+  blocked_by: true,
+  child_of: true,
+  depends_on: true,
+  followed_by: true,
+  mentions: true,
+  owned_by: true,
+  part_of: true,
+  replies_to: true,
+};
+
+/** The other kinds the page renders: the edge kinds the `block[]` attributes of the manifest
+ *  this page was built with make, each such attribute's name, as Go's `pmdoc.LinkKinds` reads
+ *  them. A kind only a newer build's manifest declares is not among them, so the page leaves it
+ *  out rather than draw it under another edge's label. */
+const MANIFEST_EDGE_KINDS = new Set(
+  compiledBlockSchema.types.flatMap((type) =>
+    Object.entries(type.attributes)
+      .filter(([, attribute]) => attribute.kind === "block[]")
+      .map(([name]) => name)
+  )
+);
 
 /** Beyond this the row clamps the excerpt and offers to expand it. The real clamp is CSS, so
  *  this is the text shape that makes a clamp likely rather than a measurement. */
@@ -229,14 +258,21 @@ export function ReferencedBy({
   // only once the reader opens it says so for its whole subtree (`ReaderIsHere` in
   // `features/issue/IssueHeader.tsx`), and the read goes out then.
   const query = useQuery({ ...referencesQuery(reference), enabled: useAfterTheFirstBatch() });
-  const groups = groupBySource(query.data?.edges ?? []);
+  // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
+  // end, that this page does not know; the page leaves such an edge out rather than draw it under
+  // another edge's label.
+  const edges = query.data?.edges?.filter(
+    (edge) =>
+      (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
+      Object.hasOwn(NODE_LABELS, edge.node.kind)
+  );
+  const groups = groupBySource(edges ?? []);
 
   return (
     <section aria-label="Referenced by" className={`space-y-2 ${className ?? ""}`} id={toggle?.id}>
       {toggle === undefined ? (
         <h3 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
-          Referenced by
-          {query.data === undefined ? "" : ` (${(query.data.edges ?? []).length})`}
+          Referenced by{edges === undefined ? "" : ` (${edges.length})`}
         </h3>
       ) : null}
       {query.isPending ? (
@@ -255,7 +291,7 @@ export function ReferencedBy({
           </button>
         </p>
       ) : null}
-      {(query.data?.edges ?? []).length === 0 ? (
+      {edges?.length === 0 ? (
         <p className={`text-sm ${textMutedOnSurface}`}>Nothing references this yet.</p>
       ) : null}
       {groups.length === 0 ? null : (

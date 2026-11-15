@@ -39,13 +39,13 @@ import { expect, type Page } from "@playwright/test";
 import * as Y from "yjs";
 
 import { FRAGMENT_NAME } from "../web/src/features/doc/roots";
+import { compiledBlockSchema, compiledSchemaCreatable } from "../web/src/features/doc/schema";
 import {
   baseUrl,
   createIssue,
   createIssueArtifact,
   createProject,
   getArtifactBlocks,
-  getBlockSchema,
   sessionCookie,
 } from "./api";
 import { theMomentThePageReached } from "./large-documents-page";
@@ -458,18 +458,21 @@ export interface ThePenIsMadeOf {
  * the editor's own keymaps, Enter and Backspace, and keep their page.)
  *
  * **How he joins.** The stack her page connects with (`web/src/features/doc/connection.ts`): a
- * `HocuspocusProvider` over a `Y.Doc` of his own, on `/ws/doc/<artifactId>`, carrying the
- * `schema_version` the server itself answers (`getBlockSchema`) as that parameter and as its
- * token, since a client presenting any other version is admitted read-only (`schemaReadOnly`,
- * `docs/socket_admission.go`) and a writer who cannot write would leave a row reading a window
- * no word ever reached. The room takes a signed-in person's cookie and no bearer at all
- * (INFRA-264), so he carries bob's, in the header Node's own `WebSocket` takes where the
- * browser's takes sub-protocols - which is the whole of the polyfill below. He is ready once
- * the room has authenticated him and his copy has synced, which is the admission
- * `connection.ts` itself waits for, so he holds the document before her page loads.
+ * `HocuspocusProvider` over a `Y.Doc` of his own, on `/ws/doc/<artifactId>`, presenting what her
+ * page presents, from the same manifest her build compiled in (`compiledBlockSchema` and
+ * `compiledSchemaCreatable`, `web/src/features/doc/schema.ts`): `schema_version` (V) and
+ * `schema_creatable` (R) as parameters, and V alone as his token, as `connection.ts` sends it. He
+ * is another reader of the same build, so he reads no schema from the server, as her page reads
+ * none; numbers the live servers do not admit get a read-only admission
+ * (`packages/envoy/cmd/dispatch/README.md`, "Two builds at once"), and a writer who cannot write
+ * would leave a row reading a window no word ever reached. The room takes a signed-in person's
+ * cookie and no bearer at all (INFRA-264), so he carries bob's, in the header Node's own
+ * `WebSocket` takes where the browser's takes sub-protocols - which is the whole of the polyfill
+ * below. He is ready once the room has authenticated him and his copy has synced, which is the
+ * admission `connection.ts` itself waits for, so he holds the document before her page loads.
  *
  * **What a refused admission leaves.** Nothing. A room that admits him read-only - a closed
- * issue, a schema version that is not the server's - or that refuses him outright is the one
+ * issue, schema numbers the live servers do not admit - or that refuses him outright is the one
  * path on which he never returns a `close` for his caller to call, so the three things he is
  * made of are destroyed here before the refusal is rethrown. Left alive, his provider would go
  * on reconnecting to that room beside every row that follows, on a socket and a `Y.Doc` nobody
@@ -501,7 +504,7 @@ export async function theOtherPersonsPen(
   { made, theirWords }: { made?: (parts: ThePenIsMadeOf) => void; theirWords?: string } = {}
 ): Promise<TheOtherPersonsPen> {
   const cookie = await sessionCookie("bob");
-  const { version } = await getBlockSchema();
+  const version = compiledBlockSchema.version;
   const sent: Record<string, number> = {};
   const theirs = theirWords === undefined ? undefined : new RegExp(theirWords, "g");
   const read = new TextDecoder();
@@ -527,7 +530,7 @@ export async function theOtherPersonsPen(
       }
     },
     connect: false,
-    parameters: { schema_version: version },
+    parameters: { schema_creatable: compiledSchemaCreatable, schema_version: version },
     url: `${baseUrl.replace(/^http/, "ws")}/ws/doc/${encodeURIComponent(artifactId)}`,
   });
   const admitted = Promise.withResolvers<void>();
@@ -545,12 +548,12 @@ export async function theOtherPersonsPen(
     name: artifactId,
     onAuthenticated: () => {
       // The scope the room admitted him on, as the page reads it (`isSchemaReadOnly`): a
-      // read-only admission is a closed issue or a schema version that is not the server's,
+      // read-only admission is a closed issue or schema numbers the live servers do not admit,
       // and either leaves a window no word of his could reach.
       if (provider.authorizedScope === "readonly") {
         admitted.reject(
           new Error(
-            `the document's room admitted this writer read-only at schema version ${version}`
+            `the document's room admitted this writer read-only at schema version ${version}, creatable ${compiledSchemaCreatable}`
           )
         );
         return;

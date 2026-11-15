@@ -1,13 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-  type ReactNode,
-  type RefObject,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
@@ -18,8 +10,6 @@ import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
 import { moveTheBox } from "../doc/readers-place";
-import { DocumentRuntime } from "../doc/runtime";
-import { blockSchemaQueryOptions } from "../doc/schema";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -164,9 +154,6 @@ function ApprovalBody({
   const settled = useSettled(artifactId);
   const approvedVersion = approval.approved?.version;
 
-  const { blockSchema: runtimeBlockSchema } = useContext(DocumentRuntime);
-  const blockSchemaQuery = useQuery(blockSchemaQueryOptions());
-  const blockSchema = runtimeBlockSchema ?? blockSchemaQuery.data;
   const user = useQuery(whoAmIQuery()).data;
   const artifactQuery = useQuery({ ...artifactQueryOptions(artifactId), enabled: settled });
   // The version the request is marked against: the document's last approval by any person, read
@@ -315,7 +302,6 @@ function ApprovalBody({
             // what was decided in them, and a column the reader flips through with `j` reads no
             // list of the document's asks to name their askers.
             asks={[]}
-            blockSchema={blockSchema}
             changeBaseline={changeBaseline}
             createdAt={
               (artifact.versions ?? []).find((version) => version.number === latestVersion)

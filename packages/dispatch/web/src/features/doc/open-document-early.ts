@@ -12,7 +12,6 @@ import { leadingBlocks } from "./document-blocks";
 import { theDocumentIsOnThePage, theFirstBatchIsAwaited } from "./first-batch";
 import { currentAddress, dropFirstScreen, firstScreenAwaits } from "./first-screen";
 import { liveTextQueryOptions } from "./live-text";
-import { blockSchemaQueryOptions } from "./schema";
 
 /** The document an address opens, as the issue names it: the artifact a named slug names, else
  *  the issue's primary spec. `undefined` for a blob, and for a slug this issue has no artifact
@@ -27,8 +26,8 @@ function documentOf(issue: IssueDetails, route: IssueRoute): Artifact | undefine
 
 /**
  * Starts what an open document needs, from the address alone, as early as the page knows it:
- * the issue, the document's own text, the block schema, and the two chunks its editor is
- * built from.
+ * the issue, the document's own text, and the two chunks its editor is built from. The block
+ * schema is no read: the page carries the manifest it was built with (`compiledBlockSchema`).
  *
  * It exists because of what those reads used to wait behind. The document's first fetch began
  * about 3.5 s after the issue's own answer arrived on a phone, because nothing asked for it
@@ -130,9 +129,6 @@ export function openDocumentEarly(client: QueryClient, pathname: string, search:
   // editor's module brings the document surface's chunk with it, which this task has no other
   // use for.
   void import("./editor").then(({ loadEditor }) => loadEditor()).catch(() => undefined);
-  // The schema the surface draws with and the socket is admitted under, read here for the same
-  // reason: the page's own read of it finds it read (`blockSchemaQueryOptions`).
-  void client.fetchQuery(blockSchemaQueryOptions()).catch(() => undefined);
   // The text itself, where the address names the document: `/issues/{key}/artifacts/{slug}`
   // names it as Dispatch's own route does, so the bytes a reader reads are asked for in the
   // first round trip rather than the second, and `web/index.html` has usually asked for them
