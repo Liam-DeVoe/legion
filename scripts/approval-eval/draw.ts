@@ -130,12 +130,12 @@ Options:
   --backlog-roots <file>  The roots carrying the legion label that stand on the backlog or in
                           icebox, read from this file rather than from Dispatch. The shape is
                           the one draw.json writes, so an earlier draw's draw.json names its
-                          own list. With --seed, this makes a re-run reproduce that draw from
-                          the corpus alone.
+                          own list.
   --issue-trees <file>    The parent of each issue the corpus names, read from this file rather
                           than from Dispatch. The shape is the one draw.json writes, so an
                           earlier draw's draw.json names its own trees. Every issue the corpus
-                          names must be in it.
+                          names must be in it. With --seed and --backlog-roots, this makes a
+                          re-run reproduce that draw from the corpus alone.
   --cache <dir>           Where the never-decide rule's answers are kept between runs. Without
                           it every case is asked of the model again.
 
