@@ -369,12 +369,13 @@ start it by hand. Without `answeredAt`, check, in order:
    turn, wakes it once nothing else is with the person. An agent's answer or resolution of another
    ask never wakes it, nor does a person's act from before the wait began.
 2. **The hand-over label.** A root whose `legion` label was taken off is not resumed: the daemon
-   takes it out of the workflow (`phase: done`) and tells the controller `unslotted`. Put the label
-   back and set the root to `todo` to queue it again.
+   takes it out of the workflow (`phase: done`) and tells nobody; `legion state` shows the root at
+   `phase: done` beside the status it ran with. Put the label back and set the root to `todo` to
+   queue it again.
 3. **The Dispatch claim.** `dispatch read <KEY>` shows `Claimed by:`. A claim held by a person or a
-   session outside the tree stops the resume and takes the root out of the workflow the same way,
-   with an `unslotted` notice: Legion never resumes work another owner took. Release the claim,
-   then `todo` with the label queues the root again.
+   session outside the tree stops the resume and takes the root out of the workflow the same way:
+   Legion never resumes work another owner took. Release the claim, then `todo` with the label
+   queues the root again.
 4. **An answer the daemon never saw.** When `dispatch read <KEY>` shows the person already
    answered after `since` and none of the above holds, the answer's event never reached the
    daemon, and nothing re-reads a waiting root's asks until the next boot. Restarting the daemon
@@ -495,9 +496,11 @@ ended this claim's turn: <cause>`, where the cause names that status, and the ho
 architect's to retry or escalate as any held phase is. The claim's own record carries that
 failure under the cause word `provider_error`, with the same sentence as its `detail`.
 
-**After six turns of one claim in a row have ended in a provider error**, the project's controller
-is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
-(`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
+**After six turns of one claim in a row have ended in a provider error**, the issue's architect
+and the project's controller are each told once, as `provider-errors on <KEY>`, with the run,
+the model and the cause
+(`supervise: a run of turns that ended in a provider error; the controller is told`). A run of an
+architect's own claim is told to the controller alone. Nothing is
 held and nothing is stopped by that count: the task is still kept and still sent again. The run
 goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
 compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one

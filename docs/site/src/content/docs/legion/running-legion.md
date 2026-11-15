@@ -702,7 +702,7 @@ What each part is for:
   death with work outstanding — so a worker it ends keeps its supervision budgets. The issue's
   architect is told what the record held: how long the agent was silent, the bound it passed, when
   the turn began, and the call the record names, if any. A tree architect's own stall is told to
-  the controller as well.
+  the controller as well only when the replacement failed that architect's claim.
 
   A role the file leaves out runs on twice its own worker's bound for a tool call no deadline
   judges — 8 hours for an implementer and a reviewer, 2 for every other role and the controller —

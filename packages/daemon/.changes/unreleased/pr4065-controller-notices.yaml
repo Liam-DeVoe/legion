@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  The daemon sends the project's controller no notice that its skill does nothing for, and no copy
+  of a notice that the issue's architect already gets. It no longer sends `awaiting-person` or
+  `unslotted`; the controller reads a root that waits on a person, or that left the workflow,
+  from `legion state`. It no longer copies to the controller a `held` whose budget ran out, a
+  `session-lost`, the `worker-died` of a tree's architect whose root is `done`, or the
+  `worker-stalled` of a tree's architect whose claim did not fail. An escalated `held`, the
+  `worker-died` of a tree's architect whose root is not `done`, and `session-store-fault` still
+  reach the controller. A `provider-errors` notice now goes to the issue's architect as well, as a
+  notice that wakes an architect whose pod was released; a run of an architect's own claim still
+  goes to the controller alone. A store migration deletes the queued controller notices of the two
+  kinds that no release writes now. Before you roll back to an
+  earlier release, stop the daemon and run the steps of `docs/kubernetes.md`, "Rolling back the
+  release whose controller and architects hold claims and whose daemon tells a held role of a
+  merge hold".

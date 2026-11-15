@@ -854,21 +854,24 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 }
 
 // claimFailed holds the issue whose phase worker's claim failed — a budget ran out — and tells the
-// architect and the controller of the hold; the worker-died that comes with it is the architect's
-// alone. The tree's architect failing holds nothing, since a phase is its worker's; it is told as a
-// worker-died of the architect, lingering or not, and the controller hears it from a row of its
-// own, because every other notice of the tree reaches that architect and nobody inside the tree is
-// left to act on its own. That is why the architect's branch comes before the lingering tree's
-// guard. The row sent to the architect's own role finishes undelivered once its claim has failed
-// (the daemon's notice executor).
+// architect of the hold and of the worker-died that comes with it. The controller is told
+// neither: the hold is the architect's to retry or escalate, and only the escalation reaches the
+// controller (retryOrEscalate). The tree's architect failing holds nothing, since a phase is its
+// worker's; it is told as a worker-died of the architect, lingering or not, and while the root is
+// not done the controller hears it from a row of its own, because every other notice of the tree
+// reaches that architect and nobody inside the tree is left to act on its own. A root that is
+// done is parked, lingers or is closed, and the controller does nothing for it, so that copy is
+// not written (dispatch://INFRA-2709, R21). That is why the architect's branch comes before the
+// lingering tree's guard. The row sent to the architect's own role finishes undelivered once its
+// claim has failed (the daemon's notice executor).
 //
-// The hold, the copy of it the controller reads and the worker-died beside them name the failure
-// the fact carries: the one word for what failed the claim, the sentence written beside it and
-// the four counts the failure left, each against the limit it ran out at (noticeFailure). The
-// worker-died of a role that does not work the issue's phase names it too, since that role's
-// architect decides whether to start it again on the same evidence. The tree architect's own
-// worker-died names none: nobody inside the tree is left to read it, and the operator who
-// relaunches that architect reads the claim's own record (api.ClaimFailureView).
+// The hold and the worker-died beside it name the failure the fact carries: the one word for
+// what failed the claim, the sentence written beside it and the four counts the failure left,
+// each against the limit it ran out at (noticeFailure). The worker-died of a role that does not
+// work the issue's phase names it too, since that role's architect decides whether to start it
+// again on the same evidence. The tree architect's own worker-died names none: nobody inside the
+// tree is left to read it, and the operator who relaunches that architect reads the claim's own
+// record (api.ClaimFailureView).
 //
 // A child's sub-architect works no phase and holds none: the operator starts it, and no transition
 // or admission ever starts an architect below the tree's root. Its claim failing holds nothing and
@@ -892,7 +895,11 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase})
+		died := record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase}
+		if issue.Phase == phase.Done {
+			return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
+		}
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, died)
 	}
 	if fact.Role == claim.RoleArchitect {
 		return intake.Result{}, nil
@@ -950,7 +957,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
-	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from,
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from,
 		Failure: failure}); err != nil {
 		return intake.Result{}, err
 	}
@@ -958,12 +965,13 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		Failure: failure})
 }
 
-// sessionLost tells the issue, its architect and the controller that a worker's recorded session
-// is in no session store any more, so the agent working the issue now has read none of its own
-// earlier work: it runs from a fresh session, and only what it pushed and committed survives.
-// Nothing of the issue moves — the worker is running — and nothing is held: the report is the
-// whole point, since a worker that lost its memory is otherwise indistinguishable from one that
-// is merely slow. An issue the record does not hold tells nobody.
+// sessionLost tells the issue and its architect that a worker's recorded session is in no session
+// store any more, so the agent working the issue now has read none of its own earlier work: it
+// runs from a fresh session, and only what it pushed and committed survives. Nothing of the issue
+// moves — the worker is running — and nothing is held: the report is the whole point, since a
+// worker that lost its memory is otherwise indistinguishable from one that is merely slow. The
+// controller gets no copy: the architect is the one who acts on it, and a person reads the issue
+// (dispatch://INFRA-2709, R21). An issue the record does not hold tells nobody.
 //
 // The detail is the runtime's own account of the failed resume, which carries a session file name
 // and a transport error from outside the daemon, and this sentence is read into an agent's
@@ -981,7 +989,7 @@ func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.Session
 		return intake.Result{}, err
 	}
 	e.warnOnCommit(ctx, "workflow: a worker's recorded session was in no session store", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
-	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{
 		Kind: "session-lost", Role: fact.Role, Phase: issue.Phase, Reason: told})
 }
 
@@ -1010,8 +1018,8 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 // each against the limit it ran out at (record.NoticeFailure). Deaths are measured against the
 // launch failure limit, as the supervisor measures them (supervise.Limits).
 //
-// The hold, the copy of it the controller reads and the worker-died are built from this one
-// value, so the three cannot name the same failure differently. It is nil for a fact carrying no
+// The hold and the worker-died are built from this one value, so the two cannot name the same
+// failure differently. It is nil for a fact carrying no
 // cause — a failure recorded before the daemon kept one, replayed at a boot — and such a notice
 // carries no failure record at all rather than a record of zeroes, which would read as a claim
 // that failed with every budget untouched.

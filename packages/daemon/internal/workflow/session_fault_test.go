@@ -28,9 +28,11 @@ func controllerNoticeKinds(t *testing.T, pool *pgxpool.Pool) []string {
 	return outboxStrings(t, pool, "select payload->>'kind' from outbox where kind = 'controller_notice' and issue = $1 order by id", "LEGION-209")
 }
 
-// A lost session is posted on the issue and told to its architect and to the controller: the
-// worker is running, so nothing is held, and the report is the whole point.
-func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing.T) {
+// A lost session is posted on the issue and told to its architect, and the controller is told
+// nothing: the worker is running, so nothing is held, and the architect is the one who acts on the
+// report. A copy to the controller would only tell it what the architect already hears
+// (dispatch://INFRA-2709, R21).
+func TestALostSessionIsToldOnTheIssueAndToItsArchitectAlone(t *testing.T) {
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
 
@@ -48,12 +50,13 @@ func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing
 	if reason, told := noticeKindReasons(t, pool, "LEGION-209")["session-lost"]; !told || !strings.Contains(reason, "fresh agent") {
 		t.Fatalf("the architect was told %q, want a session-lost notice saying a fresh agent runs", reason)
 	}
-	if got := controllerNoticeKinds(t, pool); len(got) != 1 || got[0] != "session-lost" {
-		t.Fatalf("the controller was told %v, want the lost session", got)
+	if got := controllerNoticeKinds(t, pool); len(got) != 0 {
+		t.Fatalf("the controller was told %v, want nothing: the lost session is its architect's", got)
 	}
 }
 
-// A session store that cannot be asked is told the same way, and holds no phase: the claim keeps
+// A session store that cannot be asked is posted on the issue and told to the controller, which
+// opens a finding ask for the operator who owns the store, and it holds no phase: the claim keeps
 // its session and the daemon keeps trying.
 func TestASessionStoreFaultIsToldOnTheIssueAndToTheController(t *testing.T) {
 	pool := migratedPool(t)

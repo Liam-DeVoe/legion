@@ -11,7 +11,7 @@ import (
 
 // Where the waiting line puts an issue whose work came back is shipped text, so the fragment is
 // read from the source it is declared in (record.WaitingLineBand) rather than written out again
-// here. The sixteen files below carry the eighteen texts that state it — AGENTS.md and admit.go
+// here. The fifteen files below carry the seventeen texts that state it — AGENTS.md and admit.go
 // carry two each — and one loop runs both checks over each file: the fragment's presence, and
 // the ban below. Presence reads the fragment and nothing else: whether the sentence around it
 // is true is a reader's to judge, never this loop's, so green here is coverage and not
@@ -22,8 +22,10 @@ import (
 // record.WaitingLineBand, with a tree root's own first phase placed at the moment its gate
 // opened, and never the position that placement gives an issue, which depends on what else waits
 // (record.Waiting, record/project.go). The ban is what that rule needed. It runs over the
-// sixteen files of the one list this test holds, which is every file that states the placement
-// at all.
+// fifteen files of the one list this test holds, which is every file that states the placement
+// at all. The controller's wakes reference left the list with its `awaiting-person` section: the
+// daemon sends that wake no more (dispatch://INFRA-2709, R21), and nothing else in it states the
+// placement.
 //
 // Presence alone let a position claim through: AGENTS.md carried record.WaitingLineBand word for
 // word in a sentence about a root's own first phase, two lines below a sentence that claimed a
@@ -87,7 +89,6 @@ func TestTheShippedWordsNameTheWaitingLineBand(t *testing.T) {
 		"skills/legion-controller/references/admission.md",
 		"docs/site/src/content/docs/legion/concepts.md",
 		"skills/legion-architect/references/acceptance.md",
-		"skills/legion-controller/references/wakes.md",
 	}
 	// Lower case, since the text is lower-cased before the comparison: a sentence that opens on
 	// one of these is banned as the one that carries it mid-sentence is.

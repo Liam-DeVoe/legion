@@ -473,28 +473,47 @@ func TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused(t *testing.T) {
 	}
 }
 
-// A tree architect's own stall is told to the controller as well, in a row of its own: every
-// other notice of the tree reaches that architect, so nobody outside it would hear of the turn
-// the daemon ended. A worker's stall is its architect's alone.
-func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStall(t *testing.T) {
+// A tree architect's own stall is told to the controller as well, in a row of its own, only when
+// the stall's replacement failed the architect's claim: every other notice of the tree reaches
+// that architect, so nobody else would act on a failed one. Every other end leaves the task owed
+// to the architect and fails nothing, and the controller's skill does nothing for it, so that
+// stall is the architect's alone (dispatch://INFRA-2709, R21). A worker's stall is its architect's
+// alone whatever its end.
+func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStallOnlyWhenItFailedTheClaim(t *testing.T) {
 	rig := newBackstopRig(t)
 	root := rig.claim(claim.RolePlanner, "LEGION-220", backstopBound+time.Hour, true)
 	root.Role = claim.RoleArchitect
 	rig.s.cfg.WorkerStallBackstops[claim.RoleArchitect] = backstopBound
 	claims := rig.supervising(root)
 
+	// The backstop relaunches the stalled architect: the task is still owed to it, and the
+	// controller gets no copy.
 	rig.sweep(claims)
 
 	rig.awaitResumed(root.Token, 1)
 	rig.awaitNotices("LEGION-220", 1)
 	rows := rig.written("LEGION-220")
-	if len(rows) != 2 {
-		t.Fatalf("rows on the root issue = %+v, want the architect's notice and the controller's", rows)
+	if len(rows) != 1 {
+		t.Fatalf("rows on the root issue = %+v, want the architect's notice alone: a relaunched stall fails nothing", rows)
 	}
-	notice, isNotice := rows[0].(record.Notice)
-	controllers, isController := rows[1].(record.ControllerNotice)
+	if notice, isNotice := rows[0].(record.Notice); !isNotice || notice.Kind != "worker-stalled" {
+		t.Fatalf("rows = %+v, want a worker-stalled notice to the architect", rows)
+	}
+
+	// The end that failed the claim is told to the controller as well, as the same notice.
+	failed := supervise.StallBackstopStop{Step: root.Step, LastStep: root.Step.LastStep(), Bound: backstopBound,
+		End: supervise.EndFailed, LaunchFailures: 3}
+	if told := rig.s.tellStallBackstopped(context.Background(), root, failed); !told {
+		t.Fatal("the failed end of the architect's stall reports its owner untold, want it told")
+	}
+	rows = rig.written("LEGION-220")
+	if len(rows) != 3 {
+		t.Fatalf("rows after the failed end = %+v, want two more: the architect's notice and the controller's", rows)
+	}
+	notice, isNotice := rows[1].(record.Notice)
+	controllers, isController := rows[2].(record.ControllerNotice)
 	if !isNotice || !isController || notice.Kind != "worker-stalled" {
-		t.Fatalf("rows = %+v, want a worker-stalled notice and the controller's copy of it", rows)
+		t.Fatalf("rows = %+v, want a worker-stalled notice and the controller's copy of it", rows[1:])
 	}
 	if !reflect.DeepEqual(record.Notice(controllers), notice) {
 		t.Fatalf("the controller's copy = %+v, want the architect's own %+v", controllers, notice)
@@ -504,8 +523,8 @@ func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStall(t *testing.T) 
 	worker := rig.claim(claim.RoleTester, "LEGION-220", backstopBound+time.Hour, true)
 	rig.sweep(rig.supervising(worker))
 	rig.settled(worker)
-	rig.awaitNotices("LEGION-220", 2)
-	if rows := rig.written("LEGION-220"); len(rows) != 3 {
+	rig.awaitNotices("LEGION-220", 3)
+	if rows := rig.written("LEGION-220"); len(rows) != 4 {
 		t.Fatalf("rows after the worker's stall = %+v, want one more, the architect's alone", rows)
 	}
 }

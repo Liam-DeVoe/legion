@@ -141,23 +141,28 @@ const RoleTopicPrefix = "notifications.role."
 // ControllerTopic is the topic of project's controller, the one notice topic the daemon publishes
 // to; a workflow notice goes to the role topic of the architect that owns its issue instead (the
 // daemon's notice executor), since every issue's topic is a subject its phase workers subscribe
-// to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own:
-// every hold and a tree architect's own failed claim (workflow's noticeWithController), a root in
-// triage handed to Legion (admission), a root that keeps its admission slot while its architect
-// waits on a person (`awaiting-person`, workflow's enterAwaiting), a root admission took out of
-// the workflow because no tree of it runs and nothing would ever start it (`unslotted`, admit's
-// releaseUnslotted), a person's decision on a tree Legion is not running (`parked-decision`, the
-// outbox's parkDecision and workflow's relayParkedDecision), an issue whose pod an update round
-// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a claim whose turns keep
-// ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
-// tree of the project that has stopped (`tree-stalled`, admit's tellStalledTrees, once for each
-// stall), and the slot wakes admission sends through wakeController, `slot-free`, `todo` and `tick`
+// to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own,
+// and only the kinds the controller acts on (dispatch://INFRA-2709, R21; skill://legion-controller,
+// "Wakes"): a root in triage handed to Legion (`triage`, admission); the slot wakes admission
+// sends through wakeController, `slot-free` and `todo`, on which the controller runs its
+// prioritization pass and its deployment's intake, and `tick`, its periodic wake
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
-// admit.Admission.ReportCapabilities). The controller takes no issue for `slot-free`,
-// `todo` or `awaiting-person`: it names the free slots in its summary and report, and work reaches
-// Legion only when a person hands it over or a role reports a clear defect the controller files
-// (skill://legion-controller, "Free slots"). It sits among the issue topics, where no
+// admit.Admission.ReportCapabilities); a tree of the project that has stopped (`tree-stalled`,
+// admit's tellStalledTrees, once for each stall); a person's decision on a tree Legion is not
+// running (`parked-decision`, the outbox's parkDecision and workflow's relayParkedDecision); a
+// hold the tree's architect escalated (`held` with reason `escalated`, workflow's retryOrEscalate);
+// a tree architect's own failed claim while its root is not done (`worker-died`, workflow's
+// claimFailed), and the stall of that architect whose replacement failed its claim
+// (`worker-stalled`, the daemon's enqueueStallNotice), both because every other notice of the
+// tree reaches that architect; an issue whose pod an update round cannot replace
+// (`update-stalled`, the daemon's reconcilePodUpdates); a start the session store could not
+// answer (`session-store-fault`, workflow's sessionStoreFault); and a claim whose turns keep
+// ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors),
+// which the issue's architect is told as well, unless the run is an architect's own. A free slot alone is no reason for the controller
+// to take an issue: work reaches Legion only when a person hands it over or a role reports a
+// clear defect the controller files (skill://legion-controller, "Free slots"). It sits among the
+// issue topics, where no
 // issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and the plugin's controller registers it
 // as an interest while it holds the controller role (legionControllerNoticeSubject,
 // packages/contracts/src/subject.ts). project is the project token panes are told as LEGION_PROJECT

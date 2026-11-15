@@ -267,8 +267,8 @@ type Notice struct {
 	Topic   string      `json:"topic,omitempty"`
 	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
 	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
-	// in, the copy of that hold the controller reads, and the worker-died that names the death
-	// (workflow's claimFailed). It is absent where the daemon recorded no cause for the failure,
+	// in and the worker-died that names the death (workflow's claimFailed). It is absent where
+	// the daemon recorded no cause for the failure,
 	// and absent from the two held notices that report no failure at all: the escalation's
 	// (workflow's retryOrEscalate) and the re-admission's (workflow's HeldNotice).
 	//
@@ -615,34 +615,33 @@ type ControllerNotice Notice
 
 func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNotice }
 
-// The controller notices no architect is told of. A triage notice's root is unrecorded, so no
-// architect owns it; a slot-free notice names the issue whose slot admission released while no
-// waiting issue took it. A todo notice names an issue not handed to Legion that changed in `todo`
-// while a slot stood free. An awaiting-person notice names a root that waits on a person and
-// keeps the slot it holds while it waits (workflow's enterAwaiting). The controller takes no issue for any of
-// the three (skill://legion-controller, "Free slots"). A tick is the daemon's periodic wake, whose
-// issue is the project key. An unslotted notice names a root admission found in the workflow with
-// neither a slot nor a place in the waiting line, which it then put in phase.Done; its reason
-// names the status the root stood at. An update-stalled notice names an issue whose update round
-// has passed its bound (`pod_update_grace_minutes` after it opened) while something still holds
-// it: an operator's suspension of a role the round asks, a ReplacePod the runtime refused, no
-// claim recording a process in the round's pod (or in any pod), or claims recording two pods. It
-// is told once per round (the daemon's reconcilePodUpdates). A
-// provider-errors notice names an issue whose role has ended six turns in a row in a provider
-// error: its Role is that role, and its Reason the model and the HTTP status the provider
-// answered, where it answered one, in words built from structured fields alone (supervise's
-// tellControllerOfProviderErrors). It is told once, and not again until a turn with no error puts
-// that run back to zero; nothing is held and nothing is bounded, because a chain's bottom
-// refusing deterministically costs one request every ten minutes. A tree-stalled notice names a
-// root of the daemon's own whose tree has stopped: nothing of the tree has moved for longer than
+// The controller notices, each a kind the controller acts on (skill://legion-controller,
+// "Wakes"). A triage notice's root is unrecorded, so no architect owns it; a slot-free notice
+// names the issue whose slot admission released while no waiting issue took it. A todo notice
+// names an issue not handed to Legion that changed in `todo` while a slot stood free. On either
+// of the two the controller runs its prioritization pass and its deployment's intake. A tick is
+// the daemon's periodic wake, whose issue is the project key. An update-stalled notice names an
+// issue whose update round has passed its bound (`pod_update_grace_minutes` after it opened)
+// while something still holds it: an operator's suspension of a role the round asks, a
+// ReplacePod the runtime refused, no claim recording a process in the round's pod (or in any
+// pod), or claims recording two pods. It is told once per round (the daemon's
+// reconcilePodUpdates). A provider-errors notice names an issue whose role has ended six turns in
+// a row in a provider error: its Role is that role, and its Reason the model and the HTTP status
+// the provider answered, where it answered one, in words built from structured fields alone
+// (supervise's tellControllerOfProviderErrors). It is told once, and not again until a turn with
+// no error puts that run back to zero; nothing is held and nothing is bounded, because a chain's
+// bottom refusing deterministically costs one request every ten minutes. It is the one kind of
+// these that the issue's architect is told as well, in a notice row of its own, unless the run is
+// an architect's own (validNoticeKinds, the daemon's providerErrorRunReached). A tree-stalled
+// notice names a root of the daemon's own
+// whose tree has stopped: nothing of the tree has moved for longer than
 // `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by design (admit's
 // tellStalledTrees says which trees are told). Its issue is that root, and its Reason names the
 // tree's quiet hours, each issue the workflow still runs with its phase, the role whose turn it
 // is and the state of its pull request, and what the controller is to decide. It is told once
 // for each stall: the daemon marks the root with the movement the notice was told for, and tells
 // again only once the tree moves past that mark. When admission sends each is its rule
-// (admit.Admission.wakeController and its callers, admit's releaseUnslotted,
-// admit.Admission.TellController).
+// (admit.Admission.wakeController and its callers, admit.Admission.TellController).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
@@ -652,13 +651,19 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // tree's root, Decision what the person did, Ref where in Dispatch, Actor who; a spec decision
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
 // again (skill://legion-controller/references/parked-decisions.md).
+//
+// The daemon tells the controller no notice its skill says to do nothing on (dispatch://INFRA-2709,
+// R21). So a root that waits on a person (workflow's enterAwaiting) and a root admission took out
+// of the workflow (admit's releaseUnslotted) are told to nobody: the controller does nothing for
+// the first, and reads the second from the state, a root at `phase: done` whose status is one
+// only a running tree has. Their two kinds, `awaiting-person` and `unslotted`, went with their
+// notices, and the migration 20261115121838_drop_controller_wakes_for_nothing deletes the rows an
+// earlier release left queued.
 const (
 	TriageNotice         NoticeKind = "triage"
 	SlotFreeNotice       NoticeKind = "slot-free"
 	TodoNotice           NoticeKind = "todo"
 	TickNotice           NoticeKind = "tick"
-	UnslottedNotice      NoticeKind = "unslotted"
-	AwaitingPersonNotice NoticeKind = "awaiting-person"
 	ParkedDecisionNotice NoticeKind = "parked-decision"
 	UpdateStalledNotice  NoticeKind = "update-stalled"
 	ProviderErrorsNotice NoticeKind = "provider-errors"
@@ -1756,13 +1761,21 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // mergeHoldsChanged). Its reason names the document and says to read it again
 // (MergeHoldsChangedReason). The merger of each issue in merging is told the same text by a row of
 // its own (MergeHoldsChanged), since a notice reaches only an architect.
+//
+// `provider-errors` is a claim whose turns have ended six times in a row in an error the model's
+// provider returned (supervise's tellControllerOfProviderErrors). The issue's architect is told,
+// since narrowing the work the provider keeps refusing is the architect's, and so is the
+// controller, in a row of its own (ProviderErrorsNotice), since compacting or refreshing that
+// claim's session is the controller's (internal/daemon's providerErrorRunReached). A run of an
+// architect's own claim is told to the controller alone: the architect's copy would reach the
+// failing session itself.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted",
-	"session-lost", "session-store-fault", "merge-holds-changed",
+	"session-lost", "session-store-fault", "merge-holds-changed", ProviderErrorsNotice,
 }
 
 // validNoticeKind says whether kind is a notice an architect is told.
@@ -1772,8 +1785,8 @@ func validNoticeKind(kind NoticeKind) bool {
 
 // validateNoticeFailure holds a notice's failure record to the two kinds that report a claim's
 // failure: the hold a phase worker's failed claim puts its issue in and the worker-died that
-// names the death (workflow's claimFailed). Both arms of the switch above call it, because the
-// held notice reaches the controller as a converted copy of the architect's (workflow's
+// names the death (workflow's claimFailed). Both arms of the switch above call it, because a
+// controller notice of either kind is a converted copy of the architect's (workflow's
 // noticeWithController), and a rule written in one arm alone would take the copy of a notice the
 // other refused.
 //
@@ -1815,8 +1828,7 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice:
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, ParkedDecisionNotice, UpdateStalledNotice, TreeStalledNotice:
 		return true
 	default:
 		return false

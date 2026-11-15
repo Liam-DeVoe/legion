@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, a merge hold, an architect's escalation, or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, session-store-fault, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, a merge hold, an architect's escalation, or a person's message or mention.
 ---
 
 # Legion Controller
@@ -53,7 +53,7 @@ because Envoy keeps no copy of a wake sent while no controller ran.
    `heldFrom` and the failed claim's `failure` beside it, and
    each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says.
    Name in your summary each root at `phase: done` whose `status` is `in_progress`, `testing`,
-   `needs_review` or `retro`: Legion runs it no longer, as the `unslotted` wake reports: someone
+   `needs_review` or `retro`: Legion runs it no longer, and no wake tells you of it. Someone
    else moved it there while it waited for a slot, or it waited on a person (`awaiting_person`) and
    lost its label or its Dispatch claim, which leaves the `in_progress` it ran with.
 2. Triage the roots handed to Legion while you were away, as
@@ -70,17 +70,16 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | Wake | Action |
 |---|---|
 | `triage on <KEY>` | `skill://legion-controller/references/triage.md` |
-| `slot-free on <KEY>`, `todo on <KEY>` | Name the free slots; take nothing |
+| `slot-free on <KEY>`, `todo on <KEY>` | Start the prioritization pass and the intake your deployment instructions give |
 | `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`), then the merge holds whose end is past ([Merge holds](#merge-holds)) |
-| `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
-| `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `tree-stalled on <KEY>` | Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree only as [Rules](#rules) allows |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
-| `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
-| `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when you find no cause or its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
-| `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
+| `held on <KEY>` | It comes only with `reason: "escalated"`: an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
+| `worker-died on <KEY>` (`role: "architect"`) | It comes only while the root's `phase` is not `done`. Restart the tree when you find no cause or its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
+| `worker-stalled on <KEY>` (`role: "architect"`) | It comes only when the stall's replacement failed the architect's claim: answer the `worker-died` that comes with it, and open a finding ask when the notice says the runtime did not confirm the stop of the stalled process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
-| `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
+| `session-store-fault on <KEY>` | Open a finding ask for the operator that names the issue, the role and `reason`, so an operator fixes the session store, as for `update-stalled`. Open one ask for one fault, however many notices it sends |
+| `provider-errors on <KEY>` | Name the run and its model in the day's report; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | An answer to a park ask (`Park it`, `Leave it admitted`) or a deferral ask (`Defer it`, `Let it run`) | The procedure that opened it: `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4, or `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 |
