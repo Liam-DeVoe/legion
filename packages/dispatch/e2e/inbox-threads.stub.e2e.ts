@@ -88,7 +88,7 @@ repliesList(
     );
     await expect(
       control(page, CONTROL.chip).and(
-        page.getByRole("button", { name: "Remove filter Type: Reply" })
+        page.getByRole("button", { name: "Remove Type: Reply filter" })
       )
     ).toHaveCount(1);
     const rows = page.locator("[data-inbox-row]");
@@ -178,6 +178,6 @@ test("the Type filter counts and narrows the one list of asks, approvals, replie
   await expect(page).toHaveURL(/type=approval%2Creply/);
   await page.reload();
   await expect(rows).toHaveCount(6);
-  await expect(page.getByRole("button", { name: "Remove filter Type: Approval" })).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "Remove filter Type: Reply" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Remove Type: Approval filter" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Remove Type: Reply filter" })).toHaveCount(1);
 });

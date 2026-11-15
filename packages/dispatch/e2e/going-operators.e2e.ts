@@ -192,7 +192,7 @@ test("each chip narrows the same list and reads back in the words the person cho
     await expect(search).toHaveValue("astrolabe");
 
     // A chip comes off on its own, and the rows it was holding back come back.
-    await dialog.getByRole("button", { name: "Remove Author alice" }).click();
+    await dialog.getByRole("button", { name: "Remove Author alice filter" }).click();
     await expect(options).toHaveCount(2);
     await expect((await openFilterPanel(page, dialog)).getByLabel("Author")).toBeVisible();
   } finally {

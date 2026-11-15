@@ -33,7 +33,7 @@ import {
 } from "./fake-broker-helpers";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { control, controlRow, openFilterPanel } from "./filters";
-import { drawer, peekTrigger } from "./inbox-drawer";
+import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
 import { openFilterFields } from "./inbox-filter";
 import { askControls, hasReadingPane, inboxRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedAgentThread, seedCommentThread } from "./inbox-threads";
@@ -642,7 +642,7 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
     presses++;
   }
   const last = chips.last();
-  await expect(last).toHaveAttribute("aria-label", "Remove filter Project: CORE");
+  await expect(last).toHaveAttribute("aria-label", "Remove Project: CORE filter");
   await last.click();
   await expect(
     chips,
@@ -2985,4 +2985,98 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
     `Delivery list, ${pickedPR} focused: ${delivery.readings.join(" ")}; the focus ends on ${delivery.ended}`
   );
   expect(delivery.wrong, `Delivery list: ${delivery.wrong.join("; ")}`).toEqual([]);
+});
+
+// INFRA-3135's review round 1 (threads PRRT_kwDORFy7ds63p6zI and PRRT_kwDORFy7ds63p6zJ): a panel
+// is portalled to the end of the body, outside the dialog it is opened in, so Tab from its last
+// control went past the end of the page and on to the page behind the search bar; and after
+// Shift+Tab out of the search bar's Project list every Escape was refused while the list stood
+// open, so the bar could not be closed from the keyboard. `@firefox` and `@webkit`: each engine
+// keeps a Tab order of its own - a stop for each field of a date box, one for a radio group - and
+// the panel follows the engine's.
+test("Tab and Escape never leave a panel for the page behind it, in a dialog or on a page @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await seedAsk("Which lease holds?");
+  const main = page.getByTestId("main-content");
+
+  /** Focuses `last`, the last control of its panel, and presses Tab until the focus has left it:
+   *  a date box holds a stop for each of its fields, as many as the engine draws. The control is
+   *  held by its handle, since the press that closes the panel takes it out of the page. */
+  const tabOutOf = async (last: Locator) => {
+    await last.focus();
+    const handle = await last.elementHandle();
+    for (let press = 0; press < 5; press++) {
+      await page.keyboard.press("Tab");
+      if (!(await handle?.evaluate((node) => node === document.activeElement))) break;
+    }
+    await handle?.dispose();
+  };
+
+  // On a page: the Inbox's Filter panel, whose last control is the Assignee filter.
+  await page.goto("/");
+  const inboxTrigger = control(controlRow(main), CONTROL.panelTrigger);
+  const inboxPanel = await openFilterPanel(page, main);
+  const assignee = inboxPanel.getByRole("button", { name: "Filter by assignee" });
+  await tabOutOf(assignee);
+  await expect(
+    inboxPanel,
+    "Inbox: Tab from the last control left the Filter panel open"
+  ).toHaveCount(0);
+  await expect(inboxTrigger, "Inbox: Tab from the panel's last control").toBeFocused();
+
+  // In a dialog: the Inbox drawer's View menu, whose last control is its last section's choice.
+  await openIssuesTab(page, "CORE", "List");
+  await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+  await peekTrigger(page).click();
+  const viewTrigger = control(controlRow(drawer(page)), CONTROL.displayMenu);
+  await viewTrigger.click();
+  const viewMenu = page.getByRole("dialog", { name: "View" });
+  await expect(viewMenu).toHaveCount(1);
+  const lastChoice = viewMenu.getByRole("group").last().locator('input[type="radio"]:checked');
+  await tabOutOf(lastChoice);
+  await expect(
+    viewMenu,
+    "Inbox drawer: Tab from the last choice left the View menu open"
+  ).toHaveCount(0);
+  await expect(viewTrigger, "Inbox drawer: Tab from the View menu's last choice").toBeFocused();
+  await expect(drawer(page)).toBeVisible();
+
+  // In a dialog again: the search bar's Filter panel, whose last control is Updated since.
+  await page.goto("/");
+  await page.locator("body").focus();
+  await page.keyboard.press("Control+k");
+  const palette = page.getByRole("dialog", { name: "Search" });
+  await expect(palette).toBeVisible();
+  const barTrigger = control(controlRow(palette), CONTROL.panelTrigger);
+  const barPanel = await openFilterPanel(page, palette);
+  const since = barPanel.getByLabel("Updated since");
+  await tabOutOf(since);
+  await expect(
+    barPanel,
+    "search bar: Tab from Updated since left the Filter panel open"
+  ).toHaveCount(0);
+  await expect(barTrigger, "search bar: Tab from the Filter panel's last control").toBeFocused();
+  await expect(palette).toBeVisible();
+
+  // Filter, then Project, then Shift+Tab out of the list: three presses of Escape close what is
+  // left, the search bar last.
+  await barTrigger.click();
+  await page
+    .getByRole("dialog", { name: "Filter" })
+    .getByRole("button", { exact: true, name: "Project" })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Project" })
+    .getByRole("button", { exact: true, name: "CORE" })
+    .focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(
+    palette,
+    "the search bar is still open after Shift+Tab and three Escapes"
+  ).toHaveCount(0);
 });

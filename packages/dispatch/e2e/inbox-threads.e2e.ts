@@ -56,7 +56,7 @@ test("the drawer's own bar filters the drawer alone, and the Inbox page keeps it
     await page.goto("/?type=reply");
     await expect(page.locator("[data-inbox-row]")).toHaveCount(4);
     await expect(
-      page.getByRole("button", { name: "Remove filter Type: Agent message" })
+      page.getByRole("button", { name: "Remove Type: Agent message filter" })
     ).toHaveCount(0);
   } finally {
     await alice.close();
