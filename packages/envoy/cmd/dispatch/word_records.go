@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
+	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
 )
 
 // standInToken is the credential every call to the stand-in model presents (DISPATCH_TEST_MODEL_URL),
@@ -25,7 +26,10 @@ const standInToken = "stand-in"
 // deployment (agentloop.OpenAIChat), its api-version on every request and a token of the shared
 // Azure sign-in at its scope; an anthropic group's Messages service (agentloop.AnthropicMessages),
 // its key file read on each call, so a key rewritten under the process is the next call's. A group
-// beside the stand-in model presents no credential of its own. It reads no file and calls nothing.
+// beside the stand-in model presents no credential of its own. An anthropic group asks for no
+// thinking (effort "off"). An azure group sends no reasoning effort at all: agentloop sends "off"
+// as `none`, which a Foundry chat deployment refuses (measured on grok-4.7, as the detector's
+// reader found: writingcheck.ReaderNoEffort). It reads no file and calls nothing.
 func (g modelGroup) agentloopModel() (agentloop.Model, error) {
 	var token func(context.Context) (string, error)
 	switch {
@@ -50,18 +54,22 @@ func (g modelGroup) agentloopModel() (agentloop.Model, error) {
 		}
 	}
 	endpoint := agentloop.Endpoint{BaseURL: strings.TrimRight(g.Endpoint, "/"), Token: token}
+	effort := "off"
 	switch g.Kind {
 	case modelKindAzure:
 		endpoint.Kind = agentloop.OpenAIChat
 		if g.APIVersion != "" {
 			endpoint.Query = url.Values{"api-version": {g.APIVersion}}
 		}
+		if writingcheck.ReaderNoEffort {
+			effort = ""
+		}
 	case modelKindAnthropic:
 		endpoint.Kind = agentloop.AnthropicMessages
 	default:
 		return agentloop.Model{}, fmt.Errorf("a model group of kind %q calls no model", g.Kind)
 	}
-	return agentloop.Model{Endpoint: endpoint, ID: g.Deployment, Effort: "off"}, nil
+	return agentloop.Model{Endpoint: endpoint, ID: g.Deployment, Effort: effort}, nil
 }
 
 // pace is the group's share of its deployment on pacer, the process's one pacer (modelpace): its

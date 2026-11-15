@@ -120,10 +120,15 @@ type localClient struct {
 	cookies map[string]string
 }
 
+// localTimeout bounds one request to the local Dispatch: above the reviewer's own time bound
+// (DISPATCH_REVIEWER_TIMEOUT, 120 s unset), so a review of a long document ends on the server's
+// bound and not on this one.
+const localTimeout = 5 * time.Minute
+
 func newLocalClient(inst LocalInstance) *localClient {
 	return &localClient{
 		inst: inst, cookies: map[string]string{},
-		http: &http.Client{Timeout: 60 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		http: &http.Client{Timeout: localTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}
 }
 

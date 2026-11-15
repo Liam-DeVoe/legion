@@ -162,6 +162,21 @@ func testModelsEnv(overrides map[string]string) map[string]string {
 // the refusal of a sign-in no one reads does not come first.
 var noAzureSignIn = map[string]string{"DISPATCH_AZURE_TENANT_ID": "", "DISPATCH_AZURE_CLIENT_ID": "", "DISPATCH_AZURE_FEDERATED_TOKEN_FILE": ""}
 
+// An anthropic group asks for no thinking, and an azure group, a test model of either kind
+// included, sends no reasoning effort at all, since a Foundry chat deployment refuses `none`.
+func TestAnAzureGroupSendsNoReasoningEffort(t *testing.T) {
+	models := resolveWith(t, testModelsEnv(nil)).Writing.TestModels
+	for name, want := range map[string]string{"grok-4.7": "", "claude-haiku-5-5": "off"} {
+		model, err := models[name].agentloopModel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if model.Effort != want || model.ID != name {
+			t.Errorf("%s calls %q at effort %q, want %q", name, model.ID, model.Effort, want)
+		}
+	}
+}
+
 // DISPATCH_TEST_MODELS is a test process's alone: without DISPATCH_TEST_HOOKS=1 it refuses the
 // boot. Under the hooks each listed model is its kind's group, named as its own deployment; beside
 // the stand-in model every one calls the stand-in with no credential. A kind's settings with no

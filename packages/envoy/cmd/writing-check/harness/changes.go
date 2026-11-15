@@ -261,8 +261,11 @@ func (r *changeRun) Apply(ctx context.Context, c *Case) (Applied, error) {
 		case changeDefine:
 			err = r.defineStep(ctx, t)
 		}
+		if err != nil && len(r.plan.steps) > 1 {
+			return t.out, fmt.Errorf("step %s: %w", step, err)
+		}
 		if err != nil {
-			return t.out, fmt.Errorf("change %s: %w", step, err)
+			return t.out, err
 		}
 	}
 	t.out.Text, t.out.Same = t.text, t.text == c.Agent.Text
