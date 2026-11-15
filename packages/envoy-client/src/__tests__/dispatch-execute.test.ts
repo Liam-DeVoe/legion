@@ -2628,6 +2628,8 @@ describe("executeDispatchTool", () => {
             open_asks: [],
             last_seq: 0,
             labels: [],
+            advances: [],
+            advances_revision: 0,
           });
         }
         if (target.pathname === "/api/v1/issues/DSP-1/events") return response([]);
@@ -2722,6 +2724,8 @@ describe("executeDispatchTool", () => {
           open_asks: [],
           last_seq: 0,
           labels: [],
+          advances: [],
+          advances_revision: 0,
         });
       }
       if (target.pathname === "/api/v1/issues/DSP-1/events") return response([]);
@@ -3020,6 +3024,8 @@ describe("executeDispatchTool", () => {
             last_seq: 0,
             external_links: [],
             labels: [],
+            advances: [],
+            advances_revision: 0,
             repo: null,
             resolved_repo: null,
             ...reach,
@@ -3128,6 +3134,8 @@ describe("executeDispatchTool", () => {
             last_seq: 0,
             external_links: [],
             labels: [],
+            advances: [],
+            advances_revision: 0,
             repo: null,
             resolved_repo: null,
             route: null,
@@ -4232,6 +4240,8 @@ describe("executeDispatchTool", () => {
             last_seq: 0,
             external_links: [],
             labels: [],
+            advances: [],
+            advances_revision: 0,
             ...repo,
           });
         }
@@ -13493,6 +13503,11 @@ describe("executeDispatchTool", () => {
             reason: null,
             inherited_from: "DSP-40",
           },
+          advances: [
+            { id: "ship-the-daemon", inherited: false },
+            { id: "legion-first", inherited: true },
+          ],
+          advances_revision: 12,
         });
       }
       if (target.pathname === "/api/v1/issues/DSP-42/events") return response([]);
@@ -13584,8 +13599,10 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain("Priority: P1");
     expect(result.text).toContain("Status: open\nAssignee: alice\n");
     expect(result.text).toContain("Claimed by: Implementer since 2026-09-13T01:00:00Z");
+    // The priorities the issue serves stand between what it touches and where it is routed,
+    // each marked own where the issue states it and inherited where an issue above it does.
     expect(result.text).toContain(
-      "Labels: frontend, urgent\nComponents: web (inherited from DSP-40) (retired: legacy-ui)\nRoute: none\nRepository: acme/widgets (inherited or project default)\nProgress: tasks 1/4\n"
+      "Labels: frontend, urgent\nComponents: web (inherited from DSP-40) (retired: legacy-ui)\nAdvances: ship-the-daemon (own), legion-first (inherited)\nRoute: none\nRepository: acme/widgets (inherited or project default)\nProgress: tasks 1/4\n"
     );
     // The pull request a person linked is on the read, as on the issue page; the reference graph
     // at the end carries none of it.
@@ -13629,6 +13646,8 @@ describe("executeDispatchTool", () => {
           last_seq: 0,
           external_links: [],
           labels: [],
+          advances: [],
+          advances_revision: 0,
         });
       }
       if (pathname === "/api/v1/issues/DSP-42/events") return response([]);
@@ -13683,6 +13702,8 @@ describe("executeDispatchTool", () => {
           last_seq: 0,
           external_links: [],
           labels: [],
+          advances: [],
+          advances_revision: 0,
         });
       }
       if (pathname === "/api/v1/issues/DSP-42/events") return response([]);
@@ -13728,6 +13749,8 @@ describe("executeDispatchTool", () => {
           last_seq: 0,
           external_links: [],
           labels: [],
+          advances: [],
+          advances_revision: 0,
         });
       }
       if (pathname === "/api/v1/issues/DSP-42/events") return response([]);
@@ -13773,6 +13796,8 @@ describe("executeDispatchTool", () => {
       open_asks: [],
       last_seq: 0,
       labels: [],
+      advances: [],
+      advances_revision: 0,
     });
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
