@@ -851,15 +851,16 @@ func (w *workflowRuntime) logUnservedCommitIssueTrailerRepos(accepted []mappedRe
 func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 	var named []mappedRepository
 	var limited []limitedRead
+	mapped := w.repositories.Mapped()
 	err := bootprobe.Run(ctx, "repository read", appMintRetry, w.log, readinessAttempt(func(ctx context.Context) error {
 		var err error
-		named, limited, err = nameAccepted(ctx, w.repositories.Mapped(), w.defaultBranches)
+		named, limited, err = nameAccepted(ctx, mapped, w.defaultBranches)
 		return err
 	}, appMintAttempt, bootReadTransient))
 	if err != nil {
 		return err
 	}
-	held, unheld, err := w.holdLimited(ctx, limited)
+	held, unheld, err := w.holdLimited(ctx, limited, mapped)
 	if err != nil {
 		return err
 	}
@@ -940,11 +941,15 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	// A read GitHub's rate limit refuses is served on the default branch the daemon holds, or
 	// left out for now and read again on installReadRetry when it holds none: the refresher never
 	// waits a limit out, since it holds mappingMu, which every later read of the mapping waits on.
+	// The records are matched to what this read will serve, the installations it accepted and the
+	// repositories kept on their last answer, not to the mapping as last published: this read can
+	// be the one that finds a configured rename's transfer.
+	serves := append(slices.Clone(accepted), kept...)
 	var limited []limitedRead
 	if accepted, limited, err = nameAccepted(ctx, accepted, w.defaultBranches); err != nil {
 		return err
 	}
-	held, unheld, err := w.holdLimited(ctx, limited)
+	held, unheld, err := w.holdLimited(ctx, limited, serves)
 	if err != nil {
 		return err
 	}

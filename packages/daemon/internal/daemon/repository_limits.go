@@ -99,17 +99,27 @@ func (w *workflowRuntime) heldThroughLimit(read limitedRead, held ghbranch.Repos
 // about the repository, and the branch a record holds is the one GitHub named when the issue was
 // recorded, which a read after the limit corrects if GitHub has since renamed it. limited is only
 // ever repositories the daemon held no read of, since Named answers a limited read of one it holds
-// from what it holds; the records are read once, and only when a read was refused. Each held one
+// from what it holds; the records are read once, and only when a read was refused, and matched to
+// the repositories this read of the mapping serves (serves: every one it will publish, limited
+// ones among them), which is not yet the mapping published (recordedBranches). Each held one
 // stands until the limit's reset (defaultBranches.hold), so nothing reads it inside the limit, and
 // every later read GitHub's limit refuses is answered from it too, the boot's own included
-// (defaultBranches.Named); heldThroughLimit says so and has the mapping read again then. held is
-// each so served; unheld is each no record holds a branch for, for the caller to wait out (the
-// boot's waitOutLimits) or to leave out for now (refreshMapping).
-func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead) (held []mappedRepository, unheld []limitedRead, err error) {
+// (defaultBranches.Named); heldThroughLimit says so and has the mapping read again then.
+//
+// A record gives the branch, and the spelling only of a repository it names itself: the record's
+// is GitHub's own, as it named the repository when the issue was recorded. A record that names the
+// repository only under the other name of a configured rename gives no spelling, since GitHub's
+// spelling of the name the repository moved to is neither that record's nor the pair's as
+// configured; the repository is served as this read accepted it, and intake hears it so
+// (heardRepositories), as it hears it once GitHub answers.
+//
+// held is each so served; unheld is each no record holds a branch for, for the caller to wait out
+// (the boot's waitOutLimits) or to leave out for now (refreshMapping).
+func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead, serves []mappedRepository) (held []mappedRepository, unheld []limitedRead, err error) {
 	if len(limited) == 0 {
 		return nil, nil, nil
 	}
-	recorded, err := w.recordedBranches(ctx)
+	recorded, err := w.recordedBranches(ctx, serves)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -119,6 +129,9 @@ func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead
 			unheld = append(unheld, read)
 			continue
 		}
+		if !strings.EqualFold(branch.Name.String(), read.mapped.Repo.String()) {
+			branch.Name = read.mapped.Repo
+		}
 		w.defaultBranches.hold(read.mapped.Repo, branch, read.until)
 		w.heldThroughLimit(read, branch)
 		held = append(held, mappedRepository{Repo: branch.Name, Default: read.mapped.Default})
@@ -127,16 +140,24 @@ func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead
 }
 
 // recordedBranches is the default branch the project's records hold for each repository a record
-// names (record.Issue.GitHubRepo and DefaultBranch), keyed by the repository GitHub holds it under
-// now (repositories.serving), lowercased, and naming it so, read in one read-only transaction
-// bounded by appMintAttempt. A record keeps the name it was recorded under for its whole life, so
-// one recorded before a configured rename's transfer names the repository as it was: serving maps
-// it to the name it moved to when the project serves that name and not the old one, and leaves it
-// under its own name when the project serves both, which are then two repositories. A repository
-// several records name takes the first record in the store's order: each holds the default branch
-// GitHub named when its issue was recorded, and the one taken is served only until GitHub answers a
-// read of it again. A record from before the record carried its repository holds nothing.
-func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbranch.Repository, error) {
+// names (record.Issue.GitHubRepo, in GitHub's spelling, and DefaultBranch), keyed by the repository
+// GitHub holds it under now, lowercased, read in one read-only transaction bounded by
+// appMintAttempt. A record keeps the name it was recorded under for its whole life, so one recorded
+// before a configured rename's transfer names the repository as it was: the rename's serving rule
+// (ghrepo.Renames.Serving, the rule repositories.serving reads) maps it to the name it moved to
+// when serves, the repositories the caller's read of the mapping serves, holds that name and not
+// the old one, and leaves it under its own name when serves holds both, which are then two
+// repositories. serves is the read's own set rather than the mapping as last published, since a
+// read of the mapping can be the one that finds the transfer. A repository several records name
+// takes the first record in the store's order: each holds the default branch GitHub named when its
+// issue was recorded, and the one taken is served only until GitHub answers a read of it again. A
+// record from before the record carried its repository holds nothing.
+func (w *workflowRuntime) recordedBranches(ctx context.Context, serves []mappedRepository) (map[string]ghbranch.Repository, error) {
+	served := make(map[string]bool, len(serves))
+	for _, mapped := range serves {
+		served[strings.ToLower(mapped.Repo.String())] = true
+	}
+	isServed := func(repo ghrepo.Repository) bool { return served[strings.ToLower(repo.String())] }
 	read, cancel := context.WithTimeout(ctx, appMintAttempt)
 	defer cancel()
 	var issues []record.Issue
@@ -156,10 +177,9 @@ func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbr
 		if err != nil {
 			return nil, err
 		}
-		served := w.repositories.serving(name)
-		key := strings.ToLower(served.String())
+		key := strings.ToLower(w.repositories.renames.Serving(name, isServed).String())
 		if _, taken := recorded[key]; !taken {
-			recorded[key] = ghbranch.Repository{Name: served, DefaultBranch: issue.DefaultBranch}
+			recorded[key] = ghbranch.Repository{Name: name, DefaultBranch: issue.DefaultBranch}
 		}
 	}
 	return recorded, nil

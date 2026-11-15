@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -406,44 +407,91 @@ func TestABootRefusesADefaultBranchRead404AndRetriesA500AsBefore(t *testing.T) {
 }
 
 // A record keeps the name its repository had when it was recorded, so the branch it holds is the
-// fallback for the repository GitHub holds it under now: under a configured rename whose old name
-// the project no longer serves, a record on the old name holds the branch of the new one, named
-// so; when the project serves both names, they are two repositories, and the record holds the
-// branch of the old one alone.
-func TestARecordedDefaultBranchIsHeldForTheRepositoryAConfiguredRenameServes(t *testing.T) {
+// fallback for the repository GitHub holds it under now, as the read of the mapping that met the
+// limit serves it, before that read is published: here the published mapping still serves the
+// old name alone, and the read finds the transfer. A record on the old name then holds the branch
+// of the new one, served in the spelling this read accepted, not the pair's configured spelling
+// nor the record's; when the read serves both names, they are two repositories, the record holds
+// the branch of the old one alone, in its own spelling, GitHub's, and the new one holds none.
+func TestARecordedDefaultBranchIsHeldForTheRepositoryTheReadServesUnderAConfiguredRename(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return records.PutIssue(ctx, tx, doneOn("LEGION-1", "LEGION", "old/widgets", "main"))
+		return records.PutIssue(ctx, tx, doneOn("LEGION-1", "LEGION", "Old/Widgets", "main"))
 	}); err != nil {
 		t.Fatal(err)
 	}
-	renames := ghrepo.MustRenames(ghrepo.MustRename("old/widgets", "new/widgets"))
+	renames := ghrepo.MustRenames(ghrepo.MustRename("old/widgets", "New/Widgets"))
 	for _, tc := range []struct {
 		name   string
-		served []string
-		want   string
+		serves []string
+		read   string
+		held   string
 	}{
-		{name: "the old name no longer served", served: []string{"new/widgets"}, want: "new/widgets"},
-		{name: "both names served", served: []string{"new/widgets", "old/widgets"}, want: "old/widgets"},
+		{name: "the read finds the transfer", serves: []string{"new/widgets"}, read: "new/widgets", held: "new/widgets"},
+		{name: "the read serves both names, the old one limited", serves: []string{"new/widgets", "old/widgets"}, read: "old/widgets", held: "Old/Widgets"},
+		{name: "the read serves both names, the new one limited", serves: []string{"new/widgets", "old/widgets"}, read: "new/widgets"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repos := newRepositories("LEGION", renames)
-			var mapped []mappedRepository
-			for _, name := range tc.served {
-				mapped = append(mapped, mappedRepository{Repo: ghrepo.MustParse(name)})
+			repos.set([]mappedRepository{{Repo: ghrepo.MustParse("old/widgets")}}, nil)
+			w := &workflowRuntime{pool: pool, records: records, repositories: repos, log: quietLogger(),
+				defaultBranches: newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)}
+			var serves []mappedRepository
+			for _, name := range tc.serves {
+				serves = append(serves, mappedRepository{Repo: ghrepo.MustParse(name)})
 			}
-			repos.set(mapped, nil)
-			w := &workflowRuntime{pool: pool, records: records, repositories: repos}
-			recorded, err := w.recordedBranches(ctx)
+			limited := limitedRead{mapped: mappedRepository{Repo: ghrepo.MustParse(tc.read)}, answer: &githubrest.Answer{Status: http.StatusForbidden},
+				wait: time.Minute, until: time.Now().Add(time.Minute)}
+			held, unheld, err := w.holdLimited(ctx, []limitedRead{limited}, serves)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got, ok := recorded[tc.want]; len(recorded) != 1 || !ok || got.Name.String() != tc.want || got.DefaultBranch != "main" {
-				t.Fatalf("recorded branches = %+v, want only %s at main", recorded, tc.want)
+			if tc.held == "" {
+				if len(held) != 0 || len(unheld) != 1 {
+					t.Fatalf("held %v, unheld %d; want %s unheld", held, len(unheld), tc.read)
+				}
+				return
+			}
+			if len(held) != 1 || held[0].Repo.String() != tc.held || len(unheld) != 0 {
+				t.Fatalf("held %v, unheld %d; want %s served as %s", held, len(unheld), tc.read, tc.held)
+			}
+			if kept, ok := w.defaultBranches.Kept(tc.read); !ok || kept.Name.String() != tc.held || kept.DefaultBranch != "main" {
+				t.Fatalf("the branch held for %s = %+v, %v; want %s at main", tc.read, kept, ok, tc.held)
 			}
 		})
+	}
+}
+
+// The reads after the boot's waits run mappingReads at a time, as the first reads do, however many
+// repositories share one reset: here more of them than that wait out one limit, and GitHub, holding
+// each read a moment, never has more than mappingReads in flight.
+func TestTheBootsReadsAfterARateLimitRunMappingReadsAtATime(t *testing.T) {
+	var inFlight, most atomic.Int64
+	named := map[string]string{}
+	var unheld []limitedRead
+	for index := range mappingReads + 4 {
+		repo := "acme/r" + strconv.Itoa(index)
+		named[repo] = repo + "@main"
+		unheld = append(unheld, limitedRead{mapped: mappedRepository{Repo: ghrepo.MustParse(repo)}, answer: &githubrest.Answer{Status: http.StatusTooManyRequests},
+			until: time.Now()})
+	}
+	github := newLimitedGitHub(t, named, func(http.ResponseWriter, string, int) bool {
+		now := inFlight.Add(1)
+		for seen := most.Load(); now > seen && !most.CompareAndSwap(seen, now); seen = most.Load() {
+		}
+		time.Sleep(50 * time.Millisecond)
+		inFlight.Add(-1)
+		return false
+	})
+	w := &workflowRuntime{log: quietLogger(), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
+	served, unread, err := w.waitOutLimits(context.Background(), unheld)
+	if err != nil || len(served) != len(unheld) || len(unread) != 0 {
+		t.Fatalf("waitOutLimits = %d served, %d unread, %v; want all %d served", len(served), len(unread), err, len(unheld))
+	}
+	if got := most.Load(); got > mappingReads {
+		t.Fatalf("GitHub held %d reads at once, want at most %d", got, mappingReads)
 	}
 }
 
@@ -554,8 +602,11 @@ func TestABootServesAHeldDefaultBranchToAnAdmissionReadAfterTheHoldsReset(t *tes
 	github := newLimitedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"}, func(w http.ResponseWriter, repo string, read int) bool {
 		switch {
 		case repo == "acme/widgets":
-			// Every read of acme/widgets is refused, each limit resetting within a second.
-			spentLimit(w, time.Now().Add(time.Second).Unix())
+			// Every read of acme/widgets is refused, each asking for a second's wait: relative, so
+			// the hold always ends a second after its read, never at an epoch second already past.
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
 			return true
 		case read == 1:
 			zetaReset.Store(time.Now().Add(3 * time.Second).Unix())
