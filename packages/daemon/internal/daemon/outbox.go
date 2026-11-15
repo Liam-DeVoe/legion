@@ -2255,8 +2255,13 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 //
 // A bundle that cannot be built, and one above runtime.MaxWorkspaceBundleBytes, stop the release:
 // the pod stays, nothing having been stopped yet, and the work a role has not pushed is kept at
-// the cost of a pod. A workspace with nothing unpushed bundles to nothing, and the row the
-// previous release stored goes with it, so the next pod never restores stale work.
+// the cost of a pod. The two are recorded apart, the one under workflow.IdleHoldBundleSave and
+// the other under workflow.IdleHoldBundleTooLarge with the size it came to. The shim refuses a
+// bundle over the bound itself, naming its size, which the runtime answers as a
+// *runtime.WorkspaceBundleTooLargeError; a bundle that arrives whole over the bound all the same
+// is read here as that error too, so a shim that sent one is still a release kept for its size. A
+// workspace with nothing unpushed bundles to nothing, and the row the previous release stored
+// goes with it, so the next pod never restores stale work.
 //
 // The copy the cadence took while this pod ran goes whichever way the save falls, in the save's
 // own transaction (store.PutWorkspaceBundle, store.DeleteWorkspaceBundle). This bundle is the
@@ -2319,14 +2324,16 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		return fmt.Errorf("release save of %s: %w", row.Issue, err)
 	}
 	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
-	if err != nil {
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+	if size := bundle.Size(); err == nil && size > runtime.MaxWorkspaceBundleBytes {
+		err = &runtime.WorkspaceBundleTooLargeError{Bytes: size, Max: runtime.MaxWorkspaceBundleBytes}
 	}
-	switch size := bundle.Size(); {
-	case size > runtime.MaxWorkspaceBundleBytes:
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleTooLarge,
-			fmt.Sprintf("the workspace's unpushed work is %d bytes, over the %d a release carries", size, runtime.MaxWorkspaceBundleBytes))
-	case size == 0:
+	var tooLarge *runtime.WorkspaceBundleTooLargeError
+	switch {
+	case errors.As(err, &tooLarge):
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleTooLarge, err.Error())
+	case err != nil:
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+	case bundle.Size() == 0:
 		if err := r.trees.DeleteWorkspaceBundle(ctx, row.Issue); err != nil {
 			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 		}

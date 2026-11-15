@@ -15,6 +15,26 @@ import (
 // that holding the pod for it is the cheaper mistake.
 const MaxWorkspaceBundleBytes = 40 << 20
 
+// WorkspaceBundleTooLargeError is a bundle of a workspace's unpushed work refused for its size:
+// Bytes is what the bundle came to and Max the bound it is over. The agent's side builds the
+// bundle before it can know its size and refuses one over the bound it was asked for rather than
+// send it, naming the size in its refusal, and the connection answers that refusal as this error
+// (stream.Conn.BundleWorkspace), so the caller is told the size of a bundle it was never sent.
+// It is a refusal of its own and not one more bundle that could not be built, because the two
+// readers record it by name: an idle release's save cancels the release under
+// workflow.IdleHoldBundleTooLarge, and a copy of a running pod's workspace is logged under
+// `bundle_too_large`. Each reads a bundle that arrives whole over MaxWorkspaceBundleBytes as this
+// error too.
+type WorkspaceBundleTooLargeError struct {
+	Bytes int
+	Max   int
+}
+
+func (e *WorkspaceBundleTooLargeError) Error() string {
+	return "runtime: the workspace's unpushed work is " + strconv.Itoa(e.Bytes) + " bytes, over the " +
+		strconv.Itoa(e.Max) + " a workspace bundle carries"
+}
+
 // WorkspaceBundle is the unpushed work of one issue's workspace, saved when its pod is released
 // and restored into the workspace of the pod that replaces it. The bundle itself is a git bundle
 // holding every visible commit no remote branch holds, on any head, and the working copy's own

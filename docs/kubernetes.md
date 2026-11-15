@@ -4986,14 +4986,16 @@ An issue whose pod this rule has already released stands with no Sandbox and no 
 The daemon keeps a copy of each issue workspace's unpushed work outside the pod while the pod runs, so a pod the cluster ends costs its roles the work of the minutes since the last copy rather than the work of a whole turn.
 Three triggers take that copy:
 the end of each turn of the issue, a cadence that takes one every 5 minutes while a turn of that issue runs (`runningCopyPeriod`, `packages/daemon/internal/daemon/workspace_copies.go`), and each push of the issue's branch that the daemon records (`copyWorkspaceAtPush`, the same file).
-The 5 minutes run from the end of the copy before it and not from its start, and no `legion.yaml` key changes them.
-Neither the turn's end nor the cadence copies an issue between turns:
+The 5 minutes run from the start of the copy before it and not from its end, and no `legion.yaml` key changes them.
+The daemon reads the cadence on its own minute tick, and an issue is due once less than one tick of the 5 minutes is left since its last copy started, so while that tick comes on time two copies of one turn start at most 5 minutes apart and never less than 4 minutes apart.
+A copy the shim is still building after 4 minutes is abandoned and logged `budget_spent`, so even a slow copy has ended by the tick that starts the next one, and two copies of one workspace never run at once.
+Between turns the cadence copies an issue only to retry a copy of it that came to nothing, as described below, and never on its period alone:
 the turn that ended took the copy that holds that work, and a workspace nobody writes would store the same bundle every period for as long as the pod stands.
 A push's copy can land between turns:
 a push from outside the pod, such as GitHub's "Update branch" or a person's push, and a webhook the daemon applies late arrive whatever the roles are doing, and the copy is taken then all the same, because the restore refuses a running copy taken before the newest push the daemon recorded.
 One copy of an issue is in flight at a time, since the six roles of an issue share one workspace and two bundlers in one workspace would collide.
 A turn that ends while a copy of its issue is in flight is owed one, and that copy is taken as soon as the one in flight ends:
-the copy in flight read the workspace before the turn's last work was written, and neither the turn's end nor the cadence copies an issue between turns, so dropping it would leave the idle pod's newest copy short of the work its last turn ended with.
+the copy in flight read the workspace before the turn's last work was written, and once it is stored the cadence takes no copy of the idle issue, so dropping it would leave the idle pod's newest copy short of the work its last turn ended with.
 A push's copy would hold that work too, but a pod whose roles are idle may see no push at all.
 No turn waits for a copy:
 the daemon hands each copy to a goroutine of its own, and the turn's end, the next task and the claim's own state write all go on while the copy is built.
@@ -5006,6 +5008,14 @@ A copy that is not taken or not stored holds nothing back:
 the daemon logs `running copy: no copy of the issue workspace was stored` with the reason by name
 — `claims_unread`, `no_live_role`, `clock_unread`, `bundler_failed`, `budget_spent`, `bundle_too_large`, `save_failed`, `drop_failed` or `release_bundle_unread` —
 the issue keeps the copy it had, and the next period tries again.
+That retry comes between turns as well: the cadence takes an issue whose last copy came to nothing again once its 5 minutes are up, whether or not a turn of it runs, until a copy of it is stored, so the end of a turn whose copy failed is copied within the period and an eviction of the idle pod after that restores it.
+A retry waits for a live role of its issue, since an issue with none, released or with every role stopped, has no running pod whose work a copy could hold.
+The cadence skips such an issue with no log line and keeps its retry, which runs at the first tick after a resumed or relaunched pod's role is live again and the 5 minutes are up.
+An issue that no claim names at all is forgotten, retry included.
+A copy that is stored, a workspace that holds nothing unpushed, a copy a push overtook, and the refusals `release_bundle_saved` and `newer_copy_stands` below, which are no fault, owe no retry.
+The daemon keeps the retry in memory, so a daemon that restarts owes none, and the issue's next turn's end or push copies it again.
+A workspace over the 40 MiB bound is refused by the shim itself, which builds the bundle, finds it too large and answers with its size in place of its bytes;
+the daemon logs that copy under `bundle_too_large` with the size as `bytes`, and cancels an idle release's save over the same bound under the `bundle_too_large` hold ([Idle release](#idle-release)).
 
 Once an idle release has saved its bundle, that bundle is the pod's last copy.
 No running copy is taken off that pod afterwards, at a push or for any other reason, and no running copy taken earlier supersedes it, since the save deletes the issue's running copy in its own transaction.
@@ -5067,7 +5077,7 @@ The confirmation counts only from the pod the copy was sent to: a report from an
 A restored running copy stays in its row, names the new pod as the pod its work is on, and takes a new `restore_id` with no attempt spent.
 A restored release bundle leaves `workspace_bundles` and is written into `workspace_running_copies` in the same transaction, unless the issue's running copy is the newer of the two by the rule above, in which case that copy stays as it is.
 Either way both of the kept row's times, `at` and `written_at`, are the moment of the confirmation by the database's clock, not the times of the copy it keeps.
-The new pod's disk is then the only place the work is, and a pod whose agents come up Ready and take no turn takes no copy of its own: neither a turn's end nor the cadence copies it, and only a push would.
+The new pod's disk is then the only place the work is, and a pod whose agents come up Ready and take no turn takes no copy of its own: no turn ends to copy it, the cadence copies an issue between turns only to retry a copy that came to nothing, and otherwise only a push would.
 So a second end of that pod from outside before any turn of it, such as an eviction of a `Burstable` pod, still restores the work: the pod after it first asks after the confirmation and is sent the kept copy, whatever the API server's clock stamped it created at, and the pod that restored it is sent nothing of it, since its own workspace holds the work.
 The confirmation's time is what keeps a push recorded before it, such as GitHub's "Update branch" during a release, from refusing the kept copy under the time rule below; a push recorded after it takes a copy of its own off the new pod's live roles.
 Like any running copy, the kept copy is replaced by the pod's next copy, goes when an idle release of that pod saves its bundle, and goes when the workspace holds nothing unpushed.

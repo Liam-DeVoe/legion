@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +59,10 @@ type releaseRuntime struct {
 	// place in the cadence's single flight held (runningCopies.hold): a test sets it to make
 	// something happen while the save is building its bundle.
 	beforeBundle func()
+	// shim, when set, is the role's connection the save's bundle is asked over, as the Kubernetes
+	// runtime asks it (shimBundle), in place of bundle and bundleErr: a test sets the connection's
+	// bundle and meets what the shim answers, its refusal of a bundle over the bound included.
+	shim *fake.Conn
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
@@ -74,16 +80,33 @@ func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
 	return r.sandboxName, true
 }
 
-func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
+func (r *releaseRuntime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
 	r.bundled = append(r.bundled, role)
-	hook := r.beforeBundle
+	hook, shim := r.beforeBundle, r.shim
 	bundle, err := r.bundle, r.bundleErr
 	r.mu.Unlock()
 	if hook != nil {
 		hook()
 	}
+	if shim != nil {
+		return shimBundle(ctx, shim, issue)
+	}
 	return bundle, err
+}
+
+// shimBundle asks conn for issue's workspace bundle as the Kubernetes runtime asks a role's shim
+// (sandbox's Runtime.BundleWorkspace): over the role's connection, under the runtimes' own
+// budget, with the connection's error wrapped and the bundle named by the pod it came off. The
+// fake connection answers what its test set (fake.Conn.SetWorkspaceBundle) as the shim and the
+// stream answer it, so a bundle over the bound is refused with its size and never arrives.
+func shimBundle(ctx context.Context, conn *fake.Conn, issue string) (runtime.WorkspaceBundle, error) {
+	bundle, err := conn.BundleWorkspace(ctx, issue, runtime.WorkspaceBundleTimeout)
+	if err != nil {
+		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over the rig's shim: %w", issue, err)
+	}
+	bundle.PodUID = releasedPodUID
+	return bundle, nil
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
@@ -747,20 +770,35 @@ func TestATurnStartedAfterTheMarkCancelsTheRelease(t *testing.T) {
 
 // A bundle the release cannot save stops it: the pod stays, every claim the release suspended is
 // resumed into it, and no Sandbox is torn down. The work a role has not pushed is kept at the
-// cost of a pod, never dropped to save one.
+// cost of a pod, never dropped to save one. The pod's hold names which it was: a bundle that could
+// not be built, or one too large to carry, which the shim refuses itself with the size it came to
+// and which the release's line names.
 func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		bundle runtime.WorkspaceBundle
-		err    error
+		name string
+		// fail makes the save's bundle fail that way.
+		fail func(rig *idleRig)
+		hold workflow.IdleHold
+		// says is what the release's line says of the bundle, where the case pins it.
+		says string
 	}{
-		{name: "the bundle could not be built", err: errors.New("the launcher answered nothing")},
-		{name: "the bundle is over the bound", bundle: runtime.WorkspaceBundle{Bundle: make([]byte, runtime.MaxWorkspaceBundleBytes+1)}},
+		{name: "the bundle could not be built", hold: workflow.IdleHoldBundleSave,
+			fail: func(rig *idleRig) { rig.rt.bundleErr = errors.New("the launcher answered nothing") }},
+		{name: "the shim refuses the bundle as over the bound", hold: workflow.IdleHoldBundleTooLarge,
+			says: strconv.Itoa(runtime.MaxWorkspaceBundleBytes + 1),
+			fail: func(rig *idleRig) {
+				shim := fake.NewConn()
+				shim.SetWorkspaceBundle(runtime.WorkspaceBundle{Bundle: make([]byte, runtime.MaxWorkspaceBundleBytes+1),
+					Head: "abc", Tips: []string{"abc"}})
+				rig.rt.shim = shim
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newIdleRig(t)
 			ctx := context.Background()
-			rig.rt.bundle, rig.rt.bundleErr = tc.bundle, tc.err
+			logs := &syncBuffer{}
+			rig.runner.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			tc.fail(rig)
 
 			rig.w.releaseIdlePods(ctx)
 			rig.drain(t)
@@ -777,6 +815,12 @@ func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
 			}
 			if rig.marked(t) {
 				t.Fatal("the stopped release left its mark behind")
+			}
+			if holds := rig.records(t).Holds; len(holds) != 1 || holds[0].Reason != tc.hold.String() {
+				t.Fatalf("holds = %+v, want the one %s", holds, tc.hold)
+			}
+			if line := logs.String(); !strings.Contains(line, "hold="+tc.hold.String()) || !strings.Contains(line, tc.says) {
+				t.Fatalf("the release logged:\n%s\nwant its cancel under %s naming %q", line, tc.hold, tc.says)
 			}
 		})
 	}

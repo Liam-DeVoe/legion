@@ -9,15 +9,16 @@ import (
 )
 
 // docs/kubernetes.md's cadence paragraphs and its paragraph on what each kind of pod end loses and
-// keeps are checked here, because two of their facts are this package's constants: how often the
-// daemon copies a running pod's workspace (runningCopyPeriod) and the line a copy that was not
-// stored is logged with (runningCopyUnsavedLine). An operator reads the period to know how much
-// work an end the cluster made can cost, and searches the log for the line. So the check reads
-// both from the constants themselves: a period or a line changed here is a document that must
-// change with it, and nobody has to remember to edit this file. The two regions' markers are
-// written here alone, so a reworded paragraph is one marker to change. The sandbox runtime's own
-// doc test (internal/runtime/sandbox's workspace_copy_doc_test.go) checks the document's other
-// paragraphs on the copy and on pod ends through the same reader, internal/testdoc.
+// keeps are checked here, because three of their facts are this package's constants: how often the
+// daemon copies a running pod's workspace (runningCopyPeriod), how long one copy is given
+// (runningCopyBudget) and the line a copy that was not stored is logged with
+// (runningCopyUnsavedLine). An operator reads the period to know how much work an end the cluster
+// made can cost, and searches the log for the line. So the check reads each from the constants
+// themselves: a period, a budget or a line changed here is a document that must change with it,
+// and nobody has to remember to edit this file. The two regions' markers are written here alone,
+// so a reworded paragraph is one marker to change. The sandbox runtime's own doc test
+// (internal/runtime/sandbox's workspace_copy_doc_test.go) checks the document's other paragraphs
+// on the copy and on pod ends through the same reader, internal/testdoc.
 //
 // Each check reads one region of the document, bounded by its first and last words, and fails by
 // naming the marker it could not find: a phrase found anywhere in a document of thousands of lines
@@ -31,13 +32,14 @@ import (
 // tests' to say.
 const (
 	copyCadenceStart = "The daemon keeps a copy of each issue workspace's unpushed work outside the pod while the pod runs"
-	copyCadenceEnd   = "and the next period tries again."
+	copyCadenceEnd   = "under the `bundle_too_large` hold"
 
 	endsApartStart = "Three ends differ in what reaches the issue's next pod"
 	endsApartEnd   = "and each role's session row."
 )
 
-// The cadence paragraphs state the period from runningCopyPeriod and the line from
+// The cadence paragraphs state the period from runningCopyPeriod, the bound on two starts from it
+// and the daemon's tick, the budget from runningCopyBudget, and the line from
 // runningCopyUnsavedLine, and the bullet for an end the cluster made states how far behind the
 // restored copy can be, which is the same period.
 func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
@@ -47,6 +49,9 @@ func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
 	_, region := testdoc.Region(t, "docs/kubernetes.md", cadence, copyCadenceStart, copyCadenceEnd)
 	testdoc.RequireDocFacts(t, cadence, region, []testdoc.Fact{
 		{Fact: "the second trigger and its bound, runningCopyPeriod", Phrase: "every " + period + " while a turn of that issue runs"},
+		{Fact: "the bound on the starts of two copies of one turn, runningCopyPeriod less idleTickInterval at the least",
+			Phrase: "start at most " + period + " apart and never less than " + docMinutes(t, runningCopyPeriod-idleTickInterval) + " apart"},
+		{Fact: "the budget a copy is given, runningCopyBudget", Phrase: "still building after " + docMinutes(t, runningCopyBudget)},
 		{Fact: "the line a copy that was not stored is logged with, runningCopyUnsavedLine", Phrase: runningCopyUnsavedLine},
 	})
 
@@ -60,15 +65,16 @@ func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
 }
 
 // The copy's cadence: its first trigger and where its period runs from, one copy of an issue in
-// flight, no turn waiting for one, the role it is asked of, where it is stored, and what a copy that
-// fails costs. Its 5-minute bound and the line a copy that was not stored writes are this package's
-// constants, checked against them (TestKubernetesDocStatesTheRunningCopysConstants).
+// flight, no turn waiting for one, the role it is asked of, where it is stored, what a copy that
+// fails costs, its retry between turns, and the shim's own refusal of a workspace over the bound.
+// Its 5-minute bound and the line a copy that was not stored writes are this package's constants,
+// checked against them (TestKubernetesDocStatesTheRunningCopysConstants).
 func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 	const what = `docs/kubernetes.md's cadence paragraphs of "The copy of a running pod's workspace"`
 	_, region := testdoc.Region(t, "docs/kubernetes.md", what, copyCadenceStart, copyCadenceEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
 		{Fact: "the first trigger, a turn's end", Phrase: "the end of each turn of the issue"},
-		{Fact: "that the period runs from the end of the copy before it", Phrase: "from the end of the copy before it"},
+		{Fact: "that the period runs from the start of the copy before it", Phrase: "from the start of the copy before it"},
 		{Fact: "that one copy of an issue is in flight at a time", Phrase: "One copy of an issue is in flight at a time"},
 		{Fact: "that no turn waits for a copy", Phrase: "No turn waits for a copy"},
 		{Fact: "the role the copy is asked of", Phrase: "the first live role of the issue that has a running process"},
@@ -77,6 +83,10 @@ func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 		{Fact: "that it is never stored in the idle release's row", Phrase: "never in the `workspace_bundles` row"},
 		{Fact: "that the line carries the reason by name", Phrase: "with the reason by name"},
 		{Fact: "that a failed copy leaves the issue the copy it had", Phrase: "the issue keeps the copy it had"},
+		{Fact: "that a copy that came to nothing is tried again between turns", Phrase: "That retry comes between turns as well"},
+		{Fact: "that a retry waits for a live role of its issue", Phrase: "A retry waits for a live role of its issue"},
+		{Fact: "that an issue with no live role is skipped with no line", Phrase: "skips such an issue with no log line and keeps its retry"},
+		{Fact: "that the shim refuses a workspace over the bound itself", Phrase: "is refused by the shim itself"},
 	})
 }
 

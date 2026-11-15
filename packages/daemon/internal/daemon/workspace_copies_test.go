@@ -70,14 +70,17 @@ func (b *copyBundler) holds(hold func(context.Context) (runtime.WorkspaceBundle,
 }
 
 // copyRig is the idle release's rig with the cadence wired onto it: the daemon's store, a bundler
-// of the test's own and a log the test reads back as records. Its issue is the rig's — one live
-// implementer, idle with its phase's task pending, on a pod that has been quiet — so a test that
-// wants a turn in flight starts one (turnStart).
+// of the test's own, a log the test reads back as records, and the cadence's clock. Its issue is
+// the rig's — one live implementer, idle with its phase's task pending, on a pod that has been
+// quiet — so a test that wants a turn in flight starts one (turnStart).
 type copyRig struct {
 	*idleRig
 	bundler *copyBundler
 	conn    *fake.Conn
 	logs    *testlog.Buffer
+	// clock is the cadence's clock (runningCopies.now): the wall clock until a test moves it, and
+	// held where the test put it from then on.
+	clock *heldClock
 }
 
 // copyRigBundle is what the rig's bundler answers: a copy of the issue workspace's unpushed work,
@@ -98,6 +101,8 @@ func newCopyRig(t *testing.T) *copyRig {
 	// A copy owed behind a release's save is started by the cadence's own start once the save gives
 	// the place back, as attach wires it.
 	rig.w.copies.startsOwedWith(rig.w.startOwedCopy)
+	clock := &heldClock{}
+	rig.w.copies.now = clock.Now
 	// The copies run under the daemon's run, as attach and run wire them; the test's own end is
 	// that run's.
 	run, stop := context.WithCancel(context.Background())
@@ -109,7 +114,7 @@ func newCopyRig(t *testing.T) *copyRig {
 		t.Fatalf("the rig's connections are %T, want the package's fake", rig.sup.deps.Conns)
 	}
 	conns.Register(rig.token, conn)
-	return &copyRig{idleRig: rig, bundler: bundler, conn: conn, logs: logs}
+	return &copyRig{idleRig: rig, bundler: bundler, conn: conn, logs: logs, clock: clock}
 }
 
 // turnStart puts the issue's implementer in a turn of its phase's task, as its agent's stream
@@ -221,13 +226,22 @@ func (r *copyRig) awaitQuiet(t *testing.T) {
 	}
 }
 
-// wind puts the issue's last copy a whole period in the past, so the next pass of the cadence
-// finds it due. It is the one thing a test cannot drive with the clock: the period is measured
-// from the end of the copy before it, which this process recorded.
+// wind moves the cadence's clock a whole period on, so the next pass of the cadence finds the
+// issue due: the period is counted from the start of the issue's last copy, which the cadence
+// read off that clock. It waits for the copy in flight to end first, so the move lands after it.
 func (r *copyRig) wind(t *testing.T) {
 	t.Helper()
 	r.awaitQuiet(t)
-	r.w.copies.done(r.issue.Key, time.Now().Add(-runningCopyPeriod))
+	r.clock.advance(runningCopyPeriod)
+}
+
+// asksStay fails if the bundler is asked more than count times within a second, which is how a
+// test reads that a pass of the cadence started no copy: a copy runs on a goroutine of its own.
+func (r *copyRig) asksStay(t *testing.T, count int) {
+	t.Helper()
+	if testwait.Holds(time.Second, testwait.Poll, func() bool { return len(r.bundler.reads()) > count }) {
+		t.Fatalf("the bundler was asked %v, want no more than %d asks; the daemon logged:\n%s", r.bundler.reads(), count, r.logs.String())
+	}
 }
 
 // lines is every log record the daemon wrote under msg, as its attributes.
@@ -298,8 +312,8 @@ func TestATurnThatEndsBundlesACopyOfTheIssueWorkspace(t *testing.T) {
 
 // Five minutes inside a turn the cadence takes a copy of its own: a turn that runs for an hour
 // would otherwise have its work held by no copy until it ended, which is the whole of what an
-// eviction takes. The period runs from the end of the copy before it, so a pass before it has
-// passed takes nothing and a pass after it takes another.
+// eviction takes. The period runs from the start of the copy before it, so a pass before it is
+// due takes nothing and a pass after it takes another.
 func TestFiveMinutesIntoATurnTheCadenceBundlesTheWorkspaceCopyAgain(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
@@ -496,15 +510,18 @@ func TestABlockingBundlerDelaysNoTurnEndAndItsWorkspaceCopyIsAbandonedAtItsBudge
 // issue holding the copy it had, and leaves the issue free to be copied again: the cadence is a
 // saving against an eviction, so a copy that failed costs the issue nothing but the period.
 //
-// The three are driven through the one function every path runs (takeRunningCopy) rather than
-// through the tick, because one of them cannot be reached from a tick at all: an issue the tick
-// copies is an issue with a turn in flight, and a claim in a turn is a claim with a process. The
-// role goes where the process does — a death between the report of the turn's end and the read of
-// the claims — which is the turn's end path.
+// They are driven through the one function every path runs (takeRunningCopy) rather than
+// through the tick, because the tick reaches one of them only on its retry: an issue the tick
+// copies inside a turn has a claim in a turn, which is a claim with a process. The role goes where
+// the process does — a death between the report of the turn's end and the read of the claims —
+// which is the turn's end path. A workspace over the bound a copy carries is refused by the shim
+// with its size, and reaches the daemon as the fake connection answers it, as production's does.
 func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsItWas(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		reason string
+		// bytes is the size the line names, where the case pins one.
+		bytes int
 		// fail makes the copy fail that way, and mend puts back whatever it took.
 		fail func(t *testing.T, rig *copyRig)
 		mend func(t *testing.T, rig *copyRig)
@@ -517,12 +534,16 @@ func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsI
 			},
 		},
 		{
-			name:   "the unpushed work is over the bound a copy carries",
+			name:   "the shim refuses the unpushed work as over the bound a copy carries",
 			reason: runningCopyTooLarge,
+			bytes:  runtime.MaxWorkspaceBundleBytes + 1,
 			fail: func(_ *testing.T, rig *copyRig) {
 				over := copyRigBundle
-				over.Bundle, over.At = make([]byte, runtime.MaxWorkspaceBundleBytes+1), time.Now().UTC()
-				rig.bundler.answers(over, nil)
+				over.Bundle = make([]byte, runtime.MaxWorkspaceBundleBytes+1)
+				rig.conn.SetWorkspaceBundle(over)
+				rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
+					return shimBundle(ctx, rig.conn, rig.issue.Key)
+				})
 			},
 		},
 		{
@@ -552,6 +573,9 @@ func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsI
 			}
 			if got := line["issue"]; got != rig.issue.Key {
 				t.Fatalf("the line names issue %v, want %s", got, rig.issue.Key)
+			}
+			if got, ok := line["bytes"].(float64); tc.bytes != 0 && (!ok || int(got) != tc.bytes) {
+				t.Fatalf("the line reads bytes %v, want the %d the shim's refusal named", line["bytes"], tc.bytes)
 			}
 			after, held := rig.facts(t)
 			if !held || after.Size != before.Size || !after.At.Equal(before.At) {
@@ -674,38 +698,48 @@ func TestTheWorkspaceCopyIsBundledWhileTheEnvoyListenerIsSilent(t *testing.T) {
 }
 
 // The cadence's own memory holds one entry per issue it has copied, and an entry whose copy is
-// not in flight and whose period has passed answers due exactly as a missing one does. Such an
-// entry is dropped where the map is written, so a daemon that runs for weeks holds entries for
-// the issues it is copying rather than for every issue it has ever copied.
+// not in flight, that owes no retry and whose period has passed answers due exactly as a missing
+// one does. Such an entry is dropped where the map is written, so a daemon that runs for weeks
+// holds entries for the issues it is copying rather than for every issue it has ever copied. An
+// entry whose last copy came to nothing is kept whatever its age: dropped, it would owe no retry,
+// and an issue between turns would never be copied again.
 func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T) {
-	var copies runningCopies
-	now := time.Now()
-	for _, issue := range []string{"INFRA-1", "INFRA-2"} {
+	clock := &heldClock{}
+	clock.advance(0)
+	copies := runningCopies{now: clock.Now}
+	for _, issue := range []string{"INFRA-1", "INFRA-2", "INFRA-4"} {
 		if !copies.begin(issue) {
 			t.Fatalf("the cadence refused the first copy of %s", issue)
 		}
-		copies.done(issue, now.Add(-2*runningCopyPeriod))
 	}
+	copies.done("INFRA-1", false)
+	copies.done("INFRA-2", false)
+	copies.done("INFRA-4", true)
+	clock.advance(2 * runningCopyPeriod)
 	if !copies.begin("INFRA-3") {
 		t.Fatal("the cadence refused the first copy of INFRA-3")
 	}
 
-	copies.done("INFRA-3", now)
+	copies.done("INFRA-3", false)
 
 	copies.mu.Lock()
 	held := slices.Sorted(maps.Keys(copies.issues))
 	copies.mu.Unlock()
-	if want := []string{"INFRA-3"}; !slices.Equal(held, want) {
-		t.Fatalf("the cadence remembers %v, want %v: an entry whose period has passed is dropped where the map is written", held, want)
+	if want := []string{"INFRA-3", "INFRA-4"}; !slices.Equal(held, want) {
+		t.Fatalf("the cadence remembers %v, want %v: an entry whose period has passed is dropped where the map is written, unless it owes a retry", held, want)
 	}
 	// The issues it forgot are due at once, which is what the entries it dropped said too.
+	now := clock.Now()
 	for _, issue := range []string{"INFRA-1", "INFRA-2"} {
-		if !copies.due(issue, now) {
+		if !copies.due(issue, now, idleTickInterval) {
 			t.Fatalf("%s is not due though the cadence forgot it; a dropped entry must answer as a missing one", issue)
 		}
 	}
-	if copies.due("INFRA-3", now) {
+	if copies.due("INFRA-3", now, idleTickInterval) {
 		t.Fatal("the copy that just ended is due again at once")
+	}
+	if owed := copies.retries(); !slices.Equal(owed, []string{"INFRA-4"}) {
+		t.Fatalf("the cadence owes retries of %v, want the one issue whose copy came to nothing", owed)
 	}
 }
 
@@ -734,11 +768,11 @@ func TestTheWorkspaceCopyTickDoesNothingWithoutABundlerOrAStore(t *testing.T) {
 
 // A turn that ends while the cadence's copy of its issue is still being built is copied again
 // once that copy ends. The copy in flight was read before the turn's last work was written, and
-// the cadence takes no copy of an issue between turns, so without a copy after it the newest
-// copy of a pod whose roles are all idle is not the one its last turn ended with, which is what
-// the daemon holds itself to (dispatch://INFRA-1117/spec#b-r1): an eviction of that idle pod
-// then loses the end of the turn. One copy of an issue is still in flight at a time; the turn's
-// end is owed, not dropped.
+// the cadence takes no copy between turns of an issue whose last copy was stored, so without a
+// copy after it the newest copy of a pod whose roles are all idle is not the one its last turn
+// ended with, which is what the daemon holds itself to (dispatch://INFRA-1117/spec#b-r1): an
+// eviction of that idle pod then loses the end of the turn. One copy of an issue is still in
+// flight at a time; the turn's end is owed, not dropped.
 func TestATurnThatEndsWhileACopyIsInFlightIsCopiedAgainOnceThatCopyEnds(t *testing.T) {
 	rig := newCopyRig(t)
 	rig.sup.OnDurableState(rig.w.claimDurableState)
@@ -768,10 +802,198 @@ func TestATurnThatEndsWhileACopyIsInFlightIsCopiedAgainOnceThatCopyEnds(t *testi
 	rig.turnEnd(t)
 
 	close(release)
-	// The issue is between turns now, so no pass of the cadence would copy it again: the copy
-	// the turn's end owed is the only one that can hold that work.
+	// The issue is between turns now and the copy in flight is stored, so no pass of the cadence
+	// would copy it again: the copy the turn's end owed is the only one that can hold that work.
 	rig.awaitCopy(t, len(ended.Bundle))
 	if asked := rig.bundler.reads(); len(asked) != 2 {
 		t.Fatalf("the bundler was asked %v, want the copy in flight and the one the turn's end owed after it", asked)
+	}
+}
+
+// Inside a turn the cadence starts its copies of one issue at most a period apart when the
+// daemon's tick arrives on time, and never less than a period less one tick apart
+// (runningCopyPeriod). The period is counted from the start of the copy before it: a copy holds
+// the workspace as it was when it started, so an eviction loses the work since that start, and a
+// period counted from the copy's end would let a copy that took two minutes put the next start
+// seven minutes after its own. Here the first copy takes two minutes of the cadence's clock, and
+// the tick comes every minute, on the minute.
+func TestTheCadenceStartsTheCopiesOfOneTurnAtMostAPeriodApart(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	tick := rig.w.copyTick()
+	rig.clock.advance(0)
+	// starts is the cadence's clock as the bundler is asked for each copy, which is when that copy
+	// took the issue's place: the clock does not move while a copy is being started.
+	var mu sync.Mutex
+	var starts []time.Time
+	release := make(chan struct{})
+	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
+		mu.Lock()
+		starts = append(starts, rig.clock.Now())
+		first := len(starts) == 1
+		mu.Unlock()
+		if first {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return runtime.WorkspaceBundle{}, ctx.Err()
+			}
+		}
+		taken := copyRigBundle
+		taken.At = time.Now().UTC()
+		return taken, nil
+	})
+	started := func() []time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(starts)
+	}
+	// pass is one tick of the cadence at the clock's time. A copy the tick starts reads the clock
+	// as it takes the issue's place, so the test moves the clock on only once that copy holds the
+	// place, or the tick found the issue not due.
+	pass := func() {
+		t.Helper()
+		rig.w.copyWorkingWorkspaces(ctx)
+		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+			return !rig.w.copies.due(rig.issue.Key, rig.clock.Now(), tick)
+		}) {
+			t.Fatalf("the copy the tick at %s found due never started; the daemon logged:\n%s", rig.clock.Now(), rig.logs.String())
+		}
+	}
+	rig.turnStart(t)
+
+	pass()
+	rig.awaitAsks(t, 1)
+	// The first copy is still being built at the next two ticks, and ends after the second.
+	for range 2 {
+		rig.clock.advance(tick)
+		pass()
+	}
+	close(release)
+	rig.awaitQuiet(t)
+	for minute := 3; len(started()) < 2 && minute <= 10; minute++ {
+		rig.clock.advance(tick)
+		pass()
+		rig.awaitQuiet(t)
+	}
+
+	got := started()
+	if len(got) < 2 {
+		t.Fatalf("the cadence started %d copies in ten minutes of one turn, want a second one; the daemon logged:\n%s", len(got), rig.logs.String())
+	}
+	if apart := got[1].Sub(got[0]); apart > runningCopyPeriod || apart < runningCopyPeriod-tick {
+		t.Fatalf("the turn's second copy started %s after its first, want at most %s and no less than %s", apart, runningCopyPeriod, runningCopyPeriod-tick)
+	}
+}
+
+// A copy that comes to nothing at a turn's end is taken again at the next period, though the
+// issue is between turns by then. That copy was the only one to hold the work the turn ended
+// with, and nothing else copies an idle issue's workspace, so without the retry an eviction of the
+// idle pod would restore a copy from before that turn's end. The stored copy pays the retry: the
+// cadence then leaves the idle issue alone, as it leaves every issue between turns whose last copy
+// holds the turn's end.
+func TestACopyThatFailedAtATurnsEndIsTakenAgainBetweenTurnsUntilOneIsStored(t *testing.T) {
+	rig := newCopyRig(t)
+	rig.sup.OnDurableState(rig.w.claimDurableState)
+	ctx := context.Background()
+	rig.clock.advance(0)
+	rig.bundler.answers(runtime.WorkspaceBundle{}, errors.New("the shim answered nothing"))
+	rig.turnStart(t)
+	rig.turnEnd(t)
+	if line := rig.awaitLine(t, runningCopyUnsavedLine); line["reason"] != runningCopyBundlerFailed {
+		t.Fatalf("the turn's end copy is logged as %v, want reason %s", line, runningCopyBundlerFailed)
+	}
+	rig.awaitQuiet(t)
+	ended := copyRigBundle
+	ended.Bundle, ended.Head, ended.Tips, ended.At = []byte("PACK the work the turn ended with"), "beef", []string{"beef"}, time.Now().UTC()
+	rig.bundler.answers(ended, nil)
+
+	// Inside the period the idle issue is left alone.
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.asksStay(t, 1)
+
+	// At the next period the cadence takes it again, its roles idle, and stores it.
+	rig.wind(t)
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.awaitCopy(t, len(ended.Bundle))
+	if got := rig.machine.Claim().State; got != supervise.StateIdle {
+		t.Fatalf("the claim is %s while the retry was taken, want the idle its turn's end left", got)
+	}
+
+	// The stored copy paid the retry, so the periods after it take nothing.
+	for range 2 {
+		rig.wind(t)
+		rig.w.copyWorkingWorkspaces(ctx)
+	}
+	rig.asksStay(t, 2)
+}
+
+// A copy that found no live role owes a retry like any other copy that came to nothing, and the
+// retry waits for a live role: an issue whose roles were released or stopped has no running pod
+// whose work a copy could hold, so each due tick skips it, asks no shim and writes no line, and
+// the issue keeps its retry. Once a resumed or relaunched pod's role is live, the first due tick
+// takes the copy and stores it, and the stored copy pays the retry.
+func TestTheCadencesRetryWaitsForALiveRoleAndWritesNoLineWithoutOne(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	rig.clock.advance(0)
+	rig.setClaimState(t, "suspended")
+	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	if lines := rig.awaitUnsaved(t, runningCopyNoRole, 1); lines[0]["level"] != "WARN" {
+		t.Fatalf("the turn's end that found no role is logged as %v, want it at WARN", lines[0])
+	}
+
+	// Two due ticks while no role is live ask nothing and log nothing.
+	for range 2 {
+		rig.wind(t)
+		rig.w.copyWorkingWorkspaces(ctx)
+	}
+	if testwait.Holds(time.Second, testwait.Poll, func() bool { return len(rig.lines(t, runningCopyUnsavedLine)) > 1 }) {
+		t.Fatalf("the cadence logged a retry of an issue with no live role; the daemon logged:\n%s", rig.logs.String())
+	}
+	if asked := rig.bundler.reads(); len(asked) != 0 {
+		t.Fatalf("the bundler was asked %v for an issue with no live role", asked)
+	}
+
+	// A role is live again, and the retry is due: the tick takes the copy and stores it.
+	rig.setClaimState(t, "idle")
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.awaitCopy(t, len(copyRigBundle.Bundle))
+	rig.wind(t)
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.asksStay(t, 1)
+}
+
+// The cadence forgets an issue that no claim of the project names at all — the issue of a branch
+// pushed from outside, never run in this project, or one whose claims are gone — retry and all,
+// since no copy of it can ever be stored to clear that retry, and the cadence's memory would grow
+// with every such issue. A push of such an issue's branch still logs its copy that found no role
+// at Debug. An issue with a claim keeps its retry whatever state its claim is in.
+func TestTheCadenceForgetsTheRetryOfAnIssueNoClaimNamesAndKeepsAClaimedIssues(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	const unclaimed = "LEGION-404"
+	rig.setClaimState(t, "suspended")
+	rig.w.copyWorkspaceAtPush(unclaimed)
+	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	for _, line := range rig.awaitUnsaved(t, runningCopyNoRole, 2) {
+		if line["issue"] == unclaimed && line["level"] != "DEBUG" {
+			t.Fatalf("the push's copy of an issue no claim names is logged as %v, want it at DEBUG", line)
+		}
+	}
+	if owed := rig.w.copies.retries(); !slices.Equal(owed, []string{rig.issue.Key, unclaimed}) {
+		t.Fatalf("the cadence owes retries of %v, want both copies that found no role", owed)
+	}
+
+	rig.w.copyWorkingWorkspaces(ctx)
+
+	if owed := rig.w.copies.retries(); !slices.Equal(owed, []string{rig.issue.Key}) {
+		t.Fatalf("after a pass the cadence owes retries of %v, want only %s, whose claim it read", owed, rig.issue.Key)
+	}
+	rig.w.copies.mu.Lock()
+	_, remembered := rig.w.copies.issues[unclaimed]
+	rig.w.copies.mu.Unlock()
+	if remembered {
+		t.Fatalf("the cadence still remembers %s, which no claim names", unclaimed)
 	}
 }

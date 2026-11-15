@@ -283,6 +283,13 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 // runs its jj reads and its `git bundle create` within timeout; the answer is awaited for that
 // plus the RPC timeout, the round trip, and crosses as an rpc_chunk sequence when the bundle is
 // larger than one line.
+//
+// The frame carries runtime.MaxWorkspaceBundleBytes as its bound, and the shim refuses a bundle
+// over it with the size the bundle came to: it builds the bundle before it can read the size, so
+// that refusal is the one that names a size over the bound. It is answered as a
+// *runtime.WorkspaceBundleTooLargeError, which the daemon records as a workspace too large to
+// carry; every other refusal, one naming a size within the bound or none, is a *RefusedError, a
+// bundle the shim could not build.
 func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (runtime.WorkspaceBundle, error) {
 	id := rand.Text()
 	frame := shimwire.BundleWorkspace{
@@ -301,6 +308,9 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 			return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 		}
 		if !answer.OK {
+			if answer.SizeBytes > frame.MaxBytes {
+				return runtime.WorkspaceBundle{}, &runtime.WorkspaceBundleTooLargeError{Bytes: answer.SizeBytes, Max: frame.MaxBytes}
+			}
 			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
 		}
 		// The shim's own time of its reading is left out: it is the node's clock, and a copy's

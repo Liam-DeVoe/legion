@@ -831,6 +831,55 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 	}
 }
 
+// The shim builds a workspace's bundle before it can read the bundle's size, and refuses one over
+// the bound the frame sent it, naming the size the bundle came to. That refusal, and no other, is
+// a workspace too large to carry: the daemon records an idle release it cancels for it under
+// `bundle_too_large`, and logs a running copy it could not take under the same name, where any
+// other refusal is a bundle the shim could not build. So a refusal naming a size over the bound is
+// a runtime.WorkspaceBundleTooLargeError carrying that size and the bound, and one naming a size
+// within the bound, or none, stays a RefusedError carrying the shim's words.
+func TestABundleTheShimRefusesOverTheBoundItWasSentIsTooLargeAndNoOtherRefusalIs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		size     int
+		tooLarge bool
+	}{
+		{name: "a size over the bound", size: runtime.MaxWorkspaceBundleBytes + 1, tooLarge: true},
+		{name: "a size at the bound", size: runtime.MaxWorkspaceBundleBytes},
+		{name: "no size", size: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := startListener(t, harnessOptions{})
+			p := h.connect(testToken)
+			result := async(func() error {
+				_, err := h.conn().BundleWorkspace(context.Background(), "INFRA-945", time.Minute)
+				return err
+			})
+			request := p.expect(shimwire.TypeBundleWorkspace).(shimwire.BundleWorkspace)
+			if request.MaxBytes != runtime.MaxWorkspaceBundleBytes {
+				t.Fatalf("the frame bounds the bundle at %d bytes, want %d", request.MaxBytes, runtime.MaxWorkspaceBundleBytes)
+			}
+			reason := "worker-shim: the workspace could not be bundled"
+			p.send(shimwire.BundleWorkspaceResult{ID: request.ID, OK: false, Error: reason, SizeBytes: tc.size})
+			err := awaitResult(t, result)
+			var tooLarge *runtime.WorkspaceBundleTooLargeError
+			var refused *RefusedError
+			if tc.tooLarge {
+				if !errors.As(err, &tooLarge) || tooLarge.Bytes != tc.size || tooLarge.Max != request.MaxBytes {
+					t.Fatalf("err = %v, want a WorkspaceBundleTooLargeError of %d bytes over %d", err, tc.size, request.MaxBytes)
+				}
+				return
+			}
+			if errors.As(err, &tooLarge) {
+				t.Fatalf("err = %v, a refusal naming %d bytes within the bound read as too large", err, tc.size)
+			}
+			if !errors.As(err, &refused) || refused.Command != shimwire.TypeBundleWorkspace || refused.Reason != reason {
+				t.Fatalf("err = %v, want a RefusedError of %s carrying the shim's words", err, shimwire.TypeBundleWorkspace)
+			}
+		})
+	}
+}
+
 func TestAgentSecretsEnrollmentIsAnsweredByTheShim(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)
