@@ -100,7 +100,12 @@ request, `open_on_basis` and `pending_on_basis` with a `basis`, every root carri
 issue may stand in the phase and held word `awaiting_children`, and a caller from a pod whose claims
 record a contract under 147 is served no basis word, no `treeRuns` and `admitted` and
 `children_first` for that phase and word, `api.stateFor`, `withoutGateBasis`), after contract
-141's experiment assignments
+144's memory guard
+(dispatch://INFRA-3557: the daemon's answer to an issue pod launcher's hello, `launcher_hello_ack`,
+carries the guard's settings in `memoryGuard`, and the launcher reports each process its guard
+ended in a new `launcher_memory_kill` frame, which names the process by its executable and no
+argument; a launcher that reads an acknowledgement with no settings runs no guard, and no shape the
+plugin parses moves), after contract 141's experiment assignments
 (dispatch://INFRA-2566: each issue of `GET /legion/v1/state` carries `assignments`, one
 `{experiment, variant, mode, drawnAt}` per experiment answer that applies to it, absent from an
 issue no experiment holds an answer for; the reader this plugin parses the state through takes
