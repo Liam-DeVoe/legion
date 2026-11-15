@@ -189,8 +189,7 @@ as the fingerprint decides (*The reviewer*, below, and
   for no check at all. A red you approve over reaches nobody who will act on it: the tree runs
   on to the merge, where GitHub holds the pull request under the base branch's required checks
   until someone reads them. A red there is a `REQUEST_CHANGES` when the code is at fault, and
-  your own commit to fix when your prose broke it. The architect reads your prose commits at its
-  acceptance (*The architect's acceptance*, below), and that read is no new round.
+  your own commit to fix when your prose broke it.
 
 A reviewer's phase ends with its review, and the reviewer completes all the same. Every round records a handoff and
 takes this order: read CI as above; write the handoff and record it with `dispatch handoff-write`;
