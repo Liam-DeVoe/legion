@@ -25,6 +25,7 @@
 //	writing-check dataset classify --snapshot <snapshot.jsonl.gz> --out <verdicts.jsonl> [--model <id>]
 //	writing-check dataset build (--snapshot <file> --verdicts <file> --seed N | --from <bundle>) --out <dir>
 //	writing-check dataset pack --snapshot <file> --verdicts <file> --seed N --out <bundle.tar.gz>
+//	writing-check harness probe|score|grader-test|local|load [flags]
 //
 // probe-model measures the latency of the model reader's calls, fetch reads the prose agents
 // wrote from the live Dispatch event log as cases, and group joins the cases into the groups a
@@ -35,10 +36,10 @@
 // labeller, and validate-labeller checks the labeller against the planted cases. recall
 // measures the code stage's recall, digest hashes the bundle, score runs the detector on
 // labelled writes and computes the figures, reproduce recomputes them from the stored outputs,
-// regress runs the reader's regression cases, reading takes the outcome reading over a window,
 // and validate checks a description file. dataset builds the dataset of INFRA-3231's R1 from the
-// event log: a snapshot, the verdicts of the selection prompt, and the cases. README.md says what
-// each one does.
+// event log: a snapshot, the verdicts of the selection prompt, and the cases. harness scores the
+// changes of INFRA-3231's R3 on that dataset (package harness). README.md says what each one
+// does.
 package main
 
 import (
@@ -48,6 +49,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 )
 
 func main() {
@@ -76,6 +79,7 @@ subcommands:
   reading            take the outcome reading over a window of agent writes
   validate           check a description file (scanner.yaml) against the method's rules
   dataset            build the dataset of texts the owner could not read: fetch, classify, build, pack
+  harness            score the changes of INFRA-3231 on the dataset: probe, score, grader-test, local, load
 
 writing-check <subcommand> -h lists its flags.
 `
@@ -122,6 +126,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runValidate(args[1:], stdout, stderr)
 	case "dataset":
 		return runDataset(ctx, args[1:], stdout, stderr)
+	case "harness":
+		return harness.Run(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0

@@ -1,0 +1,418 @@
+package harness
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+)
+
+// Figures is a run's scores.json: every score of R2 for each population and case group, each
+// with its 95% interval, and the run's model use.
+type Figures struct {
+	Run         FigureRun    `json:"run"`
+	Populations []Population `json:"populations"`
+	// Models is each model's calls, tokens and cost over every result: the change's own calls
+	// apart from the readers' and the grader's.
+	Models []ModelUse `json:"models"`
+	// Prices are the price table's sources.
+	Prices map[string]PriceSource `json:"price_sources"`
+}
+
+// FigureRun is what the figures were made from.
+type FigureRun struct {
+	Params        RunParams `json:"params"`
+	Seed          uint64    `json:"seed"`
+	Draws         int       `json:"draws"`
+	Selected      int       `json:"cases_selected"`
+	Results       int       `json:"cases_with_a_result"`
+	WallSeconds   float64   `json:"wall_seconds_this_run"`
+	CallSeconds   float64   `json:"call_seconds_all_results"`
+	ScoredThisRun int       `json:"scored_this_run"`
+	FailedThisRun int       `json:"failed_this_run"`
+}
+
+// The populations every change is scored on (plan Decision 18): the whole part first.
+const (
+	PopulationWhole       = "whole part"
+	PopulationWithSession = "cases with a session"
+)
+
+// Population is the scores over one population of cases.
+type Population struct {
+	Name string `json:"name"`
+	// Groups are the scores of each case group, and All those every case takes, over every
+	// group.
+	Groups map[string]*GroupFigures `json:"groups"`
+	All    *GroupFigures            `json:"all"`
+}
+
+// Count is a count judgement's scores: the share of texts with at least one, and the count per
+// text.
+type Count struct {
+	WithAny Share `json:"with_any"`
+	PerText Mean  `json:"per_text"`
+}
+
+// GroupFigures is the scores of one case group, or of every group together.
+type GroupFigures struct {
+	Cases int            `json:"cases"`
+	Kinds map[string]int `json:"kinds"`
+	// Conversation counts the cases inside and outside a conversation.
+	Conversation map[string]int `json:"conversation"`
+	// Answered is the share of question and answer cases whose fresh reader answered the
+	// question; FirstParagraph the share of answer cases whose first-paragraph reader did.
+	Answered       *Share `json:"answered,omitempty"`
+	FirstParagraph *Share `json:"first_paragraph_answered,omitempty"`
+	// AnswerFound is the share of answer cases in which the grader found a sentence that
+	// answers; Words the length of the text, and WordsBefore the words before that sentence.
+	AnswerFound *Share `json:"answer_found,omitempty"`
+	Words       *Mean  `json:"words,omitempty"`
+	WordsBefore *Mean  `json:"words_before_answer,omitempty"`
+	// Harder is the share of plain cases whose new text is harder to read than the original.
+	Harder *Share `json:"harder_to_read,omitempty"`
+	// Define is the share of Define's definitions that answer the question.
+	Define *Share `json:"define_answers,omitempty"`
+	// Lost, Added, Phrases and Undefined are the count judgements.
+	Lost      *Count `json:"facts_lost,omitempty"`
+	Added     *Count `json:"facts_added,omitempty"`
+	Phrases   *Count `json:"phrases_stating_no_fact,omitempty"`
+	Undefined *Count `json:"undefined_words,omitempty"`
+	// Wait is the seconds a person waits for the text, and ChangeCost the change's own model
+	// cost per text, in USD.
+	Wait       *Mean `json:"wait_seconds,omitempty"`
+	ChangeCost *Mean `json:"change_cost_usd,omitempty"`
+}
+
+// ModelUse is one model's calls in the results.
+type ModelUse struct {
+	Model      string   `json:"model"`
+	Role       string   `json:"role"`
+	Use        string   `json:"use"`
+	Calls      int      `json:"calls"`
+	Attempts   int      `json:"attempts"`
+	Input      int      `json:"input_tokens"`
+	Output     int      `json:"output_tokens"`
+	CacheWrite int      `json:"cache_write_tokens"`
+	CacheRead  int      `json:"cache_read_tokens"`
+	CostUSD    float64  `json:"cost_usd"`
+	Served     []string `json:"served"`
+}
+
+// computeFigures is the figures of results, the cases of the selection that have one.
+func computeFigures(params RunParams, results []CaseResult, selected int, seed uint64, draws int, cfg Config) Figures {
+	f := Figures{
+		Run:    FigureRun{Params: params, Seed: seed, Draws: draws, Selected: selected, Results: len(results)},
+		Prices: cfg.Prices.Sources,
+	}
+	var withSession []CaseResult
+	for _, r := range results {
+		if r.Session {
+			withSession = append(withSession, r)
+		}
+	}
+	for _, pop := range []struct {
+		name    string
+		results []CaseResult
+	}{{PopulationWhole, results}, {PopulationWithSession, withSession}} {
+		p := Population{Name: pop.name, Groups: map[string]*GroupFigures{}}
+		for _, g := range params.Groups {
+			var in []CaseResult
+			for _, r := range pop.results {
+				if r.Group == g {
+					in = append(in, r)
+				}
+			}
+			p.Groups[g] = groupFigures(in, g, seed, draws)
+		}
+		p.All = groupFigures(pop.results, "", seed, draws)
+		f.Populations = append(f.Populations, p)
+	}
+	f.Models = modelUse(results, cfg)
+	for _, r := range results {
+		change, measure := r.calls()
+		for _, c := range append(change, measure...) {
+			f.Run.CallSeconds += c.Seconds
+		}
+	}
+	return f
+}
+
+// groupFigures is the scores of results, the cases of group (every group for "").
+func groupFigures(results []CaseResult, group string, seed uint64, draws int) *GroupFigures {
+	g := &GroupFigures{Cases: len(results), Kinds: map[string]int{}, Conversation: map[string]int{}}
+	splits := make([]string, len(results))
+	for i, r := range results {
+		splits[i] = r.SplitGroup
+		g.Kinds[r.Kind]++
+		if r.Conversation {
+			g.Conversation["inside"]++
+		} else {
+			g.Conversation["outside"]++
+		}
+	}
+	// verdicts is the share of results whose judgement j gave true, over those that have it.
+	verdicts := func(j Judgement) *Share {
+		var groups []string
+		var hits []bool
+		for _, r := range results {
+			if gr := r.Grades[j]; gr != nil && gr.Verdict != nil {
+				groups = append(groups, r.SplitGroup)
+				hits = append(hits, *gr.Verdict)
+			}
+		}
+		if len(groups) == 0 {
+			return nil
+		}
+		s := newShare(groups, hits, draws, seed)
+		return &s
+	}
+	// counts is the count judgement j's scores, over the results that have it.
+	counts := func(j Judgement) *Count {
+		var groups []string
+		var any []bool
+		var per []float64
+		byConstruction := true
+		for _, r := range results {
+			gr := r.Grades[j]
+			if gr == nil {
+				continue
+			}
+			groups = append(groups, r.SplitGroup)
+			any = append(any, gr.Count > 0)
+			per = append(per, float64(gr.Count))
+			byConstruction = byConstruction && gr.ByConstruction
+		}
+		if len(groups) == 0 {
+			return nil
+		}
+		if byConstruction {
+			return &Count{WithAny: byConstructionShare(groups), PerText: byConstructionMean(groups)}
+		}
+		return &Count{WithAny: newShare(groups, any, draws, seed), PerText: newMean(groups, per, draws, seed)}
+	}
+	mean := func(values func(CaseResult) (float64, bool)) *Mean {
+		var groups []string
+		var vs []float64
+		for _, r := range results {
+			if v, ok := values(r); ok {
+				groups = append(groups, r.SplitGroup)
+				vs = append(vs, v)
+			}
+		}
+		if len(groups) == 0 {
+			return nil
+		}
+		m := newMean(groups, vs, draws, seed)
+		return &m
+	}
+	g.Answered = verdicts(JAnswered)
+	g.FirstParagraph = verdicts(JFirstParagraph)
+	g.Harder = verdicts(JHarder)
+	g.Define = verdicts(JDefine)
+	g.Lost, g.Added = counts(JLost), counts(JAdded)
+	g.Phrases, g.Undefined = counts(JPhrases), counts(JUndefined)
+	if group == GroupAnswer {
+		var groups []string
+		var found []bool
+		for _, r := range results {
+			if gr := r.Grades[JAnswerStart]; gr != nil && gr.Found != nil {
+				groups = append(groups, r.SplitGroup)
+				found = append(found, *gr.Found && gr.WordsBefore != nil && *gr.WordsBefore >= 0)
+			}
+		}
+		if len(groups) > 0 {
+			s := newShare(groups, found, draws, seed)
+			g.AnswerFound = &s
+		}
+		g.Words = mean(func(r CaseResult) (float64, bool) { return float64(r.Words), true })
+		g.WordsBefore = mean(func(r CaseResult) (float64, bool) {
+			gr := r.Grades[JAnswerStart]
+			if gr == nil || gr.WordsBefore == nil || *gr.WordsBefore < 0 {
+				return 0, false
+			}
+			return float64(*gr.WordsBefore), true
+		})
+	}
+	if len(results) > 0 {
+		g.Wait = mean(func(r CaseResult) (float64, bool) { return r.WaitSeconds, true })
+		g.ChangeCost = mean(func(r CaseResult) (float64, bool) {
+			var cost float64
+			for _, c := range r.ChangeCalls {
+				cost += c.CostUSD
+			}
+			return cost, true
+		})
+	}
+	return g
+}
+
+// modelUse sums the calls of results by model and use (the change's own, or the measure's).
+func modelUse(results []CaseResult, cfg Config) []ModelUse {
+	by := map[string]*ModelUse{}
+	served := map[string]map[string]bool{}
+	add := func(c Call, use string) {
+		key := use + " " + c.Model
+		u := by[key]
+		if u == nil {
+			u = &ModelUse{Model: c.Model, Role: cfg.RoleOf(c.Model), Use: use}
+			by[key] = u
+			served[key] = map[string]bool{}
+		}
+		u.Calls++
+		u.Attempts += c.Attempts
+		u.Input += c.Input
+		u.Output += c.Output
+		u.CacheWrite += c.CacheWrite
+		u.CacheRead += c.CacheRead
+		u.CostUSD += c.CostUSD
+		if c.Served != "" {
+			served[key][c.Served] = true
+		}
+	}
+	for _, r := range results {
+		change, measure := r.calls()
+		for _, c := range change {
+			add(c, "change")
+		}
+		for _, c := range measure {
+			add(c, "measure")
+		}
+	}
+	keys := slices.Sorted(maps.Keys(by))
+	out := make([]ModelUse, 0, len(keys))
+	for _, k := range keys {
+		u := by[k]
+		u.Served = slices.Sorted(maps.Keys(served[k]))
+		out = append(out, *u)
+	}
+	return out
+}
+
+// pct is a share as a percentage with one decimal.
+func pct(v float64) string { return fmt.Sprintf("%.1f%%", 100*v) }
+
+// shareText is a share, its counts and its interval, as the report prints it.
+func shareText(s *Share) string {
+	if s == nil {
+		return "-"
+	}
+	if s.Share == nil {
+		return "no case"
+	}
+	if s.CI95.Method == MethodByConstruction {
+		return fmt.Sprintf("0 of %d (0, by construction)", s.Cases)
+	}
+	return fmt.Sprintf("%d of %d = %s [%s, %s]%s", s.Hits, s.Cases, pct(*s.Share), pct(s.CI95.Low), pct(s.CI95.High), methodMark(s.CI95.Method))
+}
+
+// meanText is a mean and its interval, as the report prints it.
+func meanText(m *Mean, unit string) string {
+	if m == nil {
+		return "-"
+	}
+	if m.Mean == nil {
+		return "no case"
+	}
+	if m.CI95.Method == MethodByConstruction {
+		return fmt.Sprintf("0 (by construction, %d texts)", m.Cases)
+	}
+	return fmt.Sprintf("%s%s [%s, %s] (%d texts)", num(*m.Mean), unit, num(m.CI95.Low), num(m.CI95.High), m.Cases)
+}
+
+func num(v float64) string {
+	if v == float64(int64(v)) {
+		return fmt.Sprintf("%d", int64(v))
+	}
+	return fmt.Sprintf("%.3g", v)
+}
+
+func methodMark(method string) string {
+	if method == MethodExact {
+		return " (exact bound over groups)"
+	}
+	return ""
+}
+
+// markdown is the figures as scores.md: for each population, a table of each group's scores.
+func (f Figures) markdown() string {
+	var b strings.Builder
+	p := f.Run.Params
+	fmt.Fprintf(&b, "# Change %s on the %s part\n\n", p.Change, p.Part)
+	fmt.Fprintf(&b, "Cases selected: %d; with a result: %d. Grader %s, fresh reader %s. Prompts SHA-256 %s.\n",
+		f.Run.Selected, f.Run.Results, p.Models[RoleGrader], p.Models[RoleReader], p.PromptsSHA256)
+	fmt.Fprintf(&b, "Every interval is 95%%: a cluster bootstrap over the split groups (%d draws, seed %d), or the exact bound over the groups where no failure or no success is seen.\n\n",
+		f.Run.Draws, f.Run.Seed)
+	for _, pop := range f.Populations {
+		fmt.Fprintf(&b, "## %s (%d cases)\n\n", pop.Name, pop.All.Cases)
+		b.WriteString("| Score | " + strings.Join(p.Groups, " | ") + " | all |\n")
+		b.WriteString("| --- |" + strings.Repeat(" --- |", len(p.Groups)+1) + "\n")
+		cols := make([]*GroupFigures, 0, len(p.Groups)+1)
+		for _, g := range p.Groups {
+			cols = append(cols, pop.Groups[g])
+		}
+		cols = append(cols, pop.All)
+		row := func(name string, cell func(*GroupFigures) string) {
+			cells := make([]string, len(cols))
+			for i, g := range cols {
+				cells[i] = cell(g)
+			}
+			b.WriteString("| " + name + " | " + strings.Join(cells, " | ") + " |\n")
+		}
+		row("cases", func(g *GroupFigures) string { return fmt.Sprintf("%d", g.Cases) })
+		row("kinds", func(g *GroupFigures) string { return countsText(g.Kinds) })
+		row("conversation", func(g *GroupFigures) string { return countsText(g.Conversation) })
+		row("answered", func(g *GroupFigures) string { return shareText(g.Answered) })
+		row("first paragraph answered", func(g *GroupFigures) string { return shareText(g.FirstParagraph) })
+		row("an answering sentence found", func(g *GroupFigures) string { return shareText(g.AnswerFound) })
+		row("length (words)", func(g *GroupFigures) string { return meanText(g.Words, "") })
+		row("words before the answer", func(g *GroupFigures) string { return meanText(g.WordsBefore, "") })
+		row("harder to read", func(g *GroupFigures) string { return shareText(g.Harder) })
+		row("definition answers", func(g *GroupFigures) string { return shareText(g.Define) })
+		for _, c := range []struct {
+			name  string
+			count func(*GroupFigures) *Count
+		}{
+			{"facts lost", func(g *GroupFigures) *Count { return g.Lost }},
+			{"facts added", func(g *GroupFigures) *Count { return g.Added }},
+			{"phrases that state no fact", func(g *GroupFigures) *Count { return g.Phrases }},
+			{"undefined words and names", func(g *GroupFigures) *Count { return g.Undefined }},
+		} {
+			row(c.name+": texts with any", func(g *GroupFigures) string {
+				if n := c.count(g); n != nil {
+					return shareText(&n.WithAny)
+				}
+				return "-"
+			})
+			row(c.name+": per text", func(g *GroupFigures) string {
+				if n := c.count(g); n != nil {
+					return meanText(&n.PerText, "")
+				}
+				return "-"
+			})
+		}
+		row("wait (seconds)", func(g *GroupFigures) string { return meanText(g.Wait, "") })
+		row("change's model cost per text (USD)", func(g *GroupFigures) string { return meanText(g.ChangeCost, "") })
+		b.WriteString("\n")
+	}
+	b.WriteString("## Model calls\n\n| Model | Role | Use | Calls | Attempts | Input tokens | Output tokens | Cost (USD) | Served |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |\n")
+	var total float64
+	for _, u := range f.Models {
+		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %.2f | %s |\n", u.Model, u.Role, u.Use, u.Calls, u.Attempts, u.Input, u.Output, u.CostUSD, strings.Join(u.Served, ", "))
+		total += u.CostUSD
+	}
+	fmt.Fprintf(&b, "\nTotal model cost: %.2f USD. Wall time of this run: %.0f s; the calls' own time, summed: %.0f s.\n", total, f.Run.WallSeconds, f.Run.CallSeconds)
+	for _, family := range slices.Sorted(maps.Keys(f.Prices)) {
+		s := f.Prices[family]
+		fmt.Fprintf(&b, "Prices of %s models: %s (read %s).\n", family, strings.TrimSpace(s.Source), s.Read)
+	}
+	return b.String()
+}
+
+func countsText(m map[string]int) string {
+	var parts []string
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		parts = append(parts, fmt.Sprintf("%s %d", k, m[k]))
+	}
+	return strings.Join(parts, ", ")
+}

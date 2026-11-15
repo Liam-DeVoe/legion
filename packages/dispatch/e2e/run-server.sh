@@ -347,6 +347,35 @@ if [ "$stacks" -gt 1 ]; then
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
 fi
 
+# The caller's own server settings, read before the sweep below. DISPATCH_E2E_PASS_THROUGH names,
+# separated by spaces, DISPATCH_* settings of this environment that the server gets with the
+# caller's values, after the ones this script sets, so the caller's value of a setting this
+# script also sets wins. The measurement harness of INFRA-3231 (`writing-check harness local`,
+# packages/envoy/cmd/writing-check/harness) runs the server this way with its reviewer settings
+# and a real model group. A list that names any setting also drops the stand-in model above,
+# unless the list names DISPATCH_TEST_MODEL_URL itself, since the server refuses a model group's
+# endpoint beside the stand-in. A name that is not a DISPATCH_ setting, that is a DISPATCH_E2E_
+# switch of this harness, or that this environment does not set is refused. Unset or empty, the
+# server gets none of the caller's DISPATCH_* settings, as before.
+pass_through_env=()
+if [ -n "${DISPATCH_E2E_PASS_THROUGH:-}" ]; then
+  for name in $DISPATCH_E2E_PASS_THROUGH; do
+    if [[ ! "$name" =~ ^DISPATCH_[A-Z0-9_]+$ ]] || [[ "$name" == DISPATCH_E2E_* ]]; then
+      echo "run-server.sh: DISPATCH_E2E_PASS_THROUGH names '$name', which is not a DISPATCH_ server setting" >&2
+      exit 2
+    fi
+    if [ -z "${!name+set}" ]; then
+      echo "run-server.sh: DISPATCH_E2E_PASS_THROUGH names $name, which this environment does not set" >&2
+      exit 2
+    fi
+    pass_through_env+=("$name=${!name}")
+  done
+  case " $DISPATCH_E2E_PASS_THROUGH " in
+    *" DISPATCH_TEST_MODEL_URL "*) ;;
+    *) model_env=() ;;
+  esac
+fi
+
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
@@ -419,4 +448,5 @@ exec "${listen[@]}" env \
   XDG_CACHE_HOME=/nonexistent \
   XDG_CONFIG_HOME=/nonexistent \
   XDG_DATA_HOME=/nonexistent \
+  "${pass_through_env[@]}" \
   "$server_bin"

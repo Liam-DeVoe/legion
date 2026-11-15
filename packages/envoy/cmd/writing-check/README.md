@@ -29,6 +29,11 @@ go run ./cmd/writing-check dataset pack --snapshot <file> --verdicts <file> --se
 go run ./cmd/writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) --out <dir>
 go run ./cmd/writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
+go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
+go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--part development|held_out] [--sample N --sample-seed S] <model flags>
+go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> <model flags>
+go run ./cmd/writing-check harness local --out <dir> [--database <name> --keep] [--setting NAME=VALUE]... [--pass-through NAME,...]
+go run ./cmd/writing-check harness load --local <local.json> --cases <build dir> --verdicts <file> --out <dir> [--limit N]
 ```
 
 Run it from `packages/envoy`.
@@ -1064,3 +1069,169 @@ the cases whose session is missing or left out.
 `TestExportSessionsScriptFeedsDatasetSessions` runs the script against a stand-in `tq` and then
 `sessions` over its output. Its negative control changes one byte of a part, and `sessions`
 refuses it.
+
+## harness
+
+`harness` (package `cmd/writing-check/harness`) scores the changes of INFRA-3231's R3 on the
+dataset of R1, by the score of R2. For each case, the change gives the text a person sees. A
+fresh reader answers the person's question from that text alone. The grader then gives each
+judgement of R2, one prompt for each, against Dispatch's record as the dataset stored it and,
+where the case has one, the writer's session up to the text. The harness scores change 1, the
+text as the person saw it; t11 adds changes 2 to 7.
+
+Its inputs are in the package, and they are among the paths that decide a score:
+
+- `candidates.yaml`: the roles (grader `claude-opus-5`, writer `claude-opus-5-5`, fresh reader
+  `claude-sonnet-4-6`), the candidates, and INFRA-3483's four deployments, pending until they
+  have ids. The harness refuses a role that is not Claude, a role that is a candidate, and a
+  grader that plays the writer.
+- `prices.yaml`: each model's price in USD per million tokens, with the source and the date of
+  each family's prices. The harness refuses a model with no price.
+- `prompts/`: `reader.md`, and one `grade-*.md` for each judgement: `answered`,
+  `first-paragraph`, `lost`, `added`, `phrases`, `undefined`, `answer-start`, `harder` and
+  `define`.
+
+Every file the harness writes holds Dispatch text or session text. Write them under `$TMPDIR`.
+Each subcommand refuses an `--out` inside a repository: a directory at or above it that holds a
+`.git` or a `.jj`.
+
+### Model flags
+
+| Flag | Meaning |
+| --- | --- |
+| `--gateway`, `--gateway-key-file` | The model gateway's base URL (default `$ANTHROPIC_BASE_URL`) and the file of its key, read on each call and never printed. Every Claude model is called there. |
+| `--foundry-endpoint`, `--foundry-api-version` | The Foundry account's models inference endpoint and its `api-version`, for a Foundry model. |
+| `--azure-tenant`, `--azure-client-id`, `--federated-token-file`, `--scope` | The keyless Entra sign-in of the Foundry account, as `probe-model` takes it. The token file defaults to the pod's ServiceAccount token. |
+| `--concurrency` | The model calls in flight at once, across every model (default 6). |
+
+A call that meets a 429, a 5xx, a network error or its time bound is made again after a wait
+that starts at 2 s and doubles, up to 6 times. A reply that is not the object its schema names
+is asked again at once, up to 2 times. A call with no reasoning samples at temperature 0.
+
+### Session text
+
+Session text reaches Claude models only. Package `claude` reads the session export, and its
+`SessionText` type holds a case's part of a session. No code outside `claude` can read the text:
+the type has no exported field and no method that answers it, and it prints as a placeholder.
+Only `claude.Client.CallWithSession` sends it, and a `claude.Client` always calls a Claude
+model. Package `llm`, which holds the Foundry client, cannot name the type, since `claude`
+imports `llm`. So a call that sends session text to a model of another family does not compile.
+`TestOnlyTheClaudeClientTakesSessionText` and `TestSessionTextCannotBeReadOutsideItsPackage` hold
+that guarantee.
+
+A case's session part is its session's rows before the case's place, the newest
+`--session-chars` bytes (default 30,000). It keeps what the people and agents said, what the
+writer did and saw, and compaction summaries. It leaves out the writer's thinking, notices that a
+plugin adds, and a row the export holds once for each host. Each row is cut at 2,000 bytes. The
+parts are cached in `session-excerpts.jsonl.gz` in the output directory.
+
+### probe
+
+`probe` calls each role model and each candidate `--calls` times (default 20) with one short
+message, and prints a table: the answers, the statuses, the `route_not_found` answers (Azure's
+`ms-azureml-model-error-reason` header), the model ids the provider served, and the latency. A
+model fails when a call answers `route_not_found`, a 404 or a 400 that names the model, when the
+provider serves another model's id, or when no call answers. Then `probe` exits 1. `--out` also
+writes the rows as JSON.
+
+### score
+
+| Flag | Meaning |
+| --- | --- |
+| `--change` | The change to score: `1`. |
+| `--cases`, `--sessions` | The build directory of `dataset build` and the directory of `dataset sessions`. |
+| `--out` | The run's directory. A run continues the cases that have no result in it, and refuses a directory whose `run.json` records other parameters. |
+| `--part` | `development` (the default), or `held_out`, which only this flag selects. |
+| `--groups` | The case groups to score (default all four). |
+| `--sample`, `--sample-seed` | A stratified sample of about this many cases (see below), drawn by the seed. |
+| `--seed`, `--draws` | The bootstrap's seed (default 3231) and resamples (default 10,000). |
+| `--session-chars` | The bytes of a case's session that a grading call reads. |
+| `--exposure-log`, `--commit`, `--new-run` | The exposure log (default `$TMPDIR/infra-3231-impl/harness/exposure.log`), a held-out run's commit (default `git rev-parse HEAD`), and the reason for a second held-out run at one commit. |
+| `--figures-only` | Compute the figures from the results the directory holds, and call no model. |
+
+For each case, the judgements are:
+
+- a question case and an answer case: the fresh reader's answer to the person's question, and
+  whether it answers the question (`answered`);
+- an answer case: the answer of a fresh reader who reads only the first paragraph
+  (`first_paragraph`), the first sentence that answers the question (`answer_start`), the text's
+  length in words and the words before that sentence;
+- a plain case: whether the new text is harder to read than the original (`harder`);
+- every case: the phrases that state no fact (`phrases`) and the words and names that neither the
+  text nor the record defines (`undefined`), against the record; the facts the new text lost
+  (`lost`) and the facts it added that its inputs do not hold (`added`). Under change 1 the text
+  is the original, so `lost` and `added` are zero by construction, with no call.
+
+`answered`, `first_paragraph`, `added` and `define` read the session part where the case has
+one. The grader's reply gives what it found before its verdict: what the question asks, what the
+answer gives, four checks (the answer only says the question again, says only where the answer
+is, answers another question, or is wrong by the record), its reason, and its verdict. A check
+that is true makes the verdict false. An undefined word that the grader marks defined in the
+text or the record, or a word of common meaning, is no finding. The provider writes a reply's
+fields in the order of their names, so each name starts with its place (`1_asked`, ...,
+`8_answers`). Each grade keeps the grader's reply as it came.
+
+`run.json` holds the parameters; `cases.jsonl` one line for each case, written as it ends, with
+the readers' answers, each grade and each call's tokens and cost. A case whose line holds an
+error is scored again by the next run. `scores.json` and `scores.md` hold the figures: for the
+whole part and for the cases with a session (plan Decision 18), and for each case group and all
+groups, the cases by kind and by conversation, each score, the wait, the change's own model cost
+per text, and each model's calls, tokens and cost.
+
+Every share has a 95% interval: a cluster bootstrap over the split groups, by a PCG source
+seeded with `--seed`, the 2.5th and 97.5th percentiles of the ratio of the resampled groups'
+hits to their cases. Where no case or every case is a hit, the interval is the exact one-sided
+95% bound over the split groups, each group one trial (Clopper-Pearson): 1 − 0.05^(1/G) for G
+groups. A mean has its bootstrap interval. A score that is zero by construction is marked so.
+Under change 1 the wait is 0 and the change calls no model.
+
+`--sample` draws a stratified sample of the part: the strata are the case group and the
+conversation flag, and each stratum's target is its share of the size, at least one case. The
+split groups are taken in the order of a SHA-256 of the seed and the group's key, each one whole,
+and a group is taken when it brings the strata nearer their targets. So a score's interval is
+clustered over the same groups on a sample as on the whole part. `run.json` records the sample:
+its size, seed, cases, split groups, and each stratum's cases, target and draw.
+
+A run of the held-out part appends one line to the exposure log before it reads a case: the
+commit, the time, the changes, the models and the output directory. It refuses to start when the
+log holds a run at the same commit, unless `--new-run '<reason>'` gives the reason, which the
+line records.
+
+### grader-test
+
+`grader-test` gives the grader planted outputs, one JSON line each in `--planted`: `id`,
+`judgement`, `case_id` (a development case; a held-out case is refused), `planted` (`wrong` or
+`right`), `output` (the reader's answer, the new text or the definition), and, as the judgement
+needs, `question`, `original`, `marker` (the planted fault a wrong list output holds) and
+`words_before` (for `answer_start`). Each judgement needs a wrong and a right output. A correct
+grader fails a wrong answer or definition, passes a right one, finds a harder text harder, lists
+an item that holds the marker for a wrong list output and nothing for a right one, and finds the
+answer within 5 words of `words_before`. It writes `grader-test.json` and `grader-test.md`: for
+each judgement, the wrong and the right outputs it marked correctly. The planted outputs are
+written by hand from development cases and hold Dispatch text, so they are kept under `$TMPDIR`
+and never in the repository.
+
+### local and load
+
+`local` makes a database of its own on the server `--pg-dsn` names (default
+`$LEGION_TEST_PG_DSN`), `dispatch_harness_<unix time>` with `createdb`, and starts `bun run
+dispatch:local` on it. `--setting NAME=VALUE` and `--pass-through NAME,...` give the server
+`DISPATCH_*` settings: `e2e/run-server.sh` passes the names in `DISPATCH_E2E_PASS_THROUGH` to the
+server, and with any of them it starts the server with no stand-in model, so a real model group
+is not refused beside it. `--database <name> --keep` starts again on a database whose cases are
+loaded, with no reset and no seed (`DISPATCH_E2E_KEEP_DATABASE=1`). Once the instance is up,
+`local.json` in `--out` holds its URL, its fake Envoy, its database and the settings; the file
+goes when the instance stops.
+
+`load` re-creates each case's record in that instance: the project, an issue with its title,
+assigned to a reader of the case's own, each document at the version the record names (one local
+version holding that version's Markdown), and the thread as comments, oldest first, each by its
+author (an agent's text by its session, a person's by that person's sign-in). A case on no issue
+gets its thread as messages in the writer session's conversation. The reader's words are the
+owner's word records of the verdicts file written before the case's text (plan Decision 19),
+never the case's own question. No route of Dispatch writes a word record, so `load` writes those
+rows into the database that `local` made. A document the instance refuses (`INVALID_MARKDOWN`,
+for a block that points at a text of production it does not hold) is left out and named in the
+case's line. `loaded.jsonl` holds where each record stands, and a load continues the cases it
+holds no line for. Write times and authors differ from production, so the grader reads the
+record from the dataset, never from the local instance.

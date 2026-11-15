@@ -1,0 +1,33 @@
+# The models of INFRA-3231's harness: the three roles and the candidates of R3 (plan Decision 20).
+# This file is one of the paths that decide a score: after the held-out run it must not change.
+#
+# family: claude is a Claude model at the operator's model gateway (Anthropic Messages); foundry is
+# a chat deployment of Dispatch's Azure AI Foundry account. The endpoints and the sign-in are flags
+# of the harness, not part of this file.
+#
+# No role is a candidate, and the grader does not play the writer (R2).
+roles:
+  # The grading model: it reads every text, Dispatch's record and the writer's session. Each
+  # reply gives what the grader found before its verdict (prompts/, judge.go's numbered fields).
+  grader: {family: claude, id: claude-opus-5}
+  # The writer, played with the writer's session (changes 2, 3, 5 and 6): the model most writer
+  # sessions ran.
+  writer: {family: claude, id: claude-opus-5-5}
+  # The fresh reader: it reads only the text a person sees and, for a question case, his question.
+  reader: {family: claude, id: claude-sonnet-4-6}
+
+candidates:
+  - {family: foundry, id: grok-4.7}
+  - {family: foundry, id: Kimi-K3.1-Pro}
+  - {family: claude, id: claude-haiku-4-5-20251001}
+  - {family: claude, id: claude-haiku-5-5}
+  - {family: claude, id: claude-sonnet-5-5}
+  - {family: claude, id: claude-opus-4-8}
+
+# The four deployments INFRA-3483 declares on the Foundry account, named by its stack outputs. Each
+# joins the candidates above, with its id, when it answers from the pod (`harness probe`).
+pending:
+  - {family: foundry, output: writingCheckCandidateFirst}
+  - {family: foundry, output: writingCheckCandidateSecond}
+  - {family: foundry, output: writingCheckCandidateThird}
+  - {family: foundry, output: writingCheckCandidateFourth}
