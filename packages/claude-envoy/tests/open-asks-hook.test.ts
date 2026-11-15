@@ -748,9 +748,8 @@ test("writes no overlay and no JJ_CONFIG for a session that is no Legion pane", 
       ].join("\n"),
     )
     // No overlay was written anywhere: the only directory one could reach is the state directory
-    // the session has none of (beside the cache Bun itself keeps under HOME).
-    const written = (await readdir(scratch)).filter((entry) => entry !== ".bun").sort()
-    expect(written).toEqual(["bin", "plugin-data", "session-env.sh"])
+    // the session has none of.
+    expect((await readdir(scratch)).sort()).toEqual(["bin", "plugin-data", "session-env.sh"])
   } finally {
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })
