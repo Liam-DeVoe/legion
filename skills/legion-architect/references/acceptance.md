@@ -20,8 +20,8 @@ missing instruction.
 ## Accepting
 
 Sign off an issue with no children once its evidence holds for its goal and every requirement of
-its spec, none unmet; a parent only after its last round (below), because
-before it the approved head does not carry its children's merges.
+its spec, none unmet; a parent only on an approved head that carries its children's merges ("A
+parent's head", below).
 
 A view's requirements are the parts of its ancestor's requirements that its `Delivers:` line
 names, at the version that line pins. Accept a view on those parts, and read its empty requirement
@@ -42,7 +42,7 @@ them before you decide:
 4. A check of an issue under it counts only once that issue is `done`, with its result at that
    issue's final head. A check that runs `after_merge` counts with its result after that merge. An
    issue under it that is not `done` is a wait, not a pass: hold the acceptance until it is done.
-5. Read a check in another repository as "The last round" says.
+5. Read a check in another repository as "A parent's head" says.
 6. Where views deliver parts of one requirement, as their `Delivers:` lines name them, the
    requirement counts only when those parts together make the whole of it.
 
@@ -61,26 +61,33 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 - A `catch-up` whose `reason` names an issue as waiting for your acceptance is the wake for it: it
   is in `accepting`, and the `phase-finished` that moved it there may never have reached you (a
   failed architect's notice is dropped, so a retried one learns of the wait from its catch-up
-  alone). Accept it as this section says, a parent only after its last round (below).
+  alone). Accept it as this section says, a parent only on a head that carries its children's
+  merges (below).
 - The daemon refuses `sign_off` while an issue beneath the one you accept is still in the workflow
-  (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): run each one to done, and sign off again.
+  (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): run each one to done. Unless the issue's pull
+  request has merged, the next admission pass moves it to `awaiting_children`, and it comes back by
+  itself ("A parent's head", below); otherwise sign off again once they are done.
   Park one with `park_child` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed,
   and say in a comment which of those it is. Ask the person about a child that can reach neither
-  `done` nor a park under that rule, and hold the acceptance until they answer. Hold it too, for
-  the root and for the issue you moved an unreleased child under, until the person answers the ask
-  on the root about that child (`skill://legion-architect`, section 3): release the child when they
-  say to run it; when they say to stop it, close it, or move it to `icebox` under the rule when
-  they say its work should wait, citing their answer. A parent: sign off only after its last round
-  (below). The daemon then closes a parent that is not the root at its own merge, which under this
-  rule comes after its children's. One issue beneath never holds it: one the daemon itself holds
-  at `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
-- Past that refusal, the daemon refuses `sign_off` while a root whose step rests on the issue's
-  approval is still in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, naming each one). That
-  root's own architect, or a person, moves it. Sign off again once each one is done or out of the
-  workflow.
+  `done` nor a park under that rule, and hold the acceptance until they answer. Hold the root's
+  acceptance too until the person answers the ask on the root about a child you moved out from
+  under its parent (`skill://legion-architect`, section 3): when they say to run it, move it back
+  under that parent and release it; when they say to stop it, close it, or move it to `icebox`
+  under the rule when they say its work should wait, citing their answer. The daemon then closes a
+  parent that is not the root at its own merge, which under this rule comes after its children's.
+  One issue beneath never holds it: one the daemon itself holds at `admitted` under an ancestor it
+  has already accepted, which starts when that ancestor closes.
+- On an issue in `awaiting_children` the daemon refuses `sign_off` and `request_backward_move`
+  (`WAITING_ON_CHILDREN`, naming its open children and the start it holds): it stands in no phase
+  either acts on (`skill://legion-architect`, section 3).
+- Past the first refusal, the daemon refuses `sign_off` while a root whose step rests on the
+  issue's approval is still in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, naming each one).
+  That root's own architect, or a person, moves it. Sign off again once each one is done or out of
+  the workflow.
 - Last, it refuses `sign_off` while a Dispatch child of the issue is open, a child that runs as a
   tree of its own included (`SIGNOFF_CHILD_OPEN`, naming each one with its Dispatch status). Run
-  each one to done, or close or icebox one under the rule above, and sign off again.
+  each one to done, or close or icebox one under the rule above; the issue waits for it as it
+  waits for an issue beneath it.
 - `close_root` refuses with the same three codes, in the same order. For `close_root`, also close
   or icebox a child that was never released.
 - `request_backward_move` names the issue, because your grant serves the tree; the daemon starts
@@ -97,7 +104,7 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   `Filed dispatch://`, `Handed dispatch://` or `Not filed:` reply, because a closed issue hides
   its asks from the controller.
 
-## The last round
+## A parent's head
 
 A parent's own pull request proves each of its checks, so sign off a parent with children only
 on an approved head carrying the merges of every child those checks need. Each needs a passing
@@ -110,34 +117,37 @@ and a child carrying part of a parent's
 requirement proves it with a check on its own Verification document whose `serves` names that
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
 that waits for it waits forever, so work another child builds on is a child of its own, in a
-repository of its own or with a deploy of its own. While the approved head does not carry those
-merges, or a check in another repository has no pass standing since the close of a child it
-needs, leave the issue in `accepting` until each has closed (`child-closed`) or a park has
-already taken it out (`child-status`). That wait is no reason to park a child. Move a parked
-child's criterion to the root's own pull request or a released, open child first; never
-downgrade it. A root's requirement stays the root's, pending
-until this round, where its head must meet it.
-Then, in one turn:
+repository of its own or with a deploy of its own. A root's requirement stays the root's, and
+the root's own head must meet it.
 
-1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
-   test round of every check of the issue with no `ci_check`, not the forward-merge re-check." The
-   backward move's reason reaches only the implementer.
-2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
-   branch your addressing line names into the branch, push, end your forward-merge comment with
-   `parent's last round: full test round`, and complete." Never use a hard-coded `main`. The move
-   counts a review round, or a conflict round, which `review_round_cap` leaves out, where the
-   record holds the head conflicting with its base.
+The daemon gives a parent that head by itself. No phase of a parent starts while an open child
+stands under it, and the first admission pass that sees such a child stops the phase under way.
+The parent then waits in `awaiting_children`, with no admission slot, until no child under it is
+open (`skill://legion-architect`, section 3). It goes back to the start it held, a held test,
+review or acceptance as `implementing`. That first implementing round merges the default branch
+into the branch, pushes, and ends its forward-merge comment with the line
+`children merged: full test round`. The tester reads that line and runs a full test round of
+every check with no `ci_check`. So a parent never waits in `accepting` for a child. Move nothing
+back after a child's merge. Spend no backward move on a conflict while the parent waits: the
+return's forward merge resolves it. That wait is no reason to park a child. Move a parked child's
+criterion to the root's own pull request or a released, open child first; never downgrade it.
 
-While the parent waits in `accepting`, a conflict on its head or a child's merge needs no move of
-its own: the last round's forward merge resolves them all, so spend no backward move per child.
-A move for a child's merge counts toward `review_round_cap`, since the record holds no conflict on
-the head to leave it out; a move for a conflict the record does hold is left out, and still costs
-the implementer a forward merge the last round makes anyway.
+Send a head back yourself when it lacks the merge of a child its checks need, or when a check in
+another repository has no pass standing since the close of a child it needs. Use
+`request_backward_move` to `implementing`, with the reason "Merge the default branch your
+addressing line names into the branch, push, end your forward-merge comment with the line
+`children merged: full test round`, and complete." Never use a hard-coded `main`. The reason
+reaches only the implementer, and the tester reads the line in the implementer's comment. The
+move counts a review round, or a conflict round, which `review_round_cap` leaves out, where the
+record holds the head conflicting with its base.
 
 A criterion proven on a deployed system is proven after that child's deploy, as the repository's
 deploy skill says.
 
-If the pull request merged before its last round, it can carry no new head, so move nothing back.
+If the parent's pull request merged before its children's work, it can carry no new head, so move
+nothing back. The daemon leaves such a parent where it stands. A parent whose pull request merged
+during its wait goes back to the start it held with no forward merge, and a return into
+`accepting` tells you with an `awaiting-children` notice. Its sign-off waits for the children.
 Once they have closed, have a fresh `task` subagent run each check with no `ci_check` on the
 default branch and record each result. Read each `ci_check` check's derived result in
 `dispatch results`, which no role records. Post them in the acceptance comment, then `sign_off`.
@@ -197,6 +207,9 @@ Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
 the issue was taken out of and whose reason reads
 `the head conflicts with <base>: GitHub runs no checks on it; merge <base> forward`. You start
 nothing for it.
+On a parent with an open child under it, the daemon moves the issue to `awaiting_children`
+instead, holding that start of `implementing`, and tells you with an `awaiting-children` notice in
+place of `checks-red`.
 
 The daemon then runs the phases from `implementing`: the implementer merges the bookmark forward
 with the destination and pushes it (the procedure in

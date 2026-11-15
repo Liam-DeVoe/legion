@@ -49,14 +49,16 @@ because the operator closes or decides a deployment row, and the operator or the
 fixes a live row's session.
 
 `blocked`, when present, is `[{issue, blockedBy}, …]`: every root and child Legion is waiting to
-start, and every issue the daemon has started that waits on another issue and gave its admission
-slot back for that wait, each with what it waits on — the unfinished Dispatch issues of its
-`blocked_by` links, or,
-for a parent, the open children beneath it that children-first holds it for. `read_state` shows the
+start, every issue the daemon has started that waits on another issue and gave its admission
+slot back for that wait, and every parent in `awaiting_children`, each with what it waits on —
+the unfinished Dispatch issues of its `blocked_by` links, or,
+for a parent, the open children beneath it that hold it
+(`skill://legion-controller/references/admission.md#open-children`). `read_state` shows the
 same list under `admission.blocked`, and `legion state` prints it as `blocked on Dispatch links:`.
 A link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its
-link is taken off (by a person or the tree's architect), and a children-first wait ends when the
-last open child leaves the workflow: name the waits in the day's report and
+link is taken off (by a person or the tree's architect), and a wait on children ends when the
+last open child leaves the workflow, a parent in `awaiting_children` then going back to the start
+it held by itself: name the waits in the day's report and
 take nothing for them.
 
 `held`, when present, is `[{issue, reason, heldBy?}, …]`: every issue the daemon's record holds
@@ -67,8 +69,8 @@ holds the one that waits. The field is absent where the project holds nothing, a
 `legion state` prints their counts as `admission.held:`. The word for each row, and what ends
 each hold, is the table in `skill://legion-controller/references/admission.md`. The rows name the
 blocked issues again, under whichever word the daemon's order gives them, so an issue can stand
-in `blocked` and in `held` at once: `blocked` is what readers use for a link or a children-first
-wait, and `held` says of every held issue what it waits for. Name them in the day's report and
+in `blocked` and in `held` at once: `blocked` is what readers use for a link or a wait on
+children, and `held` says of every held issue what it waits for. Name them in the day's report and
 take nothing for them.
 
 `silent`, when present, is `[{issue, role, lastStep, silent, backgroundSince?}, …]`: every issue whose phase worker
@@ -132,9 +134,10 @@ The daemon does not tell you of a tree that waits by design. Two kinds of wait c
 
 - An issue the daemon started that gave its slot back to wait on work outside its tree never makes
   the tree read as stopped. That work is a `blocked_by` link to an issue of any project that is not
-  `done`, or an open child the daemon has released into the tree. A wait on an open child the
-  architect filed and has not released is not such a wait, because releasing that child is the
-  tree's own work.
+  `done`, or an open child the daemon has released into the tree. A parent in `awaiting_children`
+  is read the same way, as a parent whose first phase waits on its open children is. A wait on an
+  open child the architect filed and has not released is not such a wait, because releasing that
+  child is the tree's own work.
 - A wait on a person, on a Dispatch blocker, for an open child, or for an admission slot the issue
   needs and does not hold silences the tree only while the project's line can still move: some
   issue of the project holds a slot and waits by none of those rules, some claim of the project is
@@ -212,11 +215,13 @@ Four moves release a held root, at three prices. The tree's architect's own `ret
 with `retry` costs nothing. A `todo` on the root costs nothing either, and it is your own lever:
 your `set_status` to `todo`, a person's move in the Dispatch dashboard and an operator's
 `legion status` all reach the daemon as the same status, and each returns the issue to the phase
-its hold came from and starts that phase's role with its task. Two cases end elsewhere: a held
-phase whose pull request head is red goes on to `implementing`, and a held review whose round is
-already decided goes on to the phase that decision names. Either way the daemon writes the
-Dispatch status of the phase the issue ends in. Nothing else moves: the generation, the review
-rounds, the pod and the issue's place in the admission line all stay as they were.
+its hold came from and starts that phase's role with its task. Three cases end elsewhere: a held
+phase whose pull request head is red goes on to `implementing`, a held review whose round is
+already decided goes on to the phase that decision names, and a parent with an open child under
+it goes to `awaiting_children`, holding that start until no child under it is open. Each time the
+daemon writes the Dispatch status of the phase the issue ends in. Nothing else moves: the
+generation, the review rounds, the pod and the issue's place in the admission line all stay as
+they were.
 `fresh_session` costs the worker's session, which the claim leaves behind with everything in it.
 A park and an un-park costs the most: the generation, the review rounds, the pod with its disk,
 and the issue's place in the waiting line. That `todo`

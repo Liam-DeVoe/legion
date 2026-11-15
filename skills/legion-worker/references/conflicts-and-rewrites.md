@@ -9,9 +9,10 @@ Every path it cites is in cybermonklabs/legion.
 ## Reintegrating the base
 
 - **Merge the base forward only on a real conflict, a need only the base meets, a retarget, or a
-  parent's last round, and never with `jj rebase`.**
+  forward merge of a parent's children, and never with `jj rebase`.**
   The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the controller asks
-  because of a conflict, the architect's backward move names a parent's last round,
+  because of a conflict, a task asks for the forward merge of a parent's children (the daemon's
+  first implementing task after the issue waited on its children, or the architect's backward move),
   the change needs something that exists only on the base (a fix for its
   only red check, or a sentence it must change), or after the pull request is retargeted to a new
   base. Otherwise, never reintegrate the base to pick up the default branch or refresh CI. Each
@@ -31,9 +32,9 @@ Every path it cites is in cybermonklabs/legion.
   show an instance the merge brought in from the base, so before you push the merge search its
   head for the class of every finding of every earlier review round and record each search
   beside the fingerprints.
-  In a parent's last round, end that comment with `parent's last round: full test round`, the line
-  the tester reads for a full round (`skill://legion-architect/references/acceptance.md`,
-  "The last round").
+  In a forward merge of a parent's children, end that comment with the line
+  `children merged: full test round`: the tester reads it and runs a full test round
+  (`skill://legion-architect/references/acceptance.md`, "A parent's head").
   On the tmux runtime, where issue workspaces are still jj workspaces of one shared clone,
   `jj undo`, `jj abandon` and `jj op restore` rewrite the shared operation log, so a mistake there
   is recovered forward (`jj -R "$LEGION_WORKSPACE" new`, or `jj -R "$LEGION_WORKSPACE" restore

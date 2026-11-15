@@ -580,9 +580,9 @@ test("each text that orders a check run or recorded leaves out a check CI proves
 // The same rule where a text orders a check's evidence judged or recorded. Retro's trigger is met
 // by a derived result and names R5's three cases: a derived fail, or a run that concluded and
 // proved nothing, goes back to implementing; a run not concluded is waited for; and a name no run
-// answers is the architect's finding. The architect's last round records only the checks with no
-// `ci_check`, and the tester reads a `ci_check` job as that check's evidence, which its prompt's
-// core part says too.
+// answers is the architect's finding. The architect's checks of a parent whose pull request merged
+// before its children record only the checks with no `ci_check`, and the tester reads a
+// `ci_check` job as that check's evidence, which its prompt's core part says too.
 test("a derived result satisfies the passages that judge or record a check's evidence", () => {
   const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
   expect(retro).toContain(

@@ -12,7 +12,9 @@ For capacity, the only lever is order. You cannot change `admission.cap`: it is 
 `legion.yaml` setting, and `set_status` is your only admission move. The cap counts the issues the
 daemon has started, a root or a child, not trees, and an issue holds one as
 [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a tree's own children compete for it with every other
-tree's. Read `admission.active`, `admission.waiting` and `admission.trees`, tell the architect
+tree's. A parent that waits on its children holds no slot, in its first phase or in
+`awaiting_children`, so its wait takes no slot from its children and is no reason to move it to
+`backlog`. Read `admission.active`, `admission.waiting` and `admission.trees`, tell the architect
 where its tree's issues stand in the line with `envoy_publish`, and
 open a finding ask when the deployment needs a larger cap.
 
@@ -39,7 +41,9 @@ you release it. Read the record, then choose the release.
 3. **The release.** The `held` wake gives each release its price. On a root whose tree does not
    linger, `set_status` to `todo` releases the hold and costs nothing: the issue returns to the
    phase `heldFrom` names, that phase's role starts with its task, and the generation, the review
-   rounds, the pod and the place in the admission line stay as they were. Take it when the cause
+   rounds, the pod and the place in the admission line stay as they were. On a root with an open
+   child under it, the release moves it to `awaiting_children` instead, holding that phase, and
+   the phase starts once no child under it is open. Take it when the cause
    is gone, a cause that a relaunch no longer meets: a launch the runtime refused
    (`launch_refused`), a process that died (`died`), an agent that never came up
    (`never_registered`); and when you fixed what the `detail` names. On

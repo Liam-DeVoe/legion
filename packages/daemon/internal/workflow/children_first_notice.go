@@ -31,7 +31,9 @@ func ChildCycleReason(child, ancestor string) string {
 // the mark's key is the issue, its tree and that tree's root generation (admit's
 // tellChildrenFirst) — so a child filed later during one wait tells nobody again, while a
 // re-admitted tree, whose architect writes its spec anew, and a sub-parent handed over to a tree
-// of its own are told anew.
+// of its own are told anew. It names no move of a child under another issue of the tree: an open
+// child holds every phase start of an issue whose phases started, so such a move would make that
+// issue wait too (dispatch://INFRA-3320 R11).
 func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
 	named := make([]string, 0, len(wait.Open))
 	var cycles []string
@@ -42,16 +44,14 @@ func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
 		}
 	}
 	reason := fmt.Sprintf("%s starts no phase of its own while Dispatch shows an open child under it: %s. "+
-		"Each one must be released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %s, to another parent or to none; %s starts its own first phase when the last of them has. "+
+		"Each one must be released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %s to an issue outside its tree or to no parent; %s starts its own first phase when the last of them has. "+
 		"Move a child to icebox "+parkRule+", and cite that reason in a comment on the child. "+
 		"A released child, a held one included, stays under %s, because this wait ends when that child leaves the workflow. "+
-		"Move out from under %s only a child you have not released and that should not run now. "+
-		"Move it under another issue of the same tree that has started a phase and has not reached accepting, and never under an issue it waits on. "+
+		"Move out from under %s, to no parent, only a child you have not released and that should not run now, and never under another issue of this tree: an open child holds every phase start of the issue it stands under. "+
 		"After the move, ask the person on your tree's root (dispatch ask) when that child's work should run or stop: "+
-		"release it when they say to run it; when they say to stop it, close it, or move it to icebox under the rule when they say its work should wait, citing their answer. "+
-		"Hold the acceptance of the issue you moved it under, and of the root, until they answer. "+
-		"Where the tree holds no issue to move the child under, ask the person.",
-		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent, wait.Parent, wait.Parent)
+		"when they say to run it, move it back under %s and release it; when they say to stop it, close it, or move it to icebox under the rule when they say its work should wait, citing their answer. "+
+		"Hold the acceptance of the root until they answer.",
+		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent, wait.Parent, wait.Parent, wait.Parent)
 	if len(cycles) > 0 {
 		reason += " " + strings.Join(cycles, " ") + "."
 	}

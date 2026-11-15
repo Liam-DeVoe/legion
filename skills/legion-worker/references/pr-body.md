@@ -143,7 +143,7 @@ a root — it was recorded at the child's head — and a child never records the
 a root's check. A child carrying part of a root's requirement proves it with a check on its own
 Verification document whose `serves` names that requirement. A root's own checks are proven at
 its own head, or, for an `after_merge` check, on the branch the root's pull request merged into
-or on the repository's default branch, in its last round.
+or on the repository's default branch, after its children's merges.
 
 **An issue with no `before_merge` check is a named gap.** One with no Verification document, or
 with none holding a `before_merge` check, has no evidence of its own. The tester names the gap
@@ -201,8 +201,8 @@ and decides there, the only gate on such an issue.
   bare gates — the repository's CI green at the new head and its smoke check — and record each
   check with no `ci_check` again at the new head, its `--observed` ending
   `forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean`. A search that finds an instance is a failure, not a re-check: record it under `failures` and run a full test round. The
-  real-surface verification is not repeated, except in a parent's last round, which the architect
-  or the implementer's forward-merge comment names to you: then run a full test round. Different:
+  real-surface verification is not repeated, except when the implementer's forward-merge comment
+  ends with the line `children merged: full test round`: then run a full test round. Different:
   a full test round.
 - **The implementer runs `skill://simplify-settled-diff` once per pull request, in its first
   implementing round, after its own results and before it completes that round,

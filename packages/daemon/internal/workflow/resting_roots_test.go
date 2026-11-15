@@ -209,7 +209,8 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 
 		message := refusedWith(t, signOffNow(t, pool, "signoff-held", basisAncestor), signOffChildOpen, "LEGION-301 (in_progress)")
 		if want := "LEGION-100 is not accepted while these Dispatch children of it are open: LEGION-301 (in_progress). " +
-			"A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released, and sign off again. " +
+			"A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. " +
+			"Unless the pull request of LEGION-100 has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back to implementing by itself for the forward merge of their work; otherwise sign off again. " +
 			"A child that runs as a tree of its own is moved by its own architect or a person. " +
 			"Close or icebox a child " + parkRule + ", and say in a comment which of those it is. " +
 			"Ask the person about a child that can reach neither done nor icebox under that rule, and hold the acceptance until they answer"; message != want {

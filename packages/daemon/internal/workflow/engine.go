@@ -1392,9 +1392,11 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 // with their work not in it, which is what dispatch://INFRA-980 forbids. The acceptance
 // was held this way once before (dispatch://INFRA-229) and the hold was taken off because a
 // parent's approved pull request then waited outside the merge queue and went stale against its
-// base; under children-first a parent starts its own phases only after its children have left,
-// so by the time it is accepted there is nothing left to wait for, and the refusal is the
-// backstop for a child filed after the parent started.
+// base. Now no phase of a parent starts while an open child stands under it, and the admission
+// pass that sees one moves a parent in accepting to awaiting_children, where it holds no slot and
+// from which it comes back through a forward merge of its children's work (dispatch://INFRA-3320
+// R9, R12). So the refusal is the backstop for a sign-off that comes before that pass, and the
+// hold itself for a parent whose pull request has merged, which the wait leaves where it stands.
 //
 // Past that, it is refused while a root whose step rests on the issue's approval is still in the
 // workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW), and then while a Dispatch child of the issue is open
@@ -1420,14 +1422,14 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	}
 	switch held.code {
 	case signOffChildInWorkflow:
-		return refused(held.code, fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
-			issue.Key, held.names)), nil
+		return refused(held.code, fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them, on a head that carries their merges. Run each one to done: unless the pull request of %s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back to implementing by itself for the forward merge of their work; otherwise sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
+			issue.Key, held.names, issue.Key)), nil
 	case signOffRestingRoot:
 		return refused(held.code, fmt.Sprintf("%s is not accepted while these roots that rest on its approval are still in the workflow: %s. The design-gate step of each rests on an approval of %s, so %s is accepted after them. Each is a tree of its own: its own architect, or a person, moves it. Sign off again once each one is done or out of the workflow",
 			issue.Key, held.names, issue.Key, issue.Key)), nil
 	case signOffChildOpen:
-		return refused(held.code, fmt.Sprintf("%s is not accepted while these Dispatch children of it are open: %s. A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released, and sign off again. A child that runs as a tree of its own is moved by its own architect or a person. Close or icebox a child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the acceptance until they answer",
-			issue.Key, held.names)), nil
+		return refused(held.code, fmt.Sprintf("%s is not accepted while these Dispatch children of it are open: %s. A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. Unless the pull request of %s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back to implementing by itself for the forward merge of their work; otherwise sign off again. A child that runs as a tree of its own is moved by its own architect or a person. Close or icebox a child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the acceptance until they answer",
+			issue.Key, held.names, issue.Key)), nil
 	}
 	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {

@@ -22,6 +22,8 @@ says (the `held` and `worker-died` wakes, and
 you set it to `todo` with a comment on the root that cites the park's mark and says what you
 checked.
 [The walk](#the-walk) makes that check at every start and on each `tick`.
+A root you moved to the backlog while it waited on its children, or on a slot for one of them,
+also runs again once an open child stands under it, as step 6 of [the walk](#the-walk) says.
 Every other park, a person's, another session's or an operator's `legion status`, stays parked
 until a person sets it to `todo`, the daemon queues a person's approval of its spec (**The
 notice**, the paragraph that begins "A person's own approval"), or a person asks you to start it:
@@ -31,7 +33,9 @@ that request is a person's move, as the list of moves to `todo` in
 A held root is not a parked one. It stands at `phase: held` and is still in the workflow, and a
 `todo` on it releases the hold instead of starting a new run: the issue returns to the phase its
 hold came from and that phase's role starts again, at the same generation
-(`skill://legion-controller/references/wakes.md`, the `held` wake). A root that is parked or
+(`skill://legion-controller/references/wakes.md`, the `held` wake). Where an open child stands
+under the root, the release holds that phase in `awaiting_children` until the children are
+finished, and the daemon then starts it by itself. A root that is parked or
 lingers takes `todo` alone, and that `todo` re-admits its tree. The pair `backlog` and then `todo`
 (step 1 of **Deciding**) is for a root still in the workflow whose architect has stopped, a held
 root included, where `todo` alone would only release the hold. The `backlog` write takes that
@@ -278,3 +282,18 @@ At every start (step 4 of the start procedure) and on each `tick`:
    and says what you checked, as the wakes reference says. When the event has not happened, the
    cause stays, or you cannot tell, move nothing. Name the root and what it waits on in your
    summary.
+6. Take each root of step 1's list in `backlog` that you moved there while it waited on its
+   children, or on a slot for one of them, and that step 5 left where it is. Its park line is by
+   `session legion-daemon:<PROJECT>` (**Deciding**, step 2). A comment that a controller session
+   posted on the root after that line, and at most 10 minutes after it, says that the root waits
+   on its children or on a slot for one of them, whatever words that comment opens with. Read the
+   root's children from step 2. When one of them is open, as
+   [Open children](skill://legion-controller/references/admission.md#open-children) says, set the
+   root to `todo` (`set_status`). Post one comment on the root
+   (`dispatch comment --issue <root> --body-file -`): `<root> goes back to todo: it went to the
+   backlog while it waited on its children, and <child> is open under it. A parent holds no
+   admission slot while it waits on its children, so that reason for the backlog is gone.` The
+   root then waits at `todo` in the admission line for a slot, as any re-admitted root does. It
+   holds that slot only until its design gate opens and its first phase waits on its open
+   children. When no child under it is open, this step moves nothing, and the rules above decide
+   the root.

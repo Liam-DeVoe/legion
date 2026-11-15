@@ -186,9 +186,12 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
-  "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
+  "other phase (SIGNOFF_OUTSIDE_ACCEPTING), on an issue in awaiting_children (WAITING_ON_CHILDREN, naming its open " +
+  "Dispatch children and the start it holds: no phase of a parent starts while an open child stands under it, and the " +
+  "parent goes back to that start by itself once none is), and while an issue beneath it is still in the workflow " +
   "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-  "to done, and sign off again. " +
+  "to done; unless its pull request has merged, the next admission pass moves the parent to awaiting_children and it " +
+  "comes back to implementing for the forward merge of their work, and otherwise you sign off again. " +
   "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
   "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
   "Past that refusal the daemon refuses it while a root whose design-gate step rests on the issue's approval is still " +
@@ -196,7 +199,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "moves it, and you sign off again once each one is done or out of the workflow. " +
   "Last, it refuses it while a Dispatch child of the issue is open, one that runs as a tree of its own included " +
   "(SIGNOFF_CHILD_OPEN, naming each one with its Dispatch status): run each one to done, or close or icebox one " +
-  "under the same rule, and sign off again. " +
+  "under the same rule, and the parent waits for them as it waits for an issue beneath it. " +
   "close_root is refused the same way, with the same three codes in the same order, while an issue beneath the root " +
   "is still in the workflow, a root rests on its approval or a Dispatch child of it is open, since closing it would " +
   "stop that work mid-turn or leave it undone: answer it the same way, park_child under the same rule included, " +

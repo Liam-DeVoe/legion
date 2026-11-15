@@ -49,7 +49,7 @@ pod replacement. Its other rules stand, and the one that matters most held here 
 
 ## Evidence
 
-In sjawhar/legion#2549's last rounds the pod's own `LEGION_TEST_PG_DSN` was
+In the final rounds of sjawhar/legion#2549 the pod's own `LEGION_TEST_PG_DSN` was
 `postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable` and `/usr/local/bin/legion-testpg`
 was on `PATH`, both arriving with the forward merge of main at `3c78856b`; the round's harness
 nonetheless ran a postmaster of its own on 55432, which the skill at that same head forbids.

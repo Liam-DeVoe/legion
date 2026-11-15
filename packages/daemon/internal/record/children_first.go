@@ -13,10 +13,12 @@ import (
 
 // ChildrenFirstCandidates is every issue of issues whose own first phase has not started yet and
 // could: it stands at phase.Admitted, Dispatch still shows it in the workflow, its tree is not
-// lingering, and its tree's design gate stands open. Those are the only issues the
-// children-first rule can hold, so they are the only parents whose Dispatch children are read at
-// all (ChildWaitsOf). The keys come out sorted, so one pass reads the same set in the same order
-// whatever order the records arrived in.
+// lingering, and its tree's design gate stands open. Those are the only issues whose first phase
+// the children-first rule can hold, so they are the only parents whose Dispatch children this
+// judgement reads (ChildWaitsOf). A parent whose phases started is read by StartedParents, since
+// an open child holds every later phase start of it too (dispatch://INFRA-3320 R9). The keys come
+// out sorted, so one pass reads the same set in the same order whatever order the records arrived
+// in.
 //
 // The open gate is what puts the start of the wait where the spec puts it: at the gate's
 // opening, before the architect's design-approved turn releases the wave. Before that opening a
@@ -129,10 +131,11 @@ func StartedParentWaits(ctx context.Context, tx pgx.Tx, store Store, project str
 	return waits, nil
 }
 
-// ChildOpen says whether one Dispatch child of a parent still holds that parent's own first
-// phase. It is read over two sources and no others: the status Dispatch shows the child in, from
-// the daemon's mirror of the project's issues, and the daemon's own record of the child, nil when
-// it has never recorded one.
+// ChildOpen says whether one Dispatch child of a parent still holds that parent's phase starts:
+// its own first phase (ChildWaits) and, once its phases started, every later one
+// (StartedParentWaits). It is read over two sources and no others: the status Dispatch shows the
+// child in, from the daemon's mirror of the project's issues, and the daemon's own record of the
+// child, nil when it has never recorded one.
 //
 //	| Dispatch status of the child       | daemon record of the child                                   | open? |
 //	| ---------------------------------- | ------------------------------------------------------------ | ----- |

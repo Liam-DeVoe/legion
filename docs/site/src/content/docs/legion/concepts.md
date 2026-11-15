@@ -109,12 +109,19 @@ The architect writes no code. A child issue runs the same phases as its root, wi
 of its own, inside the same tree.
 
 **The children do the work first.** An issue starts no phase of its own while Dispatch shows an
-open child under it, a child the architect has filed and not released yet included; the architect
-is told so once, with a notice naming each open child and the Dispatch status that holds it. A
-parent's own first phase can start once the last of them has left the workflow, and its pull
-request then builds on a base that already carries their merges. For the same reason the daemon
-refuses a parent's acceptance, and a root's close, while an issue beneath it is still in the
-workflow.
+open child under it, a child the architect has filed and not released yet included. Before its
+first phase, the architect is told so once, with a notice naming each open child and the Dispatch
+status that holds it. A parent's own first phase can start once the last of them has left the
+workflow, and its pull request then builds on a base that already carries their merges.
+
+The rule holds after the first phase too. A child filed under an issue whose phases have started
+holds its next phase, and the daemon stops a phase that is under way. The issue then waits in
+`awaiting_children`: it holds no admission slot, Dispatch shows it `in_progress`, and no role of
+it works. Once no child under it is open, it goes back by itself to the phase it held, a held
+test, review or acceptance as `implementing`. That round merges the children's work into its
+branch, and the tester then runs every check again. The architect's skill states the rule in
+full (`skills/legion-architect/SKILL.md`, section 3). For the same reason the daemon refuses a
+parent's acceptance, and a root's close, while an issue beneath it is still in the workflow.
 
 ## Phase workers
 
@@ -129,11 +136,12 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
+| `awaiting_children` | none | A parent whose phases started waits here while Dispatch shows an open child under it. It holds no admission slot, Dispatch shows it `in_progress`, and no role of it works. It goes back to the phase it held once no child is open. | none |
 | `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Reads the tester's handoff, each check of the issue's Verification document with its latest result, and the reviewer's approval of the head, and accepts the issue (on to retro) or sends it back to the implementer or the tester. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Reads the tester's handoff, each check of the issue's Verification document with its latest result, and the reviewer's approval of the head, and accepts the issue (on to retro) or sends it back to the implementer or the tester. An issue still running beneath it holds the acceptance, and an open child moves it to `awaiting_children`. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
@@ -186,6 +194,9 @@ a `blocked_by` link to an issue that is not `done`, in another project or in thi
 Legion tree or by none, or an open child the daemon has released into the tree and runs.
 A wait on an open child the architect filed and has not released is not one, because releasing
 that child is the tree's own work.
+A parent whose phases started and that an open child holds is different: its phase stops, and it
+waits in `awaiting_children` with no slot and in no line until no child under it is open, as
+"The children do the work first" above says.
 
 An issue holding a slot starts its next phase whatever the cap says, and so does an issue past
 its review, which holds none. An issue that holds none and is owed a start, a child its architect
@@ -371,7 +382,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **A head that conflicts with its base** does move the issue. GitHub computes no merge ref for
   such a head and runs no check on it, so no CI result would ever arrive: the daemon takes the
   issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging`,
-  starts the implementer with the base to merge forward, and tells the architect.
+  starts the implementer with the base to merge forward, and tells the architect. A parent with
+  an open child under it goes to `awaiting_children` instead, and its worker is told to commit and
+  push what it has.
   No role's turn is interrupted: the tester, a reviewer whose round is not yet completed, or the
   merger keeps its turn, its background jobs, its process and its session, and the implementer's
   start acts at once. Each of them is told on its own Envoy role topic that its phase has ended,

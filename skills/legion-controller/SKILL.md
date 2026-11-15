@@ -146,11 +146,14 @@ A free slot is no reason to take an issue: a labelled root in `todo` takes the n
 run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that
 names it, only as the list of moves to `todo` below allows, and cite that request. That rule does
 not apply to your own hold, a park whose mark `Parked by Legion while it waits on:` passes the
-test of `skill://legion-controller/references/parked-decisions.md#deciding`, step 2. That tree
-returns to `todo` as the list below says.
+test of `skill://legion-controller/references/parked-decisions.md#deciding`, step 2, nor to a
+root you moved to `backlog` while it waited on its children. Each returns to `todo` as the list
+below says.
 A free slot is no reason to park an issue, and a full cap is no reason either.
 When a tree holds a slot while it waits on an event outside Legion, that wait is no reason to park
 it either (`skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`).
+A parent that waits on its children holds no slot, in its first phase or in `awaiting_children`,
+so that wait is no reason to park it either.
 Report the free slots, or the full cap, to the person in the day's report, and move nothing for them.
 A slot is one issue the daemon has started, a root or a child, not one
 tree: a tree of four issues at work holds four slots. An issue takes its slot when the daemon
@@ -193,14 +196,20 @@ Every move to `todo` you make is one of these:
   checked, or once a person's decision after the park gives it a next step
   (`skill://legion-controller/references/parked-decisions.md`,
   `skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`);
+- a root you moved to `backlog` while it waited on its children, or on a slot for one of them, as
+  your comment beside that move says, once an open child stands under it, at your next walk of
+  the roots on the backlog, with a comment on the root that says why
+  (`skill://legion-controller/references/parked-decisions.md#the-walk`, step 6);
 - stopped-session work that a person's directive in the weekly plan moves to Legion.
 
 `admission.held` is every issue the daemon's record holds in the workflow that stands in neither
 `admission.active` nor `admission.waiting`: each row gives the issue, one word for why nothing of
 it runs, and the issues that hold it. Read it beside `admission.blocked`, which names Dispatch
-links and children-first waits alone. The daemon starts none of the issues in `admission.held` by
-itself, so a row ends when a person acts or when the tree that owns the work moves;
-`skill://legion-controller/references/admission.md` gives the word for each row and what ends it.
+links and the waits on children alone. The daemon starts none of the issues in `admission.held`
+by itself, except a parent in `awaiting_children`, which it takes back to the start it held once
+no child under it is open. Every other row ends when a person acts or when the tree that owns the
+work moves; `skill://legion-controller/references/admission.md` gives the word for each row and
+what ends it.
 
 ## Findings, and the issues you file
 

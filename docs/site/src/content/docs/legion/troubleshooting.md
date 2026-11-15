@@ -292,7 +292,10 @@ Check, in order:
    `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
    line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
    counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
-   is in `blocked`, with each child it waits for.
+   is in `blocked`, with each child it waits for. So is a parent in phase `awaiting_children`, whose
+   phases had started: it holds no slot, `held` names it `awaiting_children`, and it goes on by
+   itself once no child under it is open
+   ([Concepts](/legion/legion/concepts/#trees-and-the-architect)).
 
    Each waiting issue's own `waitingLine` says where it stands and why: `part`, `returned` for
    an issue whose work came back or `starting` for one that has not started; `kind`;
