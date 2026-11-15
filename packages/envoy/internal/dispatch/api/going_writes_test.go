@@ -833,14 +833,17 @@ func TestGoingWriteSentAtOnceWithArgumentsReplacingItsOwnIsRefused(t *testing.T)
 // TestGoingWriteClaimedIsUnderWayUntilItsRecordCanNoLongerLand (review hardening): a write
 // claimed longer ago than a request's handler may run is still under way, 429, since the request
 // records what it did in the bookkeeping after that bound; only past the bookkeeping too is it
-// 409 GOING_WRITE_UNSETTLED, so no record of it can follow that answer.
+// 409 GOING_WRITE_UNSETTLED, so no record of it can follow that answer. The claim is of a planned
+// call (sends 1) with no landing recorded, the one write whose request may have run unrecorded: a
+// claim never planned sent nothing, and is run by the next press past the bound
+// (TestGoingWriteWhoseProcessEndedBeforeItSentAnythingIsRunByTheNextPress).
 func TestGoingWriteClaimedIsUnderWayUntilItsRecordCanNoLongerLand(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Claimed", "The spec.\n").Key
 	run := rig.proposed(t, "alice", true, "dispatch_comment", map[string]any{"issue": issue, "body": "Claimed long ago."})
 	ctx := context.Background()
 	claimed := goingRunWrite{ID: uuid.NewString(), Action: "dispatch_comment", Invocation: 0, Approved: goingApprovedPerson,
-		At: time.Now().UTC().Add(-(rig.served.keyedRunLimit() + time.Second))}
+		At: time.Now().UTC().Add(-(rig.served.keyedRunLimit() + time.Second)), Sends: 1}
 	if err := rig.served.claimGoingRunWrite(ctx, run, model.CanonicalLogin("alice"), claimed, ""); err != nil {
 		t.Fatalf("claim the write: %v", err)
 	}

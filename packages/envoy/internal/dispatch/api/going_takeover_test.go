@@ -11,7 +11,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -322,6 +325,140 @@ func TestGoingWriteTakenOverWhoseDocumentChangedSinceIsUndoneByNothingSayingWhy(
 	}
 	if now := decodeBody[artifactText](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/artifacts/"+notes.Artifact.ID+"/text", nil)).Markdown; now != bobs {
 		t.Fatalf("the document reads %q after the undo, want bob's %q left as it is", now, bobs)
+	}
+}
+
+// dieBeforeSending sends one press of the run whose process ends on the read before its write,
+// GET path, before anything of the write is planned or sent, and fails unless the run keeps that
+// write pending with nothing planned (sends 0) and no request recorded.
+func (rig goingWritesRig) dieBeforeSending(t *testing.T, run, path string, press map[string]any) {
+	t.Helper()
+	inner := rig.served.inProcess
+	rig.served.inProcess = goingDiesBefore(inner, http.MethodGet+" "+path)
+	rig.dieWriting(t, run, press)
+	rig.served.inProcess = inner
+	if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || !writes[0].Pending || writes[0].Sends != 0 || len(writes[0].Requests) != 0 {
+		t.Fatalf("the run keeps %+v, want the one write pending, nothing of it planned or recorded", writes)
+	}
+}
+
+// TestGoingWriteWhoseProcessEndedBeforeItSentAnythingIsRunByTheNextPress (deep review of
+// ffad0d79; check c21): a title change whose process ended on its read before, after its claim and
+// before its call was planned (sends 0) or any request of it sent, recorded no landing because
+// nothing of it was sent, as its record proves. Past the claim's bound the next press takes the
+// claim over and runs the write, as the next undo makes an undo never reached: the title changes,
+// once, and a further press answers the write's line and sends nothing.
+func TestGoingWriteWhoseProcessEndedBeforeItSentAnythingIsRunByTheNextPress(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	issue := rig.issue(t, "Titled before the press")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	run := rig.proposed(t, "alice", false, "dispatch_issue_update", map[string]any{"issue": issue, "title": "Titled by the press"})
+	press := map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedPerson}
+	rig.dieBeforeSending(t, run, "/api/v1/issues/"+issue, press)
+	sent := map[string]int{}
+	rig.served.inProcess = goingCommittedThenRefused(inner, "", sent)
+	rig.ageGoingWrites(t, run)
+	answered := rig.write(t, "alice", run, press)
+	if answered.Code != http.StatusOK || !goingLineOf(t, answered).Outcome.OK {
+		t.Fatalf("the press after the process ended answered %d %s, want the write run and landed", answered.Code, answered.Body.String())
+	}
+	if again := goingLineOf(t, rig.write(t, "alice", run, press)); !again.Outcome.OK {
+		t.Fatalf("a further press answered %+v, want the write's line", again)
+	}
+	patch := http.MethodPatch + " /api/v1/issues/" + issue
+	if title := rig.issueRead(t, issue).Title; title != "Titled by the press" || sent[patch] != 1 {
+		t.Fatalf("%s is titled %q with %s sent %d times, want it retitled by one request", issue, title, patch, sent[patch])
+	}
+	if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || writes[0].Pending || !writes[0].Outcome.OK {
+		t.Fatalf("the run keeps %+v, want the one write, recorded landed", writes)
+	}
+}
+
+// TestGoingWriteNeverReachedIsRunByOneOfTwoPressesPastTheBound (deep review of ffad0d79): two
+// presses read a write whose process ended before it sent anything, both past the claim's bound,
+// and both reach the statement that takes the claim over at once. One takes it and runs the write;
+// the other finds the claim under way again and is answered 429 GOING_WRITE_IN_PROGRESS, so the
+// write is sent once.
+func TestGoingWriteNeverReachedIsRunByOneOfTwoPressesPastTheBound(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	issue := rig.issue(t, "Titled before two presses")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	run := rig.proposed(t, "alice", false, "dispatch_issue_update", map[string]any{"issue": issue, "title": "Titled by one press"})
+	press := map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedPerson}
+	rig.dieBeforeSending(t, run, "/api/v1/issues/"+issue, press)
+	rig.ageGoingWrites(t, run)
+
+	// The press that takes the claim over is held at its write until the other has answered.
+	patch := http.MethodPatch + " /api/v1/issues/" + issue
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	let := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	var patches atomic.Int32
+	rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path == patch {
+			patches.Add(1)
+			<-release
+		}
+		inner.ServeHTTP(w, r)
+	})
+
+	ctx := context.Background()
+	lock, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx)
+	if _, err := lock.Exec(ctx, `select 1 from going_runs where id = $1::uuid for update`, run); err != nil {
+		t.Fatalf("hold the run: %v", err)
+	}
+	cookie := rig.cookie(t, "alice")
+	answers := make(chan *httptest.ResponseRecorder, 2)
+	for range 2 {
+		go func() {
+			answers <- goingRequestTo(t, rig.network, http.MethodPost, "/api/v1/going/runs/"+run+"/writes", press, pageOrigin, cookie)
+		}()
+	}
+	// Both presses read the run and wait at the statement that takes its claim over.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock'
+			  and query like '%update going_runs%' and pid <> pg_backend_pid()`).Scan(&waiting); err != nil {
+			t.Fatalf("read who waits on the run: %v", err)
+		}
+		if waiting == 2 {
+			break
+		}
+		if len(answers) == 2 || time.Now().After(deadline) {
+			let()
+			first, second := <-answers, <-answers
+			t.Fatalf("the presses never both waited to take the claim over; they answered %d %s and %d %s",
+				first.Code, first.Body.String(), second.Code, second.Body.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := lock.Commit(ctx); err != nil {
+		t.Fatalf("let the run go: %v", err)
+	}
+	refused := <-answers
+	let()
+	ran := <-answers
+	rig.served.inProcess = inner
+	if refused.Code != http.StatusTooManyRequests || !strings.Contains(refused.Body.String(), codeGoingWriteInProgress) {
+		t.Fatalf("the press that did not take the claim over answered %d %s, want 429 %s", refused.Code, refused.Body.String(), codeGoingWriteInProgress)
+	}
+	if ran.Code != http.StatusOK || !goingLineOf(t, ran).Outcome.OK {
+		t.Fatalf("the press that took the claim over answered %d %s, want the write landed", ran.Code, ran.Body.String())
+	}
+	if title := rig.issueRead(t, issue).Title; title != "Titled by one press" || patches.Load() != 1 {
+		t.Fatalf("%s is titled %q with %s sent %d times, want it retitled by one request", issue, title, patch, patches.Load())
 	}
 }
 

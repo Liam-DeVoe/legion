@@ -77,10 +77,12 @@ type goingWriteOutcome struct {
 // through states.
 //
 // Pending is a write claimed and not yet recorded: the request making it is under way, or it
-// ended - its process died, or its record could not be written - after its write may have
-// landed. Its outcome is unknown, so it is never written again: a request for its invocation is
-// answered that it is under way, and once the request that claimed it can no longer be running
-// (goingClaimBound) that its outcome is unknown.
+// ended - its process died, or its record could not be written. A request for its invocation is
+// answered that it is under way while the request that claimed it may still be running
+// (goingClaimBound); after that the request reads what the write landed first
+// (goingWriteTakenOver): one whose record names a request that landed, or that was never planned
+// (Sends 0) and names none, is taken over and made, and only one planned that records no landing
+// is answered that its outcome is unknown, since its request may have run, and never written again.
 type goingRunWrite struct {
 	ID         string            `json:"id"`
 	Action     string            `json:"action"`
@@ -404,15 +406,17 @@ func (s *server) claimGoingRunWrite(ctx context.Context, id, authorLogin string,
 
 // adoptGoingRunWrite takes over the claim of write writeID, pending and claimed longer ago than
 // any request making it can still run (goingClaimBound), whose record names a request of it that
-// landed: the request that claimed it ended - its process died - after that landing, so a later
-// request of the invocation makes the rest of it under the same claim, the landings its record
-// holds standing. The claim is moved to at in one statement that holds only while it is still
-// past the bound, so of two requests adopting it one does and the other finds it under way.
-// Either refusal is pgx.ErrNoRows. Like the claim, it marks no Idempotency-Key committed.
+// landed, or whose call was never planned (sends 0) and whose record names no request
+// (goingWriteTakenOver): the request that claimed it ended - its process died - after that
+// landing, or before it sent anything, so a later request of the invocation makes the rest of it,
+// or all of it, under the same claim, the landings its record holds standing. The claim is moved
+// to at in one statement that holds only while it is still past the bound, so of two requests
+// adopting it one does and the other finds it under way. Either refusal is pgx.ErrNoRows. Like
+// the claim, it marks no Idempotency-Key committed.
 func (s *server) adoptGoingRunWrite(ctx context.Context, id, authorLogin, writeID string, at time.Time) error {
 	adopted := `(w->>'id' = $3 and coalesce((w->>'pending')::boolean, false)
 		and (w->>'at')::timestamptz < now() - make_interval(secs => $5)
-		and jsonb_array_length(coalesce(w->'requests', '[]'::jsonb)) > 0)`
+		and (jsonb_array_length(coalesce(w->'requests', '[]'::jsonb)) > 0 or coalesce((w->>'sends')::int, 0) = 0))`
 	return s.appendToGoingRun(store.WithoutBeforeCommit(ctx), `
 		update going_runs r set writes = (
 		  select jsonb_agg(case when `+adopted+` then jsonb_set(w, '{at}', to_jsonb($4::text)) else w end order by n)

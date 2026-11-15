@@ -186,8 +186,9 @@ const (
 	// nor the bar's write store gives up on, so the retry is answered the first write's line.
 	codeGoingWriteInProgress = "GOING_WRITE_IN_PROGRESS"
 	// codeGoingWriteUnsettled is an invocation whose write was claimed longer ago than any
-	// request making it can still run (goingClaimBound) and never recorded: it may have landed,
-	// so it is not written again, and the person reads the item to see.
+	// request making it can still run (goingClaimBound), planned (its call's Sends recorded, so a
+	// request of it may have been sent) and never recorded, with no landing of it recorded: it may
+	// have landed, so it is not written again, and the person reads the item to see.
 	codeGoingWriteUnsettled = "GOING_WRITE_UNSETTLED"
 )
 
@@ -250,10 +251,12 @@ type goingWriteLine struct {
 // recorded so and answered its line, nothing of it translated, read, checked or sent again
 // (answerGoingWriteLanded); one whose record names a request of it that landed is resumed after
 // it, under that claim (adoptGoingRunWrite), its translation, its read before and its checks run
-// for the requests that did not land; and one whose record names none is 409
-// GOING_WRITE_UNSETTLED, since its request may have run. A write that was refused does not stop
-// another. The run must have proposed or ended (409 GOING_RUN_UNPROPOSED), and the action and the
-// invocation must be in its proposal (409 GOING_NOT_PROPOSED). `auto` is refused, 409
+// for the requests that did not land; one whose call was never planned and whose record names no
+// request - its process ended before it sent anything - is taken over the same way and run whole;
+// and one planned whose record names none landed is 409 GOING_WRITE_UNSETTLED, since its request
+// may have run. A write that was refused does not stop another. The run must have proposed or
+// ended (409 GOING_RUN_UNPROPOSED), and the action and the invocation must be in its proposal (409
+// GOING_NOT_PROPOSED). `auto` is refused, 409
 // GOING_APPROVAL_REQUIRED, for the two writes that always ask and for any but the action the
 // decision chose at or above the action threshold, 409 GOING_NOT_AUTOMATIC for an invocation the
 // proposal did not mark automatic (goingAutomatic), one sent with arguments replacing its own, and
@@ -588,9 +591,11 @@ const goingWriteClaimTries = 3
 // claim refused because another request recorded a write of the invocation since the read reads
 // the run again and claims from that, a few times (goingWriteClaimTries), before it answers the
 // invocation under way. A latest write still pending past goingClaimBound whose record names a
-// request of it that landed, and not every one (answerGoingWriteClaimed and answerGoingWriteLanded
-// let no other through), is taken over under its own claim, its landings, its item, fields, value
-// before and undo standing (adoptGoingRunWrite).
+// request of it that landed, and not every one, or that was never planned and names none
+// (goingWriteTakenOver; answerGoingWriteClaimed and answerGoingWriteLanded let no other through),
+// is taken over under its own claim, its landings, its item, fields, value before and undo
+// standing (adoptGoingRunWrite); of two requests taking it over at once one does, and the other
+// reads the run again and finds the write under way.
 func (s *server) claimGoingWrite(ctx context.Context, w http.ResponseWriter, r *http.Request, run goingRun, login string, input goingWriteInput) (goingRunWrite, goingRun, bool) {
 	for tries := 1; ; tries++ {
 		write := goingRunWrite{ID: uuid.NewString(), Action: input.Offer, Invocation: input.Invocation, Approved: input.Approved, At: time.Now().UTC()}
@@ -746,9 +751,14 @@ func goingLanded(requests []goingWriteRequest) []goingWriteRequest {
 // answerGoingWriteClaimed answers a request for an invocation the run already holds a write of
 // that went through - that write's line - or one claimed and not yet recorded - 429
 // GOING_WRITE_IN_PROGRESS while the request that claimed it may still be running, and 409
-// GOING_WRITE_UNSETTLED once it cannot be and its record names no request of it that landed - and
-// reports whether it answered. A claim past goingClaimBound whose record names a request that
-// landed is answered nothing: the request resumes the write after it (claimGoingWrite).
+// GOING_WRITE_UNSETTLED once it cannot be, its call was planned (Sends, recorded before any
+// request is sent) and its record names no request of it that landed, since that request may have
+// run - and reports whether it answered. A claim past goingClaimBound whose record names a request
+// that landed is answered nothing: the request resumes the write after it (claimGoingWrite). So is
+// one whose call was never planned and whose record names no request of it at all: its process
+// ended after the claim and before anything of it was sent, as the record proves, so the request
+// takes the claim over and runs the write (adoptGoingRunWrite), as an undo never reached is made
+// again (goingUndoTakeOver).
 func (s *server) answerGoingWriteClaimed(w http.ResponseWriter, run goingRun, input goingWriteInput) bool {
 	index := slices.IndexFunc(run.Writes, func(write goingRunWrite) bool {
 		return write.Action == input.Offer && write.Invocation == input.Invocation && (write.Outcome.OK || write.Pending)
@@ -762,7 +772,7 @@ func (s *server) answerGoingWriteClaimed(w http.ResponseWriter, run goingRun, in
 		WriteJSON(w, http.StatusOK, goingWriteLineOf(claimed))
 	case time.Since(claimed.At) < s.goingClaimBound():
 		writeGoingWriteInProgress(w)
-	case len(goingLanded(claimed.Requests)) > 0:
+	case goingWriteTakenOver(claimed):
 		return false
 	default:
 		writeError(w, codeGoingWriteUnsettled, http.StatusConflict, fmt.Sprintf(
@@ -770,6 +780,15 @@ func (s *server) answerGoingWriteClaimed(w http.ResponseWriter, run goingRun, in
 			claimed.At.Format(time.RFC3339)))
 	}
 	return true
+}
+
+// goingWriteTakenOver reports whether a write pending past goingClaimBound is taken over by the
+// next request for its invocation rather than answered unsettled: its record names a request that
+// landed, an inherited one among them, after which the write resumes; or its call was never
+// planned (Sends 0) and its record names no request, so nothing of it was sent and it runs whole.
+// Only a write planned with no landing recorded may have run a request no record names.
+func goingWriteTakenOver(write goingRunWrite) bool {
+	return len(goingLanded(write.Requests)) > 0 || (write.Sends == 0 && len(write.Requests) == 0)
 }
 
 // writeGoingWriteInProgress answers a request for an invocation another request is writing.
