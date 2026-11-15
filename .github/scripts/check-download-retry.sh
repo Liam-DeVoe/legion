@@ -59,23 +59,66 @@
 #
 # Rule 8 reads one step across more than one of those files: a step that runs a script under
 # .github/scripts/ carries that script's own retried calls, and those of every script it calls
-# in turn. SCRIPT_CALL finds a call by the path it writes, scripts_called reads one body's calls
-# with the line each is written on, calls_of folds the loops and the functions around that line
-# into how many times the body runs it, and reached_arithmetic walks every path of them, which
-# charges a file two of a step's paths reach once, at the most expensive of those paths, and
-# stops a cycle. Three budgets of this tree were a one-line `run:` of a script
+# in turn. Three budgets of this tree were a one-line `run:` of a script
 # call and nothing else — ci.yaml's `pr-title` and `ci-ok` steps and pr-title.yaml's, 1200 s,
 # 600 s and 900 s of retries under a 20-, a 10- and a 15-minute budget — and a rule 8 that
 # stopped at the `run:` saw the arithmetic of none of them.
 #
-# Three limits are left in that reading set, and each is a script this check cannot name. A call
-# that does not write the script's path — one that builds the path as it runs, or runs a
-# variable holding the whole command — is a call SCRIPT_CALL does not find: the script is still
-# read as a file of its own, so rules 1 to 6 hold it, but its arithmetic reaches no step's
-# budget. A call inside a heredoc whose consumer this check cannot name is another: a body
-# belongs to the command it is fed to, and runs_heredoc reads that command off the line the
-# operator sits on, so the body of a `bash` heredoc is shell the step runs and the calls in it
-# are the step's own, while `cat`, a redirect into a file, `jq` and a `python3` heredoc take
+# HOW RULE 8 FINDS A CALL (dispatch://INFRA-1545, round 37). SCRIPT_CALL finds each occurrence
+# of a path naming a script under .github/scripts/, on a line that is not a comment, in a
+# workflow step's `run:`, a composite action step's `run:` or a script this check reads, and
+# call_of reads where in its command that occurrence sits. Each is one of three things, and
+# both lists below are closed:
+#
+#   1. A RECOGNISED CALL, in command position once the wrappers reduce_words strips are gone
+#      (an assignment prefix, a shell keyword, `timeout <seconds>`, `env`, `sudo`, `exec`,
+#      `command` and the rest of PASSTHROUGH), at top level, inside a `( … )` subshell, or as
+#      the whole command of a `$( … )` or backtick substitution, in the body of an `if`, a
+#      `while` or a `for` and on either side of `&&`, `||` and `|`. It takes two forms:
+#        - a RUN: the path is the command word, in any spelling ending in `/<name>.sh` —
+#          `.github/scripts/x.sh`, `./.github/scripts/x.sh`,
+#          `$GITHUB_WORKSPACE/.github/scripts/x.sh`, `$GITHUB_ACTION_PATH/../../scripts/x.sh`,
+#          `$script_dir/x.sh`, `../../.github/scripts/x.sh`, `$(dirname "${BASH_SOURCE[0]}")/x.sh`
+#          — or the first word after `bash` or `sh` and their options;
+#        - a SOURCE: `. <path>` or `source <path>`.
+#   2. A RECOGNISED NON-CALL: an argument of `echo`, `printf` or `grep` (NONCALL_COMMANDS),
+#      which covers every `::error`, `::warning` and `::notice` line written through the first
+#      two, and a comment. It is charged nothing and refused nothing. Until round 37 a path
+#      anywhere on a line that was not a comment line was a call, so a message a step echoed
+#      charged the step the whole script it named: two echo lines of ci.yaml's `tool-fallback`
+#      step that checks its eight installs failed read as calls, 3843 s where its call is 1281 s.
+#   3. ANYTHING ELSE: a path in a variable assignment or in an array, behind `eval`, in the
+#      text of a `bash -c` or `sh -c`, in a command whose output is piped into a shell, in a
+#      process substitution, inside the body of a function (`name() { … }` or `function
+#      name`), in a redirect, in the words of a `for`, or an argument of any other command — a
+#      `die`, `fail` or `note` helper, `cp`, `cat`, `xargs`. Such an occurrence naming a
+#      script that fetches, which is a script holding a retried call or reaching one through
+#      its recognised calls, is refused by name: the file and the line, the step or the script
+#      holding it, the script it names, the form, and the rewrite — the path written as the
+#      command word, or sourced with `.`, and for a function body, the call written outside
+#      the function. It is not charged, and a refusal stands where its figure would be. One
+#      naming a script that fetches nothing is neither charged nor refused.
+#
+# The recognised calls are then charged (shell_arithmetic). A RUN is charged once for every
+# time the step runs it: the loops around it, the calls of the function holding it and the
+# loops around those, so a step that runs a.sh and then b.sh, each running c.sh, waits for
+# c.sh twice. A library a step SOURCES — itself, through another library, or inside any script
+# it runs — is charged once for that step, at the most expensive path to it, which leaves out
+# one shape the list of what rule 8 counts once names. A step is one shell: a workflow step, or
+# one step of a composite action, which rule 8 already reads as steps of their own, so
+# install-jj, which sources .github/scripts/ci-tools.sh in two of its steps, is charged that
+# library twice. A script that reaches itself stops there.
+#
+# Three limits are left in that reading set, and each is a script this check cannot name, so
+# each is unread in silence rather than refused. A call that does not write the script's path
+# — one that builds the path as it runs, or runs a variable no line of the body sets to a
+# written path — is no occurrence SCRIPT_CALL finds: the script is still read as a file of its
+# own, so rules 1 to 6 hold it, but its arithmetic reaches no step's budget. A path that is
+# written, in a variable or in any other place the third list names, is refused instead where
+# its script fetches. A call inside a heredoc whose consumer this check cannot name is another:
+# a body belongs to the command it is fed to, and runs_heredoc reads that command off the line
+# the operator sits on, so the body of a `bash` heredoc is shell the step runs and the calls in
+# it are the step's own, while `cat`, a redirect into a file, `jq` and a `python3` heredoc take
 # their body as data, where a path written in it is a path something prints rather than runs,
 # and a body read as data is blanked before any rule reads the step (without_heredocs).
 # What the command word does not say, this check does not read: a consumer
@@ -94,7 +137,8 @@
 # consumer is, and a path in such a body is no path merely printed — that reading holds for a
 # quoted body alone; and an interpreter whose command sits in the value of a `-c` written after
 # another option, such as a `bash -o pipefail -c`, where the reading stops at the option's
-# value and the fetch inside names no site at all. And a script outside
+# value and the fetch inside names no site at all, though a script's path written in that text
+# is refused, as the third list above says. And a script outside
 # .github/scripts/ is not read at all, since that one directory is
 # the whole set: a `run:` that calls the repository's own scripts/<name>.sh or a
 # packages/<package>/scripts/<name>.sh — ci.yaml and the release workflows each hold such calls
@@ -399,8 +443,8 @@
 #      function is no refusal: the call is counted once, the budget is judged against that one
 #      figure, and a step whose real cost is several ladders passes. Each shape below is priced
 #      under its real cost. All but the last two were driven at 398ee1e88c83 in a scratch tree
-#      as a step around a 300 s call; the next to last was driven in review round 29 and again
-#      in round 36 with the input its entry gives, and the last in review round 8 on this
+#      as a step around a 300 s call; the next to last is the charge round 37 chose, which its
+#      entry says, and the last was driven in review round 8 on this
 #      tree's own staging step. Every one but those two
 #      is absent from this tree: review round 3 of dispatch://INFRA-1545 read every
 #      step and every script of it with this check's own parser and found no instance of them.
@@ -424,36 +468,23 @@
 #          retried call inside the function is counted once.
 #        * a function that calls itself: counted once, because a reading that cannot see the
 #          second call cannot price it.
-#        * A SCRIPT'S PATH WRITTEN IN PROSE IS READ AS A CALL OF IT, so a comment citing
-#          another script by path charges this step that script's whole arithmetic a second
-#          time. This check reads a step's text for the scripts it names and no reading of it
-#          asks whether the line is a command or a comment. Measured on this tree in round 23
-#          of dispatch://INFRA-1545: one sentence of .github/scripts/ci-tools-proof.sh citing
-#          `.github/scripts/ci-tools.sh` for its own derivation took every step that runs the
-#          rig from 741 s to 1482 s and refused 49 sites, and the refusal names the step and
-#          the seconds, never a comment. Cite such a file by its name alone, as that sentence
-#          does now. This one over-prices rather than under-prices, so it refuses a step
-#          instead of passing one, which is why it sits at the end of this list.
-#        * a script run through another program rather than by its own path, such as an
-#          `xargs -n1 .github/scripts/x.sh`.
 #        * a `for ((i = 0; i < ${#name[@]}; i++))` over an array the body writes as words this
 #          check takes literally: `($var)` and `(a{1,2,3})` are one word each, so the loop is
 #          one pass; and an element assignment such as `name[2]=c` is not read, so the count is
 #          the words written at the array's definition alone (two words and a third assigned
 #          later is 600 s and not 900 s).
-#        * one file that two of a step's paths reach, charged once at its most expensive path:
-#          its own arithmetic multiplied by the largest product of the loop factors along any
-#          path from the step to it, with the loop waits of that path. The step runs it along
-#          every path, so the step's real cost is the sum over the paths. This is by design: a
-#          library several scripts source is charged once and not once for each of them, and
-#          charging per path raises 52 steps of this tree, all of them through
-#          .github/scripts/ci-tools.sh (dispatch://INFRA-1545, round 36). Until round 36 the
-#          file was charged through whichever path the walk visited first, in the order of the
-#          files' names. Review round 29 drove a step running .github/scripts/zz-a.sh three
-#          times in a loop and zz-b.sh once, both calling zz-c.sh, which retries at 180 s
-#          (1050 s), under `timeout-minutes: 20`: zz-c.sh was charged through zz-a.sh, 3150 s,
-#          and the step was refused, and with zz-b.sh renamed zz-0.sh it was charged through
-#          zz-0.sh, 1050 s, and the step passed. It is refused at 3150 s under either name now.
+#        * a library two scripts of one step each source, charged once for that step: a step
+#          that runs two scripts which each call a fetching function of one library is charged
+#          that library once, at the most expensive path to it — its own arithmetic multiplied
+#          by the largest product of the loop factors along any path from the step to it, with
+#          the loop waits of that path — and not once for each script. This is the
+#          architect's reading of round 37 of dispatch://INFRA-1545: a library is a set of
+#          functions, and a step pays its sites once. A run is charged for every time the step
+#          runs it, and that holds for the script's own sites alone. ci.yaml's `tool-fallback`
+#          step 'Check every tool is the version its row pins' is this tree's instance: it
+#          sources .github/scripts/ci-tools.sh and runs ci-tools-proof.sh, which sources it
+#          again, nine times, and is charged 1281 s, the library's one `ci_tools_fetch`, where
+#          charging each run its library would put it at 12810 s.
 #        * a call of a function that a sourced file defines, which is read as a call of that
 #          function and never as a call of the file defining it. A step that sources
 #          .github/scripts/ci-tools.sh is charged that file's sites once, however many times
@@ -750,13 +781,15 @@ SELF = ".github/scripts/check-download-retry.sh"
 # `gh run cancel` is a line of a workflow fixture it writes for the checker to read, which
 # nothing runs. A retry around any of them would wrap a shell function or a string.
 TEST_HARNESS = ".test.sh"
-# What names a script in a call: a word ending in `/<name>.sh`, wherever on the line it sits —
+# What names a script: a word holding `/<name>.sh`, wherever on the line it sits —
 # `.github/scripts/x.sh`, `"$script_dir/x.sh"`, `"$GITHUB_ACTION_PATH/../../scripts/x.sh"`,
 # `tag=$(.github/scripts/x.sh)`, `. .github/scripts/ci-retry.sh`. Only the name is read, and only
 # a name SCRIPTS holds is followed, SCRIPTS being the names under .github/scripts/ alone. The
 # path a call writes in front of the name is one of half a dozen ways of reaching the same file,
-# so reading the name rather than the path is what makes those spellings one site. WHAT THIS
-# DOES NOT CLAIM IS COVERAGE OF EVERY SCRIPT CI RUNS: a CI job also runs scripts outside that
+# so reading the name rather than the path is what makes those spellings one script. A match is
+# an occurrence and not yet a call: call_of below reads where on its line it is written, and
+# only a path in a recognised call's place is charged (dispatch://INFRA-1545, round 37). WHAT
+# THIS DOES NOT CLAIM IS COVERAGE OF EVERY SCRIPT CI RUNS: a CI job also runs scripts outside that
 # directory, and four of them carry retried fetches this change wrote -
 # scripts/go-third-party-notices.sh, scripts/e2e/dispatch-session-settings.sh,
 # scripts/e2e/lib/live-daemon-proof.sh and packages/envoy/loadtest/cluster/render-nats.sh. A
@@ -765,6 +798,21 @@ TEST_HARNESS = ".test.sh"
 # header describes, and widening it is dispatch://INFRA-2899's question rather than a claim to
 # be made here (review of dispatch://INFRA-1545 caught this sentence claiming the whole). A `.test.sh` harness matches nothing here, since the name this reads holds no dot.
 SCRIPT_CALL = re.compile(r"/([a-z0-9-]+\.sh)")
+# The three things an occurrence of a script's path can be, and the two kinds of the first
+# (dispatch://INFRA-1545, round 37). A RUN is charged once for every time the body runs it; a
+# library a body SOURCES is charged once for the step reaching it; a recognised non-call is
+# charged nothing and refused nothing; and an occurrence in any other place is refused by name
+# where the script it names fetches. The header's rule 8 reading writes out which places are
+# which.
+CALL_RUN = "run"
+CALL_SOURCED = "sourced"
+CALL_NONE = "non-call"
+CALL_UNREAD = "unread"
+# The commands whose arguments are text a step prints or searches and never runs: a path written
+# as an argument of one of them is a recognised non-call, an `::error` message included.
+NONCALL_COMMANDS = {"echo", "printf", "grep"}
+# The builtins whose arguments are assignments, read as a bare `name=value` is.
+ASSIGN_BUILTINS = {"export", "local", "readonly", "declare", "typeset"}
 # The canonical inline retry of a Dockerfile RUN, already in the shape the comparison uses: its
 # continuations joined and each run of blank space one space.
 CANONICAL = (
@@ -1141,6 +1189,182 @@ class Scanner:
                 # pipes standard error with it and is as much a pipeline; the `&` of it then
                 # ends a command with no words, which adds none. `||` is a logical OR and no
                 # pipeline at all, and its second `|` ends a wordless command the same way.
+                self.end_command(char == "|" and after != "|")
+            elif char in " \t":
+                self.end_word()
+            else:
+                self.add(char, i)
+            i += 1
+        self.end_command()
+        return self.commands
+
+
+class CallScanner(Scanner):
+    """The Scanner above, read for the one question of where a script's path is written
+    (dispatch://INFRA-1545, round 37). It keeps the character span of every word, so an
+    occurrence of a path is found in the word holding it; the substitutions open around each
+    command, so a call inside a `$(…)` or a process substitution is told apart from one at top
+    level; and the targets of redirects. It reads two shapes the Scanner reads otherwise, and
+    which the rules reading sites do not need: a `$(…)` or a backtick substitution keeps the
+    command it is written in, which the shell does — the Scanner ends that command at the `$(`,
+    so `x=$(.github/scripts/x.sh)` and `. "$(dirname "$0")/x.sh"` lose the word around them —
+    and `name=( … )` is an array, whose elements the Scanner reads as the commands of a
+    subshell. A command's `context` is the substitutions open around it, innermost last: "dollar"
+    for `$(…)`, "tick" for backticks, "paren" for a subshell, "proc" for `<(…)` or `>(…)` and
+    "array" for an array's elements."""
+
+    # What a substitution saves of the command it opens inside, and restores when it closes.
+    SAVED = ("words", "spans", "word", "chars", "started", "at_word_start", "redirect_target",
+             "open_command", "command_line", "command_offset")
+
+    def __init__(self, first_line: int) -> None:
+        super().__init__(first_line)
+        self.chars: list[int] = []
+        self.spans: list[tuple[int, int] | None] = []
+        self.redirects: list[tuple[int, int]] = []
+        self.open_subs: list[tuple] = []
+        self.restored_quote: str | None = None
+
+    def add(self, char: str, offset: int) -> None:
+        super().add(char, offset)
+        self.chars.append(offset)
+
+    def end_word(self) -> None:
+        brace = False
+        span = (min(self.chars), max(self.chars)) if self.chars else None
+        if self.started and not self.redirect_target:
+            self.words.append(self.word)
+            self.spans.append(span)
+            brace = self.word in ("{", "}")
+        elif self.started and self.redirect_target and span:
+            self.redirects.append(span)
+        if self.started:
+            self.redirect_target = False
+        self.word = ""
+        self.started = False
+        self.at_word_start = True
+        self.chars = []
+        if brace:
+            self.end_command()
+
+    def end_command(self, piped: bool = False) -> None:
+        self.end_word()
+        if self.words:
+            command = Command(self.words, self.command_line, self.command_offset)
+            command.piped = piped
+            command.spans = self.spans
+            command.context = tuple(entry[0] for entry in self.open_subs)
+            self.commands.append(command)
+        self.words = []
+        self.spans = []
+        self.redirect_target = False
+        self.open_command = False
+
+    def open_sub(self) -> dict:
+        """The outer command, saved mid-word: the text of a `$(…)` or a backtick substitution is
+        part of the word it is written in, and the commands inside it are commands of their own."""
+        saved = {name: list(getattr(self, name)) if isinstance(getattr(self, name), list)
+                 else getattr(self, name) for name in self.SAVED}
+        if not self.open_command:
+            saved.update(open_command=True, command_line=self.line, command_offset=None)
+        self.words, self.spans, self.word, self.chars = [], [], "", []
+        self.started, self.at_word_start, self.redirect_target = False, True, False
+        self.open_command = False
+        return saved
+
+    def close_sub(self, text: str, i: int) -> None:
+        self.end_command()
+        _kind, quote, saved, start = self.open_subs.pop()
+        for name, value in saved.items():
+            setattr(self, name, value)
+        if self.command_offset is None:
+            self.command_offset = start
+        self.word += text[start:i + 1]
+        self.chars += [start, i]
+        self.started = True
+        self.at_word_start = False
+        self.restored_quote = quote
+
+    def scan(self, text: str) -> list[Command]:
+        quote = None
+        open_subs = self.open_subs
+        i = 0
+        while i < len(text):
+            char = text[i]
+            after = text[i + 1:i + 2]
+            if char == "\n":
+                self.line += 1
+            if quote == "'":
+                if char == "'":
+                    quote = None
+                else:
+                    self.add(char, i)
+            elif char == "`":
+                if open_subs and open_subs[-1][0] == "tick":
+                    self.close_sub(text, i)
+                    quote = self.restored_quote
+                else:
+                    open_subs.append(("tick", quote, self.open_sub(), i))
+                    quote = None
+            elif char == "$" and after == "(":
+                open_subs.append(("dollar", quote, self.open_sub(), i))
+                quote = None
+                i += 1
+            elif quote == '"':
+                if char == '"':
+                    quote = None
+                elif char == "\\" and after in ("$", "`", '"', "\\"):
+                    self.add(after, i)
+                    i += 1
+                elif char == "\\" and after == "\n":
+                    self.line += 1
+                    i += 1
+                else:
+                    self.add(char, i)
+            elif char == "#" and self.at_word_start:
+                end = text.find("\n", i)
+                i = len(text) if end < 0 else end
+                continue
+            elif char == "\\" and after == "\n":
+                self.line += 1
+                i += 1
+            elif char == "\\" and after:
+                self.add(after, i)
+                i += 1
+            elif char in "'\"":
+                quote = char
+                self.started = True
+                self.at_word_start = False
+                if not self.open_command:
+                    self.command_line = self.line
+                    self.command_offset = i
+                    self.open_command = True
+            elif char == "(" and after == ")" and self.started:
+                self.add("(", i)
+                self.add(")", i)
+                i += 1
+            elif char == "(" or (char in "<>" and after == "("):
+                kind = "paren" if char == "(" else "proc"
+                if char == "(" and self.started and ASSIGNMENT.fullmatch(self.word):
+                    kind = "array"
+                if char != "(":
+                    i += 1
+                self.end_command()
+                open_subs.append((kind, None))
+            elif char == ")":
+                if open_subs and open_subs[-1][0] == "dollar":
+                    self.close_sub(text, i)
+                    quote = self.restored_quote
+                else:
+                    self.end_command()
+                    if open_subs and open_subs[-1][0] in ("paren", "proc", "array"):
+                        quote = open_subs.pop()[1]
+            elif char in "<>":
+                self.end_word()
+                self.redirect_target = True
+                while text[i + 1:i + 2] in ("<", ">", "&", "|"):
+                    i += 1
+            elif char in ";&|\n":
                 self.end_command(char == "|" and after != "|")
             elif char in " \t":
                 self.end_word()
@@ -1620,25 +1844,29 @@ class Site:
         self.blocked: int | None = None
 
 
-class Call:
-    """One script a shell body runs: the line the call is written on, how many times that body
-    runs it, what the loops around it sleep between their passes, and the loop whose passes this
-    check could not read where `factor` is None because of one."""
+class Occurrence:
+    """One path of a script under .github/scripts/ written in a shell body, and what this check
+    reads it as (dispatch://INFRA-1545, round 37). `target` is the script; `kind` is CALL_RUN,
+    CALL_SOURCED, CALL_NONE or CALL_UNREAD; `form` names, for an unread one, the place it is
+    written in, which its refusal quotes; `line` is the line the logical line holding it starts
+    on, which is the line the loops are read against, and `shown` the line the path itself sits
+    on; `factor` is how many times the body runs that line — the loops around it and the calls
+    of the function holding it — and None where a loop around it writes no count, `wait` what
+    those loops sleep between their passes, and `loop` the loop whose passes could not be read.
+    A `uses:` of a local composite action is a run of the action.yml it names, written as one of
+    these with a factor of 1."""
 
-    def __init__(self, line: int, factor: int | None, wait: int, loop: int | None) -> None:
+    def __init__(self, target: str, kind: str, line: int, shown: int | None = None,
+                 form: str = "", factor: int | None = 1, wait: int = 0,
+                 loop: int | None = None) -> None:
+        self.target = target
+        self.kind = kind
         self.line = line
+        self.shown = line if shown is None else shown
+        self.form = form
         self.factor = factor
         self.wait = wait
         self.loop = loop
-
-    def beside(self, other: "Call") -> "Call":
-        """This call and another of the same script in one body: the body runs it both times, so
-        the counts add, and one call this check cannot count leaves the pair uncounted."""
-        if self.factor is None:
-            return self
-        if other.factor is None:
-            return other
-        return Call(self.line, self.factor + other.factor, self.wait + other.wait, None)
 
 
 # What one Uncounted names: a fetch written in the body itself, a fetch of that body whose own
@@ -1827,17 +2055,126 @@ def added(total: int | None, more: int | None) -> int | None:
     return None if total is None or more is None else total + more
 
 
-def scripts_called(text: str, first_line: int = 1) -> dict[str, list[int]]:
-    """The scripts under .github/scripts/ a shell body runs, and the lines their calls are
-    written on, whose own retried calls rule 8 counts as this body's: a step that runs a script
-    waits for every attempt that script makes, once for each pass of the loop the step wraps
-    around the call.
+def functions_around(commands: list[Command]) -> list[bool]:
+    """For each command, in the order CallScanner lists them, whether it sits in the body of a
+    function: one written `name() { … }`, `function name { … }` or `function name() { … }`,
+    with its `{` on the line of the name or on the next. A script a function runs is run as
+    many times as the function is called, from wherever it is called, which this reading does
+    not follow, so a call there is one it does not read (dispatch://INFRA-1545, round 37)."""
+    marks: list[bool] = []
+    depth = 0
+    pending = False
+    for command in commands:
+        words = command.words
+        if depth > 0:
+            marks.append(True)
+            depth += words.count("{") - words.count("}")
+            continue
+        if pending and words[0] == "{":
+            marks.append(True)
+            depth = words.count("{") - words.count("}")
+            pending = False
+            continue
+        pending = False
+        marks.append(False)
+        if FUNCTION_WORD.fullmatch(words[0]) or (words[0] == "function" and len(words) > 1):
+            depth = words.count("{") - words.count("}")
+            pending = depth == 0 and "{" not in words
+    return marks
 
-    Read off the text by the path each call writes, with backslash continuations joined and
-    comment lines left out, rather than off the commands this file scans elsewhere: a call
-    reaches a script in command position, inside a `$(…)`, as the value of an assignment or
-    behind a `source` or `.`, and the path is the one thing all of those write. A name SCRIPTS
-    does not hold is nothing this check reads.
+
+def call_of(text: str, commands: list[Command], in_function: list[bool],
+            redirects: list[tuple[int, int]], pos: int, name: str) -> tuple[str, str]:
+    """What the occurrence of `/<name>` at character `pos` of `text` is, as (kind, form): a run
+    or a source, the two recognised calls; a recognised non-call; or an occurrence this check
+    does not read, with `form` naming the place it is written in. The places are the closed
+    lists the header's rule 8 reading writes out (dispatch://INFRA-1545, round 37)."""
+    found = next(((index, word) for index, command in enumerate(commands)
+                  for word, span in enumerate(command.spans)
+                  if span and span[0] <= pos <= span[1]), None)
+    if found is None:
+        if any(start <= pos <= end for start, end in redirects):
+            return CALL_UNREAD, "a redirect"
+        if re.search(r"(^|\s)#", text[text.rfind("\n", 0, pos) + 1:pos]):
+            return CALL_NONE, "a comment"
+        return CALL_UNREAD, "a place this check reads no command at"
+    index, at = found
+    command = commands[index]
+    words = command.words
+    reduced = reduce_words(words)[0]
+    wrappers = len(words) - len(reduced)
+    ends = words[at].endswith("/" + name)
+    head = PROGRAM.sub("", reduced[0]).rsplit("/", 1)[-1] if reduced else ""
+    if command.context and command.context[-1] == "array":
+        return CALL_UNREAD, "an array"
+    if words[0] in ("for", "select", "case"):
+        return CALL_UNREAD, f"the words of a `{words[0]}`"
+    if at < wrappers:
+        if ASSIGNMENT.match(words[at]):
+            return CALL_UNREAD, "a variable assignment"
+        return CALL_UNREAD, f"an argument of `{words[0]}`"
+    argument = at - wrappers
+    if head in NONCALL_COMMANDS and argument > 0:
+        return CALL_NONE, f"an argument of `{head}`"
+    if argument == 0:
+        if not ends:
+            return CALL_UNREAD, "a command word that holds more than the script's path"
+        kind = CALL_RUN
+    elif head in INTERPRETERS:
+        # `bash [options] <path>`: the first word that is no option, and no option's value, is
+        # the script the shell runs. A `-c` makes the text behind it the script instead.
+        rest = reduced[1:]
+        first = None
+        position = 0
+        while position < len(rest):
+            word = rest[position]
+            if word == "--":
+                first = position + 1
+                break
+            if word and word[0] in "-+" and word != "-":
+                flags = word[1:] if word[1:2] != "-" else ""
+                if "c" in flags:
+                    return CALL_UNREAD, f"`{head} -c` text"
+                position += 2 if flags[-1:] == "o" else 1
+                continue
+            first = position
+            break
+        if first is None or first + 1 != argument or not ends:
+            return CALL_UNREAD, f"an argument of `{head}`"
+        kind = CALL_RUN
+    elif head in (".", "source"):
+        if argument != 1 or not ends:
+            return CALL_UNREAD, f"an argument of `{head}`"
+        kind = CALL_SOURCED
+    elif head == "eval":
+        return CALL_UNREAD, "`eval`"
+    elif head in ASSIGN_BUILTINS and ASSIGNMENT.match(words[at]):
+        return CALL_UNREAD, "a variable assignment"
+    else:
+        following = commands[index + 1].words if index + 1 < len(commands) else []
+        shell = reduce_words(following)[0][:1]
+        if command.piped and shell and PROGRAM.sub("", shell[0]).rsplit("/", 1)[-1] in INTERPRETERS:
+            return CALL_UNREAD, "a pipe into a shell"
+        return CALL_UNREAD, f"an argument of `{head}`"
+    if "proc" in command.context:
+        return CALL_UNREAD, "a process substitution"
+    if in_function[index]:
+        return CALL_UNREAD, "a function body"
+    return kind, ""
+
+
+def occurrences_of(text: str, first_line: int, loops: Loops) -> list[Occurrence]:
+    """Every occurrence of a script's path in a shell body, each read as call_of reads it, with
+    the lines it sits on and how many times the body runs that line (dispatch://INFRA-1545,
+    round 37), `loops` being what sites_of read of the same body. A step that runs a script
+    waits for every attempt that script makes, once for each time the step runs it, so this is
+    where rule 8 learns which scripts a body waits for.
+
+    The occurrences are read off the text by the path each writes, with backslash
+    continuations joined and comment lines left out, and then placed in the command holding
+    them: until round 37 the path anywhere on such a line was a call, so a path in a message
+    was charged as one and a path in a variable was charged where it was written rather than
+    where it ran. A name SCRIPTS does not hold is nothing this check reads.
 
     A heredoc body a shell runs is read here with the rest of the text, and one its consumer
     takes as data is left out with the comments, which is the reading without_heredocs makes:
@@ -1848,56 +2185,62 @@ def scripts_called(text: str, first_line: int = 1) -> dict[str, list[int]]:
     name the files their entries cover. Counting those as calls gave the lint step that runs
     this check 15000 s of other scripts' arithmetic, and the ci-images job's two check steps
     mirror-ci-images.sh's 3000 s, none of which those steps wait for."""
-    found: dict[str, list[int]] = {}
-    lines = without_heredocs(text)[0].split("\n")
+    stripped = without_heredocs(text)[0]
+    # The expressions masked to as many characters, so a word's span is an offset of `stripped`.
+    scanner = CallScanner(first_line)
+    commands = scanner.scan(EXPRESSION.sub(lambda match: "E" * len(match.group(0)), stripped))
+    in_function = functions_around(commands)
+    lines = stripped.split("\n")
+    # The line each physical line's logical line starts on, and whether that line is a comment.
+    starts: list[int] = []
+    comment: list[bool] = []
     index = 0
     while index < len(lines):
-        line = lines[index]
-        start = first_line + index
-        while line.endswith("\\") and index + 1 < len(lines):
+        start = index
+        joined = lines[index]
+        while joined.endswith("\\") and index + 1 < len(lines):
             index += 1
-            line = line[:-1] + " " + lines[index]
+            joined = joined[:-1] + " " + lines[index]
+        starts += [start] * (index - start + 1)
+        comment += [joined.lstrip().startswith("#")] * (index - start + 1)
         index += 1
-        if line.lstrip().startswith("#"):
+    found: list[Occurrence] = []
+    for match in SCRIPT_CALL.finditer(stripped):
+        path = str(SCRIPTS / match.group(1))
+        physical = stripped.count("\n", 0, match.start())
+        if path not in script_files or comment[physical]:
             continue
-        for name in SCRIPT_CALL.findall(line):
-            path = str(SCRIPTS / name)
-            if path in script_files and start not in found.setdefault(path, []):
-                found[path].append(start)
+        kind, form = call_of(stripped, commands, in_function, scanner.redirects, match.start(),
+                             match.group(1))
+        line = first_line + starts[physical]
+        factor, wait, blocked = times_run(loops, line)
+        found.append(Occurrence(path, kind, line, first_line + physical, form, factor, wait,
+                                blocked))
     return found
 
 
-def calls_of(text: str, first_line: int, loops: Loops) -> dict[str, Call]:
-    """The scripts a shell body runs, each with how many times that body runs it: the loops
-    around the call, and the calls of the function the call sits in."""
-    found: dict[str, Call] = {}
-    for path, lines in scripts_called(text, first_line).items():
-        for line in lines:
-            factor, wait, blocked = times_run(loops, line)
-            call = Call(line, factor, wait, blocked)
-            found[path] = call if path not in found else found[path].beside(call)
-    return found
+def recognised(found: list[Occurrence]) -> list[Occurrence]:
+    """The runs and the sources among these occurrences: the calls rule 8 charges."""
+    return [occurrence for occurrence in found if occurrence.kind in (CALL_RUN, CALL_SOURCED)]
 
 
-def merge_calls(into: dict[str, Call], more: dict[str, Call]) -> None:
-    """The calls of a second body folded into the first's: a composite action whose two steps
-    each run one script runs it twice, and a `uses:` of that action waits for both."""
-    for path, call in more.items():
-        into[path] = call if path not in into else into[path].beside(call)
-
-
-def blocked_calls(path: str, calls: dict[str, Call]) -> list[Uncounted]:
+def blocked_calls(path: str, calls: list[Occurrence]) -> list[Uncounted]:
     """The scripts one body runs inside a loop whose passes this check cannot read: whoever runs
-    that body waits for the whole of each script once per pass, and the passes are unread.
+    that body waits for the whole of each script once per pass, and the passes are unread. One
+    item for each script, at the first such call of it.
 
     Every such call is listed here, the ones that cost nothing included, because what a script
     costs cannot be asked at this point: the scripts are read after the steps that run them, so
-    script_cost, script_calls and script_waits are still being filled while this runs. That is
+    script_cost, script_reach and script_waits are still being filled while this runs. That is
     why `one` is None for every item here and why the kind is written down instead:
     waits_for_nothing below asks its question of these items alone, and asks it by the kind,
     dropping the calls that turn out to wait for no attempt at all."""
+    first: dict[str, Occurrence] = {}
+    for call in calls:
+        if call.factor is None:
+            first.setdefault(call.target, call)
     return [Uncounted(path, call.line, target, call.loop, None, UNCOUNTED_SCRIPT_CALL)
-            for target, call in sorted(calls.items()) if call.factor is None]
+            for target, call in sorted(first.items())]
 
 
 def commands_of(body: str, first_line: int) -> tuple[list[Command], Loops,
@@ -2328,17 +2671,17 @@ class Budget:
     it is called, the minutes its own `timeout-minutes` gives (None where it writes none, which
     is itself refused for a step holding a retried call), the minutes its job gives and where
     that is written, the arithmetic of the calls the step's own `run:` holds, the local
-    composite action a `uses:` step runs, whose calls are the step's too, and the scripts the
-    step's `run:` invokes, each with how many times the step runs it, whose calls are the
-    step's too for the same reason. A cost of None is a step holding a site this check cannot
-    count, and `uncounted` is what made it so, which the refusal names in place of a
-    comparison.
+    composite action a `uses:` step runs, and the recognised calls of the step's shell — the
+    scripts its `run:` runs and sources, each with how many times the step runs that line, and
+    the action a `uses:` names, as a run of it — whose calls are the step's too. A cost of None
+    is a step holding a site this check cannot count, and `uncounted` is what made it so, which
+    the refusal names in place of a comparison.
 
     A composite action's steps get no entry here: GitHub takes no `timeout-minutes` on one, so
     the budget that holds an action's calls is the `uses:` step that runs it."""
 
     def __init__(self, path: str, line: int, step: str, minutes: int | None, cost: int | None,
-                 uses: str | None, scripts: dict[str, Call], uncounted: list[Uncounted],
+                 uses: str | None, calls: list[Occurrence], uncounted: list[Uncounted],
                  job: str | None, job_minutes: int | None, job_line: int) -> None:
         self.path = path
         self.line = line
@@ -2346,7 +2689,7 @@ class Budget:
         self.minutes = minutes
         self.cost = cost
         self.uses = uses
-        self.scripts = scripts
+        self.calls = calls
         self.uncounted = uncounted
         self.job = job
         self.job_minutes = job_minutes
@@ -2354,27 +2697,32 @@ class Budget:
 
 
 budgets: list[Budget] = []
-# The arithmetic of each composite action's own `run:` steps, and the local actions and the
-# scripts each one calls in turn: a `uses:` step of one carries the whole of it.
+# The arithmetic of each composite action's own `run:` steps, and the recognised calls of each
+# of its steps, one list per step: each step of an action is a shell of its own, so a library
+# two of its steps source is sourced twice, and a `uses:` step of the action carries the whole
+# of it (dispatch://INFRA-1545, round 37).
 action_cost: dict[str, int | None] = {}
-action_uses: dict[str, list[str]] = {}
-action_scripts: dict[str, dict[str, Call]] = {}
+action_shells: dict[str, list[list[Occurrence]]] = {}
 # What rule 8 can put no figure on in each composite action and in each script: a site, or a
 # script the body runs, inside a loop whose passes it cannot read. A step reaching one of them
 # is told about that loop instead of being judged against a sum that is missing it.
 action_uncounted: dict[str, list[Uncounted]] = {}
 action_by_directory = {str(Path(path).parent): path for path in actions}
 action_files = set(actions)
-# The arithmetic of each script's own calls, and the scripts it calls in turn: whoever runs one
-# of them waits for the whole of it, once for each time it runs it.
+# The arithmetic of each script's own calls, and the recognised calls it makes of other scripts:
+# whoever runs one of them waits for the whole of it, once for each time it runs it.
 script_cost: dict[str, int | None] = {}
-script_calls: dict[str, dict[str, Call]] = {}
+script_reach: dict[str, list[Occurrence]] = {}
 script_uncounted: dict[str, list[Uncounted]] = {}
 # What one call of each of a script's own sites takes, for every site that takes anything at
 # all: the question the sum in script_cost can no longer answer. A cost of 0 is both a body
 # with no site in it and a body whose every site has a bound written as a variable, and rule
 # 8's filter below must tell a wait of no length from a wait of unread length.
 script_waits: dict[str, list[int | None]] = {}
+# Every occurrence of a script's path this check does not read as a call or as a non-call, with
+# the file and the line it is written on and what a refusal calls the body holding it. Rule 8
+# refuses the ones naming a script that fetches, once every script is read.
+unread_calls: list[tuple[str, int, str, Occurrence]] = []
 script_files = set(scripts)
 
 
@@ -2448,8 +2796,9 @@ JOB_ID_LINES: dict[str, set[int]] = {}
 
 for path in workflows + actions:
     DUPLICATE_KEYS.clear()
+    source_lines = Path(path).read_text().split("\n")
     try:
-        document = yaml.load(Path(path).read_text(), Loader=LineLoader)
+        document = yaml.load("\n".join(source_lines), Loader=LineLoader)
     except yaml.YAMLError as error:
         problem(path, 1, f"this file is not valid YAML, so its downloads cannot be read: {error}")
         continue
@@ -2468,14 +2817,32 @@ for path in workflows + actions:
     credentialed = credentialed_jobs(path, document)
     for job, name, step, shell, holder in steps_of(path, document):
         cost: int | None = 0
-        called: dict[str, Call] = {}
+        called: list[Occurrence] = []
         blocked: list[Uncounted] = []
         if isinstance(step.get("run"), str):
             first_line = step.lines.get("run", 0)
             found, loops_read = sites_of(path, step["run"], first_line, name,
                                          sets_pipefail(shell))
-            called = calls_of(step["run"], first_line, loops_read)
+            occurrences = occurrences_of(step["run"], first_line, loops_read)
+            called = recognised(occurrences)
             blocked = uncounted_of(found) + blocked_calls(path, called)
+            # A block scalar's text starts on the line after its `run:` key, which is the line
+            # this body's lines are counted from, so a refusal of an occurrence adds that line
+            # back to name the line the path is written on.
+            block = re.match(r"\s*[|>][+-]?\d*\s*(#.*)?$",
+                             source_lines[first_line - 1].split("run:", 1)[-1])
+            who = (f"step '{name}' of job '{job}'" if job is not None
+                   else f"step '{name}' of {path}")
+            for occurrence in occurrences:
+                if occurrence.kind == CALL_UNREAD:
+                    unread_calls.append((path, occurrence.shown + (1 if block else 0), who,
+                                         occurrence))
+            # Exception (d) reads every occurrence that might run the script it names, which is
+            # every occurrence but a recognised non-call: it asks what a credentialed job could
+            # run, and a call rule 8 cannot read can run all the same.
+            if job in credentialed:
+                credentialed_roots.update(occurrence.target for occurrence in occurrences
+                                          if occurrence.kind != CALL_NONE)
             for site in found:
                 cost = added(cost, arithmetic_of(site))
                 if job in credentialed:
@@ -2487,15 +2854,15 @@ for path in workflows + actions:
                     exempted.append(site)
                     continue
                 sites.append(site)
-        if job in credentialed:
-            credentialed_roots.update(called)
         uses = local_action(step.get("uses"))
+        if uses:
+            # A `uses:` of a local composite action runs that action once, as a step's shell
+            # runs a script.
+            called.append(Occurrence(uses, CALL_RUN, step.lines.get("uses", 0)))
         if path in action_files:
             action_cost[path] = added(action_cost.get(path, 0), cost)
-            merge_calls(action_scripts.setdefault(path, {}), called)
+            action_shells.setdefault(path, []).append(called)
             action_uncounted.setdefault(path, []).extend(blocked)
-            if uses:
-                action_uses.setdefault(path, []).append(uses)
         # Every step of a workflow gets an entry, whether or not it writes a budget: a step
         # that holds a retried call and writes none is refused below, which is the shape that
         # let .github/actions/install-elan's 607 s ladder under ci.yaml's `airlock-lean` reach
@@ -2517,22 +2884,29 @@ for path in workflows + actions:
 # dependency code — a command whose path holds a `scripts/` component other than release-push.sh
 # is dependency code by its own dependency_command(). Read from the tree, like (b): the roots are
 # the scripts such a job's steps call, and the closure below adds the scripts those call in turn,
-# the same reading rule 8 makes of a step. It follows a call it can see rather than the branch a
-# job takes, so it reaches a script a credentialed job could run; the sites it covers are named
-# in exception (d) of this file's header.
+# reading every occurrence but a recognised non-call, as the roots are read. It follows a call it
+# can see rather than the branch a job takes, so it reaches a script a credentialed job could
+# run; the sites it covers are named in exception (d) of this file's header.
+script_text = {path: Path(path).read_text() for path in scripts}
+script_read = {path: sites_of(path, script_text[path], 1, "-") for path in scripts}
+script_occurrences = {path: occurrences_of(script_text[path], 1, script_read[path][1])
+                      for path in scripts}
 while credentialed_roots:
     path = credentialed_roots.pop()
     if path in credentialed_scripts:
         continue
     credentialed_scripts.add(path)
-    credentialed_roots.update(scripts_called(Path(path).read_text()))
+    credentialed_roots.update(occurrence.target for occurrence in script_occurrences[path]
+                              if occurrence.kind != CALL_NONE)
 
 for path in scripts:
-    text = Path(path).read_text()
-    found, loops_read = sites_of(path, text, 1, "-")
-    script_calls[path] = calls_of(text, 1, loops_read)
-    script_uncounted[path] = uncounted_of(found) + blocked_calls(path, script_calls[path])
+    text = script_text[path]
+    found = script_read[path][0]
+    script_reach[path] = recognised(script_occurrences[path])
+    script_uncounted[path] = uncounted_of(found) + blocked_calls(path, script_reach[path])
     script_waits[path] = [one for one in map(one_call, found) if one != 0]
+    unread_calls += [(path, occurrence.shown, path, occurrence)
+                     for occurrence in script_occurrences[path] if occurrence.kind == CALL_UNREAD]
     for site in found:
         script_cost[path] = added(script_cost.get(path, 0), arithmetic_of(site))
         if path in credentialed_scripts:
@@ -2847,45 +3221,52 @@ for site in sites:
 # author to the wrong line.
 
 
-def calls_from(path: str) -> list[tuple[str, int | None, int]]:
-    """Every call a script or a composite action makes of another file under this check, as
-    (the file it reaches, how many times it runs it, what the loops around the call sleep), in
-    the order of the files' names. The count is None where a loop around the call writes none. A
-    `uses:` of a local action runs it once and sleeps nothing, and an action two steps of one
-    action use is one call of it here, because the walk below charges a file once however many
-    calls reach it."""
-    calls = script_calls.get(path) or action_scripts.get(path) or {}
-    found = [(target, call.factor, call.wait) for target, call in sorted(calls.items())]
-    return found + [(target, 1, 0) for target in sorted(set(action_uses.get(path, ())))]
+def file_arithmetic(path: str, seen: set[str], inside: tuple[str, ...] = ()) -> int | None:
+    """What one run of a script, or one `uses:` of a composite action, carries, read as a shell
+    of its own: the script's own sites with what its recognised calls reach, as
+    shell_arithmetic charges them, or the action's own sites with each of its steps charged as
+    the shell it is (dispatch://INFRA-1545, round 37). None where one of those calls is a site
+    this check cannot count, or a call of a script that costs anything inside a loop whose
+    passes it cannot read. `seen` gains every file it reaches, and `inside` is the path the run
+    is made from, which a cycle never re-enters."""
+    here = inside + (path,)
+    if path in action_files:
+        total = action_cost.get(path, 0)
+        for calls in action_shells.get(path, []):
+            total = added(total, shell_arithmetic(calls, seen, here))
+        return total
+    return added(script_cost.get(path, 0),
+                 shell_arithmetic(script_reach.get(path, []), seen, here))
 
 
-def own_cost(path: str) -> int | None:
-    """The arithmetic of a script's or a composite action's own sites, with what the files it
-    calls cost left out."""
-    return script_cost[path] if path in script_cost else action_cost.get(path, 0)
+def shell_arithmetic(calls: list[Occurrence], seen: set[str],
+                     inside: tuple[str, ...]) -> int | None:
+    """The arithmetic of what one shell's recognised calls reach: a workflow step's, or a
+    composite action step's, and every script it runs in turn (dispatch://INFRA-1545, round 37).
 
+    A RUN is charged for every time the shell runs it: each run adds the run script's own
+    sites and its own runs, multiplied by the loops around it, with those loops' waits where
+    that script, read as a shell of its own, costs anything. A step that runs a.sh and then
+    b.sh, each running c.sh, runs c.sh twice and waits for both. Until round 37 every file a
+    step reached was charged once, at its most expensive path, which charged that step one
+    c.sh: review round 29's input, a step running zz-a.sh three times in a loop and zz-b.sh
+    once, both running zz-c.sh at 180 s (1050 s), is 4 x 1050 = 4200 s, which that reading
+    charged 3150 s. A `uses:` of a composite action is a run of it, charged what
+    file_arithmetic reads of it: each step of an action is a shell of its own, so install-jj,
+    which fetches through .github/scripts/ci-tools.sh in two of its steps, is charged for both.
 
-def reached_arithmetic(calls: list[tuple[str, int | None, int]], seen: set[str],
-                       inside: tuple[str, ...]) -> int | None:
-    """The arithmetic of the files these calls reach, each charged ONCE at its most expensive
-    path. Every path from the calls to a file is walked, and the file's own arithmetic is
-    multiplied by the largest product of the loop factors along any of them. Where two paths
-    give the same product, the one whose loop waits charge more is the one taken, and where they
-    charge the same too, the path whose names sort first. The waits charged are those of the
-    calls along the path that charges each file whose own arithmetic is above 0, each
-    multiplied by the factors above it on that path, and a call shared by two such paths is
-    charged once. A file is charged once and not once per path because a library several
-    scripts source would otherwise be charged once for each of them: charging per path raises
-    52 steps of this tree, all of them through .github/scripts/ci-tools.sh (dispatch://INFRA-1545,
-    round 36).
-
-    The most expensive path, and not the first path the walk visits, because the first path
-    is a matter of how the files are named. Review round 29 of dispatch://INFRA-1545 drove a
-    step running .github/scripts/zz-a.sh three times in a loop and zz-b.sh once, both calling
-    zz-c.sh, which retries at 180 s (1050 s), under `timeout-minutes: 20`. A walk charging
-    zz-c.sh through the first name it visited charged it through zz-a.sh (3 x 1050 = 3150 s)
-    and refused the step, and with zz-b.sh renamed zz-0.sh it charged it through zz-0.sh
-    (1050 s) and passed it. This walk charges 3150 s under either name.
+    A library SOURCED anywhere the shell reaches — by the shell itself, by another library, or
+    by a script the shell runs — is charged once for the shell, at its most expensive path,
+    which is the architect's reading of round 37: a library is a set of functions, and its
+    sites are the step's once. Every path from the shell to the library is walked, through
+    runs and sources alike, and its own arithmetic, with the runs written in it, is multiplied
+    by the largest product of the loop factors along any of them; where two paths give the
+    same product, the one whose loop waits charge more is taken, and where they charge the same
+    too, the path whose names sort first. The waits charged are those of the sources along the
+    path that charges each library costing anything, each multiplied by the factors above it
+    on that path, and a source two such paths share is charged once. This undercounts a step
+    whose scripts each call a fetching function of one library, which the header's rule 8 list
+    says.
 
     A call whose loop writes no count (factor None) is charged nothing where the file it
     reaches, with what that file calls in turn, costs 0: the figure those passes would multiply
@@ -2894,66 +3275,79 @@ def reached_arithmetic(calls: list[tuple[str, int | None, int]], seen: set[str],
     of its own keeps its 450 s, where an answer of None would leave the step running it
     compared with nothing and passed in silence (review round 6 of dispatch://INFRA-1545). Such
     a call of a file that costs above 0, or whose own answer is None, makes the whole answer
-    None, whichever path reaches that call.
+    None.
 
     `seen` gains every file the calls reach, which is what the step's refusals read for the
     files it runs and for their uncounted loops. `inside` is the path the calls are made from:
     a path never enters a file it is already inside, so a cycle, which the shell would run until
     something failed but which must not hang this check, stops."""
-    # The most expensive path found so far to each file reached through counted calls alone:
-    # the product of its factors, the waits charged along it, and the path itself.
-    best: dict[str, tuple[int, int, tuple[str, ...]]] = {}
-    # What the last call of each path walked charges for the waits of the loops around it: its
-    # own wait times the factors above it on that path.
-    waits: dict[tuple[str, ...], int] = {}
     unread = False
+    # The most expensive path to each library the shell reaches: the product of its factors,
+    # the waits along it, and the path itself.
+    best: dict[str, tuple[int, int, tuple[str, ...]]] = {}
+    # What each source walked charges for the waits of the loops around it: its own wait times
+    # the factors above it on that path.
+    waits: dict[tuple[str, ...], int] = {}
 
-    def walk(path: tuple[str, ...], product: int, waited: int,
-             calls: list[tuple[str, int | None, int]]) -> None:
+    def survey(path: tuple[str, ...], product: int, waited: int,
+               calls: list[Occurrence]) -> None:
         nonlocal unread
-        for target, factor, wait in calls:
-            if target in path:
+        for call in calls:
+            if call.target in path:
                 continue
-            seen.add(target)
-            here = path + (target,)
-            if factor is None:
-                if script_arithmetic(target, seen, path) != 0:
-                    unread = True
+            seen.add(call.target)
+            if call.factor is None:
+                unread = unread or file_arithmetic(call.target, seen, path) != 0
                 continue
-            waits[here] = product * wait
-            reached = (product * factor, waited + product * wait, here)
-            known = best.get(target)
-            if (known is None or reached[:2] > known[:2]
-                    or (reached[:2] == known[:2] and here < known[2])):
-                best[target] = reached
-            walk(here, product * factor, waited + product * wait, calls_from(target))
+            if call.target in action_files:
+                continue
+            here = path + (call.target,)
+            reached = (product * call.factor, waited + product * call.wait, here)
+            if call.kind == CALL_SOURCED:
+                waits[here] = product * call.wait
+                known = best.get(call.target)
+                if (known is None or reached[:2] > known[:2]
+                        or (reached[:2] == known[:2] and here < known[2])):
+                    best[call.target] = reached
+            survey(here, reached[0], reached[1], script_reach.get(call.target, []))
 
-    walk(inside, 1, 0, calls)
-    if unread:
-        return None
-    total = 0
+    def runs(calls: list[Occurrence], path: tuple[str, ...]) -> int:
+        """The runs among these calls, each charged once for every time it runs, with the
+        runs each run script makes in turn; its libraries are the shell's, charged below."""
+        nonlocal unread
+        total = 0
+        for call in calls:
+            if call.kind != CALL_RUN or call.target in path or call.factor is None:
+                continue
+            value = file_arithmetic(call.target, seen, path)
+            if value is None:
+                unread = True
+                continue
+            if call.target in action_files:
+                total += call.factor * value
+            else:
+                own = added(script_cost.get(call.target, 0),
+                            runs(script_reach.get(call.target, []), path + (call.target,)))
+                if own is None:
+                    unread = True
+                    continue
+                total += call.factor * own
+            total += call.wait if value else 0
+        return total
+
+    survey(inside, 1, 0, calls)
+    total = runs(calls, inside)
     charged: set[tuple[str, ...]] = set()
-    for target, (product, _waited, path) in best.items():
-        cost = own_cost(target)
+    for target, (product, _waited, path) in sorted(best.items()):
+        cost = added(script_cost.get(target, 0), runs(script_reach.get(target, []), path))
         if cost is None:
             return None
         if cost:
             total += product * cost
             charged.update(path[:end] for end in range(len(inside) + 1, len(path) + 1))
-    return total + sum(waits[path] for path in charged)
-
-
-def script_arithmetic(path: str, seen: set[str], inside: tuple[str, ...] = ()) -> int | None:
-    """The arithmetic a call of this script carries: its own calls, and every file it reaches
-    through the scripts it calls in turn, each charged once at its most expensive path from
-    this script, as reached_arithmetic charges them. A file two of its paths reach is charged
-    the same whatever the files are named (review round 29 of dispatch://INFRA-1545, whose
-    input reached_arithmetic's own comment gives). None where one of those calls is a site this
-    check cannot count, or a call of a script that costs anything inside a loop whose passes it
-    cannot read. `seen` gains every file this script reaches, and `inside` is the path the call
-    is made from, which a cycle never re-enters."""
-    return added(script_cost.get(path, 0),
-                 reached_arithmetic(calls_from(path), seen, inside + (path,)))
+    if unread:
+        return None
+    return total + sum(waits.get(path, 0) for path in charged)
 
 
 def retries_nothing(path: str, seen: set[str]) -> bool:
@@ -2968,7 +3362,7 @@ def retries_nothing(path: str, seen: set[str]) -> bool:
     seen.add(path)
     if script_waits.get(path):
         return False
-    return all(retries_nothing(target, seen) for target in script_calls.get(path, {}))
+    return all(retries_nothing(call.target, seen) for call in script_reach.get(path, []))
 
 
 def unpriced_wait(path: str, seen: set[str]) -> bool:
@@ -2981,7 +3375,7 @@ def unpriced_wait(path: str, seen: set[str]) -> bool:
     seen.add(path)
     if any(one is None for one in script_waits.get(path, ())):
         return True
-    return any(unpriced_wait(target, seen) for target in script_calls.get(path, {}))
+    return any(unpriced_wait(call.target, seen) for call in script_reach.get(path, []))
 
 
 def waits_for_nothing(item: Uncounted) -> bool:
@@ -3027,16 +3421,42 @@ def step_name(budget) -> str:
     return budget.step
 
 
+# An occurrence of a script's path this check reads as neither a call nor a non-call, naming a
+# script that fetches, is refused by name (dispatch://INFRA-1545, round 37): the step that runs
+# that line may wait for every attempt the script makes, and rule 8 can neither charge those
+# attempts nor say they are absent, so charging the occurrence nothing would be this check
+# stating a figure it did not compute. One naming a script that fetches nothing is a wait of no
+# length either way, and is left alone. Where the script fetches is read through its recognised
+# calls alone, which is all this check reads of what it runs.
+for path, line, who, occurrence in unread_calls:
+    if retries_nothing(occurrence.target, set()):
+        continue
+    if occurrence.form == "a function body":
+        cure = ("Call the script outside the function: let the function compute what the call "
+                "needs, and write the call itself where the function is called, with the "
+                "script's path as its command word. A function runs the script once for every "
+                "time it is called, from wherever it is called, and this check does not follow "
+                "a function's calls to a script")
+    else:
+        cure = (f"Write the path as the command word — `{occurrence.target} …`, or `bash "
+                f"{occurrence.target} …` — or source it with `. {occurrence.target}`, which are "
+                "the two calls this check reads: a run it charges once for each time the step "
+                "runs it, and a library it charges once for each shell that sources it")
+    problem(path, line,
+            f"{who} names {occurrence.target} in {occurrence.form}, a place this check does "
+            "not read as a call, and that script fetches: it holds a retried call, or runs or "
+            "sources a script that does. So whatever runs this line may wait for every attempt "
+            "that script makes, and rule 8 can put no figure on that wait: it is not charged "
+            f"to any budget, and this refusal stands in its place. {cure}. A path a step only "
+            "prints is a path in a comment or an argument of `echo`, `printf` or `grep`, which "
+            "this check charges nothing and refuses nothing (dispatch://INFRA-1545, round 37).")
+
 for budget in budgets:
-    # One walk for the whole step: the scripts its `run:` calls and the action it uses are the
-    # walk's first calls, so a file two of those paths reach is charged once, at the most
-    # expensive of them, though the step runs it along both: the header's list of what rule 8
-    # counts once names it. `seen` is every file the step reaches.
+    # One shell for the whole step: the scripts its `run:` runs and sources and the action it
+    # uses are its recognised calls, each run charged for every time the step runs it and each
+    # library once, at its most expensive path. `seen` is every file the step reaches.
     seen: set[str] = set()
-    calls = [(target, call.factor, call.wait) for target, call in sorted(budget.scripts.items())]
-    if budget.uses:
-        calls.append((budget.uses, 1, 0))
-    cost = added(budget.cost, reached_arithmetic(calls, seen, ()))
+    cost = added(budget.cost, shell_arithmetic(budget.calls, seen, ()))
     # The slowest retried step of each job, kept as this loop computes it — the step's own calls,
     # the scripts it runs and the composite action it uses — for the job-derivation clause below.
     # It is taken here and never recomputed there, because a `uses:` step's whole arithmetic is
@@ -3107,7 +3527,7 @@ for budget in budgets:
         # because the verb is there for a declaration to name (review round 8 of dispatch://INFRA-1545).
         script_call = blocking[0].kind == UNCOUNTED_SCRIPT_CALL
         unread_bound = not script_call and blocking[0].one is None
-        one = (script_arithmetic(blocking[0].what, set()) if script_call
+        one = (file_arithmetic(blocking[0].what, set()) if script_call
                else blocking[0].one)
         if unread_bound:
             cost_read = (f"What one call of `{blocking[0].what}` there takes is a figure this "

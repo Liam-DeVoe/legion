@@ -1223,6 +1223,8 @@ check "says what one call of it costs" "$(contains "$out" 'One call there takes 
 check "says where a count can be written or declared" "$(contains "$out" 'DECLARED_LOOPS')"
 check "does not judge the budget against a figure it is missing" \
   "$(is "$(contains "$out" 'does not strictly exceed')" false)"
+check "does not ask for a bound written as a number, the bound being one" \
+  "$(is "$(contains "$out" 'write that bound as a number')" false)"
 
 # Two uncounted loops, one inside the other's script: the step's loop cannot be counted, and
 # neither can the loop inside the script it runs, so the figure for one run of that script is
@@ -1351,7 +1353,7 @@ check "prices no run of that script at nothing" \
 # one, so the item blocked_calls lists is that inner call rather than the step's own. The one
 # reading drops it there too, because the step's list and the lists of every script and
 # action it reaches take the same filter (review round 5 of dispatch://INFRA-1545). What leaves the step
-# with a figure rather than none is reached_arithmetic(), which charges nothing for a call inside
+# with a figure rather than none is shell_arithmetic(), which charges nothing for a call inside
 # an uncounted loop where the script it reaches, with what that script calls, costs 0 s; the case
 # below holding a priced script beside such a loop is the one that pins that answer.
 echo "case: a loop around a script that calls a script that fetches nothing passes"
@@ -1668,7 +1670,7 @@ check "prices no run of either script at nothing" \
 
 # A script this check does price, holding beside that ladder a loop it cannot count around a
 # costless script. The ladder is 450 s the step waits for and the costless loop takes nothing
-# off it, so the budget is held to the 450 s. reached_arithmetic() charging nothing for an
+# off it, so the budget is held to the 450 s. shell_arithmetic() charging nothing for an
 # uncounted call of a script that costs 0 s is what keeps that figure readable: without it the
 # costless call answers None, the whole script's arithmetic answers None with it, and the step is
 # compared with nothing and passes in silence (review round 6 of dispatch://INFRA-1545).
@@ -4712,14 +4714,16 @@ YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
-# A script two paths reach is charged once, at its most expensive path, whatever the files are
+# A script two of a step's runs reach is charged once for every run, whatever the files are
 # named. Review round 29 of dispatch://INFRA-1545 drove this input: the step runs zz-a.sh three
-# times in a loop and zz-b.sh once, both call zz-c.sh, whose 180 s retry is 5 x 180 + 150 =
-# 1050 s, and the step's key is 20 minutes, 1200 s. Through zz-a.sh, zz-c.sh costs
-# 3 x 1050 = 3150 s. A walk charging zz-c.sh through the first path it visited charged 3150 s
-# here, and with zz-b.sh renamed zz-0.sh, which sorts before zz-a.sh, it charged 1050 s and
-# passed the step. Both names are refused with the same 3150 s.
-echo "case: a script two paths reach is charged at its most expensive path"
+# times in a loop and zz-b.sh once, both run zz-c.sh, whose 180 s retry is 5 x 180 + 150 =
+# 1050 s, and the step's key is 20 minutes, 1200 s. The step runs zz-c.sh four times, three
+# through zz-a.sh and once through zz-b.sh: 4 x 1050 = 4200 s. A walk charging zz-c.sh through
+# the first path it visited charged 3150 s here, and with zz-b.sh renamed zz-0.sh, which sorts
+# before zz-a.sh, it charged 1050 s and passed the step; the walk after it charged each file
+# once at its most expensive path, 3150 s under either name, which was the undercount round 37
+# of dispatch://INFRA-1545 corrected. Both names are refused with the same 4200 s.
+echo "case: a script two of a step's runs reach is charged once for every run"
 root=$(fixture shared-script-most-expensive)
 cat > "$root/.github/scripts/zz-c.sh" <<'SH'
 #!/usr/bin/env bash
@@ -4752,9 +4756,9 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "charges zz-c.sh through zz-a.sh's three passes, once" \
-  "$(contains "$out" 'its own retries take 3150 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 53')"
+check "charges zz-c.sh once for each of its four runs" \
+  "$(contains "$out" 'its own retries take 4200 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 71')"
 
 echo "case: the same step with zz-b.sh renamed zz-0.sh, which sorts first, is charged the same"
 root=$(fixture shared-script-renamed)
@@ -4767,9 +4771,9 @@ sed 's/zz-b\.sh/zz-0.sh/' "$work/shared-script-most-expensive/.github/workflows/
   > "$root/.github/workflows/case.yaml"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "charges zz-c.sh through zz-a.sh's three passes, once" \
-  "$(contains "$out" 'its own retries take 3150 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 53')"
+check "charges zz-c.sh once for each of its four runs" \
+  "$(contains "$out" 'its own retries take 4200 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 71')"
 
 # The loop waits of the path a file is charged through are charged at every call of that path,
 # each multiplied by the passes above it, and not at its last call alone. The step runs l-a.sh
@@ -4818,22 +4822,17 @@ check "charges both loops' waits along the path, once each" \
   "$(contains "$out" 'its own retries take 6500 s to exhaust')"
 check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 109')"
 
-# Two paths reaching one file with the same product of loop factors are told apart by their
-# waits, and the path waiting longer is the one charged (dispatch://INFRA-1545, round 36). The
-# step runs pa.sh and pz.sh ten times and pm.sh twenty times, in loops that do not sleep. pa.sh
-# runs pc1.sh twice with `sleep 9`, pm.sh runs it once: twenty runs either way, with
-# 10 x 9 = 90 s of waits through pa.sh and none through pm.sh, on the path's last call. pz.sh
-# runs pz2.sh twice with `sleep 9` and pz2.sh runs pc2.sh once, while pm.sh reaches pc2.sh
-# through pm2.sh: twenty runs either way again, the 90 s on the path's middle call this time. The
-# path waiting longer is walked first to pc1.sh and second to pc2.sh. Each fetch retries at 30 s
-# (300 s), so the step waits 2 x 20 x 300 + 2 x 90 = 12180 s, which `timeout-minutes: 203`,
-# 12180 s, does not exceed. Charging either file through pm.sh is 12090 s, and the step passed
-# under each walk round 36's mutation pass left standing: one comparing the products alone, one
-# letting a later path of the same product replace the first, and ones adding a call's wait to
-# its path as `-` or as `product + wait`. The loop counts are written so that the sum
-# `product + wait` makes is larger along the pm.sh paths: 20 against 10 + 9 on the last call,
-# 1 + 20 against 1 + 10 + 9 on the calls above it.
-echo "case: of two paths of one product, the one whose loops wait longer is charged"
+# Two paths reaching one file with the same product of loop factors are both charged, each run
+# with the waits of the loops around it (dispatch://INFRA-1545, round 37; until then the file
+# was charged once, through the path whose loops waited longer). The step runs pa.sh and pz.sh
+# ten times and pm.sh twenty times, in loops that do not sleep. pa.sh runs pc1.sh twice with
+# `sleep 9`, 2 x 300 + 9 = 609 s, and pm.sh runs it once; pz.sh runs pz2.sh twice with
+# `sleep 9` and pz2.sh runs pc2.sh once, 609 s again, while pm.sh reaches pc2.sh through pm2.sh.
+# Each fetch retries at 30 s (300 s), so pm.sh is 600 s and the step waits
+# 10 x (609 + 609) + 20 x 600 = 24180 s, which `timeout-minutes: 203`, 12180 s, does not exceed.
+# Round 36's reading charged each file once, 2 x 20 x 300 + 2 x 90 = 12180 s, half of the runs
+# this step makes.
+echo "case: of two paths of one product, every run along both is charged"
 root=$(fixture path-waits-equal-product)
 cat > "$root/.github/scripts/pc1.sh" <<'SH'
 #!/usr/bin/env bash
@@ -4897,20 +4896,18 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "charges each file through the path whose loops wait" \
-  "$(contains "$out" 'its own retries take 12180 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 204')"
+check "charges every run of each file along both paths, with their waits" \
+  "$(contains "$out" 'its own retries take 24180 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 404')"
 
-# Two paths of the same product and the same waits are told apart by name, the first being the
-# one charged, and the choice moves the step's figure where another file is charged through one
-# of them, because a call two charged paths share has its wait charged once. The step runs t-a.sh
-# twice with `sleep 100`, then t-b.sh twice with `sleep 100`. Both run t-c.sh, and t-b.sh runs
-# t-x.sh too, each retrying at 30 s (300 s). t-c.sh charged through t-a.sh charges the waits of
-# both loops, 4 x 300 + 200 = 1400 s, which `timeout-minutes: 23`, 1380 s, does not exceed;
-# charged through t-b.sh, the path t-x.sh is charged through, it is 1300 s, and the step passed
-# under round 36's surviving walks that let the later of two equal paths replace the first
-# (dispatch://INFRA-1545, round 36).
-echo "case: of two paths of one product and one wait, the first by name is charged"
+# Two paths of the same product and the same waits are both charged, and each loop's waits once
+# for its own runs (dispatch://INFRA-1545, round 37; until then one of the two was charged, the
+# first by name). The step runs t-a.sh twice with `sleep 100`, then t-b.sh twice with
+# `sleep 100`. Both run t-c.sh, and t-b.sh runs t-x.sh too, each retrying at 30 s (300 s). So
+# the first loop waits 2 x 300 + 100 = 700 s and the second 2 x (300 + 300) + 100 = 1300 s,
+# 2000 s, which `timeout-minutes: 23`, 1380 s, does not exceed. Round 36's reading charged t-c.sh
+# once, through t-a.sh, 4 x 300 + 200 = 1400 s.
+echo "case: of two paths of one product and one wait, each path's runs are charged"
 root=$(fixture path-tie-scripts)
 cat > "$root/.github/scripts/t-c.sh" <<'SH'
 #!/usr/bin/env bash
@@ -4953,20 +4950,18 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "charges t-c.sh through t-a.sh, the first name" \
-  "$(contains "$out" 'its own retries take 1400 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 24')"
+check "charges t-c.sh for its runs along both paths" \
+  "$(contains "$out" 'its own retries take 2000 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 34')"
 
-# The name decides that tie, not the order of the walk. A composite action's own script calls
-# are walked before the actions it `uses:`, and an action's path sorts before a script's, so
-# there the path walked second is the first by name. The step uses v-top, which runs v-s.sh twice
-# with `sleep 100` and then uses v-a. v-s.sh runs v-t.sh and v-x.sh once; v-a runs v-t.sh twice
-# with `sleep 100`. v-t.sh is run twice with 100 s of waits along either path. Charged through
-# v-a, the first by name, it charges v-a's loop beside v-s.sh's, which v-x.sh is charged through:
-# 4 x 300 + 200 = 1400 s, which `timeout-minutes: 23` does not exceed. Charged through v-s.sh,
-# the path walked first, it is 1300 s, and the step passed under round 36's surviving walks that
-# never read the name (dispatch://INFRA-1545, round 36).
-echo "case: of two equal paths, the first by name is charged where it is walked second"
+# The same through a composite action, whose steps are shells of their own and whose `uses:`
+# is a run of the action it names (dispatch://INFRA-1545, round 37; until then one of the two
+# paths was charged, the first by name). The step uses v-top, which runs v-s.sh twice with
+# `sleep 100` and then uses v-a. v-s.sh runs v-t.sh and v-x.sh once; v-a runs v-t.sh twice with
+# `sleep 100`. So v-top's first step waits 2 x (300 + 300) + 100 = 1300 s and v-a's one step
+# 2 x 300 + 100 = 700 s, 2000 s, which `timeout-minutes: 23` does not exceed. Round 36's reading
+# charged v-t.sh once, through v-a, 4 x 300 + 200 = 1400 s.
+echo "case: of two equal paths through a composite action, each path's runs are charged"
 root=$(fixture path-tie-action)
 cat > "$root/.github/scripts/v-t.sh" <<'SH'
 #!/usr/bin/env bash
@@ -5026,17 +5021,17 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "charges v-t.sh through v-a, the first name" \
-  "$(contains "$out" 'its own retries take 1400 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 24')"
+check "charges v-t.sh for its runs along both paths" \
+  "$(contains "$out" 'its own retries take 2000 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 34')"
 
-# And the name decides nothing else: a path first by name and walked second replaces the path
-# found first only where the two tie. w-top runs w-s.sh, which runs w-t.sh twice with `sleep 100`,
-# and uses w-a, which runs w-t.sh twice with no sleep. Through w-s.sh the step waits
-# 2 x 300 + 100 = 700 s, which `timeout-minutes: 11`, 660 s, does not exceed; charging w-t.sh
-# through w-a, which waits less, is 600 s, and the step passed under round 36's surviving walks
-# that let the first name replace a longer wait (dispatch://INFRA-1545, round 36).
-echo "case: a path first by name and waiting less is not charged in place of one waiting more"
+# And a path's waits are its own: each loop's waits are charged with that loop's runs and with
+# no other's (dispatch://INFRA-1545, round 37; until then one of the two paths was charged, the
+# one waiting longer). w-top runs w-s.sh, which runs w-t.sh twice with `sleep 100`, and uses
+# w-a, which runs w-t.sh twice with no sleep. The step waits 2 x 300 + 100 = 700 s through
+# w-s.sh and 2 x 300 = 600 s through w-a, 1300 s, which `timeout-minutes: 11`, 660 s, does not
+# exceed. Round 36's reading charged w-t.sh once, through w-s.sh, 700 s.
+echo "case: a path waiting less and a path waiting more are each charged their own waits"
 root=$(fixture path-name-not-wait)
 cat > "$root/.github/scripts/w-t.sh" <<'SH'
 #!/usr/bin/env bash
@@ -5091,9 +5086,9 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "charges w-t.sh through w-s.sh, whose loop waits" \
-  "$(contains "$out" 'its own retries take 700 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 12')"
+check "charges w-t.sh's runs along both paths, with w-s.sh's waits alone" \
+  "$(contains "$out" 'its own retries take 1300 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 22')"
 
 # The waits charged are those of the paths charging a file whose own arithmetic is above 0. A
 # loop sleeping 100 s between its three passes around q-quiet.sh, which retries nothing, sits

@@ -256,17 +256,19 @@ jobs:
         timeout-minutes: 181
         id: plugin_versions
         run: |
-          # pair_member <version output> <tag prefix>: the version npm carries for the plugin in
-          # this run. This step's own dispatch is which that is: the version the plugin releases,
-          # or, when it skips, nothing, and release-push.sh pair-version then reads the version of
-          # its newest tag, which is what npm carries. A newest tag whose name is not <tag
-          # prefix>X.Y.Z, and no such tag at all, print nothing, which the guards below refuse.
-          pair_member() {
-            local released=''
+          # released_of <version output>: what this step's own dispatch says the plugin releases
+          # in this run, which is its version, or, when it skips, nothing. release-push.sh
+          # pair-version <tag prefix> turns that into the version npm carries for the plugin:
+          # the version it is given, or, given nothing, the version of the plugin's newest tag,
+          # which is what npm carries. A newest tag whose name is not <tag prefix>X.Y.Z, and no
+          # such tag at all, print nothing, which the guards below refuse. Each pair-version
+          # call is written where its version is resolved rather than inside a function, so
+          # .github/scripts/check-download-retry.sh reads both as runs this step waits for
+          # (dispatch://INFRA-1545, round 37).
+          released_of() {
             if [ "$(sed -n 's/^skip=//p' <<<"$1")" != true ]; then
-              released=$(sed -n 's/^version=//p' <<<"$1")
+              sed -n 's/^version=//p' <<<"$1"
             fi
-            .github/scripts/release-push.sh pair-version "$2" "$released"
           }
           # The plugins' own build jobs write their "No release published" summary lines; with
           # GITHUB_STEP_SUMMARY empty these two calls write none into this job's summary.
@@ -274,8 +276,8 @@ jobs:
           envoy=$(GITHUB_STEP_SUMMARY='' .github/scripts/release-push.sh version pi-envoy-v $PI_ENVOY_VERSION_ARGS)
           # shellcheck disable=SC2086 # $PI_LEGION_VERSION_ARGS is the argument list, split on purpose
           legion=$(GITHUB_STEP_SUMMARY='' .github/scripts/release-push.sh version pi-legion-v $PI_LEGION_VERSION_ARGS)
-          envoy_version=$(pair_member "$envoy" pi-envoy-v)
-          legion_version=$(pair_member "$legion" pi-legion-v)
+          envoy_version=$(.github/scripts/release-push.sh pair-version pi-envoy-v "$(released_of "$envoy")")
+          legion_version=$(.github/scripts/release-push.sh pair-version pi-legion-v "$(released_of "$legion")")
           if [ -z "$legion_version" ]; then
             echo "::error::Could not resolve @sjawhar/pi-legion version"
             exit 1
@@ -1278,22 +1280,32 @@ jobs:
           PI_LEGION_VERSION: ${{ needs.pi_legion_build.outputs.version }}
           PI_LEGION_RELEASED: ${{ steps.pi_legion_release.outcome }}
         run: |
-          # pair_member <build result> <skip> <release outcome> <released version> <tag prefix>:
-          # the version npm carries for the package, or nothing when its release did not publish.
+          # pair_released <build result> <skip> <release outcome> <released version>: succeeds
+          # when npm carries a version of the package for this run, and sets `released` to the
+          # version its release published, or to nothing when it released nothing in this run;
+          # it fails when its release did not publish, and the package's member is then nothing.
           # This step's own dispatch is which of the three a run is in; release-push.sh
-          # pair-version turns that answer into a version, reading the newest tag for a package
-          # that released nothing in this run.
-          pair_member() {
-            local released=''
-            [ "$1" = success ] || return 0
+          # pair-version <tag prefix> turns that answer into a version, reading the newest tag
+          # for a package that released nothing in this run. Each pair-version call is written
+          # where its version is resolved rather than inside the function, so
+          # .github/scripts/check-download-retry.sh reads both as runs this step waits for
+          # (dispatch://INFRA-1545, round 37).
+          pair_released() {
+            released=''
+            [ "$1" = success ] || return 1
             if [ "$2" != true ]; then
-              [ "$3" = success ] || return 0
+              [ "$3" = success ] || return 1
               released=$4
             fi
-            .github/scripts/release-push.sh pair-version "$5" "$released"
           }
-          pi_envoy=$(pair_member "$PI_ENVOY_RESULT" "$PI_ENVOY_SKIP" "$PI_ENVOY_RELEASED" "$PI_ENVOY_VERSION" pi-envoy-v)
-          pi_legion=$(pair_member "$PI_LEGION_RESULT" "$PI_LEGION_SKIP" "$PI_LEGION_RELEASED" "$PI_LEGION_VERSION" pi-legion-v)
+          pi_envoy=''
+          if pair_released "$PI_ENVOY_RESULT" "$PI_ENVOY_SKIP" "$PI_ENVOY_RELEASED" "$PI_ENVOY_VERSION"; then
+            pi_envoy=$(.github/scripts/release-push.sh pair-version pi-envoy-v "$released")
+          fi
+          pi_legion=''
+          if pair_released "$PI_LEGION_RESULT" "$PI_LEGION_SKIP" "$PI_LEGION_RELEASED" "$PI_LEGION_VERSION"; then
+            pi_legion=$(.github/scripts/release-push.sh pair-version pi-legion-v "$released")
+          fi
           ok=true
           if [ -z "$pi_envoy" ]; then
             echo "::warning::@sjawhar/pi-envoy had a release in this run that did not publish, so legion is not released and the worker image is not attested"
