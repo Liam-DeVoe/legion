@@ -120,18 +120,6 @@ type goingHeldDocument struct {
 	Name, Slug string
 }
 
-// namedBy reports whether the typed words name the document (goingWordsName) by the name it is
-// stored under or by its slug. Those are the two names an upload finds a document by
-// (artifactByNameOrSlugSQL), so one of them is the name the answer wrote for the upload, and it is
-// the stem only for a document stored with no extension. A stem the answer did not write as the
-// upload's name names nothing: it is a word people type for every other reason - "add a note"
-// writes the stem of note.md, "add a todo for the release" that of todo.md, "add a note to the
-// plan" that of plan.md - and a wrong match costs an offer to replace a document whole, a missed
-// one only the person writing its name.
-func (d goingHeldDocument) namedBy(words string) bool {
-	return goingWordsName(words, d.Name) || goingWordsName(words, d.Slug)
-}
-
 // goingHolds is what the store holds now that a proposal's invocations are marked automatic
 // against: what each issue holds of its hand-overs (issue), and whether an upload's owner holds
 // a document of its name (document). A nil read reads nothing, so what it would have answered has
@@ -489,15 +477,18 @@ func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) er
 // which would write that document's next version over the text it holds. Without force every
 // write of it is refused (goingUploadForceRefusal), and the bar has no control that sets force;
 // with force, a pick would replace the document whole, which nothing the bar shows says before the
-// person picks it, unless the person's own words name that document - by the name it is stored
-// under or its slug, one of which is the name the answer wrote for the upload
-// (goingHeldDocument.namedBy) - since they asked for that document themselves. So it is offered
-// only with force and words naming the document, and otherwise withheld, the person changing the
-// document with an edit or uploading with the dispatch command. An owner the proposal could not
-// read is offered, and held to the write's own checks when it runs (goingSendRefusal,
-// goingUploadCondition). A pick of an offer the words name the document of by the other of the
-// two names is made: no check when the write runs holds the words to the exact name the answer
-// wrote, and goingUploadsOver holds only a write sent at once.
+// person picks it, unless the person asked for that document themselves: their own words write, as
+// a whole word and whatever its case (goingWordsName), the very name the answer wrote for the
+// upload - the stored name or the slug the upload finds the document by. The document's other
+// name counts for nothing, nor does its name without the extension: an issue's own spec is stored
+// as spec.md under the slug spec, so "add a note to the spec" writes its slug and offers no upload
+// named spec.md, while "replace spec.md with this" does, and "replace the spec with this" offers
+// only an upload named spec; "add a note" writes the stem of note.md, a word typed for every other
+// reason. A wrong match costs an offer to replace a document whole, a missed one only the person
+// writing the name. So it is offered only with force and words writing that name, and otherwise
+// withheld, the person changing the document with an edit or uploading with the dispatch command.
+// An owner the proposal could not read is offered, and held to the write's own checks when it runs
+// (goingSendRefusal, goingUploadCondition).
 func goingUploadWithheld(action string, arguments map[string]any, session string, words string, document goingDocumentHeld) string {
 	argument, uploads := goingUploadNames[action]
 	if !uploads || document == nil {
@@ -512,7 +503,7 @@ func goingUploadWithheld(action string, arguments map[string]any, session string
 	if !read || held == nil {
 		return ""
 	}
-	if arguments["force"] == true && held.namedBy(words) {
+	if arguments["force"] == true && goingWordsName(words, name) {
 		return ""
 	}
 	return fmt.Sprintf("%s under %q is not offered: %s already holds %s (slug %s), and an upload would write its next version over the text it holds, which the bar offers only with force where your own words name that document. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force.",

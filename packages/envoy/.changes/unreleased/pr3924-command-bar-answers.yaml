@@ -15,9 +15,9 @@ body: |-
   An offered write runs at once only where every item it names is the page's or named in the
   person's own words; any other is an offer the person picks (`409 GOING_NOT_AUTOMATIC` for
   `auto`). An upload under the name of a document its owner already holds is offered only with
-  `force` where the person's own words name that document by its stored name or its slug,
-  never by its name without the extension: every other is withheld, and the proposal's offer
-  says why in `withheld`. A write of an upload without `force` under a name
+  `force` where the person's own words write the very name the answer wrote for the upload,
+  never its other name or its name without the extension: every other is withheld, and the
+  proposal's offer says why in `withheld`. A write of an upload without `force` under a name
   the store holds when it runs is refused, however it came to run: `400 GOING_ARGUMENTS` in the
   `dispatch artifact` command's words where its read before finds the document, and the route's
   `409 DOCUMENT_EXISTS` for one made after that read. Each write is
