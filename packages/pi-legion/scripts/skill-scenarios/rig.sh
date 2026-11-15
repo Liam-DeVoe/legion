@@ -1664,6 +1664,11 @@ worker_world() {
   worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
   [ -z "$world" ] ||
     red_fixture "$world" >>"$R/fixture.log" 2>&1 || fail "the world $world fixture failed; see $R/fixture.log"
+  # The routes the gh stand-in answers from, parsed once as it parses them, before any agent
+  # boots: a file it refuses, a `follows` that names no route's `match` among them, would answer
+  # every `gh` call of the run with that refusal, so it fails the run here instead, a rig error.
+  SKILL_SCENARIO_RUN=$R bun "$here/gh-standin.ts" --check >>"$R/fixture.log" 2>&1 ||
+    fail "the gh stand-in refuses $R/fixtures.json; see $R/fixture.log"
   # `check` is last, so `read` keeps a check name with spaces in it whole.
   read -r pr head check < <(jq -r '"\(.pr) \(.head) \(.check)"' "$R/world.json")
   seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$head"
@@ -1749,13 +1754,17 @@ run_tester_proof() {
 # calls (gh-standin.ts, `follows`), so the head reads red however many times a role reads it
 # before the re-run, and the world's own answer from the moment the re-run is pressed, and
 # `gh pr checks` exits 1 while a check it reports is red and 0 when none is, as the real command
-# does. In a world that stays red both answers are red, and nothing of it moves; in a world that
-# presses no re-run (`d`, `e`, `f`) the head reads red for the whole run. World `l`'s counted
-# reads answer three states, the first of them reporting no red at all: red_report drops that one
-# between the two turns, which is the rig reporting the check. The head's check-runs route goes in
-# front of worker_fixture's generic check-runs route, which is left answering the same red to a
-# `status` read. The re-run's route carries the settlement the head's checks would raise later, as
-# the envelope the gh stand-in publishes the moment the role presses the re-run.
+# does. `gh pr checks --required` answers the checks the base requires alone, as GitHub does: no
+# fixture of this rig names a required set, so the base requires the one aggregate check `ci`,
+# which world `g`'s head alone reports, and at every other head that read answers gh's `no
+# required checks reported on the '<branch>' branch` and exits 1. In a world that stays red both
+# answers are red, and nothing of it moves; in a world that presses no re-run (`d`, `e`, `f`) the
+# head reads red for the whole run. World `l`'s counted reads answer three states, the first of
+# them reporting no red at all: red_report drops that one between the two turns, which is the rig
+# reporting the check. The head's check-runs route goes in front of worker_fixture's generic
+# check-runs route, which is left answering the same red to a `status` read. The re-run's route
+# carries the settlement the head's checks would raise later, as the envelope the gh stand-in
+# publishes the moment the role presses the re-run.
 # The twelve worlds, each the same change under a different red:
 #   a  a failing test of packages/notify, a package the change does not touch; green on the re-run
 #   b  that test, red again on the re-run
@@ -2008,10 +2017,21 @@ red_fixture() {
               | .replies = ($counted | map({stdout:($view + {statusCheckRollup:rollup(.)})}))
               | .follows = $rerun | del(.stdout))
         elif .match == "^gh pr checks"
-        then (.replies = ($counted | map(. as $state
-               | {stdout:rows($state),
-                  exit:(if (failing($state)|length) > 0 then 1 else 0 end)}))
-              | .follows = $rerun | del(.stdout))
+        # `gh pr checks --required` answers the checks the base requires and no other, as GitHub
+        # does, from a route of its own ahead of the one that answers every check. The base
+        # requires the one aggregate check `ci`, which the head of world `g` alone reports: every
+        # other head reports no check the base requires, which gh answers on stderr, exiting 1
+        # (\u0027 is the quote gh puts around the branch: this program is in single quotes).
+        then (def answer($checks):
+                {stdout:rows($checks), exit:(if (failing($checks)|length) > 0 then 1 else 0 end)};
+              "ci" as $required
+              | {match:"^gh pr checks\\b.*\\s--required\\b", follows:$rerun,
+                 replies:($counted | map(map(select(.name == $required))
+                   | if . == []
+                     then {stderr:("no required checks reported on the \u0027" + $branch
+                                   + "\u0027 branch\n"), exit:1}
+                     else answer(.) end))},
+                (.replies = ($counted | map(answer(.))) | .follows = $rerun | del(.stdout)))
         elif .match == "^gh api .*(check-runs|status)"
         then .stdout = {total_count:($red_checks|length), check_runs:$red_checks}
         else . end)

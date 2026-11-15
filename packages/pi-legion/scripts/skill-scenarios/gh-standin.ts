@@ -19,16 +19,29 @@
 //   the re-run's route answers its first reply however many times it is read, and its second from
 //   the moment the re-run is pressed. The head's state changes when the role acts, never when it
 //   reads, so a role that reads the head twice in one turn reads the same state twice. A `follows`
-//   that names no route of the file reaches nothing, leaving the route at its first reply.
+//   that names no route's `match` is refused, with the rest of a file Fixtures does not parse.
 //   `spends` is how many matching calls the route answers. After that many it matches nothing, and
 //   the call falls through to the next route whose pattern matches it, or to the 404.
 // The stand-in is a fresh process per call, so the count of calls a route has answered outlives it
 // in fixtures.json, as the route's `answered`, written back with the body keep's own
 // read-modify-write. That write happens where this call changed what the file holds — a body edit,
-// or an `answered` that is read back: a route carrying `spends` or `replies`, or one another
-// route's `replies` follow — and never for the calls of a plain route. It is atomic: a sibling
-// temporary file in the run directory, renamed over fixtures.json, so a second `gh` process of the
-// same turn never parses a half-written file.
+// or an `answered` that is read back: a route carrying `spends`, one whose `replies` follow no
+// other route, or one another route's `replies` follow — and never for the calls of a plain route
+// or of a route whose `replies` follow another's, since nothing reads that count. Each call holds
+// an exclusive flock(2) on <run>/fixtures.lock from its read of fixtures.json to that write, so no
+// two `gh` processes of one turn answer from the same read: two calls of one counted route take a
+// reply each and count twice, and a call beside the re-run never writes back the re-run's count as
+// it stood before the re-run. Bun has no file lock, so flock(1) of util-linux takes the lock on
+// this process's own descriptor of the file, which it shares as its stdin; the lock is the open
+// file's, so it outlasts that child and ends when this process closes the descriptor or exits. The
+// write itself is atomic: a sibling temporary file in the run directory, renamed over
+// fixtures.json, so a reader that takes no lock never parses a half-written file.
+// A fixtures.json that Fixtures does not parse — a route with no `match`, or a `follows` that names
+// no route's `match` — is refused: every call exits 2 with the reason and records nothing. A route
+// that followed nothing would stay at its first reply for the whole run, so a typo in a fixture
+// would keep a head red and be scored as the role's failure. `--check` is that parse alone, which
+// rig.sh's worker_world runs once a run's fixtures are written, so such a file stops the run, a
+// rig error, before any agent boots.
 // `publish` is an envelope a route publishes once it has answered: the stand-in POSTs it as it
 // stands to $ENVOY_URL/v1/messages/publish, with the bearer the file $ENVOY_TOKEN_FILE names, so a
 // role that subscribes to the pull request's checks topic and ends its turn is woken by the
@@ -37,7 +50,15 @@
 // call's exit status to the route, since a non-zero one would read to the agent as a failed `gh`
 // call; what became of it is the call's record `published`.
 //   gh-standin.ts gh <args...>
-import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+//   gh-standin.ts --check
+import {
+  appendFileSync,
+  closeSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { z } from "zod";
 
 /** One answer: what a route serves a call, and what each entry of a route's `replies` serves. */
@@ -48,34 +69,65 @@ const Reply = z.object({
 });
 /** rig.sh's worker_fixture writes each route as {match, stdout?, stderr?, exit?}, and a route that
  * answers a sequence, follows another route's calls, spends itself or publishes a settlement adds
- * `replies`, `follows`, `spends` and `publish`. `answered` is the stand-in's own: the count of
- * calls the route has answered. */
-const Fixtures = z.looseObject({
-  routes: z.array(
-    Reply.extend({
-      match: z.string(),
-      replies: z.array(Reply).optional(),
-      follows: z.string().optional(),
-      spends: z.number().optional(),
-      answered: z.number().optional(),
-      publish: z.unknown().optional(),
-    })
-  ),
-});
+ * `replies`, `follows`, `spends` and `publish`. A `follows` names the `match` of a route of the
+ * same file. `answered` is the stand-in's own: the count of calls the route has answered. */
+const Fixtures = z
+  .looseObject({
+    routes: z.array(
+      Reply.extend({
+        match: z.string(),
+        replies: z.array(Reply).optional(),
+        follows: z.string().optional(),
+        spends: z.number().optional(),
+        answered: z.number().optional(),
+        publish: z.unknown().optional(),
+      })
+    ),
+  })
+  .superRefine(({ routes }, ctx) => {
+    const matches = new Set(routes.map((route) => route.match));
+    routes.forEach((route, index) => {
+      if (route.follows !== undefined && !matches.has(route.follows))
+        ctx.addIssue({
+          code: "custom",
+          path: ["routes", index, "follows"],
+          message: `route "${route.match}" follows "${route.follows}", which is no route's match`,
+        });
+    });
+  });
 
 const run = process.env.SKILL_SCENARIO_RUN;
 if (!run) {
   console.error("gh-standin: SKILL_SCENARIO_RUN is unset");
   process.exit(2);
 }
+/** fixtures.json as Fixtures parses it. A file it refuses ends this process with status 2 and the
+ * reason, recording no call: the trouble is the rig's, never the agent's. */
+function readFixtures() {
+  const parsed = Fixtures.safeParse(JSON.parse(readFileSync(`${run}/fixtures.json`, "utf8")));
+  if (!parsed.success) {
+    console.error(`gh-standin: ${run}/fixtures.json is refused:\n${z.prettifyError(parsed.error)}`);
+    process.exit(2);
+  }
+  return parsed.data;
+}
+/** Takes the run's fixtures lock, an exclusive flock(2) on <run>/fixtures.lock, and answers the
+ * descriptor that holds it: closing it, or this process ending, releases the lock. */
+function lockFixtures(): number {
+  const lock = openSync(`${run}/fixtures.lock`, "a");
+  const flock = Bun.spawnSync(["flock", "--exclusive", "0"], { stdin: lock, stderr: "pipe" });
+  if (flock.exitCode !== 0) {
+    console.error(`gh-standin: flock ${run}/fixtures.lock: ${flock.stderr.toString().trim()}`);
+    process.exit(2);
+  }
+  return lock;
+}
 const [as = "gh", ...args] = Bun.argv.slice(2);
+if (as === "--check") {
+  readFixtures();
+  process.exit(0);
+}
 const at = new Date().toISOString();
-const fixtures = Fixtures.parse(JSON.parse(readFileSync(`${run}/fixtures.json`, "utf8")));
-/** The routes this call can match: a route that has answered its `spends` calls is spent, and the
- * call falls through to the next route whose pattern matches it. */
-const routes = fixtures.routes.filter(
-  (route) => route.spends === undefined || (route.answered ?? 0) < route.spends
-);
 
 let stdin: string | undefined;
 const readStdin = async () => {
@@ -131,6 +183,17 @@ if (prPatch && input !== undefined) {
     body = parsed.body;
   }
 }
+// The call holds the run's fixtures lock from its read of fixtures.json to its write of what it
+// changed there, below, and no longer: the answer it prints and the settlement it publishes read
+// nothing of the file. The arguments, and any stdin they name, are read before the lock is taken,
+// so a call whose stdin never closes holds no other call up.
+const lock = lockFixtures();
+const fixtures = readFixtures();
+/** The routes this call can match: a route that has answered its `spends` calls is spent, and the
+ * call falls through to the next route whose pattern matches it. */
+const routes = fixtures.routes.filter(
+  (route) => route.spends === undefined || (route.answered ?? 0) < route.spends
+);
 const joined = `${as} ${args.join(" ")}`;
 const route = routes.find((candidate) => new RegExp(candidate.match, "s").test(joined));
 /** Records the call with the status it exits with, then exits. */
@@ -189,11 +252,12 @@ const answer = replies[Math.min(followed?.answered ?? 0, replies.length - 1)] ??
 // The count of calls each route has answered outlives this process in fixtures.json, with the body
 // where this call edited the pull request's: one read-modify-write of the file carries both. The
 // file is written only where this call changed what it holds: a body edit, or an `answered` that
-// is read back — this route carries `spends`, it carries `replies`, or another route's `replies`
-// follow it by `match`. The calls of a plain route change nothing a later call reads.
+// is read back — this route carries `spends`, it carries `replies` that follow no other route, or
+// another route's `replies` follow it by `match`. The calls of a plain route, and of one whose
+// `replies` follow another's, change nothing a later call reads.
 const counted =
   route.spends !== undefined ||
-  route.replies !== undefined ||
+  (route.replies !== undefined && route.follows === undefined) ||
   fixtures.routes.some(
     (candidate) => candidate.replies !== undefined && candidate.follows === route.match
   );
@@ -217,6 +281,7 @@ if (body !== undefined || counted) {
   writeFileSync(temporary, JSON.stringify({ ...fixtures, routes: edited }));
   renameSync(temporary, `${run}/fixtures.json`);
 }
+closeSync(lock);
 if (body !== undefined) kept = body;
 let output: unknown = answer.stdout ?? "";
 const jsonIndex = args.indexOf("--json");

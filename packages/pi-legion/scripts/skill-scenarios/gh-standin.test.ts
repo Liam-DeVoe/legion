@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
@@ -26,23 +26,29 @@ function world(routes: unknown[]) {
   const run = runDirectory();
   const env: Record<string, string> = { SKILL_SCENARIO_RUN: run };
   writeFileSync(path.join(run, "fixtures.json"), JSON.stringify({ routes }));
+  /** One run of the stand-in with `argv`: a `gh` call, or the rig's `--check` of the file. */
+  async function standinRun(...argv: string[]) {
+    const child = Bun.spawn(["bun", standin, ...argv], {
+      env: { ...process.env, ...env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exit] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { stdout, stderr, exit };
+  }
   return {
     run,
     env,
     /** One `gh` call through the stand-in, as the scenario's PATH makes it. */
-    async gh(...args: string[]) {
-      const child = Bun.spawn(["bun", standin, "gh", ...args], {
-        env: { ...process.env, ...env },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [stdout, stderr, exit] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ]);
-      return { stdout, stderr, exit };
-    },
+    gh: (...args: string[]) => standinRun("gh", ...args),
+    /** The parse rig.sh's worker_world runs over fixtures.json before any agent boots. */
+    check: () => standinRun("--check"),
+    /** Whether the stand-in recorded any call at all. */
+    recorded: () => existsSync(path.join(run, "calls.jsonl")),
     calls(): Call[] {
       return readFileSync(path.join(run, "calls.jsonl"), "utf8")
         .split("\n")
@@ -167,9 +173,84 @@ test("a route that follows another advances on that route's calls, never on its 
   ]);
   expect(own.map((call) => call.stdout)).toEqual([`${RED.stdout}\n`, `${GREEN.stdout}\n`]);
   expect([pressed.stdout, pressed.exit]).toEqual([`${GREEN.stdout}\n`, 0]);
-  // Four calls of its own left the followed route where the one call of the route it follows
-  // reached: the sequence is read from `answered` of that route, never from its own.
-  expect(fixtures().routes.map((route) => route.answered)).toEqual([4, 2, 1]);
+  // The sequence is read from `answered` of the route it follows, never from its own, so the four
+  // calls of the route that follows count nothing: nothing reads that count, and a write of it
+  // beside the re-run could put back the re-run's count as it stood before the re-run.
+  expect(fixtures().routes.map((route) => route.answered)).toEqual([undefined, 2, 1]);
+});
+
+/** How many times each row below runs its calls at once: the lost update they pin was measured
+ * at 6 of 20 trials of one re-run beside three reads of the head. */
+const TRIALS = 20;
+
+test("reads of the head made beside the re-run never lose the re-run's count", async () => {
+  const seen: unknown[] = [];
+  for (let trial = 0; trial < TRIALS; trial += 1) {
+    const { gh, fixtures } = world([
+      { match: "^gh pr checks", replies: [RED, GREEN], follows: "^gh run rerun" },
+      { match: "^gh run rerun", stdout: RERUN },
+    ]);
+
+    await Promise.all([
+      gh("run", "rerun", "17420", "--failed"),
+      gh("pr", "checks"),
+      gh("pr", "checks"),
+      gh("pr", "checks"),
+    ]);
+    const after = await gh("pr", "checks");
+
+    seen.push({ rerun: fixtures().routes[1]?.answered, after: [after.stdout, after.exit] });
+  }
+  expect(seen).toEqual(
+    Array.from({ length: TRIALS }, () => ({ rerun: 1, after: [`${GREEN.stdout}\n`, 0] }))
+  );
+}, 60_000);
+
+test("calls of one counted route made at once each take a reply of their own and each count", async () => {
+  const calls = 6;
+  const seen: unknown[] = [];
+  for (let trial = 0; trial < TRIALS; trial += 1) {
+    const { gh, fixtures } = world([{ match: "^gh pr view", replies: [RED, GREEN] }]);
+
+    const answers = await Promise.all(Array.from({ length: calls }, () => gh("pr", "view")));
+
+    seen.push({
+      red: answers.filter((answer) => answer.exit === 1).length,
+      answered: fixtures().routes[0]?.answered,
+    });
+  }
+  // One call takes the first reply and every other one the last, as one call after another would.
+  expect(seen).toEqual(Array.from({ length: TRIALS }, () => ({ red: 1, answered: calls })));
+}, 60_000);
+
+test("a follows that names no route's match is refused, naming it, and answers no call", async () => {
+  const typo = world([
+    { match: "^gh pr checks", replies: [RED, GREEN], follows: "^gh run rerunn" },
+    { match: "^gh run rerun", stdout: RERUN },
+  ]);
+  const refusal =
+    `gh-standin: ${typo.run}/fixtures.json is refused:\n` +
+    `✖ route "^gh pr checks" follows "^gh run rerunn", which is no route's match\n` +
+    "  → at routes[0].follows\n";
+
+  const read = await typo.gh("pr", "checks");
+  const rerun = await typo.gh("run", "rerun", "17420", "--failed");
+  const checked = await typo.check();
+
+  expect(read).toEqual({ stdout: "", stderr: refusal, exit: 2 });
+  expect(rerun).toEqual({ stdout: "", stderr: refusal, exit: 2 });
+  expect(checked).toEqual({ stdout: "", stderr: refusal, exit: 2 });
+  expect(typo.recorded()).toBe(false);
+
+  // The same file with the follows spelled as the route's match: the check passes and records
+  // nothing, and the read answers.
+  const spelled = world([
+    { match: "^gh pr checks", replies: [RED, GREEN], follows: "^gh run rerun" },
+    { match: "^gh run rerun", stdout: RERUN },
+  ]);
+  expect(await spelled.check()).toEqual({ stdout: "", stderr: "", exit: 0 });
+  expect(spelled.recorded()).toBe(false);
+  expect((await spelled.gh("pr", "checks")).exit).toBe(1);
 });
 
 test("a spent route falls through to the next route that matches, and to the 404 when none does", async () => {
