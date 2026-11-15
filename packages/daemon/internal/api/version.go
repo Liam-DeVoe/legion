@@ -1670,7 +1670,7 @@ package api
 // declares. Read the base's own number and every open pull request again at every forward merge
 // rather than from this line.)
 //
-// 137: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 138: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -1692,7 +1692,7 @@ package api
 // and its production check — and what that work is called, "the testing phase of LEGION-208" or
 // "the production check of LEGION-208", empty when nothing is owed. The end-of-turn reminder
 // renders that answer in both harnesses and keeps no model of the phase of its own
-// (dispatch://INFRA-2746). A plugin below 137 calls no such route,
+// (dispatch://INFRA-2746). A plugin below 138 calls no such route,
 // and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts` mirrors the
 // two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
@@ -1709,7 +1709,7 @@ package api
 // empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
 // Dispatch's sequence of a kept spec decision's review, which an older daemon neither reads nor
 // writes: a row it keeps carries no sequence and its own clock, as before this release.
-// (This entry takes 137. It took 95 at the fifth forward merge of 2026-11-13, when main declared
+// (This entry takes 138. It took 95 at the fifth forward merge of 2026-11-13, when main declared
 // 87, held 95 through the sixth, which brought main in at 045ee0762538, #3677, declaring 94, and
 // took 101 at that sixth merge. The seventh brings main in at 0fde2dcff6e4, #3707, which declares
 // 98, landed by #3708. The reading of 2026-11-13T13:43:48Z, with
@@ -1747,12 +1747,16 @@ package api
 // open head declared, and this entry took it. The reading of 2026-11-15T02:23:17Z, with main
 // still declaring 132, found #4017 and #4021 declaring 134 beside 37 and 86 below the base and,
 // above it, 125, 126, 127 (twice), 130 (twice), 133, 135 (#3659) and 136 (#3575 and #3730), so
-// 137 is the lowest number above the base's 132 and above every number another open head
-// declares, and this entry takes it. A
+// 137 was then the lowest number above the base's 132 and above every number another open head
+// declared, and this entry took it. The reading of 2026-11-15T03:11:39Z, with main still
+// declaring 132, found #4046 declaring 137 beside 37 and 86 below the base and, above it, 125,
+// 126, 127, 130 (twice), 133 (twice), 134 (twice), 135 and 136 (twice), so 138 is the lowest
+// number above the base's 132 and above every number another open head declares, and this entry
+// takes it. A
 // reading is of this file at refs/pull/<n>/head for every open pull request, not of a file list:
 // GitHub cuts a pull request's file list short, so one that changes more files than the page
 // holds answers without this path. Read the base's own number and every open pull request again
 // at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 137
+const DaemonAPIVersion = 138

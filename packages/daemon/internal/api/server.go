@@ -1037,7 +1037,7 @@ const recordFieldsContract = 75
 // number is the one DaemonAPIVersion takes for these four keys, and version.go's entry for it
 // records how that number was chosen. It is the highest of the eighteen bands, this daemon's
 // own contract, so the only caller served the four keys is one at it.
-const repositoryCorrectionContract = 137
+const repositoryCorrectionContract = 138
 
 // carriesRepositoryCorrection is whether any issue of state carries the keys
 // repositoryCorrectionContract added. Like the gated steps they are written only where there is
@@ -1118,7 +1118,7 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. waitingOnIssueContract stands above
 // it, and that one's strip takes a word of the line's `kind` and no key, and
-// repositoryCorrectionContract above that, so a caller in a pod at 111 through 136 is served the
+// repositoryCorrectionContract above that, so a caller in a pod at 111 through 137 is served the
 // measure and not the four repository keys.
 const quietTimeContract = 111
 
@@ -1130,7 +1130,7 @@ const quietTimeContract = 111
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
 // optional. It is the band below repositoryCorrectionContract's, so a caller in a pod at 132
-// through 136 is served every word of `kind` and not the four repository keys.
+// through 137 is served every word of `kind` and not the four repository keys.
 const waitingOnIssueContract = 132
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.

@@ -128,10 +128,10 @@ var (
 // views' `leakCheckCause` too, and still neither entry number, nor the held list, nor the quiet
 // time, nor a repository correction; a pod from 94 to 97 the two entry numbers too, and still no
 // held list, no quiet time and no repository correction; a pod from 98 to 110 the held list too,
-// and still no tree quiet time and no repository correction; a pod from 111 to 136 the quiet
+// and still no tree quiet time and no repository correction; a pod from 111 to 137 the quiet
 // time too, and still nothing of a repository correction — the fixture stands no member of the
 // line of the one kind 132 added, so 132's strip finds nothing here (waiting_on_issue_test.go
-// reads it); a pod below 46 none of the eighteen; and a pod at 137, this daemon's declared
+// reads it); a pod below 46 none of the eighteen; and a pod at 138, this daemon's declared
 // contract, a pod whose claims record no contract and a caller in no pod — the operator's
 // `legion state`, whose memory line reads the draws, whose queue line reads the wakes and whose
 // tool-call line reads the step records — are served all of them, the quiet time of every live
@@ -210,7 +210,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// correction is whether the caller is served what a correction of an issue's repository
-		// left on its record (repositoryCorrectionContract, 137), this daemon's own contract.
+		// left on its record (repositoryCorrectionContract, 138), this daemon's own contract.
 		correction bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
@@ -290,7 +290,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from 98 to 110, from heldContract to below quietTimeContract: the held list
 		// is served too, and the tree quiet time and the four repository keys are held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
-		// The band from 111 to 136, from quietTimeContract to below repositoryCorrectionContract,
+		// The band from 111 to 137, from quietTimeContract to below repositoryCorrectionContract,
 		// the last band under the declared contract: the tree quiet time is served too, and the
 		// four repository keys are the ones held back; waitingOnIssueContract stands inside it,
 		// and this fixture stands nothing its strip takes. Its two rows are its two edges.

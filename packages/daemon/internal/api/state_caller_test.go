@@ -400,7 +400,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// two leave together (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// correction is whether the caller is served what a correction of an issue's repository
-		// left on its record, the four keys repositoryCorrectionContract added at 137, this
+		// left on its record, the four keys repositoryCorrectionContract added at 138, this
 		// daemon's own contract, so a pod at it is served them and a pod still running an older
 		// plugin is not.
 		correction bool
