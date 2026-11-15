@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"slices"
 	"strings"
 	"time"
 
@@ -304,10 +303,10 @@ func SplittingDay(day time.Time, finished []IssueFacts, filed []IssueFiling) []m
 // and P90 are nil when the parts hold no value. The statistics a series of it answers are `n`,
 // `sum` (an hours series' `hours`), `median` and `p90`.
 type SampleFold struct {
-	N      int      `json:"n"`
-	Sum    float64  `json:"sum"`
-	Median *float64 `json:"median"`
-	P90    *float64 `json:"p90"`
+	N      int
+	Sum    float64
+	Median *float64
+	P90    *float64
 }
 
 // foldSamples folds the parts of series among parts, nil when they hold none.
@@ -376,19 +375,19 @@ func FoldIdleTime(parts []measures.DayPart, cut Scope) map[string]SampleFold {
 // MedianPerIssue, the median of every finished issue's hours on it, zero for an issue no hour of
 // which fell on it (`median_per_issue`), nil when the parts hold no issue.
 type BarFold struct {
-	N              int      `json:"n"`
-	Issues         int      `json:"issues"`
-	Hours          float64  `json:"hours"`
-	MedianPerIssue *float64 `json:"median_per_issue"`
-	Segments       Segments `json:"segments"`
+	N              int
+	Issues         int
+	Hours          float64
+	MedianPerIssue *float64
+	Segments       Segments
 }
 
 // PhaseTimeFold is legion-phase-time folded: each bar by its role, a bar whose series the parts
 // hold no part of left out, and IdleShare (statistic `idle_share`), the idle hours of every bar
 // over their whole time, nil when the bars hold no hour.
 type PhaseTimeFold struct {
-	Bars      map[string]BarFold `json:"bars"`
-	IdleShare *float64           `json:"idle_share"`
+	Bars      map[string]BarFold
+	IdleShare *float64
 }
 
 // FoldPhaseTime is legion-phase-time over parts, cut by cut
@@ -426,9 +425,9 @@ func FoldPhaseTime(parts []measures.DayPart, cut Scope) *PhaseTimeFold {
 // ShareFold is a share folded: the summed numerator over the summed denominator, Share nil when
 // the denominator is 0.
 type ShareFold struct {
-	Num   int      `json:"num"`
-	Den   int      `json:"den"`
-	Share *float64 `json:"share"`
+	Num   int
+	Den   int
+	Share *float64
 }
 
 // ReworkFold is legion-rework folded: ReviewRounds, every finished issue's review rounds (series
@@ -438,9 +437,9 @@ type ShareFold struct {
 // review (series `hours_after_first_review`: `hours` the sum, `n`, `median`, `p90`). A series the
 // parts hold no part of is nil.
 type ReworkFold struct {
-	ReviewRounds          *SampleFold `json:"review_rounds"`
-	SentBack              *ShareFold  `json:"sent_back"`
-	HoursAfterFirstReview *SampleFold `json:"hours_after_first_review"`
+	ReviewRounds          *SampleFold
+	SentBack              *ShareFold
+	HoursAfterFirstReview *SampleFold
 }
 
 // FoldRework is legion-rework over parts, cut by cut (computed:legion/metrics.FoldRework): metric
@@ -463,14 +462,6 @@ func FoldRework(parts []measures.DayPart, cut Scope) *ReworkFold {
 	return &fold
 }
 
-// WeekFold is one UTC week of legion-splitting, starting on its Monday: each class's filings and
-// the issues that finished.
-type WeekFold struct {
-	Week     time.Time      `json:"week"`
-	Filed    map[string]int `json:"filed"`
-	Finished int            `json:"finished"`
-}
-
 // RootsFold is legion-splitting's root figures folded, which count roots alone whatever the cut:
 // FinishedRoots, the roots that finished (series `roots`, statistic `issues`); Children, their
 // children (`children`); ChildrenPerRoot, the second over the first (`children_per_root`), nil
@@ -478,46 +469,29 @@ type WeekFold struct {
 // `hours_with_children` and `hours_without_children`: `n`, `median`, `p90`), each nil when the
 // parts hold no part of its series.
 type RootsFold struct {
-	FinishedRoots        int         `json:"finished_roots"`
-	Children             int         `json:"children"`
-	ChildrenPerRoot      *float64    `json:"children_per_root"`
-	HoursWithChildren    *SampleFold `json:"hours_with_children"`
-	HoursWithoutChildren *SampleFold `json:"hours_without_children"`
+	FinishedRoots        int
+	Children             int
+	ChildrenPerRoot      *float64
+	HoursWithChildren    *SampleFold
+	HoursWithoutChildren *SampleFold
 }
 
 // SplittingFold is legion-splitting folded: Filed, each class's filings (series `filed:<class>`,
 // statistic `issues`), every class present; Finished, the issues that finished (series
-// `finished`, `issues`); Weeks, the UTC weeks any of those fall in, oldest first, each class
-// present in each; and Roots, the root figures, nil where the parts hold no part of series
+// `finished`, `issues`); and Roots, the root figures, nil where the parts hold no part of series
 // `roots` (its children cut always).
 type SplittingFold struct {
-	Filed    map[string]int `json:"filed"`
-	Finished int            `json:"finished"`
-	Weeks    []WeekFold     `json:"weeks"`
-	Roots    *RootsFold     `json:"roots"`
+	Filed    map[string]int
+	Finished int
+	Roots    *RootsFold
 }
 
 // FoldSplitting is legion-splitting over parts, cut by cut
 // (computed:legion/metrics.FoldSplitting): metric 4's filings by class and the issues that
-// finished, in total and by the week (weekStart) of each part's day, a week counted where it
-// holds a filing or a finished issue; and the root figures; nil when parts hold no
-// part of any of its series in the cut.
+// finished, and the root figures; nil when parts hold no part of any of its series in the cut.
 func FoldSplitting(parts []measures.DayPart, cut Scope) *SplittingFold {
 	fold := &SplittingFold{Filed: make(map[string]int, len(classes))}
 	held := false
-	weeks := map[time.Time]*WeekFold{}
-	week := func(day time.Time) *WeekFold {
-		start := weekStart(day)
-		if existing, ok := weeks[start]; ok {
-			return existing
-		}
-		fresh := &WeekFold{Week: start, Filed: make(map[string]int, len(classes))}
-		for _, class := range classes {
-			fresh.Filed[class] = 0
-		}
-		weeks[start] = fresh
-		return fresh
-	}
 	for _, class := range classes {
 		fold.Filed[class] = 0
 		series := CutSeries(FilingSeries(class), cut)
@@ -528,7 +502,6 @@ func FoldSplitting(parts []measures.DayPart, cut Scope) *SplittingFold {
 			held = true
 			if count := int(measures.ValueOrZero(part.Sum)); count > 0 {
 				fold.Filed[class] += count
-				week(part.Day).Filed[class] += count
 			}
 		}
 	}
@@ -540,7 +513,6 @@ func FoldSplitting(parts []measures.DayPart, cut Scope) *SplittingFold {
 		held = true
 		if count := int(measures.ValueOrZero(part.Sum)); count > 0 {
 			fold.Finished += count
-			week(part.Day).Finished += count
 		}
 	}
 	if roots := measures.FoldSeries(parts, CutSeries(SeriesRoots, cut)); roots.Parts > 0 {
@@ -558,10 +530,5 @@ func FoldSplitting(parts []measures.DayPart, cut Scope) *SplittingFold {
 	if !held {
 		return nil
 	}
-	fold.Weeks = make([]WeekFold, 0, len(weeks))
-	for _, one := range weeks {
-		fold.Weeks = append(fold.Weeks, *one)
-	}
-	slices.SortFunc(fold.Weeks, func(a, b WeekFold) int { return a.Week.Compare(b.Week) })
 	return fold
 }

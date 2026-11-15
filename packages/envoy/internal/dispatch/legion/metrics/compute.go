@@ -536,13 +536,6 @@ func tablePhase(phase string) string {
 	return phase
 }
 
-// weekStart is the UTC Monday the moment's week begins on.
-func weekStart(at time.Time) time.Time {
-	day := at.UTC().Truncate(24 * time.Hour)
-	back := (int(day.Weekday()) + 6) % 7
-	return day.AddDate(0, 0, -back)
-}
-
 // quantile is the q-th quantile of a sorted list, "linear interpolation between the closest
 // ranks", and zero for an empty one: the delivery measures' own rule (measures.Quantile),
 // rounded as every number of a fold is.

@@ -14,7 +14,7 @@ For each UTC day, `metrics.SplittingDay` builds these series:
 - `roots`: the roots that finished, with their children counted beside.
 - `hours_with_children` and `hours_without_children`: the work time of each finished root with children, and of each one with none.
 
-`metrics.FoldSplitting` merges a window's days. It answers the filings of each class and the issues that finished, in all and by UTC week, a week starting on a Monday. It also answers the roots, their children, the children per root, and the median and 90th percentile of the two work times.
+`metrics.FoldSplitting` merges a window's days. It answers the filings of each class and the issues that finished, the roots, their children, the children per root, and the median and 90th percentile of the two work times. The eval's read also answers the filings and `finished` day by day, and the Delivery page adds those days up by UTC week, a week starting on a Monday.
 
 The filings and `finished` have their roots cut and their children cut, read by the tree that the filed or finished issue is in now. The root figures count roots alone, so their roots cut is the same as their all cut, and their children cut holds no issue: no day row is written for it, and it reads "no data".
 

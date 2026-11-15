@@ -35,6 +35,12 @@ import type {
   EvalListItem,
   EvalListResponse,
   EvalSeriesValues,
+  LegionBarRole,
+  LegionCutSuffix,
+  LegionEvalSlug,
+  LegionFilingClass,
+  LegionIssueColumn,
+  LegionSegment,
 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -60,25 +66,30 @@ import { DAY_MS, liveWindow, type WindowChoice } from "./lib/window";
 const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
 
 /** The four Legion evals the cards draw, by slug (`packages/envoy/internal/dispatch/evals/
- *  legion_days.go`). */
+ *  legion_days.go`). Each name below is typed against the set the generated contract carries
+ *  (`LegionEvalNames`), so a name the server renames fails this file's compile rather than
+ *  reading no value. */
 const SLUG = {
   workTime: "legion-work-time",
   phaseTime: "legion-phase-time",
   rework: "legion-rework",
   splitting: "legion-splitting",
-} as const;
+} as const satisfies Record<string, LegionEvalSlug>;
 
 /** The two cuts beside every issue, as a series names them (`metrics.CutSeries`): `hours:roots`
  *  holds the roots of their trees and `hours:children` every other issue. */
-const CUTS = [
+const CUTS: readonly { readonly suffix: LegionCutSuffix; readonly label: string }[] = [
   { suffix: ":roots", label: "roots" },
   { suffix: ":children", label: "children" },
-] as const;
+];
+
+/** A series' name in every issue's cut (no suffix) or in one of the other two. */
+type CutSuffix = "" | LegionCutSuffix;
 
 /** The five segments of a bar, in the precedence the server books an hour by (the spec's "Rule
  *  details — Precedence"), each a run of bars over the seven worker types, by the statistic each
  *  bar's series states it as. */
-const SEGMENTS: readonly { readonly key: string; readonly label: string }[] = [
+const SEGMENTS: readonly { readonly key: LegionSegment; readonly label: string }[] = [
   { key: "waiting_on_person", label: "Waiting on a person" },
   { key: "in_a_turn", label: "In a turn" },
   { key: "ci_wait", label: "CI wait" },
@@ -88,7 +99,7 @@ const SEGMENTS: readonly { readonly key: string; readonly label: string }[] = [
 
 /** The four classes of filing, in the order the card lists them (`metrics.classes`), each the
  *  series `filed:<class>` of legion-splitting. */
-const CLASSES: readonly { readonly key: string; readonly label: string }[] = [
+const CLASSES: readonly { readonly key: LegionFilingClass; readonly label: string }[] = [
   { key: "in_tree_at_design", label: "In the tree, at design" },
   { key: "in_tree_later", label: "In the tree, later" },
   { key: "out_of_tree", label: "Out of the tree" },
@@ -97,7 +108,7 @@ const CLASSES: readonly { readonly key: string; readonly label: string }[] = [
 
 /** The seven bars of metric 2, each legion-phase-time's series of that role: the worker type, and
  *  "no role" for the seventh bar, which holds the phases no role works. */
-const ROLES: readonly { readonly role: string; readonly label: string }[] = [
+const ROLES: readonly { readonly role: LegionBarRole; readonly label: string }[] = [
   { role: "architect", label: "architect" },
   { role: "planner", label: "planner" },
   { role: "implementer", label: "implementer" },
@@ -163,7 +174,7 @@ function evalsByProject(answer: EvalListResponse | undefined): ReadonlyMap<strin
 /** One series of one eval, as the answer listed it. */
 function seriesOf(
   evals: ProjectEvals | undefined,
-  slug: string,
+  slug: LegionEvalSlug,
   series: string
 ): EvalSeriesValues | undefined {
   return evals?.get(slug)?.series?.find((one) => one.series === series);
@@ -172,7 +183,7 @@ function seriesOf(
 /** One statistic of one series over the window, null where the answer holds no value. */
 function stat(
   evals: ProjectEvals | undefined,
-  slug: string,
+  slug: LegionEvalSlug,
   series: string,
   name: string
 ): number | null {
@@ -183,7 +194,7 @@ function stat(
  *  figure of the window reads no value then, and the card says from when it has data. */
 function dataSinceAfter(
   evals: ProjectEvals | undefined,
-  slug: string,
+  slug: LegionEvalSlug,
   series: string,
   windowFrom: string | undefined
 ): string | null {
@@ -207,7 +218,7 @@ interface LegionIssue {
 
 function issueOf(row: EvalItemRow): LegionIssue | null {
   const cols = row.cols ?? {};
-  const number = (name: string): number | null => {
+  const number = (name: LegionIssueColumn): number | null => {
     const value = cols[name];
     return typeof value === "number" ? value : null;
   };
@@ -289,7 +300,7 @@ function phaseTimeSeries(evals: ProjectEvals | undefined): ChartSeries[] {
   const run = (
     label: string,
     format: (value: number) => string,
-    value: (role: string) => number | null,
+    value: (role: LegionBarRole) => number | null,
     scale?: number
   ): ChartSeries => {
     const points = ROLES.map((bar) => ({
@@ -316,6 +327,20 @@ function phaseTimeSeries(evals: ProjectEvals | undefined): ChartSeries[] {
       )
     ),
   ];
+}
+
+/** legion-phase-time's idle share in one cut: the idle hours of every bar of the cut over their
+ *  whole time, a figure of the cut rather than of any one bar, which the server states on each of
+ *  the cut's bars alike so a target can judge it on any (`phaseTimeStatistics` in
+ *  `packages/envoy/internal/dispatch/evals/statistics.go`). Read off the first of the cut's bars
+ *  the answer states it on, so no one bar's series is the one the card depends on; null where the
+ *  answer states it on none. */
+function idleShare(evals: ProjectEvals | undefined, suffix: CutSuffix): number | null {
+  for (const bar of ROLES) {
+    const share = stat(evals, SLUG.phaseTime, `${bar.role}${suffix}`, "idle_share");
+    if (share !== null) return share;
+  }
+  return null;
 }
 
 /** Metric 3's chart: each finished issue's review rounds, and the implementing and testing hours
@@ -346,10 +371,11 @@ function reworkSeries(rows: readonly EvalItemRow[]): ChartSeries[] {
   ];
 }
 
-/** The UTC Monday a `YYYY-MM-DD` day's week begins on, as a `YYYY-MM-DD` day: the server's own
- *  week rule (`weekStart` in `packages/envoy/internal/dispatch/legion/metrics/compute.go`, which
- *  `metrics.FoldSplitting` groups its weeks by), stated once more here because the eval read
- *  answers legion-splitting by the day and the card has always drawn it by the week. */
+/** The UTC Monday a `YYYY-MM-DD` day's week begins on, as a `YYYY-MM-DD` day: the week the card
+ *  draws legion-splitting by, which the server never folds, since the eval read answers
+ *  legion-splitting by the day. The week is the one Legion's metric 4 has always counted by, which
+ *  the eval folds' golden test groups the stored per-day parts by to meet the base head's weekly
+ *  counts (`splittingWeeks` in `packages/envoy/internal/dispatch/evals/legion_golden_test.go`). */
 export function weekOf(day: string): string {
   const at = new Date(`${day}T00:00:00Z`);
   const back = (at.getUTCDay() + 6) % 7;
@@ -538,13 +564,14 @@ function LegionProject({
   const work = (series: string, name: string) => stat(evals, SLUG.workTime, series, name);
   const rounds = (series: string, name: string) => stat(evals, SLUG.rework, series, name);
   const split = (series: string, name: string) => stat(evals, SLUG.splitting, series, name);
-  const filed = (suffix: string): number | null => {
+  const filed = (suffix: CutSuffix): number | null => {
     const classes = CLASSES.map((filing) => split(`filed:${filing.key}${suffix}`, "issues"));
     return classes.every((count) => count === null)
       ? null
       : classes.reduce<number>((sum, count) => sum + (count ?? 0), 0);
   };
-  const since = (slug: string, series: string) => dataSinceAfter(evals, slug, series, range.from);
+  const since = (slug: LegionEvalSlug, series: string) =>
+    dataSinceAfter(evals, slug, series, range.from);
   const label = (title: string) => `${project}: ${title}`;
 
   return (
@@ -576,20 +603,14 @@ function LegionProject({
           </MetricCard>
           <MetricCard
             figures={[
-              {
-                label: "Idle share",
-                value: shown(stat(evals, SLUG.phaseTime, "architect", "idle_share"), pct),
-              },
+              { label: "Idle share", value: shown(idleShare(evals, ""), pct) },
               ...CUTS.map((cut) => ({
                 label: `Idle share, ${cut.label}`,
-                value: shown(
-                  stat(evals, SLUG.phaseTime, `architect${cut.suffix}`, "idle_share"),
-                  pct
-                ),
+                value: shown(idleShare(evals, cut.suffix), pct),
               })),
             ]}
             metric="phase_time"
-            since={since(SLUG.phaseTime, "architect")}
+            since={since(SLUG.phaseTime, "architect" satisfies LegionBarRole)}
             title="Phase time by worker type"
           >
             <Chart

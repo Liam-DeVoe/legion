@@ -23471,6 +23471,93 @@
         ],
         "type": "object"
       },
+      "LegionEvalNames": {
+        "properties": {
+          "class": {
+            "enum": [
+              "in_tree_at_design",
+              "in_tree_later",
+              "out_of_tree",
+              "by_the_controller"
+            ],
+            "type": "string"
+          },
+          "column": {
+            "enum": [
+              "children",
+              "closed_at",
+              "implementing_after_first_review",
+              "merged_at",
+              "opened_at",
+              "parked_hours",
+              "queued_hours",
+              "repo",
+              "review_rounds",
+              "root_key",
+              "sent_back",
+              "slot_hours",
+              "slot_wait_hours",
+              "started_at",
+              "testing_after_first_review",
+              "tree_depth",
+              "waiting_reason",
+              "work_first_at",
+              "work_hours",
+              "work_last_at"
+            ],
+            "type": "string"
+          },
+          "cut_suffix": {
+            "enum": [
+              ":roots",
+              ":children"
+            ],
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "architect",
+              "planner",
+              "implementer",
+              "tester",
+              "reviewer",
+              "merger",
+              "no_role"
+            ],
+            "type": "string"
+          },
+          "segment": {
+            "enum": [
+              "waiting_on_person",
+              "in_a_turn",
+              "ci_wait",
+              "waiting_on_children",
+              "idle"
+            ],
+            "type": "string"
+          },
+          "slug": {
+            "enum": [
+              "legion-work-time",
+              "legion-phase-time",
+              "legion-idle-time",
+              "legion-slot-wait",
+              "legion-rework",
+              "legion-splitting"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "role",
+          "class",
+          "segment",
+          "cut_suffix",
+          "column"
+        ],
+        "type": "object"
+      },
       "LegionSetting": {
         "properties": {
           "created_by": {

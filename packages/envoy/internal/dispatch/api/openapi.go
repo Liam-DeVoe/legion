@@ -129,6 +129,13 @@ func openAPIDocument() (*openapi31.Spec, error) {
 	if err := emitter.resolveRawFields(); err != nil {
 		return nil, err
 	}
+	// The sets of names no route answers, each declared under its own name so a client can type
+	// what it reads against them (openAPINamedSets).
+	for _, set := range openAPINamedSets {
+		if _, err := emitter.schema(set); err != nil {
+			return nil, err
+		}
+	}
 
 	hooks := openAPIHookRoutes()
 	paths := map[string]*openapi31.PathItem{}

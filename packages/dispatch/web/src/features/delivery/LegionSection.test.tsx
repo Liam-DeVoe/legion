@@ -36,7 +36,7 @@ function setting(project: string): LegionSetting {
 
 type Stats = Readonly<Record<string, number | null>>;
 
-/** One listed series of an eval as the list read states it (`evalSeriesValues`), its window's
+/** One listed series of an eval as the list read states it (`evals.SeriesValues`), its window's
  *  statistics and its per-day array. */
 function series(
   name: string,
@@ -554,7 +554,7 @@ test("the splitting chart draws the filings and the finished issues by UTC week,
   expect(rows.map((cells) => cells[5])).toEqual(["2", "1"]);
 });
 
-test("a week begins on the UTC Monday, as the server's weekStart reads it", () => {
+test("a week begins on the UTC Monday, the week metric 4 has always counted by", () => {
   expect(weekOf("2026-11-02")).toBe("2026-11-02");
   expect(weekOf("2026-11-01")).toBe("2026-10-26");
   expect(weekOf("2026-10-29")).toBe("2026-10-26");
@@ -586,6 +586,27 @@ test("a window that starts before a measure's first day says from when it has da
       ?.getAttribute("data-legion-since")
   ).toBe("2026-10-20");
   expect(card("ACME", "rework").querySelector("[data-legion-since]")).toBeNull();
+});
+
+test("the idle share is its cut's, read off whichever of the cut's bars the answer lists", async () => {
+  // An answer that lists no architect bar in any cut: the idle share every other bar states is
+  // still the card's.
+  await renderSection([setting("ACME")], () =>
+    answer(
+      legionEvals("ACME").map((item) =>
+        item.definition.slug === "legion-phase-time"
+          ? {
+              ...item,
+              series: (item.series ?? []).filter((one) => !one.series.startsWith("architect")),
+            }
+          : item
+      )
+    )
+  );
+
+  await waitFor(() => expect(figure("ACME", "phase_time", "Idle share")).toBe("12.5%"));
+  expect(figure("ACME", "phase_time", "Idle share, roots")).toBe("20.0%");
+  expect(figure("ACME", "phase_time", "Idle share, children")).toBe("10.0%");
 });
 
 test("every page of the read across the projects is read, so no project's block is left without its numbers", async () => {

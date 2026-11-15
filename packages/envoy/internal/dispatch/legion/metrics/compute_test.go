@@ -634,11 +634,11 @@ func TestEachClassOfFiledIssue(t *testing.T) {
 	if phaseOf["INFRA-4"] != "" {
 		t.Errorf("the controller's filing names the phase %q, want none: the controller works no issue", phaseOf["INFRA-4"])
 	}
-	split := w.splitting(t)
-	if len(split.Weeks) != 1 {
-		t.Fatalf("the filings fall in %d weeks, want one", len(split.Weeks))
+	weeks := w.weeks()
+	if len(weeks) != 1 {
+		t.Fatalf("the filings fall in %d weeks, want one", len(weeks))
 	}
-	week := split.Weeks[0]
+	week := weeks[0].fold
 	if week.Finished != 1 || week.Filed[ClassInTreeAtDesign] != 1 || week.Filed[ClassByTheController] != 1 {
 		t.Fatalf("the week is %+v, want one finished issue and one filing of each class", week)
 	}
@@ -678,7 +678,7 @@ func TestEachCutNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 		{Key: "INFRA-2", At: hour(6), Filer: legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}, Parent: "INFRA-1", Ancestors: []string{"INFRA-1"}},
 		{Key: "INFRA-7", At: hour(7), Filer: legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}},
 	}
-	filingsWeek := weekStart(hour(6))
+	filingsWeek := mondayOf(hour(6))
 	for _, one := range []struct {
 		scope  Scope
 		filed  []string
@@ -694,10 +694,10 @@ func TestEachCutNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 				t.Fatalf("cut %s holds the filings %v, want %v: a filing is read by the tree of the issue it created, not by the filer's",
 					one.scope, filed, one.filed)
 			}
-			var week WeekFold
-			for _, row := range w.splitting(t).Weeks {
-				if row.Week.Equal(filingsWeek) {
-					week = row
+			var week SplittingFold
+			for _, row := range w.weeks() {
+				if row.start.Equal(filingsWeek) {
+					week = row.fold
 				}
 			}
 			want := map[string]int{ClassInTreeAtDesign: 0, ClassInTreeLater: 0, ClassOutOfTree: 0, ClassByTheController: 0}

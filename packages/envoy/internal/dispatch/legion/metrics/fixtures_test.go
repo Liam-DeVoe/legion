@@ -240,6 +240,45 @@ func (w window) splitting(t *testing.T) SplittingFold {
 	return *fold
 }
 
+// splitWeek is legion-splitting over one UTC week of a window: the Monday the week begins on, and
+// the fold of the parts of its days in the window's cut.
+type splitWeek struct {
+	start time.Time
+	fold  SplittingFold
+}
+
+// weeks is legion-splitting over the window in its cut week by week, as the Delivery page's Legion
+// card draws it from the eval read's per-day counts (weekOf in LegionSection.tsx): the window's
+// parts grouped by the UTC Monday their day's week begins on (mondayOf), each group folded
+// (FoldSplitting), oldest first, a week kept where it holds a filing or a finished issue.
+func (w window) weeks() []splitWeek {
+	byWeek := map[time.Time][]measures.DayPart{}
+	for _, part := range w.splittingParts {
+		byWeek[mondayOf(part.Day)] = append(byWeek[mondayOf(part.Day)], part)
+	}
+	var weeks []splitWeek
+	for _, start := range slices.SortedFunc(maps.Keys(byWeek), time.Time.Compare) {
+		fold := FoldSplitting(byWeek[start], w.cut)
+		if fold == nil {
+			continue
+		}
+		counted := fold.Finished
+		for _, filed := range fold.Filed {
+			counted += filed
+		}
+		if counted > 0 {
+			weeks = append(weeks, splitWeek{start: start, fold: *fold})
+		}
+	}
+	return weeks
+}
+
+// mondayOf is the UTC Monday the moment's week begins on.
+func mondayOf(at time.Time) time.Time {
+	day := at.UTC().Truncate(24 * time.Hour)
+	return day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
+}
+
 // roots is legion-splitting's root figures over the window, which count roots alone whatever the
 // cut and which its all cut carries.
 func (w window) roots(t *testing.T) RootsFold {

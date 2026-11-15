@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -256,40 +255,15 @@ type evalOwner struct {
 	WrittenBy model.Actor `json:"written_by"`
 }
 
-// evalDayPoint is one day of a headline series' per-day array: the day (YYYY-MM-DD, UTC) and the
-// series' statistics over that day's rows alone, through the same fold as the window's.
-type evalDayPoint struct {
-	Day        string           `json:"day"`
-	Statistics evals.Statistics `json:"statistics"`
-}
-
-// evalSeriesValues is one listed series of an eval as a read states it: its current definition,
-// its statistics over the window, over the compare range (null with none) and the change from the
-// compare range to the window (each statistic the window's less the compare range's, null where
-// either has no value; null with no compare range); data_since, the first day the series holds a
-// day row (YYYY-MM-DD, null for a series with none), before which a range reads "no data", every
-// statistic null; via_repository, how many of the rows the window's day rows count reached the
-// project through a repository rather than an issue; and days, the window's per-day array of a
-// headline series, one point per day that holds a row of it ([] for a control series).
-type evalSeriesValues struct {
-	evals.Series
-	Window        evals.Statistics `json:"window"`
-	Compare       evals.Statistics `json:"compare"`
-	Change        evals.Statistics `json:"change"`
-	DataSince     *string          `json:"data_since"`
-	ViaRepository int              `json:"via_repository"`
-	Days          []evalDayPoint   `json:"days"`
-}
-
 // evalItem is one eval as the list read states it, and one version of one as the detail read
 // does: the definition (every field of eval_versions, R1), its owner, each listed series with its
 // values, and the verdict of its target (null where the target is off). The detail read states
 // the series and the verdict of the newest version alone; an older version's are null.
 type evalItem struct {
-	Definition evals.Definition   `json:"definition"`
-	Owner      evalOwner          `json:"owner"`
-	Series     []evalSeriesValues `json:"series"`
-	Verdict    *evals.Verdict     `json:"verdict"`
+	Definition evals.Definition     `json:"definition"`
+	Owner      evalOwner            `json:"owner"`
+	Series     []evals.SeriesValues `json:"series"`
+	Verdict    *evals.Verdict       `json:"verdict"`
 }
 
 // evalListItem is one eval of the list read: its id, `<project_key>/<slug>` (the definition's
@@ -802,12 +776,12 @@ func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries
 	}
 	items := make([]evalItem, len(entries))
 	for index, entry := range entries {
-		series := evalSeriesOf(entry, byEval[entry.Definition.EvalID], firsts[entry.Definition.EvalID], ranges)
+		series := evals.SeriesValuesOf(entry, byEval[entry.Definition.EvalID], firsts[entry.Definition.EvalID], ranges.window, ranges.compare)
 		items[index] = evalItem{
 			Definition: entry.Definition,
 			Owner:      evalOwnerOf(entry.Definition),
 			Series:     series,
-			Verdict:    evals.VerdictOf(entry, windowStatistics(series)),
+			Verdict:    evals.VerdictOf(entry, evals.WindowStatistics(series)),
 		}
 	}
 	return items, oldest, nil
@@ -815,110 +789,6 @@ func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries
 
 func evalOwnerOf(definition evals.Definition) evalOwner {
 	return evalOwner{Role: definition.OwnerRole, Person: definition.Person, WrittenBy: definition.WrittenBy}
-}
-
-// evalSeriesOf is each listed series of entry with its values over rows, the eval's day rows of
-// the window and the compare range, and firsts, each series' first day. A range that starts
-// before a series' first day, or a series with no first day at all, reads "no data": every
-// statistic of that range null, whatever rows the range holds; the per-day array still answers
-// each day that holds a row (R12).
-func evalSeriesOf(entry evals.Entry, rows []evals.WindowRow, firsts map[string]time.Time, ranges evalRanges) []evalSeriesValues {
-	var listed, headline []evals.Series
-	for _, series := range entry.Series {
-		if !series.Listed {
-			continue
-		}
-		listed = append(listed, series)
-		if series.Role == evals.RoleHeadline {
-			headline = append(headline, series)
-		}
-	}
-	var windowParts, compareParts []measures.DayPart
-	byDay := map[time.Time][]measures.DayPart{}
-	via := map[string]int{}
-	for _, row := range rows {
-		part := row.Part
-		if row.Range == evals.RangeCompare {
-			compareParts = append(compareParts, part)
-			continue
-		}
-		windowParts = append(windowParts, part)
-		byDay[part.Day] = append(byDay[part.Day], part)
-		via[part.Series] += part.ViaRepository
-	}
-	definition := entry.Definition
-	window := evals.FoldStatistics(definition, listed, windowParts, ranges.window)
-	var compare map[string]evals.Statistics
-	if ranges.compare != nil {
-		compare = evals.FoldStatistics(definition, listed, compareParts, *ranges.compare)
-	}
-	// Each day of the window folded alone, by the same fold, for the headline series' arrays.
-	days := slices.SortedFunc(maps.Keys(byDay), func(a, b time.Time) int { return a.Compare(b) })
-	perDay := make([]map[string]evals.Statistics, len(days))
-	for index, day := range days {
-		perDay[index] = evals.FoldStatistics(definition, headline, byDay[day], evals.Range{From: day, To: day.AddDate(0, 0, 1)})
-	}
-	values := make([]evalSeriesValues, len(listed))
-	for index, series := range listed {
-		first, held := firsts[series.Series]
-		value := evalSeriesValues{Series: series, Window: window[series.Series], ViaRepository: via[series.Series], Days: []evalDayPoint{}}
-		if held {
-			value.DataSince = new(first.Format(time.DateOnly))
-		}
-		if !held || ranges.window.From.Before(first) {
-			value.Window = noData(value.Window)
-		}
-		if ranges.compare != nil {
-			value.Compare = compare[series.Series]
-			if !held || ranges.compare.From.Before(first) {
-				value.Compare = noData(value.Compare)
-			}
-			value.Change = evalChange(value.Window, value.Compare)
-		}
-		if series.Role == evals.RoleHeadline {
-			for dayIndex, day := range days {
-				if slices.ContainsFunc(byDay[day], func(part measures.DayPart) bool { return part.Series == series.Series }) {
-					value.Days = append(value.Days, evalDayPoint{Day: day.Format(time.DateOnly), Statistics: perDay[dayIndex][series.Series]})
-				}
-			}
-		}
-		values[index] = value
-	}
-	return values
-}
-
-// noData is stats with every statistic null: a range the series has no data for.
-func noData(stats evals.Statistics) evals.Statistics {
-	cleared := make(evals.Statistics, len(stats))
-	for name := range stats {
-		cleared[name] = nil
-	}
-	return cleared
-}
-
-// evalChange is each statistic of window less compare's, null where either has no value, or where
-// the difference of two finite figures is past what a float holds, which no answer can write.
-func evalChange(window, compare evals.Statistics) evals.Statistics {
-	change := make(evals.Statistics, len(window))
-	for name, value := range window {
-		change[name] = nil
-		if against := compare[name]; value != nil && against != nil {
-			if difference := *value - *against; !math.IsInf(difference, 0) {
-				change[name] = &difference
-			}
-		}
-	}
-	return change
-}
-
-// windowStatistics is each of series' statistics over the window, by series name: what the eval's
-// verdict judges (evals.VerdictOf).
-func windowStatistics(series []evalSeriesValues) map[string]evals.Statistics {
-	window := make(map[string]evals.Statistics, len(series))
-	for _, one := range series {
-		window[one.Series.Series] = one.Window
-	}
-	return window
 }
 
 // getProjectEval answers GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,

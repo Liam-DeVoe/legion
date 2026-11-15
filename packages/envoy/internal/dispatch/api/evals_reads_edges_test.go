@@ -415,7 +415,7 @@ func TestAWindowWhoseSumPassesWhatAFloatHoldsAnswersItNull(t *testing.T) {
 		}
 	}
 	// value is huge's series as an answer states it, failing where the answer holds none.
-	value := func(what string, body []byte) evalSeriesValues {
+	value := func(what string, body []byte) evals.SeriesValues {
 		t.Helper()
 		var page struct {
 			Items []evalItem `json:"items"`
@@ -434,7 +434,7 @@ func TestAWindowWhoseSumPassesWhatAFloatHoldsAnswersItNull(t *testing.T) {
 			}
 		}
 		t.Fatalf("%s answers no series value of EVL/huge: %.300s", what, body)
-		return evalSeriesValues{}
+		return evals.SeriesValues{}
 	}
 	stated := func(stats evals.Statistics, name string) string {
 		if stats[name] == nil {

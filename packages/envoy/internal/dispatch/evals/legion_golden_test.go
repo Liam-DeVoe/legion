@@ -416,17 +416,21 @@ func compareFolds(check *legionCheck, parts map[string][]measures.DayPart, cut m
 		split = &metrics.SplittingFold{}
 	}
 	check.exact("issues finished", split.Finished, report.Finished)
-	check.exact("weeks", len(split.Weeks), len(report.Splitting.Weeks))
+	// The card draws legion-splitting by the UTC week (weekOf in LegionSection.tsx), adding up the
+	// per-day counts the eval read answers: the base head's report did the same grouping, so each
+	// of its weeks is the fold of the window's parts of that week's days.
+	weeks := splittingWeeks(parts[SlugLegionSplitting], cut)
+	check.exact("weeks", len(weeks), len(report.Splitting.Weeks))
 	for index, week := range report.Splitting.Weeks {
-		if index >= len(split.Weeks) {
+		if index >= len(weeks) {
 			break
 		}
-		folded := split.Weeks[index]
+		folded := weeks[index]
 		name := "the week of " + week.Week.Format(time.DateOnly) + "'s "
-		check.exact(name+"start", folded.Week.Format(time.DateOnly), week.Week.UTC().Format(time.DateOnly))
-		check.exact(name+"issues finished", folded.Finished, week.Finished)
+		check.exact(name+"start", folded.start.Format(time.DateOnly), week.Week.UTC().Format(time.DateOnly))
+		check.exact(name+"issues finished", folded.fold.Finished, week.Finished)
 		for _, class := range slices.Sorted(maps.Keys(week.Filed)) {
-			check.exact(name+class+" filings", folded.Filed[class], week.Filed[class])
+			check.exact(name+class+" filings", folded.fold.Filed[class], week.Filed[class])
 		}
 	}
 	byClass := map[string]int{}
@@ -454,6 +458,40 @@ func compareFolds(check *legionCheck, parts map[string][]measures.DayPart, cut m
 		check.exact("the roots cut's finished roots", orRoots(split.Roots).FinishedRoots, all.Roots.FinishedRoots)
 		check.exact("the roots cut's children", orRoots(split.Roots).Children, all.Roots.Children)
 	}
+}
+
+// splittingWeek is legion-splitting over one UTC week of a window: the Monday the week begins on,
+// and the fold of the parts of its days.
+type splittingWeek struct {
+	start time.Time
+	fold  metrics.SplittingFold
+}
+
+// splittingWeeks is legion-splitting over parts in cut week by week: parts grouped by the UTC
+// Monday their day's week begins on, each group folded (metrics.FoldSplitting), oldest first, a
+// week kept where it holds a filing or a finished issue.
+func splittingWeeks(parts []measures.DayPart, cut metrics.Scope) []splittingWeek {
+	byWeek := map[time.Time][]measures.DayPart{}
+	for _, part := range parts {
+		day := part.Day.UTC().Truncate(24 * time.Hour)
+		monday := day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
+		byWeek[monday] = append(byWeek[monday], part)
+	}
+	var weeks []splittingWeek
+	for _, start := range slices.SortedFunc(maps.Keys(byWeek), time.Time.Compare) {
+		fold := metrics.FoldSplitting(byWeek[start], cut)
+		if fold == nil {
+			continue
+		}
+		counted := fold.Finished
+		for _, filed := range fold.Filed {
+			counted += filed
+		}
+		if counted > 0 {
+			weeks = append(weeks, splittingWeek{start: start, fold: *fold})
+		}
+	}
+	return weeks
 }
 
 func orEmpty(fold *metrics.SampleFold) *metrics.SampleFold {

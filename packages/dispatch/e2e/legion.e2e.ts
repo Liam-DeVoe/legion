@@ -416,8 +416,8 @@ const legionEvalsBuilt = 150_000;
 
 /** The window from the first day the project's work-time eval holds data to the midnight after
  *  today, once the evals over it count `want.finished` issues finished and `want.filed` filings: a
- *  window that starts before a series' first day reads no value at all (`evalSeriesOf`,
- *  api/evals.go), so the page is opened over the days the history holds. The seeded tree's
+ *  window that starts before a series' first day reads no value at all (`SeriesValuesOf`,
+ *  evals/statistics.go), so the page is opened over the days the history holds. The seeded tree's
  *  filing is on the day its issues closed (`seedLegionFinishedTree`), so the first day of every
  *  series the row checks, legion-splitting's `filed:<class>` among them, is the day this window
  *  opens on: none of them starts after the window, and the filing is not before it. */

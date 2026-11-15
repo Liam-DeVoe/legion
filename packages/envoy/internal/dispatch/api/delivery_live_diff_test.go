@@ -971,16 +971,16 @@ func liveEval(slug string, version int, mean float64) evalListItem {
 		Kind: evals.KindExperiment, Source: evals.SourceLogged, State: evals.StateActive, Links: []evals.Link{},
 		WrittenVia: evals.ViaReading, WrittenBy: model.Actor{Kind: "user", ID: "alice"}, CreatedAt: liveFrom,
 	}
-	series := evalSeriesValues{
+	series := evals.SeriesValues{
 		Series: evals.Series{
 			EvalID: id, Series: "value", Version: 1, Unit: "count", Role: evals.RoleHeadline, IsPrimary: true,
 			Listed: true, Agg: evals.AggSum, Links: []evals.Link{}, CreatedAt: liveFrom,
 		},
 		Window: evals.Statistics{"mean": &mean}, Compare: evals.Statistics{}, Change: evals.Statistics{},
-		DataSince: new(liveFrom.Format(time.DateOnly)), Days: []evalDayPoint{},
+		DataSince: new(liveFrom.Format(time.DateOnly)), Days: []evals.DayPoint{},
 	}
 	return evalListItem{ID: id, evalItem: evalItem{
-		Definition: definition, Owner: evalOwnerOf(definition), Series: []evalSeriesValues{series},
+		Definition: definition, Owner: evalOwnerOf(definition), Series: []evals.SeriesValues{series},
 	}}
 }
 

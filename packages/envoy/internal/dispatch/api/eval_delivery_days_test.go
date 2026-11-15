@@ -265,8 +265,11 @@ func foldedMeasures(parts map[string][]measures.DayPart, window measures.Window)
 
 // foldedPipeline is the Pipeline route's day cards folded from parts and jobs (one cut's day rows
 // and its job series), by the folds the route answers through, its slowest jobs the first
-// measures.SlowestJobs of the ranking by minN timed results.
-func foldedPipeline(parts map[string][]measures.DayPart, jobs []measures.DayPart, settings delivery.DeliverySettings, days []string, minN int) deliveryPipelineResponse {
+// measures.SlowestJobs of the ranking by minN timed results, and its targets and its lead-time
+// cards' verdicts stated as the route states them (deliveryTargets, deliveryVerdict over
+// evals.LeadTimeStatistics of each card's total) by deployRepoEvals, the evals the route reads for
+// the deploy repository (evals.Store.DeployRepoEvals).
+func foldedPipeline(parts map[string][]measures.DayPart, jobs []measures.DayPart, settings delivery.DeliverySettings, days []string, minN int, deployRepoEvals map[string]evals.Entry) deliveryPipelineResponse {
 	cards := map[measures.DeployJobCardID]measures.DeployJobTiming{}
 	slugs := map[measures.DeployJobCardID]string{
 		measures.CardProductionApply: evals.SlugProductionDeploy, measures.CardStagingE2E: evals.SlugStagingE2E, measures.CardStagingApply: evals.SlugStagingDeploy,
@@ -275,6 +278,10 @@ func foldedPipeline(parts map[string][]measures.DayPart, jobs []measures.DayPart
 		cards[card.CardID] = measures.DeployJobTiming{Job: strings.Join(card.JobNames, " or "), Timing: dayTiming(parts[slugs[card.CardID]], days)}
 	}
 	ranked := measures.FoldSlowestJobs(jobs, days, minN)
+	mergeToProduction, openedToMerge := dayLeadTiming(parts[evals.SlugMergeToProduction], days), dayLeadTiming(parts[evals.SlugPROpenToMerge], days)
+	verdict := func(slug string, timing measures.LeadTimeTiming) *bool {
+		return deliveryVerdict(deployRepoEvals, slug, map[string]evals.Statistics{measures.SeriesMinutes: evals.LeadTimeStatistics(timing.Total)})
+	}
 	return deliveryPipelineResponse{
 		Days: days,
 		PRChecks: deliveryPipelinePRChecks{
@@ -283,8 +290,13 @@ func foldedPipeline(parts map[string][]measures.DayPart, jobs []measures.DayPart
 		StagingE2E:        optionalDeployJobTiming(cards, measures.CardStagingE2E),
 		StagingApply:      optionalDeployJobTiming(cards, measures.CardStagingApply),
 		ProductionApply:   cards[measures.CardProductionApply],
-		MergeToProduction: dayLeadTiming(parts[evals.SlugMergeToProduction], days),
-		OpenedToMerge:     dayLeadTiming(parts[evals.SlugPROpenToMerge], days),
+		MergeToProduction: mergeToProduction,
+		OpenedToMerge:     openedToMerge,
+		Targets:           deliveryTargets(deployRepoEvals),
+		Status: deliveryPipelineStatus{
+			MergeToProduction: verdict(evals.SlugMergeToProduction, mergeToProduction),
+			OpenedToMerge:     verdict(evals.SlugPROpenToMerge, openedToMerge),
+		},
 	}
 }
 
@@ -387,7 +399,17 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		}
 		return decodeDeliveryOracleTree(t, response.Body.Bytes())
 	}
-	pipelineDropped := []string{"computed_at", "freshness", "targets", "pr_checks.failing_jobs"}
+	pipelineDropped := []string{"computed_at", "freshness", "pr_checks.failing_jobs"}
+	// The evals each route judges its figures by, read as each reads them for the deploy
+	// repository.
+	targetEvals, err := registry.DeployRepoEvals(t.Context(), settings.DeployRepo, evals.DeliveryTargetSlugs)
+	if err != nil {
+		t.Fatalf("read the measures' evals of %s: %v", settings.DeployRepo, err)
+	}
+	pipelineEvals, err := registry.DeployRepoEvals(t.Context(), settings.DeployRepo, evals.PipelineSlugs)
+	if err != nil {
+		t.Fatalf("read the Pipeline's evals of %s: %v", settings.DeployRepo, err)
+	}
 
 	wholeMeasures := route("/api/v1/delivery/measures", query)
 	wholePipeline := route("/api/v1/delivery/pipeline", query)
@@ -396,11 +418,17 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		differ("all repositories: %s", missing)
 	} else {
 		compare("the measures of all repositories", oracleTree(t, folded), subtree(wholeMeasures, "measures"))
+		// The targets and each KPI's verdict, stated from the folded measures as the route states
+		// them from its own (deliveryTargets, measuresStatus over evals.ResultStatistics), the
+		// unowned P0 issues being those open now, which no day row of a past window counts.
+		compare("the targets of the measures of all repositories", oracleTree(t, deliveryTargets(targetEvals)), subtree(wholeMeasures, "targets"))
+		compare("the status of the measures of all repositories",
+			oracleTree(t, measuresStatus(targetEvals, evals.ResultStatistics(folded, len(fixture.UnownedP0)))), subtree(wholeMeasures, "status"))
 		tally.withPRs = folded.DeployFrequency.DeploysWithPRs
 	}
 	minN := prCIJobsMinN(t, fixture.Project, entries)
 	compare("the pipeline of all repositories",
-		subtree(oracleTree(t, foldedPipeline(all, jobParts(fixture.Project, stored, "", from, to), settings, days, minN)), "", pipelineDropped...),
+		subtree(oracleTree(t, foldedPipeline(all, jobParts(fixture.Project, stored, "", from, to), settings, days, minN, pipelineEvals)), "", pipelineDropped...),
 		subtree(wholePipeline, "", pipelineDropped...))
 
 	for _, repo := range fixture.Repos {
@@ -434,7 +462,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		for _, field := range []string{"deploy_frequency", "deploy_run_success", "daily"} {
 			compare("the "+field+" of "+repo, subtree(oracleTree(t, folded), field), subtree(wholeMeasures, "measures."+field))
 		}
-		cutPipeline := subtree(oracleTree(t, foldedPipeline(cut, jobParts(fixture.Project, stored, repo, from, to), settings, days, minN)), "", pipelineDropped...)
+		cutPipeline := subtree(oracleTree(t, foldedPipeline(cut, jobParts(fixture.Project, stored, repo, from, to), settings, days, minN, pipelineEvals)), "", pipelineDropped...)
 		for _, field := range []string{"pr_checks", "staging_e2e", "staging_apply", "production_apply"} {
 			compare("the "+field+" of "+repo, subtree(cutPipeline, field), subtree(subtree(wholePipeline, "", pipelineDropped...), field))
 		}

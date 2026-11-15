@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -128,6 +129,131 @@ func writable(folded map[string]Statistics) map[string]Statistics {
 		}
 	}
 	return folded
+}
+
+// SeriesValues is one listed series of an eval as a read states it: its current definition, its
+// statistics over the window, over the compare range (null with none) and the change from the
+// compare range to the window (each statistic the window's less the compare range's, null where
+// either has no value; null with no compare range); data_since, the first day the series holds a
+// day row (YYYY-MM-DD, null for a series with none), before which a range reads "no data", every
+// statistic null; via_repository, how many of the rows the window's day rows count reached the
+// project through a repository rather than an issue; and days, the window's per-day array of a
+// headline series, one point per day that holds a row of it ([] for a control series).
+type SeriesValues struct {
+	Series
+	Window        Statistics `json:"window"`
+	Compare       Statistics `json:"compare"`
+	Change        Statistics `json:"change"`
+	DataSince     *string    `json:"data_since"`
+	ViaRepository int        `json:"via_repository"`
+	Days          []DayPoint `json:"days"`
+}
+
+// DayPoint is one day of a headline series' per-day array: the day (YYYY-MM-DD, UTC) and the
+// series' statistics over that day's rows alone, through the same fold as the window's.
+type DayPoint struct {
+	Day        string     `json:"day"`
+	Statistics Statistics `json:"statistics"`
+}
+
+// SeriesValuesOf is each listed series of entry with its values over rows, the eval's day rows of
+// window and of compare, the compare range, nil for none (DayWindow), and firsts, each series'
+// first day (FirstDays). A range that starts before a series' first day, or a series with no first
+// day at all, reads "no data": every statistic of that range null, whatever rows the range holds;
+// the per-day array still answers each day that holds a row (R12).
+func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
+	var listed, headline []Series
+	for _, series := range entry.Series {
+		if !series.Listed {
+			continue
+		}
+		listed = append(listed, series)
+		if series.Role == RoleHeadline {
+			headline = append(headline, series)
+		}
+	}
+	var windowParts, compareParts []measures.DayPart
+	byDay := map[time.Time][]measures.DayPart{}
+	via := map[string]int{}
+	for _, row := range rows {
+		part := row.Part
+		if row.Range == RangeCompare {
+			compareParts = append(compareParts, part)
+			continue
+		}
+		windowParts = append(windowParts, part)
+		byDay[part.Day] = append(byDay[part.Day], part)
+		via[part.Series] += part.ViaRepository
+	}
+	definition := entry.Definition
+	windowed := FoldStatistics(definition, listed, windowParts, window)
+	var compared map[string]Statistics
+	if compare != nil {
+		compared = FoldStatistics(definition, listed, compareParts, *compare)
+	}
+	// Each day of the window folded alone, by the same fold, for the headline series' arrays.
+	days := slices.SortedFunc(maps.Keys(byDay), func(a, b time.Time) int { return a.Compare(b) })
+	perDay := make([]map[string]Statistics, len(days))
+	for index, day := range days {
+		perDay[index] = FoldStatistics(definition, headline, byDay[day], Range{From: day, To: day.AddDate(0, 0, 1)})
+	}
+	values := make([]SeriesValues, len(listed))
+	for index, series := range listed {
+		first, held := firsts[series.Series]
+		value := SeriesValues{Series: series, Window: windowed[series.Series], ViaRepository: via[series.Series], Days: []DayPoint{}}
+		if held {
+			value.DataSince = new(first.Format(time.DateOnly))
+		}
+		if !held || window.From.Before(first) {
+			value.Window = noData(value.Window)
+		}
+		if compare != nil {
+			value.Compare = compared[series.Series]
+			if !held || compare.From.Before(first) {
+				value.Compare = noData(value.Compare)
+			}
+			value.Change = changeOf(value.Window, value.Compare)
+		}
+		if series.Role == RoleHeadline {
+			for dayIndex, day := range days {
+				if slices.ContainsFunc(byDay[day], func(part measures.DayPart) bool { return part.Series == series.Series }) {
+					value.Days = append(value.Days, DayPoint{Day: day.Format(time.DateOnly), Statistics: perDay[dayIndex][series.Series]})
+				}
+			}
+		}
+		values[index] = value
+	}
+	return values
+}
+
+// noData is stats with every statistic null: a range the series has no data for.
+func noData(stats Statistics) Statistics {
+	return blank(slices.Collect(maps.Keys(stats))...)
+}
+
+// changeOf is each statistic of window less compare's, null where either has no value, or where
+// the difference of two finite figures is past what a float holds, which no answer can write.
+func changeOf(window, compare Statistics) Statistics {
+	change := make(Statistics, len(window))
+	for name, value := range window {
+		change[name] = nil
+		if against := compare[name]; value != nil && against != nil {
+			if difference := *value - *against; !math.IsInf(difference, 0) {
+				change[name] = &difference
+			}
+		}
+	}
+	return change
+}
+
+// WindowStatistics is each of series' statistics over the window, by series name: what the eval's
+// verdict judges (VerdictOf).
+func WindowStatistics(series []SeriesValues) map[string]Statistics {
+	window := make(map[string]Statistics, len(series))
+	for _, one := range series {
+		window[one.Series.Series] = one.Window
+	}
+	return window
 }
 
 // HeadlineStatistic is the statistic series, one of definition's, is stated by where nothing

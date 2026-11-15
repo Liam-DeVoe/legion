@@ -70,6 +70,34 @@ var legionDaySlugs = []string{
 	SlugLegionSplitting,
 }
 
+// LegionNames is no answer of any route: it is the names a client reads off the Legion evals'
+// answers, where each stands as a plain string (an eval's slug, a series' name, a statistic's
+// name, an items row's column), stated as the sets the generated contract carries, one field's
+// `enum` tag for each. The OpenAPI document declares it as a schema of its own (api's
+// openAPINamedSets), so a client types its names against those sets and a name renamed here fails
+// its compile rather than reading no value. TestTheLegionNamesAreTheGoNames holds each tag to the
+// names it states.
+type LegionNames struct {
+	// Slug is a Legion eval of the catalogue (SlugLegion*), in the catalogue's order.
+	Slug string `json:"slug" enum:"legion-work-time,legion-phase-time,legion-idle-time,legion-slot-wait,legion-rework,legion-splitting"`
+	// Role is a bar of legion-phase-time, its series before its cut (metrics.bars): one of
+	// Legion's six worker types, each legion-idle-time's series too, or no_role, the bar of the
+	// phases no role works.
+	Role string `json:"role" enum:"architect,planner,implementer,tester,reviewer,merger,no_role"`
+	// Class is a class of filing, legion-splitting's series `filed:<class>` before its cut
+	// (metrics.FilingSeries), in the order the eval lists them.
+	Class string `json:"class" enum:"in_tree_at_design,in_tree_later,out_of_tree,by_the_controller"`
+	// Segment is one of a bar's five segments, each a statistic of every legion-phase-time series
+	// (metrics.Segment), in the precedence's order.
+	Segment string `json:"segment" enum:"waiting_on_person,in_a_turn,ci_wait,waiting_on_children,idle"`
+	// CutSuffix ends a Legion series' name in each cut but every issue's (metrics.CutSeries): the
+	// roots of their trees, then the rest.
+	CutSuffix string `json:"cut_suffix" enum:":roots,:children"`
+	// Column is a column every issue row of a Legion eval's items carries, whatever the issue
+	// (legionfacts.ItemRows), by name.
+	Column string `json:"column" enum:"children,closed_at,implementing_after_first_review,merged_at,opened_at,parked_hours,queued_hours,repo,review_rounds,root_key,sent_back,slot_hours,slot_wait_hours,started_at,testing_after_first_review,tree_depth,waiting_reason,work_first_at,work_hours,work_last_at"`
+}
+
 // legionDayFamilies is the one family of eval_day_members a Legion day records its issues under,
 // the evals' kind.
 var legionDayFamilies = []string{KindLegion}

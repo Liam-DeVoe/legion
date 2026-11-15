@@ -239,3 +239,14 @@ func PipelineMinN(prCI Entry) int {
 	}
 	return SlowestJobsMinN(prCI.Series[index].MinN)
 }
+
+// SlowestJobsMinN is the fewest timed results a PR-checks job needs over the days a read folds to
+// be ranked among pr-ci's slowest jobs (measures.FoldSlowestJobs), from jobsMinN, the min_n of
+// pr-ci's job series (SeriesJobs), which a person may set (R5): that count, or none (0) where it
+// is null, the column's "no minimum".
+func SlowestJobsMinN(jobsMinN *int) int {
+	if jobsMinN == nil {
+		return 0
+	}
+	return *jobsMinN
+}
