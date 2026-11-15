@@ -460,6 +460,19 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 		"create schema x; create table seen (search_path text, current_user_name text, session_user_name text); grant insert on seen to public"); err != nil {
 		t.Fatal(err)
 	}
+	// A login that is no superuser, as the pod's own test server gives (legion-testpg), holds no
+	// membership of a role it creates, so it takes one, as its admin option on that role lets it,
+	// and its SET ROLE row runs; SET SESSION AUTHORIZATION needs a superuser, so its two rows run
+	// only under one.
+	var superuser bool
+	if err := admin.QueryRow(ctx, "select rolsuper from pg_roles where rolname = current_user").Scan(&superuser); err != nil {
+		t.Fatalf("read whether the test database's login is a superuser: %v", err)
+	}
+	if !superuser {
+		if _, err := admin.Exec(ctx, "grant "+group+" to current_user"); err != nil {
+			t.Fatalf("grant %s to the test database's login: %v", group, err)
+		}
+	}
 	// Registered before any runner connects, so every runner's connection closes first.
 	t.Cleanup(func() {
 		if _, err := admin.Exec(context.Background(), "drop role "+other+", "+login+", "+group); err != nil {
@@ -480,14 +493,19 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 		// user is the login the runner's connection signs in as, "" for the test database's own.
 		user string
 		set  string
+		// superuser is whether the row's SETs need the test database's login to be a superuser.
+		superuser bool
 	}{
-		{"a session set of search_path", "", "set search_path = x"},
-		{"a set role", "", "set role " + group},
-		{"a set session authorization", "", "set session authorization " + other},
-		{"all three", "", "set session authorization " + other + "; set role " + group + "; set search_path = x"},
-		{"a set role and a set of search_path on a login that is no superuser", login, "set role " + group + "; set search_path = x"},
+		{"a session set of search_path", "", "set search_path = x", false},
+		{"a set role", "", "set role " + group, false},
+		{"a set session authorization", "", "set session authorization " + other, true},
+		{"all three", "", "set session authorization " + other + "; set role " + group + "; set search_path = x", true},
+		{"a set role and a set of search_path on a login that is no superuser", login, "set role " + group + "; set search_path = x", false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			if row.superuser && !superuser {
+				t.Skip("SET SESSION AUTHORIZATION needs a superuser, and the test database's login is none; the last row is the case of a login that is no superuser")
+			}
 			runnerConfig := config.Copy()
 			if row.user != "" {
 				runnerConfig.User, runnerConfig.Password = row.user, "exec-test"
