@@ -394,12 +394,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// plugin is not.
 		held bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
-		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 111 added). The two
-		// leave together (withoutQuietTime), so one column answers for both.
+		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 111 added), so a pod at
+		// 111 or above is served the measure and a pod still running an older plugin is not. The
+		// two leave together (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// times is whether the caller is served each issue's `entryQueuedAt` and
 		// `entryConfirmedAt`, and each root's `architectStalls` (entryTimesContract, the contract
-		// 127 added, which is this daemon's own), so the only pod served them is one at it. The
+		// 133 added, which is this daemon's own), so the only pod served them is one at it. The
 		// three leave together (withoutEntryTimes), so one column answers for all of them.
 		times bool
 	}{
@@ -427,12 +428,14 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// bands left above it.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true},
 		// The band from heldContract to below quietTimeContract: the held list is served too,
-		// and the tree quiet time and the entry times are the two bands left above it.
+		// and the tree quiet time and the entry times are the two key-carrying bands left above
+		// it.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true},
-		// The band from quietTimeContract to below entryTimesContract, 111 through 126: the tree
-		// quiet time is served too, and the entry times are the one band left above it. 123,
-		// INFRA-3146's contract, moves no shape of the state, so a pod at the top of the band is
-		// served what a pod at its foot is.
+		// The band from quietTimeContract to below entryTimesContract, 111 through 132: the tree
+		// quiet time is served too, and the entry times are the one key-carrying band left above
+		// it. 123, INFRA-3146's contract, moves no shape of the state, and waitingOnIssueContract,
+		// 132, takes a word of the line's `kind` and no key, so a pod at the top of the band is
+		// served what a pod at its foot is here; waiting_on_issue_test.go reads that word.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, times: true},
@@ -530,8 +533,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// that half), with the two keys contract 111 added gone, each issue of a live tree's
 			// `treeMovedAt` and `quietHours` (withoutQuietTime), and with each issue's
 			// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` gone, the three keys
-			// contract 127 added (withoutEntryTimes). Every row that reaches here is below all of
-			// them, so those seventeen strips take their keys whatever the row is.
+			// contract 133 added (withoutEntryTimes). Every row that reaches here is below all of
+			// them, so those seventeen strips take their keys whatever the row is; contract 132's
+			// strip takes a word of the line's `kind` and no key, and this fixture stands no member
+			// of that kind.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)

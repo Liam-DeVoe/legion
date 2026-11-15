@@ -422,13 +422,17 @@ const legionSlotView = z.object({
  * one declares a new contract for it, as the ninth answer did at contract 68, which is what keeps
  * this reader away from a body that carries it. Nothing older reaches them either: both words are
  * rendered afresh from `record.LinePart` and `record.LineKind` at each read and never stored, so no
- * retired word comes back off a row, and naming the four kinds is what lets a reader branch on
- * them. */
+ * retired word comes back off a row, and naming the five kinds is what lets a reader branch on
+ * them. `waiting_on_issue`, a started issue that gave its admission slot back to wait on another
+ * issue, is the fifth, added at contract 132; a caller below 132 is served such a member without
+ * its `kind`. */
 const legionWaitingLineView = z.object({
   place: z.number().int().positive(),
   length: z.number().int().positive(),
   part: z.enum(["returned", "starting"]).optional(),
-  kind: z.enum(["returning", "answered", "queued_root", "first_phase"]).optional(),
+  kind: z
+    .enum(["returning", "answered", "queued_root", "first_phase", "waiting_on_issue"])
+    .optional(),
   partPlace: z.number().int().positive().optional(),
   partLength: z.number().int().positive().optional(),
   holdsSlot: z.boolean().optional(),
@@ -689,7 +693,7 @@ const legionIssue = z.object({
    * number is below the entry its row names, on every admission pass and on a sweep of its own
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
    * has still to reach. A root carries them as a child does, since the architect is the role
-   * that works `admitted` (contract 127); both are absent together for a phase no role works —
+   * that works `admitted` (contract 133); both are absent together for a phase no role works —
    * `awaiting_person`, `done` and `held` — and each is absent where it is 0, which is a role no
    * entry has been raised for and one the daemon holds no claim row of; a daemon before contract
    * 94 writes neither, and a caller in a pod whose plugin declares a contract below 94 is served
@@ -698,7 +702,7 @@ const legionIssue = z.object({
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
   /** The two times of a claim's handshake of the last entry it was queued a task of (contract
-   * 127): when a task of that entry was first queued to the claim, and when a turn of that
+   * 133): when a task of that entry was first queued to the claim, and when a turn of that
    * claim's worker first confirmed one. The claim keeps both in a record of its own, so they
    * outlast the task, which the end of the confirming turn retires. A tree's own root carries its
    * architect's handshake whatever phase it stands in — through `awaiting_person` and the phases
@@ -706,15 +710,15 @@ const legionIssue = z.object({
    * the handshake of the role of its current phase. Both are absent where no entry was queued to
    * that claim in the issue's current generation — a role the daemon holds no claim row of, a
    * re-admitted root whose new architect entry is not queued yet, and a root of the release
-   * before contract 127, which carries the two numbers and no handshake — and `entryConfirmedAt`
+   * before contract 133, which carries the two numbers and no handshake — and `entryConfirmedAt`
    * alone is absent while no turn has confirmed a task of the entry. A daemon before contract
-   * 127 writes neither, and a caller in a pod whose plugin declares a contract below 127 is
+   * 133 writes neither, and a caller in a pod whose plugin declares a contract below 133 is
    * served the state with neither (the daemon's `withoutEntryTimes`), which is why a reader takes
    * both as optional. */
   entryQueuedAt: timestamp.optional(),
   entryConfirmedAt: timestamp.optional(),
   /** For a tree's own root, every arm of the daemon's architect-stalled reading that holds for its
-   * architect at this read, in the order the controller is told them (contract 127):
+   * architect at this read, in the order the controller is told them (contract 133):
    * `took-nothing`, the task of its entry was queued to its claim more than ten minutes ago and no
    * turn confirmed it; `claim-unreachable`, the claim is failed or retired, the root is not
    * waiting on a person, and no start of the root's run is the daemon's next move for it (a start
@@ -727,8 +731,8 @@ const legionIssue = z.object({
    * last raised entry. The daemon reads the arms by the predicates its own `architect-stalled`
    * wake uses and serves them whether or not the controller was told, and `legion state`'s plain
    * line prints them. Absent for a root no arm holds for and for every issue that is not a tree's
-   * root; a daemon before contract 127 writes none, and a caller in a pod whose plugin declares a
-   * contract below 127 is served the state without it (the daemon's `withoutEntryTimes`), which is
+   * root; a daemon before contract 133 writes none, and a caller in a pod whose plugin declares a
+   * contract below 133 is served the state without it (the daemon's `withoutEntryTimes`), which is
    * why a reader takes it as optional. */
   architectStalls: z
     .array(z.enum(["took-nothing", "claim-unreachable", "slow-before-gate"]))
@@ -776,8 +780,9 @@ const legionContract = z.object({
 });
 
 /** `api.BlockedIssue` (`record.BlockedIssue`, and `api.HeldChild` on a wave release) — one issue
- * Legion is waiting to start and the issues it waits on that are not done, in the order Dispatch
- * lists them. A blocker the daemon has not yet observed as an issue of its own counts as
+ * Legion waits on another issue for, one it has still to start or one it started that gave its
+ * admission slot back for the wait, and the issues it waits on that are not done, in the order
+ * Dispatch lists them. A blocker the daemon has not yet observed as an issue of its own counts as
  * unfinished, so `blockedBy` can name a key the state's `issues` does not. */
 const legionBlockedIssue = z.object({
   issue: issueKey,
@@ -830,18 +835,24 @@ const legionHeldIssue = z.object({
  * person, while an issue past its review — a merger at work in `merging`, one in `merging`
  * whose start a closed design gate holds, a merged root standing in `merging` while the rest
  * of its tree runs — and one whose phase has left the workflow, `done` or a status Dispatch
- * took it out of the workflow with, are in neither list. An issue holding a slot is
- * in `waiting` as well while its work comes back to it, an answered root until the pass that
- * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a running
- * tree may hold no slot at all — the controller reads it where it read `active` as the running
+ * took it out of the workflow with, are in neither list. A started issue that waits on another
+ * issue before its review is missing from `active` too, other than the three roots that keep
+ * their slot through such a wait: it holds no slot while it waits and stands in `waiting` and in
+ * `blocked`, which is how a reader tells it from an issue a person parked, which stands in none
+ * of the three (the rule: "Admission" in the root AGENTS.md). An issue holding a slot is in
+ * `waiting` as well while its work comes back to it, an answered root until the pass that
+ * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a
+ * running tree may hold no slot at all — the controller reads it where it read `active` as the
+ * running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose
  * claims record a contract below 51 (`api.stateFor`, `withoutTrees`). A reader that finds it
  * absent has been served that stripped body and learns nothing about which trees run; it is
  * never a daemon older than this plugin, whom the boot gate and `legion probe-image` refuse.
- * `blocked` is every root and every child Legion is waiting to start behind a Dispatch
- * issue nobody has finished, by issue key; a blocked issue the line carries is in `waiting` too.
+ * `blocked` is every issue Legion waits on a Dispatch issue nobody has finished for, by issue
+ * key: a root or a child Legion is waiting to start, and a started issue that gave its slot back
+ * for the wait; a blocked issue the line carries is in `waiting` too.
  * The controller names them in the day's report and takes nothing for them.
  * `held` is every issue the daemon's record holds in the workflow that stands in neither
  * `active` nor `waiting`, sorted by key: the work the daemon runs nothing of and queues nowhere,

@@ -48,14 +48,18 @@ func stallMarks(stalls []architectStall) []record.ArchitectStall {
 // architectStalls reads the three arms over the architect of every root of read, in the order
 // the holders are read and, for each root, in the order a controller is told them: the architect
 // took nothing, its claim cannot be reached, the root is slow before its gate. The domain is the
-// selection's (readSlotHolders): a root holding a slot and a root past its review alike. A root
-// in accepting, retro or merging holds no slot since cybermonklabs/legion#3573, so the first two
-// arms read it here as they read it while it held one. The third reads a root at admitted alone,
-// whose slot gives it the admission time its bound is weighed from. sent names the roots whose
-// architect start this pass wrote (resumeSlottedWorkers), which the second arm reads; the
-// sweep's gate and the state pass none, since the gate asks only where the pass would send
-// nothing (OwesEntryWork) and the state reads what the passes before it committed
-// (ArchitectStallArms). Each root's arms are read at that root's own reading of the clock.
+// selection's (readSlotHolders): a root holding a slot, a root past its review and a root
+// released for a wait alike. A root in accepting, retro or merging holds no slot since
+// cybermonklabs/legion#3573, and a root waiting on another issue holds none since
+// cybermonklabs/legion#3715, so the first two arms read each of them here as they read it while
+// it held one. The third reads a root at admitted with no step of its design gate registered
+// alone, whose slot gives it the admission time its bound is weighed from; a root at admitted is
+// released for a wait only once its gate has opened, so the third holds for no released root.
+// sent names the roots whose architect start this pass wrote (resumeSlottedWorkers), which the
+// second arm reads; the sweep's gate and the state pass none, since the gate asks only where the
+// pass would send nothing (OwesEntryWork) and the state reads what the passes before it
+// committed (ArchitectStallArms). Each root's arms are read at that root's own reading of the
+// clock.
 func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotReading, facts record.LineFacts,
 	sent map[string]bool,
 ) ([]architectStall, error) {
