@@ -168,15 +168,21 @@ func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store
 	t.Helper()
 	flip := func(version int, claimState string) {
 		// One statement, so the store itself never answers half a change: the version every
-		// type carries and whether the claim type is live move together.
+		// type carries and whether the claim type is live move together. An element whose since
+		// is above the version - check's ci_check, read from version 4 - is in no store at that
+		// version, since a manifest holding one is refused, so it leaves with the version and
+		// comes back with it.
 		if _, err := pool.Exec(ctx, `
 			update graph_nodes
-			set attributes = case when coalesce((attributes->>'block_type')::boolean, false)
+			set attributes = case when kind = $3 and coalesce((attributes->>'block_type')::boolean, false)
 					then jsonb_set(attributes, '{version}', to_jsonb($1::int))
 					else attributes end,
-				state = case when id = 'claim' then $2::text else state end
-			where kind = $3
-		`, version, claimState, KindSupertag); err != nil {
+				state = case
+					when kind = $3 and id = 'claim' then $2::text
+					when attributes ? 'since' then case when (attributes->>'since')::int > $1 then 'gone' else 'live' end
+					else state end
+			where kind in ($3, $4)
+		`, version, claimState, KindSupertag, KindAttribute); err != nil {
 			t.Errorf("flip the store's schema to version %d: %v", version, err)
 		}
 	}

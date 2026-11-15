@@ -35,9 +35,10 @@ type Installer struct {
 	// OnSwitch runs after a read that moved the schema this process serves: the installed
 	// version changed, or the store went above this build and left the process serving none
 	// (pmdoc.NotReadyReason). The server closes its document sockets there
-	// (docs.Service.CloseDocumentSockets), because a socket's admission was decided on the
-	// version its browser presented and nothing else tells that browser to read the schema
-	// again. It runs on this loop's goroutine, so a hook that blocks delays the next read; a
+	// (docs.Service.CloseDocumentSockets), because a socket's admission was decided against the
+	// schema the process served as it connected, and the browser connects again on that close,
+	// where admission decides against the schema installed now. It runs on this loop's
+	// goroutine, so a hook that blocks delays the next read; a
 	// reload that installed the same schema runs it not at all, which is what leaves an
 	// ordinary reinstall's editors connected. A nil hook is nothing.
 	OnSwitch func()

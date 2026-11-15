@@ -29,10 +29,10 @@ import (
 // process runs (Install), and a stored tree is keyed by its text, its mode and DisplayTreeVersion,
 // never by a schema (texttrees): a default left out under one schema would be filled back under
 // whichever schema the reader holds when that tree is served. Written whole, a typed block reads
-// the same under every schema, and FromJSON, which refuses a typed block missing any attribute
-// its schema declares a default for, reads the encoding back as it is. Leaving those defaults out
-// would change every tree that holds a typed block, testdata/display.json's among them, and so
-// raise DisplayTreeVersion.
+// the same under every schema. Leaving those defaults out would change every tree that holds a
+// typed block, testdata/display.json's among them, and so raise DisplayTreeVersion; the change
+// that would read them from the manifest instead (dispatch://INFRA-3404) has to answer a schema
+// installed while the process runs first.
 var displayNodeDefaults = map[string]Attrs{
 	// heading: `id` is the slug milkdown's own generator would write and both readers leave
 	// empty; `level` is 1 for a heading nothing says the level of.

@@ -253,9 +253,8 @@ pod_sessions_dir=/home/legion/.omp/profiles/legion/agent/sessions
 stream=ENVOY_NOTIFICATIONS
 # The issues the run's daemon runs at once. Since dispatch://INFRA-980 a slot is one issue the
 # daemon has started, a root or a child, so tree 1's children count against this cap as its root
-# does, and since dispatch://INFRA-2560 an issue holds one of the cap's slots from the moment the
-# daemon starts it until its work is past its review — accepting, retro and merging hold
-# none — or until it is done or Dispatch takes it out of the workflow. Four is
+# does, and an issue holds one as root AGENTS.md's "Admission" says: since
+# dispatch://INFRA-2560 an issue in accepting, retro or merging holds none. Four is
 # the run's own peak under that rule, reached once, at issue-independence: tree 1's root and its
 # two children beside tree 2's root, which is where the cap stands full and tree 3, set todo
 # there, waits for it. The later gathering is three and not four: at children-first-acceptance
@@ -6294,8 +6293,18 @@ until [ -n "$planner_killed" ]; do
   if hold_end_charged "$(claim_token "$tree4" planner)"; then planner_killed=$ended_incarnation; fi
 done
 note "killed $tree4's planner mid-turn (process $planner_killed in pod $ended_pod_uid)"
-interrupted_needle="Your previous turn on this task was interrupted when your process died."
-planner_resent() { session_contains "$tree4" planner "$interrupted_needle"; }
+# The task goes again behind the sentence the claim's record of the kill composes
+# (packages/daemon/internal/supervise/relaunch.go, relaunchSentence): its first statement says the
+# turn was interrupted, and the next names the death as its cause. Both are read, each as a fixed
+# string of the planner's session, because neither alone says the kill was what it told.
+interrupted_needle="Your previous turn on this task was interrupted."
+death_needle="ended because the process died: "
+# One read of the session serves both needles, since each poll reads the whole session text.
+planner_resent() {
+  local text
+  text=$(claim_session_text "$tree4" planner) || return 1
+  grep -Fq -- "$interrupted_needle" <<<"$text" && grep -Fq -- "$death_needle" <<<"$text"
+}
 on_tree "$tree4" until_true 600 "$tree4's planner to be sent its task again, told its turn was interrupted" planner_resent
 send_agent "$tree4" planner "Stage 4b proof planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 on_tree "$tree4" wait_for_phase "$tree4" implementing "$plan_seconds"

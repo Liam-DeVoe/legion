@@ -30,6 +30,7 @@ import (
 var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
+	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
 }
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
@@ -157,7 +158,8 @@ func requireBaseAttributes(t *testing.T, ctx context.Context, pool *store.Pool, 
 
 // requireAttributeNodesMatchTheFile holds every typed block type's attribute nodes to the file,
 // field by field and in both directions: an attribute only in the file, or only in the store,
-// fails, and so does one whose kind, choices, default, server flag, targets or scope differs.
+// fails, and so does one whose kind, choices, default, server flag, targets, scope or element
+// versions differ.
 // The file names an attribute as a document writes it, and its node is the one
 // schemanodes.StoreName names, `<type>/<store name>`, so ask's `state` is the node
 // ask/answer_state. Each type and attribute it fails on is recorded in drift.
@@ -215,7 +217,7 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 
 // requireAttributeNodeCarries holds one attribute node of type typeName to what the file says
 // about that attribute: its name and place, the store name schemanodes.StoreName gives it, and
-// each of the six fields a BlockAttributeSchema carries. A node that differs is recorded in drift.
+// each field a BlockAttributeSchema carries. A node that differs is recorded in drift.
 func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName string, position int, declared pmdoc.BlockAttribute, drift *schemaDrift) {
 	t.Helper()
 	carried := node.Attributes
@@ -231,7 +233,7 @@ func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName st
 		t.Errorf("attribute node %q carries position %v, want %d", node.ID, carried["position"], position)
 		drift.add(node.ID)
 	}
-	// The six fields of BlockAttributeSchema, compared as the file writes them: the node's
+	// The fields of BlockAttributeSchema, compared as the file writes them: the node's
 	// attributes are the attribute's own JSON with the name, the store name and the position
 	// beside it, so one encoding of each side names every difference at once.
 	stored := map[string]any{}
@@ -252,13 +254,17 @@ func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName st
 }
 
 // requireTheStoreBuildsTheFilesSchema reads the schema back out of the nodes and holds it to the
-// file, type for type and attribute for attribute, recording in drift what the two differ on.
+// file, type for type and attribute for attribute, recording in drift what the two differ on. The
+// file's nodes and marks are left out of the comparison: they are the Proof schema's, which the
+// store holds no node for, and the server installs the build's own beside the store's types
+// (pmdoc.Install).
 func requireTheStoreBuildsTheFilesSchema(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema, drift *schemaDrift) {
 	t.Helper()
 	built, err := schemanodes.Read(ctx, pool)
 	if err != nil {
 		t.Fatalf("build the schema from the store's nodes: %v", err)
 	}
+	file.Nodes, file.Marks = nil, nil
 	if string(mustMarshal(t, built)) != string(mustMarshal(t, file)) {
 		t.Errorf("the schema the store's nodes build is\n%s\nwant the file's\n%s", mustMarshal(t, built), mustMarshal(t, file))
 		drift.compare(built, file)

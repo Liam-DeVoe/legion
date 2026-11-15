@@ -44,14 +44,14 @@ type BlockPointer struct {
 // (a paragraph) is caught by the index itself, which writes a pointer only from a node of the
 // pointer's own block type (refs.IndexBlocks).
 func BlockPointers(tree *Node) []BlockPointer {
-	value := installed.Load()
-	if len(value.linkKinds) == 0 {
+	manifest := active.Load()
+	if len(manifest.linkKinds) == 0 {
 		return nil
 	}
 	var pointers []BlockPointer
 	held := make(map[string]struct{})
 	Walk(tree, func(node *Node) bool {
-		typ, typed := value.types[node.Type]
+		typ, typed := manifest.types[node.Type]
 		if !typed {
 			return true
 		}
@@ -63,7 +63,7 @@ func BlockPointers(tree *Node) []BlockPointer {
 			}
 			held[id] = struct{}{}
 		}
-		for _, name := range value.pointerAttributes[node.Type] {
+		for _, name := range manifest.pointerAttributes[node.Type] {
 			refs, _ := stringSlice(node.Attrs[name])
 			for _, ref := range refs {
 				target, canonical := text.CanonicalBlockRef(ref)

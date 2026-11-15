@@ -4,13 +4,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -20,148 +18,36 @@ import (
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte
 
-// The schema's shape - BlockSchema, BlockTypeSchema, BlockAttributeSchema, BlockContentRule and
-// the attribute kinds - is declared in packages/contracts/schemas/block-schema.schema.json and
-// generated into schema_generated.go, which blocks.json above is read into.
+// The schema's shape - BlockSchema, BlockSchemaElement, BlockTypeSchema, BlockAttributeSchema,
+// BlockElementVersions, BlockContentRule and the attribute kinds - is declared in
+// packages/contracts/schemas/block-schema.schema.json and generated into schema_generated.go,
+// which blocks.json above is read into (manifest.go, compileManifest). The manifest names the
+// nodes and marks of the Proof schema beside the typed blocks Dispatch adds to it, and every
+// element of it - a node, a mark, a typed block, a typed block's attribute, an enum attribute's
+// choice - may say from which schema version a build reads it (since) and from which a build may
+// create it (creatable_since); both are 1 when it says neither. This build reads every element
+// the installed manifest declares and creates those whose creatable_since is at most Version
+// (SchemaVersion). The installed manifest is the store's once the server has read it (Install):
+// the typed blocks the store's supertag nodes declare, beside this build's own nodes and marks.
+// blocks.json is what those nodes were seeded from, and what is installed until then.
 
-// installedSchema is the whole of what this package knows about the block schema: the value
-// itself, the lookups built from it, and the bytes an editor is served. It is built once, off to
-// the side, and published by storing one pointer, so a reinstall never writes a map another
-// goroutine is reading (the store-driven reinstall, pmdoc/schemanodes). Nothing here is written
-// after the pointer is stored.
-type installedSchema struct {
-	schema    BlockSchema
-	types     map[string]BlockTypeSchema
-	linkKinds []string
-	// pointerAttributes maps each typed block declaring a `block[]` attribute to those
-	// attributes' names, sorted.
-	pointerAttributes map[string][]string
-	// json is the value as GET /api/v1/schema/blocks serves it, encoded at install so a reader
-	// takes the whole schema in one load rather than encoding it again per request.
-	json []byte
-}
-
-// installed holds the one installed schema. Every reader loads it once and takes no lock.
-var installed atomic.Pointer[installedSchema]
-
-// builtSchemaVersion is the highest schema version this binary was built for: the version of the
-// embedded file. A store schema above it names types this build cannot address, so it is not
-// installed and the process reports itself not ready (NotReadyReason).
-var builtSchemaVersion int
-
-// schemaAhead holds the store schema version that is above builtSchemaVersion, or 0 while the
-// installed value is this build's own. It is what makes the process not ready.
-var schemaAhead atomic.Int64
-
-func init() {
-	var value BlockSchema
-	if err := json.Unmarshal(blockSchemaJSON, &value); err != nil {
-		panic(fmt.Sprintf("pmdoc: decode embedded block schema: %v", err))
-	}
-	builtSchemaVersion = value.Version
-	if err := installSchema(value); err != nil {
-		panic(fmt.Sprintf("pmdoc: install embedded block schema: %v", err))
-	}
-}
-
-// installSchema makes value the one schema every reader of this package uses. It applies the two
-// checks init applies to the embedded file - normalizeSchemaDefaults, then validateBlockSchema -
-// and installs nothing when either refuses: the caller keeps the schema it has.
-func installSchema(value BlockSchema) error {
-	if err := normalizeSchemaDefaults(&value); err != nil {
-		return fmt.Errorf("normalize block schema: %w", err)
-	}
-	if err := validateBlockSchema(value); err != nil {
-		return fmt.Errorf("invalid block schema: %w", err)
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("encode block schema: %w", err)
-	}
-	next := &installedSchema{
-		schema:            value,
-		types:             make(map[string]BlockTypeSchema, len(value.Types)),
-		pointerAttributes: map[string][]string{},
-		json:              encoded,
-	}
-	kinds := map[string]struct{}{}
-	for _, typ := range value.Types {
-		next.types[typ.Name] = typ
-		var names []string
-		for _, attr := range typ.Attributes {
-			if attr.Kind == BlockAttributeBlockList {
-				kinds[attr.Name] = struct{}{}
-				names = append(names, attr.Name)
-			}
-		}
-		if len(names) > 0 {
-			sort.Strings(names)
-			next.pointerAttributes[typ.Name] = names
-		}
-	}
-	next.linkKinds = slices.Sorted(maps.Keys(kinds))
-	installed.Store(next)
-	return nil
-}
-
-// Install makes value, read from the node store, the installed schema. A value whose version is
-// above the one this binary was built for installs nothing and makes the process not ready
-// (NotReadyReason): the build cannot address the types that version declares, and the deployment
-// replaces the process with one that can. A value that fails either check of installSchema
-// installs nothing either, and leaves the process ready on the schema it has.
-func Install(value BlockSchema) error {
-	if value.Version > builtSchemaVersion {
-		schemaAhead.Store(int64(value.Version))
-		return fmt.Errorf("block schema version %d is above the highest version this build was made for (%d)",
-			value.Version, builtSchemaVersion)
-	}
-	if err := installSchema(value); err != nil {
-		return err
-	}
-	schemaAhead.Store(0)
-	return nil
-}
-
-// BuiltSchemaVersion is the highest schema version this binary handles: the version of the file
-// it embeds.
-func BuiltSchemaVersion() int {
-	return builtSchemaVersion
-}
-
-// NotReadyReason is why this process cannot serve, or "" while it can: the one reason is a store
-// schema above the version this build handles. GET /healthz answers 503 with it, and the switch
-// that closes the open document sockets reads the same reason.
-func NotReadyReason() string {
-	ahead := schemaAhead.Load()
-	if ahead == 0 {
-		return ""
-	}
-	return fmt.Sprintf("the store's block schema version %d is above the highest version this build was made for (%d)",
-		ahead, builtSchemaVersion)
-}
-
-// LinkKinds is the edge kinds the schema's `block[]` attributes make, sorted: each such
+// LinkKinds is the edge kinds the manifest's `block[]` attributes make, sorted: each such
 // attribute's name, once however many types declare it. None is a structural edge kind
 // (model.GraphEdgeKinds).
 func LinkKinds() []string {
-	return slices.Clone(installed.Load().linkKinds)
+	return slices.Clone(active.Load().linkKinds)
 }
 
-// HasLinkKinds reports whether the schema declares any `block[]` attribute (LinkKinds is not
+// HasLinkKinds reports whether the manifest declares any `block[]` attribute (LinkKinds is not
 // empty).
 func HasLinkKinds() bool {
-	return len(installed.Load().linkKinds) > 0
+	return len(active.Load().linkKinds) > 0
 }
 
 // SchemaJSON returns a copy of the installed block schema as JSON: what the store's nodes built,
 // or the embedded file where nothing has been installed over it.
 func SchemaJSON() []byte {
-	return append([]byte(nil), installed.Load().json...)
-}
-
-// SchemaVersion returns the current schema version clients present during document admission.
-func SchemaVersion() int {
-	return installed.Load().schema.Version
+	return append([]byte(nil), active.Load().json...)
 }
 
 // IsTypedBlock reports whether name is a typed block the schema declares.
@@ -171,12 +57,12 @@ func IsTypedBlock(name string) bool {
 }
 
 func typedBlock(name string) (BlockTypeSchema, bool) {
-	typ, ok := installed.Load().types[name]
+	typ, ok := active.Load().types[name]
 	return typ, ok
 }
 
 func typedBlockNames() []string {
-	types := installed.Load().schema.Types
+	types := active.Load().schema.Types
 	names := make([]string, 0, len(types))
 	for _, typ := range types {
 		names = append(names, typ.Name)
@@ -231,7 +117,7 @@ func validateBlockSchema(value BlockSchema) error {
 	for _, typ := range value.Types {
 		for _, attr := range typ.Attributes {
 			for _, target := range attr.Targets {
-				if _, typed := seenTypes[target]; !typed && !builtInBlockNode(target) {
+				if _, typed := seenTypes[target]; !typed && !builtInBlockNode(value, target) {
 					return fmt.Errorf("type %q attribute %q targets %q, which is neither a type the schema declares nor a built-in block the link graph holds", typ.Name, attr.Name, target)
 				}
 			}
@@ -240,17 +126,22 @@ func validateBlockSchema(value BlockSchema) error {
 	return nil
 }
 
-// builtInBlockNode reports whether name is a built-in block type whose blocks are nodes of the
-// link graph, which a `block[]` attribute's targets may name: a type the renderer records a block
-// offset for (renderer.block: any node but the document and inline nodes), so one
-// GET /api/v1/artifacts/{id}/blocks lists, less the types the renderer writes without recording
-// one - a list item and a table's rows and cells - which no block list holds.
-func builtInBlockNode(name string) bool {
+// builtInBlockNode reports whether name is a built-in block type of value, the manifest being
+// validated, whose blocks are nodes of the link graph, which a `block[]` attribute's targets may
+// name: a type the renderer records a block offset for (renderer.block: any node but the document
+// and inline nodes), so one GET /api/v1/artifacts/{id}/blocks lists, less the types the renderer
+// writes without recording one - a list item and a table's rows and cells - which no block list
+// holds. It reads value's own nodes rather than the installed manifest's, since the manifest
+// being validated is not installed yet (compileManifest).
+func builtInBlockNode(value BlockSchema, name string) bool {
 	switch name {
 	case "doc", "list_item", "table_header_row", "table_row", "table_header", "table_cell":
 		return false
 	}
-	return nodeTypes[name] && !isInlineNodeType(name)
+	if isInlineNodeType(name) {
+		return false
+	}
+	return slices.ContainsFunc(value.Nodes, func(node BlockSchemaElement) bool { return node.Name == name })
 }
 
 func validBlockContentRule(rule BlockContentRule) bool {
@@ -363,7 +254,7 @@ func validateAttributeValue(attr BlockAttributeSchema, value any) error {
 				return nil
 			}
 		}
-		return fmt.Errorf("must be one of %s, got %q", strings.Join(attr.Choices, ", "), text)
+		return unknownElement(fmt.Errorf("must be one of %s, got %q", strings.Join(attr.Choices, ", "), text), text)
 	case BlockAttributeStringList:
 		switch items := value.(type) {
 		case []string:
@@ -500,11 +391,42 @@ func stringListWrittenWithGoEscapes(text string) ([]string, bool) {
 	return value, true
 }
 
+// defaultAttributes is the attributes a block of typ holds before it names any of its own: each
+// attribute's written default (writtenDefault).
 func defaultAttributes(typ BlockTypeSchema) Attrs {
 	attrs := make(Attrs, len(typ.Attributes))
 	for _, attr := range typ.Attributes {
-		if attr.Default != nil {
-			attrs[attr.Name] = cloneSchemaValue(attr.Default)
+		if value, ok := writtenDefault(typ, attr); ok {
+			attrs[attr.Name] = value
+		}
+	}
+	return attrs
+}
+
+// writtenDefault is the value of typ's attribute attr, for a block that does not hold it: its
+// default, and false when it has none or when this build may not create the attribute yet. A
+// block an earlier build wrote, before the attribute existed, reads with that default (readElement,
+// renderTypedAttributes), as the browser editor reads it. An attribute this build cannot create is
+// left out, so that no write of this build adds it.
+func writtenDefault(typ BlockTypeSchema, attr BlockAttribute) (any, bool) {
+	if attr.Default == nil || !creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name}) {
+		return nil, false
+	}
+	return cloneSchemaValue(attr.Default), true
+}
+
+// withWrittenDefaults is attrs, a typed block's attributes as a stored tree holds them, with the
+// written default of each attribute of typ that it does not hold. It adds to attrs in place.
+func withWrittenDefaults(typ BlockTypeSchema, attrs Attrs) Attrs {
+	for _, attr := range typ.Attributes {
+		if _, present := attrs[attr.Name]; present {
+			continue
+		}
+		if value, ok := writtenDefault(typ, attr); ok {
+			if attrs == nil {
+				attrs = make(Attrs, len(typ.Attributes))
+			}
+			attrs[attr.Name] = value
 		}
 	}
 	return attrs
@@ -537,11 +459,11 @@ func typedAttributeValues(n *Node, typ BlockTypeSchema) ([]model.BlockAttributeV
 			continue
 		}
 		value, present := n.Attrs[name]
+		if !present {
+			value, present = writtenDefault(typ, attribute)
+		}
 		if !present || (value == nil && definition.Default == nil) {
-			if definition.Default == nil {
-				continue
-			}
-			return nil, fmt.Errorf("%w: typed block %q is missing attribute %q", ErrSchema, n.Type, name)
+			continue
 		}
 		encoded, err := encodeTypedAttribute(n.Type, name, definition, value)
 		if err != nil {

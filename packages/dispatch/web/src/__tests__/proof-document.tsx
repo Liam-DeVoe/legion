@@ -4,7 +4,6 @@ import { act, render, waitFor } from "@testing-library/react";
 import { http, type RequestHandler } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import serverBlockSchema from "../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { api } from "../api/client";
 import type {
   Artifact,
@@ -37,24 +36,6 @@ export const artifact: Artifact = {
   session_id: null,
   slug: "spec",
   versions: [],
-};
-
-// What this page's `["block-schema"]` holds, with the version the server has installed: a page
-// seeded with an older one would read a refused socket as a schema the store moved rather than as
-// this document's own refusal (`document-runtime.ts` says why).
-const blockSchema = {
-  types: [
-    {
-      attributes: {
-        kind: { choices: ["note", "warning"], default: "note", kind: "enum" as const },
-        title: { default: "", kind: "string" as const },
-      },
-      content: "paragraph+" as const,
-      name: "callout",
-      render: "host" as const,
-    },
-  ],
-  version: serverBlockSchema.version,
 };
 
 export function createQueryClient(): QueryClient {
@@ -214,7 +195,6 @@ export function renderProofDocument({
         }
       | undefined,
   };
-  queryClient.setQueryData(["block-schema"], blockSchema);
   const toolbar: { current: DocumentToolbar | undefined } = { current: undefined };
   /** Every value the document reported upward, so a suite can assert it reported none at all. */
   const toolbarChanges: (DocumentToolbar | undefined)[] = [];

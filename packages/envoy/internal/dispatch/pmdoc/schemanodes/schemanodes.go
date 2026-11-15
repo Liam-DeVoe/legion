@@ -71,13 +71,20 @@ type supertagAttributes struct {
 	// Position is the type's place in the schema, which is the order the server serves the
 	// types in and the order the seed read them from the file.
 	Position int `json:"position"`
+	// Since and CreatableSince are the type's element versions as the manifest gives them: from
+	// which schema version a build reads the type and from which it may create it. A node that
+	// carries neither is a type the manifest gives none, which reads as 1 and 1 (pmdoc's
+	// normalizeVersions), as blocks.json leaves them out.
+	Since          int `json:"since"`
+	CreatableSince int `json:"creatable_since"`
 }
 
 // attributeAttributes is what an attribute node carries: the name its type declares it under,
-// its place among that type's attributes, and the schema's own six fields - the kind, the
-// choices, the default, whether the server owns it, what it may point at and its scope. The node
-// carries its store name (StoreName) beside them, which is no field of the block schema and is
-// not read here: a document and the editor know an attribute by its name alone.
+// its place among that type's attributes, and the schema's own fields - the kind, the choices,
+// the default, whether the server owns it, what it may point at, its scope and its element
+// versions. The node carries its store name (StoreName) beside them, which is no field of the
+// block schema and is not read here: a document and the editor know an attribute by its name
+// alone.
 type attributeAttributes struct {
 	Name     string `json:"name"`
 	Position int    `json:"position"`
@@ -89,7 +96,9 @@ type attributeAttributes struct {
 // node records. The version is the highest its types carry, so a type added at a new version
 // raises the schema's own. Each attribute is declared under the name its node carries, the name
 // a document writes it under, and never under its store name: the node ask/answer_state is
-// ask's `state`, as blocks.json declares it.
+// ask's `state`, as blocks.json declares it. It names no node and no mark of the Proof schema:
+// the store holds the typed blocks alone, and pmdoc.Install takes the nodes and marks from the
+// build's own manifest.
 //
 // It refuses a store holding no block type, since installing that would leave the server
 // unable to read a single typed block, and a node it cannot decode. Everything else it cannot
@@ -125,10 +134,12 @@ func Read(ctx context.Context, q graphstore.Queryer) (pmdoc.BlockSchema, error) 
 			return pmdoc.BlockSchema{}, err
 		}
 		types = append(types, placed{position: carried.Position, typ: pmdoc.BlockTypeSchema{
-			Name:       node.ID,
-			Content:    carried.Content,
-			Render:     carried.Render,
-			Attributes: declared,
+			Name:           node.ID,
+			Content:        carried.Content,
+			Render:         carried.Render,
+			Attributes:     declared,
+			Since:          carried.Since,
+			CreatableSince: carried.CreatableSince,
 		}})
 		if carried.Version > value.Version {
 			value.Version = carried.Version
