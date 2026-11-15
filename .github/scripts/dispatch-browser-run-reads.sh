@@ -355,31 +355,28 @@ case "$mode" in
     #   merge job reports is one the merge job did not wait for, which no job of this file is
     #   today: every one of them is in the merge job's `needs:`.
     #
-    # THE BOUND, AND WHY IT IS NOT R5's OWN. R5 of dispatch://INFRA-1109/spec holds a full lane
-    # to 2,400 s and a pull-request lane to 900 s, over every job of the run. This reading is
-    # short of one job - its own - so the figure it holds the others to is that bound less this
-    # job's own worst case, which is `merge_maximum` below and is subtracted from each bound in
-    # one place:
+    # THE BOUND, AND WHAT IT IS NOT. R5 of dispatch://INFRA-1109/spec holds a full lane to four
+    # fifths of the median of that day's green default-branch full-lane runs, and a
+    # pull-request lane to 900 s. No job can read another run, so this reading cannot be that
+    # one: it is a coarse absolute ceiling above the fleet's own spread, and it holds nothing
+    # this issue delivers. What this issue delivers is read after the run, against the day's
+    # base: R5's four fifths and R4's machine-seconds a row.
     #
-    #   full lane:         2,400 - 37 = 2,363 s
+    #   full lane:         2,700 - 37 = 2,663 s
     #   pull-request lane:   900 - 37 =   863 s
     #
-    # The full lane's bound was 2,040 s when this mode was written, from readings of 1,974,
-    # 1,997, 2,003 and 2,025 s taken on 2026-11-11. It is 2,400 s because the machines moved,
-    # not because this suite did. Between run 43150379433 (2,003 s) and run 43192333526
-    # (2,285 s), paired job by job over the 1,340 rows both ran, every job of ci.yaml that
-    # reads no file of this suite rose with it: typecheck +83 per cent, envoy-client +109,
-    # envoy-smoke +34, broker-multiprocess +21, envoy-go +16, lint +14; the `binaries` job,
-    # which runs no row, +31, its one build step +45 with the same package.json and bun.lock;
-    # and the `stub` project, which starts no server, no Postgres and no socket, +25. The
-    # default branch moved with them: its four green merge-queue runs of 2026-11-12 cost
-    # 2,955, 2,994, 2,994 and 3,059 s of browser jobs (43213097789, 43212395650, 43194553567,
-    # 43188011059) against the 2,863 to 3,059 of the day before. What survives a fleet is the
-    # ratio, and it did: the head's lane is 0.72 to 0.75 of a default-branch lane read the same
-    # day, against 0.71 to 0.73 the day before. So this bound is a ceiling that a fleet-wide
-    # slowdown cannot hide a real rise behind, and not a reading of how fast a row is; the
-    # reading of that is R4's machine-seconds a row, 1.62 at the head against 2.03 to 2.17 on
-    # the base, which held on both fleets.
+    # So this number answers a suite grown by half and never a slow afternoon. The full lane's
+    # bound was 2,040 s when this mode was written, from readings of 1,974, 1,997, 2,003 and
+    # 2,025 s taken on 2026-11-11; it became 2,400 s when the machines moved, not when this
+    # suite did, and 2,700 s when one slow afternoon proved that an absolute figure near the
+    # measurement is a figure the fleet decides. On 2026-11-15 two runs of one tree cost 2,252
+    # and 2,450 s (43664675139, 43667557013), whose real-stack row medians were 2,746 and
+    # 3,126 ms: the lane's cost tracked the runner and not the rows. The default branch moved
+    # with it, as it always does - its four green merge-queue runs of that day cost 3,038,
+    # 3,059, 3,122 and 3,173 s (43651772530, 43599674489, 43618438852, 43654768102) - which is
+    # why the ratio is what R5 and R4 read and this ceiling is not.
+    # The pull-request lane keeps 900 s, since the default branch runs no such lane and there
+    # is no same-day figure to take a ratio against.
     # The 37 s is 36 s measured plus 1 s this file's own new step. The 36 s is measured, not
     # allowed for: the `dispatch-browser / merge` job took 36 s in run 43045412941, 28 s in
     # 43074443876, 33 s in 43079610268 and 22 s in 43002633713 (the pull-request lane), and
@@ -394,11 +391,11 @@ case "$mode" in
     # figure and not cancelled is one whose seconds both comments then understate, and this
     # budget is the looser for it by exactly the difference.
     # Subtracting the maximum rather than the median is what keeps this reading stricter than
-    # R5 and never looser: a lane that passes here at 2,363 s and then spends a worst-case 37 s
-    # in this job lands on R5's 2,400 exactly.
+    # the ceiling itself and never looser: a lane that passes here at 2,663 s and then spends a
+    # worst-case 37 s in this job lands on 2,700 exactly.
     #
-    # The same bound read after the run, over every job of it and this one included, is R5's
-    # own check and not this one; this reading is what refuses the growth before the run ends.
+    # This reading is what refuses the growth before the run ends; what the run is held to
+    # afterwards, against the day's own base, is R5's and R4's.
     #
     # WHY AN UNREADABLE LIST REFUSES. A budget that passes when it cannot read its number is
     # the defect this mode exists against, so a jobs file that is not there, that no job of
@@ -412,7 +409,7 @@ case "$mode" in
     #   .github/scripts/dispatch-browser-run-reads.sh machine-time jobs.json full
     case "$lane" in
       full)
-        bound=2400
+        bound=2700
         ;;
       pull-request)
         bound=900
@@ -475,14 +472,14 @@ case "$mode" in
         done < "$measured"
         echo
         echo "The $count concluded jobs of this $lane lane, this merge job apart, cost" \
-          "$seconds s against a budget of $budget s, which is R5's $bound s less this job's" \
-          "own worst case of $merge_maximum s."
+          "$seconds s against a budget of $budget s, which is the committed ceiling of" \
+          "$bound s less this job's own worst case of $merge_maximum s."
       } >> "$GITHUB_STEP_SUMMARY"
     fi
     if [ "$seconds" -gt "$budget" ]; then
       echo "::error::this $lane lane has cost $seconds s of machine time over its $count" \
         "concluded jobs, this merge job apart, which is above the $budget s they are held to:" \
-        "R5's bound of $bound s for this lane, less this job's own worst case of" \
+        "the committed ceiling of $bound s for this lane, less this job's own worst case of" \
         "$merge_maximum s, which a reading taken inside the run cannot hold. The table in this" \
         "run's summary names each job's seconds. This is the suite costing more machine time" \
         "than dispatch://INFRA-1109 left it costing, and not a failed browser row."

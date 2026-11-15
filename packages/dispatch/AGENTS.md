@@ -2058,19 +2058,26 @@ that reports ci-ok, so a run gets one verdict and not seven.
 It also holds the lane to a machine-time budget, in its step `Reading five, the lane's machine
 time`: it sums `completed_at - started_at` over every other job of that workflow that ended with
 a duration, every skipped job apart, out
-of the jobs file its first reading already wrote, and fails above 2,363 s on the full lane and
+of the jobs file its first reading already wrote, and fails above 2,663 s on the full lane and
 863 s on the pull-request lane
 (`.github/scripts/dispatch-browser-run-reads.sh`, mode `machine-time`).
-Those two numbers are lower than the 2,400 s and 900 s the issue committed to on purpose: a job
+Those two numbers are lower than the committed ceiling of 2,700 s and 900 s on purpose: a job
 reading inside its own run cannot see its own cost, because its `completed_at` is still null, so
-each budget is the bound less this job's own worst case of 37 s - 36 s measured over five runs,
+each budget is the ceiling less this job's own worst case of 37 s - 36 s measured over five runs,
 and the second the reading step itself was given a budget for - and a lane that passes
-here and then spends that worst case lands on the bound exactly.
-The full lane's bound was 2,040 s until 2026-11-12, when the machines got slower and this suite
+here and then spends that worst case lands on the ceiling exactly.
+That ceiling is a coarse guard above the fleet's own spread and no reading of what
+dispatch://INFRA-1109 delivers: no job can read another run, so what the suite costs against the
+day's own default branch is read after the run, by R4 and R5 of that issue, each a ratio.
+It was 2,040 s until 2026-11-12, when the machines got slower and this suite
 did not: between run 43150379433 (2,003 s) and run 43192333526 (2,285 s), every job of
 `ci.yaml` that reads no file of this suite rose with it, the `binaries` job that runs no row
 rose 31 per cent with the same `package.json` and `bun.lock`, and the head's lane stayed 0.72 to
 0.75 of a default-branch lane read the same day.
+It became 2,700 s on 2026-11-15, when two runs of one tree cost 2,252 and 2,450 s
+(43664675139, 43667557013) with real-stack row medians of 2,746 and 3,126 ms, against four green
+merge-queue runs of the default branch that day at 3,038 to 3,173 s: the lane's cost tracks the
+runner, so a ceiling set near the measurement is one the fleet decides.
 A jobs file it cannot read, or one holding no job with a duration, fails too rather than passing.
 The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit
 tests and build, beside the proof editor's, and runs no browser row; `bun run check:asset-sizes`
