@@ -48,6 +48,13 @@ import (
 // close, so its start row follows the linger's suspends and resumes the checking role as a
 // root's own check does, rather than being stopped by them.
 //
+// Whatever the departure, the held start goes with the phase it was held in: an issue that leaves
+// from awaiting_children stands at done holding nothing (record.Issue.ChildrenWait, which the
+// record's shape ties to that phase), as a held issue's hold goes with its leave, while the two
+// facts of its run that outlive the phase — the forward merge it owes and the moment it last
+// waited — stay on the record. A root a person parks while it waits on its children leaves like
+// any parked root, and a person's todo re-admits it as a new generation (admit's readmit).
+//
 // Whatever the departure, the issue carries no mark of a slot released for a wait afterwards.
 // The mark is the daemon's answer to "this issue was started and its row is gone because it
 // waits on another issue" (record.Issue.ReleasedForWaitAt), and this write is the third of the
@@ -96,7 +103,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return e.openCheckIfMerged(ctx, tx, issue, false)
 	}
 	if issue.Phase != phase.Done {
-		issue.Phase, issue.Hold = phase.Done, nil
+		issue.Phase, issue.Hold, issue.ChildrenWait = phase.Done, nil, nil
 		if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -195,7 +202,7 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 func (e *Engine) leaveUnderOperator(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: a waiting root left the workflow while the operator runs a tree under its key; the operator's tree is left alone",
 		"issue", root.Key, "tree", root.Tree, "status", status)
-	root.Phase, root.Hold, root.Awaiting = phase.Done, nil, nil
+	root.Phase, root.Hold, root.Awaiting, root.ChildrenWait = phase.Done, nil, nil, nil
 	return e.store.PutIssue(ctx, tx, root)
 }
 
@@ -307,7 +314,7 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue) 
 		return err
 	}
 	root.LingerUntil = &until
-	root.Phase, root.Hold, root.Awaiting = phase.Done, nil, nil
+	root.Phase, root.Hold, root.Awaiting, root.ChildrenWait = phase.Done, nil, nil, nil
 	if err := e.store.PutIssue(ctx, tx, root); err != nil {
 		return err
 	}

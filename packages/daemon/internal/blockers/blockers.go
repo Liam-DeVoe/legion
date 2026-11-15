@@ -153,12 +153,13 @@ func LineWaitsOn(rows map[string]Row, entry record.LineEntry) []string {
 // never judged, as the decider that would admit it does not judge it either (Exempt): what
 // promotion starts whatever its links say is never reported as waiting on them.
 //
-// more is what a decider outside this package has already judged and rendered, which today is
-// the children-first wait (record.ChildWaitRows): that rule reads the mirror's parent column
-// against the daemon's records rather than an issue's blocked-by links, so it cannot be made
-// here, and it must still reach the one list a reader reads. A key both deciders name keeps one
-// row, with each one's issues in it — the deciders are independent, and an issue can wait on a
-// link and on a child at once.
+// more is what a decider outside this package has already judged and rendered, which is the two
+// waits on a parent's open Dispatch children (ChildRows): the children-first wait and the wait of
+// a parent in awaiting_children. Each rule reads the mirror's parent column against the daemon's
+// records rather than an issue's blocked-by links, so it cannot be made here, and it must still
+// reach the one list a reader reads. A key both deciders name keeps one row, with each one's
+// issues in it — the deciders are independent, and an issue can wait on a link and on a child at
+// once.
 func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry, more []record.BlockedIssue) []record.BlockedIssue {
 	blocked := make([]record.BlockedIssue, 0, len(line)+len(more))
 	at := make(map[string]int, len(line)+len(more))
@@ -189,6 +190,31 @@ func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry
 	}
 	slices.SortFunc(blocked, func(a, b record.BlockedIssue) int { return cmp.Compare(a.Issue, b.Issue) })
 	return blocked
+}
+
+// ChildRows is the two waits on a parent's open Dispatch children as the rows Blocked takes
+// beside its own (its more), from the one judgement of the pass that the facts carry: the
+// children-first wait of a parent whose own first phase has not started
+// (record.LineFacts.ChildWaits), and the wait of a parent in awaiting_children on its open
+// children (record.LineFacts.StartedParentWaits, dispatch://INFRA-3320 R11). Each is rendered by
+// the one renderer of a children wait (record.ChildWaitRows), so a waiting parent names its open
+// children and a cycle among them names the child and the ancestor its link holds it under.
+//
+// Of the started parents only those in awaiting_children are rows here. That is where an open
+// child holds a started parent: the admission pass moves every other started parent an open
+// child holds into that phase (admit's childrenWaits), and one it leaves where it stands — held,
+// or with its pull request merged — is not waiting on its children. A blocked_by link adds no row
+// to a parent in awaiting_children: such a parent stands in no line (record.Waiting places none,
+// since the phase keeps no slot), so no link of it is judged, and it waits on its children alone
+// until they are finished (R11).
+func ChildRows(issues []record.Issue, facts record.LineFacts) []record.BlockedIssue {
+	waiting := make(map[string]record.ChildWait)
+	for _, issue := range issues {
+		if wait, open := facts.StartedParentWaits[issue.Key]; open && issue.Phase == phase.AwaitingChildren {
+			waiting[issue.Key] = wait
+		}
+	}
+	return append(record.ChildWaitRows(facts.ChildWaits), record.ChildWaitRows(waiting)...)
 }
 
 // Exempt says whether an issue starts whatever its links say, and so is neither held by the

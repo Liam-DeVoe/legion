@@ -501,6 +501,7 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "testing", p: phase.Testing, want: claim.RoleTester},
 		{name: "accepting is the architect's", p: phase.Accepting},
 		{name: "awaiting a person", p: phase.AwaitingPerson},
+		{name: "awaiting its children, which no role works", p: phase.AwaitingChildren},
 		{name: "done", p: phase.Done},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -26,10 +26,11 @@
 -- it does not know the phase, and a write of such a row that leaves the phase without clearing the
 -- held-start columns fails the shape check below. It names forward_merge_owed and children_waited_at
 -- in no statement: its reads leave them out, its inserts take forward_merge_owed's default (false)
--- and leave children_waited_at null, and its upserts leave both as they are. So a parent this
--- release moved out of the wait before the rollback carries neither a forward merge it owes nor the
--- moment it last waited, which is what docs/kubernetes.md's rollback section for this release
--- says an operator clears before the rollback.
+-- and leave children_waited_at null, and its upserts leave both as they are. docs/kubernetes.md's
+-- section "Rolling back the release that holds a parent's start while a child of it is open" says
+-- how a rollback waits for no parent to stand in the phase, or moves each one out of it to the
+-- start this release's return would have given it, clearing the held start and both of those
+-- columns, and what an operator then starts by hand.
 --
 -- There is no down file: migrations here are forward-only.
 alter table issues drop constraint issues_phase_check;

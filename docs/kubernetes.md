@@ -1991,6 +1991,112 @@ Read against that time, its trees are quiet for the whole of the gap, and the fi
 The cost is one notice per tree, cleared by that tree's next movement, which stamps `moved_at` again and lets the measure start from a time the daemon watched.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release that holds a parent's start while a child of it is open
+
+This release adds a phase, `awaiting_children`, in which an issue whose phases have started waits while a Dispatch child of it is open, holding no slot, and keeps the start it held until no child of it is open (dispatch://INFRA-3320 R9 to R13).
+Its migration `20261114232555_awaiting_children` adds the phase to `issues_phase_check` and adds six columns to `issues`: the held start, `children_wait_start`, `children_wait_task`, `children_wait_reason` and `children_wait_since`, which the check `issues_children_wait_shape` ties to the phase, and `forward_merge_owed` and `children_waited_at`, which outlive it.
+The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261114064235_outbox_kinds_with_the_basis_seeds`).
+The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
+
+An earlier daemon reads this much of it:
+
+- **An issue in `awaiting_children`.**
+  An earlier daemon knows no such phase, and a write of such a row that leaves the phase without clearing the held start fails `issues_children_wait_shape` (the comment of `20261114232555_awaiting_children.up.sql`).
+
+- **The new notice kinds and the new supervise operation.**
+  An earlier release refuses a notice of any of the four kinds (`unknown notice kind`, `validNoticeKind` in its `record/outbox.go`) and a supervise row whose op is `retire_task` (`unknown supervise operation`, `validSuperviseOp`).
+  Each such row is refused on every attempt and retried on its backoff for ever.
+  The fields `Ref` and `Actor` that this release puts on the three basis notices go with those rows.
+
+- **The new fields of an existing payload.**
+  An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
+  A `catch-up` notice of this release can carry two fields in a design-gate step's entry that it knows nothing of, `pending` and `basis` (`record.CatchUpGate`), so such a row is refused as the four kinds are.
+  The catch-up's own fields (`record.CatchUp`) are the earlier release's, and `record.GateSeed` gained no field.
+
+- **The two new outbox kinds.**
+  An earlier release knows neither `pending_basis_seed` nor `reparent_seed`, so it runs no row of either.
+
+- **A queued `phase_ended` row** that ended a worker's phase into `awaiting_children` has the shape the earlier release decodes, and it is delivered with that release's words: it names `awaiting_children` as the phase the issue is in now and tells the worker to stop writing the workspace and leave what it has uncommitted, where this release tells it to commit and push.
+
+- **The columns of `20261114064234_design_gate_basis`** need no statement: an earlier daemon names none of them, reads a step a basis opened as approved at the version the root registered, and reads a pending step as registered and not approved (that migration's comment).
+
+**The simplest rollback waits until no issue stands in `awaiting_children`.**
+The wait ends by itself as the parents' open children finish.
+Read it with:
+
+```sql
+select count(*) from public.issues where phase = 'awaiting_children';
+```
+
+Once it reads 0, nothing below the outbox statements is needed.
+
+**Delete the rows an earlier release refuses, with every daemon of the database stopped, before the earlier image is pinned.**
+
+```sql
+-- The four notice kinds this release adds, with the Ref and Actor they carry.
+delete from public.outbox
+  where kind = 'notice'
+    and payload->>'kind' in ('awaiting-children', 'basis-ended', 'basis-changes-requested', 'resting-root');
+-- The two reads of Dispatch this release adds.
+delete from public.outbox where kind in ('pending_basis_seed', 'reparent_seed');
+-- The retirement of the task a stopped worker's claim holds.
+delete from public.outbox where kind = 'supervise' and payload->>'op' = 'retire_task';
+-- A catch-up's step entries, without the two fields an earlier release does not know.
+update public.outbox
+  set payload = jsonb_set(payload, '{catch_up,gates}',
+    (select jsonb_agg(gate - 'pending' - 'basis' order by position)
+       from jsonb_array_elements(payload->'catch_up'->'gates') with ordinality as entries(gate, position)))
+  where kind = 'notice' and payload->>'kind' = 'catch-up'
+    and jsonb_path_exists(payload, '$.catch_up.gates[*] ? (exists (@.pending) || exists (@.basis))');
+```
+
+What each costs: an architect is not told of one move into the wait, one end of a basis wait, one changes request on an ancestor or one root resting on its ancestor; a root's pending basis is read again by nobody, which the earlier release reads as a step registered and not approved; a re-parented root and its new parent's architect are not told of the move; a stopped worker keeps the task its claim held for the stopped phase; and a catch-up tells its architect a step's state without the basis it rests on.
+
+**Where the rollback cannot wait, move each issue out of `awaiting_children` before the earlier image is pinned, with every daemon of the database stopped.**
+The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren`): a held start of `planning` or `implementing` goes back to that phase, and a held start of `testing`, `reviewing` or `accepting` goes to `implementing`, since a test or a review of a head without the children's merges proves nothing.
+An issue whose pull request merged during the wait goes back to the very start it held, which the statement reads from `public.pull_requests` (`state = 'merged'`, one row per issue).
+It clears the held start, which the shape check requires of every other phase, and the two columns that outlive the phase, so that a roll forward asks again for no merge the operator has already asked for below.
+Its `returning` list is the record of what it moved: keep it, since the earlier release queues no start for any of these issues.
+
+```sql
+update public.issues as i
+  set phase = case
+        when i.children_wait_start in ('planning', 'implementing') then i.children_wait_start
+        when exists (select 1 from public.pull_requests as p where p.issue = i.key and p.state = 'merged') then i.children_wait_start
+        else 'implementing'
+      end,
+    children_wait_start = null, children_wait_task = null, children_wait_reason = null, children_wait_since = null,
+    forward_merge_owed = false, children_waited_at = null
+  where i.phase = 'awaiting_children'
+  returning i.key, i.phase;
+```
+
+The earlier release's boot writes each moved issue's Dispatch status to its phase's (`correctStatuses` in that release's `workflow/resume.go`).
+Nothing of it starts the phase's worker: the move into the wait finished every start the issue owed, and the statement writes none.
+So, once the earlier daemon is up, start each one by hand, for the role of the phase the statement returned (`planning` the planner, `implementing` the implementer, `testing` the tester, `reviewing` the reviewer).
+Read the claim's token on the issue's row for that role in `legion claims list --operator-token-file <file>`.
+The earlier release's `legion claims retry` starts a phase again only for a claim that failed or that an operator stopped (`retryStart` and `restartWorkedPhase` in its `api/operator.go`), so stop a claim in any other state first, which retires it, and then retry it:
+
+```sh
+legion claims stop --operator-token-file <file> --claim <token>
+legion claims retry --operator-token-file <file> --claim <token>
+```
+
+The retry starts the phase again on the claim's own session.
+An issue back in `accepting` has no worker to start: its architect signs it off as any issue in `accepting`.
+Where the list shows no claim of that role, the role has never run on the issue, and its architect decides how its work goes on.
+
+An issue the statement put in `implementing` whose pull request has not merged owes the merge of its children's work: this release's return would have asked its implementer to merge the default branch into the branch, push, and complete with a new handoff record, and the earlier release's task asks for none of that.
+Ask the implementer for it in a comment on the issue, or wait for the wait to drain before the rollback, which is the path above.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `issues` and `outbox` are one table each for all of them, so the statements above act on every project's rows.
+Run them only when every daemon of the database is stopped, and roll back every daemon of one database in the same change.
+
+**Each project's daemon image moves first, and its worker image with it or after it.**
+The skills and role prompts that name the new phase ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
+A rollback moves each project's worker image back with its daemon image.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:

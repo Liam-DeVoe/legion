@@ -513,10 +513,11 @@ func silences(word record.HeldReason) bool { return silencedTree[word] }
 
 // lineHolds is what the walk that built this pass's waiting line said of the project's issues,
 // put by key for the measure (tellStalledTrees): the line's own entries, the issues the slot
-// rows the walk read name, the word of every issue the walk left behind and the children-first
-// waits. None of it is judged here: the line and the words are record.Waiting's two answers
-// through blockers.JudgeLine, the child waits are record.ChildWaits' through the same
-// judgement, and the slots are the pass's own rows.
+// rows the walk read name, the word of every issue the walk left behind, the children-first
+// waits and the started parents' waits. None of it is judged here: the line and the words are
+// record.Waiting's two answers through blockers.JudgeLine, the child waits are
+// record.ChildWaits' through the same judgement and the started parents' are the pass's
+// (record.StartedParentWaits), and the slots are the pass's own rows.
 type lineHolds struct {
 	// line is the waiting line's entries, by issue key. An entry says whether its issue already
 	// holds a slot (record.LineEntry.Holds), which is the one fact of the cap's own hold.
@@ -538,6 +539,11 @@ type lineHolds struct {
 	// waits for, each with whether the daemon has released it (record.OpenChild.Released), which
 	// waitsOnWorkOutsideItsTree reads.
 	childWaits map[string]record.ChildWait
+	// startedWaits is the pass's judgement of the started parents' open children, by parent key
+	// (record.LineFacts.StartedParentWaits): for a parent in awaiting_children, the open Dispatch
+	// children it waits on, each with whether the daemon has released it, which
+	// waitsOnWorkOutsideItsTree reads as it reads a children-first wait.
+	startedWaits map[string]record.ChildWait
 }
 
 // lineHoldsOf puts by key what the caller handed over. It is built once per pass, at step 4 of
@@ -550,7 +556,7 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 	holds := lineHolds{line: make(map[string]record.LineEntry, len(line)),
 		holders: make(map[string]struct{}, len(slots)),
 		words:   make(map[string]record.HeldReason, len(dropped)), gates: facts.Gates,
-		childWaits: facts.ChildWaits}
+		childWaits: facts.ChildWaits, startedWaits: facts.StartedParentWaits}
 	for _, entry := range line {
 		holds.line[entry.Issue.Key] = entry
 	}
@@ -586,7 +592,11 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //     exactly where its word silences (silencedTree). Its slot decides nothing here: a tree's
 //     root at admitted may hold one while its design gate is closed, since a closed gate is no
 //     wait on another issue and a gate that has never opened is its architect at work
-//     (blockers.waitsOf keeps that row), and it waits for that gate all the same;
+//     (blockers.waitsOf keeps that row), and it waits for that gate all the same. A parent
+//     waiting in awaiting_children on its open children, in the workflow, is read the same way
+//     (dispatch://INFRA-3320 R13, which counts the phase as it counts a first phase that waits
+//     on its children): the line leaves it behind, since the phase keeps no slot, and its word
+//     (awaiting_children, or one the ladder reads before it) decides;
 //  4. every other issue does not: a slot holder at work in its phase, an issue past its review
 //     on no slot, a root waiting for its tree to be opened, an issue out of the workflow, and an
 //     issue already started that the line left behind. The holds the ladder names for that last
@@ -600,7 +610,8 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 	if entry, waits := h.line[issue.Key]; waits {
 		return !entry.Holds
 	}
-	if issue.Phase != phase.Admitted || !record.InWorkflow(issue) || record.QueuedRoot(issue, h.gates[issue.Key]) {
+	firstPhase := issue.Phase == phase.Admitted && !record.QueuedRoot(issue, h.gates[issue.Key])
+	if !firstPhase && issue.Phase != phase.AwaitingChildren || !record.InWorkflow(issue) {
 		return false
 	}
 	return silences(h.words[issue.Key])
@@ -649,12 +660,28 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 // which nothing but that architect does. Such a waiter is answered false here and read by
 // waitsByDesign as every other wait of the daemon's is, so a project that fails every term of
 // lineCanMove names its tree (the architect's ruling on cybermonklabs/legion#3715).
+//
+// A parent waiting in awaiting_children on its open children is read as that children-first
+// wait is (dispatch://INFRA-3320 R13): it stands in no line, since the phase keeps no slot, and
+// its wait is on its open children as the pass judged them (record.LineFacts.StartedParentWaits),
+// so it is answered true where it has an open child and the daemon has released every one, and
+// false where any is a child nobody released, which leaves it to waitsByDesign. One whose last
+// open child has gone waits on nothing here: the pass takes it back to the start it held.
 func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
-	entry, stands := h.line[issue.Key]
-	if !stands || entry.Kind != record.LineWaitingOnIssue || len(entry.Waits) == 0 {
-		return false
+	var open []record.OpenChild
+	if issue.Phase == phase.AwaitingChildren {
+		open = h.startedWaits[issue.Key].Open
+		if len(open) == 0 {
+			return false
+		}
+	} else {
+		entry, stands := h.line[issue.Key]
+		if !stands || entry.Kind != record.LineWaitingOnIssue || len(entry.Waits) == 0 {
+			return false
+		}
+		open = h.childWaits[issue.Key].Open
 	}
-	for _, child := range h.childWaits[issue.Key].Open {
+	for _, child := range open {
 		if !child.Released {
 			return false
 		}

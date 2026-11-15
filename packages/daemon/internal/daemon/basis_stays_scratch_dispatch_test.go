@@ -758,8 +758,12 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		if opt.member != "" {
 			run.member = r.create(asSession, opt.member, map[string]any{"labels": []string{"legion"}, "parent": run.root.Key})
 			r.setStatus(run.member.Key, "todo")
-			settled(t, r.d, "start the first phase of "+run.member.Key+", a member of "+run.root.Key+"'s tree", func(s api.State) bool {
-				return s.Issues[run.member.Key].Phase == phase.Planning && s.Issues[run.member.Key].Tree == run.root.Key
+			// The member is an open Dispatch child of the root, whose own phases have started, so
+			// the admission pass moves the root to awaiting_children, where it holds no slot, for
+			// as long as the member is open (dispatch://INFRA-3320 R9, R11).
+			settled(t, r.d, "start the first phase of "+run.member.Key+", a member of "+run.root.Key+"'s tree, and move "+run.root.Key+" to awaiting_children", func(s api.State) bool {
+				return s.Issues[run.member.Key].Phase == phase.Planning && s.Issues[run.member.Key].Tree == run.root.Key &&
+					s.Issues[run.root.Key].Phase == phase.AwaitingChildren
 			})
 		}
 		if opt.openedBefore {
@@ -802,7 +806,8 @@ func (r *personHandoverRig) registerOn(run basisRun) {
 // pendingRegistered is what k11's negative control reads after a pending registration of run's
 // root: its step is closed, the state and the row read it as pending on P's document, the version
 // and the request ask, its catch-up names that request, it keeps its phase (standing) and its
-// slot, and its architect is told nothing of a basis; P's architect gets a resting-root notice
+// slot, or holds none where it waits on its open children in awaiting_children, and its
+// architect is told nothing of a basis; P's architect gets a resting-root notice
 // naming the root wherever the daemon records P in a live tree (told), and none elsewhere.
 func (r *personHandoverRig) pendingRegistered(run basisRun, ask string, told bool, standing phase.Phase) {
 	t := r.t
@@ -820,8 +825,13 @@ func (r *personHandoverRig) pendingRegistered(run basisRun, ask string, told boo
 		gate.Basis.Version != run.basisVersion {
 		t.Fatalf("the spec row of %s = %+v, want it closed, pending on %s", run.root.Key, gate, ask)
 	}
-	if issue := state.Issues[run.root.Key]; issue.Phase != standing || issue.Slot == nil || !slices.Contains(state.Admission.Active, run.root.Key) {
-		t.Fatalf("%s stands at %s with slot %+v after the pending registration, want it at %s in its slot\nstate %s", run.root.Key, issue.Phase, issue.Slot, standing, body)
+	// A root in awaiting_children holds no slot while it waits on its open children
+	// (dispatch://INFRA-3320 R11); every other phase here keeps the slot it was started with.
+	issue := state.Issues[run.root.Key]
+	slotted := issue.Slot != nil && slices.Contains(state.Admission.Active, run.root.Key)
+	if issue.Phase != standing || slotted != (standing != phase.AwaitingChildren) {
+		t.Fatalf("%s stands at %s with slot %+v after the pending registration, want it at %s, in its slot unless it waits on its children\nstate %s",
+			run.root.Key, issue.Phase, issue.Slot, standing, body)
 	}
 	if ended := r.notices(run.root.Key, "basis-ended"); len(ended) != 0 {
 		t.Fatalf("the pending registration of %s queued basis-ended notices %+v, want none", run.root.Key, ended)
@@ -1143,9 +1153,9 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	// A member of R's tree in its first phase.
 	member := r.pendingWorld([]string{"Ski lift ticketing", "Mountain resort upgrade"}, pendingOptions{place: ancestorLive, member: "Gondola cabin heater"})
 	r.registerOn(member.basisRun)
-	r.pendingRegistered(member.basisRun, member.ask, true, phase.Planning)
+	r.pendingRegistered(member.basisRun, member.ask, true, phase.AwaitingChildren)
 	r.approve(member.parent.PrimaryArtifactID)
-	r.reopenedOnPending(member.basisRun, phase.Planning)
+	r.reopenedOnPending(member.basisRun, phase.AwaitingChildren)
 	standsOpen := fmt.Sprintf("The spec step stands open on an ancestor's approval: a person approved version %d of the primary document of %s",
 		member.basisVersion, member.parent.Key)
 	testwait.Eventually(t, "the daemon to tell the planner of "+member.member.Key+" the opening on the ancestor's approval", func() bool {

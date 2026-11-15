@@ -309,8 +309,8 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// one judgement admission itself promotes from (blockers.JudgeLine): the rows of every issue
 	// a blocker can hold, the children-first wait, the line those two leave, and the rows of the
 	// issues the line names. The deciders' own judgement (blockers.Blocked) then names exactly
-	// the roots admission skips, the issues it holds back and the parents whose children go
-	// first.
+	// the roots admission skips, the issues it holds back, the parents whose children go first
+	// and the parents waiting in awaiting_children on their open children (blockers.ChildRows).
 	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil, now)
 	if err != nil {
 		return api.State{}, err
@@ -384,7 +384,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		view.WaitingLine.Reason = waitingLineReason(entry, parts[entry.Part], other)
 		projected.Issues[key] = view
 	}
-	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
+	projected.Admission.Blocked = blockers.Blocked(rows, own, line, blockers.ChildRows(own, facts))
 	// What the daemon runs nothing of and queues nowhere, beside the two lists above: every
 	// record of this project the daemon holds in the workflow (record.InWorkflow) that stands in
 	// neither the active set nor the line, with the one word for why (record.HeldList). The rows

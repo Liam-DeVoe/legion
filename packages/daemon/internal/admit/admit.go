@@ -569,7 +569,7 @@ func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue
 	}
 	held := record.HeldList(issues, own, line, dropped, facts)
 	a.logUnclassified(held, issues)
-	return held, blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), silent, nil
+	return held, blockers.Blocked(rows, issues, line, blockers.ChildRows(issues, facts)), silent, nil
 }
 
 // logUnclassified writes one line for each row the ladder could put no word to (C2), naming the
@@ -1264,7 +1264,11 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	// among them, stays its own tree (workflow's RanAsRoot) and records no chain to be held under.
 	stored.Ancestry = nil
 	if !orphan {
-		stored.Phase, stored.Hold, stored.Awaiting = phase.Admitted, nil, nil
+		// A new generation starts at admitted with nothing held: the start a parent held in
+		// awaiting_children goes with the generation that held it (record.Issue.ChildrenWait),
+		// as the hold and the wait on a person go. Its first phase waits on its open children
+		// under the children-first rule, as any re-admitted root's does.
+		stored.Phase, stored.Hold, stored.Awaiting, stored.ChildrenWait = phase.Admitted, nil, nil, nil
 		// Another tree's work arriving without its run: the run it had was that tree's.
 		if !claim.IsTreeRoot(stored.Key, oldTree) {
 			stored.TakenBack = false
@@ -2632,6 +2636,16 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		// that, so admitting a fresh root relaunches nobody and creates no claim for a worker
 		// that has never worked.
 		if member.Phase == phase.Admitted {
+			return nil
+		}
+		// A member waiting in awaiting_children has no role at work and none is woken for it
+		// (dispatch://INFRA-3320 R11): its next start is the one it holds, which the admission
+		// pass gives it back once no open child is left (childrenWaits, workflow's
+		// ReturnFromChildren), and every role of it waits for that start. So a promotion brings
+		// none of its roles back, its phase worker or any other, and queues its branch alone, as
+		// it queues the branch of every member past admitted.
+		if member.Phase == phase.AwaitingChildren {
+			members = append(members, midPhaseMember{issue: member})
 			return nil
 		}
 		// Accepting's role is the tree's architect, which promotion already started: nothing of

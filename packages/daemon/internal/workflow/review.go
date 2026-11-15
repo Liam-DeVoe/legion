@@ -251,7 +251,10 @@ func namedConclusions(conclusions map[string]record.RunConclusion) string {
 // a second settlement of the same head that leaves the same conclusions tells nobody again, and so
 // does a settlement that stands for no head. Linger holds a member of a closed tree where it stood
 // (record.TreeLingers): every role of the tree is suspended there, so the settlement is recorded
-// and nobody is told.
+// and nobody is told. A parent waiting in awaiting_children is told nothing either, and neither
+// is its tree's architect: no role works the parent while it waits, and the forward merge its
+// return asks for gives its head new checks (dispatch://INFRA-3320 R11), so the settlement is
+// recorded and no message goes out.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
@@ -268,7 +271,7 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		return nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
-	if err != nil || issue == nil {
+	if err != nil || issue == nil || issue.Phase == phase.AwaitingChildren {
 		return err
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
