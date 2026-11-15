@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -19,7 +18,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
@@ -44,8 +42,8 @@ type repositories struct {
 	// was is served by the one it moved to. It never widens the served set itself, which stays
 	// Dispatch's mapping: a rename configured before the transfer names a repository GitHub does
 	// not have yet, and the mapping's read of GitHub (nameAccepted) fails whole on the first
-	// repository it cannot read. The zero value, which answers as a comparison without case does,
-	// while the deployment configures none.
+	// repository it cannot read for any reason but GitHub's rate limit. The zero value, which
+	// answers as a comparison without case does, while the deployment configures none.
 	renames ghrepo.Renames
 
 	mu                sync.RWMutex
@@ -64,9 +62,11 @@ type mappedRepository struct {
 
 // refusedRepository is a mapped repository Legion leaves out, as Dispatch maps it, and why.
 // readErr is the first installation read that failed to answer, of either name checkMapping read
-// for it: GitHub gave no answer, so the refusal is for now, and refreshOnMappingChange reads the
-// mapping again until GitHub answers. A refusal every read answered carries none and stands until
-// the mapping changes. mappedDefault is whether Dispatch maps it as the project's default.
+// for it, or the default-branch read GitHub did not answer past its rate limit
+// (unreadDefaultBranch): GitHub gave no answer, so the refusal is for now, and
+// refreshOnMappingChange reads the mapping again until GitHub answers. A refusal every read
+// answered carries none and stands until the mapping changes. mappedDefault is whether Dispatch
+// maps it as the project's default.
 type refusedRepository struct {
 	Repo          string
 	Reason        string
@@ -709,14 +709,23 @@ const mappingReads = 8
 
 // nameAccepted is accepted as GitHub names each repository (named: its own spelling of owner and
 // name, which its events and the subjects Envoy publishes them on carry), each read with its
-// default branch as the implement App, mappingReads at a time.
-func nameAccepted(ctx context.Context, accepted []mappedRepository, named *defaultBranches) ([]mappedRepository, error) {
+// default branch as the implement App, mappingReads at a time. A read GitHub refuses for its rate
+// limit fails no other read: its repository is returned in limited rather than among the named
+// ones, in accepted's order, for the caller to serve on what the daemon holds or to wait out
+// (holdLimited, waitOutLimits), since the limit says nothing about the repository. Any other
+// failed read fails the whole read.
+func nameAccepted(ctx context.Context, accepted []mappedRepository, named *defaultBranches) ([]mappedRepository, []limitedRead, error) {
 	out := make([]mappedRepository, len(accepted))
+	limits := make([]limitedRead, len(accepted))
 	group, read := errgroup.WithContext(ctx)
 	group.SetLimit(mappingReads)
 	for index, mapped := range accepted {
 		group.Go(func() error {
 			repo, err := named.Named(read, mapped.Repo)
+			if answer, limited := rateLimited(err); limited {
+				limits[index] = limitedRead{mapped: mapped, answer: answer, err: err}
+				return nil
+			}
 			if err != nil {
 				return err
 			}
@@ -725,9 +734,18 @@ func nameAccepted(ctx context.Context, accepted []mappedRepository, named *defau
 		})
 	}
 	if err := group.Wait(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return out, nil
+	// Both are compacted in place: each entry is written at or before the index it was read from.
+	served, limited := out[:0], limits[:0]
+	for index := range accepted {
+		if limits[index].answer != nil {
+			limited = append(limited, limits[index])
+			continue
+		}
+		served = append(served, out[index])
+	}
+	return served, limited, nil
 }
 
 // loadMapping is the boot's read of the repository mapping. Dispatch's read (listMapping) waits
@@ -824,21 +842,33 @@ func (w *workflowRuntime) logUnservedCommitIssueTrailerRepos(accepted []mappedRe
 }
 
 // nameMapping replaces the served repositories with GitHub's spelling of each, on the boot's
-// retry, and logs the mapping the daemon serves.
+// retry, and logs the mapping the daemon serves. A read GitHub refuses for its rate limit never
+// refuses the boot, however long the limit stands: a repository the daemon holds a default branch
+// for is served on it at once and read again after the limit's reset (holdLimited), and one it
+// holds none for is waited out and read once more, and left out for now if GitHub still does not
+// answer (waitOutLimits). A 404, and every other answer that is no limit, refuses the boot, and a
+// 5xx is retried on appMintRetry (bootReadTransient).
 func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 	var named []mappedRepository
+	var limited []limitedRead
 	err := bootprobe.Run(ctx, "repository read", appMintRetry, w.log, readinessAttempt(func(ctx context.Context) error {
 		var err error
-		named, err = nameAccepted(ctx, w.repositories.Mapped(), w.defaultBranches)
+		named, limited, err = nameAccepted(ctx, w.repositories.Mapped(), w.defaultBranches)
 		return err
-	}, appMintAttempt, func(err error) bool {
-		var answer *githubrest.Answer
-		return appTransient(err) || errors.As(err, &answer) && answer.Status >= 500
-	}))
+	}, appMintAttempt, bootReadTransient))
 	if err != nil {
 		return err
 	}
-	w.repositories.set(named, w.repositories.Refused())
+	held, unheld, err := w.holdLimited(ctx, limited)
+	if err != nil {
+		return err
+	}
+	waited, unread, err := w.waitOutLimits(ctx, unheld)
+	if err != nil {
+		return err
+	}
+	named = append(append(named, held...), waited...)
+	w.repositories.set(named, append(w.repositories.Refused(), unread...))
 	w.log.Info("legion workflow boot stage", "stage", "repositories", "accepted", repositoryNames(w.repositories.Accepted()), "refused", refusalReasons(w.repositories.Refused()),
 		"withoutWebhookApp", webhookGapReasons(w.repositories.WithoutWebhookApp()))
 	return nil
@@ -850,7 +880,10 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 // installation read fails stays served on its last answer, with the name GitHub last gave it and
 // no read of GitHub, recorded as unverified so it is read again: GitHub's failure to answer is no
 // reason to stop serving a repository it answered for, and no reason either to hold back the rest
-// of the mapping. One left out whose read fails stays left out, with the new failure. Dispatch's
+// of the mapping. One left out whose read fails stays left out, with the new failure. A
+// repository whose default-branch read GitHub's rate limit refuses is served on the default
+// branch the daemon holds for it and read again after the limit's reset (holdLimited), or, when
+// it holds none, left out for now and read again as a failed installation read is. Dispatch's
 // read, and the naming and publication after the check, are each bounded by appMintAttempt; the
 // check itself is bounded per read (installReadAttempt), so a GitHub that answers slowly is
 // answered for whatever the mapping's size. Each repository the mapping as last read left out for
@@ -904,10 +937,23 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	})
 	ctx, cancel = context.WithTimeout(ctx, appMintAttempt)
 	defer cancel()
-	if accepted, err = nameAccepted(ctx, accepted, w.defaultBranches); err != nil {
+	// A read GitHub's rate limit refuses is served on the default branch the daemon holds, or
+	// left out for now and read again on installReadRetry when it holds none: the refresher never
+	// waits a limit out, since it holds mappingMu, which every later read of the mapping waits on.
+	var limited []limitedRead
+	if accepted, limited, err = nameAccepted(ctx, accepted, w.defaultBranches); err != nil {
 		return err
 	}
-	accepted = append(accepted, kept...)
+	held, unheld, err := w.holdLimited(ctx, limited)
+	if err != nil {
+		return err
+	}
+	for _, read := range unheld {
+		w.log.Warn("workflow: GitHub's rate limit refused the read of a mapped repository's default branch and the daemon holds none for it, so it leaves the repository out and reads it again",
+			append([]any{"repo", read.mapped.Repo.String(), "retryIn", installReadRetry.Initial.String()}, limitAttributes(read)...)...)
+		refused = append(refused, unreadDefaultBranch(read.mapped, read.err))
+	}
+	accepted = append(append(accepted, held...), kept...)
 	served := make([]ghrepo.Repository, 0, len(accepted))
 	for _, mapped := range accepted {
 		served = append(served, mapped.Repo)

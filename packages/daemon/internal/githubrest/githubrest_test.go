@@ -55,8 +55,9 @@ func TestPostSendsJSONAndAnswersWithTheStatus(t *testing.T) {
 // for an answer other than 2xx. It names how long GitHub asks the caller to wait and the budget
 // the limit spent: a Retry-After, a limit that reports no primary budget spent, or one whose
 // message names the secondary limit, is GitHub's secondary limit, which every call of the token
-// meets; a primary limit spends the budget x-ratelimit-resource names, or the REST API's core
-// budget when it names none. Any other error is no limit.
+// meets; a primary limit, by its headers or by its message alone, spends the budget
+// x-ratelimit-resource names, or the REST API's core budget when it names none. Any other error
+// is no limit.
 func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
 	const limited = `{"message":"API rate limit exceeded"}`
@@ -75,6 +76,8 @@ func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 		{"a secondary limit's 429", http.StatusTooManyRequests, map[string]string{"Retry-After": "17"}, limited, BudgetSecondary, 17 * time.Second, 17 * time.Second},
 		{"a secondary limit named by its message", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "4321"},
 			`{"message":"You have exceeded a secondary rate limit."}`, BudgetSecondary, time.Minute, time.Minute},
+		{"a primary limit named by its message", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "4321"},
+			`{"message":"API rate limit exceeded for installation ID 7."}`, BudgetCore, time.Minute, time.Minute},
 		{"an installation refused", http.StatusForbidden, nil, `{"message":"Resource not accessible by integration"}`, "", 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -221,6 +224,57 @@ func TestASecondaryRateLimitNamedOnlyByItsMessageIsARateLimit(t *testing.T) {
 			}
 			if answer.RateLimited != tc.limited || answer.RetryAfter != tc.wantAfter {
 				t.Fatalf("the 403 = rate limited %v, retry after %s; want %v, %s", answer.RateLimited, answer.RetryAfter, tc.limited, tc.wantAfter)
+			}
+		})
+	}
+}
+
+// GitHub's primary rate limit can answer a 403 naming the limit in its body while its headers show
+// calls left, or carry no rate-limit header at all: the answer is a rate limit all the same, waited
+// the minute GitHub's documentation names for a limit that names no wait, on the core budget. Every
+// answer other than 2xx carries its rate-limit headers as GitHub sent them, so a caller's log
+// names the limit that refused it in GitHub's words.
+func TestAPrimaryRateLimitNamedOnlyByItsMessageIsARateLimit(t *testing.T) {
+	const body = `{"message":"API rate limit exceeded for installation ID 7. If you reach out to GitHub Support for help, please include the request ID 0000:0000:0000000:0000000:00000000.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api","status":"403"}`
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		status  int
+		limited bool
+		budget  Budget
+		limit   LimitHeaders
+	}{
+		{name: "calls left in its headers", headers: map[string]string{"X-RateLimit-Limit": "15000", "X-RateLimit-Remaining": "14671", "X-RateLimit-Reset": "1700000000", "X-RateLimit-Resource": "core"},
+			status: http.StatusForbidden, limited: true, budget: BudgetCore,
+			limit: LimitHeaders{Limit: "15000", Remaining: "14671", Reset: "1700000000", Resource: "core"}},
+		{name: "no rate-limit header", status: http.StatusForbidden, limited: true, budget: BudgetCore},
+		{name: "the message on a status GitHub documents no limit on", headers: map[string]string{"X-RateLimit-Remaining": "14671"},
+			status: http.StatusNotFound, limit: LimitHeaders{Remaining: "14671"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				for name, value := range tc.headers {
+					w.Header().Set(name, value)
+				}
+				w.WriteHeader(tc.status)
+				w.Write([]byte(body))
+			}))
+			defer server.Close()
+			client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+
+			var answer *Answer
+			if err := client.Get(context.Background(), "", nil); !errors.As(err, &answer) {
+				t.Fatalf("Get = %v, want an *Answer", err)
+			}
+			wantAfter := time.Duration(0)
+			if tc.limited {
+				wantAfter = time.Minute
+			}
+			if answer.RateLimited != tc.limited || answer.RetryAfter != wantAfter || answer.Budget != tc.budget {
+				t.Fatalf("the answer = rate limited %v, retry after %s, budget %q; want %v, %s, %q", answer.RateLimited, answer.RetryAfter, answer.Budget, tc.limited, wantAfter, tc.budget)
+			}
+			if answer.Limit != tc.limit {
+				t.Fatalf("the answer's rate-limit headers = %+v, want %+v as GitHub sent them", answer.Limit, tc.limit)
 			}
 		})
 	}
