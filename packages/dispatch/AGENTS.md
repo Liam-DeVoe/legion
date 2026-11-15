@@ -2794,10 +2794,12 @@ Its two halves are scripts of their own: `build:web-b` writes the second bundle,
 `e2e:multiprocess` or of `e2e:multiprocess:run` keeps the B it named.
 The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs `e2e:multiprocess:run`
 and no build, on the full lane alone: both bundles come out of the `binaries` job's artefact
-(dispatch://INFRA-1109). CI's `dispatch-two-builds` job runs `cross-build.multiprocess` with
-`DISPATCH_E2E_BINARY_B` and `DISPATCH_E2E_WEB_DIST_B` naming the previous release's build
-(`e2e/cross-build.multiprocess.e2e.ts`: each direction's page against the other build's server,
-and, with both processes on this tree, a document holding newer content).
+(dispatch://INFRA-1109). CI's `dispatch-two-builds` job runs `cross-build.multiprocess` twice,
+with `DISPATCH_E2E_BINARY_B` and `DISPATCH_E2E_WEB_DIST_B` naming the previous release's build
+and then the first-rollout release's, the newest release before the one that registers its
+schema numbers (`e2e/cross-build.multiprocess.e2e.ts`: each direction's page against the other
+build's server, writable or read-only as the live registry's numbers admit it, and, with both
+processes on this tree, a document holding newer content).
 Two-process mode starts its own servers, so the Playwright config refuses it with
 `PLAYWRIGHT_BASE_URL`, and `bun run dispatch:local` refuses it.
 
