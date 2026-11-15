@@ -2770,7 +2770,9 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await after(where, "Enter on Apply over a custom range");
 
     // The search bar: Retry under a search that failed goes once the search it retries lands.
-    // The bar asks twice more before it says a search failed, so the search fails until then.
+    // The bar asks twice more before it says a search failed, so the search fails until then -
+    // and on until just before the press, so a search the bar asks again on its own meanwhile
+    // fails as well and leaves the failure, and its Retry, where they are.
     where = `search bar at ${at}`;
     let failing = true;
     const failSearch = (route: Route) =>
@@ -2784,8 +2786,12 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await control(controlRow(palette), CONTROL.searchBox).fill("rollout");
     const failure = palette.getByRole("alert").filter({ hasText: "Search failed." });
     await expect(failure, `${where}: the search never failed`).toBeVisible();
+    const retry = failure.getByRole("button", { exact: true, name: "Retry" });
+    await expect(retry, `${where}: the failure offers no Retry`).toBeVisible();
+    await expect(retry, `${where}: Retry is held by a search still out`).toBeEnabled();
+    await retry.focus();
+    await expect(retry, `${where}: Retry did not take the focus`).toBeFocused();
     failing = false;
-    await failure.getByRole("button", { exact: true, name: "Retry" }).focus();
     await page.keyboard.press("Enter");
     await expect(failure, `${where}: Retry left the failure up`).toHaveCount(0);
     await after(where, "Enter on a failed search's Retry");
