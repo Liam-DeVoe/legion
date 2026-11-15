@@ -12,8 +12,10 @@ body: |-
   `400 EVAL_FIELD_INVALID` naming `series[i].min_n`. A version that lists or unlists a logged
   eval's series lists or unlists its stored day rows with it. The seed carries a person's `min_n`
   forward like the target instead of reverting it, and where it takes over a catalogue slug a
-  reading registered first, it sets the catalogue's target and, where no one wrote one, its
-  method. The delivery answers read the targets too: `GET /api/v1/delivery/measures`, the
+  reading registered first, it sets the catalogue's target unless a register write set or turned
+  off one (a write of other fields alone, such as the unit or the person, does not stop it), the
+  catalogue's `min_n` on `pr-ci`'s job series where it holds none, and, where no one wrote
+  one, its method. The delivery answers read the targets too: `GET /api/v1/delivery/measures`, the
   timeline's `measures` and `GET /api/v1/delivery/pipeline` judge their figures by the targets of
   `deploy-frequency`, `change-fail-rate`, `merge-to-production`, `pr-open-to-merge`,
   `deploy-run-success` and `unowned-p0` in the project the deploy repository is mapped to (the

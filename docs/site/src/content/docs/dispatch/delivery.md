@@ -139,7 +139,9 @@ verdict under `status` is true, false, or null when there is no target or nothin
 verdicts are the eval's own, judged by the same code as `GET /api/v1/projects/{key}/evals`. The
 route takes the timeline's parameters: `from` and `to` (the last seven days when both are left
 out, at most 84 days apart), `q` for the search, and any filter repeated for several values, such
-as `&repo=acme/widgets&priority=P0`. Any signed-in person or agent token reads it.
+as `&repo=acme/widgets&priority=P0`. `from`, `to` and `q`, and the Pipeline route's `at`, take one
+value each, and a query naming one of them twice is `400 INVALID_QUERY`, as it is on the eval
+routes. Any signed-in person or agent token reads it.
 `GET /api/v1/delivery/timeline` carries the same
 answer as its `measures` for its own window and filters, so an agent reading both needs only the
 timeline. The routes and the page's live updates compute from the same stored facts with the same

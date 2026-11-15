@@ -79,6 +79,40 @@ func parseDeliveryWindow(query url.Values) (from, to time.Time, err error) {
 	return from, to, nil
 }
 
+// The query keys each delivery read takes one value of: the fields of its route shape's query
+// struct (routeShapes' Params) that hold one value (oneValueQueryKeys), read once when the package
+// starts. Every facet the timeline and the measures filter by (deliveryFacets) is a list field
+// there, and so stays repeatable.
+var (
+	deliveryWindowOneValueKeys   = oneValueQueryKeys(deliveryWindowQuery{})
+	deliveryPipelineOneValueKeys = oneValueQueryKeys(deliveryPipelineQuery{})
+)
+
+// repeatedDeliveryKey refuses a delivery read's query naming more than once one of oneValue, the
+// keys the read takes one value of, as repeatedQueryKey refuses an eval read's: 400 INVALID_QUERY
+// naming the first such key in the order its shape declares them, nil where none is. Such a key
+// was read as its first value, so ?from=A&from=B was answered the window from A, a window other
+// than the one sent. A delivery route passes over a key it does not read, so only the keys it
+// reads are checked.
+func repeatedDeliveryKey(query url.Values, oneValue []string) error {
+	for _, key := range oneValue {
+		if err := namedOnce(query, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseDeliveryWindowQuery reads the window of GET /api/v1/delivery/timeline's or
+// GET /api/v1/delivery/measures's query (parseDeliveryWindow), refusing first a query that names
+// one of the keys those routes read one value of, from, to or q, more than once.
+func parseDeliveryWindowQuery(query url.Values) (from, to time.Time, err error) {
+	if err := repeatedDeliveryKey(query, deliveryWindowOneValueKeys); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	return parseDeliveryWindow(query)
+}
+
 // parseOptionalRFC3339 is query's name parameter as an RFC3339 time, or fallback when the query
 // has no such parameter, refusing a value that does not parse, or one whose UTC year is outside 1
 // to 9999 (R18), with an error naming the parameter. RFC 3339 writes the years 0000 to 9999 with
@@ -135,7 +169,7 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	from, to, err := parseDeliveryWindow(query)
+	from, to, err := parseDeliveryWindowQuery(query)
 	if err != nil {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return

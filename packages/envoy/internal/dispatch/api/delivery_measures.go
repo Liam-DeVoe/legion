@@ -46,7 +46,7 @@ func (s *server) getDeliveryMeasures(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	from, to, err := parseDeliveryWindow(query)
+	from, to, err := parseDeliveryWindowQuery(query)
 	if err != nil {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return

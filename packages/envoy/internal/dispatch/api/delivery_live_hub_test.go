@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -2681,5 +2683,47 @@ func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
 	}
 	if spec.project != "INFRA" || spec.key != "legion|INFRA|" {
 		t.Fatalf("the spec = %+v, want the project it names and a key of its own", spec)
+	}
+}
+
+// TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce: a delivery read takes each facet any
+// number of times and every other key it reads once, so a query naming the search or the
+// Pipeline's at twice is refused naming it, as one naming from or to twice is
+// (TestADeliveryReadRefusesARepeatedWindowKey). A timeline or measures view is read as its GET
+// route reads its query, so it refuses the search named twice too, and takes its facets repeated.
+func TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce(t *testing.T) {
+	facets := url.Values{"repo": {"acme/one", "acme/two"}, "priority": {"P0", "P1"}, "q": {"fix"}}
+	if _, _, err := parseDeliveryWindowQuery(facets); err != nil {
+		t.Errorf("the timeline's query %s: %v, want its facets taken repeated", facets.Encode(), err)
+	}
+	for _, refused := range []struct {
+		read, key string
+		query     url.Values
+		parse     func(url.Values) error
+	}{
+		{"the timeline", "q", url.Values{"q": {"fix", "revert"}}, func(query url.Values) error {
+			_, _, err := parseDeliveryWindowQuery(query)
+			return err
+		}},
+		{"the Pipeline", "at", url.Values{"at": {"2026-11-14T00:00:00Z", "2026-11-07T00:00:00Z"}}, func(query url.Values) error {
+			_, err := parsePipelineWindow(query)
+			return err
+		}},
+	} {
+		var apiErr *apiError
+		if err := refused.parse(refused.query); !errors.As(err, &apiErr) || apiErr.code != "INVALID_QUERY" || !strings.Contains(apiErr.message, strconv.Quote(refused.key)) {
+			t.Errorf("%s's query %s: %v, want INVALID_QUERY naming %s", refused.read, refused.query.Encode(), err, refused.key)
+		}
+	}
+	window := DeliveryLiveWindow{Preset: new(7)}
+	for _, kind := range []string{deliveryLiveTimeline, deliveryLiveMeasures} {
+		twice := "q=fix&q=revert"
+		if _, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: kind, Window: &window, Query: &twice}); refusal == nil || refusal.Code != "INVALID_QUERY" || !strings.Contains(refusal.Message, `"q"`) {
+			t.Errorf("a %s view of %s: refusal = %+v, want INVALID_QUERY naming q", kind, twice, refusal)
+		}
+		repeated := facets.Encode()
+		if _, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: kind, Window: &window, Query: &repeated}); refusal != nil {
+			t.Errorf("a %s view of %s: refusal = %+v, want its facets taken repeated", kind, repeated, refusal)
+		}
 	}
 }

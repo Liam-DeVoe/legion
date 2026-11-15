@@ -9,4 +9,8 @@ body: |-
   and field. A read whose window or compare range falls outside the UTC years 1 to 9999 is
   `400 INVALID_QUERY`, on the eval reads and the delivery routes alike (the Pipeline route
   panicked on one). A statistic a window's fold takes past what a float holds answers `null`, and
-  any answer that cannot be encoded is `500 INTERNAL` rather than an empty 200.
+  any answer that cannot be encoded is `500 INTERNAL` rather than an empty 200. A delivery read
+  (`/api/v1/delivery/timeline`, `measures` and `pipeline`, and a live timeline or measures view)
+  that names `from`, `to`, `q` or `at` more than once is `400 INVALID_QUERY` naming the key, as
+  an eval read is, where it was answered the first value's window or search; a facet such as
+  `repo` or `priority` still takes any number of values.

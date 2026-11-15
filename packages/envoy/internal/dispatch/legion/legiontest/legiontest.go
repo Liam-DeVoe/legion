@@ -657,7 +657,10 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 // write stores everything the trees built, one statement per table. Each statement takes its
 // table's columns as arrays and unnests them, so a history of thousands of rows costs six round
 // trips (the project's row and the five tables) rather than thousands. The project's row is kept
-// where it exists already.
+// where it exists already. Each issue's last_seq is the seq of the last event written of it, 0
+// for one with none: an event the server writes takes the issue's last_seq + 1, and
+// events_issue_key_seq_key holds one event to each, so an issue left at 0 beside events 1..n
+// would refuse the next write the API makes to it.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {
@@ -669,16 +672,20 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 		s.spec.Project, s.spec.IssueOffset+len(s.rows.issueKeys)+1); err != nil {
 		return err
 	}
+	lastSeqs := make([]int32, len(s.rows.issueKeys))
+	for index, key := range s.rows.issueKeys {
+		lastSeqs[index] = s.seq[key]
+	}
 	if err := exec("issues", `
 		insert into issues (key, project_key, number, title, status, rank, priority, parent_key,
-			created_by, created_at, closed_at)
-		select key, $1, number, title, status, rank, priority, parent, $2::jsonb, opened, closed
+			created_by, created_at, closed_at, last_seq)
+		select key, $1, number, title, status, rank, priority, parent, $2::jsonb, opened, closed, last_seq
 		from unnest($3::text[], $4::int[], $5::text[], $6::text[], $7::text[], $8::smallint[],
-			$9::text[], $10::timestamptz[], $11::timestamptz[])
-			as seeded(key, number, title, status, rank, priority, parent, opened, closed)`,
+			$9::text[], $10::timestamptz[], $11::timestamptz[], $12::int[])
+			as seeded(key, number, title, status, rank, priority, parent, opened, closed, last_seq)`,
 		s.spec.Project, person, s.rows.issueKeys, s.rows.issueNumbers, s.rows.issueTitles,
 		s.rows.issueStatuses, s.rows.issueRanks, s.rows.issuePriorities, s.rows.issueParents,
-		s.rows.issueOpened, s.rows.issueClosed); err != nil {
+		s.rows.issueOpened, s.rows.issueClosed, lastSeqs); err != nil {
 		return err
 	}
 	// The pull requests of Spec.Merged, each naming its issue as the attribution read would (its

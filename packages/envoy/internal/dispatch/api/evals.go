@@ -84,6 +84,21 @@ func queryKeysOf(params any) []string {
 	return keys
 }
 
+// oneValueQueryKeys is the keys params, a route's query struct, declares for one value: the
+// `query` tag of each field that is no list, in the order params declares them. A list field is a
+// key the route takes any number of values of.
+func oneValueQueryKeys(params any) []string {
+	structure := reflect.TypeOf(params)
+	keys := make([]string, 0, structure.NumField())
+	for index := range structure.NumField() {
+		field := structure.Field(index)
+		if key, tagged := field.Tag.Lookup("query"); tagged && field.Type.Kind() != reflect.Slice {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
 // undeclaredQueryKey refuses a query carrying a key its eval route does not take: 400
 // INVALID_QUERY naming the first such key in name order, where declared is the keys the route's
 // shape declares and the global session parameter is taken by every route; nil where every key
@@ -552,9 +567,22 @@ var evalRepeatableQueryKeys = []string{"project", "repo"}
 // (undeclaredQueryKey).
 func repeatedQueryKey(query url.Values) error {
 	for _, key := range slices.Sorted(maps.Keys(query)) {
-		if named := len(query[key]); named > 1 && !slices.Contains(evalRepeatableQueryKeys, key) {
-			return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is named %d times, and this route reads one value of it", key, named)
+		if slices.Contains(evalRepeatableQueryKeys, key) {
+			continue
 		}
+		if err := namedOnce(query, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// namedOnce refuses a query naming key more than once, for a route that reads one value of it:
+// 400 INVALID_QUERY naming the key and how many times the query names it, nil where it names the
+// key once or not at all.
+func namedOnce(query url.Values, key string) error {
+	if named := len(query[key]); named > 1 {
+		return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is named %d times, and this route reads one value of it", key, named)
 	}
 	return nil
 }

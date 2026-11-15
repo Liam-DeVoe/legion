@@ -360,8 +360,10 @@ func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 // computed eval with the catalogue's target, its inclusiveness and its judges, as the version 1 of
 // a project it seeds first holds them, since no person turned that target off, and with the
 // catalogue's method in its section, since no person wrote one. An eval a person's register write
-// wrote before the seed keeps that write's target, none here, and its section the method the
-// person wrote, where one did; where none did, it gets the catalogue's.
+// wrote before the seed, naming no target, gets the catalogue's target too, and keeps the fields
+// the write set; its section keeps the method the person wrote, where one did, and where none
+// did, it gets the catalogue's (TestASeedFillsWhatNoWriteOfATakenOverEvalSet keeps a target a
+// write set).
 func TestASeedThatTakesOverAReadingsSlugSetsTheCataloguesTarget(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
@@ -396,9 +398,9 @@ func TestASeedThatTakesOverAReadingsSlugSetsTheCataloguesTarget(t *testing.T) {
 			showValue(catalogued.Target), catalogued.TargetInclusive, catalogued.TargetJudges)
 	}
 	kept, _ := r.currentOf(t, SlugMergeToProduction)
-	if !kept.Computed() || kept.Target != nil || kept.Person != "bob" {
-		t.Errorf("%s, which alice's register write wrote, holds source %s, target %s and person %q after the seed; want it computed with her write's target, none, and person bob",
-			SlugMergeToProduction, kept.Source, showValue(kept.Target), kept.Person)
+	if want := entryOf(t, SlugMergeToProduction).definition.Target; !kept.Computed() || !sameTarget(kept.Target, want) || kept.Person != "bob" {
+		t.Errorf("%s, which alice's register write of its person alone wrote, holds source %s, target %s and person %q after the seed; want it computed with the catalogue's target %s and person bob",
+			SlugMergeToProduction, kept.Source, showValue(kept.Target), kept.Person, showValue(want))
 	}
 	for _, definition := range []Definition{taken, kept} {
 		if text := method(definition); !strings.Contains(text, entryOf(t, definition.Slug).definition.Question) {
@@ -413,6 +415,64 @@ func TestASeedThatTakesOverAReadingsSlugSetsTheCataloguesTarget(t *testing.T) {
 		if headings(text, slug) != 1 {
 			t.Errorf("evals-md holds %d sections of %s, want one", headings(text, slug), slug)
 		}
+	}
+}
+
+// TestASeedFillsWhatNoWriteOfATakenOverEvalSet: the seed gives each catalogue eval its target
+// before any editor runs (the spec's Order), so where it takes over a slug a reading registered
+// before any seed of its project, it writes the catalogue's target, its inclusiveness and its
+// judges whatever other field a register write then set: merge-to-production, whose register
+// write set its unit alone, holds the catalogue's target after the seed. A target a person's
+// register write set is kept, pr-open-to-merge's 90, and so is one a person set and then turned
+// off, deploy-frequency's none. The catalogue states pr-ci's job series' min_n as it states a
+// target, and no write of a logged eval takes a min_n, so the job series the reading registered
+// with none holds the catalogue's after the seed, as one the seed writes first does.
+func TestASeedFillsWhatNoWriteOfATakenOverEvalSet(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	minutes := row(t, map[string]any{"series": measures.SeriesMinutes, "row_kind": "pull_request", "value": 30, "measured_at": at(4, 9, 0)})
+	r.write(t, SlugMergeToProduction, alice, minutes)
+	r.write(t, SlugPROpenToMerge, alice, minutes)
+	r.write(t, SlugDeployFrequency, alice, row(t, map[string]any{"series": measures.SeriesDeploys, "row_kind": "deploy", "value": 3, "measured_at": at(4, 9, 0)}))
+	r.write(t, SlugPRCI, alice, row(t, map[string]any{"series": SeriesJobs, "row_kind": "run", "value": 4, "measured_at": at(4, 9, 0)}))
+	personal, turnedOff := 90.0, 10.0
+	for _, registration := range []Registration{
+		{Project: r.project, Slug: SlugMergeToProduction, Caller: alice, ComputationChange: ComputationChange{Unit: Set("hours")}},
+		{Project: r.project, Slug: SlugPROpenToMerge, Caller: alice, Target: Set(&personal)},
+		{Project: r.project, Slug: SlugDeployFrequency, Caller: alice, Target: Set(&turnedOff)},
+		{Project: r.project, Slug: SlugDeployFrequency, Caller: alice, Target: Set[*float64](nil)},
+	} {
+		if _, err := r.registry.Register(ctx, registration); err != nil {
+			t.Fatalf("alice's register write of %s: %v", registration.Slug, err)
+		}
+	}
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	catalogued := entryOf(t, SlugMergeToProduction).definition
+	if filled, _ := r.currentOf(t, SlugMergeToProduction); !filled.Computed() || !sameTarget(filled.Target, catalogued.Target) ||
+		filled.TargetInclusive != catalogued.TargetInclusive || !slices.Equal(filled.TargetJudges, catalogued.TargetJudges) {
+		t.Errorf("%s, which a reading registered and a register write of its unit alone wrote, holds source %s and target %s inclusive %t judges %v after the seed; want the catalogue's %s inclusive %t judges %v",
+			SlugMergeToProduction, filled.Source, showValue(filled.Target), filled.TargetInclusive, filled.TargetJudges,
+			showValue(catalogued.Target), catalogued.TargetInclusive, catalogued.TargetJudges)
+	}
+	if kept, _ := r.currentOf(t, SlugPROpenToMerge); !kept.Computed() || !sameTarget(kept.Target, &personal) {
+		t.Errorf("%s, whose register write set its target to %v, holds source %s and target %s after the seed; want it computed with that target",
+			SlugPROpenToMerge, personal, kept.Source, showValue(kept.Target))
+	}
+	if off, _ := r.currentOf(t, SlugDeployFrequency); !off.Computed() || off.Target != nil {
+		t.Errorf("%s, whose register writes set a target and then turned it off, holds source %s and target %s after the seed; want it computed with none",
+			SlugDeployFrequency, off.Source, showValue(off.Target))
+	}
+	var minN *int
+	for _, series := range entryOf(t, SlugPRCI).series {
+		if series.Series == SeriesJobs {
+			minN = series.MinN
+		}
+	}
+	if _, series := r.currentOf(t, SlugPRCI); minN == nil || series[SeriesJobs].MinN == nil || *series[SeriesJobs].MinN != *minN {
+		t.Errorf("%s's series %s, which a reading registered with no min_n, holds min_n %s after the seed; want the catalogue's %s",
+			SlugPRCI, SeriesJobs, showMinN(series[SeriesJobs].MinN), showMinN(minN))
 	}
 }
 

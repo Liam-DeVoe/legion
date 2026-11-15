@@ -102,8 +102,12 @@ func (w pipelineWindow) readTo() time.Time { return w.start().AddDate(0, 0, w.da
 // and its tests send. `from` and `to`, read by the shared parseDeliveryWindow and bounded by the
 // same maxDeliveryWindow, are the window's own days, stopping at to. A request naming at beside
 // either is refused: the two name the same thing, and a reader whose window moved would otherwise
-// be answered the other one.
+// be answered the other one. So is one naming any of the three more than once
+// (repeatedDeliveryKey), which would be answered its first value's window.
 func parsePipelineWindow(query url.Values) (pipelineWindow, error) {
+	if err := repeatedDeliveryKey(query, deliveryPipelineOneValueKeys); err != nil {
+		return pipelineWindow{}, err
+	}
 	windowed := query.Has("from") || query.Has("to")
 	if !query.Has("at") && windowed {
 		from, to, err := parseDeliveryWindow(query)

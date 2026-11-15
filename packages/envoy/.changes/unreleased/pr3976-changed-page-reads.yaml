@@ -7,4 +7,6 @@ body: |-
   timeline reads each deploy run's production jobs by name and its failed jobs through the new
   partial index `delivery_run_jobs_failed`, rather than every job of every run. The lease pool
   holds one more connection, for the day-row refresher, whose first pass in a process also seeds
-  every project's evals, so a process opens 108 connections at most.
+  every project's evals, so a process opens 108 connections at most. `infra/gcp` no longer holds
+  its own copy of that count (`dispatchConnectionsPerPod` and the test that compared it are gone):
+  its comments name the server's `store.ConnectionsPerProcess`, which they size the database by.
