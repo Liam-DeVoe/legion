@@ -3252,6 +3252,11 @@ for budget in budgets:
 # not head or sit inside (dispatch://INFRA-1545, review round 27, where `typecheck` lowered to 20
 # was priced by `tool-fallback-arm`'s step comment 28 lines above it).
 PAIRED: set[tuple[str, int]] = set()
+# The text of the block that prices each paired key, keyed as PAIRED is and joined as this loop
+# joins it, in reading order. The job-derivation clause reads a job's derivation here and nowhere
+# else, so the block it holds a key to is the block that prices that key (dispatch://INFRA-1545,
+# round 35).
+PRICING_BLOCK: dict[tuple[str, int], str] = {}
 for path in sorted(set(budget.path for budget in budgets)):
     lines = Path(path).read_text().split("\n")
     job_ids = JOB_ID_LINES.get(path, set())
@@ -3291,6 +3296,7 @@ for path in sorted(set(budget.path for budget in budgets)):
             if found:
                 keys.append((int(found.group(1)), below + 1))
                 PAIRED.add((path, below + 1))
+                PRICING_BLOCK[(path, below + 1)] = block
         for key, key_line in keys:
             if key in figures:
                 continue
@@ -3317,13 +3323,21 @@ for path in sorted(set(budget.path for budget in budgets)):
 # figure with a block that did not own it, one reading a job as 268 minutes by swallowing a
 # neighbouring comment's 14322 s.
 #
+# WHICH BLOCK IT READS: the one the priced-comment clause above paired with this job's key, as
+# PRICING_BLOCK holds it, and no other. That is the block directly above the job's id or the one
+# below the id and above the key, with no comment line between it and the key, so a derivation
+# is read wherever the job prices itself; a key no block prices has no derivation here, and the
+# job-that-prices-nothing clause below refuses it wherever the job's retries cost anything.
+# Until round 35 this clause walked up from the key over comment lines alone, so a derivation
+# written above the job's id was not read: `download-retry`, `download-retry-images`,
+# `re-record`, `embedder` and `visual` state their sums there, and each could be lowered below
+# its own sum, with every arrow of its block rewritten to the lowered key, and no refusal named
+# that job's key. The harness's real-tree case drove that on this repository's own tree and named
+# those five jobs (dispatch://INFRA-1545, round 35).
+#
 # WHAT IT DOES NOT READ, each checkable by mutating that site and watching this check stay
 # green. These are measured, not believed (dispatch://INFRA-1545, round 29, where a reviewer
 # drove every one of them):
-#   - a derivation written ABOVE THE JOB'S ID rather than above its key: the walk starts at the
-#     key and stops at the first line that is not a comment, so `download-retry`,
-#     `download-retry-images`, `re-record`, `embedder` and `visual` state their sums where this
-#     clause cannot see them;
 #   - a sum that DOES NOT ADD UP (`1200 + 1281 = 1941 s`): it is passed over rather than
 #     refused, since a clause that recomputed a total it cannot trust would be guessing;
 #   - a sum with WORDS BETWEEN IT AND ITS ARROW (`2250 s, of which the key carries ... -> 30
@@ -3335,8 +3349,8 @@ for path in sorted(set(budget.path for budget in budgets)):
 #     part by part" states the construction its key comes from — `114 is the 104 this
 #     construction gives with ten minutes added`. A clause that refused that job would be a
 #     correct job refused, which is how a check gets silenced.
-# Each of the four has a harness case that pins it (round 32), so a change that starts or stops
-# reading one of them is one a reader sees in the harness rather than in the tree.
+# Each of the three has a harness case that pins it, so a change that starts or stops reading one
+# of them is one a reader sees in the harness rather than in the tree.
 # A KEY LOWERED ON ITS OWN IS NOT IN THAT LIST ANY MORE: it leaves an arrow its key no longer
 # matches, which the priced-comment clause above refuses by name. Before that clause existed,
 # each of the nine keys this issue raised could be put back with its comment left alone and
@@ -3344,18 +3358,15 @@ for path in sorted(set(budget.path for budget in budgets)):
 # see them refused.
 DERIVATION = re.compile(r"(\d+)\s*\+\s*(\d+)\s*=\s*(\d+)\s*s\s*->\s*(\d+)\s*min")
 for (path, job), row in sorted(JOB_SLOWEST.items()):
-    lines = Path(path).read_text().split("\n")
-    # The comment block this job's own key carries, and nothing else: upwards from the key line
-    # while the lines are comments. A figure outside the block belongs to another job or another
-    # step and is never read here. The walk also stops at line 0, though the job's own id line,
-    # written above its key and not a comment, ends it before it gets there.
-    index = row["line"] - 2
-    block: list[str] = []
-    while index >= 0 and lines[index].lstrip().startswith("#"):
-        block.append(lines[index].lstrip().lstrip("#").strip())
-        index -= 1
+    # The block that prices this job's key, and nothing else: a figure outside it belongs to
+    # another job or another step and is never read here. A key no block prices has no
+    # derivation to read, and the job-that-prices-nothing clause below refuses it wherever the
+    # job's retries cost anything.
+    block = PRICING_BLOCK.get((path, row["line"]))
+    if block is None:
+        continue
     stated = None
-    for match in DERIVATION.finditer(" ".join(reversed(block))):
+    for match in DERIVATION.finditer(block):
         if int(match.group(4)) == row["minutes"]:
             stated = match
     if stated is None:
