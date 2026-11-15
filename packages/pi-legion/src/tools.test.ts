@@ -260,6 +260,18 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), and nothing of the " +
   "claim changes: only the operator lifts the operator's suspension, so ask the operator. The four " +
   "refuse role controller as fresh_session and compact do. " +
+  "An architect has the same six operations, fresh_session, compact, stop, retry, suspend and " +
+  "resume (issue, role), for the claims of its own tree alone. An architect uses them on a claim " +
+  "of its tree that needs action and asks no other session to do it. The daemon refuses an " +
+  "architect another tree's claim (ISSUE_OUTSIDE_TREE) and its own claim (OWN_CLAIM). It refuses " +
+  "each of the six for a claim the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for a " +
+  "claim the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
+  "waits for a turn to end. Nothing of the claim changes: ask the holder to lift its suspension. " +
+  "An architect's suspension is recorded as architect. An architect's resume lifts it, and the " +
+  "controller's and the operator's resume lift it too. An architect's resume, suspend, stop and " +
+  "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
+  "of such a claim is refused too, since retry reaches no suspended claim. Its suspend takes " +
+  "over a claim the daemon released, and its stop retires one. " +
   "Each refusal says what the claim does now and which operation reaches each state. It " +
   "names no moment to come back at: ask again later, and read the claim's state in " +
   "read_state. " +
@@ -316,14 +328,14 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "read_release_records",
         "handoff_complete",
         "ready_for_update",
-        "read_state",
-        "set_status",
         "fresh_session",
         "compact",
         "stop",
         "retry",
         "suspend",
         "resume",
+        "read_state",
+        "set_status",
       ],
     },
     issue: { type: "string" },
@@ -1926,6 +1938,151 @@ test("the controller stops, retries, suspends and resumes a claim it names by is
   expect(refused.content).toEqual([
     { type: "text", text: expect.stringContaining("SUSPENDED_BY_OPERATOR") },
   ]);
+});
+
+// The architect's operation set, pinned whole: every `op` the tool's schema lists that an
+// architect's session is not refused as unavailable. It is the tree's workflow operations, the
+// phase ops, and the six claim operations the daemon serves an architect for its own tree; the
+// controller's read_state and set_status stay the controller's alone.
+test("an architect's operation set is the tree's operations and the six claim operations", async () => {
+  const opSchema = z.toJSONSchema(toolFor(claimSession("architect")).parameters as z.ZodType)
+    .properties?.op;
+  const declared = typeof opSchema === "object" ? (opSchema.enum ?? []).map(String) : [];
+  expect(declared).toHaveLength(20);
+  for (const architect of [claimSession("architect"), claimSession("architect", "LEGION-209")]) {
+    const tool = toolFor(architect);
+    const available: string[] = [];
+    for (const op of declared) {
+      const result = await tool.execute("", { op }, undefined, undefined, context());
+      const refused = result.content.some(
+        (part) =>
+          part.type === "text" && part.text === `${op} is not available to a architect session`
+      );
+      if (!refused) available.push(op);
+    }
+    expect(available).toEqual([
+      "register_gate",
+      "release_children",
+      "request_backward_move",
+      "retry_or_escalate",
+      "sign_off",
+      "close_root",
+      "park_child",
+      "rerun_child",
+      "read_record",
+      "read_release_records",
+      "handoff_complete",
+      "ready_for_update",
+      "fresh_session",
+      "compact",
+      "stop",
+      "retry",
+      "suspend",
+      "resume",
+    ]);
+  }
+});
+
+// An architect's claim operations name the claim by issue and role, as the controller's do, and
+// mint the architect's own claim grant rather than a controller grant: the daemon reads the tree
+// from that grant and refuses every claim outside it. Each returns the daemon's answer whole.
+test("an architect acts on a claim of its own tree with its own grant", async () => {
+  const answers = {
+    freshSession: {},
+    compact: { compacted: true },
+    stopClaim: { state: "retired" },
+    retryClaim: { state: "launching" },
+    suspendClaim: { state: "suspended", suspendedBy: "architect" },
+    resumeClaim: { state: "launching" },
+  };
+  const { calls, daemon } = recordingDaemon({ answers });
+  const architect = claimSession("architect");
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => architect,
+  });
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context());
+
+  for (const [op, route] of [
+    ["fresh_session", "freshSession"],
+    ["compact", "compact"],
+    ["stop", "stopClaim"],
+    ["retry", "retryClaim"],
+    ["suspend", "suspendClaim"],
+    ["resume", "resumeClaim"],
+  ] as const) {
+    const answer = answers[route];
+    await expect(run({ op, issue: "LEGION-209", role: "tester" })).resolves.toEqual({
+      content: [{ type: "text", text: JSON.stringify(answer) }],
+      details: answer,
+    });
+    expect(calls.slice(-2)).toEqual([
+      [
+        "grant",
+        { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+      ],
+      [route, { grantId: "grant-208", issue: "LEGION-209", role: "tester" }],
+    ]);
+  }
+
+  // Refused before any mint, as the controller's are: a missing role, the controller's role, a
+  // missing issue and a field none of the six takes.
+  const before = calls.length;
+  for (const [parameters, message] of [
+    [{ op: "stop", issue: "LEGION-209" }, "stop requires role architect"],
+    [{ op: "compact", issue: "LEGION-209", role: "controller" }, "compact requires role architect"],
+    [{ op: "suspend", role: "tester" }, "suspend requires issue"],
+    [
+      { op: "resume", issue: "LEGION-209", role: "tester", reason: "why" },
+      'resume does not accept field "reason"; it takes issue, role',
+    ],
+  ] as const) {
+    const result = await run(parameters);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
+  }
+  expect(calls).toHaveLength(before);
+
+  // The daemon's refusals reach the architect in their own code and words: another tree's claim,
+  // its own claim, and a claim the controller's suspension holds.
+  for (const [route, op, status, code] of [
+    ["stopClaim", "stop", 403, "ISSUE_OUTSIDE_TREE"],
+    ["suspendClaim", "suspend", 403, "OWN_CLAIM"],
+    ["resumeClaim", "resume", 409, "SUSPENDED_BY_CONTROLLER"],
+  ] as const) {
+    const refusing = recordingDaemon({
+      answers: {
+        [route]: new LegionDaemonApiError(
+          "POST",
+          `/legion/v1/claims/${op}`,
+          status,
+          code,
+          "refused"
+        ),
+      },
+    });
+    const refused = await createLegionTool({
+      pi,
+      daemon: refusing.daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => architect,
+    }).execute("", { op, issue: "LEGION-209", role: "tester" }, undefined, undefined, context());
+    expect(refused.isError).toBe(true);
+    expect(refused.content).toEqual([{ type: "text", text: expect.stringContaining(code) }]);
+  }
 });
 
 test("read_state with no field summarizes 92 issues under the tool's limit, naming every one", async () => {

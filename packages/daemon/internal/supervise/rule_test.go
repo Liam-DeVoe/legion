@@ -19,7 +19,7 @@ func suspendedBy(h *harness, by SuspendSource) {
 // Every suspension records who asked for it, and the store keeps it while the claim is suspended:
 // the rule reads it after a restart as before one. A resume clears it.
 func TestASuspensionRecordsItsSource(t *testing.T) {
-	for _, by := range []SuspendSource{SuspendedByOperator, SuspendedByController, SuspendedByDaemon, SuspendedByReleased} {
+	for _, by := range []SuspendSource{SuspendedByOperator, SuspendedByController, SuspendedByArchitect, SuspendedByDaemon, SuspendedByReleased} {
 		t.Run(string(by), func(t *testing.T) {
 			h := newHarness(t)
 			suspendedBy(h, by)
@@ -56,7 +56,7 @@ func TestASuspensionNamingNoSourceIsRefused(t *testing.T) {
 		t.Run(string(by), func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			if err := h.handle(RequestSuspend{Claim: testToken, By: by}); err == nil || !strings.Contains(err.Error(), "not operator, controller, daemon or released") {
+			if err := h.handle(RequestSuspend{Claim: testToken, By: by}); err == nil || !strings.Contains(err.Error(), "not operator, controller, architect, daemon or released") {
 				t.Fatalf("suspend naming %q returned %v, want it refused", by, err)
 			}
 			h.wantState(StateIdle)
@@ -65,12 +65,13 @@ func TestASuspensionNamingNoSourceIsRefused(t *testing.T) {
 	}
 }
 
-// The rule resumes every suspension but the two that hold, the operator's and the controller's:
-// the daemon's, a root's own exit, and one suspended before migration 0038 recorded its source
-// (unknown, or none), as main resumed those on the same triggers. The operator's holds until the
-// operator resumes the claim, and the controller's until the controller or the operator does. (The
-// boot's resume by rule, the one trigger main did not have, filters for daemon and exit itself,
-// leaving a released claim to its role's wake: workflow's booted.)
+// The rule resumes every suspension but the three that hold, the operator's, the controller's and
+// an architect's: the daemon's, a root's own exit, and one suspended before migration 0038
+// recorded its source (unknown, or none), as main resumed those on the same triggers. The
+// operator's holds until the operator resumes the claim, the controller's until the controller or
+// the operator does, and an architect's until an architect, the controller or the operator does.
+// (The boot's resume by rule, the one trigger main did not have, filters for daemon and exit
+// itself, leaving a released claim to its role's wake: workflow's booted.)
 func TestTheRuleResumesEverySuspensionButTheOperators(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -98,6 +99,7 @@ func TestTheRuleResumesEverySuspensionButTheOperators(t *testing.T) {
 		}, resumed: true},
 		{name: "the operator's", suspend: func(h *harness) { suspendedBy(h, SuspendedByOperator) }},
 		{name: "the controller's", suspend: func(h *harness) { suspendedBy(h, SuspendedByController) }},
+		{name: "an architect's", suspend: func(h *harness) { suspendedBy(h, SuspendedByArchitect) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)

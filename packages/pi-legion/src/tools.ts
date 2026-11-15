@@ -45,7 +45,8 @@ export interface LegionControllerToolSession {
 export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSession;
 
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
- * (`@legion/pi-shared/legion-phase-ops`) are an architect's too. */
+ * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and so are the six claim
+ * operations (`CLAIM_OPERATIONS`), which the daemon serves an architect for its own tree's claims. */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
@@ -60,6 +61,12 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_release_records",
     "handoff_complete",
     "ready_for_update",
+    "fresh_session",
+    "compact",
+    "stop",
+    "retry",
+    "suspend",
+    "resume",
   ],
   "phase-worker": [
     "request_backward_move",
@@ -99,9 +106,9 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   resume: ["issue", "role"],
 };
 
-/** The controller's operations on one claim, each naming it by `issue` and `role`: the two
- * recoveries and the operator's four `legion claims` operations, which the daemon serves the
- * controller on routes of its own. */
+/** The operations on one claim, each naming it by `issue` and `role`: the two recoveries and the
+ * operator's four `legion claims` operations, which the daemon serves the controller for its
+ * project's claims and an architect for its own tree's claims, on routes of their own. */
 const CLAIM_OPERATIONS = [
   "fresh_session",
   "compact",
@@ -120,6 +127,35 @@ const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
 
 const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
   toolSuccess(JSON.stringify(details), details);
+
+/** Posts one claim operation, its grant minted, and answers the daemon's answer whole. */
+async function claimOperation(
+  client: LegionDaemonClient,
+  operation: ClaimOperation,
+  request: { readonly grantId: string; readonly issue: string; readonly role: LegionRole }
+): Promise<ToolResult> {
+  switch (operation) {
+    case "compact":
+      // The answer is the daemon's own: a compaction Oh My Pi refused or skipped says so and
+      // names why, and the claim is back whatever it says.
+      return jsonSuccess(await client.compact(request));
+    case "fresh_session":
+      // The daemon's answer again: empty for a claim whose phase was restarted or needed no
+      // restart, and naming the refusal where the claim came back owing no task and the workflow
+      // refused the restart that would have handed it one.
+      return jsonSuccess(await client.freshSession(request));
+    // The operator's four operations answer the claim as each left it, with who holds a
+    // suspension over it, so the caller reads whether its own resume lifts it.
+    case "stop":
+      return jsonSuccess(await client.stopClaim(request));
+    case "retry":
+      return jsonSuccess(await client.retryClaim(request));
+    case "suspend":
+      return jsonSuccess(await client.suspendClaim(request));
+    case "resume":
+      return jsonSuccess(await client.resumeClaim(request));
+  }
+}
 
 /** `read_state`'s filters, each naming the full records it answers with, in the order the schema
  * declares them. Naming none answers the summary. */
@@ -240,12 +276,13 @@ function readState(state: LegionState, parameters: Record<string, unknown>): Too
 }
 
 /** The tool's one object schema, `op` choosing the operation; its fields and the `op` values are
- * in the order `tools.test.ts` pins. */
+ * in the order `tools.test.ts` pins. The `op` values are the architect's operations and then the
+ * controller's that the architect does not have, each once. */
 function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
   const phaseOp = phaseOpParameters(z);
   return z.object({
-    op: z.enum([...OPERATIONS.architect, ...OPERATIONS.controller]),
+    op: z.enum([...new Set([...OPERATIONS.architect, ...OPERATIONS.controller])]),
     issue: phaseOp.issue,
     since: phaseOp.since,
     artifactId: z
@@ -321,7 +358,8 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
  * `handoff_complete` belongs to every session but the root architect's (a phase worker, and a
  * sub-architect: an architect whose issue is not its tree), and finds what it reports in the pane
- * first (`handoffReport`); `read_state` and `set_status` belong to the controller. */
+ * first (`handoffReport`); `read_state` and `set_status` belong to the controller, and the six claim
+ * operations to the controller and to an architect, whose reach the daemon limits to its own tree. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -374,8 +412,9 @@ export function createLegionTool(deps: {
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentence on request_backward_move (an architect's names the
     // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off and
-    // the controller's operations: the exact text tools.test.ts pins, so a change to the shared
-    // template cannot reach an Oh My Pi agent unnoticed.
+    // the controller's operations, and the architect's own-tree limit on the claim operations:
+    // the exact text tools.test.ts pins, so a change to the shared template cannot reach an Oh My
+    // Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -463,6 +502,18 @@ export function createLegionTool(deps: {
         "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), and nothing of the " +
         "claim changes: only the operator lifts the operator's suspension, so ask the operator. The four " +
         "refuse role controller as fresh_session and compact do. " +
+        "An architect has the same six operations, fresh_session, compact, stop, retry, suspend and " +
+        "resume (issue, role), for the claims of its own tree alone. An architect uses them on a claim " +
+        "of its tree that needs action and asks no other session to do it. The daemon refuses an " +
+        "architect another tree's claim (ISSUE_OUTSIDE_TREE) and its own claim (OWN_CLAIM). It refuses " +
+        "each of the six for a claim the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for a " +
+        "claim the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
+        "waits for a turn to end. Nothing of the claim changes: ask the holder to lift its suspension. " +
+        "An architect's suspension is recorded as architect. An architect's resume lifts it, and the " +
+        "controller's and the operator's resume lift it too. An architect's resume, suspend, stop and " +
+        "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
+        "of such a claim is refused too, since retry reaches no suspended claim. Its suspend takes " +
+        "over a claim the daemon released, and its stop retires one. " +
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
         "read_state. ",
@@ -509,39 +560,26 @@ export function createLegionTool(deps: {
         }
         assertOperationInput(parameters, operation);
         const client = daemon();
-        if (active.kind === "controller") {
-          if (operation === "read_state") return readState(await client.state(), parameters);
-          // The controller's writes: each validated whole before its grant is minted.
+        if (active.kind === "controller" && operation === "read_state") {
+          return readState(await client.state(), parameters);
+        }
+        if (isClaimOperation(operation)) {
+          // Validated whole before its grant is minted: the controller's with its registration's
+          // secret, an architect's with its claim's. The daemon decides which claims each reaches.
           const issue = requiredString(parameters, operation, "issue");
-          if (isClaimOperation(operation)) {
-            const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
-            if (role === undefined) {
-              throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
-            }
-            const { grantId } = await controllerGrant(active.sessionID);
-            const request = { grantId, issue, role };
-            switch (operation) {
-              case "compact":
-                // The answer is the daemon's own: a compaction Oh My Pi refused or skipped says
-                // so and names why, and the claim is back whatever it says.
-                return jsonSuccess(await client.compact(request));
-              case "fresh_session":
-                // The daemon's answer again: empty for a claim whose phase was restarted or
-                // needed no restart, and naming the refusal where the claim came back owing no
-                // task and the workflow refused the restart that would have handed it one.
-                return jsonSuccess(await client.freshSession(request));
-              // The operator's four operations answer the claim as each left it, with who holds
-              // a suspension over it, so the controller reads whether its own resume lifts it.
-              case "stop":
-                return jsonSuccess(await client.stopClaim(request));
-              case "retry":
-                return jsonSuccess(await client.retryClaim(request));
-              case "suspend":
-                return jsonSuccess(await client.suspendClaim(request));
-              case "resume":
-                return jsonSuccess(await client.resumeClaim(request));
-            }
+          const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
+          if (role === undefined) {
+            throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
           }
+          const grantId =
+            active.kind === "controller"
+              ? (await controllerGrant(active.sessionID)).grantId
+              : await mintClaimGrant(client, active);
+          return await claimOperation(client, operation, { grantId, issue, role });
+        }
+        if (active.kind === "controller") {
+          // set_status, validated whole before its grant is minted.
+          const issue = requiredString(parameters, operation, "issue");
           const status = ISSUE_STATUSES.find((candidate) => candidate === parameters.status);
           if (status === undefined) {
             throw new Error(`set_status requires status ${ISSUE_STATUSES.join(", ")}`);

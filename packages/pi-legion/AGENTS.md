@@ -100,8 +100,11 @@ and `resume` (issue, role), which post `POST /legion/v1/claims/stop`, `/retry`, 
 `/resume` with the claim recoveries' body and read `ClaimOperationResponse`, the claim's state and
 who holds a suspension over it; the controller's suspension is recorded as `controller`, its own
 resume lifts it, and the daemon refuses the controller's resume, suspend, stop and `fresh_session`
-of a claim the operator's own suspension holds with `SUSPENDED_BY_OPERATOR`; no shape the plugin
-already parses moves, and the state still names no suspender), after contract 133's merge wait
+of a claim the operator's own suspension holds with `SUSPENDED_BY_OPERATOR`; an architect's tool
+gains the same six claim operations for its own tree's claims, its suspension recorded as
+`architect` under the controller's, refused `SUSPENDED_BY_CONTROLLER` under the controller's
+suspension; no shape the plugin already parses moves, and the state still names no suspender),
+after contract 133's merge wait
 (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's
 answer about merging the pull request's head carries `mergeWait`, the head the round waits on, the
 merge state the record holds for that head, when that state was last read, when GitHub last moved
@@ -475,7 +478,11 @@ Each other operation mints a controller grant and posts it with its request.
 `set_status` posts `POST /legion/v1/issues/status`.
 `compact` and `fresh_session` post `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`.
 `stop`, `retry`, `suspend` and `resume` post `POST /legion/v1/claims/stop`, `/retry`, `/suspend` and `/resume`, and each answers the claim's state with who holds a suspension over it.
-The claim: `GET /legion/v1/state` first, since a registration replaces the running controller: an unset
+An architect's claim session gets the same six claim operations, `fresh_session`, `compact`, `stop`, `retry`, `suspend` and `resume`, beside its tree's operations.
+Each mints the architect's own claim grant (`mintClaimGrant`) and posts it to the same route, and the daemon serves it for the claims of the architect's own tree alone.
+It refuses another tree's claim (`ISSUE_OUTSIDE_TREE`), the architect's own claim (`OWN_CLAIM`), and a claim the operator's or the controller's suspension holds (`SUSPENDED_BY_OPERATOR`, `SUSPENDED_BY_CONTROLLER`).
+An architect's suspension is recorded as `architect`, which an architect's resume lifts and so do the controller's and the operator's.
+The controller's claim: `GET /legion/v1/state` first, since a registration replaces the running controller: an unset
 `LEGION_PROJECT`, or one whose controller role is not that of the project the state names
 (`legionProjectToken` in `@legion/contracts`, the daemon's own rule), stops the claim there; then
 `claims/register` with the capability in place of a boot token, answered with

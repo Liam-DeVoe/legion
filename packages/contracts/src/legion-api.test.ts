@@ -84,8 +84,8 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // The controller's four claim operations (contract 136): the claim as each left it, and who
-  // holds a suspension over it.
+  // The four claim operations of the controller and of an architect (contract 136): the claim as
+  // each left it, and who holds a suspension over it.
   "claim-stop.json": LegionClaimOperationResponse,
   "claim-retry.json": LegionClaimOperationResponse,
   "claim-suspend.json": LegionClaimOperationResponse,
@@ -1864,12 +1864,12 @@ const operatorSchemas: Record<string, true> = {
   LegionOperatorClaimsResponse: true,
 };
 
-/** The one session-facing exception: the controller's four claim operations (`POST
- * /legion/v1/claims/stop|retry|suspend|resume`) answer who holds a suspension, because those
- * routes are where the controller reads whether its own resume lifts it. The reason the guard
- * exists does not reach them: they arrived with contract 136, so only a plugin at that contract or
- * later calls them, and no reader of these bodies predates the key. The schema and the four
- * fixtures it pins are named here, and nothing else; a new session-facing body that names a
+/** The one session-facing exception: the four claim operations of the controller and of an
+ * architect (`POST /legion/v1/claims/stop|retry|suspend|resume`) answer who holds a suspension,
+ * because those routes are where the caller reads whether its own resume lifts it. The reason the
+ * guard exists does not reach them: they arrived with contract 136, so only a plugin at that
+ * contract or later calls them, and no reader of these bodies predates the key. The schema and the
+ * four fixtures it pins are named here, and nothing else; a new session-facing body that names a
  * suspender still fails the walk below. */
 const claimOperationSchemas: Record<string, true> = { LegionClaimOperationResponse: true };
 const claimOperationFixtures: Record<string, true> = {
@@ -1912,9 +1912,9 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from contract 136, to the controller's
-// four claim operations (claimOperationSchemas), and nowhere else; this holds that for every schema
-// the module exports, present and future.
+// `suspendedBy` is served to the operator's bearer and, from contract 136, to the four claim
+// operations of the controller and of an architect (claimOperationSchemas), and nowhere else; this
+// holds that for every schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
   let walked = 0;
   for (const [name, schema] of Object.entries(legionApi)) {
@@ -1937,6 +1937,25 @@ test("no session-facing response carries suspendedBy", () => {
   for (const name of Object.keys(claimOperationFixtures)) {
     expect(readdirSync(fixtureDir), name).toContain(name);
   }
+});
+
+// An architect's suspension is a source of its own (contract 136, dispatch://INFRA-2709 t41): the
+// claim operations' answer names it, landed or held, while the state, which the walk above holds
+// to no suspender at all, still names none.
+test("the claim operations name an architect's suspension", () => {
+  expect(
+    LegionClaimOperationResponse.parse({ state: "suspended", suspendedBy: "architect" })
+  ).toEqual({ state: "suspended", suspendedBy: "architect" });
+  expect(
+    LegionClaimOperationResponse.parse({
+      state: "working",
+      suspensionHeld: true,
+      suspensionHeldBy: "architect",
+    }).suspensionHeldBy
+  ).toBe("architect");
+  expect(
+    LegionClaimOperationResponse.safeParse({ state: "suspended", suspendedBy: "tree" }).success
+  ).toBeFalse();
 });
 
 test("the state golden shows a claim's capability report beside its locator", () => {

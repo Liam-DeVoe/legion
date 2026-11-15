@@ -1728,13 +1728,14 @@ package api
 // 136: dispatch://INFRA-2709 R22 -- the project's controller gets the four claim operations the
 // operator already has, as controller routes beside `claims/fresh-session` and `claims/compact`,
 // each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and the same door
-// (controllerClaim: a controller grant or `403 CONTROLLER_REQUIRED`, a claim the daemon
-// supervises or `404 NO_CLAIM`, built from the daemon's own project, so another project's claim
-// cannot be named): `POST /legion/v1/claims/stop` runs `legion claims stop`'s effect,
-// `POST /legion/v1/claims/retry` the plain `legion claims retry` (no fresh session),
-// `POST /legion/v1/claims/suspend` `legion claims suspend`'s, and `POST /legion/v1/claims/resume`
-// `legion claims resume`'s. Each answers `api.ClaimOperationResponse`: the claim's `state` after
-// the request and, where a suspension is over it, `suspendedBy`, `suspensionHeld` and
+// (claimDoor: a controller grant, or an architect grant for a claim of its own tree, or `403
+// CONTROLLER_REQUIRED`, a claim the daemon supervises or `404 NO_CLAIM`, built from the daemon's
+// own project, so another project's claim cannot be named): `POST /legion/v1/claims/stop` runs
+// `legion claims stop`'s effect, `POST /legion/v1/claims/retry` the plain `legion claims retry`
+// (no fresh session), `POST /legion/v1/claims/suspend` `legion claims suspend`'s, and
+// `POST /legion/v1/claims/resume` `legion claims resume`'s. Each answers
+// `api.ClaimOperationResponse`: the claim's `state` after the request and, where a suspension is
+// over it, `suspendedBy`, `suspensionHeld` and
 // `suspensionHeldBy`, which these routes alone of the session-facing ones carry, since no plugin
 // below this contract calls them (the state still names no suspender, StrandedClaim); a
 // suspension held for the agent's turn, and a retry whose start the issue's phase queued, answer
@@ -1743,10 +1744,22 @@ package api
 // migration 20261115060739: it holds against the daemon's rules as the operator's does, its own
 // resume lifts it, and the operator's suspension outranks it. So the operator claim routes'
 // `suspendedBy` and `suspensionHeldBy` gain the value `controller`, which only the operator's
-// bearer reads. The controller's resume, suspend and stop, and its fresh session, are refused a
-// claim the operator's own suspension holds with `409 SUSPENDED_BY_OPERATOR`, nothing of the
-// claim changed; its retry and resume of a claim stored working are refused `409
-// CLAIM_IN_A_TURN`. The number is a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
+// bearer reads. The controller's resume, suspend, stop and retry, and its fresh session, are
+// refused a claim the operator's own suspension holds with `409 SUSPENDED_BY_OPERATOR`, nothing of
+// the claim changed; its retry and resume of a claim stored working are refused `409
+// CLAIM_IN_A_TURN`. An architect gets the same six operations — these four, `fresh-session` and
+// `compact` — for the claims of its own tree alone (dispatch://INFRA-2709 t41): an issue the
+// daemon does not record is `404 ISSUE_NOT_FOUND`, one of another tree `403 ISSUE_OUTSIDE_TREE`,
+// and the architect's own claim `403 OWN_CLAIM`. Its suspension is recorded as `architect`, a
+// further supervise.SuspendSource that `claims.suspended_by` admits from migration
+// 20261115083448, which holds as the controller's does and ranks under it: an architect's resume
+// lifts it, and so do the controller's and the operator's. Each of an architect's operations is
+// refused a claim the operator's own suspension holds (`409 SUSPENDED_BY_OPERATOR`) and one the
+// controller's holds (`409 SUSPENDED_BY_CONTROLLER`), held or landed, and its resume, suspend, stop
+// and fresh session a claim the daemon suspended (`409 SUSPENDED_BY_DAEMON`; its suspend and stop
+// reach a released claim). The operator claim routes'
+// and the four routes' `suspendedBy` and `suspensionHeldBy` gain the value `architect`; no shape
+// moves. The number is a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declares 133, and the
 // open heads above it declare 134 (#4021), 135 (#3659), 137 (#4046), 138 (#4017), 139 (#2731,

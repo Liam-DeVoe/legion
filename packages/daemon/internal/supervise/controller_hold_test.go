@@ -15,9 +15,9 @@ func TestTheControllersSuspensionHoldsAsTheOperatorsDoes(t *testing.T) {
 	}
 	h := newHarness(t)
 	suspendedBy(h, SuspendedByController)
-	if c := h.claim(); !c.RuleHolds() || c.RuleMayResume() || c.OperatorHolds() {
-		t.Fatalf("the controller's suspension: rule holds %t, rule may resume %t, operator holds %t; want true, false, false",
-			c.RuleHolds(), c.RuleMayResume(), c.OperatorHolds())
+	if c := h.claim(); !c.RuleHolds() || c.RuleMayResume() || c.HeldAgainst(SuspendedByController) != nil {
+		t.Fatalf("the controller's suspension: rule holds %t, rule may resume %t, held against the controller %v; want true, false, nil",
+			c.RuleHolds(), c.RuleMayResume(), c.HeldAgainst(SuspendedByController))
 	}
 	h.must(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's phase"})
 	h.wantState(StateSuspended)
@@ -33,11 +33,11 @@ func TestTheControllersSuspensionHoldsAsTheOperatorsDoes(t *testing.T) {
 // (ErrOperatorHolds) with nothing of the claim changed; the operator's resume lifts the
 // controller's as it lifts every other.
 func TestTheControllersResumeLiftsEverySuspensionButTheOperators(t *testing.T) {
-	for _, by := range []SuspendSource{SuspendedByController, SuspendedByDaemon, SuspendedByReleased} {
+	for _, by := range []SuspendSource{SuspendedByController, SuspendedByArchitect, SuspendedByDaemon, SuspendedByReleased} {
 		t.Run(string(by), func(t *testing.T) {
 			h := newHarness(t)
 			suspendedBy(h, by)
-			h.must(RequestResume{Claim: testToken, ByController: true})
+			h.must(RequestResume{Claim: testToken, By: SuspendedByController})
 			h.wantState(StateLaunching)
 			h.wantCalls("Resume", 1)
 		})
@@ -46,7 +46,7 @@ func TestTheControllersResumeLiftsEverySuspensionButTheOperators(t *testing.T) {
 	t.Run("operator", func(t *testing.T) {
 		h := newHarness(t)
 		suspendedBy(h, SuspendedByOperator)
-		err := h.handle(RequestResume{Claim: testToken, ByController: true})
+		err := h.handle(RequestResume{Claim: testToken, By: SuspendedByController})
 		var refused *RefusedError
 		if !errors.As(err, &refused) || !errors.Is(err, ErrOperatorHolds) {
 			t.Fatalf("the controller's resume of the operator's suspension returned %v, want a refusal naming ErrOperatorHolds", err)
@@ -104,7 +104,7 @@ func TestTheOperatorsSuspensionOutranksTheControllers(t *testing.T) {
 		if got := h.store.load(testToken).SuspendedBy; got != SuspendedByOperator {
 			t.Fatalf("after the operator's suspend the store records %q, want the operator", got)
 		}
-		if err := h.handle(RequestResume{Claim: testToken, ByController: true}); !errors.Is(err, ErrOperatorHolds) {
+		if err := h.handle(RequestResume{Claim: testToken, By: SuspendedByController}); !errors.Is(err, ErrOperatorHolds) {
 			t.Fatalf("the controller's resume returned %v, want ErrOperatorHolds", err)
 		}
 		h.wantState(StateSuspended)
@@ -147,7 +147,7 @@ func TestTheControllersStopOfAClaimTheOperatorHoldsIsRefused(t *testing.T) {
 	t.Run("the operator's landed suspension", func(t *testing.T) {
 		h := newHarness(t)
 		suspendedBy(h, SuspendedByOperator)
-		if err := h.handle(RequestStop{Claim: testToken, ByController: true}); !errors.Is(err, ErrOperatorHolds) {
+		if err := h.handle(RequestStop{Claim: testToken, By: SuspendedByController}); !errors.Is(err, ErrOperatorHolds) {
 			t.Fatalf("the controller's stop returned %v, want ErrOperatorHolds", err)
 		}
 		h.wantState(StateSuspended)
@@ -159,7 +159,7 @@ func TestTheControllersStopOfAClaimTheOperatorHoldsIsRefused(t *testing.T) {
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the operator suspended it", By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
 			t.Fatalf("the operator's suspend of a claim in a turn returned %v, want it held", err)
 		}
-		if err := h.handle(RequestStop{Claim: testToken, ByController: true}); !errors.Is(err, ErrOperatorHolds) {
+		if err := h.handle(RequestStop{Claim: testToken, By: SuspendedByController}); !errors.Is(err, ErrOperatorHolds) {
 			t.Fatalf("the controller's stop returned %v, want ErrOperatorHolds", err)
 		}
 		h.wantState(StateWorking)
@@ -168,7 +168,7 @@ func TestTheControllersStopOfAClaimTheOperatorHoldsIsRefused(t *testing.T) {
 	t.Run("the controller's own suspension", func(t *testing.T) {
 		h := newHarness(t)
 		suspendedBy(h, SuspendedByController)
-		h.must(RequestStop{Claim: testToken, ByController: true})
+		h.must(RequestStop{Claim: testToken, By: SuspendedByController})
 		h.wantState(StateRetired)
 	})
 

@@ -99,11 +99,12 @@ var compactOp = controllerOp{
 	liveStates:       "ready or idle",
 }
 
-// claimCompact is the controller's door onto the compaction (compact). The effect is the
-// operator's own, and so are its refusals and its answer; only the authentication differs
-// (controllerClaim).
+// claimCompact is the claim door's compaction (compact). The effect is the operator's own, and so
+// are its refusals and its answer; only the authentication differs (claimDoor), which refuses an
+// architect a claim the operator's or the controller's suspension holds before the effect is
+// asked.
 func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
-	target, ok := s.controllerClaim(w, r, compactOp)
+	target, ok := s.claimDoor(w, r, compactOp)
 	if !ok {
 		return
 	}
@@ -111,7 +112,7 @@ func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.log.Info("api: the controller compacted a claim's session", "claim", target.token, "issue", target.issue,
+	s.log.Info("api: "+callerName(target.by)+" compacted a claim's session", "claim", target.token, "issue", target.issue,
 		"role", target.role, "compacted", answer.Compacted, "reason", answer.Reason)
 	writeJSON(w, http.StatusOK, answer)
 }

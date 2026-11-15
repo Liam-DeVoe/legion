@@ -405,18 +405,21 @@ type RequestSuspend struct {
 	NeverHold bool
 }
 
-// RequestResume relaunches a suspended claim's session. The operator's resume lifts every
-// suspension, whoever placed it. ByController is the project's controller's resume, through its
-// own `legion` tool (api's claimResume): it lifts every suspension but the operator's own, which
-// it is refused (ErrOperatorHolds), since only the operator undoes the operator's decision.
+// RequestResume relaunches a suspended claim's session. By is who asks: empty for the operator,
+// whose resume lifts every suspension, whoever placed it; SuspendedByController for the project's
+// controller, through its own `legion` tool (api's claimResume), whose resume lifts every
+// suspension but the operator's own; and SuspendedByArchitect for an architect of the claim's
+// tree, through the same tool, whose resume lifts an architect's suspension alone. Each is
+// refused what it may not lift (Claim.ResumeRefusal: ErrOperatorHolds, ErrControllerHolds,
+// ErrNotTheArchitectsSuspension), since no agent undoes a decision of one that outranks it.
 type RequestResume struct {
-	Claim        claim.Token
-	ByController bool
+	Claim claim.Token
+	By    SuspendSource
 }
 
 // RequestRuleResume is the daemon's own resume, by rule: it relaunches a suspended claim's session
-// unless an operator or the controller suspended it (Claim.RuleMayResume): that suspension holds
-// until a resume lifts it. The daemon asks it of
+// unless an operator, the controller or an architect suspended it (Claim.RuleMayResume): that
+// suspension holds until a resume lifts it. The daemon asks it of
 // a claim that owns its issue's current phase (the outbox's start of that phase, the boot's
 // included) and of its own controller. It resumes nothing that is not suspended — a failed claim's
 // launch budget is spent, and only the workflow's retry relaunches it — so it is asked again as
@@ -429,18 +432,20 @@ type RequestRuleResume struct {
 
 // RequestStop ends one claim. The tree's root claim is not one it can end: a root ends only with
 // its tree, so any other stop of it is refused, and suspending it is how its process is stopped.
-// ByController is the project's controller's stop, through its own `legion` tool (api's
-// claimStop): it is refused for a claim the operator's own suspension holds, held or landed
-// (ErrOperatorHolds), since a stop retires the claim and a retry then relaunches it, which would
-// get past the operator's hold.
+// By is who asks: empty for the operator; SuspendedByController for the project's controller and
+// SuspendedByArchitect for an architect of the claim's tree, each through its own `legion` tool
+// (api's claimStop). Either is refused for a claim a suspension outranking it holds, held or
+// landed — the operator's for either, the controller's for an architect's — and an architect's for
+// a claim the daemon's own suspension holds (Claim.StopOrSuspendRefusal), since a stop retires the
+// claim and a retry then relaunches it, which would get past that hold.
 //
 // A close is its own event rather than a flag here, and there are two of them, because who decided
 // the close is what says whether TreeClosable is asked. A flag has an unsafe default, and the
 // caller that never thought about it gets that default; these two make a new caller name which
 // close it is making, and the table holds a row for each.
 type RequestStop struct {
-	Claim        claim.Token
-	ByController bool
+	Claim claim.Token
+	By    SuspendSource
 }
 
 // RequestTreeClose is the workflow closing a tree: every claim of a tree whose linger expired,
@@ -1946,9 +1951,9 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // ready — it never registered, or registered and never said it was ready. Without a held
 // suspension, it is retired, counted and relaunched. A relaunch the tree lifecycle refuses is
 // checked before the retirement, so the process is kept and the deadline tried again at the probe
-// interval, as one whose stop fails is. A suspension that holds (an operator's or the
-// controller's) retained through a rule-resuming launch instead completes here: no ready will
-// arrive to run it, and relaunching would drop that hold.
+// interval, as one whose stop fails is. A suspension that holds (an operator's, the controller's
+// or an architect's) retained through a rule-resuming launch instead completes here: no ready
+// will arrive to run it, and relaunching would drop that hold.
 func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && m.held.By.Holds() {
 		return m.suspendHeld(ctx)
@@ -2064,18 +2069,19 @@ func reready(m *Machine, ctx context.Context, _ Event) error {
 	return finishReady(m, ctx)
 }
 
-// resume relaunches a suspended claim's session, the operator's whoever suspended it and the
-// controller's for every suspension but the operator's own (RequestResume.ByController).
+// resume relaunches a suspended claim's session: the operator's whoever suspended it, the
+// controller's for every suspension but the operator's own, and an architect's for an
+// architect's suspension alone (RequestResume.By, Claim.ResumeRefusal).
 func resume(m *Machine, ctx context.Context, ev Event) error {
-	if ev.(RequestResume).ByController && m.current().OperatorHolds() {
-		return &RefusedError{State: m.claim.State, Request: "resume", Err: ErrOperatorHolds}
+	if err := m.current().ResumeRefusal(ev.(RequestResume).By); err != nil {
+		return &RefusedError{State: m.claim.State, Request: "resume", Err: err}
 	}
 	return m.revive(ctx, exemptWake(ev), nil)
 }
 
 // resumeByRule is the daemon's own resume of a suspended claim (RequestRuleResume): the same
-// session relaunched, as the operator's resume relaunches it, unless an operator or the
-// controller suspended the claim: that suspension holds until a resume lifts it
+// session relaunched, as the operator's resume relaunches it, unless an operator, the
+// controller or an architect suspended the claim: that suspension holds until a resume lifts it
 // (Claim.RuleMayResume). A launch that fails is charged to the claim's launch budget like
 // any other, so a claim the rule resumes that keeps failing fails once the budget is spent, and a
 // failed claim is never resumed by rule.
@@ -2157,11 +2163,12 @@ func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 // runtime holds for the root issue — under a sandbox, its Sandbox, and with it the pod and the
 // disk that pod owns. Any other
 // stop of it is refused, naming the operator's close when it is that close which ends the tree.
-// The controller's stop of a claim the operator's own suspension holds is refused before any of
-// that (RequestStop.ByController, ErrOperatorHolds).
+// The controller's or an architect's stop of a claim a suspension outranking it holds, and an
+// architect's of a claim the daemon's own suspension holds, is refused before any of that
+// (RequestStop.By, Claim.StopOrSuspendRefusal).
 func stop(m *Machine, ctx context.Context, ev Event) error {
-	if ev.(RequestStop).ByController && m.current().OperatorHolds() {
-		return &RefusedError{State: m.claim.State, Request: "stop", Err: ErrOperatorHolds}
+	if err := m.current().StopOrSuspendRefusal(ev.(RequestStop).By); err != nil {
+		return &RefusedError{State: m.claim.State, Request: "stop", Err: err}
 	}
 	if !m.claim.treeRoot() {
 		return m.end(ctx)

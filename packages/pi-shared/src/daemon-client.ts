@@ -130,8 +130,8 @@ export interface LegionDaemonClient {
   readonly issueStatus: (
     input: z.input<typeof LegionIssueStatusRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** The controller's `fresh_session`: the claim on `role` of `issue` leaves its recorded
-   * session behind and starts again in a new one, the effect
+  /** The controller's or an architect's `fresh_session`: the claim on `role` of `issue` leaves
+   * its recorded session behind and starts again in a new one, the effect
    * `legion claims retry --fresh-session` runs for an operator. The answer is empty wherever
    * the claim came back and its start ran. `phaseNotRestarted` carries the workflow's refusal
    * of the phase restart, where the claim came back owing no task, or the machine's refusal of
@@ -144,39 +144,47 @@ export interface LegionDaemonClient {
   readonly gateRegister: (
     input: z.input<typeof LegionGateRegisterRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** The controller's `compact`: the claim on `role` of `issue` has its Oh My Pi session
-   * compacted and is then sent the task it owes again, the effect `legion claims compact` runs
-   * for an operator. The answer says whether the session was compacted and, when it was not,
-   * why; the claim came back and whatever task it owes went again either way. */
+  /** The controller's or an architect's `compact`: the claim on `role` of `issue` has its Oh My
+   * Pi session compacted and is then sent the task it owes again, the effect
+   * `legion claims compact` runs for an operator. The answer says whether the session was
+   * compacted and, when it was not, why; the claim came back and whatever task it owes went again
+   * either way. */
   readonly compact: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionCompactResponse>>;
-  /** The controller's `stop`: the claim on `role` of `issue` is released and retired, the effect
-   * `legion claims stop` runs for an operator; a turn it is in is cut off with it. Refused for a
-   * claim the operator's own suspension holds (`SUSPENDED_BY_OPERATOR`). The answer is the claim
-   * as the stop left it. */
+  /** The controller's or an architect's `stop`: the claim on `role` of `issue` is released and
+   * retired, the effect `legion claims stop` runs for an operator; a turn it is in is cut off with
+   * it. Refused for a claim the operator's own suspension holds (`SUSPENDED_BY_OPERATOR`). The
+   * answer is the claim as the stop left it. */
   readonly stopClaim: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
-  /** The controller's `retry`: a claim that failed, or that a stop retired, starts again in the
-   * session it recorded, the effect a plain `legion claims retry` runs for an operator; a phase
-   * worker is started through its issue's phase. Refused for a claim stored working
-   * (`CLAIM_IN_A_TURN`). The answer is the claim as the retry left it. */
+  /** The controller's or an architect's `retry`: a claim that failed, or that a stop retired,
+   * starts again in the session it recorded, the effect a plain `legion claims retry` runs for an
+   * operator; a phase worker is started through its issue's phase. Refused for a claim stored
+   * working (`CLAIM_IN_A_TURN`). The answer is the claim as the retry left it. */
   readonly retryClaim: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
-  /** The controller's `suspend`: the claim's process stops and its session is kept, the effect
-   * `legion claims suspend` runs for an operator, held for a turn's end; the suspension is the
-   * controller's, which holds against the daemon's rules and which its own resume lifts. Refused
-   * for a claim the operator's own suspension holds (`SUSPENDED_BY_OPERATOR`). The answer is the
-   * claim as the suspension left it, with who holds the suspension. */
+  /** The controller's or an architect's `suspend`: the claim's process stops and its session is
+   * kept, the effect `legion claims suspend` runs for an operator, held for a turn's end; the
+   * suspension is the caller's (`controller` or `architect`), which holds against the daemon's
+   * rules and which the caller's own resume lifts. Refused for a claim the operator's own
+   * suspension holds (`SUSPENDED_BY_OPERATOR`). The answer is the claim as the suspension left it,
+   * with who holds the suspension. */
   readonly suspendClaim: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
-  /** The controller's `resume`: a suspended claim's session is relaunched, the effect
-   * `legion claims resume` runs for an operator, but never over the operator's own suspension
-   * (`SUSPENDED_BY_OPERATOR`); a claim stored working is refused (`CLAIM_IN_A_TURN`). The answer
-   * is the claim as the resume left it. */
+  /** The controller's or an architect's `resume`: a suspended claim's session is relaunched, the
+   * effect `legion claims resume` runs for an operator, but never over the operator's own
+   * suspension (`SUSPENDED_BY_OPERATOR`); a claim stored working is refused (`CLAIM_IN_A_TURN`).
+   * The answer is the claim as the resume left it.
+   *
+   * An architect's grant reaches the claims of its own tree alone, through all six of these
+   * claim operations: another tree's claim is refused (`ISSUE_OUTSIDE_TREE`), and so is the
+   * architect's own (`OWN_CLAIM`), a claim the controller's suspension holds
+   * (`SUSPENDED_BY_CONTROLLER`), and, for its resume, suspend, stop and `fresh_session`, a claim
+   * the daemon suspended (`SUSPENDED_BY_DAEMON`). */
   readonly resumeClaim: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
