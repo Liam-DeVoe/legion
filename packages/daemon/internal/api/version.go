@@ -1672,7 +1672,7 @@ package api
 // declares. Read the base's own number and every open pull request again at every forward merge
 // rather than from this line.)
 //
-// 134: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
+// 136: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
 // issue record of the state gains `assignments`, the experiment answers that apply to it: one
 // `{experiment, variant, mode, drawnAt}` per answer, in the order the project's file declares
 // the experiments (config.Project.ExperimentsDeclared): the `memory` block's experiment first,
@@ -1697,18 +1697,18 @@ package api
 // before: a tree that answered nothing answers nothing still, and the measurement job's count
 // of the trees each group reached is the count it was. `assignments` carries that settled row
 // all the same, with its empty variant. `settings.projects.<KEY>.experiments` is a key new at
-// 134, and every project carries it, `[]` for a project whose file declares no experiment under
+// 136, and every project carries it, `[]` for a project whose file declares no experiment under
 // that key, as `slack_channels` and `memory` are always carried; every plugin reads the settings
 // loosely, so no strictly parsed shape changes with it. `packages/contracts/src/legion-api.ts` mirrors
 // `assignments` on `legionIssue`, which is a `z.object`: every answer-side schema of
 // `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
-// that package's own test holds it to, and 134 is later than that change, so a reader built after
-// that change and before 134 parses this state and sees no `assignments` at all rather than
+// that package's own test holds it to, and 136 is later than that change, so a reader built after
+// that change and before 136 parses this state and sees no `assignments` at all rather than
 // refusing it — and every worker's `read_record` parses the state through that schema. The
 // downgrade below is still what serves such a reader: a caller that did not ask for the field is
 // not given it.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 134 is served the state without the field (api's stateFor,
+// contract below 136 is served the state without the field (api's stateFor,
 // withoutAssignments), as a caller below 49 is served it without the memory fields; a caller
 // from 49 to below this contract is served the three memory fields and no assignments, whatever
 // else its own band gives it — each band is served what the narrowing at its lower edge and
@@ -1768,5 +1768,10 @@ package api
 // #3715's own, main declared 132, the entry then right above this one, so in that merge the
 // number moved to the lowest free number above 132 at its push, 134: of the heads of the 152
 // pull requests open at 2026-11-15T00:17:26Z, read at refs/pull/<n>/head, #4033 declared 132 and
-// #3937 133.)
-const DaemonAPIVersion = 134
+// #3937 133. Before that merge was pushed, the reading at its push, of the heads of the 151
+// pull requests open at 2026-11-15T01:04:30Z, found #4021 declaring 134 beside #2697, #3995 and
+// #4033 at 132 and #3937 at 133, so the number moved once more, to 135, the lowest free number
+// above 132 then. The reading before the next push, of the heads of the 150 pull requests
+// open at 2026-11-15T01:34:27Z, found #3659 declaring 135, so the number moved to 136, the
+// lowest free number above 132 then.)
+const DaemonAPIVersion = 136

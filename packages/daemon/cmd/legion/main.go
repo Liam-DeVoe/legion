@@ -114,6 +114,7 @@ var commands = map[string]commandEntry{
 	"skills-check":     {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
 	"controller":       {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
 	"git-credential":   {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
+	"git":              {runGit, "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)"},
 	"gh":               {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
 	"leak-check":       {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
 }
@@ -812,7 +813,7 @@ const waitingLineNamedCap = 10
 // `memory: none` for a deployment that has drawn nothing yet, which is the line such a
 // deployment read before any experiment was declared.
 //
-// A daemon older than contract 134 serves no `assignments` on any issue, and that is the daemon an
+// A daemon older than contract 136 serves no `assignments` on any issue, and that is the daemon an
 // operator who rolls the daemon back and keeps this `legion` reads. So an issue that carries no
 // `assignments` is counted from its memory fields instead (api.Issue.MemoryGroup and
 // MemoryDrawMode, which every daemon from contract 49 serves), under the `memory` experiment,
@@ -822,7 +823,7 @@ const waitingLineNamedCap = 10
 // settings carries neither, so the list above declares the `memory` experiment alone and the
 // line is the one a `legion` without this change prints for the same body. A daemon of this
 // release serves the memory fields only where an issue's `memory` row records a draw, and serves
-// that row in `assignments` as well to every caller but a pod below contract 134 (api's stateFor),
+// that row in `assignments` as well to every caller but a pod below contract 136 (api's stateFor),
 // so in the body it serves `legion state` an issue with no `assignments` carries no `memoryGroup`
 // either and the fallback counts nothing; in the body it serves such a pod it counts the `memory`
 // draws.
