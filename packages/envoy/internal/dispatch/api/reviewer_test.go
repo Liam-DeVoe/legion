@@ -70,8 +70,8 @@ func reviewStandIn(t *testing.T) *modeltest.Model {
 			Reply: modeltest.Reply{Text: standInReview(t, vacuousPhrase, map[string]any{
 				"body": "Ship the reviewer?\nThe test of the held ask fails on its first call.",
 				"options": []map[string]string{
-					{"id": "", "label": "Ship it", "description": "Release it today, with the failing test."},
-					{"id": "", "label": "Do not file", "description": "Wait until the test passes."},
+					{"label": "Ship it", "description": "Release it today, with the failing test."},
+					{"label": "Do not file", "description": "Wait until the test passes."},
 				},
 				"multiple": false,
 			})},
@@ -463,6 +463,91 @@ func TestTheReviewerPostsTheRewriteOfAHeldAskLeftToTheWindow(t *testing.T) {
 	}
 }
 
+// writtenOptions are the options the writer's ask of an option case has.
+var writtenOptions = []map[string]string{{"label": "Ship it", "description": "Release it today."}, {"label": "Do not file", "description": "Wait."}}
+
+// optionCase is the stand-in reviewer's rewrite of the options of the ask whose question holds
+// its marker, and the reason the rewrite is not applied, "" for one that keeps them.
+type optionCase struct {
+	marker, notApplied string
+	options            []map[string]string
+}
+
+// optionCases rewrite writtenOptions: one keeps them, and the others change a label, the order
+// and the count. Each writes its options as the reply's schema has a model write them, with no id.
+func optionCases() []optionCase {
+	ship := map[string]string{"label": "Ship it", "description": "Release it today, with the failing test."}
+	hold := map[string]string{"label": "Do not file", "description": "Wait until the test passes."}
+	return []optionCase{
+		{"case-kept", "", []map[string]string{ship, hold}},
+		{"case-labels", `option 2 has the label "Hold" in the rewrite, and "Do not file" in the ask`,
+			[]map[string]string{ship, {"label": "Hold", "description": "Wait until the test passes."}}},
+		{"case-order", `the rewrite puts the options in the order "Do not file", "Ship it", and the ask has them in the order "Ship it", "Do not file"`,
+			[]map[string]string{hold, ship}},
+		{"case-count", "the rewrite has 1 option, and the ask has 2", []map[string]string{ship}},
+	}
+}
+
+// optionCaseQuestion is the question of the ask of the case with marker.
+func optionCaseQuestion(marker string) string {
+	return "Ship the reviewer? " + marker + "\n" + vacuousPhrase
+}
+
+// optionCaseStandIn is the stand-in reviewer of cases: for the ask whose question holds a case's
+// marker, it finds the vacuous phrase and rewrites the ask with the case's options, keeping the
+// first line.
+func optionCaseStandIn(t *testing.T, cases []optionCase) *modeltest.Model {
+	t.Helper()
+	isReview := func(request modeltest.Request) bool { return strings.Contains(request.Text, reviewMarker) }
+	var rules []modeltest.Rule
+	for _, c := range cases {
+		marker := c.marker
+		rules = append(rules, modeltest.Rule{
+			Match: func(request modeltest.Request) bool {
+				return isReview(request) && strings.Contains(reviewedText(request), marker)
+			},
+			Reply: modeltest.Reply{Text: standInReview(t, vacuousPhrase, map[string]any{
+				"body": "Ship the reviewer? " + marker + "\nThe test of the held ask fails on its first call.", "options": c.options, "multiple": false,
+			})},
+		})
+	}
+	return modeltest.New(t, append(rules, modeltest.Rule{Match: isReview, Reply: modeltest.Reply{Text: `{"findings":[]}`}})...)
+}
+
+// A held ask whose reviewer's rewrite changes an option's label, the options' order or their
+// count keeps the rewrite unapplied with its reason, and its writer leaving it past the window
+// posts it as written, recorded posted_as_written with that reason.
+func TestAHeldAsksRewriteThatChangesItsOptionsIsNotApplied(t *testing.T) {
+	cases := optionCases()[1:]
+	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, WriterWindow: 300 * time.Millisecond, Unedited: UneditedRewrite}, optionCaseStandIn(t, cases))
+	ids := make([]string, len(cases))
+	for i, c := range cases {
+		ids[i] = rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{
+			"question": optionCaseQuestion(c.marker), "options": writtenOptions,
+		}), "the ask of "+c.marker).ID
+	}
+	for i, c := range cases {
+		if held := rig.waitHeld(ids[i], heldAwaitingWriter); held.rewrite == nil || held.notApplied != c.notApplied {
+			t.Fatalf("%s: the review gave rewrite %+v not applied %q, want not applied %q", c.marker, held.rewrite, held.notApplied, c.notApplied)
+		}
+	}
+	time.Sleep(400 * time.Millisecond)
+	rig.served.sweepHeld(t.Context())
+	for i, c := range cases {
+		posted := rig.waitHeld(ids[i], heldPosted)
+		if posted.outcome != reviewPostedAsWritten || !strings.Contains(posted.detail, "the reviewer's rewrite is not applied: "+c.notApplied) {
+			t.Fatalf("%s: the ask posted %s (%s), want posted_as_written with the reason", c.marker, posted.outcome, posted.detail)
+		}
+		var question string
+		if err := rig.database.Pool.QueryRow(context.Background(), `select question from asks where id = $1`, ids[i]).Scan(&question); err != nil {
+			t.Fatalf("%s: read the posted ask: %v", c.marker, err)
+		}
+		if question != optionCaseQuestion(c.marker) {
+			t.Fatalf("%s: the posted ask asks %q, want its writer's question", c.marker, question)
+		}
+	}
+}
+
 // A writer session that has gone gets no time: the setting's choice posts at once.
 func TestTheReviewerPostsAtOnceWhenTheWriterHasGone(t *testing.T) {
 	for _, unedited := range []string{UneditedRewrite, UneditedAsWritten} {
@@ -582,6 +667,33 @@ func TestTheReviewerDraftRouteAnswersAndWritesNothing(t *testing.T) {
 	off := newRegisteredTestHandlerWithoutReviewer(t)
 	if response := dispatchRequest(t, off, http.MethodPost, "/api/v1/reviewer/draft", map[string]any{"kind": "comment", "text": "x"}, "alice"); response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("the draft route with no reviewer's model: %d, want 503", response.Code)
+	}
+}
+
+// The draft route weighs the reviewer's rewrite of an ask's options as every rewrite is weighed:
+// one that keeps their labels, their number and their order would post, and one that changes a
+// label, the order or the count would not, saying why. No option of a rewrite carries an id.
+func TestTheDraftRouteWeighsTheRewriteOfAnAsksOptions(t *testing.T) {
+	cases := optionCases()
+	rig := newReviewRig(t, ReviewerConfig{}, optionCaseStandIn(t, cases))
+	for _, c := range cases {
+		t.Run(c.marker, func(t *testing.T) {
+			response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer/draft", map[string]any{
+				"kind": "ask", "text": optionCaseQuestion(c.marker), "options": writtenOptions, "issue": rig.issue,
+			}, "alice")
+			if response.Code != http.StatusOK {
+				t.Fatalf("the draft route: %d %s", response.Code, response.Body.String())
+			}
+			answer := decodeBody[reviewerDraftAnswer](t, response)
+			if answer.Rewrite == nil || len(answer.Rewrite.Options) != len(c.options) || answer.NotApplied != c.notApplied {
+				t.Fatalf("the draft's rewrite = %+v, not applied %q; want %d options, not applied %q", answer.Rewrite, answer.NotApplied, len(c.options), c.notApplied)
+			}
+			for _, option := range answer.Rewrite.Options {
+				if option.ID != "" {
+					t.Errorf("the rewrite's option %q carries the id %q", option.Label, option.ID)
+				}
+			}
+		})
 	}
 }
 

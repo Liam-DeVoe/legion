@@ -8,13 +8,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// pictureAsk is an ask whose question holds a picture line and links.
+// pictureAsk is an ask whose question holds a picture line and links. Its options carry no id, as
+// the ask's row holds them (AskSubject).
 func pictureAsk() Text {
 	return Text{
 		Kind: KindAsk,
 		Body: "Finding from tester\nThe chart shows the wait. See https://ci.test/run/7 and [the log](https://ci.test/log/7).\n" +
 			"![the wait](https://ci.test/chart.png)\nRef: dispatch://PRJ-1/comment/c1",
-		Options: []model.AskOption{{ID: "o1", Label: "Ship"}, {ID: "o2", Label: "Hold", Description: "Wait"}},
+		Options: []model.AskOption{{Label: "Ship"}, {Label: "Hold", Description: "Wait"}},
 	}
 }
 
@@ -38,8 +39,6 @@ func TestEachBreakOfWhatARewriteKeepsIsNotApplied(t *testing.T) {
 			"the rewrite has 1 option, and the ask has 2"},
 		{"the options in another order", edit(func(r *Text) { r.Options[0], r.Options[1] = r.Options[1], r.Options[0] }), KeepOptionOrder,
 			`the rewrite puts the options in the order "Hold", "Ship", and the ask has them in the order "Ship", "Hold"`},
-		{"an option's id", edit(func(r *Text) { r.Options[1].ID = "o3" }), KeepOptionIDs,
-			`option 2 has the id "o3" in the rewrite, and "o2" in the ask`},
 		{"an option's label", edit(func(r *Text) { r.Options[1].Label = "Hold it" }), KeepOptionLabels,
 			`option 2 has the label "Hold it" in the rewrite, and "Hold" in the ask`},
 		{"single to multiple choice", edit(func(r *Text) { r.Multiple = true }), KeepChoice,
@@ -75,6 +74,13 @@ func TestEachBreakOfWhatARewriteKeepsIsNotApplied(t *testing.T) {
 	})
 	if got := Preserve(Record{Text: ask}, kept); got != nil {
 		t.Errorf("a rewrite that keeps every rule: %v", got)
+	}
+	// An option's id is the server's (optionWords), so Preserve weighs none: a rewrite, which
+	// writes no id, of an ask whose options carry the part ids a read shows keeps every rule.
+	read := pictureAsk()
+	read.Options[0].ID, read.Options[1].ID = "b-2", "b-3"
+	if got := Preserve(Record{Text: read}, kept); got != nil {
+		t.Errorf("a rewrite of an ask whose options carry ids: %v", got)
 	}
 }
 

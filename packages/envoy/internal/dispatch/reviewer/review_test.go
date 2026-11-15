@@ -27,14 +27,15 @@ var ruleSetMarkers = map[RuleSet][]string{
 	RuleDetector:    {`### Rule set "detector"`, "<detector_findings>", "Rule vacuous-verb-phrase."},
 }
 
-// keptRewrite is a rewrite of askRecord's ask that keeps every rule of what a rewrite keeps.
+// keptRewrite is a rewrite of askRecord's ask that keeps every rule of what a rewrite keeps, as
+// the schema has a reply write it: options with no id.
 func keptRewrite() Text {
 	return Text{
 		Kind: KindAsk,
 		Body: "Finding from tester\nWe start the node. The test fails on the node's first call.\nRef: dispatch://PRJ-1/comment/c1",
 		Options: []model.AskOption{
-			{ID: "o1", Label: "Ship", Description: "Release it today, with the failing test"},
-			{ID: "o2", Label: "Hold", Description: "Wait until the test passes"},
+			{Label: "Ship", Description: "Release it today, with the failing test"},
+			{Label: "Hold", Description: "Wait until the test passes"},
 		},
 	}
 }

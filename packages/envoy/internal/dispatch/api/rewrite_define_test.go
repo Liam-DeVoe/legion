@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -110,7 +111,8 @@ type rewriteRig struct {
 	issue    string
 }
 
-// rewriteJSON is a rewrite's reply: the body and the options, each {id, label, description}.
+// rewriteJSON is a rewrite's reply: the body and the options, each {label, description}, as the
+// reply's schema has a model write them, with no id.
 func rewriteJSON(t *testing.T, body string, multiple bool, options ...map[string]string) string {
 	t.Helper()
 	encoded, err := json.Marshal(map[string]any{"body": body, "options": options, "multiple": multiple})
@@ -120,14 +122,14 @@ func rewriteJSON(t *testing.T, body string, multiple bool, options ...map[string
 	return string(encoded)
 }
 
-func option(id, label, description string) map[string]string {
-	return map[string]string{"id": id, "label": label, "description": description}
+func option(label, description string) map[string]string {
+	return map[string]string{"label": label, "description": description}
 }
 
 // keptRewrite is the stand-in's rewrite of rewriteQuestion, which keeps what a rewrite keeps.
 func keptRewrite(t *testing.T) string {
 	return rewriteJSON(t, rewriteBody, false,
-		option("", "Ship it", "Release it today, with the failing test."), option("", "Do not file", "Wait until the test passes."))
+		option("Ship it", "Release it today, with the failing test."), option("Do not file", "Wait until the test passes."))
 }
 
 // newRewriteRig builds the rig: the writer session advertises capabilities, and the stand-in
@@ -202,6 +204,18 @@ func (rig *rewriteRig) question(id string) string {
 		rig.t.Fatal(err)
 	}
 	return question
+}
+
+// options are the ask id's options as alice reads them, each with the id a read shows.
+func (rig *rewriteRig) options(id string) []model.AskOption {
+	rig.t.Helper()
+	response := dispatchRequest(rig.t, rig.handler, http.MethodGet, "/api/v1/asks/"+id, nil, "alice")
+	if response.Code != http.StatusOK {
+		rig.t.Fatalf("alice's read of ask %s: %d %s", id, response.Code, response.Body.String())
+	}
+	return decodeBody[struct {
+		Ask model.Ask `json:"ask"`
+	}](rig.t, response).Ask.Options
 }
 
 // rewriteOf is the `rewrite` of the object with the id id in what login reads at target: an ask,
@@ -383,6 +397,31 @@ func TestARewriteSendsNoSideQuestionToAHostWithoutBtw(t *testing.T) {
 	}
 }
 
+// A rewrite's reply writes no option id, and an applied rewrite keeps each option's id all the
+// same: the part index keeps an option's part through an edit that rewords it in its place, so
+// the ask's read shows the ids it showed before, beside the rewrite's descriptions.
+func TestAnAppliedRewriteKeepsTheAsksOptionIDs(t *testing.T) {
+	rig := newRewriteRig(t, []string{"steer"})
+	id := rig.ask(rewriteQuestion)
+	before := rig.options(id)
+	rig.rewrite(id)
+	rig.waitRewrite(id, model.RewriteRewritten)
+	after := rig.options(id)
+	ids := func(options []model.AskOption) []string {
+		read := make([]string, len(options))
+		for i, option := range options {
+			read[i] = option.ID
+		}
+		return read
+	}
+	if len(before) != 2 || slices.Contains(ids(before), "") || !slices.Equal(ids(after), ids(before)) {
+		t.Fatalf("the options read %+v before the rewrite and %+v after, want the same ids", before, after)
+	}
+	if after[0].Description != "Release it today, with the failing test." || after[1].Description != "Wait until the test passes." {
+		t.Fatalf("the rewritten options are %+v, want the rewrite's descriptions", after)
+	}
+}
+
 // preserveQuestion is a question with every line a rewrite keeps: a short first line, a link of
 // each kind, a picture line and a `Ref: ` line. marker tells the stand-in which case it is.
 func preserveQuestion(marker string) string {
@@ -393,7 +432,7 @@ func preserveQuestion(marker string) string {
 // Each break of what a rewrite keeps leaves the ask as it was: the run fails with the rule's
 // reason, a quiet ask.rewrite_failed carries it, and the ask's read carries the failed rewrite.
 func TestEachBreakOfWhatARewriteKeepsLeavesTheAskAsItWas(t *testing.T) {
-	ship, hold := option("", "Ship", "Release it."), option("", "Hold", "Wait.")
+	ship, hold := option("Ship", "Release it."), option("Hold", "Wait.")
 	body := func(marker string) string { return preserveQuestion(marker) }
 	cases := []struct {
 		marker, reason string
@@ -401,11 +440,8 @@ func TestEachBreakOfWhatARewriteKeepsLeavesTheAskAsItWas(t *testing.T) {
 	}{
 		{"count", "the rewrite has 1 option, and the ask has 2", func(t *testing.T, b string) string { return rewriteJSON(t, b, false, ship) }},
 		{"order", `the rewrite puts the options in the order "Hold", "Ship"`, func(t *testing.T, b string) string { return rewriteJSON(t, b, false, hold, ship) }},
-		{"ids", `option 1 has the id "o9" in the rewrite`, func(t *testing.T, b string) string {
-			return rewriteJSON(t, b, false, option("o9", "Ship", "Release it."), hold)
-		}},
 		{"labels", `option 2 has the label "Hold it" in the rewrite, and "Hold" in the ask`, func(t *testing.T, b string) string {
-			return rewriteJSON(t, b, false, ship, option("", "Hold it", "Wait."))
+			return rewriteJSON(t, b, false, ship, option("Hold it", "Wait."))
 		}},
 		{"choice", "the rewrite makes the single-choice ask a multiple-choice ask", func(t *testing.T, b string) string { return rewriteJSON(t, b, true, ship, hold) }},
 		{"firstline", "the rewrite changes the first line", func(t *testing.T, b string) string {
@@ -546,7 +582,7 @@ func TestARewriteOfADecisionBlockKeepsItsPicture(t *testing.T) {
 	)
 	document := "# Rollout\n\nThe plan for the rollout.\n\n:::ask{urgency=\"med\"}\n" + asked +
 		"\n\n- Ship it: Release it today.\n- Do not file: Wait.\n:::\n"
-	options := []map[string]string{option("", "Ship it", "Release it today."), option("", "Do not file", "Wait.")}
+	options := []map[string]string{option("Ship it", "Release it today."), option("Do not file", "Wait.")}
 	for name, test := range map[string]struct {
 		body, state, reason string
 	}{

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The user message shows each part of the record in its own tag, and the reader's words only
@@ -13,7 +15,7 @@ func TestTheInputShowsEachPartOfTheRecord(t *testing.T) {
 	input := askRecord().input(extra{})
 	for _, want := range []string{
 		"<text kind=\"ask\" choice=\"single\">\n<question>\nFinding from tester\n",
-		`[{"id":"o1","label":"Ship","description":"Release it today"},{"id":"o2","label":"Hold","description":"Wait for the store"}]`,
+		`[{"label":"Ship","description":"Release it today"},{"label":"Hold","description":"Wait for the store"}]`,
 		"<thread>\n<entry kind=\"comment\" author=\"person sami\" at=\"2026-11-14T09:00:00Z\">\nWhat is a store?\n</entry>\n</thread>",
 		"<issue key=\"PRJ-1\">\nShip the reviewer\n</issue>",
 		"<document name=\"spec\" role=\"document the text stands in\">\n# Spec",
@@ -28,6 +30,13 @@ func TestTheInputShowsEachPartOfTheRecord(t *testing.T) {
 		if strings.Contains(input, absent) {
 			t.Errorf("the input holds %s", absent)
 		}
+	}
+	// An option's id is the server's: a text whose options carry the ids an ask's read shows
+	// gives the model no id.
+	read := askRecord()
+	read.Text.Options = []model.AskOption{{ID: "b-2", Label: "Ship"}, {ID: "b-3", Label: "Hold"}}
+	if input := read.input(extra{}); !strings.Contains(input, `[{"label":"Ship"},{"label":"Hold"}]`) || strings.Contains(input, "b-2") {
+		t.Errorf("the input shows an option's id:\n%s", input)
 	}
 	if input := (Record{Text: Text{Kind: KindMessage, Body: "Hi."}}).input(extra{readerWords: true}); !strings.Contains(input, "<reader_words>\nThe reader asked about no word before this text.\n</reader_words>") {
 		t.Errorf("a record with no reader words, reader_words on:\n%s", input)

@@ -59,15 +59,16 @@ const (
 )
 
 // askRecord is the record of an ask with two options, a thread, the document it stands in, the
-// issue's decisions document, the writer's texts and the words its reader asked about before.
+// issue's decisions document, the writer's texts and the words its reader asked about before. Its
+// options carry no id, as the ask's row holds them (AskSubject).
 func askRecord() Record {
 	return Record{
 		Text: Text{
 			Kind: KindAsk,
 			Body: "Finding from tester\nWe spin up the node. This names the problem.\nRef: dispatch://PRJ-1/comment/c1",
 			Options: []model.AskOption{
-				{ID: "o1", Label: "Ship", Description: "Release it today"},
-				{ID: "o2", Label: "Hold", Description: "Wait for the store"},
+				{Label: "Ship", Description: "Release it today"},
+				{Label: "Hold", Description: "Wait for the store"},
 			},
 		},
 		Thread: []Entry{{Kind: KindComment, Author: "person sami", At: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC), Text: "What is a store?"}},

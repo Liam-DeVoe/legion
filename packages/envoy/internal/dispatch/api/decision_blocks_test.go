@@ -201,8 +201,8 @@ func TestADecisionBlockWhoseRewriteDropsItsPicturePostsAsWritten(t *testing.T) {
 			Reply: modeltest.Reply{Text: standInReview(t, vacuousPhrase, map[string]any{
 				"body": "Ship the reviewer? https://ci.test/chart.png The test of the held ask fails on its first call.",
 				"options": []map[string]string{
-					{"id": "", "label": "Ship it", "description": "Release it today, with the failing test."},
-					{"id": "", "label": "Do not file", "description": "Wait until the test passes."},
+					{"label": "Ship it", "description": "Release it today, with the failing test."},
+					{"label": "Do not file", "description": "Wait until the test passes."},
 				},
 				"multiple": false,
 			})},

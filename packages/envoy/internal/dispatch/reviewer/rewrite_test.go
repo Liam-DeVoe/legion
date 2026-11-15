@@ -12,10 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
 )
 
-// rewriteReply is a rewrite's reply holding text.
+// rewriteReply is a rewrite's reply holding text, as the schema has a reply write it.
 func rewriteReply(t *testing.T, text Text) string {
 	t.Helper()
-	return asJSON(t, map[string]any{"body": text.Body, "options": optionsOrEmpty(text), "multiple": text.Multiple})
+	return asJSON(t, map[string]any{"body": text.Body, "options": optionWords(text.Options), "multiple": text.Multiple})
 }
 
 // A rewrite reads the writer's answer when one came, and the record alone when none did, and
@@ -70,7 +70,7 @@ func TestARewriteReadsTheWritersAnswerWhenOneCame(t *testing.T) {
 // A rewrite that breaks a rule of what a rewrite keeps comes back not applied, with its reason.
 func TestARewriteThatBreaksARuleIsNotApplied(t *testing.T) {
 	broken := keptRewrite()
-	broken.Options = []model.AskOption{{ID: "o1", Label: "Ship it", Description: "Release it today"}, broken.Options[1]}
+	broken.Options = []model.AskOption{{Label: "Ship it", Description: "Release it today"}, broken.Options[1]}
 	stand := modeltest.New(t, modeltest.Rule{Reply: modeltest.Reply{Text: rewriteReply(t, broken)}})
 	rewritten, err := Rewrite(t.Context(), chatModel(stand.URL, "rewriter"), []RuleSet{RuleNoslop}, askRecord(), Answer{})
 	if err != nil {
@@ -82,6 +82,46 @@ func TestARewriteThatBreaksARuleIsNotApplied(t *testing.T) {
 	}
 	if !reflect.DeepEqual(rewritten.Text, broken) {
 		t.Errorf("rewrite = %+v, want the model's, kept for its reason", rewritten.Text)
+	}
+}
+
+// A reply writes no option id, since an option's id is the server's: the schema asks for none,
+// and a rewrite or a review's rewrite that keeps the labels and their order is applied, whether
+// the record's options carry no id, as the ask's row holds them, or the part ids a read shows.
+func TestARewriteOfAnAsksOptionsWritesNoID(t *testing.T) {
+	kept := keptRewrite()
+	stand := modeltest.New(t,
+		modeltest.Rule{Contains: rewriteMarker, Reply: modeltest.Reply{Text: rewriteReply(t, kept)}},
+		modeltest.Rule{Contains: reviewMarker, Reply: modeltest.Reply{Text: reviewReplyOf(t, RuleNoslop)}},
+	)
+	read := askRecord()
+	read.Text.Options = []model.AskOption{
+		{ID: "b-2", Label: "Ship", Description: "Release it today"}, {ID: "b-3", Label: "Hold", Description: "Wait for the store"},
+	}
+	for name, record := range map[string]Record{"the row's options": askRecord(), "a read's options": read} {
+		rewritten, err := Rewrite(t.Context(), chatModel(stand.URL, "rewriter"), []RuleSet{RuleNoslop}, record, Answer{})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !reflect.DeepEqual(rewritten.Text, kept) || rewritten.NotApplied != nil {
+			t.Errorf("%s: rewrite = %+v, not applied %v; want %+v applied", name, rewritten.Text, rewritten.NotApplied, kept)
+		}
+		reviewed, err := Review(t.Context(), chatModel(stand.URL, "reviewer"), []RuleSet{RuleNoslop}, record)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if reviewed.Rewrite == nil || !reflect.DeepEqual(*reviewed.Rewrite, kept) || reviewed.NotApplied != nil {
+			t.Errorf("%s: the review's rewrite = %+v, not applied %v; want %+v applied", name, reviewed.Rewrite, reviewed.NotApplied, kept)
+		}
+	}
+	requests := stand.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("%d requests, want two rewrites and two reviews", len(requests))
+	}
+	for _, request := range requests {
+		if body := string(request.Body); !strings.Contains(body, `"required":["label","description"]`) || strings.Contains(body, `"id":{"type":"string"}`) {
+			t.Errorf("the request's schema asks for an option's id: %s", body)
+		}
 	}
 }
 

@@ -21,9 +21,8 @@ const (
 	KeepOptionCount Keep = "option_count"
 	// KeepOptionOrder: the order of an ask's options.
 	KeepOptionOrder Keep = "option_order"
-	// KeepOptionIDs: each option's id, byte for byte.
-	KeepOptionIDs Keep = "option_ids"
-	// KeepOptionLabels: each option's label, byte for byte.
+	// KeepOptionLabels: each option's label, byte for byte. An option's id is the server's, which
+	// an edit that keeps the labels and their order keeps (optionWords), so a rewrite has none.
 	KeepOptionLabels Keep = "option_labels"
 	// KeepChoice: an ask's single or multiple choice.
 	KeepChoice Keep = "choice"
@@ -85,19 +84,15 @@ func Preserve(record Record, rewrite Text) *NotApplied {
 	return nil
 }
 
-// keepOptions weighs a rewrite's options and choice against the ask's.
+// keepOptions weighs a rewrite's options and choice against the ask's: their number, their
+// order and each label. Their ids are the server's (optionWords), so neither side's are weighed.
 func keepOptions(original, rewrite Text) *NotApplied {
 	was, now := original.Options, rewrite.Options
 	if len(now) != len(was) {
 		return &NotApplied{KeepOptionCount, fmt.Sprintf("the rewrite has %s, and the ask has %d", optionCount(len(now)), len(was))}
 	}
-	if !slices.EqualFunc(was, now, sameOption) && sameOptions(was, now) {
+	if !slices.EqualFunc(was, now, sameLabel) && sameLabels(was, now) {
 		return &NotApplied{KeepOptionOrder, fmt.Sprintf("the rewrite puts the options in the order %s, and the ask has them in the order %s", labels(now), labels(was))}
-	}
-	for i := range was {
-		if now[i].ID != was[i].ID {
-			return &NotApplied{KeepOptionIDs, fmt.Sprintf("option %d has the id %s in the rewrite, and %s in the ask", i+1, strconv.Quote(now[i].ID), strconv.Quote(was[i].ID))}
-		}
 	}
 	for i := range was {
 		if now[i].Label != was[i].Label {
@@ -111,18 +106,17 @@ func keepOptions(original, rewrite Text) *NotApplied {
 	return nil
 }
 
-// sameOption reports whether two options have the same id and label.
-func sameOption(a, b model.AskOption) bool { return a.ID == b.ID && a.Label == b.Label }
+// sameLabel reports whether two options have the same label.
+func sameLabel(a, b model.AskOption) bool { return a.Label == b.Label }
 
-// sameOptions reports whether two lists hold the same options, by id and label, in any order.
-func sameOptions(a, b []model.AskOption) bool {
-	key := func(o model.AskOption) string { return o.ID + "\x00" + o.Label }
+// sameLabels reports whether two lists hold the same labels, in any order.
+func sameLabels(a, b []model.AskOption) bool {
 	left, right := make([]string, len(a)), make([]string, len(b))
 	for i := range a {
-		left[i] = key(a[i])
+		left[i] = a[i].Label
 	}
 	for i := range b {
-		right[i] = key(b[i])
+		right[i] = b[i].Label
 	}
 	slices.Sort(left)
 	slices.Sort(right)

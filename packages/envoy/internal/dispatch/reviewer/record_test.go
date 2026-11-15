@@ -64,8 +64,10 @@ func seedRecords(t *testing.T, database *store.Store) seeded {
 	s.handbook = document(nil, "handbook", false, nil)
 	version(s.handbook, 1, "# Handbook\n\nHow we work.\n", at(-24*time.Hour))
 
+	// An ask's row holds its options with no id, as every write of one stores them
+	// (api.validateAskOptions): an option's id is its part's, which a read attaches.
 	s.ask = exec(`insert into asks (issue_key, author, question, options, created_at) values ('PRJ-1', $1, 'Which store do we keep?',
-		'[{"id":"o1","label":"One"},{"id":"o2","label":"Two","description":"Keep both"}]', $2) returning id`, writerActor, at(-3*time.Hour))
+		'[{"label":"One"},{"label":"Two","description":"Keep both"}]', $2) returning id`, writerActor, at(-3*time.Hour))
 	s.blockAsk = exec(`insert into asks (issue_key, author, question, options, block_id, block_artifact_id, created_at) values ('PRJ-1', $1, 'Which store?',
 		'[{"label":"A","description":"one store"},{"label":"B","description":"see the memo"}]', 'blk', $2, $3) returning id`, writerActor, s.notes, at(-24*time.Hour))
 	comment := func(author string, body string, askID, replyTo, anchor any, written time.Time) string {
@@ -163,8 +165,9 @@ func TestBuildRecordReadsTheRecordBeforeTheText(t *testing.T) {
 }
 
 // A person's Rewrite of a stored ask reads the ask's own wording and leaves the ask out of its
-// thread; a decision block's record holds its document, by which a rewrite of an option line the
-// document holds more of is not applied.
+// thread, and a rewrite of it that keeps its labels, their number and order and its choice keeps
+// what a rewrite keeps; a decision block's record holds its document, by which a rewrite of an
+// option line the document holds more of is not applied.
 func TestAskSubjectReadsAStoredAsk(t *testing.T) {
 	database := storetest.Open(t)
 	s := seedRecords(t, database)
@@ -173,7 +176,7 @@ func TestAskSubjectReadsAStoredAsk(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Subject{
-		Text: Text{Kind: KindAsk, Body: "Which store do we keep?", Options: []model.AskOption{{ID: "o1", Label: "One"}, {ID: "o2", Label: "Two", Description: "Keep both"}}},
+		Text: Text{Kind: KindAsk, Body: "Which store do we keep?", Options: []model.AskOption{{Label: "One"}, {Label: "Two", Description: "Keep both"}}},
 		ID:   s.ask, AskID: s.ask, IssueKey: "PRJ-1", Writer: "s-writer",
 	}
 	if !reflect.DeepEqual(subject, want) {
@@ -185,6 +188,12 @@ func TestAskSubjectReadsAStoredAsk(t *testing.T) {
 	}
 	if got := entriesOf(record.Thread); len(got) != 3 || strings.HasPrefix(got[0], "ask") {
 		t.Errorf("a stored ask's thread = %q, want its three replies and not the ask", got)
+	}
+	kept := record.Text
+	kept.Body = "Which store do we keep: one, or both?"
+	kept.Options = []model.AskOption{{Label: "One", Description: "Keep one store"}, {Label: "Two", Description: "Keep both stores"}}
+	if got := Preserve(record, kept); got != nil {
+		t.Errorf("a rewrite of the stored ask that keeps its labels and their order: %v", got)
 	}
 
 	subject, err = AskSubject(t.Context(), database, s.blockAsk)
