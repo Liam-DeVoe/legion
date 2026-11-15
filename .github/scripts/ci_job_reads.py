@@ -1008,9 +1008,9 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # -timeout 18m. A call's limit is the smallest whole minute at which its slowest
 # package takes at most half of it, measured on the largest reading this branch
 # has of that package (dispatch://INFRA-1075). This call's slowest package is
-# internal/dispatch/pmdoc at 513.5 s (run 42993788046, job 130432829161), which is
-# 47.5 per cent of 18m and would be 50.3 per cent of 17m, the limit this call
-# carried when that run read it. The limit leaves 566.5 s above that package's own
+# cmd/dispatch at 525.9 s (run 43691345741, job 132742525106), which is
+# 48.7 per cent of 18m and would be 51.6 per cent of 17m, the whole minute below
+# it. The limit leaves 554.1 s above that package's own
 # time, far over the 60 s of pmdoc's perCallReportMargin, which is the floor a
 # package that reads the test binary's deadline sets for itself.
 lead="{UNIT_TEST_LEAD_TEXT}"
