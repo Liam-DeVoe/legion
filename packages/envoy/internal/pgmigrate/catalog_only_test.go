@@ -372,7 +372,9 @@ var refusedRows = []refusedRow{
 	// LOCK TABLE needs no catalog read and sizes big, so the refusal comes from ALTER TYPE alone,
 	// which the census admitted as alter table before it read objtype (D5).
 	{name: "alter type add attribute", migrations: []string{"alter type pair add attribute c text; lock table big in access exclusive mode;"}},
-	// The pooled connection keeps a session setting for the next migration it runs (D1).
+	// A session SET turns off the reads of every later migration (D1). The runner resets the
+	// connection's session after each migration, so no later migration meets the setting, and the
+	// rule only refuses more.
 	{name: "after a session set search_path", migrations: []string{"set search_path = public", addColumn}},
 	{name: "after a session set of a quoted Search_Path", migrations: []string{`set "Search_Path" = public`, addColumn}},
 	// A session SET or a RESET of any setting but lock_timeout and statement_timeout, set time zone
@@ -632,11 +634,12 @@ func underSearchPath(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPa
 // Each form this repository's migrations write that PostgreSQL runs in the catalog alone is
 // exempt from the table limit, whatever the column type: an added column of any type that
 // resolves and is neither a domain nor a relation's row type, nor an array of one, with a
-// constant, a cast constant, a SQL value function or a call of a stable pg_catalog function with
-// no argument as its default, and the other subcommands, renames, creates, drops and locks that
-// read no existing row. The census runs with the limit at one byte, so every table of the fixture
-// is above it, and each row's migration touches such a table: a form that touches no table the
-// census sizes shares its migration with an added bigint column of big, which is admitted alone.
+// constant, a cast of a constant, a SQL value function or a call of a stable pg_catalog function
+// with no argument as its default, and the other subcommands, renames, creates, drops and locks
+// that read no existing row. The census runs with the limit at one byte, so every table of the
+// fixture is above it, and each row's migration touches such a table: a form that touches no
+// table the census sizes shares its migration with an added bigint column of big, which is
+// admitted alone.
 // Each row asserts that the census still sized a table above the limit for the migration, so a
 // pass means the exemption kept the refusal away, not a table the census did not find. A row of
 // two migrations shows that a first migration of statements that keep the catalog reads on
