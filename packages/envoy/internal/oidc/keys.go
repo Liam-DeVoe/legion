@@ -140,7 +140,11 @@ func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 // fails leaves the last good set serving and is returned only when that set does not hold the key
 // asked for — an issuer that is down stops no verification it does not have to. While the last
 // read failed less than FailureSpacing ago, Key makes no read: a set never read answers that
-// read's error, and a stale set answers from the set it holds.
+// read's error, and a stale set answers from the set it holds. With FailureSpacing set, a kid the
+// set does not hold that prompts no read, because MinRefresh holds it back, answers the last
+// read's error while that read failed and no read has succeeded since: the set is then not known
+// to be the issuer's, so the key may be one the issuer rotated in, which is the outage's to
+// answer and not a key nobody published.
 //
 // Every error wraps ErrNoKey, ErrAmbiguousKey or ErrKeySet. The text names the key id asked for,
 // which is a public identifier, shortened so an oversized one cannot flood a log, and no other
@@ -165,9 +169,15 @@ func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, erro
 	if err == nil {
 		return key, nil
 	}
-	if read || !errors.Is(err, ErrNoKey) || !k.openMissWindow() {
+	if read || !errors.Is(err, ErrNoKey) {
 		if fetchErr != nil {
 			return nil, fetchErr
+		}
+		return nil, err
+	}
+	if !k.openMissWindow() {
+		if failure := k.spacedFailure(); failure != nil {
+			return nil, failure
 		}
 		return nil, err
 	}
@@ -183,6 +193,18 @@ func (k *Keys) state() ([]jose.JSONWebKey, time.Time) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.keys, k.fetched
+}
+
+// spacedFailure is the last read's error while that read failed and none has succeeded since, on
+// a Keys whose caller set FailureSpacing, and nil otherwise: a Keys with no spacing answers an
+// unknown key as one nobody published, as it did before the spacing existed.
+func (k *Keys) spacedFailure() error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.FailureSpacing <= 0 {
+		return nil
+	}
+	return k.failure
 }
 
 // openMissWindow reports whether a key id the cached set does not hold may prompt a read now, and

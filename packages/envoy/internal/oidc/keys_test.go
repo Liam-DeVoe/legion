@@ -254,6 +254,42 @@ func TestAStaleKeySetAnswersWhatItHoldsWithinTheSpacing(t *testing.T) {
 	}
 }
 
+// TestAKeyRotatedInWhileTheKeySetCannotBeReadIsTheOutage: a set read once, whose issuer's key set
+// then fails, is asked for a key id it does not hold three times in one MinRefresh window, the
+// way a cluster that rotated its key while its key set is down sends tokens. With the broker's
+// spacing every call answers the failed read's ErrKeySet, so the broker answers 503 and no token
+// is refused as signed by a key nobody published. With no spacing, as Dispatch and the listener
+// read a key set, only the call that made the read answers ErrKeySet and the others ErrNoKey.
+func TestAKeyRotatedInWhileTheKeySetCannotBeReadIsTheOutage(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		spacing time.Duration
+		want    []error
+	}{
+		{name: "spaced five seconds", spacing: DefaultKeysFailureSpacing, want: []error{ErrKeySet, ErrKeySet, ErrKeySet}},
+		{name: "with no spacing", want: []error{ErrKeySet, ErrNoKey, ErrNoKey}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issuer := oidctest.New(t)
+			keys, _ := keysFor(t, issuer, "exchange-key")
+			keys.FailureSpacing = c.spacing
+			if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+				t.Fatalf("Key(the published key): %v", err)
+			}
+			issuer.FailKeys(http.StatusServiceUnavailable)
+			for call, want := range c.want {
+				_, err := keys.Key(context.Background(), "rotated-in", testAlgorithm)
+				if !errors.Is(err, want) {
+					t.Fatalf("Key(a key id the set does not hold), call %d, with the key set failing = %v, want %v", call+1, err, want)
+				}
+			}
+			if fetches := issuer.JWKSFetches(); fetches != 2 {
+				t.Fatalf("the key set was read %d times, want twice: the first Key and the first unknown key id", fetches)
+			}
+		})
+	}
+}
+
 // TestTheSpacingEndsAndTheNextKeyReadsTheSet: within the spacing a Key answers the failed read's
 // error without reading, even once the key set answers again; past it, the next Key reads the set
 // and answers the key.
