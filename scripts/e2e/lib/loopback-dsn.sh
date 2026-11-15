@@ -25,12 +25,10 @@
 # eighth is lib/two-builds.sh, the harness the two two-builds proofs share, which reads
 # DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. The ninth is
 # lib/live-daemon-proof.sh, whose prerequisites check
-# reads LEGION_TEST_PG_DSN for each of the ten proofs that make that run: behind-entry-fence.sh,
-# busy-relaunch-delivery.sh, child-adoption.sh, claim-compaction.sh, conflict-no-takeover.sh,
-# handoff-records.sh, late-completion.sh, phase-entry-converge.sh, provider-error-retry.sh and
-# role-prompt-rule.sh. The tenth call site is busy-relaunch-delivery.sh's negative control, which
-# reads LEGION_TEST_PG_DSN with this guard before it builds the base commit's tree, through the
-# copy lib/live-daemon-proof.sh sources. Eight of the ten call sites call this function.
+# reads LEGION_TEST_PG_DSN for each proof that makes that run, which is every entry script that
+# sources it. The tenth call site is busy-relaunch-delivery.sh's negative control, which reads
+# LEGION_TEST_PG_DSN with this guard before it builds the base commit's tree, through the copy
+# lib/live-daemon-proof.sh sources. Eight of the ten call sites call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.
