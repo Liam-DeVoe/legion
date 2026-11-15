@@ -114,6 +114,16 @@ export const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
  *  the first request under the key rather than ran again. */
 export const IDEMPOTENCY_REPLAYED_HEADER = "Idempotency-Replayed";
 
+/**
+ * The request header (`1`) a plugin puts on a reply that holds text it generated rather than text
+ * the agent wrote: a person's `!command` report, a slash command's output, a plugin's error reply.
+ * Dispatch reads it on `POST /api/v1/messages/{id}/reply` and `POST /api/v1/comments/{id}/reply`
+ * alone and ignores it on every other route: such a reply posts at once, the writing check does
+ * not read it, and `writing_check_events` records it as `exempt_generated`. An agent's own answer
+ * that a plugin posts carries no header. A Dispatch that does not know the header ignores it.
+ */
+export const DISPATCH_GENERATED_TEXT_HEADER = "Dispatch-Generated-Text";
+
 /** The longest `IDEMPOTENCY_KEY_HEADER` value, in characters. */
 export const IDEMPOTENCY_KEY_MAX = 128;
 

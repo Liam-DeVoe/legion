@@ -10,7 +10,6 @@ import (
 
 // rebuildArtifactInput is the body of POST /api/v1/artifacts/{id}/rebuild.
 type rebuildArtifactInput struct {
-	writingCheckOverride
 	Markdown *string `json:"markdown"`
 }
 

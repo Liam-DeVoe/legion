@@ -79,9 +79,6 @@ type artifactUploadInput struct {
 	// already names a document or gives the slug of one Dispatch makes itself. A multipart
 	// upload always carries its bytes, so it never sets this.
 	blank bool
-	// override is the upload's override_writing_check: the JSON member, or the multipart form
-	// value of that name.
-	override string
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -106,7 +103,6 @@ func (target artifactTarget) refPrefix() string {
 }
 
 type jsonArtifactUpload struct {
-	writingCheckOverride
 	Name string `json:"name" required:"true"`
 	// Content is what a JSON upload stores, which is always a markdown document. A body with
 	// no content, or whose content is blank, makes a new document holding nothing, which a
@@ -286,7 +282,6 @@ func (s *server) checkUploadWriting(
 	target artifactTarget,
 ) bool {
 	checked := jsonArtifactUpload{Summary: input.summary}
-	checked.OverrideWritingCheck = input.override
 	if kind != "doc" {
 		checked.unreadFile = mediaType
 		return s.writingCheck(w, r, actor, checked)
@@ -350,7 +345,6 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		summary:     strings.TrimSpace(body.Summary),
 		supplied:    body.Actor,
 		blank:       blank,
-		override:    body.OverrideWritingCheck,
 	}, true
 }
 
@@ -438,7 +432,6 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		contentType: contentType,
 		summary:     strings.TrimSpace(r.FormValue("summary")),
 		supplied:    supplied,
-		override:    r.FormValue(writingCheckOverrideField),
 	}, true
 }
 
@@ -1129,7 +1122,6 @@ func (s *server) commitArtifactVersionEvent(
 // createVersionInput is the body of POST /api/v1/artifacts/{id}/versions and its issue and
 // project artifact patterns.
 type createVersionInput struct {
-	writingCheckOverride
 	Summary string       `json:"summary" required:"true"`
 	Actor   *model.Actor `json:"actor"`
 }
@@ -1208,7 +1200,6 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 // editArtifactInput is the body of POST /api/v1/artifacts/{id}/edits and its issue and project
 // artifact patterns.
 type editArtifactInput struct {
-	writingCheckOverride
 	Ops          []model.EditOp          `json:"ops"`
 	Summary      string                  `json:"summary"`
 	Precondition *model.EditPrecondition `json:"precondition"`

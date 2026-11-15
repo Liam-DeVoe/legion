@@ -85,16 +85,19 @@ func (rig *writingCheckRig) noProjectDefault() {
 	rig.exec(`update projects set default_assignee = null where key = 'WCK'`)
 }
 
-// wantRead writes badProse through call and holds the write to a refusal recorded with reader.
+// wantRead writes badProse through call and holds it to a write the check read, recorded findings
+// with reader. The check refuses no write, so the status is the route's own and is only held to
+// not being 422; a route whose write needs a state the rig does not build answers after the
+// check has recorded its decision.
 func (rig *writingCheckRig) wantRead(what, reader string, call func() int) {
 	rig.t.Helper()
 	rig.clearEvents()
-	if code := call(); code != http.StatusUnprocessableEntity {
-		rig.t.Errorf("%s: %d, want 422: %s reads it", what, code, reader)
+	if code := call(); code == http.StatusUnprocessableEntity {
+		rig.t.Errorf("%s: 422, want the route's own answer: the check refuses no write", what)
 		return
 	}
-	if event := rig.lastEvent(what); event.Outcome != "refused" || event.Reader != reader {
-		rig.t.Errorf("%s: event = %+v, want refused with reader %s", what, event, reader)
+	if event := rig.lastEvent(what); event.Outcome != writingCheckFindings || event.Reader != reader {
+		rig.t.Errorf("%s: event = %+v, want %s with reader %s", what, event, writingCheckFindings, reader)
 	}
 }
 
@@ -275,7 +278,10 @@ func TestTheWritingCheckReaderOfAProjectDocument(t *testing.T) {
 	rig.noProjectDefault()
 	rig.wantUnread("an edit of a project document with no default assignee", rig.session(http.MethodPost, edits, edit))
 	rig.wantUnread("a comment on a project document with no default assignee", rig.session(http.MethodPost, comments, map[string]any{"body": badProse}))
-	rig.wantUnread("a new project document with no default assignee", rig.session(http.MethodPost, "/api/v1/projects/WCK/artifacts", upload))
+	// A new document of its own: the runbook above was written, and a version that adds no block
+	// gives the check nothing to read.
+	rig.wantUnread("a new project document with no default assignee", rig.session(http.MethodPost, "/api/v1/projects/WCK/artifacts",
+		map[string]any{"name": "rota", "content": badProse}))
 }
 
 // TestTheWritingCheckReaderOfANewIssue: a new issue's title and spec are read by the person it

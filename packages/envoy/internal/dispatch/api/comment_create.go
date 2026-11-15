@@ -21,7 +21,6 @@ import (
 )
 
 type commentInput struct {
-	writingCheckOverride
 	Body    string             `json:"body"`
 	Anchor  *model.AnchorInput `json:"anchor"`
 	ReplyTo *string            `json:"reply_to"`

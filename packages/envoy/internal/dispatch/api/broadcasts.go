@@ -134,7 +134,6 @@ type broadcastTarget struct {
 
 // createBroadcastInput is the body of POST /api/v1/broadcasts.
 type createBroadcastInput struct {
-	writingCheckOverride
 	Body       string   `json:"body" required:"true"`
 	Delivery   string   `json:"delivery" required:"true"`
 	SessionIDs []string `json:"session_ids" required:"true"`

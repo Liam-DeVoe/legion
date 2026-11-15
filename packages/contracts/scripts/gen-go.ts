@@ -5,6 +5,7 @@ import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_GENERATED_TEXT_HEADER,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
   DISPATCH_SIGN_IN_REQUIRED,
@@ -475,6 +476,12 @@ const LiveSocketMaxSubscriptions = ${LIVE_SOCKET_MAX_SUBSCRIPTIONS}
 // dashboard and the agents' client name them once.
 const IdempotencyKeyHeader = ${JSON.stringify(IDEMPOTENCY_KEY_HEADER)}
 const IdempotencyReplayedHeader = ${JSON.stringify(IDEMPOTENCY_REPLAYED_HEADER)}
+
+// GeneratedTextHeader is the request header (1) a plugin puts on a reply holding text it generated
+// rather than text the agent wrote. The server reads it on the two delivery reply routes alone.
+// Generated from DISPATCH_GENERATED_TEXT_HEADER in packages/contracts so the server and the
+// plugins name it once.
+const GeneratedTextHeader = ${JSON.stringify(DISPATCH_GENERATED_TEXT_HEADER)}
 
 // IdempotencyKeyMax is the longest key and IdempotencyKeyPattern a whole one. Generated from
 // IDEMPOTENCY_KEY_MAX and IDEMPOTENCY_KEY_PATTERN in packages/contracts so the server's refusal and

@@ -72,11 +72,11 @@ import type {
   UpdateIssueInput,
   Version,
   WhoamiResponse,
-  WritingCheckOverride,
 } from "@legion/contracts";
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  DISPATCH_GENERATED_TEXT_HEADER,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -85,7 +85,6 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   retriesUnderKey,
-  WRITING_CHECK_REFUSED,
 } from "@legion/contracts";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
@@ -119,10 +118,7 @@ export class DispatchServiceError extends Error {
     message: string,
     readonly candidates?: DispatchServiceErrorShape["candidates"],
     readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
-    /** A `WRITING_CHECK_REFUSED` refusal's findings: each sentence the check refused, the rule it
-     *  breaks, the request field it stands in and how to fix it. */
-    readonly findings?: DispatchServiceErrorShape["findings"]
+    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
   ) {
     super(message);
   }
@@ -160,44 +156,6 @@ export class DispatchGatewayError extends DispatchServiceError {
     this.transient = transientStatus(status);
     this.mayHaveReachedDispatch = reachesDispatch(status);
   }
-}
-
-/** Whether Dispatch's writing check refused the write (`422 WRITING_CHECK_REFUSED`): nothing was
- *  written, and the error's `findings` name each sentence, its rule and a rewrite. */
-export function isWritingCheckRefusal(error: unknown): error is DispatchServiceError {
-  return (
-    error instanceof DispatchServiceError &&
-    error.fromDispatch &&
-    error.code === WRITING_CHECK_REFUSED
-  );
-}
-
-/** The writing check's override a plugin's second send of its own text carries: none on the
- *  first send, `generated` on the one after a refusal (`writeGenerated`). */
-export type GeneratedOverride = { readonly override_writing_check?: "generated" };
-
-/**
- * Writes text a plugin generated rather than an agent wrote - a `!command`'s report, a slash
- * command's output, a plugin's own error reply, AskGate's decision record - under Dispatch's
- * writing check (INFRA-3231, R14). The first send carries no override, and only where the check
- * refused it (`422 WRITING_CHECK_REFUSED`) is it sent again with
- * `override_writing_check: "generated"`, which Dispatch writes and counts as generated. A first
- * send never carries the field because a server that has no writing check decodes each request
- * with `DisallowUnknownFields` and answers a field it does not know `400 INVALID_JSON`, and a
- * plugin release can reach a host before that server does. `write` makes one send with the
- * override it is given; each call is a request of its own, so a keyed write gives the second
- * send a key of its own, since Dispatch keeps the refusal under the first send's key. Any other
- * failure, of either send, is thrown as it came.
- */
-export async function writeGenerated<T>(
-  write: (override: GeneratedOverride) => Promise<T>
-): Promise<T> {
-  try {
-    return await write({});
-  } catch (error) {
-    if (!isWritingCheckRefusal(error)) throw error;
-  }
-  return await write({ override_writing_check: "generated" });
 }
 
 /**
@@ -1296,12 +1254,7 @@ export class DispatchClient {
    */
   async requestApproval(
     artifactID: string,
-    input: {
-      actor: Actor;
-      summary: string;
-      include_verification?: boolean;
-      override_writing_check?: WritingCheckOverride;
-    }
+    input: { actor: Actor; summary: string; include_verification?: boolean }
   ): Promise<ApprovalRequestResponse & { recorded: boolean }> {
     const answer = await this.#jsonAnswer<ApprovalRequestResponse>(
       "POST",
@@ -1487,20 +1440,30 @@ export class DispatchClient {
    * body names the session as `actor` and the `attempt`). `followUp` is `messageReply`'s own
    * option: the attempt is settled by the first reply Dispatch takes, so a second answer to it -
    * the output a waiting reply promised - is posted only when it asks (`?follow_up=true`).
+   * `generated` marks text the plugin generated rather than an agent wrote with
+   * `DISPATCH_GENERATED_TEXT_HEADER`, which these two routes read and every other route ignores.
    */
   async deliveryReply(
     resource: "message" | "comment",
     id: string,
     input: Readonly<Record<string, unknown>>,
-    options: { readonly followUp?: boolean } = {}
+    options: { readonly followUp?: boolean; readonly generated?: boolean } = {}
   ): Promise<void> {
     const collection = resource === "message" ? "messages" : "comments";
-    await this.#json(
-      "POST",
+    const url = this.#url(
       ["api", "v1", collection, id, "reply"],
-      input,
       options.followUp === true ? { follow_up: "true" } : undefined
     );
+    const response = await this.#send(
+      "POST",
+      url,
+      { content: JSON.stringify(input), type: "application/json" },
+      undefined,
+      undefined,
+      undefined,
+      options.generated === true ? { [DISPATCH_GENERATED_TEXT_HEADER]: "1" } : {}
+    );
+    await this.#response<unknown>("POST", url, response);
   }
 
   async getMessage(issue: string, id: string): Promise<MessageRead> {
@@ -1802,9 +1765,6 @@ export class DispatchClient {
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
     if (input.actor !== undefined) form.set("actor", JSON.stringify(input.actor));
-    if (input.override_writing_check !== undefined) {
-      form.set("override_writing_check", input.override_writing_check);
-    }
     form.set("file", input.file, input.name);
     return this.#form("POST", path, form, key);
   }
@@ -1850,6 +1810,7 @@ export class DispatchClient {
    * remembers; a transport failure, a silence cut and an answer something in Dispatch's place wrote
    * say nothing, so they rely on what an answer or `/healthz` showed within
    * `KEYED_LAYER_MEMORY_MS`, and ask `/healthz` when nothing did (`#runsKeyedLayer`).
+   * `extraHeaders` go on every attempt beside the client's own.
    */
   async #send(
     method: string,
@@ -1857,14 +1818,15 @@ export class DispatchClient {
     body?: EncodedBody,
     accept = "application/json",
     signal?: AbortSignal,
-    callerKey?: string
+    callerKey?: string,
+    extraHeaders: Readonly<Record<string, string>> = {}
   ): Promise<Response> {
     // The credential is presented once here, and again for each attempt the write loop makes
     // below: a key-bound scheme signs one proof per request, so one presentation is one proof
     // sent, never a second minted and discarded. It is asked before the loop so a credential
     // that cannot answer throws here, out of the loop's reach, rather than being taken for a
     // failed attempt.
-    const headers: Record<string, string> = { Accept: accept };
+    const headers: Record<string, string> = { ...extraHeaders, Accept: accept };
     let presented = await this.#credential.headers(method, url);
     if (body !== undefined) headers["Content-Type"] = body.type;
     if (method !== "POST" && method !== "PATCH") {
@@ -2185,8 +2147,7 @@ export class DispatchClient {
           error.error,
           error.candidates,
           error.current,
-          error.mismatches,
-          error.findings
+          error.mismatches
         );
       }
       const quoted = excerpt(text, this.token);

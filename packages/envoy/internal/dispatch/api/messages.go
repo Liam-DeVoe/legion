@@ -21,7 +21,6 @@ import (
 const maxMessageReplyPreview16 = 160
 
 type createMessageInput struct {
-	writingCheckOverride
 	Body      string  `json:"body" required:"true"`
 	InReplyTo *string `json:"in_reply_to"`
 	// InReplyToBlock is the id of the block of message InReplyTo the reply answers ("b2").
@@ -80,7 +79,6 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 
 // createAgentMessageInput is the body of POST /api/v1/agents/{session_id}/messages.
 type createAgentMessageInput struct {
-	writingCheckOverride
 	Body           string  `json:"body" required:"true"`
 	Delivery       string  `json:"delivery" required:"true"`
 	InReplyTo      *string `json:"in_reply_to"`

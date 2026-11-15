@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
@@ -18,24 +19,17 @@ import (
 // writing_check.go puts the writing check (INFRA-3231) on the server's write path. A route whose
 // request carries prose (writing_check_fields.go) calls writingCheck once the request is decoded
 // and its writer resolved, and before it opens a transaction, takes a lock or writes anything: the
-// check may call a model, and no database transaction waits on it. A write the check refuses is
-// answered 422 WRITING_CHECK_REFUSED and writes nothing. Every decision the check makes for a
-// write is one row of writing_check_events, inserted outside the write's transaction, after the
-// decision and before the answer; a failed insert is logged and fails nothing.
-
-// The values override_writing_check takes besides "".
-const (
-	// writingCheckOverrideAgent is an agent sending its own text through on its own judgement.
-	writingCheckOverrideAgent = "agent"
-	// writingCheckOverrideGenerated is a plugin sending text it generated.
-	writingCheckOverrideGenerated = "generated"
-)
+// check may call a model, and no database transaction waits on it. The check refuses no write:
+// every write it reads goes on. Every decision the check makes for a write is one row of
+// writing_check_events, inserted outside the write's transaction, after the decision and before
+// the answer; a failed insert is logged and fails nothing.
 
 // The outcomes writingCheck records besides the checker's own (writingcheck.Outcome*) and the
 // actor rule's exemptions (writingcheck.Exempt*).
 const (
-	// writingCheckForced is a write the check refused that override_writing_check sent through.
-	writingCheckForced = "forced"
+	// writingCheckFindings is a write in which the check found at least one sentence that breaks
+	// a rule; the write went on, and the row names the rules and the fields.
+	writingCheckFindings = "findings"
 	// writingCheckUnreadUpload is an uploaded file the check does not read: any upload that is
 	// not stored as a Markdown document.
 	writingCheckUnreadUpload = "exempt_unread_upload"
@@ -43,13 +37,22 @@ const (
 	// (writingCheckReader): a send to an agent, a broadcast, a reply between two sessions, or a
 	// record that names nobody. The check does not read it.
 	writingCheckNoReader = "exempt_no_reader"
+	// writingCheckGenerated is text a plugin generated rather than an agent wrote, posted on one
+	// of generatedTextRoutes with contracts.GeneratedTextHeader. The check does not read it.
+	writingCheckGenerated = "exempt_generated"
 )
 
-// codeWritingCheckRefused is the refusal a write the check refused is answered with.
-const codeWritingCheckRefused = "WRITING_CHECK_REFUSED"
+// generatedTextRoutes are the routes a plugin posts the text it generates on (a person's
+// !command report, a slash command's output, a plugin's error reply): the replies to a delivered
+// message and to a delivered mention. The server reads contracts.GeneratedTextHeader on these two
+// routes alone.
+var generatedTextRoutes = []string{"POST /api/v1/messages/{id}/reply", "POST /api/v1/comments/{id}/reply"}
 
-// writingCheckOverrideField is the request member that sends a refused write through.
-const writingCheckOverrideField = "override_writing_check"
+// generatedText reports whether r is a plugin's generated text: a write on one of
+// generatedTextRoutes whose contracts.GeneratedTextHeader is "1".
+func generatedText(r *http.Request, pattern string) bool {
+	return r.Header.Get(contracts.GeneratedTextHeader) == "1" && slices.Contains(generatedTextRoutes, pattern)
+}
 
 // WritingCheckModel is the model the writing check's reader calls, as GET /api/v1/writing-check
 // shows it: no key, token or credential is part of it.
@@ -114,33 +117,17 @@ func writingCheckReads(actor model.Actor) (checked bool, exemption string) {
 	return writingcheck.Checks(actor.Kind, actor.ID, actSession)
 }
 
-// writingCheckOverrideCarrier is a request that declares override_writing_check: every request
-// type embedding writingCheckOverride.
-type writingCheckOverrideCarrier interface{ writingCheckOverrideValue() string }
-
 // unreadUploadCarrier is an upload whose file the check does not read: unreadUpload answers the
 // file's media type, or "" for an upload the check reads.
 type unreadUploadCarrier interface{ unreadUpload() string }
 
 // writingCheck runs the writing check over the prose input carries (proseFieldsOf), for the write
-// actor makes, and reports whether the write goes on. It reads a write only when the actor rule
-// says an agent makes it (writingCheckReads) and a person reads it (writingCheckReader), and it
-// records that person on every row. A false answer has been written: 400 for an override value
-// the check does not know, 422 WRITING_CHECK_REFUSED for a refusal. Call it once input is decoded
-// and actor resolved, and before any transaction, lock or write.
-func (s *server) writingCheck(w http.ResponseWriter, r *http.Request, actor model.Actor, input any) bool {
-	override := ""
-	if carrier, ok := input.(writingCheckOverrideCarrier); ok {
-		override = carrier.writingCheckOverrideValue()
-	}
-	switch override {
-	case "", writingCheckOverrideAgent, writingCheckOverrideGenerated:
-	default:
-		writeError(w, "INVALID_WRITING_CHECK_OVERRIDE", http.StatusBadRequest, fmt.Sprintf(
-			"%s must be %q or %q, not %q", writingCheckOverrideField,
-			writingCheckOverrideAgent, writingCheckOverrideGenerated, override))
-		return false
-	}
+// actor makes, records its decision, and reports whether the write goes on, which it always does:
+// the check refuses no write. It reads a write only when the actor rule says an agent makes it
+// (writingCheckReads), a person reads it (writingCheckReader) and no plugin generated it
+// (generatedText), and it records that person on every row. Call it once input is decoded and
+// actor resolved, and before any transaction, lock or write.
+func (s *server) writingCheck(_ http.ResponseWriter, r *http.Request, actor model.Actor, input any) bool {
 	check := s.deps.WritingCheck
 	if !check.on() {
 		return true
@@ -161,18 +148,23 @@ func (s *server) writingCheck(w http.ResponseWriter, r *http.Request, actor mode
 	}
 	event := store.WritingCheckEvent{
 		Route: route, Method: method, ActorKind: actor.Kind, ActorID: actor.ID,
-		TokenID: s.writingCheckTokenID(r, actor), OverrideValue: override,
+		TokenID: s.writingCheckTokenID(r, actor),
 	}
 	if actor.Act != nil {
 		event.ActSession = actor.Act.Session
 	}
 	readerOf, err := s.writingCheckReader(r.Context(), r, method+" "+route, actor, input)
 	if err != nil {
-		// The write is let through unread rather than refused: the check never fails closed.
+		// The write is let through unread: the check never fails closed.
 		slog.Warn("dispatch: decide the reader of a write", "route", method+" "+route, "error", err)
 		event.Detail = "the reader could not be decided: " + err.Error()
 	}
 	event.Reader = readerOf
+	if generatedText(r, method+" "+route) {
+		event.Outcome = writingCheckGenerated
+		s.recordWritingCheck(r.Context(), event)
+		return true
+	}
 	if checked, exemption := writingCheckReads(actor); !checked {
 		event.Outcome = exemption
 		s.recordWritingCheck(r.Context(), event)
@@ -200,20 +192,16 @@ func (s *server) writingCheck(w http.ResponseWriter, r *http.Request, actor mode
 		}
 	}
 	switch {
-	case result.Outcome == writingcheck.OutcomeRefused && override != "":
-		event.Outcome = writingCheckForced
 	case result.Outcome == writingcheck.OutcomeRefused:
-		s.recordWritingCheck(r.Context(), event)
-		WriteJSON(w, http.StatusUnprocessableEntity, writingCheckRefusalOf(result.Findings))
-		return false
+		event.Outcome = writingCheckFindings
+		if unread != "" {
+			event.Detail = "file of type " + unread + " not read"
+		}
 	case unread != "":
 		event.Outcome = writingCheckUnreadUpload
 		event.Detail = "file of type " + unread + " not read; the outcome of its summary: " + result.Outcome
 	case result.Outcome != writingcheck.OutcomeClean:
 		event.Detail = "the write went through with the structure rules alone"
-	}
-	if unread != "" && event.Outcome == writingCheckForced {
-		event.Detail = "file of type " + unread + " not read"
 	}
 	s.recordWritingCheck(r.Context(), event)
 	return true
@@ -243,95 +231,6 @@ func (s *server) recordWritingCheck(ctx context.Context, event store.WritingChec
 		slog.Warn("dispatch: record a writing check decision", "route", event.Method+" "+event.Route,
 			"outcome", event.Outcome, "error", err)
 	}
-}
-
-// writingCheckRefusal is the body of 422 WRITING_CHECK_REFUSED.
-type writingCheckRefusal struct {
-	Code          string                `json:"code"`
-	Error         string                `json:"error"`
-	Findings      []writingCheckFinding `json:"findings"`
-	OverrideField string                `json:"override_field"`
-}
-
-// writingCheckFinding is one rule one sentence of the refused write breaks: the request field it
-// stands in, the rule's id, the sentence, and how to fix it.
-type writingCheckFinding struct {
-	Field   string `json:"field"`
-	Rule    string `json:"rule"`
-	Text    string `json:"text"`
-	Rewrite string `json:"rewrite"`
-}
-
-// init gives every route whose request carries prose (requestCarriesProse) the check's refusal
-// beside its own, 422 WRITING_CHECK_REFUSED, so the OpenAPI document reflected out of routeShapes
-// names it on each route the check reads and on no other. It reads the registry, so a route that
-// starts to carry prose is given the refusal with no line of its own.
-func init() {
-	for key, shape := range routeShapes {
-		if requestCarriesProse(shape.Request) {
-			shape.Refusals = append(slices.Clip(shape.Refusals), routeAnswer{
-				Status: http.StatusUnprocessableEntity, Body: writingCheckRefusal{},
-			})
-			routeShapes[key] = shape
-		}
-	}
-}
-
-// writingCheckRefusalOf words a refusal of findings. The error text is written in ASD-STE100
-// English and passes the check itself when an agent posts it as a body: each rewrite comes
-// first, with every phrase it quotes set as inline code, then the rule id, the field and the
-// sentence, each in inline code, and last the way through.
-func writingCheckRefusalOf(findings []writingcheck.Finding) writingCheckRefusal {
-	refusal := writingCheckRefusal{
-		Code:          codeWritingCheckRefused,
-		Findings:      make([]writingCheckFinding, len(findings)),
-		OverrideField: writingCheckOverrideField,
-	}
-	var text strings.Builder
-	text.WriteString("The writing check refused this write. Fix each sentence below and send the write again.\n\n")
-	for index, finding := range findings {
-		refusal.Findings[index] = writingCheckFinding(finding)
-		fmt.Fprintf(&text, "%d. %s Rule %s, field %s: %s.\n", index+1, quotesAsCode(finding.Rewrite),
-			inlineCode(finding.Rule), inlineCode(finding.Field), inlineCode(finding.Text))
-	}
-	text.WriteString("\nIf the text is correct as it is, send the write again with the flag " +
-		inlineCode("--override-writing-check") + ", or with the JSON field " +
-		inlineCode(writingCheckOverrideField+`: "`+writingCheckOverrideAgent+`"`) + ".")
-	refusal.Error = text.String()
-	return refusal
-}
-
-// inlineCode sets text as one Markdown code span on one line, with a fence longer than any run of
-// backticks it holds.
-func inlineCode(text string) string {
-	text = strings.Join(strings.Fields(text), " ")
-	fence := "`"
-	for strings.Contains(text, fence) {
-		fence += "`"
-	}
-	if strings.HasPrefix(text, "`") || strings.HasSuffix(text, "`") {
-		text = " " + text + " "
-	}
-	return fence + text + fence
-}
-
-// quotesAsCode sets every phrase a rewrite quotes in double quotes as inline code, so the phrase
-// it names - a phrasal verb, a nominalization, a conjunction - is read as a token and not as a
-// sentence of the refusal.
-func quotesAsCode(rewrite string) string {
-	parts := strings.Split(rewrite, `"`)
-	if len(parts)%2 == 0 {
-		return rewrite
-	}
-	var out strings.Builder
-	for index, part := range parts {
-		if index%2 == 1 {
-			out.WriteString(inlineCode(part))
-			continue
-		}
-		out.WriteString(part)
-	}
-	return out.String()
 }
 
 // writingCheckState is the body of GET /api/v1/writing-check: the check as this process runs it.
@@ -393,7 +292,7 @@ func (c *WritingCheck) state() writingCheckState {
 	case !cfg.Enabled:
 		state.Detector.Reason = "the check is off (DISPATCH_WRITING_CHECK)"
 	case !writingcheck.DetectorEnabled && !cfg.DetectorTestHook:
-		state.Detector.Reason = "the bundle ships the detector off: it ships on only once its final test bounds 1 - precision at 5% or below"
+		state.Detector.Reason = "the bundle ships the detector off"
 	case !cfg.Detector:
 		state.Detector.Reason = "DISPATCH_WRITING_CHECK_DETECTOR is off"
 	case slices.Contains(cfg.RulesOff, writingcheck.DetectorRule):
@@ -420,8 +319,7 @@ func (s *server) getWritingCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 // getWritingCheckCounts is GET /api/v1/writing-check/counts: one UTC day of writing_check_events
-// counted by outcome, by override value and by route; ?day= is that day, YYYY-MM-DD, and today
-// where it is absent.
+// counted by outcome and by route; ?day= is that day, YYYY-MM-DD, and today where it is absent.
 func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

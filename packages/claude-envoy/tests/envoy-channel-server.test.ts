@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
+import { DISPATCH_GENERATED_TEXT_HEADER } from "@legion/contracts"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
@@ -557,6 +558,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
     const replies: Array<{
       readonly path: string
       readonly auth: string | null
+      readonly generated: string | null
       readonly body: unknown
     }> = []
     server = Bun.serve({
@@ -565,6 +567,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
+          generated: request.headers.get(DISPATCH_GENERATED_TEXT_HEADER),
           body: await request.json(),
         })
         return Response.json({})
@@ -588,11 +591,11 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       {
         path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
         auth: "Bearer reply-token",
+        // The plugin's own error text: one send, with the generated-text header.
+        generated: "1",
         body: {
           actor: { kind: "session", id: "ses_claude" },
           attempt: 1,
-          // The plugin's own error text, posted as generated: with no override on its first send,
-          // which this Dispatch takes.
           error: "Invalid Dispatch targeted delivery frame",
         },
       },

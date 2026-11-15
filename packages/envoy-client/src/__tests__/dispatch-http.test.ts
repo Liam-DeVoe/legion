@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import type { ArchitectureSource, IssueSummary, ItemBlocks } from "@legion/contracts";
+import {
+  type ArchitectureSource,
+  DISPATCH_GENERATED_TEXT_HEADER,
+  type IssueSummary,
+  type ItemBlocks,
+} from "@legion/contracts";
 import { bearerCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
   DispatchGatewayError,
-  DispatchServiceError,
-  type GeneratedOverride,
   type SearchOptions,
-  writeGenerated,
 } from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
 
@@ -563,83 +565,29 @@ describe("DispatchClient", () => {
     expect((artifactBody.get("file") as Blob).type).toBe("text/markdown");
   });
 
-  // The writing check (INFRA-3231): a file upload carries the override as a named form value,
-  // and a refusal keeps its findings on the DispatchServiceError it throws.
-  test("sends the writing check's override as a form value and keeps a refusal's findings", async () => {
-    const findings = [
-      { field: "summary", rule: "semicolon", text: "It is done; ship it.", rewrite: "Split it." },
-    ];
-    const { fetchImpl, requests } = fakeFetch([
-      jsonResponse({ ok: true }),
-      jsonResponse(
-        {
-          code: "WRITING_CHECK_REFUSED",
-          error: "The writing check refused this write.",
-          findings,
-          override_field: "override_writing_check",
-        },
-        422
-      ),
-    ]);
+  // Text a plugin generated carries the generated-text header on the reply routes; any other
+  // reply carries none, and both are one request each.
+  test("sends the generated-text header on a generated delivery reply alone", async () => {
+    const { fetchImpl, requests } = fakeFetch([jsonResponse({}, 201), jsonResponse({}, 201)]);
     const client = new DispatchClient(
       "http://dispatch.test/",
       bearerCredential("secret"),
       fetchImpl
     );
+    const body = { actor, attempt: 1, body: "Ran `ls`: 2 files." };
 
-    await client.artifact("DSP-1", {
-      name: "notes.md",
-      file: new Blob(["# Notes"], { type: "text/markdown" }),
-      summary: "Notes",
-      override_writing_check: "generated",
-      actor,
-    });
-    const refused = await client
-      .message("DSP-1", { body: "It is done; ship it.", actor })
-      .catch((error: unknown) => error);
+    await client.deliveryReply("comment", "comment-1", body, { generated: true });
+    await client.deliveryReply("message", "message-1", body, { followUp: true });
 
-    const upload = requests[0] as RecordedRequest;
-    const form = await new Response(upload.init.body, {
-      headers: {
-        "Content-Type": (upload.init.headers as Record<string, string>)["Content-Type"] as string,
-      },
-    }).formData();
-    expect(form.get("override_writing_check")).toBe("generated");
-    expect(refused).toMatchObject({
-      name: "DispatchServiceError",
-      code: "WRITING_CHECK_REFUSED",
-      status: 422,
-      message: "The writing check refused this write.",
-      findings,
-    });
-  });
-
-  // A plugin's own text (INFRA-3231, R14): the first send carries no override, which a Dispatch
-  // with no writing check would refuse as an unknown field, and only the check's refusal sends it
-  // again with `generated`. Any other failure is the write's, and is never sent again.
-  test("writeGenerated sends again with the generated override only after the check's refusal", async () => {
-    const refusal = new DispatchServiceError("WRITING_CHECK_REFUSED", 422, "refused");
-    const sent: GeneratedOverride[] = [];
-    const answering =
-      (...answers: readonly (Error | string)[]) =>
-      async (override: GeneratedOverride): Promise<string> => {
-        sent.push(override);
-        const answer = answers[sent.length - 1];
-        if (answer instanceof Error) throw answer;
-        return answer ?? "unexpected send";
-      };
-
-    expect(await writeGenerated(answering("written"))).toBe("written");
-    expect(sent).toEqual([{}]);
-
-    sent.length = 0;
-    expect(await writeGenerated(answering(refusal, "forced"))).toBe("forced");
-    expect(sent).toEqual([{}, { override_writing_check: "generated" }]);
-
-    sent.length = 0;
-    const other = new DispatchServiceError("INVALID_JSON", 400, "unknown field");
-    expect(await writeGenerated(answering(other)).catch((error: unknown) => error)).toBe(other);
-    expect(sent).toEqual([{}]);
+    expect(requests.map((request) => request.url)).toEqual([
+      "http://dispatch.test/api/v1/comments/comment-1/reply",
+      "http://dispatch.test/api/v1/messages/message-1/reply?follow_up=true",
+    ]);
+    const sent = requests.map((request) =>
+      new Headers(request.init.headers).get(DISPATCH_GENERATED_TEXT_HEADER)
+    );
+    expect(sent).toEqual(["1", null]);
+    expect(requestBody(requests[0] as RecordedRequest)).toEqual(body);
   });
 
   test("maps a structured conflict response into DispatchServiceError candidates", async () => {

@@ -41,7 +41,7 @@ type writingCheckConfig struct {
 	ClientID        string
 	FederatedToken  string
 	// ReaderTimeout is DISPATCH_TEST_WRITING_CHECK_READER_TIMEOUT, read only under the test
-	// hooks; zero keeps the reader's own two seconds.
+	// hooks; zero sets no bound of the reader's own beyond the request's.
 	ReaderTimeout time.Duration
 	// DetectorTestHook is DISPATCH_TEST_WRITING_CHECK_DETECTOR=on, read only under the test
 	// hooks: the detector runs although the bundle ships it off.

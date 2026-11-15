@@ -191,9 +191,7 @@ async function harness(input: {
         ...(result.body === undefined ? {} : { body: result.body }),
         ...(asked === undefined ? {} : { followUp: asked }),
       })
-      return { posted: true }
     },
-    toMainTurn: (notice) => order.push(`main:${notice}`),
     session,
     sessionId: () => SESSION,
     state,
@@ -507,7 +505,7 @@ test("a slash message runs as the command it is and its output is the reply", as
 
     expect(mod.madeOf("command.run")).toEqual([{ command: "compact", args: "keep the plan" }])
     expect(session.replies.map((posted) => posted.body)).toEqual(["Compacted 42 messages."])
-    // A command's output is this plugin's own text: posted as generated (INFRA-3231).
+    // A command's output is this plugin's own text: posted with the generated-text header.
     expect(session.generated).toEqual([true])
   } finally {
     await rm(session.directory, { recursive: true, force: true })
@@ -762,8 +760,7 @@ test("a BTW is answered from the model's fork and adds nothing to the conversati
     expect(mod.madeOf("model.fork")).toEqual([{ prompt: "what blocks it?" }])
     expect(mod.madeOf("session.message")).toEqual([])
     expect(session.replies.map((posted) => posted.body)).toEqual(["It is the migration guard."])
-    // The fork's answer is the agent's words: not generated, so the writing check's refusal of
-    // it goes back to the agent.
+    // The fork's answer is the agent's words: posted with no generated-text header.
     expect(session.generated).toEqual([false])
     // A BTW is no attempt of a person's own turn: nothing of it is spent.
     expect(session.accepts).toEqual([])

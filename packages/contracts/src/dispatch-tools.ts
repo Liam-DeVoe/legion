@@ -415,22 +415,6 @@ function imagesArgument<E extends SchemaNode<E>>(z: SchemaApi<E>, owner: string)
     .optional();
 }
 
-/**
- * `override_writing_check`, which every write whose text Dispatch's writing check reads takes
- * (INFRA-3231). The tool's field is a boolean, `--override-writing-check` on the command line,
- * which the executor sends as `override_writing_check: "agent"`: an agent's call never sends
- * `generated`, which is the plugins' own mark for text they generate (`WRITING_CHECK_OVERRIDES`
- * in `dispatch-api.ts`).
- */
-function overrideWritingCheckArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
-  return z
-    .boolean()
-    .describe(
-      "Send this write although Dispatch's writing check refused its text (422 WRITING_CHECK_REFUSED). Fix each sentence the refusal names first; set this only when you judge the text correct as it is. Dispatch records the write as forced by the agent."
-    )
-    .optional();
-}
-
 /** Ask urgency levels the Dispatch server accepts, in ascending order. */
 export const ASK_URGENCIES = ["low", "med", "high", "blocking"] as const;
 
@@ -555,8 +539,7 @@ const RESULT_RETRACT_RULE =
 
 /** The whole rule a call of this tool keeps: one shape records a result, the other retracts one. */
 const RESULT_SHAPE_RULE =
-  `${RESULT_RETRACT_RULE} A call with retract takes reason, and override_writing_check where ` +
-  "the writing check refused the reason, and no other argument. A call " +
+  `${RESULT_RETRACT_RULE} A call with retract takes reason and no other argument. A call ` +
   "without retract records a result, and it takes issue, check, role, verdict and commit.";
 
 /** The refusal of the first rule a result call breaks, or undefined when it keeps them. The two
@@ -733,7 +716,6 @@ export const dispatchToolSpecs = [
           "The repository the issue targets, owner/name, mapped to the issue's project in Settings; a child inherits its parent's when unset, and an issue with none on its parent chain takes the project's default."
         )
         .optional(),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
   },
   {
@@ -866,7 +848,6 @@ export const dispatchToolSpecs = [
           `Move the issue below this issue on its project's board: an issue key in the same project. With before, the issue lands between the two. ${BOARD_NEIGHBOUR_REFUSAL}`
         )
         .optional(),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
     validation: {
       check: (value) => issueUpdateProblem(value) === undefined,
@@ -992,7 +973,6 @@ export const dispatchToolSpecs = [
         .describe("Optional document location for the question.")
         .optional(),
       images: imagesArgument(z, "the issue (or the project document's project)"),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
     validation: documentOwnerValidation(true),
   },
@@ -1055,7 +1035,6 @@ export const dispatchToolSpecs = [
         ),
       multiple: z.boolean().describe("Whether multiple choices may be selected.").optional(),
       urgency: z.enum(ASK_URGENCIES).describe("Replacement decision urgency.").optional(),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
     validation: {
       check: (value) => {
@@ -1104,7 +1083,6 @@ export const dispatchToolSpecs = [
         .enum(["retracted", "resolved"])
         .describe("Whether the ask is retracted or self-resolved."),
       reason: z.string({ min: 1 }).describe("Why the open ask no longer needs a human answer."),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
   },
   {
@@ -1196,7 +1174,6 @@ export const dispatchToolSpecs = [
         )
         .optional(),
       images: imagesArgument(z, "the issue (or the project document's project)"),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
     validation: commentValidation,
   },
@@ -1232,7 +1209,6 @@ export const dispatchToolSpecs = [
         .number({ int: true, min: 0 })
         .describe("Optional zero-based occurrence of quote.")
         .optional(),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
     validation: documentOwnerValidation(true, true),
   },
@@ -1276,7 +1252,6 @@ export const dispatchToolSpecs = [
         z,
         "the issue (a reply to a direct message: your own conversation, dispatch://agent/<your session id>)"
       ),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
     validation: messageValidation,
   },
@@ -1323,7 +1298,6 @@ export const dispatchToolSpecs = [
             "under it; without it the message starts a conversation of its own."
         )
         .optional(),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
     strict: true,
   },
@@ -1455,7 +1429,6 @@ export const dispatchToolSpecs = [
         )
         .optional(),
       summary: z.string().describe("Optional named-version summary.").optional(),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
     validation: documentEditValidation,
   },
@@ -1561,7 +1534,6 @@ export const dispatchToolSpecs = [
           "Ask for the issue's Verification document in the same request, beside this one: one Inbox card names both at their current versions, and the answer records the human's review on each. 409 NO_VERIFICATION_DOCUMENT when the issue has no verification.md. Without it the request names this document alone and records nothing on the Verification document."
         )
         .optional(),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
     validation: documentOwnerValidation(true),
   },
@@ -1670,11 +1642,10 @@ export const dispatchToolSpecs = [
           "dispatch:// references to image documents of this issue or of the check's issue."
         )
         .optional(),
-      override_writing_check: overrideWritingCheckArgument(z),
       retract: z
         .string()
         .describe(
-          "The id of a result recorded before. It records that the result is wrong, and it takes reason alone beside it, with override_writing_check where the writing check refused the reason."
+          "The id of a result recorded before. It records that the result is wrong, and it takes reason alone beside it."
         )
         .optional(),
       reason: z
@@ -1778,7 +1749,6 @@ export const dispatchToolSpecs = [
         )
         .optional(),
       summary: z.string().describe("Optional version summary.").optional(),
-      override_writing_check: overrideWritingCheckArgument(z),
     }),
     validation: {
       check: (value) => artifactProblem(value) === undefined,

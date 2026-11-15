@@ -2644,7 +2644,7 @@ So a reader sees exactly one ending, never two and never none.
 
 ## Writing check
 
-The writing check reads the prose of an agent's write before the server stores it, and refuses a write that breaks one of its rules (`internal/dispatch/writingcheck`, `internal/dispatch/api/writing_check.go`).
+The writing check reads the prose of an agent's write before the server stores it and records what it finds (`internal/dispatch/writingcheck`, `internal/dispatch/api/writing_check.go`); the write goes on whatever it finds.
 It is off unless `DISPATCH_WRITING_CHECK=on`.
 
 ### Settings
@@ -2654,11 +2654,11 @@ It is off unless `DISPATCH_WRITING_CHECK=on`.
 - `DISPATCH_WRITING_CHECK_RULES_OFF`: a comma list of rule ids not to apply: `phrasal-verb`, `nominalization`, `dangling-conjunction`, and `vacuous-verb-phrase` for the detector.
   An id the check does not carry refuses the boot.
   It turns rules off and never on: the bundle (`writingcheck/bundle.go`) names the rules that can run.
-  The bundle ships `semicolon` and `long-sentence` off (`writingcheck.MeasuredOff`): over 600 drawn agent writes they refused 62.2% and 79.1%, and the ceiling for one rule is 5%; `GET /api/v1/writing-check` lists them in `rules_left_out` with that reason.
+  The bundle ships `semicolon` and `long-sentence` off (`writingcheck.MeasuredOff`): over 600 drawn agent writes they matched 62.2% and 79.1%, and the ceiling for one rule is 5%; `GET /api/v1/writing-check` lists them in `rules_left_out` with that reason.
 
 - `DISPATCH_WRITING_CHECK_DETECTOR`: `on` or `off`.
   `off` turns the detector off; the structure rules still run.
-  It can turn the bundle's detector off and never on: the bundle ships it off (`writingcheck.DetectorEnabled`) until its final test bounds 1 - precision at 5% or below, so today `on` changes nothing and the model group below is accepted and ignored.
+  It can turn the bundle's detector off and never on: the bundle ships it off (`writingcheck.DetectorEnabled`), so today `on` changes nothing and the model group below is accepted and ignored.
   When it runs, the reader sends no `reasoning_effort` (`writingcheck.ReaderNoEffort`), since a Foundry chat deployment refuses the value `none`.
 
 - `DISPATCH_WRITING_CHECK_AZURE_ENDPOINT`, `_AZURE_DEPLOYMENT`, `_AZURE_TOKENS_PER_MINUTE`: the detector's reader: an Azure AI Foundry chat deployment of its own, with a rate limiter of its own sized by the quota.
@@ -2673,9 +2673,9 @@ It is off unless `DISPATCH_WRITING_CHECK=on`.
 - `DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID`, `DISPATCH_AZURE_FEDERATED_TOKEN_FILE`: the shared keyless Azure sign-in.
   The writing check's model is its third reader, beside an `azure` embedder and an `azure` answerer: the three are accepted when any `DISPATCH_WRITING_CHECK_AZURE_*` setting is set.
 
-- `DISPATCH_TEST_WRITING_CHECK_READER_TIMEOUT`: test processes only, under `DISPATCH_TEST_HOOKS=1`: a Go duration that replaces the reader's two-second bound.
+- `DISPATCH_TEST_WRITING_CHECK_READER_TIMEOUT`: test processes only, under `DISPATCH_TEST_HOOKS=1`: a Go duration that bounds each reader call; unset, the reader sets no bound beyond the request's own.
 
-- `DISPATCH_TEST_WRITING_CHECK_DETECTOR`: test processes only, under `DISPATCH_TEST_HOOKS=1`: `on` runs the detector although the bundle ships it off, so an end-to-end test reads the detector's refusals.
+- `DISPATCH_TEST_WRITING_CHECK_DETECTOR`: test processes only, under `DISPATCH_TEST_HOOKS=1`: `on` runs the detector although the bundle ships it off, so an end-to-end test reads the detector's findings.
   `DISPATCH_WRITING_CHECK_DETECTOR=off` still turns it off, and any other value refuses the boot.
   `GET /api/v1/writing-check` then says in `detector.reason` that this setting turned it on.
 
@@ -2683,7 +2683,7 @@ It is off unless `DISPATCH_WRITING_CHECK=on`.
   The stand-in answers the reader's Chat Completions call, with its verdict schema, as the Azure deployment does; the reader calls it with no Azure sign-in and no token, and sets no tokens-per-minute budget.
   It takes the place of the `DISPATCH_WRITING_CHECK_AZURE_*` group: with the check and the detector on, a group set beside it refuses the boot.
   With the check or the detector off, it is accepted and ignored.
-  The plugins' live suites start the server with both of these and a stand-in of their own (`packages/envoy-client/test/dispatch-stack.ts`).
+  `packages/envoy-client/test/dispatch-stack.ts` starts a server with both of these and a stand-in of its own (`startStandInReader`, `detectorOnWith`).
 
 Without `DISPATCH_TEST_HOOKS=1`, each of the three test-only settings above refuses the boot, so no deployment can turn the detector on or point its reader anywhere but its Azure deployment.
 
@@ -2691,6 +2691,7 @@ Without `DISPATCH_TEST_HOOKS=1`, each of the three test-only settings above refu
 
 The check reads a write by an agent session that is not a project's Legion daemon (`legion-daemon:<PROJECT>`), and a write a person's credential makes for such a session (the actor's `act.session`).
 It does not read a person's own write, a daemon's write or a write Dispatch itself makes.
+It does not read a reply a plugin posts with the header `Dispatch-Generated-Text: 1` on `POST /api/v1/messages/{id}/reply` or `POST /api/v1/comments/{id}/reply`, which marks text the plugin generated rather than the agent wrote (a person's `!command` report, a slash command's output, the plugin's own error reply); such a reply is recorded `exempt_generated`, and the header is ignored on every other route.
 
 It reads only text a person reads.
 The server decides that person from the record, never from the text, when the write arrives and before the check reads it (`api/writing_check_reader.go`);
@@ -2718,38 +2719,28 @@ A document edit is read for the text it adds (an operation's `with` and `markdow
 An upload stored as a Markdown document is read as inline content is; any other file is not read, and only its `summary` is.
 The check runs once the request is decoded and its writer resolved, before the write opens a transaction:
 the reader may call a model, and no transaction waits on it.
-A reader fault (`reader_timeout`, `reader_error`, `reader_malformed`, `reader_budget`, `candidate_cap`, `model_mismatch`) never refuses a write: the structure rules decide it alone.
-
-### Refusal and override
-
-A refused write is `422 WRITING_CHECK_REFUSED` with `{code, error, findings: [{field, rule, text, rewrite}], override_field: "override_writing_check"}`, and nothing of it is written.
-The `error` text gives, for each finding, the rewrite, then the rule id and the sentence, and last the way through.
-A write that is correct as it stands is sent again with `override_writing_check`:
-`agent` for an agent's own judgement (the CLI flag `--override-writing-check`), or `generated` for text a plugin generated.
-Every request type with a prose member declares the field, and an upload takes it as a multipart form value;
-any other value is `400 INVALID_WRITING_CHECK_OVERRIDE`.
-The keyed layer stores a `422` under its `Idempotency-Key` (Keyed writes, below), so a write sent again with the override takes a new key.
+A reader fault (`reader_timeout`, `reader_error`, `reader_malformed`, `reader_budget`, `candidate_cap`, `model_mismatch`) changes nothing for the write: the structure rules decide the record alone.
 
 ### Records
 
 Each decision is one row of `writing_check_events`:
-the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the override value, the rules broken and their fields, the code stage's candidate count, how long the model reader took, and `reader`, the login of the person who reads the text (null where no person does), on every row.
-The outcomes are `refused`, `forced`, `clean`, `exempt_person`, `exempt_daemon`, `exempt_system`, `exempt_unread_upload`, `exempt_no_reader`, and the reader's fail-open outcomes with `no_model`.
+the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the rules broken and their fields, the code stage's candidate count, how long the model reader took, and `reader`, the login of the person who reads the text (null where no person does), on every row.
+The outcomes are `findings` (a sentence breaks a rule; the write went on), `clean`, `exempt_person`, `exempt_daemon`, `exempt_system`, `exempt_unread_upload`, `exempt_no_reader`, `exempt_generated`, and the reader's fail-open outcomes with `no_model`.
 A write that carries no prose text is not recorded.
 The server inserts the row outside the write's transaction, after the decision and before the answer; an insert that fails is logged and the write goes on.
 A daily sweep deletes the rows older than 90 days (Background loops, above).
 
 `GET /api/v1/writing-check` answers the check as this process runs it:
 `enabled`, the `rules` it applies, `rules_left_out` with each reason, the `detector` (`on` and why not), the reader's `model` (endpoint host, deployment, api version, tokens per minute, never a credential), `reader_calls` since the process started, and `bundle_model_id`.
-`GET /api/v1/writing-check/counts?day=YYYY-MM-DD` counts one UTC day by outcome, by override value and by route.
+`GET /api/v1/writing-check/counts?day=YYYY-MM-DD` counts one UTC day by outcome and by route.
 
-A day's forced writes of each kind:
+A day's writes with findings, by rule and route:
 
 ```sql
-select override_value, method || ' ' || route as route, count(*)
+select rules, method || ' ' || route as route, count(*)
 from writing_check_events
-where outcome = 'forced' and created_at >= '2026-11-13' and created_at < '2026-11-14'
-group by 1, 2 order by 1, 3 desc;
+where outcome = 'findings' and created_at >= '2026-11-13' and created_at < '2026-11-14'
+group by 1, 2 order by 3 desc;
 ```
 
 A day's exemptions, with the daemon-named writes counted by the personal token that made them:

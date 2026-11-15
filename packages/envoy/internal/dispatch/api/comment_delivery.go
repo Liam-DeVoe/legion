@@ -984,7 +984,6 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 
 // commentReplyInput is the body of POST /api/v1/comments/{id}/reply.
 type commentReplyInput struct {
-	writingCheckOverride
 	Actor   *model.Actor `json:"actor"`
 	Target  *string      `json:"target"`
 	Attempt int          `json:"attempt" required:"true"`

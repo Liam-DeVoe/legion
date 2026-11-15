@@ -175,7 +175,6 @@ func parseReplacesAnswer(raw json.RawMessage) (*time.Time, error) {
 
 // answerAskInput is the body of POST /api/v1/asks/{id}/answer.
 type answerAskInput struct {
-	writingCheckOverride
 	Selected []string `json:"selected"`
 	Text     *string  `json:"text"`
 	// ExpectedEditedAt is required: an answer names the wording it answers, and a body without
@@ -308,7 +307,6 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 
 // resolveAskInput is the body of POST /api/v1/asks/{id}/resolve.
 type resolveAskInput struct {
-	writingCheckOverride
 	Kind   string       `json:"kind" required:"true"`
 	Reason string       `json:"reason" required:"true"`
 	Actor  *model.Actor `json:"actor"`
@@ -399,7 +397,6 @@ func (s *server) writeClosedBlockState(ctx context.Context, ask model.Ask, actor
 // declineAskInput is the body of POST /api/v1/asks/{id}/decline. Both fields are optional: a
 // person who writes no note declines all the same, and a browser names no acting session.
 type declineAskInput struct {
-	writingCheckOverride
 	Note  *string      `json:"note"`
 	Actor *model.Actor `json:"actor"`
 }

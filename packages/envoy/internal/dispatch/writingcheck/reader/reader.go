@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -56,11 +57,12 @@ const (
 // CandidateCap is the most candidates one call reads.
 const CandidateCap = 24
 
-// Defaults for the zero Config fields.
-const (
-	DefaultTimeout         = 2 * time.Second
-	DefaultMaxOutputTokens = 4096
-)
+// DefaultMaxOutputTokens is the bound of one reply under a zero Config.MaxOutputTokens.
+const DefaultMaxOutputTokens = 4096
+
+// noBound is a call's time bound under a zero Config.Timeout. agentloop needs a bound, and this
+// one never ends first, so the caller's context is the only bound.
+const noBound = time.Duration(math.MaxInt64)
 
 // Config is how a Reader calls its model.
 type Config struct {
@@ -76,7 +78,7 @@ type Config struct {
 	// BundleModelID is the model id the bundle was measured with. A reply served by another
 	// model is OutcomeModelMismatch. An empty id pins no model, and no reply is checked.
 	BundleModelID string
-	// Timeout bounds one call; zero is DefaultTimeout.
+	// Timeout bounds one call; zero sets no bound beyond the caller's context.
 	Timeout time.Duration
 	// TokensPerMinute is the token budget of the calls, estimated before each call from the
 	// prompt's length and MaxOutputTokens; zero sets no budget.
@@ -132,7 +134,7 @@ type Reader struct {
 // New is a Reader over cfg, its zero fields set to their defaults.
 func New(cfg Config) *Reader {
 	if cfg.Timeout <= 0 {
-		cfg.Timeout = DefaultTimeout
+		cfg.Timeout = noBound
 	}
 	if cfg.MaxOutputTokens <= 0 {
 		cfg.MaxOutputTokens = DefaultMaxOutputTokens

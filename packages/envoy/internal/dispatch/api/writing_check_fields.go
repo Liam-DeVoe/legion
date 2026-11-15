@@ -48,7 +48,6 @@ var (
 	markRoundTrip  = proseMark{why: "a draft the server parses and renders back, storing nothing of it"}
 	markConfig     = proseMark{why: "a repository, a branch, a path or a job name the server matches"}
 	markHandoff    = proseMark{why: "a handoff body is one JSON object a daemon reads, never shown as Markdown"}
-	markOverride   = proseMark{why: "the writing check's own override value: agent or generated"}
 	markAttributes = proseMark{why: "a typed block's attributes: ids, states and values the block schema names"}
 	markRawPayload = proseMark{why: "a value the server reads as a number, an id, a time or null"}
 )
@@ -76,8 +75,6 @@ var proseTypesNotRead = map[reflect.Type]string{
 // its JSON name. A struct embedded with no JSON name of its own carries its members into the
 // type that embeds it, as encoding/json reads them, and is marked as a type of its own.
 var proseRegistry = map[reflect.Type]map[string]proseMark{
-	reflect.TypeFor[writingCheckOverride](): {"override_writing_check": markOverride},
-
 	// Issues.
 	reflect.TypeFor[createIssueInput](): {
 		"title": markProse, "spec": markProse, "components": rawAs[issueComponentsInput](),
@@ -220,25 +217,13 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 // TestEveryFormValueTheUploadReadsIsMarked holds it to the form values the upload routes' source
 // reads by name, so a value read there and not marked here fails.
 var artifactUploadFormValues = map[string]proseMark{
-	"content":                markProse,
-	"summary":                markProse,
-	"actor":                  {why: "the writer's identity, which the server resolves"},
-	"name":                   markName,
-	"file":                   {why: "a file's bytes: a Markdown file is read as content, any other file is not read"},
-	"primary":                markRawPayload,
-	"override_writing_check": markOverride,
+	"content": markProse,
+	"summary": markProse,
+	"actor":   {why: "the writer's identity, which the server resolves"},
+	"name":    markName,
+	"file":    {why: "a file's bytes: a Markdown file is read as content, any other file is not read"},
+	"primary": markRawPayload,
 }
-
-// writingCheckOverride is the member every request type carrying prose declares, embedded so one
-// declaration serves them all: "" checks the write, "agent" sends it through as an agent's own
-// judgement, and "generated" as text a plugin generated. Any other value is 400.
-type writingCheckOverride struct {
-	OverrideWritingCheck string `json:"override_writing_check,omitempty"`
-}
-
-// writingCheckOverrideValue answers the override a request carries; a request type that embeds
-// writingCheckOverride carries this method too.
-func (o writingCheckOverride) writingCheckOverrideValue() string { return o.OverrideWritingCheck }
 
 // proseMember is one member of a request type as the registry walk meets it.
 type proseMember struct {

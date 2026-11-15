@@ -1,13 +1,13 @@
 -- 20261113085841_writing_check_events.up.sql — one row for each write the writing check decided.
 --
--- INFRA-3231: the server reads the prose of an agent's write before it stores it and refuses a
--- write that breaks a rule of the check (api/writing_check.go). This table records what the check
--- decided for each write it saw: refused, forced through with override_writing_check, written
+-- INFRA-3231: the server reads the prose of an agent's write before it stores it
+-- (api/writing_check.go), and the write goes on whatever the check finds. This table records what
+-- the check decided for each write it saw: a sentence that breaks a rule (findings), written
 -- clean, let through because the reader failed (the reader's fail-open outcomes), or not read at
--- all because the writer is a person, a project's daemon or Dispatch itself, or because the
--- upload is a file the check does not read. A person reads it with the SQL in
--- cmd/dispatch/README.md ("Writing check"), and GET /api/v1/writing-check/counts counts one UTC
--- day of it.
+-- all because the writer is a person, a project's daemon or Dispatch itself, because a plugin
+-- generated the text (exempt_generated), or because the upload is a file the check does not
+-- read. A person reads it with the SQL in cmd/dispatch/README.md ("Writing check"), and
+-- GET /api/v1/writing-check/counts counts one UTC day of it.
 --
 -- The server inserts the row outside the write's own transaction, after the decision and before
 -- the answer, so a failed insert is logged and never fails the write, and a write that rolls back
@@ -16,8 +16,8 @@
 -- token_id is the personal token row the write was made with, where there is one: the day's
 -- exemptions are read by it, so a daemon-named write made with a person's token is counted under
 -- that token. rules and fields are the rule ids the write broke and the request fields they
--- stand in, for a refused or a forced write; candidates is how many sentences the code stage
--- gave the reader, and reader_ms how long the reader took, null where it was not called.
+-- stand in, for a write with findings; candidates is how many sentences the code stage gave the
+-- reader, and reader_ms how long the reader took, null where it was not called.
 --
 -- A new table no earlier release names: nothing existing is read or rewritten, and the release
 -- before this one neither reads nor writes it, so it rolls (cmd/dispatch/README.md, "Database
@@ -33,11 +33,10 @@ create table writing_check_events (
   act_session text,
   token_id text,
   outcome text not null check (outcome in (
-    'refused', 'forced', 'exempt_person', 'exempt_daemon', 'exempt_system', 'exempt_unread_upload',
-    'clean', 'reader_timeout', 'reader_error', 'reader_malformed', 'reader_budget', 'candidate_cap',
-    'model_mismatch', 'no_model'
+    'findings', 'exempt_person', 'exempt_daemon', 'exempt_system', 'exempt_unread_upload',
+    'exempt_generated', 'clean', 'reader_timeout', 'reader_error', 'reader_malformed',
+    'reader_budget', 'candidate_cap', 'model_mismatch', 'no_model'
   )),
-  override_value text check (override_value in ('agent', 'generated')),
   rules text[] not null default '{}',
   fields text[] not null default '{}',
   candidates int not null default 0,

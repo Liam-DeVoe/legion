@@ -69,7 +69,6 @@ type resolvedCheck struct {
 
 // checkResultInput is the body POST /api/v1/issues/{key}/results takes.
 type checkResultInput struct {
-	writingCheckOverride
 	Actor           *model.Actor `json:"actor"`
 	Check           string       `json:"check" required:"true"`
 	Role            string       `json:"role" required:"true"`

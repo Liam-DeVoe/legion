@@ -28,7 +28,6 @@ const issueUpdatedNow = "greatest(updated_at, clock_timestamp())"
 
 // updateIssueInput is the body of PATCH /api/v1/issues/{key}.
 type updateIssueInput struct {
-	writingCheckOverride
 	Title         *string               `json:"title"`
 	Status        *string               `json:"status"`
 	Rank          *rankInput            `json:"rank"`

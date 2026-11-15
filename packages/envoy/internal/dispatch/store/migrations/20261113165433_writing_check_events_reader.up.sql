@@ -26,7 +26,7 @@ alter table writing_check_events
   add column reader text,
   drop constraint writing_check_events_outcome_check,
   add constraint writing_check_events_outcome_check check (outcome in (
-    'refused', 'forced', 'exempt_person', 'exempt_daemon', 'exempt_system', 'exempt_unread_upload',
-    'exempt_no_reader', 'clean', 'reader_timeout', 'reader_error', 'reader_malformed', 'reader_budget',
-    'candidate_cap', 'model_mismatch', 'no_model'
+    'findings', 'exempt_person', 'exempt_daemon', 'exempt_system', 'exempt_unread_upload',
+    'exempt_generated', 'exempt_no_reader', 'clean', 'reader_timeout', 'reader_error',
+    'reader_malformed', 'reader_budget', 'candidate_cap', 'model_mismatch', 'no_model'
   )) not valid;

@@ -24,7 +24,6 @@ import (
 
 // checkResultRetractionInput is the body POST /api/v1/results/{id}/retract takes.
 type checkResultRetractionInput struct {
-	writingCheckOverride
 	Actor  *model.Actor `json:"actor"`
 	Reason string       `json:"reason" required:"true"`
 }

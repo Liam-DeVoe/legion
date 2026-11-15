@@ -40,7 +40,7 @@ func addReaderFlags(flags *flag.FlagSet, batch bool) *readerFlags {
 	flags.StringVar(&f.federated, "federated-token-file", "", "the federated token file Entra trusts for the client id")
 	flags.StringVar(&f.scope, "scope", embed.DefaultEntraScope, "the Entra token scope")
 	flags.StringVar(&f.keyFile, "key-file", "", "a file holding the endpoint's key (sent as the protocol expects; never printed)")
-	flags.DurationVar(&f.deadline, "deadline", reader.DefaultTimeout, "the reader's time bound for one call")
+	flags.DurationVar(&f.deadline, "deadline", 0, "the reader's time bound for one call (0: no bound)")
 	flags.BoolVar(&f.noEffort, "no-effort", false, "send no reasoning effort (openai-chat only), for a deployment that refuses reasoning_effort")
 	f.modelID = writingcheck.BundleModelID
 	f.concurrency = 1

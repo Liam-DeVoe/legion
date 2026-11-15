@@ -388,6 +388,12 @@ const LiveSocketMaxSubscriptions = 64
 const IdempotencyKeyHeader = "Idempotency-Key"
 const IdempotencyReplayedHeader = "Idempotency-Replayed"
 
+// GeneratedTextHeader is the request header (1) a plugin puts on a reply holding text it generated
+// rather than text the agent wrote. The server reads it on the two delivery reply routes alone.
+// Generated from DISPATCH_GENERATED_TEXT_HEADER in packages/contracts so the server and the
+// plugins name it once.
+const GeneratedTextHeader = "Dispatch-Generated-Text"
+
 // IdempotencyKeyMax is the longest key and IdempotencyKeyPattern a whole one. Generated from
 // IDEMPOTENCY_KEY_MAX and IDEMPOTENCY_KEY_PATTERN in packages/contracts so the server's refusal and
 // the keys every client mints cannot drift apart.

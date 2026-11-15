@@ -43,7 +43,7 @@ bounds are the bundle's.
 | `--azure-tenant`, `--azure-client-id`, `--federated-token-file`, `--scope` | Keyless Azure sign-in through `embed.NewEntraTokenSource`, as the answerer signs in. `--scope` defaults to `embed.DefaultEntraScope`. |
 | `--key-file` | A file that holds the endpoint's key. `openai-chat` sends it as a bearer token, `anthropic-messages` as `X-Api-Key`. The command never prints it. |
 | `--calls` | The number of calls (default 20). |
-| `--deadline` | The reader's time bound for one call (default 2s, the bundle's). |
+| `--deadline` | The reader's time bound for one call (default 0: no bound). |
 | `--bodies` | A JSONL file of `{"text": ...}` bodies. Without it, the command uses a built-in set of synthetic sentences. A body that holds no candidate is not sent. |
 | `--out` | A JSONL file for the per-call records. |
 | `--no-effort` | Send no `reasoning_effort` (`openai-chat` only), for a deployment that refuses the parameter. Without it, the reader asks for effort `off`, which Chat Completions receives as `reasoning_effort: none`. |
@@ -55,9 +55,9 @@ for a call that read every candidate, else `reader_timeout`, `reader_error`, `re
 and the rest), the model id the provider said served the call (empty when no reply came), the
 error text, and the number of candidates sent.
 
-The summary prints p50, p95 and the maximum latency (nearest rank), the share of calls over the
-deadline or failed, the count of parse failures (`reader_malformed`), the count of each outcome
-and of each served model id, and the window the calls ran in.
+The summary prints p50, p95 and the maximum latency (nearest rank), the share of calls that failed
+(or, with a `--deadline`, went over it), the count of parse failures (`reader_malformed`), the count
+of each outcome and of each served model id, and the window the calls ran in.
 
 ## fetch
 

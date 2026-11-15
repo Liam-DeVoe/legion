@@ -274,6 +274,40 @@ func TestEachFaultLetsTheWriteThroughWithItsOutcome(t *testing.T) {
 	}
 }
 
+// A zero Timeout sets no bound of the reader's own: a reply later than 2 seconds is read, and
+// the caller's context alone ends a call.
+func TestAZeroTimeoutIsBoundedByTheCallersContextAlone(t *testing.T) {
+	t.Parallel()
+	unbounded := func(s *stub) *Reader {
+		return New(Config{
+			Model:         AzureModel(s.server.URL+"/", deployment, apiVersion, func(context.Context) (string, error) { return token, nil }),
+			BundleModelID: bundleModel,
+		})
+	}
+	t.Run("a late reply is read", func(t *testing.T) {
+		t.Parallel()
+		s := newStub(t, func(s sentInput) (int, string, string, time.Duration) {
+			return http.StatusOK, bundleModel, verdictsFor(s, true), 2100 * time.Millisecond
+		})
+		verdicts, outcome := unbounded(s).Read(context.Background(), cands(t, twoVacuous))
+		if outcome != OutcomeRead || len(verdicts) == 0 {
+			t.Errorf("verdicts %+v, outcome %q, want verdicts and %q", verdicts, outcome, OutcomeRead)
+		}
+	})
+	t.Run("the caller's context ends the call", func(t *testing.T) {
+		t.Parallel()
+		s := newStub(t, func(s sentInput) (int, string, string, time.Duration) {
+			return http.StatusOK, bundleModel, verdictsFor(s, true), 5 * time.Second
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		verdicts, outcome := unbounded(s).Read(ctx, cands(t, twoVacuous))
+		if outcome != OutcomeTimeout || verdicts != nil {
+			t.Errorf("verdicts %+v, outcome %q, want none and %q", verdicts, outcome, OutcomeTimeout)
+		}
+	})
+}
+
 // A reply served by another model is a mismatch, and the reader then stays off: no later Read
 // calls the model.
 func TestAModelMismatchTurnsTheReaderOff(t *testing.T) {

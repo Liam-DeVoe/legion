@@ -233,8 +233,9 @@ func readBodies(path string) ([]string, error) {
 	return texts, scanner.Err()
 }
 
-// writeProbeSummary prints the latency percentiles, the share of calls over the deadline or
-// failed, the served model ids, the parse failures and the window the calls ran in.
+// writeProbeSummary prints the latency percentiles, the share of calls that failed or went over
+// the deadline (a zero deadline is no bound, so only failures count), the served model ids, the
+// parse failures and the window the calls ran in.
 func writeProbeSummary(w io.Writer, records []probeCall, deadline time.Duration, end time.Time) {
 	latencies := make([]float64, len(records))
 	models := map[string]int{}
@@ -244,7 +245,7 @@ func writeProbeSummary(w io.Writer, records []probeCall, deadline time.Duration,
 		latencies[i] = rec.LatencyMS
 		models[rec.Model]++
 		outcomes[rec.Outcome]++
-		if rec.Outcome != outcomeRead || rec.LatencyMS > float64(deadline.Microseconds())/1000 {
+		if rec.Outcome != outcomeRead || deadline > 0 && rec.LatencyMS > float64(deadline.Microseconds())/1000 {
 			bad++
 		}
 		if rec.Outcome == reader.OutcomeMalformed {
@@ -255,7 +256,11 @@ func writeProbeSummary(w io.Writer, records []probeCall, deadline time.Duration,
 	fmt.Fprintf(w, "calls: %d\n", len(records))
 	fmt.Fprintf(w, "latency ms: p50 %.0f  p95 %.0f  max %.0f\n",
 		percentile(latencies, 0.50), percentile(latencies, 0.95), latencies[len(latencies)-1])
-	fmt.Fprintf(w, "over the %s deadline or failed: %d (%.1f%%)\n", deadline, bad, 100*float64(bad)/float64(len(records)))
+	if deadline > 0 {
+		fmt.Fprintf(w, "over the %s deadline or failed: %d (%.1f%%)\n", deadline, bad, 100*float64(bad)/float64(len(records)))
+	} else {
+		fmt.Fprintf(w, "failed: %d (%.1f%%)\n", bad, 100*float64(bad)/float64(len(records)))
+	}
 	fmt.Fprintf(w, "parse failures (%s): %d\n", reader.OutcomeMalformed, malformed)
 	fmt.Fprintln(w, "outcomes:")
 	for _, name := range sortedKeys(outcomes) {

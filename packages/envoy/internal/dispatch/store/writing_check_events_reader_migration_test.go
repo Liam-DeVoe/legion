@@ -14,7 +14,8 @@ const (
 // 20261113165433 adds writing_check_events.reader and admits the outcome exempt_no_reader. A row
 // written before it keeps its outcome and records no reader, the census refuses nothing, and after
 // it a row names its reader and a write with no person as its reader is recorded as such; an
-// outcome the check does not name is still refused.
+// outcome the check does not name, the refused and forced outcomes of a check that refused writes
+// among them, is still refused.
 func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -45,7 +46,7 @@ func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *test
 	}
 	if err := store.InsertWritingCheckEvent(ctx, WritingCheckEvent{
 		Route: "/api/v1/issues/{key}/comments", Method: "POST", ActorKind: "session", ActorID: "s-two",
-		Outcome: "refused", Reader: "alice",
+		Outcome: "findings", Reader: "alice",
 	}); err != nil {
 		t.Fatalf("insert a row with a reader: %v", err)
 	}
@@ -54,6 +55,12 @@ func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *test
 		Outcome: "exempt_no_reader",
 	}); err != nil {
 		t.Fatalf("insert a row with no reader: %v", err)
+	}
+	if err := store.InsertWritingCheckEvent(ctx, WritingCheckEvent{
+		Route: "/api/v1/comments/{id}/reply", Method: "POST", ActorKind: "session", ActorID: "s-five",
+		Outcome: "exempt_generated", Reader: "alice",
+	}); err != nil {
+		t.Fatalf("insert a plugin's generated reply: %v", err)
 	}
 	rows, err := store.Pool.Query(ctx, `select actor_id, outcome, coalesce(reader, '<none>') from writing_check_events where actor_id <> 's-one' order by id`)
 	if err != nil {
@@ -68,13 +75,15 @@ func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *test
 		}
 		got = append(got, actor+" "+outcome+" "+reader)
 	}
-	if want := []string{"s-two refused alice", "alice exempt_no_reader <none>"}; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+	if want := []string{"s-two findings alice", "alice exempt_no_reader <none>", "s-five exempt_generated alice"}; len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Errorf("rows = %q, want %q", got, want)
 	}
-	if err := store.InsertWritingCheckEvent(ctx, WritingCheckEvent{
-		Route: "/api/v1/broadcasts", Method: "POST", ActorKind: "session", ActorID: "s-four", Outcome: "exempt_unknown",
-	}); err == nil {
-		t.Error("an outcome the check does not name was stored, want the outcome check to refuse it")
+	for _, outcome := range []string{"exempt_unknown", "refused", "forced"} {
+		if err := store.InsertWritingCheckEvent(ctx, WritingCheckEvent{
+			Route: "/api/v1/broadcasts", Method: "POST", ActorKind: "session", ActorID: "s-four", Outcome: outcome,
+		}); err == nil {
+			t.Errorf("the outcome %q was stored, want the outcome check to refuse it", outcome)
+		}
 	}
 	var today time.Time
 	if err := store.Pool.QueryRow(ctx, `select now()`).Scan(&today); err != nil {
@@ -84,7 +93,8 @@ func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *test
 	if err != nil {
 		t.Fatalf("count the day: %v", err)
 	}
-	if counts.Outcomes["exempt_no_reader"] != 1 || counts.Outcomes["refused"] != 1 || counts.Outcomes["clean"] != 1 {
-		t.Errorf("counts = %+v, want one exempt_no_reader beside the refused and the clean row", counts)
+	if counts.Outcomes["exempt_no_reader"] != 1 || counts.Outcomes["findings"] != 1 || counts.Outcomes["clean"] != 1 ||
+		counts.Outcomes["exempt_generated"] != 1 || counts.Total != 4 {
+		t.Errorf("counts = %+v, want one exempt_no_reader and one exempt_generated beside the findings and the clean row", counts)
 	}
 }

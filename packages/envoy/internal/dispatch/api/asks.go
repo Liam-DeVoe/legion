@@ -131,7 +131,6 @@ func (s *server) createAsk(w http.ResponseWriter, r *http.Request) {
 
 // createAskInput is the body of POST /api/v1/issues/{key}/asks and POST /api/v1/artifacts/{id}/asks.
 type createAskInput struct {
-	writingCheckOverride
 	Question string             `json:"question" required:"true"`
 	Kind     string             `json:"kind"`
 	Options  []model.AskOption  `json:"options"`
@@ -349,7 +348,6 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 
 // editAskInput is the body of PATCH /api/v1/asks/{id}.
 type editAskInput struct {
-	writingCheckOverride
 	Question *string            `json:"question"`
 	Options  *[]model.AskOption `json:"options"`
 	Multiple *bool              `json:"multiple"`
