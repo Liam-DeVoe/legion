@@ -1203,6 +1203,73 @@ dir="$(fresh citations-no-dispatch)"
 out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"
 ending_result "--citations with no Dispatch to resolve against cannot run: exit 2, the reason last" 2 '^check\.sh cannot run' "$?" "$out"
 
+# 73-75 come from test round 24 and the architect's decision on it: no check passes on no
+# input, and a live source that does not answer is a mode that cannot run (the header of
+# check.sh states both). Each fault passed at 8f53f0c8ca, or ended there as the
+# deliverable failing; each honest form beside it is the fixture as it is built.
+#
+# 73. An empty judgement ends each mode that reads it in a FAIL naming the assertion. At
+# 8f53f0c8ca --shape failed page-count alone and passed each assertion over the pages on
+# none of them, --landed passed every assertion, and --replay read the judgement only
+# after its other assertions had judged.
+dir="$(fresh empty-judgement-shape)"
+: >"$dir/judgement.md"
+case_result "an empty judgement fails the assertions over its pages, named" 'page-parts: the judgement carries 0 candidate pages' "$(fixture_run "$dir" --shape)"
+dir="$(fresh empty-judgement-landed)"
+: >"$dir/judgement.md"
+case_result "an empty judgement fails --landed, naming the step it lost" 'landed-proof: the step .An execution record under the gen_ai. names., which sources.json.s landed list commits, has no page' "$(fixture_run "$dir" --landed)"
+dir="$(fresh empty-judgement-replay)"
+sed -i 's/| inside one tree | 20 | 100 |/| inside one tree | 0 | 100 |/' "$dir/repo/docs/research/internet-of-cognition/coordination/count.md"
+: >"$dir/judgement.md"
+case_result "an empty judgement fails --replay's zero class, named" 'count-zero-premise' "$(fixture_run "$dir" --replay)"
+dir="$(fresh judgement-honest)"
+out="$(fixture_run "$dir" --shape)"
+ending_result "the fixture's judgement passes --shape" 0 '^all 9 assertions passed$' "$?" "$out"
+out="$(fixture_run "$dir" --landed)"
+ending_result "the fixture's judgement passes --landed" 0 '^all 5 assertions passed$' "$?" "$out"
+
+# 74. A step of sources.json's landed list that no page carries fails by its title. At
+# 8f53f0c8ca the gate read only the pages it found, so a renamed page left the step its
+# list commits unread. Other inputs of a committed set are held the same way: a test
+# against our own records whose file is gone, and a record under check read as nothing.
+dir="$(fresh landed-title-missing)"
+sed -i 's/^### An execution record under the gen_ai\. names$/### An execution record, renamed/' "$dir/judgement.md"
+grep -q '^### An execution record, renamed$' "$dir/judgement.md" || { printf 'FAIL the landed page could not be renamed\n'; exit 1; }
+case_result "a landed step whose page is gone fails --landed, naming it" 'landed-proof: the step .An execution record under the gen_ai. names., which sources.json.s landed list commits, has no page of the judgement that carries its Landed line' "$(fixture_run "$dir" --landed)"
+dir="$(fresh test-file-missing)"
+rm "$dir/repo/docs/research/internet-of-cognition/tests/scope.md"
+case_result "a test against our own records whose file is gone fails, named" 'our-data-input: the test scope against our own records has no file' "$(fixture_run "$dir" --replay)"
+dir="$(fresh record-read-empty)"
+: >"$dir/repo/docs/research/internet-of-cognition/records/under-check.md"
+case_result "a record under check read as nothing fails citation-row by its rows" 'citation-row: the row u-[0-9]+ is no citation the record labelled u carries' "$(fixture_run "$dir" --replay)"
+
+# 75. A live source that does not answer is a mode that cannot run, in every mode that
+# reads one, with the source named last. At 8f53f0c8ca, with no Dispatch, --landed passed
+# on an empty judgement and --published failed its delivery; a record read live from
+# Dispatch failed citation-row. The fixture's own judgement is a file, so its read that
+# does not answer is a file that is not there; the tree's own --landed reads Dispatch.
+dir="$(fresh judgement-unreadable)"
+rm "$dir/judgement.md"
+out="$(fixture_run "$dir" --landed)"
+ending_result "--landed whose judgement does not answer cannot run" 2 '^check\.sh cannot run --landed: the judgement file .* did not answer' "$?" "$out"
+out="$(fixture_run "$dir" --shape)"
+ending_result "--shape whose judgement does not answer cannot run" 2 '^check\.sh cannot run --shape: the judgement file .* did not answer' "$?" "$out"
+out="$(DISPATCH_URL=http://127.0.0.1:1 bash "$HERE/check.sh" --landed 2>&1)"
+ending_result "--landed with no Dispatch cannot run, naming Dispatch" 2 '^check\.sh cannot run --landed: Dispatch, the read of dispatch://INFRA-3134/artifact/judgement-md did not answer' "$?" "$out"
+dir="$(fresh record-no-dispatch)"
+jq -c '.records_under_check |= map(del(.copy) | .ref = "dispatch://INFRA-3134/artifact/judgement-md")' "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
+    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json"
+out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --replay)"
+ending_result "--replay whose record under check Dispatch does not answer cannot run" 2 '^check\.sh cannot run --replay: Dispatch, the read of dispatch://INFRA-3134/artifact/judgement-md did not answer' "$?" "$out"
+dir="$(fresh published-no-dispatch)"
+out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --published)"
+ending_result "--published with no Dispatch cannot run, naming Dispatch" 2 '^check\.sh cannot run --published: Dispatch, the read of the comments of INFRA-3134 did not answer' "$?" "$out"
+dir="$(fresh citations-honest)"
+out="$(fixture_run "$dir" --citations)"
+ending_result "the fixture passes --citations when Dispatch answers" 0 '^all 5 assertions passed$' "$?" "$out"
+out="$(fixture_run "$dir" --replay)"
+ending_result "the fixture passes --replay" 0 '^all 16 assertions passed$' "$?" "$out"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"

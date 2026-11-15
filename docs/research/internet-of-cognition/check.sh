@@ -25,11 +25,41 @@
 # reported nothing, because its code crashed, exited or was skipped, is a FAIL naming it,
 # so no assertion is passed by its silence; each prints its PASS only after all its parts
 # have run. A mode cannot run when a tool is missing, the GitHub budget is spent, env.sh or
-# the install reader cannot load or does not run to its end, or a source every assertion
-# of the mode reads does not answer; the reason is then the last line. Any other ending,
-# no output at all included, is a failed check: a run that was killed prints nothing and
-# exits non-zero for a reason that is not this deliverable's. Read the run by its last
-# line and not by the exit status alone.
+# the install reader cannot load or does not run to its end, or a live source does not
+# answer; the reason is then the last line. Any other ending, no output at all included,
+# is a failed check: a run that was killed prints nothing and exits non-zero for a reason
+# that is not this deliverable's. Read the run by its last line and not by the exit
+# status alone.
+#
+# Two rules hold what every mode reads, and this is the one place they are stated.
+#
+# The expected-set rule: no assertion passes on no input, and no count that decides a
+# floor is read from the live input alone. Every count an assertion holds over is held to
+# a committed expected set or floor: each step of sources.json's landed list to a page of
+# the judgement that carries its Landed line; the candidate pages to PAGE_FLOOR and
+# PAGE_CAP, three and seven, and every assertion over the pages (their eleven parts, their
+# verdicts, what each commits us to, a refutation) to that floor; the three fixed pages;
+# the six named mas-lab directories and the three questions; the four fixed interview
+# rows; the three tests against our own records; the five deep-read directories of the
+# order of work; and the rows of claims.jsonl that cite each record under check, which
+# must be exactly the citations the record carries as it is read now. Where no committed
+# set exists the floor is one: a claims.jsonl with no row, no command, no quotation or no
+# absence search, a kind of citation with no row, a directory naming no dispatch://
+# reference, an empty landed list or an empty question list fails the assertion over it
+# by name.
+#
+# The live-read rule: every read of a live source goes through one function, live_read,
+# in the mode's own shell before any assertion of the mode judges: the judgement and the
+# two records under check from Dispatch, Dispatch's answer to each dispatch:// reference,
+# the Dispatch API, the GitHub budget, the default branch and its fetch, and the fetch of
+# each pinned clone. A source that does not answer is a mode that cannot run, exit 2,
+# naming the source; it is never an assertion's failure. A source that answers that it
+# holds no such thing has answered, and judges the deliverable: Dispatch's "not found",
+# "No block", "no version N of" or "document ... not found" for a reference fails
+# citation-dispatch, and for the judgement leaves the text empty, which every assertion
+# over it then fails by its floor. The one live read that is no input is the report of
+# each published page's live address, which reports an address that does not answer
+# rather than stopping, as the Verification document asks of it.
 #
 # Prerequisites, because nothing in CI runs this script and a gate nobody else can start
 # passes by default:
@@ -121,6 +151,7 @@ trap 'rm -rf "$RUN_SCRATCH"' EXIT
 # reads them after the mode's subshell ends, however it ended.
 REPORTED="$RUN_SCRATCH/reported"
 : >"$REPORTED"
+MODE=""  # the mode run_mode runs, which live_read names when a source does not answer
 
 # family | mode | what it asserts | the fault --self-test plants, or - for none. A mode
 # declares the assertions it runs by this table: the rows of its mode, and for
@@ -247,6 +278,7 @@ cannot_run() {
 # still reads what it reported, then ends the run: exit 2 with the mode's reason when it
 # could not run, and otherwise the verdict of finish, exit 0 or 1.
 run_mode() {
+    MODE="$1"
     ("mode_${1//-/_}")
     [ -s "$RUN_SCRATCH/cannot-run" ] && exit 2
     finish "$1"
@@ -265,19 +297,40 @@ claims_file() { printf '%s/claims.jsonl' "$EVIDENCE"; }
 # Every row of claims.jsonl, as compact JSON, one per line.
 claims() { grep -v '^[[:space:]]*$' "$(claims_file)"; }
 
-# clone_root <repository>; prints the path of the clone of a repository sources.json pins,
-# at its pinned commit. The clone is made by env.sh's one rule, ioc_env_clone, under the
-# clone root this run reads, so a clone or a fetch that fails fails here rather than
-# leaving a clone without the commit.
-clone_root() {
-    # A row may name a repository as `scope` or as `ioc-project/scope`; both name the
-    # same row of sources.json, which pins it by its last path element.
-    local name="${1##*/}"
-    env_functions || return 1
-    local IOC_ENV_HERE="$EVIDENCE" IOC_CLONES="$CLONES"
-    ioc_env_clone "$name" || return 1
-    printf '%s/%s' "$CLONES" "$name"
+# live_read <source> <file> <command...>; the one read of a live source, which every mode
+# makes in its own shell before any assertion judges: the judgement and the records under
+# check from Dispatch, a reference Dispatch is asked to resolve, the Dispatch API, the
+# GitHub budget and default branch, and a clone's fetch. It runs the command, writes what
+# it printed into <file>, and returns 0 when the source answered. It returns 1 when the
+# source answered that it holds no such thing, which is an answer that judges the
+# deliverable: Dispatch's "not found", "No block", "no version N of", "document ... not
+# found", or its refusal to read a reference it does not take ("dispatch read was not
+# called"), each measured against Dispatch on 2026-11-15. Anything else that fails, a
+# Dispatch that is unreachable, a curl or git transport error, is no answer at all: the
+# mode cannot run, and it ends here, exit 2, naming the source.
+LIVE_ANSWER_NO='^(not found$|No block |no version [0-9]+ of |document "[^"]*" not found|dispatch [a-z-]+ was not called)'
+live_read() {
+    local source="$1" file="$2"
+    shift 2
+    "$@" >"$file" 2>"$file.err" && return 0
+    head -1 "$file" "$file.err" 2>/dev/null | grep -qE "$LIVE_ANSWER_NO" && return 1
+    cannot_run " --$MODE: $source did not answer: $(cat "$file" "$file.err" 2>/dev/null | head -c 240 | tr '\n' ' ')"
 }
+
+# clone_fetch <repository>; fetches the clone of a repository sources.json pins at its
+# pinned commit, by env.sh's one rule, ioc_env_clone, under the clone root this run
+# reads, through live_read: a fetch that fails is a mode that cannot run. It returns 1
+# for a repository sources.json does not pin, which is an answer about the deliverable.
+# clone_dir <repository> prints where that clone stands. A row may name a repository as
+# `scope` or as `ioc-project/scope`; both name the row of sources.json that pins it by its
+# last path element.
+clone_fetch() {
+    local name="${1##*/}"
+    jq -e --arg n "$name" '.repositories[] | select(.name==$n) | .url and .commit' "$EVIDENCE/sources.json" >/dev/null 2>&1 || return 1
+    env_functions || cannot_run " --$MODE: env.sh, which holds the rule a clone is made by, did not load."
+    IOC_ENV_HERE="$EVIDENCE" IOC_CLONES="$CLONES" live_read "GitHub, the fetch of the clone of $name" "$RUN_SCRATCH/clone-$name.log" ioc_env_clone "$name"
+}
+clone_dir() { printf '%s/%s' "$CLONES" "${1##*/}"; }
 
 our_commit() { jq -r '.our_repository.commit' "$EVIDENCE/sources.json"; }
 
@@ -297,19 +350,24 @@ dispatch_header() {
     printf '%s' "$file"
 }
 
+# dispatch_get <path>; a read of the Dispatch API, run through live_read by its caller: a
+# pod with no bearer, a transport error and an HTTP error status each fail it.
 dispatch_get() {
     local path="$1" header
-    header="$(dispatch_header)" || return 1
-    curl -sS -H @"$header" "${DISPATCH_URL%/}$path"
+    header="$(dispatch_header)" || {
+        printf 'no Dispatch bearer: DISPATCH_TOKEN_FILE names no readable file\n' >&2
+        return 1
+    }
+    curl -sS --fail-with-body -H @"$header" "${DISPATCH_URL%/}$path"
 }
 
 # env_functions makes env.sh's functions and lists those of this shell, so that check.sh
-# and env.sh share each rule they both read: a Dispatch record (ioc_env_read_record: the
-# read exited 0 and what it printed is not a refusal), a clone (ioc_env_clone), the
-# variables uv and pip enforce the locks by (IOC_ENV_ENFORCED), the environments and their
-# locks (IOC_ENV_FROZEN, read by ioc_env_frozen_entry), the reader of a lock
-# (ioc_env_lock_py), and the check of what an environment holds (ioc_env_frozen). env.sh
-# read this way defines them and prepares nothing.
+# and env.sh share each rule they both read: the command that reads a Dispatch record
+# (ioc_env_record_command), a clone (ioc_env_clone), the variables uv and pip enforce the
+# locks by (IOC_ENV_ENFORCED), the environments and their locks (IOC_ENV_FROZEN, read by
+# ioc_env_frozen_entry), the reader of a lock (ioc_env_lock_py), and the check of what an
+# environment holds (ioc_env_frozen). env.sh read this way defines them and prepares
+# nothing.
 env_functions() {
     declare -F ioc_env_read_record >/dev/null && return 0
     [ -r "$EVIDENCE/env.sh" ] || return 1
@@ -318,47 +376,59 @@ env_functions() {
     . "$EVIDENCE/env.sh"
 }
 
-# The judgement, read live from Dispatch once per run and held in this run's scratch, so
-# the gate reads what a reader reads now rather than what an earlier run left behind.
-judgement_text() {
+# judgement_load; reads the judgement once per run, live from Dispatch through
+# live_read, into this run's scratch, so the gate reads what a reader reads now rather
+# than what an earlier run left behind. The self-test's fixture names a file instead, as
+# IOC_JUDGEMENT. A Dispatch that does not answer ends the mode, exit 2; one that answers it
+# holds no judgement leaves the text empty, and every assertion over it then fails by its
+# committed floor. Each mode that reads the judgement calls this first, in its own shell;
+# judgement_text then prints what it read.
+judgement_load() {
     local cache="$RUN_SCRATCH/judgement.md"
+    [ -e "$cache" ] && return 0
     if [ -n "${IOC_JUDGEMENT:-}" ]; then
-        cat "$IOC_JUDGEMENT"
+        live_read "the judgement file $IOC_JUDGEMENT" "$cache" cat "$IOC_JUDGEMENT"
         return 0
     fi
-    if [ ! -s "$cache" ]; then
-        { env_functions && ioc_env_read_record dispatch://INFRA-3134/artifact/judgement-md "$cache"; } 2>/dev/null || return 1
-    fi
-    cat "$cache"
+    env_functions || cannot_run " --$MODE: env.sh, which holds the command a Dispatch record is read by, did not load."
+    live_read "Dispatch, the read of dispatch://INFRA-3134/artifact/judgement-md" "$cache" \
+        ioc_env_record_command dispatch://INFRA-3134/artifact/judgement-md || : >"$cache"
+}
+judgement_text() {
+    [ -e "$RUN_SCRATCH/judgement.md" ] || {
+        printf 'check.sh read the judgement before judgement_load\n' >&2
+        return 1
+    }
+    cat "$RUN_SCRATCH/judgement.md"
 }
 
-record_text() {
-    local label="$1" ref copy cache
+# record_load <label>; reads one record under check, by its label in sources.json, into
+# this run's scratch: from the copy sources.json names, which is how the self-test's
+# fixture holds one; else from the copy env.sh fetched before the first recorded command
+# ran; else live from Dispatch through live_read. A Dispatch that answers it holds no such
+# record leaves the text empty, and citation-row then fails by its committed rows.
+# record_text <label> prints what it read.
+record_load() {
+    local label="$1" ref copy cache="$RUN_SCRATCH/record-$1.md" prepared=""
+    [ -e "$cache" ] && return 0
     ref="$(jq -r --arg l "$label" '.records_under_check[] | select(.label==$l) | .ref' "$EVIDENCE/sources.json")"
     copy="$(jq -r --arg l "$label" '.records_under_check[] | select(.label==$l) | .copy // ""' "$EVIDENCE/sources.json")"
     if [ -n "$copy" ]; then
-        # A record this directory carries a copy of, which is how the self-test's own
-        # fixture holds one. The two records of this issue are read live from Dispatch.
-        cat "$EVIDENCE/$copy"
+        cp "$EVIDENCE/$copy" "$cache"
         return 0
     fi
-    # env.sh fetched the two records of this issue before the first recorded command ran
-    # and exported where it put them; this reads those rather than fetching them twice.
     case "$label" in
-    d) cache="${IOC_DESIGN:-}" ;;
-    r) cache="${IOC_COMMENT:-}" ;;
-    *) cache="" ;;
+    d) prepared="${IOC_DESIGN:-}" ;;
+    r) prepared="${IOC_COMMENT:-}" ;;
     esac
-    if [ -n "$cache" ] && [ -s "$cache" ]; then
-        cat "$cache"
+    if [ -n "$prepared" ] && [ -s "$prepared" ]; then
+        cp "$prepared" "$cache"
         return 0
     fi
-    cache="$RUN_SCRATCH/record-$label.md"
-    if [ ! -s "$cache" ]; then
-        { env_functions && ioc_env_read_record "$ref" "$cache"; } 2>/dev/null || return 1
-    fi
-    cat "$cache"
+    env_functions || cannot_run " --$MODE: env.sh, which holds the command a Dispatch record is read by, did not load."
+    live_read "Dispatch, the read of $ref" "$cache" ioc_env_record_command "$ref" || : >"$cache"
 }
+record_text() { cat "$RUN_SCRATCH/record-$1.md"; }
 
 # history_ref names the commit whose history --shape and --landed read: IOC_HISTORY_REF
 # when it is set, which a reader sets once the squash merge has left the pull request's
@@ -906,7 +976,8 @@ github_budget() {
     local answer remaining reset
     # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
     [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
-    answer="$(curl -sS https://api.github.com/rate_limit 2>/dev/null)" || return 0
+    live_read "GitHub, the read of its rate limit" "$RUN_SCRATCH/rate-limit.json" curl -sS https://api.github.com/rate_limit
+    answer="$(cat "$RUN_SCRATCH/rate-limit.json")"
     remaining="$(printf '%s' "$answer" | jq -r '.resources.core.remaining // empty' 2>/dev/null)"
     reset="$(printf '%s' "$answer" | jq -r '.resources.core.reset // empty' 2>/dev/null)"
     [ -n "$remaining" ] || return 0
@@ -2658,6 +2729,13 @@ mode_replay() {
     # those commands refuses at once rather than after an install.
     github_budget
     prepare_env
+    # The live inputs of the assertions below, read before any of them judges: the two
+    # records under check and the judgement, which count-zero-premise reads.
+    local label
+    for label in $(jq -r '.records_under_check[].label' "$EVIDENCE/sources.json"); do
+        record_load "$label"
+    done
+    judgement_load
     # The header file every recorded curl of the Dispatch API reads; a pod with no bearer
     # leaves it unset, and those rows then fail on the read they could not make.
     IOC_DISPATCH_HEADER="$(dispatch_header)" && export IOC_DISPATCH_HEADER
@@ -2770,12 +2848,24 @@ mode_replay() {
     done <<<"$unpinned"
     [ -z "$unpinned" ] && [ -z "$frozen_failures" ] && pass install-pinned "every package a recorded command installs or runs names its version and is read from a committed hashed lock, or is a local path built under a build constraint, and so does every build backend, and every environment a row installed into holds only packages its lock holds at their version and packages its pinned clone builds"
 
-    [ "$bad_form" -eq 0 ] && pass claim-form "every claim of $(claims | wc -l) carries one of the five forms"
-    [ "$bad_mark" -eq 0 ] && pass claim-mark "every claim carries a mark its requirement fixes"
-    [ "$bad_predicate" -eq 0 ] && pass predicate-form "every row with a command carries exactly one predicate, and each is a bound, a set membership or an exit status"
-    [ "$bad_quotation" -eq 0 ] && pass quotation-marked "every quotation is marked a claim of the project and not of its code"
+    # None of these passes on no input: a claims.jsonl with no row, no command, no
+    # quotation or no absence search to read fails the assertion over it by name.
+    local rows quotations absences
+    rows="$(claims | wc -l)"
+    quotations="$(claims | jq -c 'select(.kind=="quotation")' | wc -l)"
+    absences="$(claims | jq -c 'select(.kind=="absence" and (.command // "") != "")' | wc -l)"
+    [ "$rows" -gt 0 ] || { bad_form=$((bad_form + 1)) && fail claim-form "claims.jsonl holds no row, so no claim is judged"; }
+    [ "$rows" -gt 0 ] || { bad_mark=$((bad_mark + 1)) && fail claim-mark "claims.jsonl holds no row, so no mark is judged"; }
+    [ "$ran" -gt 0 ] || { bad_predicate=$((bad_predicate + 1)) && fail predicate-form "no row of claims.jsonl carries a command and a predicate, so no predicate is judged"; }
+    [ "$quotations" -gt 0 ] || { bad_quotation=$((bad_quotation + 1)) && fail quotation-marked "claims.jsonl holds no quotation, though the authors' account is quoted, so no mark of one is judged"; }
+    [ "$ran" -gt 0 ] || { command_failures="$command_failures none" && fail replay-command "no recorded command ran, so nothing was replayed"; }
+    [ "$absences" -gt 0 ] || { absence_failures="$absence_failures none" && fail absence-still-empty "claims.jsonl holds no absence search, so none is read again"; }
+    [ "$bad_form" -eq 0 ] && pass claim-form "every claim of $rows carries one of the five forms"
+    [ "$bad_mark" -eq 0 ] && pass claim-mark "every claim of $rows carries a mark its requirement fixes"
+    [ "$bad_predicate" -eq 0 ] && pass predicate-form "every one of the $ran rows with a command carries exactly one predicate, and each is a bound, a set membership or an exit status"
+    [ "$bad_quotation" -eq 0 ] && pass quotation-marked "every one of the $quotations quotations is marked a claim of the project and not of its code"
     [ -z "$command_failures" ] && pass replay-command "$ran recorded commands ran again, no read inside one failed, and each met the predicate its row carries"
-    [ -z "$absence_failures" ] && pass absence-still-empty "every absence search still finds nothing"
+    [ -z "$absence_failures" ] && pass absence-still-empty "every one of the $absences absence searches still finds nothing"
 
     # The id list is read by three of the assertions below and built once here.
     claims | jq -r '.id' | sort -u >"$work/ids"
@@ -2788,29 +2878,42 @@ mode_replay() {
 }
 
 replay_citation_rows() {
-    # replay_citation_rows <id file>; the ids of claims.jsonl, one per line.
-    local ids="$1" work label missing=0 total=0
+    # replay_citation_rows <id file>; the ids of claims.jsonl, one per line. The expected
+    # set is committed: the rows of claims.jsonl whose id is a citation of a record under
+    # check, <label>-<number>. Each citation the record carries has such a row, each such
+    # row is a citation the record carries, and a label with no such row is a failure, so
+    # a record read as nothing, or a set of rows taken out, is no pass.
+    local ids="$1" work label missing=0 total=0 cid
     work="$(mktemp -d "${TMPDIR:-/tmp}/ioc-cit.XXXXXX")"
+    if [ "$(jq '.records_under_check | length' "$EVIDENCE/sources.json")" -eq 0 ]; then
+        missing=$((missing + 1))
+        fail citation-row "sources.json names no record under check, so no citation is checked"
+    fi
     for label in $(jq -r '.records_under_check[].label' "$EVIDENCE/sources.json"); do
-        if ! record_text "$label" >"$work/record-$label.md"; then
-            fail citation-row "Dispatch did not answer the read of the record labelled $label"
-            rm -rf "$work"
-            return
-        fi
+        record_text "$label" >"$work/record-$label.md"
         python3 "$EVIDENCE/citations.py" extract --input "$work/record-$label.md" --label "$label" >"$work/cit-$label.jsonl" || {
+            missing=$((missing + 1))
             fail citation-row "citations.py could not read the record labelled $label"
-            rm -rf "$work"
-            return
+            continue
         }
+        jq -r '.cid' "$work/cit-$label.jsonl" | sort -u >"$work/cids-$label"
+        grep -E "^$label-[0-9]+\$" "$ids" | sort -u >"$work/rows-$label" || true
+        if [ ! -s "$work/rows-$label" ]; then
+            missing=$((missing + 1))
+            fail citation-row "claims.jsonl carries no row of a citation of the record labelled $label, so nothing of it is checked"
+            continue
+        fi
         while IFS= read -r cid; do
-            total=$((total + 1))
-            grep -qx "$cid" "$ids" || {
-                missing=$((missing + 1))
-                fail citation-row "the citation $cid of the record labelled $label has no row with a mark"
-            }
-        done < <(jq -r '.cid' "$work/cit-$label.jsonl")
+            missing=$((missing + 1))
+            fail citation-row "the citation $cid of the record labelled $label has no row with a mark"
+        done < <(comm -23 "$work/cids-$label" "$work/rows-$label")
+        while IFS= read -r cid; do
+            missing=$((missing + 1))
+            fail citation-row "the row $cid is no citation the record labelled $label carries as it was read now"
+        done < <(comm -13 "$work/cids-$label" "$work/rows-$label")
+        total=$((total + $(wc -l <"$work/rows-$label")))
     done
-    [ "$missing" -eq 0 ] && pass citation-row "each of the $total citations of the two records under check has a row with a mark"
+    [ "$missing" -eq 0 ] && pass citation-row "each of the $total rows of claims.jsonl that cite a record under check is a citation the record carries, and each citation it carries has its row"
     rm -rf "$work"
 }
 
@@ -2875,9 +2978,16 @@ replay_interview() {
 }
 
 replay_our_data() {
-    local bad=0 file
-    for file in "$EVIDENCE"/tests/*.md; do
-        [ -e "$file" ] || continue
+    # The three tests against our own records the specification names, each a file of
+    # tests/; a test whose file is missing fails, so an empty directory is no pass.
+    local bad=0 file name
+    for name in concord scope mas-lab; do
+        file="$EVIDENCE/tests/$name.md"
+        [ -s "$file" ] || {
+            bad=$((bad + 1))
+            fail our-data-input "the test $name against our own records has no file tests/$name.md"
+            continue
+        }
         local input
         input="$(grep -m1 '^Input:' "$file" || true)"
         if [ -z "$input" ]; then
@@ -2945,7 +3055,7 @@ replay_count() {
     [ "$without" -eq 0 ] && pass count-denominator "every class carries its denominator, the records read in the window"
 
     local judgement
-    judgement="$(judgement_text 2>/dev/null || true)"
+    judgement="$(judgement_text)"
     if [ -z "$zero_classes" ]; then
         pass count-zero-premise "no class reads zero over a denominator above zero"
     elif printf '%s' "$judgement" | grep -qF 'premise that failed'; then
@@ -2957,20 +3067,28 @@ replay_count() {
 
 # ---------------------------------------------------------------- --shape
 
+# The floor and the cap of candidate pages the specification fixes. Every assertion over
+# the pages is held to the floor, so a judgement with fewer pages, or none, is no pass of
+# them.
+PAGE_FLOOR=3
+PAGE_CAP=7
+
 page_blocks() {
-    # Prints each candidate page's heading and its body, separated by a form feed.
+    # Prints each candidate page's heading and its body, separated by a form feed, from
+    # the judgement judgement_load read.
     judgement_text | awk '/^### /{if(n)printf "\f"; n=1} n{print} END{if(n)printf "\f"}'
 }
 
 mode_shape() {
     local text
-    text="$(judgement_text)" || cannot_run " --shape: Dispatch did not answer the read of judgement.md, so no part of it can be judged."
+    judgement_load
+    text="$(judgement_text)"
     local pages
     pages="$(printf '%s\n' "$text" | grep -c '^### ' || true)"
-    if [ "${pages:-0}" -ge 3 ] && [ "${pages:-0}" -le 7 ]; then
-        pass page-count "the judgement carries $pages candidate pages, between the floor of three and the cap of seven"
+    if [ "${pages:-0}" -ge "$PAGE_FLOOR" ] && [ "${pages:-0}" -le "$PAGE_CAP" ]; then
+        pass page-count "the judgement carries $pages candidate pages, between the floor of $PAGE_FLOOR and the cap of $PAGE_CAP"
     else
-        fail page-count "the judgement carries $pages candidate pages, and the floor is three and the cap is seven"
+        fail page-count "the judgement carries ${pages:-0} candidate pages, and the floor is $PAGE_FLOOR and the cap is $PAGE_CAP"
     fi
 
     local front
@@ -2985,8 +3103,9 @@ mode_shape() {
     [ "$missing" -eq 0 ] && pass front-page "the front page carries the ranking, the one thing to do first, the paragraph on where the two accounts differ, and what was not read"
 
     local parts=("**Question:**" "**Proposal:**" "**Verdict:**" "**Landing component:**" "**Cost:**" "**Deletes or replaces:**" "**Cost of reversing it:**" "**Default if nobody answers:**" "**Owner:**" "**Node model:**" "**Test:**")
-    local bad_parts=0 bad_verdict=0 bad_commitment=0 page title verdict
+    local bad_parts=0 bad_verdict=0 bad_commitment=0 page title verdict read_pages=0
     while IFS= read -r -d $'\f' page; do
+        read_pages=$((read_pages + 1))
         title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
         for part in "${parts[@]}"; do
             printf '%s\n' "$page" | grep -qF "$part" || {
@@ -3036,9 +3155,15 @@ mode_shape() {
             fail page-parts "the page '$title' does not name the versions of the two node-model specifications it was read against"
         }
     done < <(page_blocks)
-    [ "$bad_parts" -eq 0 ] && pass page-parts "every candidate page carries all eleven of its parts"
-    [ "$bad_verdict" -eq 0 ] && pass page-verdict "every candidate page carries exactly one verdict word"
-    [ "$bad_commitment" -eq 0 ] && pass verdict-commitment "every verdict names what it commits us to"
+    if [ "$read_pages" -lt "$PAGE_FLOOR" ]; then
+        bad_parts=$((bad_parts + 1)) bad_verdict=$((bad_verdict + 1)) bad_commitment=$((bad_commitment + 1))
+        fail page-parts "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so its pages' parts are not judged"
+        fail page-verdict "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so its verdicts are not judged"
+        fail verdict-commitment "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so what its verdicts commit us to is not judged"
+    fi
+    [ "$bad_parts" -eq 0 ] && pass page-parts "each of the $read_pages candidate pages carries all eleven of its parts"
+    [ "$bad_verdict" -eq 0 ] && pass page-verdict "each of the $read_pages candidate pages carries exactly one verdict word"
+    [ "$bad_commitment" -eq 0 ] && pass verdict-commitment "the verdict of each of the $read_pages candidate pages names what it commits us to"
 
     shape_fixed_pages "$text"
     shape_questions "$text"
@@ -3073,6 +3198,10 @@ shape_questions() {
     local text="$1" bad=0 number
     local listed
     listed="$(grep -c '^## [0-9]*\.' "$EVIDENCE/questions.md" || true)"
+    [ "${listed:-0}" -gt 0 ] || {
+        bad=$((bad + 1))
+        fail question-list "the question list carries no question, so no page is held to one"
+    }
     while IFS= read -r number; do
         grep -qE "^## $number\." "$EVIDENCE/questions.md" || {
             bad=$((bad + 1))
@@ -3132,6 +3261,15 @@ shape_order() {
         bad=$((bad + 1))
         fail order-of-work "the commit that adds the question list adds $(printf '%s' "$beside" | tr '\n' ' ') beside it"
     fi
+    # Each of the five deep-read directories is held to this order, and each holds at
+    # least one file in this history: a directory with none is no pass of the order.
+    local directory
+    for directory in mas-lab triage tests coordination similarity; do
+        [ -n "$(git -C "$ROOT" ls-tree -r --name-only "$history" -- "docs/research/internet-of-cognition/$directory" | head -1)" ] || {
+            bad=$((bad + 1))
+            fail order-of-work "this history holds no file of the deep-read directory $directory"
+        }
+    done
     while IFS= read -r path; do
         commit="$(git -C "$ROOT" log --diff-filter=A --format='%H' "$history" -- "$path" | tail -1)"
         [ -n "$commit" ] || continue
@@ -3141,7 +3279,7 @@ shape_order() {
             fail order-of-work "the commit that adds $path does not descend from the commit that adds the question list"
         }
     done < <(git -C "$ROOT" ls-tree -r --name-only "$history" -- docs/research/internet-of-cognition/mas-lab docs/research/internet-of-cognition/triage docs/research/internet-of-cognition/tests docs/research/internet-of-cognition/coordination docs/research/internet-of-cognition/similarity)
-    [ "$bad" -eq 0 ] && pass order-of-work "the commit that adds the question list is an ancestor of every commit that adds a deep-read evidence file"
+    [ "$bad" -eq 0 ] && pass order-of-work "the commit that adds the question list is an ancestor of every commit that adds a file of the five deep-read directories"
 }
 
 # ---------------------------------------------------------------- --citations
@@ -3368,12 +3506,14 @@ false_references() {
     sort -u "$list"
 }
 
-# dispatch_ref_resolves <ref>; true when Dispatch holds the whole reference, its block
-# anchor and its version included. dispatch read --ref reads a block and refuses a block
-# it does not hold. It refuses a version of a whole document, which dispatch doc-read
-# reads instead, and the shorthand KEY/spec@vN these pages write is the version N of the
-# issue's primary document.
-dispatch_ref_resolves() {
+# dispatch_ref_read <ref>; asks Dispatch for the whole reference, its block anchor and its
+# version included, and prints what dispatch prints. dispatch read --ref reads a block and
+# refuses a block it does not hold. It refuses a version of a whole document, which
+# dispatch doc-read reads instead, and the shorthand KEY/spec@vN these pages write is the
+# version N of the issue's primary document. mode_citations runs it through live_read, so
+# a reference Dispatch answers it does not hold fails citation-dispatch, and a Dispatch
+# that does not answer ends the mode, exit 2.
+dispatch_ref_read() {
     local ref="$1" rest
     case "$ref" in
     *'#'*) dispatch read --ref "$ref" ;;
@@ -3383,7 +3523,7 @@ dispatch_ref_resolves() {
         ;;
     *@v*) dispatch doc-read --ref "$ref" ;;
     *) dispatch read --ref "$ref" ;;
-    esac >/dev/null 2>&1
+    esac
 }
 
 
@@ -3461,6 +3601,25 @@ mode_citations() {
     local flat_dir="$RUN_SCRATCH/citations"
     mkdir -p "$flat_dir"
     commit="$(our_commit)"
+    # The live inputs, read through live_read before any assertion judges: the clone of
+    # each repository a project-code row cites, and Dispatch's answer to each dispatch://
+    # reference of this directory. A source that does not answer ends the mode, exit 2; a
+    # reference Dispatch answers it does not hold is kept for citation-dispatch to fail.
+    while IFS= read -r repo; do
+        [ -n "$repo" ] && { clone_fetch "$repo" || true; }
+    done < <(claims | jq -r 'select(.kind=="project-code") | .evidence.repo // empty' | sort -u)
+    local ref refs="$RUN_SCRATCH/references" falses="$RUN_SCRATCH/false-reference-list"
+    local unresolved="$RUN_SCRATCH/unresolved-references" refs_read=1 asked=0
+    : >"$unresolved"
+    if directory_references >"$refs" && false_references >"$falses"; then
+        while IFS= read -r ref; do
+            asked=$((asked + 1))
+            live_read "Dispatch, the read of $ref" "$RUN_SCRATCH/reference.out" dispatch_ref_read "$ref" ||
+                printf '%s\t%s\n' "$ref" "$(cat "$RUN_SCRATCH/reference.out" "$RUN_SCRATCH/reference.out.err" | head -1 | head -c 160)" >>"$unresolved"
+        done < <(grep -vxF -f "$falses" "$refs")
+    else
+        refs_read=0
+    fi
     while IFS= read -r row; do
         id="$(printf '%s' "$row" | jq -r '.id')"
         case "$(printf '%s' "$row" | jq -r '.kind')" in
@@ -3490,11 +3649,12 @@ mode_citations() {
             file="$(printf '%s' "$row" | jq -r '.evidence.file // ""')"
             file="${file%%:*}"
             local root
-            root="$(clone_root "$repo")" || {
+            if ! jq -e --arg n "${repo##*/}" '.repositories[] | select(.name==$n) | .url and .commit' "$EVIDENCE/sources.json" >/dev/null 2>&1; then
                 bad_theirs=$((bad_theirs + 1))
-                fail citation-project-code "$id cites the repository $repo, which could not be cloned"
+                fail citation-project-code "$id cites the repository $repo, which sources.json pins no clone of"
                 continue
-            }
+            fi
+            root="$(clone_dir "$repo")"
             if ! paths_at "$root" "$rcommit" "$file"; then
                 bad_theirs=$((bad_theirs + 1))
                 fail citation-project-code "$id cites $repo $file at $rcommit, which the clone does not hold"
@@ -3546,6 +3706,19 @@ mode_citations() {
             ;;
         esac
     done < <(claims)
+    # None of these passes on no input: a kind of citation claims.jsonl holds no row of,
+    # and a directory that names no dispatch:// reference, fail by name.
+    local kind count
+    for kind in our-code project-code published; do
+        count="$(claims | jq -c --arg k "$kind" 'select(.kind==$k)' | wc -l)"
+        [ "$count" -gt 0 ] && continue
+        case "$kind" in
+        our-code) bad_ours=$((bad_ours + 1)) ;;
+        project-code) bad_theirs=$((bad_theirs + 1)) ;;
+        published) bad_published=$((bad_published + 1)) ;;
+        esac
+        fail "citation-$kind" "claims.jsonl holds no $kind row, so no such citation is checked"
+    done
     [ "$bad_ours" -eq 0 ] && pass citation-our-code "every citation into our own repository names a path that stands at $commit, and every symbol part that is an identifier, a line, a prefixed name or a file name stands in it"
     [ "$bad_theirs" -eq 0 ] && pass citation-project-code "every citation into one of the projects names a path the clone holds at its pinned commit, and every symbol part that is an identifier, a line, a prefixed name or a file name stands in it"
     [ "$bad_published" -eq 0 ] && pass citation-published "every citation of a published document names a committed copy that holds the sentence quoted"
@@ -3553,19 +3726,19 @@ mode_citations() {
     report_unchecked_parts
     report_live_pages
 
-    local ref refs="$RUN_SCRATCH/references" falses="$RUN_SCRATCH/false-reference-list"
-    if directory_references >"$refs" && false_references >"$falses"; then
-        while IFS= read -r ref; do
-            dispatch_ref_resolves "$ref" || {
-                bad_dispatch=$((bad_dispatch + 1))
-                fail citation-dispatch "the reference $ref resolves to no node Dispatch holds"
-            }
-        done < <(grep -vxF -f "$falses" "$refs")
-    else
+    if [ "$refs_read" -eq 0 ]; then
         bad_dispatch=$((bad_dispatch + 1))
         fail citation-dispatch "citations.py could not read the dispatch:// references of this directory"
+    elif [ "$asked" -eq 0 ]; then
+        bad_dispatch=$((bad_dispatch + 1))
+        fail citation-dispatch "this directory names no dispatch:// reference, so none is resolved"
     fi
-    [ "$bad_dispatch" -eq 0 ] && pass citation-dispatch "every dispatch:// reference of this directory resolves to a node Dispatch holds"
+    local answer
+    while IFS=$'\t' read -r ref answer; do
+        bad_dispatch=$((bad_dispatch + 1))
+        fail citation-dispatch "the reference $ref resolves to no node Dispatch holds: Dispatch answered '$answer'"
+    done <"$unresolved"
+    [ "$bad_dispatch" -eq 0 ] && pass citation-dispatch "each of the $asked dispatch:// references of this directory resolves to a node Dispatch holds"
 
     if python3 "$EVIDENCE/citations.py" --self-test >/dev/null 2>&1; then
         pass citation-kinds "the extraction rule reads a citation of every kind it names, a number written in words among them"
@@ -3578,13 +3751,18 @@ mode_citations() {
 
 mode_landed() {
     local bad_proof=0 bad_refutation=0 page title commit command landed=0 history entry want_commit want_command named
+    local read_pages=0 found="$RUN_SCRATCH/landed-titles"
     history="$(history_ref)"
     git -C "$ROOT" rev-parse --verify --quiet "$history^{commit}" >/dev/null ||
         cannot_run " --landed: the history ref '$history' names no commit of this repository; IOC_HISTORY_REF names a ref that holds the pull request's history."
+    judgement_load
+    : >"$found"
     while IFS= read -r -d $'\f' page; do
+        read_pages=$((read_pages + 1))
         title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
         printf '%s\n' "$page" | grep -qE '\*\*Landed:\*\*' || continue
         landed=$((landed + 1))
+        printf '%s\n' "$title" >>"$found"
         if printf '%s\n' "$page" | grep -qE '\*\*Landed:\*\*[[:space:]]*not made'; then
             # A step that is not made carries evidence in one of the five forms: a command
             # with its output, never a search that found nothing.
@@ -3634,8 +3812,29 @@ mode_landed() {
             fail landed-proof "the committed proof of the page '$title', '$want_command', exits non-zero"
         fi
     done < <(page_blocks)
-    [ "$bad_proof" -eq 0 ] && pass landed-proof "each of the $landed landed pages names the commit and the command sources.json commits for it, the commit is one this pull request added, and the committed command passes"
-    [ "$bad_refutation" -eq 0 ] && pass landed-refutation "a page that refutes a step carries a command with output"
+    # The expected set is committed: each step sources.json's landed list names is held to
+    # a page of the judgement that carries its Landed line, so a judgement that lost a
+    # Landed line, or a page, or every page, is no pass. A list with no step is no pass
+    # either.
+    local steps
+    steps="$(jq -r '.landed // [] | .[].title' "$EVIDENCE/sources.json")"
+    if [ -z "$steps" ]; then
+        bad_proof=$((bad_proof + 1))
+        fail landed-proof "sources.json's landed list names no step, so no landed step is held to a page"
+    fi
+    while IFS= read -r title; do
+        [ -n "$title" ] || continue
+        grep -qxF -- "$title" "$found" || {
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the step '$title', which sources.json's landed list commits, has no page of the judgement that carries its Landed line"
+        }
+    done <<<"$steps"
+    if [ "$read_pages" -lt "$PAGE_FLOOR" ]; then
+        bad_refutation=$((bad_refutation + 1))
+        fail landed-refutation "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so no page's refutation is judged"
+    fi
+    [ "$bad_proof" -eq 0 ] && pass landed-proof "each of the $(printf '%s\n' "$steps" | grep -c .) steps of sources.json's landed list has a page that carries its Landed line, each of the $landed landed pages names the commit and the command sources.json commits for it, the commit is one this pull request added, and the committed command passes"
+    [ "$bad_refutation" -eq 0 ] && pass landed-refutation "each of the $read_pages candidate pages that says its step is not made carries a command with output"
 
     landed_order
     landed_no_refusal
@@ -3695,73 +3894,78 @@ landed_third_change() {
 # ---------------------------------------------------------------- --published
 
 mode_published() {
-    local remote head work
+    local remote head work="$RUN_SCRATCH/published-mode"
     remote="$(jq -r '.our_repository.url' "$EVIDENCE/sources.json")"
-    work="$(mktemp -d "${TMPDIR:-/tmp}/ioc-published.XXXXXX")"
-    head="${IOC_PUBLISHED_COMMIT:-$(git ls-remote "$remote" refs/heads/main | cut -f1)}"
+    mkdir -p "$work"
+    # The live inputs, read through live_read before any assertion judges: the three
+    # Dispatch reads the delivery is judged by, then the default branch from GitHub,
+    # fetched into a clone of this run's scratch and never into this repository's own
+    # object store. A source that does not answer ends the mode, exit 2.
+    live_read "Dispatch, the read of the comments of INFRA-3134" "$work/comments" dispatch_get '/api/v1/issues/INFRA-3134/comments?limit=200'
+    live_read "Dispatch, the read of the messages of INFRA-3134" "$work/messages" dispatch_get '/api/v1/issues/INFRA-3134/messages?limit=200'
+    live_read "Dispatch, the read of the comments of INFRA-1098" "$work/upstream" dispatch_get '/api/v1/issues/INFRA-1098/comments?limit=200'
+    head="${IOC_PUBLISHED_COMMIT:-}"
     if [ -z "$head" ]; then
-        rm -rf "$work"
-        cannot_run " --published: GitHub did not answer the read of the default branch of $remote."
+        live_read "GitHub, the read of the default branch of $remote" "$work/ls-remote" git ls-remote "$remote" refs/heads/main
+        head="$(cut -f1 "$work/ls-remote")"
     fi
-    # The default branch is fetched into a clone of this run's scratch and never into this
-    # repository's own object store: the mode writes nothing outside its scratch.
-    local clone="$work/clone"
-    git init --quiet "$clone" 2>/dev/null &&
-        git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$head" 2>/dev/null || {
-        rm -rf "$work"
-        cannot_run " --published: the fetch of $head from $remote into the scratch clone failed."
-    }
-    local missing=0 path
-    for path in questions.md check.sh citations.py sources.json claims.jsonl README.md interview/transcript.md; do
-        git -C "$clone" cat-file -e "$head:docs/research/internet-of-cognition/$path" 2>/dev/null || {
-            missing=$((missing + 1))
-            fail published-tree "the default branch at $head does not carry docs/research/internet-of-cognition/$path"
-        }
-    done
-    # The files each landed step changed stand there as the step left them, each read by
-    # the sentences its own step added and not by a word the file carried before. Each
-    # landed entry of sources.json lists them as its `published` pairs, so a change to a
-    # rule edits that one list.
-    local title sentence
-    while IFS= read -r title; do
+    local clone="$work/clone" missing=0 path
+    if [ -n "$head" ]; then
+        git init --quiet "$clone" 2>/dev/null || cannot_run " --published: git init of the scratch clone failed."
+        live_read "GitHub, the fetch of $head from $remote" "$work/fetch.log" git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$head"
+    fi
+    if [ -z "$head" ]; then
         missing=$((missing + 1))
-        fail published-tree "the landed step '$title' lists no sentence in sources.json, so nothing of it is read on the default branch"
-    done < <(jq -r '.landed[]? | select((.published // []) | length == 0) | .title' "$EVIDENCE/sources.json")
-    while IFS=$'\t' read -r path sentence; do
-        git -C "$clone" show "$head:$path" >"$work/published" 2>/dev/null || {
+        fail published-tree "GitHub answered that $remote has no default branch main, so nothing of this directory is published"
+    else
+        for path in questions.md check.sh citations.py sources.json claims.jsonl README.md interview/transcript.md; do
+            git -C "$clone" cat-file -e "$head:docs/research/internet-of-cognition/$path" 2>/dev/null || {
+                missing=$((missing + 1))
+                fail published-tree "the default branch at $head does not carry docs/research/internet-of-cognition/$path"
+            }
+        done
+        # The files each landed step changed stand there as the step left them, each read
+        # by the sentences its own step added and not by a word the file carried before.
+        # Each landed entry of sources.json lists them as its `published` pairs, so a
+        # change to a rule edits that one list; a list with no step is no pass.
+        local title sentence
+        [ "$(jq '.landed // [] | length' "$EVIDENCE/sources.json")" -gt 0 ] || {
             missing=$((missing + 1))
-            fail published-tree "the default branch at $head does not carry $path"
-            continue
+            fail published-tree "sources.json's landed list names no step, so no landed step is read on the default branch"
         }
-        grep -qF -- "$sentence" "$work/published" || {
+        while IFS= read -r title; do
             missing=$((missing + 1))
-            fail published-tree "the published $path does not carry the landed step: '$sentence'"
-        }
-    done < <(jq -r '.landed[]? | .published[]? | [.path, .sentence] | @tsv' "$EVIDENCE/sources.json")
+            fail published-tree "the landed step '$title' lists no sentence in sources.json, so nothing of it is read on the default branch"
+        done < <(jq -r '.landed[]? | select((.published // []) | length == 0) | .title' "$EVIDENCE/sources.json")
+        while IFS=$'\t' read -r path sentence; do
+            git -C "$clone" show "$head:$path" >"$work/published" 2>/dev/null || {
+                missing=$((missing + 1))
+                fail published-tree "the default branch at $head does not carry $path"
+                continue
+            }
+            grep -qF -- "$sentence" "$work/published" || {
+                missing=$((missing + 1))
+                fail published-tree "the published $path does not carry the landed step: '$sentence'"
+            }
+        done < <(jq -r '.landed[]? | .published[]? | [.path, .sentence] | @tsv' "$EVIDENCE/sources.json")
+    fi
     [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and the files each landed step changed"
 
     local delivery=0
-    local comments
-    comments="$(dispatch_get '/api/v1/issues/INFRA-3134/comments?limit=200' 2>/dev/null || true)"
-    printf '%s' "$comments" | grep -qF 'notifications.role.legion-infra-controller' || {
+    grep -qF 'notifications.role.legion-infra-controller' "$work/comments" || {
         delivery=$((delivery + 1))
         fail published-delivery "no comment of this issue records the publication of the ranked list to the project's controller"
     }
-    local messages
-    messages="$(dispatch_get '/api/v1/issues/INFRA-3134/messages?limit=200' 2>/dev/null || true)"
-    printf '%s' "$messages" | grep -qiF 'ranking' || {
+    grep -qiF 'ranking' "$work/messages" || {
         delivery=$((delivery + 1))
         fail published-delivery "no message on this issue carries the ranking to the issue's assignee"
     }
-    local upstream
-    upstream="$(dispatch_get '/api/v1/issues/INFRA-1098/comments?limit=200' 2>/dev/null || true)"
-    printf '%s' "$upstream" | grep -qF 'INFRA-3134' || {
+    grep -qF 'INFRA-3134' "$work/upstream" || {
         delivery=$((delivery + 1))
         fail published-delivery "no comment of dispatch://INFRA-1098 carries this issue's reading of the node model"
     }
     [ "$delivery" -eq 0 ] && pass published-delivery "the record of the delivery is on the issue: the message, the comment on dispatch://INFRA-1098 and the comment recording the publication"
     printf 'This mode reads the record of the publication to the controller, which is the comment above, and not the publication itself: an Envoy publication leaves no record a program can read.\n'
-    rm -rf "$work"
 }
 
 # ---------------------------------------------------------------- --self-test

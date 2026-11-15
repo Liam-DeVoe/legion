@@ -357,17 +357,25 @@ ioc_env_is_refusal() {
     head -1 "$1" | grep -qE '^(not found$|No block |document "[^"]*" not found|Dispatch at .* is unreachable|dispatch [a-z-]+ was not called)'
 }
 
-# ioc_env_read_record <ref> <file>; the one reader of a Dispatch record, which check.sh
-# reads too. It writes through <file>.part and keeps the copy only when dispatch exited 0
-# and what it printed is not a refusal; otherwise it removes the copy and refuses, naming
-# the record, so no later run reads an error as the record.
-ioc_env_read_record() {
-    local ref="$1" file="$2" part="$2.part" rest status
-    rest="${ref#dispatch://}"
+# ioc_env_record_command <ref>; the dispatch command that reads a record, an artifact by
+# doc-read and anything else by read --ref, printing what dispatch prints. env.sh reads a
+# record through ioc_env_read_record below; check.sh runs this same command through its
+# live_read, which tells a Dispatch that does not answer from one that answers no.
+ioc_env_record_command() {
+    local ref="$1" rest="${1#dispatch://}"
     case "$ref" in
-    *"/artifact/"*) dispatch doc-read --issue "${rest%%/*}" --artifact "${ref##*/artifact/}" >"$part" 2>/dev/null ;;
-    *) dispatch read --ref "$ref" >"$part" 2>/dev/null ;;
+    *"/artifact/"*) dispatch doc-read --issue "${rest%%/*}" --artifact "${ref##*/artifact/}" ;;
+    *) dispatch read --ref "$ref" ;;
     esac
+}
+
+# ioc_env_read_record <ref> <file>; env.sh's reader of a Dispatch record. It writes
+# through <file>.part and keeps the copy only when dispatch exited 0 and what it printed is
+# not a refusal; otherwise it removes the copy and refuses, naming the record, so no later
+# run reads an error as the record.
+ioc_env_read_record() {
+    local ref="$1" file="$2" part="$2.part" status
+    ioc_env_record_command "$ref" >"$part" 2>/dev/null
     status=$?
     if [ "$status" -ne 0 ] || [ ! -s "$part" ] || ioc_env_is_refusal "$part"; then
         ioc_env_refuse "the record $ref" "dispatch exited $status and printed '$(head -c 160 "$part" 2>/dev/null | tr '\n' ' ')'; is DISPATCH_TOKEN_FILE readable and DISPATCH_URL reachable?"
