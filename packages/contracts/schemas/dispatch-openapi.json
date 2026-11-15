@@ -201,6 +201,57 @@
       }
     },
     "/api/v1/agents/{session_id}/artifacts": {
+      "get": {
+        "description": "The files and images of an agent's conversation, newest first (created_at, then id), each as GET /api/v1/agents/{session_id}/artifacts/{slug} reads it, with its versions; [] for a conversation that holds none. A reference picker lists them under the session, each addressed dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e. A conversation's files are part of the conversation, so the route needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits, reading session as that route does.",
+        "operationId": "getApiV1AgentsBySessionIdArtifacts",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ArtifactWithTrees"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      },
       "post": {
         "description": "Upload a file or image to an agent's conversation (multipart, as an issue upload, its kind read from its bytes): ref_key agent/\u003csession_id\u003e/\u003cslug\u003e, addressed dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e. It holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT, since a document belongs to an issue or a project. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE. A session_id that is empty or holds /, ?, #, whitespace, a control character or a character that ends a reference in text (\u003c\u003e\"'`[]|) is 400 INVALID_SESSION_ID on every agent artifact route.",
         "operationId": "postApiV1AgentsBySessionIdArtifacts",

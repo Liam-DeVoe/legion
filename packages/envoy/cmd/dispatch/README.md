@@ -4419,13 +4419,18 @@ Each item below names a path with its method and identity, then its purpose.
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
   one removed after it answers `200` with `lost_ops`.
 
+- `/api/v1/agents/{session_id}/artifacts` (GET; cookie, trusted header, or bearer; needs the `person` scope)
+
+  The files and images of an agent's conversation, newest first (`created_at`, then `id`), each as `GET /api/v1/agents/{session_id}/artifacts/{slug}` reads it, with its versions; `[]` for a conversation that holds none.
+  The dashboard's reference picker lists them under the session's row, so a person names one by its `dispatch://agent/<session_id>/artifact/<slug>` address without having pasted it.
+  A conversation's files are part of the conversation, so it admits exactly the callers `GET /api/v1/agents/{session_id}/messages` admits, and reads `session` as that route and every person route do: the session the request acts for, which a credential that proved another session is refused (`403 ACTOR_SESSION_MISMATCH`).
+
 - `/api/v1/agents/{session_id}/artifacts` (POST; cookie, trusted header, or bearer)
 
   Upload a file or image to an agent's conversation:
   a multipart `file` (+ `name`, `summary?`, `actor?`) with an issue upload's caps, errors and file-store write, its kind read from its bytes as an issue upload's is (an `image` only for a PNG, JPEG, GIF or WebP, stored under the type its bytes are;
   any other file a `file` under its declared type), stored with `session_id` set, `issue_key` null, `project` `""` and `ref_key` `agent/<session_id>/<slug>`, addressed `dispatch://agent/<session_id>/artifact/<slug>`;
   it appends no event, since every event belongs to an issue, a document or a project.
-  There is no list route: a conversation's pictures are reached through the references its messages carry, never enumerated.
   A caller whose credential proves a session of its own
   — an access token the secrets broker issued, the one that does
   — uploads only into that session's conversation;
@@ -4433,7 +4438,7 @@ Each item below names a path with its method and identity, then its purpose.
   A person's cookie proves no session and uploads into the conversation it names.
   An agent's conversation holds files and images only, so a markdown document (JSON `content` or a `text/markdown` file) is `400 ARTIFACT_INPUT` ("an agent's conversation holds files and images;
   a document belongs to an issue or a project").
-  A `session_id` that is empty or holds `/`, `?`, `#`, whitespace, a control character or a character that ends a reference in text (`<>"'` and a backtick, `[`, `]`, `|`) is `400 INVALID_SESSION_ID` on all three agent routes.
+  A `session_id` that is empty or holds `/`, `?`, `#`, whitespace, a control character or a character that ends a reference in text (`<>"'` and a backtick, `[`, `]`, `|`) is `400 INVALID_SESSION_ID` on every agent artifact route.
   Such a file takes no comment, ask, event read or subscriber through `/api/v1/artifacts/{id}/...`, which is `400 ARTIFACT_AGENT_OWNED`.
 
 - `/api/v1/agents/{session_id}/artifacts/{slug}` (GET; cookie, trusted header, or bearer)

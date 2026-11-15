@@ -1,7 +1,7 @@
 import { agentFilter } from "./agents";
 import { baseUrl, createProjectDocument, userHeaders } from "./api";
 import { recordClipboard } from "./clipboard";
-import { commentField, refPicker } from "./ref-picker";
+import { commentField, highlightedRow, refPicker } from "./ref-picker";
 import {
   COMPONENT_ID,
   COMPONENT_REFERENCE,
@@ -19,20 +19,26 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * INFRA-1702's `c-picker-reaches-every-kind`: one picker over every kind Dispatch holds.
+ * INFRA-1702's `c-picker-reaches-every-kind`: one picker over every kind Dispatch holds, in each
+ * of its hosts.
  *
  * For each of the thirteen kinds the spec names the picker inserts that kind's address, the
  * comment the reader sends holds exactly what was picked, and every reference in the stored
  * record reads as its node's name and opens that node's own page. A block of a document, a part
  * of an ask, a block of a comment and a block of a message are reached by opening the node that
  * holds them (the row's **Blocks**), never by a query alone: their text is their holder's, so a
- * query that finds the holder is what puts them within reach.
+ * query that finds the holder is what puts them within reach. A document of an agent's
+ * conversation is reached the same way, by opening the agent's row (its **Documents**): the
+ * search index holds no such file, and the agent's conversation lists them
+ * (`GET /api/v1/agents/{session_id}/artifacts`).
  *
- * Two of the thirteen are not the picker's to insert, and each says so where it is read:
- * a person, whom the picker writes as their login and whose reference opens nothing, since
- * dispatch://INFRA-1149 owns that page; and a document of an agent's conversation, which no box
- * picks - a session's file is written by the upload that makes it (`e2e/pictures.e2e.ts`) - and
- * which is read here as the stored record it is.
+ * One of the thirteen is not the picker's to open, and says so where it is read: a person, whom
+ * the picker writes as their login and whose reference opens nothing, since
+ * dispatch://INFRA-1149 owns that page.
+ *
+ * The agent live conversation draws the same picker in assistant-ui's composer, where the keys
+ * are assistant-ui's: there an issue's message is offered as everywhere, and each holder's parts
+ * open by the row's control and by ArrowRight.
  */
 
 /** The 1x1 PNG the suite uploads, as `e2e/artifacts.e2e.ts` and the two-build spec upload it. */
@@ -65,10 +71,12 @@ interface Kind {
   readonly query: string;
   /** The row to take, by its own words. */
   readonly row: RegExp;
-  /** The row whose **Blocks** must be opened first, for a kind that is a part of another node,
-   *  and the heading its blocks are listed under: the row is taken from that group alone, since
-   *  the holder's own row can match the same words while its blocks are still being read. */
-  readonly holder?: { readonly row: RegExp; readonly blocks: string };
+  /** The row whose parts must be opened first, for a kind that is a part of another node or a
+   *  document of an agent's conversation, the words of the control that opens them (**Blocks**
+   *  where none is named), and the heading they are listed under: the row is taken from that
+   *  group alone, since the holder's own row can match the same words while its parts are still
+   *  being read. */
+  readonly holder?: { readonly row: RegExp; readonly blocks: string; readonly control?: string };
   /** What the pick must write, where the whole address is known before the pick; a block's id is
    *  the server's, so those rows check the shape instead. */
   readonly writes?: string;
@@ -90,7 +98,7 @@ function blockOf(address: string): string {
 }
 
 // SLOW(>=2s): the one reference world - three projects, fifteen issues, the host's question
-// blocks settling into asks, the architecture source sync and the live session - then fourteen
+// blocks settling into asks, the architecture source sync and the live session - then fifteen
 // picks, each its own read of the registry, the collaborators, the components and the search
 // route, and the comment they are sent in.
 test("the picker reaches every kind, and each pick reads as its node's name and opens it", async ({
@@ -106,8 +114,10 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
   const target = world.target.key;
   const agentDocument = `dispatch://agent/${SESSION_ID}/artifact/${AGENT_SLUG}`;
 
-  // The thirteen kinds, in the order one draft names them. A block, a part and the two item
-  // blocks follow the node that holds them, because that is how they are reached.
+  // The thirteen kinds, in the order one draft names them, a document in each of its three
+  // owners' forms. A block, a part and the two item blocks follow the node that holds them, and a
+  // document of an agent's conversation is reached from the agent's row, because that is how
+  // they are reached.
   const kinds: readonly Kind[] = [
     {
       kind: "issue",
@@ -141,6 +151,20 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       reads: "glossary.md",
       row: /^glossary\.md/,
       writes: "dispatch://CORE/artifact/glossary-md",
+    },
+    {
+      holder: {
+        blocks: "Documents",
+        control: "Documents",
+        row: new RegExp(`^${SESSION_TITLE}\\b`),
+      },
+      kind: "document of an agent",
+      opens: () => `/agents/${SESSION_ID}/artifacts/${AGENT_SLUG}`,
+      // The session's name is two words and a door closes on a space, so one word finds it.
+      query: `@${SESSION_TITLE.split(" ")[0]}`,
+      reads: AGENT_FILE,
+      row: /^shot\.png/,
+      writes: agentDocument,
     },
     {
       kind: "ask",
@@ -245,7 +269,7 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
     const field = commentField(page);
     const list = refPicker(page);
 
-    /** Types the kind's query at the end of the draft, opens its holder's blocks where it has
+    /** Types the kind's query at the end of the draft, opens its holder's parts where it has
      *  one, takes the row, and answers what the pick wrote. */
     const pick = async (kind: Kind): Promise<string> => {
       const before = await field.inputValue();
@@ -256,10 +280,10 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
         await list
           .getByRole("option", { name: kind.holder.row })
           .first()
-          .getByRole("button", { name: "Blocks" })
+          .getByRole("button", { name: kind.holder.control ?? "Blocks" })
           .click();
       }
-      // A part's row is read once the holder's blocks answer, beside the holder's own row; only
+      // A part's row is read once the holder's parts answer, beside the holder's own row; only
       // the part's group holds it, so a pick taken before the read lands cannot take the holder.
       const rows =
         kind.holder === undefined ? list : list.getByRole("group", { name: kind.holder.blocks });
@@ -284,23 +308,11 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
         expect(address, `${kind.kind}: what the pick wrote`).toMatch(kind.shape ?? /^$/u);
       }
     }
-    // The fourteenth form, which no box picks: a file of an agent's conversation, written by the
-    // upload that makes it. It is typed here as that upload writes it, and read below with the
-    // rest, because a document of an agent is a document all the same.
+    // Each pick ends its own line; the last one's line break goes, so the record ends with the
+    // last address. One comment holds every pick, exactly as the picker wrote them.
     await field.press("End");
-    await field.pressSequentially(agentDocument);
-
-    // The picker offers no row for it, whatever is typed: an artifact of an agent's conversation
-    // is no row of the search index (`a.kind = 'doc'`), and no box writes about one.
-    const before = await field.inputValue();
-    await field.pressSequentially(" [[shot");
-    await expect(list).toBeVisible();
-    await expect(list.getByRole("option", { name: /shot\.png/ })).toHaveCount(0);
-    await field.press("Escape");
-    await field.fill(before);
-
-    // One comment holds every pick, exactly as the picker wrote them.
-    const body = [...kinds.map((kind) => written.get(kind.kind) ?? ""), agentDocument].join("\n");
+    await field.press("Backspace");
+    const body = kinds.map((kind) => written.get(kind.kind) ?? "").join("\n");
     await expect(field).toHaveValue(body);
     const sent = page.waitForResponse(
       (response) =>
@@ -332,15 +344,17 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       await expect(link, `${kind.kind}: reads as its node's name`).toHaveText(kind.reads);
       await expect(link, `${kind.kind}: opens its node`).toHaveAttribute("href", path);
     }
-    // The agent's own document reads as its name and opens its page in that same record.
-    const file = card.locator(`a[data-dispatch-ref="${agentDocument}"]`);
-    await expect(file).toHaveText(AGENT_FILE);
-    await expect(file).toHaveAttribute("href", `/agents/${SESSION_ID}/artifacts/${AGENT_SLUG}`);
 
-    // The three pages the new kinds open, followed rather than read off an attribute.
+    // The four pages the new kinds open, followed rather than read off an attribute.
     await card.locator(`a[data-dispatch-ref="${SESSION_REFERENCE}"]`).click();
     await expect(page).toHaveURL(`/agents/${SESSION_ID}/live`);
     await expect(page.getByRole("heading", { name: SESSION_TITLE }).first()).toBeVisible();
+
+    await page.goto(`/issues/${world.host.key}/conversation`);
+    const file = await expandedComment(page, stored.id);
+    await file.locator(`a[data-dispatch-ref="${agentDocument}"]`).click();
+    await expect(page).toHaveURL(`/agents/${SESSION_ID}/artifacts/${AGENT_SLUG}`);
+    await expect(page).toHaveTitle(`${AGENT_FILE} · Dispatch`);
 
     await page.goto(`/issues/${world.host.key}/conversation`);
     const again = await expandedComment(page, stored.id);
@@ -376,6 +390,104 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
   }
 });
 
+// SLOW(>=2s): the one reference world, then the live conversation's picker opened nine times,
+// each open its own read of the registry and the search route and eight of them a read of the
+// holder's parts.
+test("the live conversation offers an issue's message, and opens each holder's parts by its control and by ArrowRight", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  const world = await seedReferenceWorld();
+  const target = world.target.key;
+  // The four holders of parts and the part each is read for, as the shared field reaches them
+  // above. What a pick here writes is followed by the space assistant-ui leaves after it.
+  const holders = [
+    {
+      blocks: "Document blocks",
+      kind: "a document",
+      part: /^The cache notes\./,
+      query: "[[notes",
+      row: /^notes\.md/,
+      shape: new RegExp(`^dispatch://${target}/artifact/notes-md#b-[\\w-]+ $`),
+    },
+    {
+      blocks: "Ask parts",
+      kind: "an ask",
+      part: /^Should the cache be warmed first\?/,
+      query: "[[warmed",
+      row: /^Should the cache be warmed first/,
+      shape: new RegExp(`^dispatch://${target}/ask/[\\w-]+#b-[\\w-]+ $`),
+    },
+    {
+      blocks: "Comment blocks",
+      kind: "a comment",
+      part: /^The warm cache halves start-up time\./,
+      query: "[[halves",
+      row: /^The warm cache halves start-up time/,
+      shape: new RegExp(`^dispatch://${target}/comment/[\\w-]+#b-[\\w-]+ $`),
+    },
+    {
+      blocks: "Message blocks",
+      kind: "a message",
+      part: /^The rollout finished at noon\./,
+      query: "[[noon",
+      row: /^The rollout finished at noon/,
+      shape: new RegExp(`^dispatch://${target}/message/[\\w-]+#b-[\\w-]+ $`),
+    },
+  ] as const;
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/agents/${SESSION_ID}/live`);
+    const field = page.getByTestId("agent-composer").locator("textarea");
+    await expect(field).toBeVisible();
+    const list = refPicker(page);
+    /** Clears the message and opens a door on `query`, typed as a reader types it. */
+    const open = async (query: string) => {
+      await field.fill("");
+      await field.pressSequentially(query);
+      await expect(list, `${query}: the picker did not open`).toBeVisible();
+    };
+
+    // A message of an issue has its own address, as every node of the issue has: it is offered
+    // here as in every other box, under its own heading, and a pick writes that address.
+    await open("[[noon");
+    await liveRowsUnder(list, "Messages")
+      .and(list.getByRole("option", { name: /^The rollout finished at noon/ }))
+      .first()
+      .click();
+    await expect(field).toHaveValue(new RegExp(`^dispatch://${target}/message/[\\w-]+ $`));
+
+    for (const holder of holders) {
+      for (const way of ["its control", "ArrowRight"] as const) {
+        const what = `the parts of ${holder.kind}, opened by ${way}`;
+        await open(holder.query);
+        const holderRow = list.getByRole("option", { name: holder.row }).first();
+        await expect(holderRow, `${what}: the holder is offered`).toBeVisible();
+        // The holder's own row can carry the part's words, so the part is taken from under its
+        // own heading alone.
+        const part = liveRowsUnder(list, holder.blocks)
+          .and(list.getByRole("option", { name: holder.part }))
+          .first();
+        if (way === "its control") {
+          await holderRow.getByRole("button", { name: "Blocks" }).click();
+          await part.click();
+        } else {
+          await arrowTo(field, holderRow, `${what}: the holder`);
+          await field.press("ArrowRight");
+          await expect(part, `${what}: the parts are listed`).toBeVisible();
+          await arrowTo(field, part, `${what}: the part`);
+          await field.press("Enter");
+        }
+        await expect(field, `${what}: what the pick wrote`).toHaveValue(holder.shape);
+      }
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
 /** The comment's Conversation card, expanded: a collapsed card draws the inert one-line
  *  preview, whose references are spans rather than links. */
 async function expandedComment(page: Page, id: string): Promise<Locator> {
@@ -389,4 +501,30 @@ async function expandedComment(page: Page, id: string): Promise<Locator> {
   }
   await expect(collapse).toBeVisible();
   return card;
+}
+
+/** The live composer's rows under one kind's heading. Its popover draws each heading as the
+ *  element just before that kind's first row, with no group around the kind's rows, so a row is
+ *  under the heading that is the nearest element before it that is not a row. */
+function liveRowsUnder(list: Locator, heading: string): Locator {
+  return list.locator(
+    `xpath=.//*[@role="option"][preceding-sibling::*[not(@role="option")][1][normalize-space(.)="${heading}"]]`
+  );
+}
+
+/** Moves the live composer's highlight down with the arrow key until it rests on `row`, as a
+ *  reader does: the highlight is assistant-ui's own, the list it highlights in can be redrawn
+ *  under it as a read lands, and only the keys move it. */
+async function arrowTo(field: Locator, row: Locator, what: string): Promise<void> {
+  const highlighted = highlightedRow(refPicker(field.page())).and(row);
+  await expect
+    .poll(
+      async () => {
+        if ((await highlighted.count()) > 0) return true;
+        await field.press("ArrowDown");
+        return false;
+      },
+      { intervals: [150], message: `${what}: the arrows never reached it`, timeout: 15_000 }
+    )
+    .toBe(true);
 }

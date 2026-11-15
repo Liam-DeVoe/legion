@@ -76,7 +76,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    get?: never;
+    /** @description The files and images of an agent's conversation, newest first (created_at, then id), each as GET /api/v1/agents/{session_id}/artifacts/{slug} reads it, with its versions; [] for a conversation that holds none. A reference picker lists them under the session, each addressed dispatch://agent/<session_id>/artifact/<slug>. A conversation's files are part of the conversation, so the route needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits, reading session as that route does. */
+    get: operations["getApiV1AgentsBySessionIdArtifacts"];
     put?: never;
     /** @description Upload a file or image to an agent's conversation (multipart, as an issue upload, its kind read from its bytes): ref_key agent/<session_id>/<slug>, addressed dispatch://agent/<session_id>/artifact/<slug>. It holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT, since a document belongs to an issue or a project. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE. A session_id that is empty or holds /, ?, #, whitespace, a control character or a character that ends a reference in text (<>"'`[]|) is 400 INVALID_SESSION_ID on every agent artifact route. */
     post: operations["postApiV1AgentsBySessionIdArtifacts"];
@@ -6338,6 +6339,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["SessionAnswersResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AgentsBySessionIdArtifacts: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        session_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ArtifactWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */

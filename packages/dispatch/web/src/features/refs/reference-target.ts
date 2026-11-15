@@ -134,6 +134,15 @@ export const agentArtifactQuery = (session: string | undefined, slug: string | u
     queryFn: () => api.getAgentArtifact(session ?? "", slug ?? ""),
   });
 
+/** Every artifact of an agent's conversation, newest first: what the picker opens under the
+ *  session's row. Its key is the prefix of each one's own read above, so an upload to the
+ *  conversation (`refreshOwnerArtifacts`) refreshes the list and its members alike. */
+export const agentArtifactsQuery = (session: string | undefined) =>
+  queryOptions({
+    queryKey: ["agent-artifacts", session],
+    queryFn: () => api.listAgentArtifacts(session ?? ""),
+  });
+
 /** A document's live text, or one immutable version of it when the reference pins a version. */
 export const artifactTextQuery = (id: string | undefined, version: number | undefined) =>
   queryOptions<ArtifactText | ArtifactVersionContent>({

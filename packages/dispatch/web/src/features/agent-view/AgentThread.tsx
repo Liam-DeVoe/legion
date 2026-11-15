@@ -44,7 +44,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
 import type { LivePlace } from "./live-views";
-import { ReferenceTriggers } from "./ReferenceTriggers";
+import { type ReferenceKeys, ReferenceTriggers } from "./ReferenceTriggers";
 import { useLiveFollow } from "./use-live-follow";
 import { useFrameCoalesced } from "./useFrameCoalesced";
 
@@ -476,6 +476,9 @@ export function AgentThread({
   const shownRefusal = refusedPress ? refusal : null;
   if (refusal === null && refusedPress) setRefusedPress(false);
   const hintId = useId();
+  // The keys the reference doors serve that assistant-ui does not (`ReferenceTriggers`), handed
+  // to them before the composer reads the key.
+  const referenceKeys = useRef<ReferenceKeys | null>(null);
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ErrorBoundary region="this conversation" resetKey={resetKey}>
@@ -551,13 +554,14 @@ export function AgentThread({
             <SlashCommands commands={commands} />
           )}
           {/* The three reference doors, beside the `/` above: one input, four triggers. */}
-          <ReferenceTriggers />
+          <ReferenceTriggers keys={referenceKeys} />
           <div className="flex items-end gap-2">
             <ComposerPrimitive.Input
               className={`min-h-11 flex-1 rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
               // The one handle a browser row reaches this box by, since its accessible name is
               // the placeholder, which says what the session is doing (`DISPATCH_WRITING_BOXES`).
               data-agent-message=""
+              onKeyDown={(event) => referenceKeys.current?.(event)}
               placeholder={placeholder}
               rows={1}
               submitMode="enter"

@@ -570,6 +570,10 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// what the conversation read above already tells a caller, so it admits the callers
 		// that read admits and needs its scope.
 		"GET /api/v1/agents/known",
+		// The conversation's files are this change's own row: they are part of the conversation
+		// the read above shows, so the list admits the callers that read admits and needs its
+		// scope.
+		"GET /api/v1/agents/{session_id}/artifacts",
 		"POST /api/v1/agents/{session_id}/messages",
 		"POST /api/v1/broadcasts",
 		"GET /api/v1/broadcasts",

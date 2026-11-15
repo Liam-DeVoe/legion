@@ -11,6 +11,7 @@ import { ApiError, api } from "../../api/client";
 import type {
   Agent,
   ArchitectureTree,
+  ArtifactWithTrees,
   GraphReferences,
   IssueCollaborators,
   SearchResponse,
@@ -130,10 +131,28 @@ const blocks: GraphReferences = {
   node: graphNode({ id: "comment-1", kind: "comment" }),
 };
 
+/** The one file the planner's conversation holds, as `GET /api/v1/agents/{session_id}/artifacts`
+ *  lists it. */
+const shot: ArtifactWithTrees = {
+  created_at: "2026-11-01T00:00:00Z",
+  created_by: { id: "alice@theorem.dev", kind: "user" },
+  id: "artifact-shot",
+  issue_key: null,
+  kind: "image",
+  name: "shot.png",
+  primary: false,
+  project: "",
+  ref_key: "agent/planner-session/shot-png",
+  session_id: "planner-session",
+  slug: "shot-png",
+  versions: [],
+};
+
 interface Pane {
   getArchitecture: Mock<typeof api.getArchitecture>;
   getIssueCollaborators: Mock<typeof api.getIssueCollaborators>;
   getReferences: Mock<typeof api.getReferences>;
+  listAgentArtifacts: Mock<typeof api.listAgentArtifacts>;
   listAgents: Mock<typeof api.listAgents>;
   listUsers: Mock<typeof api.listUsers>;
   restore: () => void;
@@ -205,6 +224,7 @@ function renderHost({
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "bob@theorem.dev" }]);
   const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architecture);
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(blocks);
+  const listAgentArtifacts = spyOn(api, "listAgentArtifacts").mockResolvedValue([shot]);
   const search = spyOn(api, "search").mockImplementation(searchAnswer);
   const view = render(
     <MemoryRouter>
@@ -219,10 +239,12 @@ function renderHost({
     getArchitecture,
     getIssueCollaborators,
     getReferences,
+    listAgentArtifacts,
     listAgents,
     listUsers,
     restore: () => {
       search.mockRestore();
+      listAgentArtifacts.mockRestore();
       getReferences.mockRestore();
       getArchitecture.mockRestore();
       listUsers.mockRestore();
@@ -452,6 +474,55 @@ test("a node's row lists its blocks from its part_of backlinks, and a block pick
 
   await user.click(screen.getByRole("option", { name: /The first words/ }));
   await waitFor(() => expect(comment.value).toBe("dispatch://CORE-2/comment/comment-1#b-block-1"));
+});
+
+test("an agent's row lists its conversation's documents, and a document pick is its address", async () => {
+  const user = userEvent.setup();
+  const page = renderHost();
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@plann");
+  await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+  // A role holds no documents of its own: only the session's row opens any.
+  expect(screen.getAllByRole("button", { name: "Documents" })).toHaveLength(1);
+  expect(page.listAgentArtifacts).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole("button", { name: "Documents" }));
+
+  await waitFor(() => expect(page.listAgentArtifacts).toHaveBeenCalledWith("planner-session"));
+  await waitFor(() =>
+    expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner", "Documents: shot.png"])
+  );
+  // A file holds no blocks, so its row opens nothing.
+  expect(screen.getAllByRole("button", { name: "Documents" })).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "Blocks" })).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("option", { name: /^shot\.png/ }));
+  await waitFor(() =>
+    expect(comment.value).toBe("dispatch://agent/planner-session/artifact/shot-png")
+  );
+});
+
+test("ArrowRight on an agent's row lists its documents, and Enter takes one", async () => {
+  const user = userEvent.setup();
+  const page = renderHost();
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@plann");
+  await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+
+  await user.keyboard("{ArrowRight}");
+
+  await waitFor(() => expect(page.listAgentArtifacts).toHaveBeenCalledWith("planner-session"));
+  await waitFor(() =>
+    expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner", "Documents: shot.png"])
+  );
+  await user.keyboard("{ArrowDown}{ArrowDown}{Enter}");
+  await waitFor(() =>
+    expect(comment.value).toBe("dispatch://agent/planner-session/artifact/shot-png")
+  );
 });
 
 test("a box with no issue offers everyone who has signed in", async () => {

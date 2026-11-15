@@ -10,10 +10,12 @@ import type { SearchResultKind } from "../../api/types";
  * `useRefPicker.ts` reads the server for the rows; `RefPickerList.tsx` draws them.
  */
 
-/** Every kind the picker reaches, which is every kind a reference can name except an artifact of
- *  an agent's conversation, which no box writes about. A block is its holder's kind in its own
- *  right: its rows come from another read (the holder's `part_of` backlinks) and sit under a
- *  heading of their own. */
+/** Every kind the picker reaches, which is every kind a reference can name, in every box. A block
+ *  is its holder's kind in its own right: its rows come from another read (the holder's `part_of`
+ *  backlinks) and sit under a heading of their own. A document of an agent's conversation is a
+ *  `document` like an issue's or a project's, reached by opening the agent's row
+ *  (`GET /api/v1/agents/{session_id}/artifacts`) as a block is reached by opening its holder's:
+ *  the search index holds no such file. */
 export const REF_PICKER_KINDS = [
   "issue",
   "document",
@@ -154,8 +156,9 @@ export interface RefPickerRow {
   readonly detail: string;
   /** The `dispatch://` address the row names. */
   readonly reference: string;
-  /** The address whose `part_of` backlinks are this row's blocks, for a node that holds any; a
-   *  host opens them with `openParts`. */
+  /** The address of what this row opens, for a row that holds anything a reference can name on
+   *  its own: a node's blocks, its `part_of` backlinks, or an agent's documents, its
+   *  conversation's artifacts. A host opens them with `openParts`. */
   readonly parts?: string;
 }
 
@@ -343,21 +346,12 @@ const SEARCHED_KIND_WORDS: Record<SearchResultKind, string> = {
   message: "messages",
 };
 
+const SEARCHED_WORDS = REF_PICKER_SEARCHED_KINDS.map((kind) => SEARCHED_KIND_WORDS[kind]);
+
 /**
  * The one row the picker shows for the kinds it cannot list yet: the search route refuses a
  * query under two characters, so until the reader has typed two the list holds the parties and
- * the components, and this says what the next two letters will add. It names the kinds this box
- * offers and no others, since a box that offers no messages would otherwise promise some.
+ * the components, and this says what the next two letters will add. Every box offers every
+ * kind, so every box says the same.
  */
-export function refPickerInstruction(kinds: readonly RefPickerKind[]): string {
-  const words = REF_PICKER_SEARCHED_KINDS.filter((kind) =>
-    kinds.some((offered) => offered === kind)
-  ).map((kind) => SEARCHED_KIND_WORDS[kind]);
-  if (words.length === 0) return "";
-  const last = words[words.length - 1];
-  const named = words.length === 1 ? last : `${words.slice(0, -1).join(", ")} and ${last}`;
-  return `Type two characters to search ${named}.`;
-}
-
-/** The instruction of a box that offers every kind. */
-export const REF_PICKER_INSTRUCTION = refPickerInstruction(REF_PICKER_KINDS);
+export const REF_PICKER_INSTRUCTION = `Type two characters to search ${SEARCHED_WORDS.slice(0, -1).join(", ")} and ${SEARCHED_WORDS.at(-1)}.`;

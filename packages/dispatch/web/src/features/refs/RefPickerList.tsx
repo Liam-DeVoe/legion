@@ -78,6 +78,34 @@ export function RefPickerNotes({ picker }: { picker: RefPicker }): ReactNode {
 }
 
 /**
+ * The control on a row that holds parts of its own - a node's blocks, an agent's conversation's
+ * documents - which lists them beside the row, in both the hosts that draw the picker's chrome:
+ * one control, so the shared field's list and the live composer's popover open a row's parts
+ * the same way and by the same words. Pressing it is not a pick of its row.
+ */
+export function RefPartsControl({
+  picker,
+  row,
+}: {
+  picker: RefPicker;
+  row: RefPickerRow;
+}): ReactNode {
+  if (row.parts === undefined) return null;
+  return (
+    <button
+      className={`shrink-0 rounded px-2 py-1 text-xs font-medium ${textOptionDescription}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        picker.openParts(row.id);
+      }}
+      type="button"
+    >
+      {row.kind === "agent" ? "Documents" : "Blocks"}
+    </button>
+  );
+}
+
+/**
  * The reference picker's rows, drawn for a host that has nowhere of its own to draw them: the
  * groups in the door's order, each under its kind's heading and wearing that kind's icon, with
  * the one instruction row and the words of whichever listing state holds. The host owns the
@@ -106,8 +134,8 @@ export function RefPickerList({
     if (insertion !== undefined) onTake(insertion);
   };
   const row = (one: RefPickerRow) => (
-    // A row is a `div`, not a `button`: a node's own row carries the control that lists its
-    // blocks, and a button inside a button is no button at all.
+    // A row is a `div`, not a `button`: a row that holds parts carries the control that lists
+    // them, and a button inside a button is no button at all.
     <div
       aria-selected={one.id === picker.activeId}
       className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${surfaceMutedHoverBg} ${
@@ -137,18 +165,7 @@ export function RefPickerList({
           </TruncatedText>
         )}
       </span>
-      {one.parts === undefined ? null : (
-        <button
-          className={`shrink-0 rounded px-2 py-1 text-xs font-medium ${textOptionDescription}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            picker.openParts(one.id);
-          }}
-          type="button"
-        >
-          Blocks
-        </button>
-      )}
+      <RefPartsControl picker={picker} row={one} />
     </div>
   );
   return (

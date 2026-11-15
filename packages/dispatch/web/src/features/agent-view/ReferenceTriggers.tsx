@@ -5,7 +5,16 @@ import {
   type Unstable_TriggerMatcher,
   unstable_useTriggerPopoverScopeContext,
 } from "@assistant-ui/react";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { TruncatedText } from "../../components/TruncatedText";
 import {
@@ -18,37 +27,38 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { RefKindIcon } from "../refs/kind-icons";
-import { RefPickerNotes } from "../refs/RefPickerList";
+import { RefPartsControl, RefPickerNotes } from "../refs/RefPickerList";
 import {
   insertionText,
+  orderedRows,
   REF_PICKER_HEADINGS,
-  REF_PICKER_KINDS,
   REF_PICKER_TRIGGERS,
   type RefPickerDoor,
   type RefPickerKind,
+  type RefPickerRow,
   readTrigger,
 } from "../refs/ref-picker";
 import { type RefPicker, useRefPicker } from "../refs/useRefPicker";
 
 /**
  * The three reference doors in an agent's live composer: `[[`, `@` and `#`, drawing the one
- * picker every other box draws (`features/refs/useRefPicker.ts`), beside the `/` that lists the
- * session's own commands. The four are triggers of one input: assistant-ui owns the detection,
- * the highlight and the keyboard, so Enter takes the highlighted row while a list is open and
- * sends the message while none is, and a pick replaces the trigger the reader typed with the
- * row's text.
+ * picker every other box draws (`features/refs/useRefPicker.ts`) over every kind it reaches,
+ * beside the `/` that lists the session's own commands. The four are triggers of one input:
+ * assistant-ui owns the detection, the highlight and the keyboard, so Enter takes the highlighted
+ * row while a list is open and sends the message while none is, and a pick replaces the trigger
+ * the reader typed with the row's text. A row that holds parts - a node's blocks, an agent's
+ * documents - carries the control every other box draws for them (`RefPartsControl`), and
+ * ArrowRight opens the highlighted row's, which assistant-ui leaves to the input: the composer
+ * hands that key here first (`ReferenceKeys`).
  *
  * The `/` list stays its own (`AgentThread.tsx`'s `SlashCommands`): a slash command is the
  * characters a terminal reads, not a reference, and it is serialized as the person would type
  * it rather than as an address.
  */
 
-/** The kinds this box offers. A message of a session's live conversation belongs to no issue,
- *  so it has no `dispatch://` address and neither have its blocks: neither kind is offered
- *  here, and the search is never asked for one. */
-const AGENT_MESSAGE_KINDS: readonly RefPickerKind[] = REF_PICKER_KINDS.filter(
-  (kind) => kind !== "message" && kind !== "message-block"
-);
+/** What the composer's input hands the reference doors before assistant-ui reads the key: the
+ *  doors stop the one key they serve themselves, and leave every other to the composer. */
+export type ReferenceKeys = (event: KeyboardEvent<HTMLTextAreaElement>) => void;
 
 /** The characters that open each door, as the picker reads them. */
 function doorChars(door: RefPickerDoor): string {
@@ -79,42 +89,67 @@ const DOOR_MATCHERS: Record<RefPickerDoor, Unstable_TriggerMatcher> = {
   parties: doorMatcher("parties"),
 };
 
-/** One row of the list: its kind's icon, its words, and what it is or where it is under them. */
-function RefRow({ index, item }: { index: number; item: Unstable_TriggerItem }): ReactNode {
+/** One row of the list: its kind's icon, its words, what it is or where it is under them, and
+ *  the control that opens its parts where it holds any. */
+function RefRow({
+  index,
+  item,
+  picker,
+  row,
+}: {
+  index: number;
+  item: Unstable_TriggerItem;
+  picker: RefPicker;
+  /** The picker's row this item draws, which says whether it holds parts. */
+  row: RefPickerRow | undefined;
+}): ReactNode {
   const highlighted = unstable_useTriggerPopoverScopeContext().highlightedIndex === index;
-  const row = useRef<HTMLButtonElement>(null);
+  const element = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (highlighted) row.current?.scrollIntoView({ block: "nearest" });
+    if (highlighted) element.current?.scrollIntoView({ block: "nearest" });
   }, [highlighted]);
   return (
-    <ComposerPrimitive.Unstable_TriggerPopoverItem
-      className={`flex min-h-11 w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm ${cardHoverBorder} ${
-        highlighted ? `${selectedCardBg} ${selectedCardBorder}` : card
-      }`}
-      index={index}
-      item={item}
-      // Keeps the caret in the message, so the person types on after picking.
-      onMouseDown={(event) => event.preventDefault()}
-      ref={row}
-    >
-      <RefKindIcon kind={item.type as RefPickerKind} />
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className={`truncate font-medium ${textPrimaryOnSurface}`}>{item.label}</span>
-        {item.description === undefined ? null : (
-          <TruncatedText
-            className={`self-stretch text-xs ${textOptionDescription}`}
-            title={item.description}
-          >
-            {item.description}
-          </TruncatedText>
-        )}
-      </span>
+    // The item draws as a `div` rather than assistant-ui's own button, for the reason
+    // `RefPickerList`'s row is one: a row that holds parts carries the control that lists them,
+    // and a button inside a button is no button at all. The item's own props - its option role,
+    // its highlight and the click that takes it - land on the `div`.
+    <ComposerPrimitive.Unstable_TriggerPopoverItem asChild index={index} item={item}>
+      <div
+        aria-selected={highlighted}
+        className={`flex min-h-11 w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm ${cardHoverBorder} ${
+          highlighted ? `${selectedCardBg} ${selectedCardBorder}` : card
+        }`}
+        // Keeps the caret in the message, so the person types on after picking a row or opening
+        // its parts.
+        onMouseDown={(event) => event.preventDefault()}
+        ref={element}
+        role="option"
+        tabIndex={-1}
+      >
+        <RefKindIcon kind={item.type as RefPickerKind} />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className={`truncate font-medium ${textPrimaryOnSurface}`}>{item.label}</span>
+          {item.description === undefined ? null : (
+            <TruncatedText
+              className={`self-stretch text-xs ${textOptionDescription}`}
+              title={item.description}
+            >
+              {item.description}
+            </TruncatedText>
+          )}
+        </span>
+        {row === undefined ? null : <RefPartsControl picker={picker} row={row} />}
+      </div>
     </ComposerPrimitive.Unstable_TriggerPopoverItem>
   );
 }
 
 /** The rows under their kinds' headings, in the order the picker ranked them for this door. */
-function refRows(items: readonly Unstable_TriggerItem[]): ReactNode[] {
+function refRows(
+  items: readonly Unstable_TriggerItem[],
+  rows: ReadonlyMap<string, RefPickerRow>,
+  picker: RefPicker
+): ReactNode[] {
   const drawn: ReactNode[] = [];
   let kind: string | undefined;
   items.forEach((item, index) => {
@@ -129,41 +164,55 @@ function refRows(items: readonly Unstable_TriggerItem[]): ReactNode[] {
         </div>
       );
     }
-    drawn.push(<RefRow index={index} item={item} key={item.id} />);
+    drawn.push(
+      <RefRow index={index} item={item} key={item.id} picker={picker} row={rows.get(item.id)} />
+    );
   });
   return drawn;
 }
 
 /**
- * The door's own child: it tells the composer above which door is open and what has been typed
- * after it, so the picker reads its rows for that door, and it draws what the list is while it
- * holds no rows. Rendered whether the door is open or not, as every child of a trigger popover
- * is, so everything it draws is behind that check.
+ * The door's own child: it tells the composer above which door is open, what has been typed
+ * after it and which row assistant-ui has highlighted, so the picker reads its rows for that door
+ * and ArrowRight knows whose parts to open, and it draws what the list is while it holds no rows.
+ * Rendered whether the door is open or not, as every child of a trigger popover is, so everything
+ * it draws is behind that check.
  */
 function DoorBody({
   door,
+  highlighted,
   onQuery,
   picker,
 }: {
   door: RefPickerDoor;
+  /** The open door's highlighted row, which only that door's own scope can read. */
+  highlighted: RefObject<string | undefined>;
   onQuery: (door: RefPickerDoor, query: string | undefined) => void;
   picker: RefPicker;
 }): ReactNode {
-  const { open, query } = unstable_useTriggerPopoverScopeContext();
+  const { highlightedIndex, items, open, query } = unstable_useTriggerPopoverScopeContext();
   useEffect(() => {
     onQuery(door, open ? query : undefined);
   }, [door, onQuery, open, query]);
   // The door closing takes its rows with it.
   useEffect(() => () => onQuery(door, undefined), [door, onQuery]);
+  useEffect(() => {
+    if (!open) return;
+    highlighted.current = items[highlightedIndex]?.id;
+    return () => {
+      highlighted.current = undefined;
+    };
+  }, [highlighted, highlightedIndex, items, open]);
   if (!open) return null;
   return <RefPickerNotes picker={picker} />;
 }
 
 /**
  * The three reference triggers of the live composer. Mounted inside the composer's
- * `Unstable_TriggerPopoverRoot`, beside the `/` trigger, so one input carries four.
+ * `Unstable_TriggerPopoverRoot`, beside the `/` trigger, so one input carries four. `keys` is
+ * what that input hands every key to before assistant-ui reads it, which the triggers fill.
  */
-export function ReferenceTriggers(): ReactNode {
+export function ReferenceTriggers({ keys }: { keys: RefObject<ReferenceKeys | null> }): ReactNode {
   /** The door the input has open and what has been typed after it, as the open door's own
    *  child reports it. */
   const [opened, setOpened] = useState<{ door: RefPickerDoor; query: string } | undefined>(
@@ -184,42 +233,63 @@ export function ReferenceTriggers(): ReactNode {
   const picker = useRefPicker({
     caret: text.length,
     enabled: opened !== undefined,
-    kinds: AGENT_MESSAGE_KINDS,
     text,
   });
 
-  const items = useMemo<Unstable_TriggerItem[]>(
-    () =>
-      picker.groups.flatMap((group) =>
-        group.rows.map((row) => ({
-          id: row.id,
-          label: row.label,
-          type: row.kind,
-          ...(row.detail === "" ? {} : { description: row.detail }),
-        }))
-      ),
+  // Each row by its id: assistant-ui's items carry an item's words alone, and what a row writes
+  // and whether it holds parts are the picker's row's.
+  const rows = useMemo(
+    () => new Map(orderedRows(picker.groups).map((row) => [row.id, row])),
     [picker.groups]
   );
-  // What each row writes, by the one rule every box writes a pick by: a party as a link naming
-  // it, every other kind as its bare address.
-  const written = useMemo(
+  const items = useMemo<Unstable_TriggerItem[]>(
     () =>
-      new Map(
-        picker.groups.flatMap((group) => group.rows.map((row) => [row.id, insertionText(row)]))
-      ),
-    [picker.groups]
+      [...rows.values()].map((row) => ({
+        id: row.id,
+        label: row.label,
+        type: row.kind,
+        ...(row.detail === "" ? {} : { description: row.detail }),
+      })),
+    [rows]
   );
   const adapter = useMemo(
     () => ({ categories: () => [], categoryItems: () => [], search: () => items }),
     [items]
   );
+  // What each row writes, by the one rule every box writes a pick by: a party as a link naming
+  // it, every other kind as its bare address.
   const formatter = useMemo<Unstable_DirectiveFormatter>(
     () => ({
       parse: (value: string) => [{ kind: "text" as const, text: value }],
-      serialize: (item: Unstable_TriggerItem) => written.get(item.id) ?? item.label,
+      serialize: (item: Unstable_TriggerItem) => {
+        const row = rows.get(item.id);
+        return row === undefined ? item.label : insertionText(row);
+      },
     }),
-    [written]
+    [rows]
   );
+
+  // ArrowRight opens the highlighted row's parts, as it does in every other box
+  // (`useRefPicker`'s `pressKey`). assistant-ui reads no such key, so the input would move its
+  // caret instead; the composer hands it here first, and it is stopped only where there are
+  // parts to open. The handler reads the newest picker and rows when the key comes.
+  const highlighted = useRef<string | undefined>(undefined);
+  const pickerNow = useRef(picker);
+  pickerNow.current = picker;
+  const rowsNow = useRef(rows);
+  rowsNow.current = rows;
+  useEffect(() => {
+    keys.current = (event) => {
+      const id = highlighted.current;
+      if (event.key !== "ArrowRight" || id === undefined) return;
+      if (rowsNow.current.get(id)?.parts === undefined) return;
+      event.preventDefault();
+      pickerNow.current.openParts(id);
+    };
+    return () => {
+      keys.current = null;
+    };
+  }, [keys]);
 
   return (
     <>
@@ -235,9 +305,9 @@ export function ReferenceTriggers(): ReactNode {
         >
           <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={formatter} />
           <ComposerPrimitive.Unstable_TriggerPopoverItems className="contents">
-            {refRows}
+            {(shown) => refRows(shown, rows, picker)}
           </ComposerPrimitive.Unstable_TriggerPopoverItems>
-          <DoorBody door={door} onQuery={onQuery} picker={picker} />
+          <DoorBody door={door} highlighted={highlighted} onQuery={onQuery} picker={picker} />
         </ComposerPrimitive.Unstable_TriggerPopover>
       ))}
     </>

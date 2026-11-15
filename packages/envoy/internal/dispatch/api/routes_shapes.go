@@ -751,6 +751,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/agents/{session_id}/messages": {
 		Status: http.StatusCreated, Response: shapedMessage{}, Request: createAgentMessageInput{},
 	},
+	"GET /api/v1/agents/{session_id}/artifacts": {Status: http.StatusOK, Response: []artifactRead{}},
 	"POST /api/v1/agents/{session_id}/artifacts": {
 		Status: http.StatusCreated, Response: artifactUploadResponse{},
 		// The upload reads JSON or multipart as the issue and project forms do, but a
