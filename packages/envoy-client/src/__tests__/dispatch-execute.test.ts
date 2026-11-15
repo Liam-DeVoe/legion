@@ -12087,6 +12087,138 @@ describe("executeDispatchTool", () => {
     ).rejects.toThrow(/turn requires reply_to_ask/);
   });
 
+  // Each --mention goes to Dispatch as one {target}, on an issue's comment and on a project
+  // document's (POST /api/v1/artifacts/{id}/comments) alike.
+  test.each([
+    ["an issue", { issue: "DSP-42" }, "DSP-42", "/api/v1/issues/DSP-42/comments"],
+    [
+      "a project document",
+      { project: "CORE", artifact: "runbook-md" },
+      null,
+      "/api/v1/artifacts/artifact-42/comments",
+    ],
+  ] as const)("sends each mention as a target on a comment on %s", async (_owner, owner, issueKey, path) => {
+    const posted: Array<{ pathname: string; body: unknown }> = [];
+    const artifact = {
+      id: "artifact-42",
+      issue_key: null,
+      project: "CORE",
+      ref_key: "CORE/runbook-md",
+      slug: "runbook-md",
+      name: "Runbook.md",
+      kind: "doc",
+      primary: false,
+      created_by: { kind: "session", id: "session-42" },
+      created_at: "2026-09-11T00:00:00Z",
+      versions: [],
+    };
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/projects/CORE/artifacts/runbook-md") {
+        return response(artifact);
+      }
+      // The project's unlinked documents, which the project document's resolution lists.
+      if (target.pathname === "/api/v1/projects/CORE/artifacts") return response([artifact]);
+      if (init?.method === "POST" && target.pathname.endsWith("/comments")) {
+        posted.push({ pathname: target.pathname, body: JSON.parse(String(init.body)) });
+        return response({ id: "comment-5", issue_key: issueKey, ask_id: null, reply_to: null });
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_comment",
+      args: {
+        ...owner,
+        body: "Over to you.",
+        mentions: ["role:legion-infra-infra-1-architect", "session:ses_01-AB"],
+      },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toStartWith("Posted comment comment-5");
+    expect(posted).toEqual([
+      {
+        pathname: path,
+        body: expect.objectContaining({
+          body: "Over to you.",
+          mentions: [
+            { target: "role:legion-infra-infra-1-architect" },
+            { target: "session:ses_01-AB" },
+          ],
+        }),
+      },
+    ]);
+  });
+
+  // Dispatch takes a mention's target only as role:<name> or session:<id>
+  // (validateCommentMentions, model.ParseRoute), so the command refuses any other in the
+  // server's own words before it sends anything.
+  test.each([
+    ["no route prefix", ["legion-infra-infra-1-architect"]],
+    ["an uppercase role", ["role:Architect"]],
+    ["an empty role", ["role:"]],
+    ["a space in a session id", ["session:ses 1"]],
+    ["a trailing newline", ["role:architect\n"]],
+    ["one bad target among good ones", ["role:architect", "user:alice"]],
+  ])("refuses a mention target with %s before calling the server", async (_case, mentions) => {
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      requests.push(String(url));
+      throw new Error("network must not be called");
+    };
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_comment",
+        args: { issue: "DSP-42", body: "Over to you.", mentions },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      })
+    ).rejects.toThrow("- mention target must be role:<name> or session:<id>\n");
+    expect(requests).toEqual([]);
+  });
+
+  // Dispatch takes at most ten mentions on one comment: ten are sent, and an eleventh is refused
+  // in the server's own words before anything is sent.
+  test("sends ten mentions and refuses an eleventh before calling the server", async () => {
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      requests.push(new URL(String(url)).pathname);
+      return response({ id: "comment-6", issue_key: "DSP-42", ask_id: null, reply_to: null });
+    };
+    const comment = (count: number) =>
+      executeDispatchTool({
+        tool: "dispatch_comment",
+        args: {
+          issue: "DSP-42",
+          body: "Over to you all.",
+          mentions: Array.from({ length: count }, (_, index) => `session:s${index + 1}`),
+        },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    await comment(10);
+    expect(requests).toEqual(["/api/v1/issues/DSP-42/comments"]);
+
+    await expect(comment(11)).rejects.toThrow("- mentions allow at most 10 targets\n");
+    expect(requests).toEqual(["/api/v1/issues/DSP-42/comments"]);
+  });
+
   test("reports no waiting state for a reply the server recorded without a turn (closed ask)", async () => {
     const askID = "01234567-0000-4000-8000-000000000044";
     const fetchImpl = async (_url: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>

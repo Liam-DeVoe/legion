@@ -224,23 +224,55 @@ const documentEditValidation: NonNullable<DispatchToolSpec["validation"]> = {
     documentEditProblem(value) ?? `${documentEditOwner.message} ${PRECONDITION_RULE}`,
 };
 
-/** dispatch_comment: the document-owner rule plus `turn` only alongside `reply_to_ask`. */
+/** dispatch_comment: the document-owner rule, `turn` only alongside `reply_to_ask`, and the
+ *  mention rules below. */
 const commentOwner = documentOwnerValidation(true);
 const COMMENT_TURN_RULE =
   "turn requires reply_to_ask: turn says who holds an open ask's thread after the reply. Pass reply_to_ask with the open ask's id, or drop turn.";
 
+/** The most mentions one comment carries, and the refusal of one more, both as Dispatch states
+ *  them (`validateCommentMentions` in packages/envoy/internal/dispatch/api/comment_create.go). */
+const MAX_COMMENT_MENTIONS = 10;
+const COMMENT_MENTION_LIMIT_RULE = `mentions allow at most ${MAX_COMMENT_MENTIONS} targets`;
+
+/** The two forms of a mention's target and the refusal of any other, as Dispatch reads them
+ *  (`model.ParseRoute`'s roleRoutePattern and sessionRoutePattern in
+ *  packages/envoy/internal/dispatch/model/model.go, and `validateCommentMentions`). */
+const MENTION_TARGET_PATTERNS = [/^role:[a-z0-9-]+$/, /^session:[A-Za-z0-9_-]+$/] as const;
+const COMMENT_MENTION_TARGET_RULE = "mention target must be role:<name> or session:<id>";
+
+/** The mention rule a comment's mentions break, in Dispatch's words and in its order: the count
+ *  first, then each target. Undefined when they keep both, or name none. */
+function mentionProblem(mentions: unknown): string | undefined {
+  if (!Array.isArray(mentions)) return undefined;
+  if (mentions.length > MAX_COMMENT_MENTIONS) return COMMENT_MENTION_LIMIT_RULE;
+  const kept = mentions.every(
+    (target) =>
+      typeof target === "string" && MENTION_TARGET_PATTERNS.some((pattern) => pattern.test(target))
+  );
+  return kept ? undefined : COMMENT_MENTION_TARGET_RULE;
+}
+
 function commentProblem(value: unknown): string | undefined {
-  const input = value as { readonly turn?: unknown; readonly reply_to_ask?: unknown };
+  const input = value as {
+    readonly turn?: unknown;
+    readonly reply_to_ask?: unknown;
+    readonly mentions?: unknown;
+  };
+  const mention = mentionProblem(input.mentions);
   return brokenParts([
     [commentOwner.check(value), commentOwner.message],
     [input.turn === undefined || typeof input.reply_to_ask === "string", COMMENT_TURN_RULE],
+    [mention === undefined, mention ?? ""],
   ]);
 }
 
+const COMMENT_RULE = `${commentOwner.message} ${COMMENT_TURN_RULE} ${COMMENT_MENTION_LIMIT_RULE}, and each ${COMMENT_MENTION_TARGET_RULE}.`;
+
 const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => commentProblem(value) === undefined,
-  message: `${commentOwner.message} ${COMMENT_TURN_RULE}`,
-  refusal: (value) => commentProblem(value) ?? `${commentOwner.message} ${COMMENT_TURN_RULE}`,
+  message: COMMENT_RULE,
+  refusal: (value) => commentProblem(value) ?? COMMENT_RULE,
 };
 
 const ISSUE_UPDATE_FIELDS_RULE =
@@ -1171,6 +1203,15 @@ export const dispatchToolSpecs = [
             "you need the human to act - the ask returns to 'Waiting on you'. human does not " +
             "apply to an approval request a newer version moved: it stays with you until dispatch " +
             "request-approval hands it back at the current version."
+        )
+        .optional(),
+      mentions: z
+        .array(z.string())
+        .describe(
+          "Optional targets the comment mentions: role:<name> (lowercase letters, digits and -), " +
+            "which reaches the session holding that role, or session:<id> (letters, digits, _ " +
+            "and -); at most 10, none named twice. Dispatch delivers the comment to each target, " +
+            "retries a send that does not go through, and records every attempt on the comment."
         )
         .optional(),
       images: imagesArgument(z, "the issue (or the project document's project)"),
