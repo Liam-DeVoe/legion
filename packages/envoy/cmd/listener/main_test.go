@@ -1549,8 +1549,8 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	}
 
 	// The registry's cache still answers a session it holds; a cache miss must read NATS, which
-	// is now gone.
-	waitFor(t, time.Second, "the watcher to cache ses_known", func() bool {
+	// is now gone. listenerWait guards a hang and asserts nothing: the watcher has to cache it.
+	waitFor(t, listenerWait, "the watcher to cache ses_known", func() bool {
 		return get("ses_known").Code == http.StatusOK
 	})
 	client.Close()

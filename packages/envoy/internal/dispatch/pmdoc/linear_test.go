@@ -70,11 +70,13 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 			growsLinearly(t, fmt.Sprintf("parsing %q", shape), []int{small * len(shape), full * len(shape)}, linearSlack, func(size int) func() (time.Duration, error) {
 				text := strings.Repeat(shape, size/len(shape)) // the parse only reads it, so the rung's samples share one
 				return func() (time.Duration, error) {
-					return cpuTimeOf(again(func() {
+					var failed error
+					took, err := cpuTimeOf(again(func() {
 						if _, err := ParseRendering(text); err != nil {
-							t.Fatalf("parse %d bytes of %q: %v", size, shape, err)
+							failed = fmt.Errorf("parse %d bytes of %q: %w", size, shape, err)
 						}
 					}))
+					return took, errors.Join(err, failed)
 				}
 			})
 		})
@@ -98,11 +100,13 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 			growsLinearly(t, name, []int{small * len(repeat), full * len(repeat)}, linearSlack, func(size int) func() (time.Duration, error) {
 				text := open + strings.Repeat(repeat, size/len(repeat)) + closer // the parse only reads it, so the rung's samples share one
 				return func() (time.Duration, error) {
-					return cpuTimeOf(again(func() {
+					var failed error
+					took, err := cpuTimeOf(again(func() {
 						if _, err := ParseForWrite(text, nil); err != nil {
-							t.Fatalf("%s at %d bytes: %v", name, size, err)
+							failed = fmt.Errorf("%s at %d bytes: %w", name, size, err)
 						}
 					}))
+					return took, errors.Join(err, failed)
 				}
 			})
 		})
@@ -131,11 +135,13 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 				}
 				body := text.String()
 				return func() (time.Duration, error) {
-					return cpuTimeOf(again(func() {
+					var failed error
+					took, err := cpuTimeOf(again(func() {
 						if _, err := ParseForWrite(body, nil); err != nil {
-							t.Fatalf("%s at %d bytes: %v", name, size, err)
+							failed = fmt.Errorf("%s at %d bytes: %w", name, size, err)
 						}
 					}))
+					return took, errors.Join(err, failed)
 				}
 			})
 		})
@@ -172,11 +178,13 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 					repeats := size / pair
 					text := shape.before + strings.Repeat(shape.open, repeats) + strings.Repeat(shape.close, repeats) + shape.after // the parse only reads it, so the rung's samples share one
 					return func() (time.Duration, error) {
-						return cpuTimeOf(again(func() {
+						var failed error
+						took, err := cpuTimeOf(again(func() {
 							if _, err := reader.parse(text); err != nil && !refusedForItsMarks(err) {
-								t.Fatalf("%s of %d bytes of %q: %v", reader.name, size, name, err)
+								failed = fmt.Errorf("%s of %d bytes of %q: %w", reader.name, size, name, err)
 							}
 						}))
+						return took, errors.Join(err, failed)
 					}
 				})
 			})
@@ -192,11 +200,13 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 			growsLinearly(t, fmt.Sprintf("rendering %q", shape), []int{small * len(shape), full * len(shape)}, linearSlack, func(size int) func() (time.Duration, error) {
 				tree := doc(size / len(shape)) // the render only reads the tree, so the rung's samples share one
 				return func() (time.Duration, error) {
-					return cpuTimeOf(again(func() {
+					var failed error
+					took, err := cpuTimeOf(again(func() {
 						if _, err := Render(tree); err != nil {
-							t.Fatalf("render %d bytes of %q: %v", size, shape, err)
+							failed = fmt.Errorf("render %d bytes of %q: %w", size, shape, err)
 						}
 					}))
+					return took, errors.Join(err, failed)
 				}
 			})
 		})
@@ -315,11 +325,13 @@ func TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds(t *testing.T) {
 			growsLinearly(t, "rendering "+test.name, []int{renderFullTarget / growthStep, renderFullTarget}, linearSlack, func(size int) func() (time.Duration, error) {
 				document := test.doc(size) // the render only reads the tree, so the rung's samples share one
 				return func() (time.Duration, error) {
-					return cpuTimeOf(again(func() {
+					var failed error
+					took, err := cpuTimeOf(again(func() {
 						if _, err := Render(document); err != nil {
-							t.Fatalf("render %s at %s: %v", test.name, sizeText(size), err)
+							failed = fmt.Errorf("render %s at %s: %w", test.name, sizeText(size), err)
 						}
 					}))
+					return took, errors.Join(err, failed)
 				}
 			})
 		})
@@ -340,11 +352,13 @@ func TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds(t *testing.T) {
 			growsLinearly(t, "parsing "+test.name, []int{parseFullTarget / growthStep, parseFullTarget}, linearSlack, func(size int) func() (time.Duration, error) {
 				markdown := test.markdown(size) // the parse only reads it, so the rung's samples share one
 				return func() (time.Duration, error) {
-					return cpuTimeOf(again(func() {
+					var failed error
+					took, err := cpuTimeOf(again(func() {
 						if _, err := test.parse(markdown); err != nil {
-							t.Fatalf("parse %s at %s: %v", test.name, sizeText(size), err)
+							failed = fmt.Errorf("parse %s at %s: %w", test.name, sizeText(size), err)
 						}
 					}))
+					return took, errors.Join(err, failed)
 				}
 			})
 		})
@@ -366,11 +380,13 @@ func TestParseIsLinearInATableOfEscapedPipes(t *testing.T) {
 	growsLinearly(t, "parsing a table of `\\|` cells", ladderSizes, growthAllowance, func(size int) func() (time.Duration, error) {
 		markdown := header + strings.Repeat(row, (size-len(header))/len(row)) // the parse only reads it, so the rung's samples share one
 		return func() (time.Duration, error) {
-			return cpuTimeOf(again(func() {
+			var failed error
+			took, err := cpuTimeOf(again(func() {
 				if _, err := ParseRendering(markdown); err != nil {
-					t.Fatalf("parse %d bytes of `\\|` rows: %v", size, err)
+					failed = fmt.Errorf("parse %d bytes of `\\|` rows: %w", size, err)
 				}
 			}))
+			return took, errors.Join(err, failed)
 		}
 	})
 }
@@ -457,15 +473,18 @@ func readsAndWritesLinearly(t *testing.T, head, shape, tail string, sizes []int)
 	growsLinearly(t, fmt.Sprintf("reading and writing %q", what), sizes, growthAllowance, func(size int) func() (time.Duration, error) {
 		markdown := head + strings.Repeat(shape, (size-len(head))/len(shape)) + tail + "._\n" // the read and the write only read it, so the rung's samples share one
 		return func() (time.Duration, error) {
-			return cpuTimeOf(again(func() {
+			var failed error
+			took, err := cpuTimeOf(again(func() {
 				doc, err := ParseRendering(markdown)
 				if err != nil {
-					t.Fatalf("parse %d bytes of %q: %v", size, what, err)
+					failed = fmt.Errorf("parse %d bytes of %q: %w", size, what, err)
+					return
 				}
 				if _, err := Render(doc); err != nil {
-					t.Fatalf("render %d bytes of %q: %v", size, what, err)
+					failed = fmt.Errorf("render %d bytes of %q: %w", size, what, err)
 				}
 			}))
+			return took, errors.Join(err, failed)
 		}
 	})
 }
@@ -698,7 +717,11 @@ func processCPUTime() time.Duration { return cputest.Process() }
 // one from each call, and again is the prepare of one that changes nothing. cputest.Measure picks
 // how many runs one timed window holds, so the clock resolves the window, and divides by them;
 // every run's input is built before its window opens (timedWindow), since the input is not the
-// code under test.
+// code under test. A run reports through no *testing.T, as timedWindow does not: it runs on
+// runWithDeadline's goroutine, where a t.Fatalf would end that goroutine rather than the test, and
+// the measured call would then never send its result, miss its deadline and stay registered in
+// leaking, so that every later call is refused. A run that fails keeps its error for the measured
+// call to return, and timedWithDeadline reports it on the test's own goroutine.
 func cpuTimeOf(prepare func() (run func())) (time.Duration, error) {
 	return cputest.Measure(func(count int) (time.Duration, error) {
 		runs := make([]func(), count)

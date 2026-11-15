@@ -23,6 +23,11 @@ func sleeper(t *testing.T) *exec.Cmd {
 	return cmd
 }
 
+// waitExitReturns bounds a wait for WaitExit to return. It guards a hang and asserts nothing: a
+// pidfd turns readable as its process exits, and a stop is seen at the end of the 1 s poll slice
+// it lands in, so this only names a WaitExit that never returns.
+const waitExitReturns = 30 * time.Second
+
 // TestDescendsFromRealProcesses: descendsFrom over /proc says a child descends from its parent and
 // a process from itself, never a parent from its child or pid 1 from anything, and every one of
 // those real walks reaches root or init without an error.
@@ -78,8 +83,8 @@ func TestPinnedPeerReportsExit(t *testing.T) {
 		if !ok {
 			t.Fatal("WaitExit returned false for an exited process")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("WaitExit did not observe the exit within 3 s")
+	case <-time.After(waitExitReturns):
+		t.Fatalf("WaitExit did not observe the exit within %s", waitExitReturns)
 	}
 	if got := peer.PID(); got != 0 {
 		t.Fatalf("a dead pinned process must read as pid 0, got %d", got)
@@ -103,7 +108,7 @@ func TestWaitExitStops(t *testing.T) {
 		if ok {
 			t.Fatal("WaitExit must return false when stopped")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(waitExitReturns):
 		t.Fatal("WaitExit ignored stop")
 	}
 }

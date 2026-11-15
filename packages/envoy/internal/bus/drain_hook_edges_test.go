@@ -1,7 +1,7 @@
 package bus_test
 
-// Every test here captures the default slog handler (captureBusLogs, restart_test.go), a
-// process-wide swap, so none of them is parallel (dispatch://INFRA-1075).
+// Every test here that calls captureBusLogs (restart_test.go) captures the default slog handler, a
+// process-wide swap, so none of those is parallel (dispatch://INFRA-1075).
 
 import (
 	"context"
@@ -150,6 +150,7 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 // Real time, at production's reserve: the drain it measures is of a live NATS connection over
 // TCP, which no synctest bubble can hold.
 func TestASlowDeliveryLeavesTheDrainHooksTheirShare(t *testing.T) {
+	// Serial: its assertion is a time (the hooks run with at least 300 ms of the 2 s drain left).
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
@@ -191,6 +192,8 @@ func TestASlowDeliveryLeavesTheDrainHooksTheirShare(t *testing.T) {
 // Real time, at production's reserve: the drain it measures is of a live NATS connection over
 // TCP, which no synctest bubble can hold.
 func TestADeliveryKeepsTenSecondsOfTheListenersDrain(t *testing.T) {
+	// Serial: its assertion is a time (a 9.5 s delivery finishes inside the 13 s drain, and the
+	// hooks run with at least 2.5 s of it left).
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {

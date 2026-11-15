@@ -348,10 +348,12 @@ func unlockMigrations(conn *pgxpool.Conn) {
 	}
 }
 
-// closeBounded closes conn on a context a cancelled ctx does not cancel, bounded like the rest of
-// this runner's waits (pgmigrate.LockTimeout). Its two callers are this runner's own: the failed
-// lock, which hands over the connection it hijacks out of the pool, and the concurrent build,
-// which owns its connection.
+// closeBounded closes conn on a context a cancelled ctx does not cancel, bounded by
+// pgmigrate.LockTimeout and not by the store's Locking: a close is no lock wait, and pgmigrate
+// likewise keeps LockTimeout, whatever a runner's Locking, for its read of a lock holder's
+// diagnosis, which is no lock wait either (diagnoseHolders). Its two callers are this runner's
+// own: the failed lock, which hands over the connection it hijacks out of the pool, and the
+// concurrent build, which owns its connection.
 func closeBounded(ctx context.Context, conn *pgx.Conn) {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
 	defer cancel()

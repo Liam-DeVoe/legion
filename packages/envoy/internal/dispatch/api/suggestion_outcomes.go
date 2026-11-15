@@ -216,7 +216,7 @@ var (
 )
 
 // startSuggestionCursor is what the first pass on a database reads before its rules run: the
-// highest event id at or below the safe horizon ($2, judgeSuggestionPage), which the cursor moves
+// highest event id at or below the pass's own final-event bound ($2, judgeSuggestionPage), which the cursor moves
 // to once the rules have judged every pending suggestion against every event up to it, and up to
 // $1 of the suggestions not yet swept, oldest first (all of them recorded since migration 0155),
 // which the rules judge too and the pass then marks.
@@ -225,7 +225,7 @@ select coalesce((select max(id) from events where id <= $2::bigint), 0),
        array(select id::text from write_suggestions where not swept order by created_at limit $1)`
 
 // readSuggestionPage is what a later pass reads before its rules run, from up to $2 events after
-// the cursor ($1) and at or below the safe horizon ($4, judgeSuggestionPage) and up to $2
+// the cursor ($1) and at or below the pass's own final-event bound ($4, judgeSuggestionPage) and up to $2
 // suggestions not yet swept, oldest first: of the events, those before the first one younger than
 // $3 seconds, as the last id, how many, and their issues and documents; of the suggestions, the
 // ids of those at least $3 seconds old; and the seconds until the first thing it held back for
@@ -299,8 +299,9 @@ func judgeSuggestionPageInTransaction(ctx context.Context, pool *store.Pool, saf
 }
 
 // judgeSuggestionPage runs the three rules over one page, in tx, which holds the cursor row for
-// update until it ends. A page holds only events at or below safe, the safe horizon the pass read
-// (suggestionOutcomePass). It reports whether the page was full - more events or suggestions may
+// update until it ends. A page holds only events at or below safe, the bound the pass read
+// (suggestionOutcomeFloor.read: the event log's writer floor, or the safe horizon in the one case
+// the floor cannot bound). It reports whether the page was full - more events or suggestions may
 // be waiting - and, when it held back an event or a suggestion younger than settle, how long
 // until that one is old enough to judge.
 //
@@ -325,12 +326,12 @@ func judgeSuggestionPageInTransaction(ctx context.Context, pool *store.Pool, saf
 // its write inserts the row, and two writes that wait on nothing commit out of id order
 // (events.Broker.Append), so an id below a committed one can still commit: a page that read the
 // higher one and moved the cursor there would never read the lower. The cap at safe is what
-// closes that: every event at or below the safe horizon H of the server's one events.Horizon is
+// closes that: every event at or below it is
 // final - committed and visible to every later statement, or rolled back for good - so a page of
-// (cursor, H] holds every event it passes over, and the cursor, which moves at most to H, never
+// (cursor, safe] holds every event it passes over, and the cursor, which moves at most to safe, never
 // stands above an id that can still commit. The event of such an id is read by a pass once the
-// horizon has reached it: its own commit notifies dispatch_events, which wakes the loop, and
-// while the horizon stands below it the pass asks for one of its own (suggestionOutcomePass,
+// bound has reached it: its own commit notifies dispatch_events, which wakes the loop, and
+// while the bound stands below it the pass asks for one of its own (suggestionOutcomePass,
 // RunSuggestionOutcomeSweep).
 func judgeSuggestionPage(ctx context.Context, tx pgx.Tx, safe int64, page int, settle time.Duration) (full bool, settlesIn time.Duration, err error) {
 	var cursor *int64

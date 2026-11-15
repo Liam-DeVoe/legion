@@ -333,7 +333,7 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 		case ctx.Err() != nil:
 			return documents, false, ctx.Err()
 		case errors.Is(err, ErrDocNewerContent):
-			slog.Warn("dispatch: reference excerpt reconciliation deferred a document holding an element this build cannot read; its mentions stay owed for a build that reads it",
+			s.log().Warn("dispatch: reference excerpt reconciliation deferred a document holding an element this build cannot read; its mentions stay owed for a build that reads it",
 				"artifact", document.FromID, "version", document.Version, "error", err)
 			deferDocument(document)
 			continue

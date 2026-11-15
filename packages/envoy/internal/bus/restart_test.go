@@ -1,7 +1,7 @@
 package bus_test
 
-// Every test here captures the default slog handler (captureBusLogs, below), a process-wide
-// swap, so none of them is parallel, nor is any test of another file that calls it
+// Every test here that calls captureBusLogs (below) captures the default slog handler, a
+// process-wide swap, so none of those is parallel, nor is any test of another file that calls it
 // (dispatch://INFRA-1075).
 
 import (
@@ -26,6 +26,7 @@ import (
 // place rather than closing, so a JetStream handle taken from it before the restart is still bound
 // to a live connection afterwards.
 func TestAServerRestartKeepsJetStreamStateTakenFromTheConnection(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -59,6 +60,8 @@ func TestAServerRestartKeepsJetStreamStateTakenFromTheConnection(t *testing.T) {
 // callers treat an error as not delivered (a role-lane forward as delivery_failed, a webhook as a
 // 500 for the sender to retry), so a copy held and sent after reconnecting would arrive twice.
 func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
+	// Serial: its assertion is a quiet window (the failed publish must not arrive in the 2 s after
+	// the reconnect).
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -102,6 +105,8 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 // rather than failing at once: a webhook that gets an error answers 503, and the sender does not
 // redeliver, so a failure fast enough to beat a one-second NATS restart loses the event.
 func TestAPublishWhileReconnectingWaitsForTheReconnect(t *testing.T) {
+	// Serial: its assertion is a time (a publish rides out a one-second restart inside its 5 s
+	// publishBound).
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {

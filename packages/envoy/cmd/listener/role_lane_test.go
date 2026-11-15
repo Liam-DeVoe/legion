@@ -186,7 +186,9 @@ func publishRoleMessage(t *testing.T, conn *natsgo.Conn, role, message string) c
 
 // gatherForwards returns the forwards the holder receives until n have arrived and quiet then passes
 // with no other, or within passes: every one that arrived, so a caller reports a shortfall or a
-// surplus with the rest of what it measured.
+// surplus with the rest of what it measured. A zero quiet takes the forwards already queued
+// without waiting: time.After(0) is ready as the select starts, and a select with two ready cases
+// picks one at random, so a surplus forward already queued would be missed about one run in two.
 func gatherForwards(frames <-chan roleLaneFrame, n int, within, quiet time.Duration) []roleLaneFrame {
 	got := make([]roleLaneFrame, 0, n)
 	deadline := time.After(within)
@@ -199,6 +201,15 @@ func gatherForwards(frames <-chan roleLaneFrame, n int, within, quiet time.Durat
 		}
 	}
 	for {
+		if quiet <= 0 {
+			select {
+			case frame := <-frames:
+				got = append(got, frame)
+			default:
+				return got
+			}
+			continue
+		}
 		select {
 		case frame := <-frames:
 			got = append(got, frame)

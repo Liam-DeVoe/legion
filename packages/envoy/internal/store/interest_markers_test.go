@@ -1,7 +1,7 @@
 package store
 
-// Every test here captures the default slog handler (captureJSONLogs, below), a process-wide
-// swap, so none of them is parallel (dispatch://INFRA-1075).
+// Every test here that calls captureJSONLogs (below) captures the default slog handler, a
+// process-wide swap, so none of those is parallel (dispatch://INFRA-1075).
 
 import (
 	"encoding/json"
@@ -238,6 +238,7 @@ func TestAPassCollectsTheDeleteMarkersAndKeepsEveryLiveKey(t *testing.T) {
 // A write between the scan and the purge lands above the floor and survives it, whichever write it
 // is: the floor is a sequence the scan already saw, and the bucket only hands out higher ones.
 func TestWritesBetweenTheScanAndThePurgeSurvive(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, kv := rawInterestBucket(t, conn)
@@ -538,6 +539,7 @@ func (j purgeThenDelete) PurgeStream(name string, opts ...natsgo.JSOpt) error {
 // above it and the purge would delete it; a floor taken from the bucket's own scan protects it,
 // because the scan reads operations and revisions and never a value.
 func TestAnUndecodableLiveValueIsKept(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, kv := rawInterestBucket(t, conn)

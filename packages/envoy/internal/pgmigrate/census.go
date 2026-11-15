@@ -52,11 +52,15 @@ const (
 
 // CensusOptions are the census's bounds. A zero field takes its package constant
 // (CensusTableLimit, CensusLongTransaction, CensusStatementTimeout); tests set smaller ones.
-// Locking is the runner's discipline, of which the census reads the timeout alone: how long it
-// waits for a touched table's lock before it refuses that table. It is the runner's own bound
-// because a migration queued behind the same holder would give up there, and it resolves as the
-// runner's does, so a zero Locking is production's five seconds (LockTimeout); a test of that
-// refusal sets it short rather than waiting five seconds out.
+// Locking bounds one wait of the census's own, and the census reads only its timeout: how long the
+// census waits for a touched table's lock before it refuses that table. It resolves as a runner's
+// Locking does, so a zero Locking waits production's five seconds (LockTimeout): the bound
+// production's runner applies a migration under, which gives up after that long behind the same
+// holder. A test of that refusal sets it short rather than waiting five seconds out. The census
+// does not judge a migration's lock holders by it (lockBoundOf, holderRefusal). It judges them by
+// the lock_timeout production's runner applies the migration under: LockTimeout until the
+// migration sets its own (migrationLockTimeouts), whatever Locking says. So a census whose wait a
+// test shortened judges each lock holder as production's census does.
 type CensusOptions struct {
 	TableLimit       int64
 	LongTransaction  time.Duration
@@ -418,11 +422,12 @@ func lockBoundOf(ctx context.Context, tx pgx.Tx, entry *MigrationCensus) (lockBo
 	return bound, nil
 }
 
-// migrationLockTimeouts are the lock_timeout settings a migration's statements wait under: Exec's
-// LockTimeout until the migration's first SET [LOCAL | SESSION] lock_timeout, then each value it
-// sets, as SET would give it to Postgres (a string literal's text, any other value as written). A
-// migration that sets its own before any other statement waits under that alone. Comments and
-// literals are read past as Postgres reads them (scanSQL), and a DO block's body is not read.
+// migrationLockTimeouts are the lock_timeout settings a migration's statements wait under when
+// production's runner applies it: LockTimeout, which a zero Locking's Exec sets, until the
+// migration's first SET [LOCAL | SESSION] lock_timeout, then each value it sets, as SET would give
+// it to Postgres (a string literal's text, any other value as written). A migration that sets its
+// own before any other statement waits under that alone. Comments and literals are read past as
+// Postgres reads them (scanSQL), and a DO block's body is not read.
 func migrationLockTimeouts(sql string) []string {
 	type token struct {
 		kind sqlTokenKind

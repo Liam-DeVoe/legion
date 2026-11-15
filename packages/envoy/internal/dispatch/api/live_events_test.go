@@ -925,11 +925,7 @@ func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
 // GET /api/v1/events and its test hook are gone, test hooks or not: the event feed is the live
 // socket's.
 func TestTheEventsRouteIsGone(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{testHooks: true}, nil)
 	for _, request := range []struct{ method, target string }{
 		{http.MethodGet, "/api/v1/events"},

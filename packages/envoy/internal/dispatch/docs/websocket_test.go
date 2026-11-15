@@ -259,7 +259,8 @@ func TestHocuspocusAuthenticationCommunicatesSchemaReadOnly(t *testing.T) {
 		t.Fatalf("send schema authentication: %v", err)
 	}
 
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	// roomWait guards a hang and asserts nothing: the room has to answer the authentication.
+	connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	for {
 		_, message, err := connection.ReadMessage()
 		if err != nil {
@@ -661,7 +662,8 @@ func TestDocumentSocketRefusesARoomOutsideTheSchema(t *testing.T) {
 				t.Fatalf("connect outside-schema document: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
 			cleanupAndRelease(t, func() { _ = connection.Close() })
-			connection.SetReadDeadline(time.Now().Add(time.Second))
+			// roomWait guards a hang and asserts nothing: the server has to close the socket.
+			connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 			_, message, err := connection.ReadMessage()
 			var closed *gws.CloseError
 			if !errors.As(err, &closed) || closed.Code != documentSchemaCloseCode {
@@ -693,7 +695,8 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	defer connection.Close()
-	waitFor(t, time.Second, "document peer connection", func() bool {
+	// roomWait guards a hang and asserts nothing: the room has to register the connection.
+	waitFor(t, roomWait(t), "document peer connection", func() bool {
 		state := service.room(artifactID)
 		state.mu.Lock()
 		defer state.mu.Unlock()

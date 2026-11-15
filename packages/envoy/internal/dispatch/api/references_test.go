@@ -280,8 +280,10 @@ func graphEdges(t *testing.T, handler http.Handler, query url.Values) model.Grap
 // the message.created write. Read from the message, the same edge points out at the ask. Filters
 // narrow it and malformed input is 400.
 func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is instance-wide — any open transaction anywhere on the Postgres server holds it back.
+	// No t.Parallel: its ?since= reads answer only up to the event log's safe horizon
+	// (sinceHorizon), which is proven from pg_snapshot_xmin, the oldest transaction id running
+	// anywhere on the instance (internal/dispatch/events, horizon.go), so any open transaction
+	// anywhere on the Postgres server holds them back.
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")

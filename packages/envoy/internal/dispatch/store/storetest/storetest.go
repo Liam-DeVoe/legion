@@ -34,8 +34,9 @@ const DatabaseURLEnv = "DISPATCH_TEST_DATABASE_URL"
 // (`go test -p 8 -parallel 12`), so the live stores are many, not one. Sixteen is the fewest one
 // test passes with: TestConcurrentSendsUnderOneKeyMakeOneMessage holds every connection of the
 // pool at once (below). A larger pool would let each of those many stores ask the server for more.
-// The pools Pool.separate opens - the rooms, lease, outbox, listener, health, compaction and
-// horizon pools - keep their own sizes, so this bounds the shared pool alone.
+// The pools Pool.separate opens - the rooms, their appends, the listener, the leases, the outbox,
+// the compaction, the display-tree fill and the horizon pools, and the health probe's own - keep
+// their own sizes, so this bounds the shared pool alone.
 //
 // It is not a free knob: a test writes against the number. Halving it to eight failed
 // TestConcurrentSendsUnderOneKeyMakeOneMessage (internal/dispatch/api), which holds a table lock

@@ -78,10 +78,17 @@ type promptRead struct {
 	err  error
 }
 
+// readerAnswerWait bounds a wait for readHidden's answer once everything it needs has been typed.
+// It guards a hang and asserts nothing: the reader answers once its own windows have passed (the
+// 200 ms quiet after a line, the second a split paste mark gets), and this only names a reader
+// that never answers. It is longer than maxPasteDrain, so a reader stuck in an open paste gives
+// it up (errPasteCutShort) before the wait does, and the test's own check of the answer fails.
+const readerAnswerWait = 30 * time.Second
+
 // typeAtPrompt starts readHidden at a fresh terminal and, once it has turned echo off, writes typed
 // to the controller as a terminal emulator does for a person's keys or a paste. It answers the
-// pseudo-terminal and the reader's answer, failing t if the reader has not answered within two
-// seconds.
+// pseudo-terminal and the reader's answer, failing t if the reader has not answered within
+// readerAnswerWait.
 func typeAtPrompt(t *testing.T, typed string) (*os.File, int, promptRead) {
 	t.Helper()
 	return typeAtPromptInWrites(t, 0, typed)
@@ -109,8 +116,8 @@ func typeAtPromptInWrites(t *testing.T, gap time.Duration, writes ...string) (*o
 	select {
 	case got := <-answer:
 		return controller, terminal, got
-	case <-time.After(2 * time.Second):
-		t.Fatalf("the reader did not return within 2s of %q being typed", writes)
+	case <-time.After(readerAnswerWait):
+		t.Fatalf("the reader did not return within %s of %q being typed", readerAnswerWait, writes)
 		return nil, 0, promptRead{}
 	}
 }
@@ -213,8 +220,8 @@ func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
 		if got.err != nil || string(got.line) != "value" {
 			t.Fatalf("readHidden = %q, %v; want %q", got.line, got.err, "value")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the reader did not return within 2s")
+	case <-time.After(readerAnswerWait):
+		t.Fatalf("the reader did not return within %s", readerAnswerWait)
 	}
 	if lflag(t, terminal)&unix.IEXTEN == 0 {
 		t.Fatal("IEXTEN is off after the prompt returned")

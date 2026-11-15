@@ -1164,7 +1164,7 @@ func parkedCommitTrial() (int, bool) {
 // A write whose commit never returns is the defect TestAWriteSurvivesItsIssueClosingAsItPublishes
 // exists to catch, and the case must report it and end rather than hold its package's cleanup:
 // storetest.Open closes the pool in a cleanup Go runs before it prints the subtest's result
-// (storetest.go:90), and the pool's Close waits for every connection in use, so a transaction
+// (storetest.go:71), and the pool's Close waits for every connection in use, so a transaction
 // left open there costs the whole run its deadline - the -timeout .github/workflows/ci.yaml gives
 // envoy-go-race-docs and envoy-go-docs-finalizers - and prints no --- FAIL line at all. This runs
 // the case in a child process of this test binary with one trial's commit parked for good and
@@ -1181,8 +1181,8 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// template migration and database clone before that, and storetest's drop of that clone
 	// after it: the parked commit's connection is still open on the clone, so the plain drop is
 	// answered 55006 and tried again for dropWindow, 15 s, before the drop is forced
-	// (storetest.go:132, :147-161), and Main waits for that drop before the binary exits
-	// (storetest.go:110). Both measurements take it in: 54.56 s in this package's issue pod
+	// (pgtemplate.go:241, :258-283), and Main waits for that drop before the binary exits
+	// (storetest.go:78, pgtemplate.go:117-141). Both measurements take it in: 54.56 s in this package's issue pod
 	// under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
 	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
 	// and it is minutes below the deadline of any run that holds this package (the -timeout
@@ -1191,12 +1191,13 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	const childDeadline = 180 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
 	// the deadline above watches none of what the child does after them: storetest.Main's wait for
-	// those drops (storetest.go:110), the admin Exec that drops the template on
-	// context.Background(), the leak report. A child stuck in one of those would hold this row
+	// those drops (pgtemplate.go:133) and the leak report. The template is not dropped: it is named
+	// after the migration set and every test process on the server shares it (pgtemplate.go:114-116).
+	// A child stuck in one of those would hold this row
 	// until the run that holds this package reached its own deadline, which is the end this row
 	// exists to prevent, so the child is bounded from here too. The margin over childDeadline is
-	// what that teardown is worth: the 15 s the plain drop is retried for, the forced drop behind
-	// it and the template drop after that, which a minute covers with room to spare while leaving
+	// what that teardown is worth: the 15 s the plain drop is retried for and the forced drop
+	// behind it, which a minute covers with room to spare while leaving
 	// this row minutes inside the shortest run that holds the package.
 	const childTeardown = time.Minute
 	killing, cancelKilling := context.WithTimeout(context.Background(), childDeadline+childTeardown)

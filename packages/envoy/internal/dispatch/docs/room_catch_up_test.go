@@ -93,17 +93,29 @@ func waitNote(t *testing.T, notes chan string, artifactID, what string) {
 	}
 }
 
-// countNotes is how many notes for artifactID arrive within quiet of each other.
+// countNotes is how many notes for artifactID arrive within quiet of each other. A zero quiet
+// counts the notes already queued without waiting: time.After(0) is ready as the select starts,
+// and a select with two ready cases picks one at random, so a note already queued would be
+// missed about one run in two.
 func countNotes(notes chan string, artifactID string, quiet time.Duration) int {
 	count := 0
 	for {
-		select {
-		case room := <-notes:
-			if room == artifactID {
-				count++
+		var room string
+		if quiet <= 0 {
+			select {
+			case room = <-notes:
+			default:
+				return count
 			}
-		case <-time.After(quiet):
-			return count
+		} else {
+			select {
+			case room = <-notes:
+			case <-time.After(quiet):
+				return count
+			}
+		}
+		if room == artifactID {
+			count++
 		}
 	}
 }
@@ -615,6 +627,8 @@ func TestACatchUpForADocumentWithNoRoomHereDoesNothing(t *testing.T) {
 	if pair.taskA.srv.GetDoc(elsewhere) != nil {
 		t.Fatal("the catch-up loaded a room for a document nobody here had open")
 	}
+	// catchUp runs afterRead on this goroutine, so a read it made is already queued: the zero
+	// window counts it without waiting (countNotes).
 	if reads := countNotes(notes.reads, elsewhere, 0); reads != 0 {
 		t.Fatalf("the catch-up read %d time(s) for a document with no room here", reads)
 	}

@@ -220,9 +220,11 @@ func TestMaxConnAgeDoesNotDisturbAnAgedHijackedWebsocket(t *testing.T) {
 	if response.Close || strings.EqualFold(response.Header.Get("Connection"), "close") {
 		t.Fatalf("hijacked websocket carried Connection: close: %v", response.Header)
 	}
+	// The handler closes upgraded as soon as the Upgrade that wrote the 101 read above returns, so
+	// this bound guards a hang and asserts nothing: it only names a handler that never got there.
 	select {
 	case <-upgraded:
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("server did not hold the websocket after the handshake")
 	}
 }

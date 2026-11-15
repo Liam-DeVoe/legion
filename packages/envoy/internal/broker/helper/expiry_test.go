@@ -9,7 +9,6 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -162,7 +161,8 @@ func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testi
 
 // TestTheHelperWarnsADayBeforeTheExpiry: with no lead set, as in production, the warning comes a
 // day before the credential lapses. A credential with less than a day left warns at once; one
-// with more than a day left does not warn yet.
+// with more than a day left does not warn yet. The watch's timers are the test's, so it checks
+// how long the warning waits instead of waiting for it.
 func TestTheHelperWarnsADayBeforeTheExpiry(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -181,16 +181,24 @@ func TestTheHelperWarnsADayBeforeTheExpiry(t *testing.T) {
 			b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 				Log: slog.New(slog.NewJSONHandler(&out, nil))}
 			t.Cleanup(b.Close)
-			expiryLogin(t, b)
-			warned := func() bool {
-				return slices.ContainsFunc(logRecords(t, &out), func(rec map[string]any) bool { return rec["msg"] == expiresSoonMsg })
+			timers := installExpiryTimers(b)
+			loggingIn := time.Now()
+			cred := expiryLogin(t, b)
+			// The watch asks its warning timer for the time from its own start to a day before the
+			// expiry, and it starts after the login began and before its timer is fired here, so
+			// the wait it asked for lies between the two readings below, however long either
+			// step took. A wait of zero or less warns at once; a positive one is not due yet.
+			wait := timers.fire(t, cred, 0)
+			warnAt := cred.expiresAt.Add(-24 * time.Hour)
+			if shortest, longest := warnAt.Sub(time.Now()), warnAt.Sub(loggingIn); wait < shortest || wait > longest {
+				t.Fatalf("a credential expiring in %s: the warning waits %s; want the time to a day before its expiry, %s to %s",
+					tc.lifetime, wait, shortest, longest)
 			}
-			deadline := time.Now().Add(300 * time.Millisecond)
-			for !warned() && time.Now().Before(deadline) {
-				time.Sleep(10 * time.Millisecond)
+			if atOnce := wait <= 0; atOnce != tc.warns {
+				t.Fatalf("a credential expiring in %s: the warning waits %s, at once %v; want %v", tc.lifetime, wait, atOnce, tc.warns)
 			}
-			if got := warned(); got != tc.warns {
-				t.Fatalf("a credential expiring in %s: warned within 300 ms %v; want %v (log: %s)", tc.lifetime, got, tc.warns, out.String())
+			if warned := waitForRecord(t, &out, expiresSoonMsg); warned["level"] != "WARN" || warned["credential_id"] != cred.id {
+				t.Fatalf("the warning its timer gives: %v; want a WARN naming %s", warned, cred.id)
 			}
 		})
 	}

@@ -329,11 +329,7 @@ func newDocumentSocketRig(t *testing.T) *documentSocketRig {
 // signed in: their session generation and refresh token are kept, and once the issuer answers the
 // same cookie is served again after one refresh.
 func TestASignInIssuerOutageAnswersTheAPIAndTheDocumentSocket503AndKeepsTheSession(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	rig := newDocumentSocketRig(t)
 	ctx := context.Background()
 	signedIn, found, err := rig.people.Membership(ctx, rig.email)

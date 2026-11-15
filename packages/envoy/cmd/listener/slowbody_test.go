@@ -1,7 +1,7 @@
 package main
 
-// A test here swaps the standard log package's writer (log.SetOutput), a process-wide default,
-// so none of this file's tests is parallel (dispatch://INFRA-1075).
+// TestAGitHubBodyReadFailureIsLogged swaps the standard log package's writer (log.SetOutput), a
+// process-wide default, so it is not parallel (dispatch://INFRA-1075).
 
 import (
 	"bufio"
@@ -104,6 +104,7 @@ func serveSlowly(t *testing.T, path string, handler http.Handler, headers map[st
 // A GitHub delivery whose body takes longer than the server's 10 s to arrive is read whole and
 // published, not cut off with no answer.
 func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}
@@ -156,6 +157,7 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 // Every other route keeps the server's 10 s bound on its body: a Slack body that takes longer to
 // arrive is cut off.
 func TestASlackBodyStillHasTheServersReadTimeout(t *testing.T) {
+	// Serial: its assertion is a time (the Slack body is cut off between 10 s and 11.5 s).
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}

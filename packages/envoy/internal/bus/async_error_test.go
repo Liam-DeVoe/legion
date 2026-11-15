@@ -1,7 +1,7 @@
 package bus
 
-// Every test here captures the default slog handler (captureLogs, stream_config_test.go), a
-// process-wide swap, so none of them is parallel (dispatch://INFRA-1075).
+// Every test here that calls captureLogs (stream_config_test.go) captures the default slog
+// handler, a process-wide swap, so none of those is parallel (dispatch://INFRA-1075).
 
 import (
 	"bufio"
@@ -149,6 +149,7 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 // own. The errors are built as nats.go builds the one it hands the async error callback for a
 // server's -ERR (processErr).
 func TestOnlyTheServersRefusalOfTheCoreSubscriptionMarksItRefused(t *testing.T) {
+	t.Parallel()
 	violation := func(text string) error { return fmt.Errorf("%w: %s", nats.ErrPermissionViolation, text) }
 	own := violation(`Permissions Violation for Subscription to "notifications.>" using queue "live"`)
 	current := &nats.Conn{}

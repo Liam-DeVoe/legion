@@ -286,15 +286,19 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
 	roleHolder := "s1"
-	roleLookups := 0
+	// relookups counts the lookups that found the role already moved to s2: every lookup after
+	// the first one since roleHolder was last set to s1, which answers s1 and moves the role.
+	relookups := 0
 	sent := []map[string]any{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
 			mu.Lock()
-			roleLookups++
 			holder := roleHolder
+			if holder == "s2" {
+				relookups++
+			}
 			roleHolder = "s2"
 			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -330,26 +334,24 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 	}, func() {
 		mu.Lock()
 		roleHolder = "s1"
-		roleLookups = 0
+		relookups = 0
 		sent = nil
 		mu.Unlock()
 	})
-	// The lookup behind this comment moved the role to s2 as it answered, and the attempt
+	// The lookup behind this comment answered s1 and moved the role to s2, and the attempt
 	// committed with the holder it read. From here the role must not be asked about again: the
-	// send is made to the session the attempt names, through a read of that session alone, so
-	// the lookups counted from this point are the whole proof that no role transition redirected
-	// the frame. They start at zero, because what the creation itself spent - one lookup, or two
-	// when it gave the first up at mentionLookupTimeout - says nothing about this.
-	mu.Lock()
-	roleLookups = 0
-	mu.Unlock()
+	// send is made to the session the attempt names, through a read of that session alone. Every
+	// lookup after that one finds the role at s2, so relookups counts each of them whenever it
+	// came, one the sender made before this test read the response included, and they are the
+	// whole proof that no role transition redirected the frame. The creation's own lookup is not
+	// among them: it is the one that answered s1, as the mention's pinned session shows.
 	settledCommentDeliveries(t, database, created.ID)
 	mu.Lock()
-	holder, lookups, sends := roleHolder, roleLookups, slices.Clone(sent)
+	holder, lookups, sends := roleHolder, relookups, slices.Clone(sent)
 	mu.Unlock()
 	if lookups != 0 || holder != "s2" || len(created.Mentions) != 1 || created.Mentions[0].SessionID == nil ||
 		*created.Mentions[0].SessionID != "s1" || len(sends) != 1 || sends[0]["target_session"] != "s1" {
-		t.Fatalf("role resolution/sends = holder:%s lookups after the creation:%d mentions:%#v sends:%#v, want one pinned s1 delivery after role moves to s2",
+		t.Fatalf("role resolution/sends = holder:%s lookups after the one that pinned s1:%d mentions:%#v sends:%#v, want one pinned s1 delivery after role moves to s2",
 			holder, lookups, created.Mentions, sends)
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")

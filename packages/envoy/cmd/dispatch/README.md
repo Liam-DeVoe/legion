@@ -589,7 +589,8 @@ It prints the `DATABASE_URL` to use for development.
 Run again, it starts or reuses the same `dispatch-pg` container, which runs its pinned image:
 pgvector on PostgreSQL 18, whose `vector` extension the migrations need.
 It refuses a `dispatch-pg` on any other image or major and prints the commands that dump that container's databases and restore them into a new container on the pinned image.
-The `dispatch` database keeps its migrated schema, and a Go test never writes in it: each test copies a database of its own on the same server, from a migrated template or, for a test of the migration runner itself, from `template1`, and drops it when the test ends, and the templates stay on the server (`docs/testing.md`, "A database a Go test creates").
+The `dispatch` database keeps its migrated schema, and a Go test never writes in it: each test makes a database of its own on the same server and drops it when the test ends, and the templates stay on the server (`docs/testing.md`, "A database a Go test creates").
+Most tests clone a migrated template; a test of the migration runner itself, and a test outside Dispatch's own store that opens a database through `internal/testpg` and migrates it (`cmd/listener/dispatch_resolution_test.go:176-185`), start from an empty one instead.
 The test commands under Tests run against a throwaway server instead (`./scripts/dev-postgres.sh --throwaway`), which runs them faster and serves more connections at once; Tests says why.
 
 ## A large test database
@@ -1307,10 +1308,10 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
 
 - The suggestion outcome sweep (`api.RunSuggestionOutcomeSweep`) is woken by `dispatch_events` (`0107`), which every event commit notifies whichever process made it.
   Passes start at least 60 s apart.
-  A pass reads the events after its cursor (`suggestion_outcome_cursor`, `0154`) and at or below the event log's safe horizon, as the per-process relay behind a reader's events subscription reads:
+  A pass reads the events after its cursor (`suggestion_outcome_cursor`, `0154`) and at or below the event log's writer floor, the highest id at or below which no event of this database's log can still be open (`eventWriterFloor`, `events.Horizon.WriterFloor`):
   event ids are not commit order, so a cursor moved past an event that could still commit would never judge by it.
-  The pass takes that horizon once (`events.Horizon.Safe`, the server's one `Horizon`;
-  the first pass after a start takes `events.Horizon.Await`, which waits until the transactions holding an event id on the instance end, and ends with its context), and one left with an event above it asks for a pass 60 s on rather than re-reading at once, so a horizon an open transaction holds back costs one pass a minute;
+  The floor counts only the transactions holding a write lock on this database's `events` table, where the safe horizon counts every transaction open anywhere on the instance, so an operator's `psql` session in another database holds the sweep back no longer.
+  The one case the floor cannot bound - a floor of 0 with events in the log, an event write open since before every mark the sweep has taken - falls back to the safe horizon (`events.Horizon.Await`, which waits until the transactions holding an event id on the instance end, and ends with its context), and a pass left with an event above its bound asks for a pass 60 s on rather than re-reading at once;
   the late commit's own `dispatch_events` notification wakes the loop as any other does.
   A pass also reads the suggestions no pass has judged yet (`write_suggestions.swept`, `0155`), in pages of 1,000, each page in a transaction that holds the cursor row `for update`, and judges only the pending suggestions those can resolve:
   the newly recorded ones, against all their events, and those whose source issue, source document or suggested issue a page's event names.

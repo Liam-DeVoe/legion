@@ -1,7 +1,7 @@
 package bus_test
 
-// Every test here captures the default slog handler (captureLogs, stream_config_test.go), a
-// process-wide swap, so none of them is parallel (dispatch://INFRA-1075).
+// Every test here that calls captureBusLogs (restart_test.go) captures the default slog handler, a
+// process-wide swap, so none of those is parallel (dispatch://INFRA-1075).
 
 import (
 	"context"
@@ -97,6 +97,7 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 // A drain runs its hooks once the delivery subscriptions have drained and before the connection's
 // own drain, within the drain's deadline, so a hook's requests still reach the server.
 func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {

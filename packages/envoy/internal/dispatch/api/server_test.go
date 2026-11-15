@@ -49,11 +49,12 @@ import (
 //
 // What bounds the number is the database's connections rather than the runner's cores. A test
 // holds a handful of the sixteen its store's pool allows (storetest's testPoolSize), beside the
-// harness's admin pool and its reset workers. At PostgreSQL's default max_connections of 100,
+// harness's one admin connection and the clone and drop each test's own database costs. At
+// PostgreSQL's default max_connections of 100,
 // sixteen reached that limit - a test opening a database of its own was refused "sorry, too many
-// clients already" - and twelve did not. Every CI job that runs this package now raises the
-// server to 500 (.github/workflows/ci.yaml, envoy-go and envoy-go-race-api), so the bound is five
-// times what it was and this is twenty-four.
+// clients already" - and twelve did not. Every CI job that runs this package starts its server
+// at max_connections=500 (.github/workflows/ci.yaml, envoy-go and envoy-go-race-api), so the
+// bound is five times what it was and this is twenty-four.
 //
 // A -parallel on the command line still wins: go test parses its flags inside M.Run, which
 // storetest.Main calls after this.

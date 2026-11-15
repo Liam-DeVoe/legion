@@ -1,7 +1,7 @@
 package bus_test
 
-// Every test here sets ENVOY_ALLOW_REMOTE_NATS or a seed file with t.Setenv, which panics the
-// process beside t.Parallel, so none of them is parallel (dispatch://INFRA-1075).
+// Every test here that sets ENVOY_ALLOW_REMOTE_NATS or a seed file with t.Setenv, which panics the
+// process beside t.Parallel, is serial (dispatch://INFRA-1075).
 
 import (
 	"errors"
@@ -21,6 +21,7 @@ import (
 
 // A deployment of the stream still creates it and reconciles what it finds on the NATS it names.
 func TestConnectOwningStreamStillReconcilesTheDeployedStream(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	js := deployStream(t, uri)
 
@@ -80,6 +81,7 @@ func TestConnectOwningStreamRefusesANATSServerThatIsNotThisMachines(t *testing.T
 // process on the same bus, and a viewer's relay dialling production by accident is the thing
 // being stopped.
 func TestDialRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	remote := remoteLookingURL(t, uri)
 
@@ -104,6 +106,7 @@ func TestDialRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
 // the override, and it is read off the URL: nothing dials while the run has not said it means
 // another machine's NATS.
 func TestConnectRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	remote := remoteLookingURL(t, uri)
 
@@ -181,6 +184,7 @@ func TestAHandedEnvironmentReplacesTheProcessEnvironment(t *testing.T) {
 // another machine's, naming both variables, and nothing dials while they refuse. Said, the same
 // connect goes through the proxy.
 func TestASetProxyIsRemoteReach(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	if !bus.LocalNATSURL(uri) {
 		t.Fatalf("the test server's URL %s is not a loopback URL", uri)

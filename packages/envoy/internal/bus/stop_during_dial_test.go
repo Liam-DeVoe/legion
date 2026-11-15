@@ -1,7 +1,7 @@
 package bus_test
 
-// Every test here sets NATS_NKEY_SEED with t.Setenv, which panics the process beside t.Parallel,
-// so none of them is parallel (dispatch://INFRA-1075).
+// Both tests here point the default slog handler at a writer of their own (logtest.SetDefault), a
+// process-wide swap, so neither is parallel (dispatch://INFRA-1075).
 
 import (
 	"bytes"

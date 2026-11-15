@@ -102,25 +102,28 @@ const branchCommitsMigration = 20261107234701
 // of this kind aborts nothing here but would have to be told apart from a database that is
 // unreachable. A database that has no schema_migrations at all is a fresh one with no version
 // recorded and nothing dropped, and there is nothing to forget.
-func repairDroppedTables(t *testing.T, ctx context.Context, pool *store.Pool) {
-	t.Helper()
+//
+// It answers its failure rather than failing a test, since it runs inside withoutBranchCommits's
+// sync.OnceValue, where a t.Fatalf's Goexit would panic the whole run.
+func repairDroppedTables(ctx context.Context, pool *store.Pool) error {
 	var migrated bool
 	if err := pool.QueryRow(ctx, "select to_regclass('schema_migrations') is not null").Scan(&migrated); err != nil {
-		t.Fatalf("look for schema_migrations: %v", err)
+		return fmt.Errorf("look for schema_migrations: %w", err)
 	}
 	if !migrated {
-		return
+		return nil
 	}
 	var present bool
 	if err := pool.QueryRow(ctx, "select to_regclass('branch_commits') is not null").Scan(&present); err != nil {
-		t.Fatalf("look for branch_commits: %v", err)
+		return fmt.Errorf("look for branch_commits: %w", err)
 	}
 	if present {
-		return
+		return nil
 	}
 	if _, err := pool.Exec(ctx, "delete from schema_migrations where version = $1::bigint", branchCommitsMigration); err != nil {
-		t.Fatalf("forget the migration of branch_commits, which a run that died left dropped: %v", err)
+		return fmt.Errorf("forget the migration of branch_commits, which a run that died left dropped: %w", err)
 	}
+	return nil
 }
 
 // A table a test dropped and never put back is made again by the next deliveryTestPool, so the

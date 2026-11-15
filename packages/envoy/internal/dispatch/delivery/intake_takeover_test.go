@@ -123,14 +123,16 @@ func requireOneBinder(t *testing.T, publisher *bus.Client, first, second *takeOv
 }
 
 // standbyTakeOverBound is how long TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates
-// gives a standby to replace the holder that stopped. The holder releases its hold as it stops,
-// so what the standby waits out is one durableBindInterval poll (2 s) and its own take-over: the
-// durable's consumer lease, the delete, the subscribe and the create. Ten seconds is what the
-// two-process row of the real binary allows a surviving envoy-dispatch after a holder *stops*
-// while waiting for admission (cmd/dispatch/multiprocess_test.go,
-// TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables gives it four), with room for a
-// loaded two-CPU host; nothing here is jittered, so this is a hang guard too. The hand-over after
-// a holder *dies* is the slower one, bounded by the hold's lapse
+// gives a standby to replace the holder that stopped, counted from the moment the holder begins
+// to stop. The holder releases its hold as it stops, so what the standby waits out is one
+// durableBindInterval poll (2 s) and its own take-over: the durable's consumer lease, the delete,
+// the subscribe and the create. Ten seconds is what the two-process row of the real binary allows
+// a surviving envoy-dispatch after a holder *stops* while waiting for admission
+// (cmd/dispatch/multiprocess_test.go, TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables
+// gives it four), with room for a loaded two-CPU host; nothing here is jittered, so this is a hang
+// guard too. It is also intakeHoldTTL less intakeHoldRenew, the soonest a hold that lapsed rather
+// than being released can be taken after its holder began to stop. The hand-over after a holder
+// *dies* is the slower one, bounded by the hold's lapse
 // (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse).
 const standbyTakeOverBound = 10 * time.Second
 
@@ -156,10 +158,16 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	// so the hand-over measured below is one of its ordinary polls and not its first.
 	time.Sleep(2 * durableBindInterval)
 
+	// The span is read from before the stop: a hold that lapsed rather than being handed over
+	// cannot be taken before intakeHoldTTL less intakeHoldRenew after the stop began, since the
+	// lapse falls one TTL after a renewal and the last renewal was at most one Renew before it,
+	// and that is the 10 s standbyTakeOverBound allows. Taking the time after stop returned would
+	// hand whatever the stop cost - its release alone may wait intakeHoldRenew - to a lapsed
+	// hand-over as slack, and the bound could then no longer tell the two apart.
+	stopping := time.Now()
 	holder.stop()
-	stopped := time.Now()
 	var taken *natsgo.ConsumerInfo
-	waitFor(t, standbyTakeOverBound, func() bool {
+	waitFor(t, standbyTakeOverBound-time.Since(stopping), func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil || !info.PushBound || info.Config.DeliverSubject == held.Config.DeliverSubject {
 			return false
@@ -169,7 +177,7 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	}, func() string {
 		return "the standby did not take the durable the holder released over within the bound: " + consumerState(publisher)
 	})
-	t.Logf("the standby took the durable over %s after the holder stopped", time.Since(stopped))
+	t.Logf("the standby took the durable over %s after the holder began to stop", time.Since(stopping).Round(time.Millisecond))
 
 	publishMergedPullRequest(t, publisher, 11)
 	waitFor(t, 20*time.Second, func() bool { return standby.fetches(11) == 1 }, func() string {

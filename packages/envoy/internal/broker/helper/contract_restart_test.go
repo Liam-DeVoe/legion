@@ -211,8 +211,12 @@ func TestContractARefreshThatCannotReachTheBrokerKeepsTheLogin(t *testing.T) {
 // TestContractAnUnrefreshedLoginDropsAtItsExpiry: a helper whose refresh never reaches the broker
 // holds its login until the expiry it kept, then drops it for that reason, as the broker's own
 // lapse would refuse it.
+//
+// Serial: its assertion is a time - the restarted helper must have started and still hold the
+// login it kept within the second from the save to that login's expiry, and must drop it within
+// 5 s past the expiry; a parallel test's load is what would stretch the start or the drop past
+// either bound.
 func TestContractAnUnrefreshedLoginDropsAtItsExpiry(t *testing.T) {
-	t.Parallel()
 	first := newContractRig(t)
 	first.login(t)
 	kept, err := LoadMachineFile(first.machineFile)

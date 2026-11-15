@@ -726,19 +726,37 @@ func TestALeaseHeldInAnotherDatabaseIsNotHeldHere(t *testing.T) {
 	const name = "ci-reconcile"
 	database := storetest.Open(t)
 	elsewhere := storetest.Open(t)
+	// The lease pool is taken here, on the test's own goroutine: a t.Fatal on the goroutine below
+	// would end that goroutine rather than the test, and the wait for the pass would never end.
+	// The goroutine hands back only what Exclusive answered, and both waits on it are bounded, so a
+	// pass that never runs fails the test by name.
+	leases := leasesOf(t, elsewhere)
+	ctx, cancel := context.WithCancel(t.Context())
 	taken, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var ran bool
 	go func() {
 		defer close(done)
-		duty.Exclusive(t.Context(), leasesOf(t, elsewhere), name, time.Time{}, 0, func(context.Context) {
+		ran = duty.Exclusive(ctx, leases, name, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
 	}()
-	<-taken
 	defer func() {
+		cancel()
 		close(release)
-		<-done
+		select {
+		case <-done:
+		case <-time.After(eventWait):
+			t.Errorf("Exclusive did not return within %s of its pass being let go", eventWait)
+		}
 	}()
+	select {
+	case <-taken:
+	case <-done:
+		t.Fatalf("Exclusive answered %v without running the pass that holds the lease in the other database", ran)
+	case <-time.After(eventWait):
+		t.Fatalf("the pass that holds the lease in the other database did not start within %s", eventWait)
+	}
 
 	if held, err := duty.LeaseHeld(t.Context(), elsewhere.Pool, name); err != nil || !held {
 		t.Fatalf("the lease reads as held = %v in the database whose session holds it: %v", held, err)

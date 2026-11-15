@@ -114,7 +114,7 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            ("envoy-go", "Test what the race build cannot run at all or at full size"),
+            ("envoy-go", "Unit test envoy Go package"),
             ("envoy-go-race-docs", "Race-test the document service"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/docs",

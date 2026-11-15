@@ -979,14 +979,16 @@ RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
 RACE_IMPOSSIBLE_CALL = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The whole unit step, comments and all: nine calls started in the background longest first,
+# The whole unit step, comments and all: nine calls started in the background, the long ones
+# longest first,
 # a wait for each, and one replay group per call. It is built here rather than beside
 # UNIT_TEST_PATTERN above because the race-impossible call's -run comes from the walk over
 # packages/envoy that this file does just above. ci.yaml holds this text exactly, indentation
 # aside, and check-ci-filters.sh fails when the two differ.
 UNIT_TEST_SCRIPT = f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
-# Longest first. The nine calls share this runner's four cores, so the step is over
+# The four long calls first, longest first; the short calls after them, in any order.
+# The nine calls share this runner's four cores, so the step is over
 # when its longest call is, and a call that starts late ends as late as it started.
 # Measured on run 42716398877, job 129499072292, every stream on one clock whose zero
 # is the first event of any of them: natslive 0.0 s to 61.0 s, integration 20.8 s to
@@ -1663,9 +1665,10 @@ GATES = [
     ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy") + CI_SELF),
 
     gate("envoy_go", "envoy-go", runs=[ceiling_run("envoy-go")], exact=[
-        # This job has one `go test` step, and every call of it writes a `go test -json` stream
-        # to a file and replays it to the log, so none of them is in the simple form: -json is
-        # not a flag the check reduces and a redirect is not in that form either
+        # This job has one `go test` step, and every `go test` call of it writes a `go test
+        # -json` stream to a file and replays it to the log, so none of them is in the simple
+        # form: -json is not a flag the check reduces and a redirect is not in that form either.
+        # The step's ninth call is a `go vet`, which writes a log and no stream
         # (dispatch://INFRA-1075).
         #
         # The unit step, whose nine calls run at the same time (ci.yaml says why): the package

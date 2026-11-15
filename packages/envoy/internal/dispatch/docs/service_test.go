@@ -582,7 +582,8 @@ func TestSettlementRecordsMalformedAskAndRepairsIt(t *testing.T) {
 		tree.Children[0].Children[1].Children[0].Children[0].Children = nil
 		return tree
 	})
-	waitFor(t, time.Second, "malformed update persisted", func() bool {
+	// roomWait guards a hang and asserts nothing: the edit's append has to land.
+	waitFor(t, roomWait(t), "malformed update persisted", func() bool {
 		var updates int
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from doc_updates where artifact_id = $1
@@ -653,7 +654,8 @@ func TestSettlementRecordsMalformedAskAndRepairsIt(t *testing.T) {
 		}}
 		return tree
 	})
-	waitFor(t, time.Second, "repaired update persisted", func() bool {
+	// roomWait guards a hang and asserts nothing: the edit's append has to land.
+	waitFor(t, roomWait(t), "repaired update persisted", func() bool {
 		var updates int
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from doc_updates where artifact_id = $1
@@ -5390,7 +5392,8 @@ func TestImmediateSettlementTimerUnregistersAfterFiring(t *testing.T) {
 	if timer == nil {
 		t.Fatal("immediate settlement did not schedule a timer")
 	}
-	waitFor(t, time.Second, "expired immediate settlement timer to unregister", func() bool {
+	// roomWait guards a hang and asserts nothing: the fired timer has to unregister.
+	waitFor(t, roomWait(t), "expired immediate settlement timer to unregister", func() bool {
 		return !service.isSettleTimerArmed(timer)
 	})
 }
@@ -6593,7 +6596,8 @@ func TestQuoteMarkSettlesLegacyTableWithoutCanonicalizing(t *testing.T) {
 		t.Fatalf("mark quote: %v", err)
 	}
 	settleCurrentGeneration(t, service, artifactID)
-	waitFor(t, time.Second, "quote mark removed", func() bool {
+	// roomWait guards a hang and asserts nothing: the unrecorded mark has to be removed.
+	waitFor(t, roomWait(t), "quote mark removed", func() bool {
 		_, _, found := pmdoc.FindMark(liveTree(t, service, artifactID), "proofComment", "mark-1")
 		return !found
 	})

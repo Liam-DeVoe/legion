@@ -91,8 +91,11 @@ func TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce(t *testing.T) 
 // sessions answers within one take-over window, well inside the dispatch CLI's 60 s request
 // abort, which would otherwise fire after the comment committed and make its retry post the
 // comment a second time.
+//
+// Serial: its assertion is a time - the comment must answer within listenerTakeoverWindow and 2 s
+// (14 s) of its post, the bound that tells one window's wait from two stacked ones (24 s), and a
+// parallel test's load is what would stretch the request toward it.
 func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t *testing.T) {
-	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/") {
 			writeSessionRecord(t, w, `[]`, strings.TrimPrefix(r.URL.Path, "/v1/registry/"))

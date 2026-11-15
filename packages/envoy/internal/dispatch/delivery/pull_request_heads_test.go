@@ -1420,15 +1420,27 @@ func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) (
 	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
 		t.Fatalf("drop branch_commits: %v", err)
 	}
-	restore = sync.OnceFunc(func() {
+	// One repair for both callers. A t.Fatalf inside a sync.OnceFunc is a Goexit the Once turns
+	// into a panic of the whole run, so the repair returns its error and restore reports it on the
+	// goroutine that called restore.
+	repaired := sync.OnceValue(func() error {
 		// The test's own context is cancelled before its cleanups run, so the repair takes one
 		// that is not (context.WithoutCancel).
 		repair := context.WithoutCancel(ctx)
-		repairDroppedTables(t, repair, pool)
-		if err := (&store.Store{Pool: pool}).Migrate(repair); err != nil {
-			t.Fatalf("put branch_commits back: %v", err)
+		if err := repairDroppedTables(repair, pool); err != nil {
+			return err
 		}
+		if err := (&store.Store{Pool: pool}).Migrate(repair); err != nil {
+			return fmt.Errorf("put branch_commits back: %w", err)
+		}
+		return nil
 	})
+	restore = func() {
+		t.Helper()
+		if err := repaired(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Cleanup(restore)
 	return restore
 }

@@ -5137,13 +5137,19 @@ jobs:
     #   integration       integration 9.7 s       1m   16.1 %   run 42893130638
     #
     # Each row is its package's time divided by 30 and rounded up, which is the smallest whole
-    # minute that time is at most half of, and each is the one place that reading is written:
-    # the comment on each call below names its limit and points here.
+    # minute that time is at most half of, and this table is where the reading that sizes each
+    # limit is derived; the comment on each call below names its limit and points here, and the
+    # package-list call's comment repeats its own reading because the margin it clears is read
+    # off it.
     #
-    # The package list and the race-impossible call are the two whose tests read a margin, and
-    # both clear it: 18m leaves 566.5 s over pmdoc's own time, against the 60 s of its
-    # perCallReportMargin, and 10m leaves 307.9 s over the documents package's, against its 30 s
-    # of roomWaitMargin. At 4 minutes the race-impossible call failed that floor and said so
+    # Three calls run tests that read a margin off the binary's own deadline, and each clears it:
+    # 18m leaves 554.1 s over cmd/dispatch's own time in the package list, against the 60 s of
+    # pmdoc's perCallReportMargin; 10m leaves 448.6 s over the documents package's time in the
+    # race-impossible call, against its 30 s of roomWaitMargin; and 3m leaves 111.7 s over
+    # cmd/dispatch's time in the shutdown call, against the 30 s of eventsStartDrain
+    # (cmd/dispatch/live_events_wait_test.go:76), which waitEventsStart leaves of the deadline so
+    # that its failure prints rather than being cut off by the package timeout. At 4 minutes the
+    # race-impossible call failed that floor and said so
     # itself, in both arms of run 42577832967: "the test binary's deadline leaves 20.769s, not
     # more than roomWaitMargin (30s): this looks like a misconfigured run; raise -timeout".
     #
@@ -5374,12 +5380,14 @@ jobs:
             !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
-      # The script raises max_connections with `alter system` and restarts the server, and a
-      # setting on a server's command line holds over `alter system`: this service, as every
-      # Postgres service of this file, starts at max_connections=500, so the restart brings it
-      # back on its five settings, and what the step adds is its own check that 500 is at least
-      # what the suite's Dispatch processes need, testlimits.ServerConnections and the superuser
-      # reserve.
+      # The script raises max_connections with `alter system` and restarts the server only where
+      # the server does not already allow what the lane needs. A setting on a server's command
+      # line holds over `alter system`, and this service, as every Postgres service of this file,
+      # starts at max_connections=500, which is over testlimits.ServerConnections and the
+      # superuser reserve, so the script reads that, prints what the service allows, and alters
+      # and restarts nothing. What the step is here for is that check
+      # (dispatch://INFRA-1075: the lane's A8 says no step of these jobs runs `alter system`,
+      # and a restart would cost the job the time and the connections of a fresh server).
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -5423,12 +5431,14 @@ jobs:
       # The step below runs the module's packages in the background and, beside them, eight other
       # calls: the plain run of what the race build cannot make, internal/pgmigrate, the routes
       # package, internal/dispatch/events, the shutdown feed test, the container-backed NATS
-      # matrix, the integration suite and the agentloop vet. The package list runs 110 test
-      # binaries. In the pair at fae4eab5 (runs 43654965125 and 43657875798, jobs 132631426228
-      # and 132640445955) it took 581.0 s and 449.4 s from the first event of its stream to the
-      # last, and every other stream had ended before it did. All nine calls are started in the
-      # background at the step's head, longest first, so the step costs the longest of them
-      # rather than their sum.
+      # matrix, the integration suite and the agentloop vet. The package list runs 111 test
+      # binaries. In the pair at bdffd7d2 (runs 43687973145 and 43691345741, jobs 132732382594
+      # and 132742525106) it took 519.0 s and 594.0 s from the first event of its stream to the
+      # last, and every other call of this step had ended before it did. All nine calls are
+      # started in the background at the step's head, the long ones longest first, so the step
+      # costs the longest of them rather than their sum. The short calls follow the long ones,
+      # and their order among themselves decides nothing: in run 2 the last of them ended at
+      # 07:50:49 while the package list ran until 07:58:31.
       # The race-impossible call runs here since the measurement dispatch://INFRA-985 asked for
       # was made; the comment on that call says what was measured and what it came back with.
       # The shutdown feed test, internal/pgmigrate and internal/dispatch/events are each out of
@@ -5493,12 +5503,16 @@ jobs:
       # measured in run 42469495554, pmdoc started about 95 s into the step and ended it 91 s
       # after any other package finished, while every other long package was done 90 s earlier.
       # Leading with the five longest overlaps the longest one with the rest, which is what
-      # longest-first scheduling buys, and the order is read back from the call's own -json
-      # (dispatch://INFRA-1075).
+      # longest-first scheduling buys. Their order among themselves is not a ranking: the pair at
+      # bdffd7d2 ranks them differently in its two runs (run 1 pmdoc 485.9 s then cmd/dispatch
+      # 445.9 s then cmd/dispatch-seed 377.4 s; run 2 cmd/dispatch 525.9 s then dispatch-seed
+      # 515.0 s then pmdoc 468.3 s), so what the list leads with is the five, read back from the
+      # call's own -json (dispatch://INFRA-1075).
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
-          # Longest first. The nine calls share this runner's four cores, so the step is over
+          # The four long calls first, longest first; the short calls after them, in any order.
+          # The nine calls share this runner's four cores, so the step is over
           # when its longest call is, and a call that starts late ends as late as it started.
           # Measured on run 42716398877, job 129499072292, every stream on one clock whose zero
           # is the first event of any of them: natslive 0.0 s to 61.0 s, integration 20.8 s to
@@ -5876,7 +5890,9 @@ jobs:
     # measured time of a green run, 634 s in run 43675841985 (job 132695730267), 10.57 minutes,
     # plus that largest -timeout plus 6: 10.57 + 16 + 6 = 32.57, so 33. The red one of run
     # 43640601453, 633 s (job 132587189318), asks the same 33. A job of this lane varies
-    # by a minute between two attempts of one commit, so a bound follows the largest reading
+    # between two runs of one commit, by a minute here and by much more in the race lane's
+    # longer jobs (at bdffd7d2 envoy-go-race-api read 865 s and 1,125 s, and envoy-go-race-docs
+    # 1,665 s and 1,241 s), so a bound follows the largest reading
     # rather than the newest. The limit must fire before the runner cancels the job, so a hung
     # test prints the dump that names it.
     timeout-minutes: 33
@@ -6324,8 +6340,8 @@ jobs:
   # starts two real envoy-dispatch processes against one Postgres and one NATS - which is what
   # production runs - and drives them over HTTP, their own logs and NATS's own consumer and
   # stream reads. They build only under the `multiprocess` tag, so envoy-go's unit run leaves
-  # them out, and they are a job of their own for the reason dispatch-memory is: each call of
-  # envoy-go's unit step is held to a -timeout sized from its slowest package's measured time
+  # them out, and they are a job of their own for the reason dispatch-memory is: each `go test`
+  # call of envoy-go's unit step is held to a -timeout sized from its slowest package's measured time
   # (18m for the package list, which runs cmd/dispatch), which rows of tens of seconds each would
   # move - one here waits out a durable hand-over or a maintenance loop's tick - and the memory
   # tests already took that step red at 600 s when it ran under go test's default ten-minute
@@ -6594,7 +6610,7 @@ jobs:
   # readiness while it serves a request out past the old shutdown budget.
   #
   # They build only under the `multiprocess` tag, so envoy-go's unit run leaves them out, and
-  # they are kept out of it: each call of that step is held to a -timeout sized from its slowest
+  # they are kept out of it: each `go test` call of that step is held to a -timeout sized from its slowest
   # package's measured time (18m for the package list, which runs cmd/broker), which rows of tens
   # of seconds each would move - these wait out a migration race, a ten-second fan-out window and
   # a twelve-second drain - and the memory tests already took that step red at 600 s when it ran

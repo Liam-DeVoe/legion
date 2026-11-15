@@ -641,11 +641,14 @@ func (s *recordingVersionedStore) signal() {
 	}
 }
 
+// waitForDocumentUpdate waits for the next document update to reach persistence. Its bound,
+// concurrentWait, guards a hang and asserts nothing: every caller waits for an update that has
+// to come, and the bound only names the wait when it never does.
 func waitForDocumentUpdate(t *testing.T, store *recordingVersionedStore) {
 	t.Helper()
 	select {
 	case <-store.updates:
-	case <-time.After(time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("document mutation did not reach persistence")
 	}
 }

@@ -57,11 +57,7 @@ func (c *socketClient) subscribeAgent(t *testing.T, sub, session string) {
 }
 
 func TestAgentStreamRelaysTheSessionsOwnReplayThenItsLiveFrames(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"replay-body"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -93,11 +89,7 @@ func TestAgentStreamRelaysTheSessionsOwnReplayThenItsLiveFrames(t *testing.T) {
 // every release that can stream answers the control subject, and none that cannot does. The
 // relay says so on the wire rather than leaving a viewer waiting on a turn that cannot arrive.
 func TestAgentStreamReportsASessionNobodyAnswersFor(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, false)
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -120,11 +112,9 @@ func TestAgentStreamReportsASessionNobodyAnswersFor(t *testing.T) {
 // answer delivers the history without the page subscribing again. Once it has answered, a re-arm
 // only tells the session the viewer is still there.
 func TestAgentStreamRearmsTheSessionAndDeliversItsReplayOnItsFirstAnswer(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	// No t.Parallel: this test measures the process. In the 300 ms quiet window after the replay
+	// the view must re-arm the session again, at its 50 ms interval, and another test's work on
+	// the same machine would read as a view that stopped re-arming.
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, false)
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source, agentWatchInterval: 50 * time.Millisecond}, nil)
@@ -150,11 +140,7 @@ func TestAgentStreamRearmsTheSessionAndDeliversItsReplayOnItsFirstAnswer(t *test
 }
 
 func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"replay-body"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -184,11 +170,7 @@ func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
 // asked about. What a credential that does resolve may watch is the scope it holds, which
 // TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt below decides.
 func TestAgentStreamRefusesAViewerWithNoCredential(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 
@@ -210,11 +192,10 @@ func TestAgentStreamRefusesAViewerWithNoCredential(t *testing.T) {
 // frame naming the scope it lacks. /ws/live is one socket serving every view, so this check is
 // the view's own and not the route table's.
 func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	// No t.Parallel: this test measures the process. After each refusal no frame may come in a
+	// 300 ms quiet window, and the refused view must have armed nothing by its end; another
+	// test's work on the same machine could hold a wrongly sent frame or arm past the window, so
+	// the test would pass with the defect.
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"replay-body"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -251,11 +232,7 @@ func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
 }
 
 func TestAgentStreamReportsADeploymentWithNoRelay(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	client := rig.dial(t, asUser("alice"))
 	client.subscribeAgent(t, "agent", plannerSessionID)
@@ -266,11 +243,10 @@ func TestAgentStreamReportsADeploymentWithNoRelay(t *testing.T) {
 // naming either would subscribe a single viewer to every armed session on the bus. The view is
 // refused anything that is not a session uuid before it touches NATS at all.
 func TestAgentStreamRefusesASessionIdThatIsNotAUUID(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	// No t.Parallel: this test measures the process. After the last refusal no frame may come in
+	// a 300 ms quiet window, and no refused session id may have reached the bus by its end;
+	// another test's work on the same machine could hold a wrongly sent frame or watch past the
+	// window, so the test would pass with the defect.
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 	client := rig.dial(t, asUser("alice"))
@@ -296,11 +272,7 @@ func TestAgentStreamRefusesASessionIdThatIsNotAUUID(t *testing.T) {
 
 // An agent view names its kind and its session and nothing else.
 func TestAnAgentViewNamesItsKindAndItsSessionAlone(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 	client := rig.dial(t, asUser("alice"))
@@ -342,8 +314,7 @@ func agentFrameOf(t *testing.T, stream *gatedStream, event string) string {
 func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
 	// No t.Parallel: each case holds the whole of one view's byte budget in frames at once
 	// (agentStreamBufferBytes), and a second copy of it beside another test's would take the
-	// pod's memory; it belongs with the family of live-socket tests this file keeps out of the
-	// parallel set (dispatch://INFRA-1075).
+	// pod's memory.
 	for _, test := range []struct {
 		name   string
 		frames int
@@ -385,9 +356,7 @@ func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
 // the page a subscribe, and the subscribe rebuilds from the session's own replay.
 func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
 	// No t.Parallel: this test holds the whole of one view's byte budget in frames at once, and
-	// a second copy of it beside another test's would take the pod's memory; it belongs with the
-	// family of live-socket tests this file keeps out of the parallel set
-	// (dispatch://INFRA-1075).
+	// a second copy of it beside another test's would take the pod's memory.
 	source := agentstream.NewMemory()
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 	stream := newGatedStream()
@@ -431,11 +400,10 @@ func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
 // subscription as dropped, and the socket stays open: the page subscribes again at once, and that
 // subscription rebuilds from the session's replay.
 func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	// No t.Parallel: this test measures the process. After the relay drops the view, a frame
+	// published to the session must not reach the page in a 300 ms quiet window; another test's
+	// work on the same machine could hold a wrongly relayed frame past the window, so the test
+	// would pass with the defect.
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"first-replay"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -468,11 +436,9 @@ func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
 // (the writer closes a socket with 1011 for a frame it cannot encode). The subscription counts what
 // it skipped in one WARN when it ends, the count alone and never the bytes.
 func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	// No t.Parallel: this test swaps process-wide state. logtest.SetDefault points slog's default
+	// logger at a buffer of its own to read the ended view's WARN, which every other test's
+	// logging would join.
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	source := agentstream.NewMemory()
@@ -512,11 +478,10 @@ func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
 // One page's socket carries every agent view it shows: each subscription relays its own session
 // alone, and one that stops leaves the session's frames while the other goes on.
 func TestTwoAgentViewsShareOneSocket(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	// No t.Parallel: this test measures the process. Once the planner's view stops, the planner's
+	// next frame must not reach the page in a 300 ms quiet window; another test's work on the same
+	// machine could hold a wrongly relayed frame past the window, so the test would pass with the
+	// defect.
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"planner-replay"}`))
 	source.SetResponder(reviewerSessionID, true)
@@ -588,11 +553,10 @@ func (s *heldReplaySource) Replay(ctx context.Context, sessionID string) (agents
 // same socket opens at once, and an unsubscribe ends the waiting view at once, cancelling its
 // request rather than waiting the request out.
 func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	// No t.Parallel: this test measures the process. The reviewer's view must open, and the
+	// waiting planner's view end after its unsubscribe, each within half the 2 s replay timeout
+	// (agentStreamReplayTimeout), and another test's work on the same machine would read as a
+	// view held behind the replay.
 	memory := agentstream.NewMemory()
 	memory.SetResponder(plannerSessionID, true)
 	memory.SetResponder(reviewerSessionID, true)
@@ -690,11 +654,7 @@ func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
 // GET /api/v1/agents/{session_id}/stream is gone; the test hook that feeds the in-memory relay
 // stays, since the browser suite's agent views read from it.
 func TestTheAgentStreamRouteIsGone(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{testHooks: true, agentStream: source}, nil)
 	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/agents/"+plannerSessionID+"/stream", nil, "alice"); response.Code != http.StatusNotFound {
@@ -712,6 +672,7 @@ func TestTheAgentStreamRouteIsGone(t *testing.T) {
 // (decodeJSONTestHook): a browser row that misspells `responding` would otherwise be answered 200
 // with the session's verdict left as it was.
 func TestTheResponderTestHookRefusesAMemberItDoesNotDeclare(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{testHooks: true, agentStream: agentstream.NewMemory()}, nil)
 	hook := "/api/v1/agents/" + plannerSessionID + "/stream/_test/publish?as=responder"
 	refused := dispatchRequest(t, rig.handler, http.MethodPost, hook, map[string]any{"responding": true, "respondng": true}, "alice")
