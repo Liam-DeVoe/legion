@@ -1,6 +1,9 @@
 package runtime
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // MaxWorkspaceBundleBytes is the largest bundle a release carries. A bundle above it stops the
 // release, which is recorded with its reason and leaves the pod where it is: the work a role has
@@ -58,6 +61,19 @@ type WorkspaceBundle struct {
 
 // Size is the bundle's length in bytes, which the release records and the 40 MiB bound reads.
 func (b WorkspaceBundle) Size() int { return len(b.Bundle) }
+
+// WorkspaceBundleTooLargeError is a save refused because the workspace's unpushed work, Size
+// bytes, is over Max, the bound a release carries. The shim refuses such a bundle itself, before
+// a byte of it leaves the pod, and the worker stream reads that refusal from the frame's own
+// size field rather than from its words (stream.Conn.BundleWorkspace); the daemon makes the same
+// refusal of a bundle a runtime answered whole. Either way the release reads it with errors.As
+// and holds the pod until a push or a turn, since the next save finds the same work until one
+// of them (internal/daemon's refuseTooLarge).
+type WorkspaceBundleTooLargeError struct{ Size, Max int }
+
+func (e WorkspaceBundleTooLargeError) Error() string {
+	return fmt.Sprintf("the workspace's unpushed work is %d bytes, over the %d a release carries", e.Size, e.Max)
+}
 
 // WorkspaceBundleTake is what one pod's ask of an issue's saved bundle did to that bundle
 // (store.Store.TakeWorkspaceBundleForRestore). A bundle is offered to one pod only — the first

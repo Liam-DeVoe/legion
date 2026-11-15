@@ -489,10 +489,15 @@ type BundleWorkspace struct {
 
 // BundleWorkspaceResult answers BundleWorkspace with the bundle and the three facts a restore
 // needs beside it: the commit the working copy sat on, the heads the bundle carries, and each
-// local bookmark that pointed into the saved set. A bundle larger than the request's MaxBytes is
-// refused rather than sent, with SizeBytes naming what it would have been, so the caller can stop
-// the release and record why. The result crosses the shim's lane as an rpc_chunk sequence when it
-// is larger than one line.
+// local bookmark that pointed into the saved set. The result crosses the shim's lane as an
+// rpc_chunk sequence when it is larger than one line.
+//
+// SizeBytes is the bundle's length. A bundle larger than the request's MaxBytes is refused rather
+// than sent, with SizeBytes naming what it would have been, and no other refusal sets it: a
+// refusal whose SizeBytes is over the MaxBytes asked is the size refusal, which the daemon reads
+// from this number, never from Error's words (stream.Conn.BundleWorkspace), and holds the pod on
+// until a push or a turn. Every shim that answers this frame has set it so, since the frame's
+// first release. Error is a sentence for a person.
 type BundleWorkspaceResult struct {
 	ID        string            `json:"id"`
 	OK        bool              `json:"ok"`

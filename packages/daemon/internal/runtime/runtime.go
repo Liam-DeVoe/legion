@@ -217,7 +217,8 @@ type IssueSuspender interface {
 // the workspace on it go. The role named must be one whose process runs: the shim builds the
 // bundle with the jj and git of the workspace it already works in. A runtime whose processes
 // share no workspace implements nothing here, and the release of such a pod saves nothing because
-// there is no such pod.
+// there is no such pod. Work over MaxWorkspaceBundleBytes that the shim refused to send is a
+// WorkspaceBundleTooLargeError in the error's chain, which the release reads with errors.As.
 type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
 }

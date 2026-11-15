@@ -2286,10 +2286,13 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // A bundle that cannot be built, and one above runtime.MaxWorkspaceBundleBytes, stop the release:
 // the pod stays, nothing having been stopped yet, and the work a role has not pushed is kept at
 // the cost of a pod. A bundle over the bound is recorded first (refuseTooLarge), so the idle tick
-// marks no release of the issue again before something can change what the next save finds. A
-// save that failed is not recorded so, and its release is marked again on the next tick. A
-// workspace with nothing unpushed bundles to nothing, and the row the previous release stored
-// goes with it, so the next pod never restores stale work.
+// marks no release of the issue again before something can change what the next save finds. The
+// shim refuses such a bundle itself, and the runtime answers that refusal as a
+// runtime.WorkspaceBundleTooLargeError (stream.Conn.BundleWorkspace), which is the path every
+// measured refusal took; a bundle a runtime answered whole over the bound is refused here the same
+// way. A save that failed for any other reason is not recorded so, and its release is marked
+// again on the next tick. A workspace with nothing unpushed bundles to nothing, and the row the
+// previous release stored goes with it, so the next pod never restores stale work.
 //
 // A save of a release that is over stores nothing: the bundle of the issue belongs to whichever
 // release the store's mark names, never to a row of one that was cancelled and is still on the
@@ -2316,12 +2319,16 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, "the runtime bundles no workspace")
 	}
 	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
-	if err != nil {
+	var tooLarge runtime.WorkspaceBundleTooLargeError
+	switch {
+	case errors.As(err, &tooLarge):
+		return r.refuseTooLarge(ctx, row, payload, tooLarge)
+	case err != nil:
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}
 	switch size := bundle.Size(); {
 	case size > runtime.MaxWorkspaceBundleBytes:
-		return r.refuseTooLarge(ctx, row, payload, size)
+		return r.refuseTooLarge(ctx, row, payload, runtime.WorkspaceBundleTooLargeError{Size: size, Max: runtime.MaxWorkspaceBundleBytes})
 	case size == 0:
 		if err := r.trees.DeleteWorkspaceBundle(ctx, row.Issue); err != nil {
 			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
@@ -2370,14 +2377,14 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	return nil
 }
 
-// refuseTooLarge ends a release whose save found the workspace's unpushed work, size bytes, over
-// the bound a release carries: it records the refusal (store.RecordBundleRefusal) and then
-// cancels the release (cancelRelease). The record is what the idle rule reads to mark no release
-// of the issue again until a role of the pod does something or the issue's branch moves
-// (workflow.IdleRelease): until then the next save finds the same work, and each release marked
-// on the clock alone cost a bundle over the worker stream and a hold record, once a minute. It is
-// written before the cancel, so a cancel that fails, which the lane runs again, finds it already
-// there.
+// refuseTooLarge ends a release whose save found the workspace's unpushed work over the bound a
+// release carries, refused names the size and the bound: it records the refusal
+// (store.RecordBundleRefusal) and then cancels the release (cancelRelease). The record is what
+// the idle rule reads to mark no release of the issue again until a role of the pod does
+// something or the issue's branch moves (workflow.IdleRelease): until then the next save finds
+// the same work, and each release marked on the clock alone cost a bundle over the worker stream
+// and a hold record, once a minute. It is written before the cancel, so a cancel that fails,
+// which the lane runs again, finds it already there.
 //
 // It also tells the issue's worker, because only a push of that worker's can end it: the message
 // names the size and the bound, and the store queues it only for the first refusal at the
@@ -2386,8 +2393,8 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // A save that failed for a reason of its own records nothing here and tells nobody: no push or
 // turn cures a database error or a runtime that answers nothing, and a hold waiting for one would
 // keep an idle pod for as long as nobody acts, which is the cost the release exists to end.
-func (r *outbox) refuseTooLarge(ctx context.Context, row record.OutboxRow, payload record.IssueBundle, size int) error {
-	message, err := r.bundleTooLargeMessage(ctx, row.Issue, payload.Role, size)
+func (r *outbox) refuseTooLarge(ctx context.Context, row record.OutboxRow, payload record.IssueBundle, refused runtime.WorkspaceBundleTooLargeError) error {
+	message, err := r.bundleTooLargeMessage(ctx, row.Issue, payload.Role, refused)
 	if err != nil {
 		return err
 	}
@@ -2398,16 +2405,16 @@ func (r *outbox) refuseTooLarge(ctx context.Context, row record.OutboxRow, paylo
 	if told {
 		r.wake(row.Issue, record.OutboxKindRoleMessage)
 	}
-	return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleTooLarge,
-		fmt.Sprintf("the workspace's unpushed work is %d bytes, over the %d a release carries", size, runtime.MaxWorkspaceBundleBytes))
+	return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleTooLarge, refused.Error())
 }
 
 // bundleTooLargeMessage is the role message that tells the issue's worker its unpushed work is
-// over the bound a release carries (record.RoleMessage), encoded as a row for the store to queue.
-// It goes to the worker of the issue's open phase when a live claim of the pod holds that role,
-// since that worker is the one whose commits the workspace holds, and otherwise to the role the
-// save was asked of, which is a live role of the same pod and works the same workspace.
-func (r *outbox) bundleTooLargeMessage(ctx context.Context, issue string, asked claim.Role, size int) (store.IdleReleaseRow, error) {
+// over the bound a release carries (record.RoleMessage), naming the size and the bound refused,
+// encoded as a row for the store to queue. It goes to the worker of the issue's open phase when a
+// live claim of the pod holds that role, since that worker is the one whose commits the workspace
+// holds, and otherwise to the role the save was asked of, which is a live role of the same pod and
+// works the same workspace.
+func (r *outbox) bundleTooLargeMessage(ctx context.Context, issue string, asked claim.Role, refused runtime.WorkspaceBundleTooLargeError) (store.IdleReleaseRow, error) {
 	role := asked
 	recorded, err := r.recordedIssue(ctx, issue)
 	if err != nil {
@@ -2432,7 +2439,7 @@ func (r *outbox) bundleTooLargeMessage(ctx context.Context, issue string, asked 
 		"Push your work to the branch on the remote. "+
 		"If the work has files that must not go to the remote, remove them first. "+
 		"The daemon does not try the release again until a push or a turn in the pod occurs.",
-		issue, size, runtime.MaxWorkspaceBundleBytes)
+		issue, refused.Size, refused.Max)
 	encoded, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(token), Body: body}, r.now())
 	if err != nil {
 		return store.IdleReleaseRow{}, fmt.Errorf("encode the message to %s's %s: %w", issue, role, err)

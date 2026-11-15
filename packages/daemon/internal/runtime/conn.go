@@ -117,8 +117,9 @@ type Conn interface {
 	Compact(ctx context.Context, customInstructions string, bound time.Duration) error
 	// BundleWorkspace has the agent's side bundle the unpushed work of the workspace every role
 	// of issue shares, for a release that is about to take the pod, its disk and that workspace
-	// away. A bundle larger than MaxWorkspaceBundleBytes is refused rather than sent, with the
-	// size it would have been in the refusal, so the release can stop and record why.
+	// away. A bundle larger than MaxWorkspaceBundleBytes is refused rather than sent, as a
+	// WorkspaceBundleTooLargeError naming the size it would have been and the bound, so the
+	// release can stop, record why and wait for a push or a turn.
 	BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (WorkspaceBundle, error)
 	// AgentSecretsEnrollment hands the agent's shim the secrets broker's enrollment id for its
 	// process, which the shim keeps beside the key it generated.

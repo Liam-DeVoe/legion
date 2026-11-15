@@ -368,6 +368,12 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 // runs its jj reads and its `git bundle create` within timeout; the answer is awaited for that
 // plus the RPC timeout, the round trip, and crosses as an rpc_chunk sequence when the bundle is
 // larger than one line.
+//
+// A shim refuses a bundle over the frame's MaxBytes itself and names the size it would have been
+// in the result's SizeBytes, which no other refusal sets (shimwire.BundleWorkspaceResult): that
+// refusal is a runtime.WorkspaceBundleTooLargeError of that size and the bound this call sent,
+// read from the number and never from the shim's words. Every other refusal, and one whose size
+// is not over the bound it was refused against, is a *RefusedError carrying the shim's reason.
 func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (runtime.WorkspaceBundle, error) {
 	id := rand.Text()
 	frame := shimwire.BundleWorkspace{
@@ -384,6 +390,10 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 	case shimwire.BundleWorkspaceResult:
 		if err := answer.Validate(); err != nil {
 			return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		}
+		if !answer.OK && answer.SizeBytes > frame.MaxBytes {
+			return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s refused %s: %w", c.claim, shimwire.TypeBundleWorkspace,
+				runtime.WorkspaceBundleTooLargeError{Size: answer.SizeBytes, Max: frame.MaxBytes})
 		}
 		if !answer.OK {
 			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}

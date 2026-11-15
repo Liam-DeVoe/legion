@@ -4873,6 +4873,11 @@ Its base commits are the ones a new pod's workspace fetch already has: the defau
 It never reaches GitHub.
 sjawhar/legion is public and a working copy holds every file that is not ignored, so a save to a branch would publish files no agent chose to push and could start CI; the daemon's database is private and starts nothing.
 A bundle above 40 MiB, or a save that fails, stops the release, and the daemon records that reason (`bundle_too_large` or `bundle_save_failed`).
+The shim measures the bundle before it sends a byte and refuses one over the bound itself, naming its size in the result's `sizeBytes`, which no other refusal sets;
+that refusal is the one every measured save over the bound met, and the daemon reads it from that number, never from the shim's words (`stream.Conn.BundleWorkspace`, `runtime.WorkspaceBundleTooLargeError`).
+Every shim that answers a save has sent its size this way since the save's first release, so this holds whichever worker image the deployment pins.
+A bundle a runtime answered whole over the bound is refused by the daemon's own check, the same way.
+A refusal that names no size is a `bundle_save_failed`, whatever its words say.
 The next save would find work over 40 MiB again until something changes it, so after a `bundle_too_large` the daemon marks no release of that issue again until a role of the pod does something after the refused release was marked, which a turn and an activity report each record on the role's claim, or the head of the issue's pull request moves, which is a push.
 Until then each idle pass holds the pod under `bundle_too_large`; after either, the release is marked once the pod is quiet again for the idle period.
 A daemon restart keeps this, since the refusal is a row of `workspace_bundle_refusals`, and a save that stores the work or finds none deletes that row, as the end of the issue's work does.

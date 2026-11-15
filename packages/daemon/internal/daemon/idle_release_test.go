@@ -3,10 +3,13 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,7 +26,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -57,6 +62,9 @@ type releaseRuntime struct {
 	// and the teardown's own read has already answered, which is where production's second
 	// answer can differ from its first. A test sets it before the drain.
 	beforeAuthorize func()
+	// bundleVia, when set, answers the save in place of bundle and bundleErr: the rig's role
+	// asked over a real worker stream, as the Kubernetes runtime asks it (idleRig.shimAnswers).
+	bundleVia func(ctx context.Context, issue string) (runtime.WorkspaceBundle, error)
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
@@ -74,11 +82,15 @@ func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
 	return r.sandboxName, true
 }
 
-func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
+func (r *releaseRuntime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.bundled = append(r.bundled, role)
-	return r.bundle, r.bundleErr
+	via, bundle, err := r.bundleVia, r.bundle, r.bundleErr
+	r.mu.Unlock()
+	if via != nil {
+		return via(ctx, issue)
+	}
+	return bundle, err
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
@@ -776,21 +788,49 @@ func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
 // push, which moves the head of the issue's pull request, or a turn of a role of the pod, which
 // writes its claim after the refusal. The worker is told once for each head a release was
 // refused at, with the size and the bound, since only a push of its own can end the hold.
+//
+// The refusal reaches the release two ways, and both are held. The shim refuses the bundle
+// itself and answers its size over the worker stream, which is the path of every refusal
+// measured on BET (25 of them, each in the shim's words); the stand-in here sends the frame a
+// current shim sends, and the daemon reads it from the size, never the words. A runtime that
+// answered the bundle whole over the bound is refused by the daemon's own check.
 func TestABundleOverTheBoundIsAskedForAgainOnlyAfterAPushOrATurn(t *testing.T) {
-	rig := newIdleRig(t)
+	for _, tc := range []struct {
+		name string
+		// refuse makes every save of rig find size bytes of unpushed work, and answers how many
+		// saves were asked of the pod.
+		refuse func(t *testing.T, rig *idleRig, size int) (attempts func() int)
+	}{
+		{name: "the shim refuses it over the worker stream", refuse: func(t *testing.T, rig *idleRig, size int) func() int {
+			return rig.shimAnswers(t, func(request shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult {
+				return shimSizeRefusal(request, size)
+			})
+		}},
+		{name: "the runtime answers it whole", refuse: func(_ *testing.T, rig *idleRig, size int) func() int {
+			rig.rt.bundle = runtime.WorkspaceBundle{Bundle: make([]byte, size), Head: "abc", Tips: []string{"abc"},
+				At: time.Now().UTC(), PodUID: releasedPodUID}
+			return func() int {
+				bundled, _ := rig.rt.reads()
+				return len(bundled)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			size := runtime.MaxWorkspaceBundleBytes + 1
+			aRefusalWaitsForAPushOrATurn(t, rig, size, tc.refuse(t, rig, size))
+		})
+	}
+}
+
+func aRefusalWaitsForAPushOrATurn(t *testing.T, rig *idleRig, size int, attempts func() int) {
+	t.Helper()
 	ctx := context.Background()
-	size := runtime.MaxWorkspaceBundleBytes + 1
-	rig.rt.bundle = runtime.WorkspaceBundle{Bundle: make([]byte, size), Head: "abc", Tips: []string{"abc"},
-		At: time.Now().UTC(), PodUID: releasedPodUID}
 	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
 		return rig.issues.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: rig.issue.Key,
 			Repo: "acme/widgets", Number: 42, Branch: claim.IssueBranch(rig.issue.Key), HeadSHA: "head-one"})
 	}); err != nil {
 		t.Fatalf("seed the issue's pull request: %v", err)
-	}
-	attempts := func() int {
-		bundled, _ := rig.rt.reads()
-		return len(bundled)
 	}
 	pass := func() {
 		rig.w.releaseIdlePods(ctx)
@@ -832,6 +872,15 @@ func TestABundleOverTheBoundIsAskedForAgainOnlyAfterAPushOrATurn(t *testing.T) {
 	}
 	if rig.marked(t) {
 		t.Fatal("a release is marked while nothing changed since the refusal")
+	}
+	holds := rig.records(t).Holds
+	if len(holds) == 0 {
+		t.Fatal("the refused release recorded no hold")
+	}
+	for _, hold := range holds {
+		if hold.Reason != workflow.IdleHoldBundleTooLarge.String() {
+			t.Fatalf("holds = %+v, want each %s", holds, workflow.IdleHoldBundleTooLarge)
+		}
 	}
 
 	// A push moves the head of the issue's pull request: the next tick asks once, and the
@@ -914,6 +963,104 @@ func TestASaveThatFailedIsTriedAgainOnTheNextIdleTick(t *testing.T) {
 	if got := len(rig.runner.notices.(*outboxPublisher).publishes()); got != 0 {
 		t.Fatalf("messages published = %d, want none", got)
 	}
+}
+
+// A refusal that names no size is a save that failed, whatever its words say: the shim's
+// sentence about the bound alone, with no sizeBytes beside it, is tried again on the next idle
+// tick and tells the worker nothing, as every refusal was before the daemon read the size. The
+// daemon never holds a pod on a reason it would have to read from another process's words.
+func TestAShimRefusalThatNamesNoSizeIsTriedAgainOnTheNextIdleTick(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	attempts := rig.shimAnswers(t, func(request shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult {
+		refusal := shimSizeRefusal(request, runtime.MaxWorkspaceBundleBytes+1)
+		refusal.SizeBytes = 0
+		return refusal
+	})
+	for range 3 {
+		rig.w.releaseIdlePods(ctx)
+		rig.drain(t)
+	}
+	if got := attempts(); got != 3 {
+		t.Fatalf("bundle attempts after three idle ticks over a refusal with no size = %d, want one each tick", got)
+	}
+	if got := len(rig.runner.notices.(*outboxPublisher).publishes()); got != 0 {
+		t.Fatalf("messages published = %d, want none", got)
+	}
+	holds := rig.records(t).Holds
+	if len(holds) == 0 {
+		t.Fatal("the stopped releases recorded no hold")
+	}
+	for _, hold := range holds {
+		if hold.Reason != workflow.IdleHoldBundleSave.String() {
+			t.Fatalf("holds = %+v, want each %s", holds, workflow.IdleHoldBundleSave)
+		}
+	}
+}
+
+// shimSizeRefusal is the frame a current shim sends for a bundle of size bytes over the request's
+// bound (shim's bundleWorkspace and runBundle): a refusal, its size, and the shim's sentence.
+func shimSizeRefusal(request shimwire.BundleWorkspace, size int) shimwire.BundleWorkspaceResult {
+	return shimwire.BundleWorkspaceResult{ID: request.ID, SizeBytes: size, At: time.Now().UTC(),
+		Error: fmt.Sprintf("worker-shim: the workspace's unpushed work is %d bytes, over the %d the release carries", size, request.MaxBytes)}
+}
+
+// shimAnswers puts the rig's implementer on a real worker stream, dialed and greeted as `legion
+// worker-shim` greets it, and makes the runtime's save that stream's own BundleWorkspace, wrapped
+// as the Kubernetes runtime wraps it (sandbox.Runtime.BundleWorkspace). The stand-in shim answers
+// each bundle-workspace frame with answer's result. It returns how many bundle-workspace frames
+// crossed the stream.
+func (r *idleRig) shimAnswers(t *testing.T, answer func(shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult) func() int {
+	t.Helper()
+	const bootToken = "the-implementer-boot-token"
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	resolve := func(boot string) (claim.Token, uint64, bool, bool, error) {
+		return r.token, 1, false, boot == bootToken, nil
+	}
+	listener, err := stream.Listen(ctx, "unix://"+filepath.Join(shortTempDir(t), "worker-stream.sock"), resolve,
+		stream.Options{RPCTimeout: 5 * time.Second, Log: quietLogger()})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	worker := dialShim(t, listener.Addr(), bootToken)
+	conn, err := listener.Await(ctx, r.token)
+	if err != nil {
+		t.Fatalf("the stand-in shim's connection: %v", err)
+	}
+	// dialShim's read of the hello_ack set a deadline; the stand-in waits as long as the test runs.
+	if err := worker.conn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	var asked atomic.Int64
+	go func() {
+		for {
+			line, err := worker.lines.ReadBytes('\n')
+			if err != nil {
+				return
+			}
+			frame, err := shimwire.Decode(line)
+			if err != nil {
+				continue
+			}
+			if request, ok := frame.(shimwire.BundleWorkspace); ok {
+				asked.Add(1)
+				if err := worker.writer.WriteFrame(answer(request)); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	r.rt.mu.Lock()
+	defer r.rt.mu.Unlock()
+	r.rt.bundleVia = func(ctx context.Context, issue string) (runtime.WorkspaceBundle, error) {
+		bundle, err := conn.BundleWorkspace(ctx, issue, runtime.WorkspaceBundleTimeout)
+		if err != nil {
+			return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over %s: %w", issue, r.token, err)
+		}
+		return bundle, nil
+	}
+	return func() int { return int(asked.Load()) }
 }
 
 // Release is off unless the deployment asks for it: `idle_minutes: 0`, a runtime that is not
