@@ -1726,6 +1726,43 @@ func TestMemoryGuardCommandShowsNoPasswordOfAURLAfterALabelWhoseValueGluesTextTo
 	}
 }
 
+// The kill line shows no part of a token that is a URL whose word holds no `@`, after an API-key
+// or bearer label, whole or cut before a later word: the text after `host:` is the token's, not a
+// port. Measured in a gVisor issue pod on 2026-11-15 at 63bf5151 by the implementer (its handoff,
+// version 8): capabilities.RedactedLine gave `Bearer ***://u:SECRETPASS` for
+// `Bearer http://u:SECRETPASS`, as on main.
+func TestMemoryGuardCommandShowsNoTokenThatIsAURLWithNoAtSignAfterALabel(t *testing.T) {
+	pod := newFakePod(t)
+	for _, label := range [][]string{{"-H", "Bearer"}, {"-H", "api-key:"}} {
+		// The `@` is joined on, so no line of the source holds a URL's userinfo shape.
+		for _, value := range [][]string{{"http://u:SECRETPASS"}, {"https://u:SECRETPASS/x"}, {"http://u:SECRETPASS" + "\t" + "@h"}, {"http://u:SECRETPASS", "@h"}} {
+			for _, tc := range []struct {
+				name string
+				args []string
+			}{
+				{"whole", slices.Concat([]string{"curl"}, label, value)},
+				{"cut after it", slices.Concat([]string{"curl"}, label, value, slices.Repeat([]string{"w"}, 3000))},
+			} {
+				pod.add(fakeProcess{pid: 900, ppid: 1, args: tc.args})
+				table, err := scan(pod.proc)
+				if err != nil {
+					t.Fatal(err)
+				}
+				p, ok := table.Get(900)
+				if !ok {
+					t.Fatal("the scan did not read pid 900")
+				}
+				command := commandText(p)
+				for _, text := range []string{command, cut(command, logCommandBytes)} {
+					if strings.Contains(text, "SECRETPASS") {
+						t.Errorf("%s %q, %s: the command shows the token: %.200q", label[1], value, tc.name, text)
+					}
+				}
+			}
+		}
+	}
+}
+
 // timedClock is a fakeClock that keeps the wall time at which the guard starts each wait: it
 // starts the next once the reading before it, and all that reading led to, is done.
 type timedClock struct {
