@@ -441,8 +441,12 @@ never sees it. The shared clone under `/legion/repos` is what it binds:
 
 1. Run every knives command as `KNIVES_OWNER=legion-<project>-<key> HOME=/legion/repos knives …`,
    with the project and the issue key lower-cased.
-2. Write the repository's registry entry where that `HOME` reads it,
-   `/legion/repos/.config/knives/repos.toml`, with its `workspaces` path under `$TMPDIR`.
+2. Write the repository's registry entry at `$XDG_CONFIG_HOME/knives/repos.toml`, your role's own
+   config home, which no other role of the pod reads, with its `workspaces` path under `$TMPDIR`.
+   knives reads `KNIVES_CONFIG_HOME`, then `$XDG_CONFIG_HOME/knives`, and `$HOME/.config/knives`
+   only when neither is set (`src/config.rs` `default_config_home`), and every role of a pod has
+   `XDG_CONFIG_HOME` set, so the `HOME` above does not move the registry: `knives repos --json`
+   prints the `config_path` it reads.
 3. Add the `upstream` remote, and the `release` remote where the entry names one, to
    `/legion/repos/github.com/<owner>/<repo>`, and fetch every base the entry names.
 4. Name the fork with `--repo` on every `gh` command after that: the clone's two remotes name two

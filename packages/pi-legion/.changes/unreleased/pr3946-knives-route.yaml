@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-    The legion-worker tools reference says how knives works on a fork from a pod: every knives command under `KNIVES_OWNER` and `HOME=/legion/repos`, the registry entry where that `HOME` reads it, the `upstream` and `release` remotes added to the shared clone with every base fetched, and `--repo` on every `gh` command afterwards.
+    The legion-worker tools reference says how knives works on a fork from a pod: every knives command under `KNIVES_OWNER` and `HOME=/legion/repos`, the registry entry in the role's own `$XDG_CONFIG_HOME/knives/repos.toml`, which knives reads ahead of any `HOME`, the `upstream` and `release` remotes added to the shared clone with every base fetched, and `--repo` on every `gh` command afterwards.
     The pr-body reference tells a worker to cite another pull request or issue as `owner/repo#N`, never as a bare `#N`, since Dispatch can attribute the pull request to a GitHub issue the body cites.
 time: 2026-11-15T09:28:07Z
 custom:
