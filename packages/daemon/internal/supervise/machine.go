@@ -1082,8 +1082,8 @@ type Machine struct {
 	valueWrittenAt time.Time
 	// awaitsAct is a machine whose two waits wait for the worker's next act before they are
 	// armed: every machine NewMachine builds, since a daemon start serves nothing before it and
-	// the time the daemon was not serving counts toward neither bound (departure 7 of
-	// dispatch://INFRA-2811's plan). The shim's hello, a registration, a ready, a seen report, a
+	// the time the daemon was not serving counts toward neither bound (dispatch://INFRA-2811).
+	// The shim's hello, a registration, a ready, a seen report, a
 	// take and a turn frame are acts (actOf); the first of them clears it, and the waits are
 	// armed from there.
 	awaitsAct bool
@@ -3193,7 +3193,7 @@ func HoldsCapability(state ClaimState) bool {
 // plugin reports ready, so a publish then still reaches the session that held the role before.
 //
 // The ready comes before the Envoy role as well — the plugin claims the role right after its
-// ready has answered (decision 15 of INFRA-2811's plan) — so a claim this answers true for may not
+// ready has answered (dispatch://INFRA-2811) — so a claim this answers true for may not
 // answer to its name yet: for the moment between the two, and, for a pane the daemon relaunched,
 // while it waits out the standing claim of the process it replaced (the listener's live window).
 // The listener refuses a publish to a role no live session holds with 404 (notify.ErrNoHolder),

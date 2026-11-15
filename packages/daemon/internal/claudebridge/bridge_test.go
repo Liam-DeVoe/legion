@@ -1492,7 +1492,7 @@ func TestTheTurnOutcomeNamesTheTaskAndTheProviderError(t *testing.T) {
 }
 
 // A seen report and a take that get no answer from the daemon are sent again, the same request,
-// until it answers (departure 7 of INFRA-2811's plan): on a refused, a reset and a closed
+// until it answers (dispatch://INFRA-2811): on a refused, a reset and a closed
 // connection, a name that does not resolve, an attempt with no answer within its bound, and a 502,
 // a 503 and a 504 that name no Legion error code. Once the daemon answers, the task is taken once
 // and runs once.

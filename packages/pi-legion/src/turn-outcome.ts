@@ -8,8 +8,11 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
 /**
  * The Oh My Pi half of the turn-outcome report (INFRA-714). Every turn this pane ends — one the
  * model answered, and one the provider refused — is reported to the daemon over HTTP, under a
- * sequence this plugin counts itself, so the daemon can fail a claim whose provider refuses turn
- * after turn instead of leaving it to be reminded for ever (dispatch://INFRA-264).
+ * sequence this plugin counts itself, so the daemon, not a reminder, answers a session whose
+ * provider refuses turn after turn (dispatch://INFRA-264). A refusal this plugin reports carries
+ * the provider's failure (`providerError`, below), which the daemon answers with its provider-error
+ * wait and counts toward no launch failure; only a refused turn with no such failure counts toward
+ * the run that fails the claim at `launch_failure_limit`.
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and

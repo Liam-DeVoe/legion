@@ -45,11 +45,11 @@ import { configuredValue } from "./claude-session"
  * A turn Claude Code ended on an API error fires `StopFailure` rather than `Stop`, and that is
  * the provider refusing the turn: it earns no continuation, since the host would turn one into
  * another turn at once and the provider would refuse that one the same way. It does arm one
- * timer, because the task that refused turn carried ended with it and nothing else would wake
- * this worker, so a single transient refusal would otherwise leave the issue idle. What stops
- * the reminding for good is the runner's record check, which drops every reminder once the
- * daemon has failed this role's claim — the refused turns themselves are counted by the bridge,
- * which reports each turn's outcome to the daemon (INFRA-714).
+ * timer, because a refused turn that carried no task leaves nothing else to wake this worker; a
+ * task's refused turn is woken by the daemon too, whose provider-error wait writes the task's value
+ * again once it is over, from the outcome the bridge reports with the provider's failure beside it
+ * (INFRA-714, dispatch://INFRA-956). What stops the reminding for good is the runner's record
+ * check, which drops every reminder once the daemon has failed this role's claim.
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -527,9 +527,9 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // worker said ("Hooks reference", code.claude.com/docs/en/hooks). So this is the
           // provider refusing the turn, and the machine takes it as one: it earns no
           // continuation, because the next turn would be refused the same way, and one timer,
-          // because nothing else would wake this worker once the task that turn carried ended
-          // with it. What ends a session the provider keeps refusing is the daemon failing its
-          // claim on the outcomes the bridge reports, which the timer's own record check reads.
+          // because a refused turn of no task leaves nothing else to wake this worker; a task's
+          // refused turn the daemon's provider-error wait gives again. Once the daemon fails the
+          // claim, the timer's own record check drops the reminding.
           // Claude Code ignores whatever this hook returns, which costs nothing now that there
           // is nothing to return.
           await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })

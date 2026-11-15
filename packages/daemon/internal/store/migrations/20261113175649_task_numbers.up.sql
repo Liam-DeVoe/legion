@@ -125,11 +125,17 @@
 -- after this one builds on the twelve columns it drops, and at this release the one recorded
 -- after it, 20261114031356_merge_queue_removal, rewrites outbox_kind_check and touches none of
 -- them. A rollback past the release before this one — to contract 87, across
--- 20261111225552_phase_entry — runs this block first and the phase entry's own block after it: the
--- release before the phase entry reads the three marks as the release before this one does, and
--- the phase entry's block leaves this migration's columns alone. The roll-forward after both then
--- applies the two migrations again in version order, the phase entry's first, so this fill reads
--- the served_entry the phase entry's second fill wrote.
+-- 20261111225552_phase_entry — crosses every release between the two and runs their ways back
+-- newest first, with the daemon stopped, as docs/kubernetes.md lists them: this block; the
+-- merge-queue removal's outbox delete; the five statements of the release whose update round ends
+-- at its bound, whose 20261113110610_drop_claim_update_answer_marks dropped two columns contract
+-- 87's claim read names; the steps of contract 111's slot past review and of contract 98's held
+-- list; and last the phase entry's own block. Contract 123's 20261113090512_phase_entry_moved_back
+-- needs no statement on the way back, and contract 104 adds no migration. The release before the
+-- phase entry reads the three marks as the release before this one does, and the phase entry's
+-- block leaves this migration's columns alone. The roll-forward after them applies again, in
+-- version order, every migration those ways back re-armed, the phase entry's first and this one
+-- last, so this fill reads the served_entry the phase entry's second fill wrote.
 alter table claims add column task_written bigint not null default 0;
 alter table claims add column task_taken bigint not null default 0;
 alter table claims add column task_finished bigint not null default 0;

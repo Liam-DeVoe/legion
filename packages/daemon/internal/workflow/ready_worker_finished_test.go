@@ -581,7 +581,7 @@ func TestWaitingWorkerAfterMigrationIsGivenNothingAtItsRelaunch(t *testing.T) {
 }
 
 // The silence repair writes origin `silence` in both of its branches, whatever task each writes
-// (repairSilence, decision 7 of INFRA-2811's plan): the work of the entry a silent claim stands
+// (repairSilence, dispatch://INFRA-2811): the work of the entry a silent claim stands
 // behind, and the phase's resume task for a claim level with its row. Neither names `resume`,
 // the origin R9 reads for writes to a worker that finished its last task, nor `phase-start`: the
 // repair is the backstop of a worker whose own report does not explain its quiet, and its writes

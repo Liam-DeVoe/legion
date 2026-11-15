@@ -323,7 +323,7 @@ func TestTakeRouteAnswersRefusedNotOwedAndDroppedOverARealMachine(t *testing.T) 
 // A take the worker sends again — its answer was lost, or a daemon restart cut it off — is
 // answered the same text and applies nothing a second time: no second write of the value, no
 // second record of the take, across the restart too, since the text is kept on the pending row
-// (departure 7 of INFRA-2811's plan).
+// (dispatch://INFRA-2811).
 func TestTakeRouteAnswersARepeatedTakeTheSameTextAndAppliesNothingAgain(t *testing.T) {
 	h := newHarness(t)
 	c := h.readyClaim("LEGION-209", claim.RoleImplementer)

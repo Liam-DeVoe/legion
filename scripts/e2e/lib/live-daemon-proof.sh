@@ -76,18 +76,14 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 
 cleanup() {
   local status=$? pid
-  # The services go first: each runs against the broker, and a listener whose NATS went first would
-  # spend its stop reconnecting.
-  for pid in $service_pids; do
+  # The services go first and the broker last: each service runs against the broker, and a
+  # listener whose NATS went first would spend its stop reconnecting.
+  for pid in $service_pids $nats_pid; do
     if kill -0 "$pid" 2>/dev/null; then
       kill -TERM "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
     fi
   done
-  if [ -n "$nats_pid" ] && kill -0 "$nats_pid" 2>/dev/null; then
-    kill -TERM "$nats_pid" 2>/dev/null || true
-    wait "$nats_pid" 2>/dev/null || true
-  fi
   rm -rf "$work"
   if [ "$status" -eq 0 ]; then
     echo "$proof_label e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"

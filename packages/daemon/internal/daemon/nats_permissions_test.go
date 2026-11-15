@@ -262,7 +262,7 @@ const taskGrantKey = "legion-capture-capture-1-implementer"
 
 // createTaskBucketUnderGrant connects to uri as the daemon's user, whose seed is seed, logging what
 // the server reports as the daemon does (natsauth.LogEvents) to logs, has the daemon's own
-// open-or-create make the task bucket as the plan's decision 4 shapes it (openTaskBucket: one
+// open-or-create make the task bucket in the shape it creates (openTaskBucket: one
 // revision of each key, kept on file, no TTL, at the replica count of the notification stream,
 // which admin's js creates first), and returns the bucket opened again, as a restarted daemon
 // opens it.

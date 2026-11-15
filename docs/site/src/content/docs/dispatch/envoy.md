@@ -469,11 +469,18 @@ whole bucket through an ordered consumer, whose create, delete and flow-control 
 last three rows. The watch delivers on `_INBOX.>`, so the bucket adds no subscribe. The bucket
 serves every project and the grant reaches every project's keys and its stream's whole purge; a
 daemon writes, deletes and purges only its own project's, the keys that start `legion-<project>-`.
-Unlike the stored-message get above, these rows are not optional: a daemon whose user lacks any of
-them refuses to boot, naming the bucket and the subject NATS refused, and so does a daemon that
-connects as the agents' shared session user, which holds nothing of the bucket by design. The
-purge is the one exception: a daemon whose user lacks it boots and runs, and logs each delete
-marker it could not purge (`legion daemon could not purge a delete marker of the task bucket`).
+Unlike the stored-message get above, these rows are not optional, though a boot asks only those
+its open of the bucket uses: a daemon refuses to boot, naming the bucket and the subject NATS
+refused, when its user lacks the bucket stream's info, or, where the bucket does not exist yet,
+the account info, the notification stream's info, the create or, when another daemon created it
+first, the update. So does a daemon that connects as the agents' shared session user, which holds
+nothing of the bucket by design, and `legion probe-boot` refuses both the same way. A daemon whose
+user lacks only the gets, the key writes, the purge or the watch's rows boots, and NATS then
+refuses each call that needs the missing subject: without the key writes no worker is handed a
+task, without the gets the registration's answer carries no value, without the watch the daemon
+never reads the bucket whole to repair it, and without the purge each delete marker stays in the
+bucket (`legion daemon could not purge a delete marker of the task bucket`). The daemon logs each
+refused call as below.
 
 The consumer subjects end in `>`, so the grant reaches every consumer of `ENVOY_NOTIFICATIONS`,
 not just the daemon's three: a holder of the daemon's seed can read, recreate with another filter,

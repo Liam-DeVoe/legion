@@ -2,8 +2,8 @@ package supervise
 
 // R5's two waits (waits.go): the first bound over a value the worker saw and did not take, or
 // that nobody reported seeing; the second over an accepted take whose turn did not start; the
-// count a turn resets and a take does not; the holds that charge nobody; and departure 7 of
-// dispatch://INFRA-2811's plan — the time a daemon was not serving counts toward neither bound,
+// count a turn resets and a take does not; the holds that charge nobody; and that the time a
+// daemon was not serving counts toward neither bound (dispatch://INFRA-2811),
 // and a restored claim whose shim never comes back meets a reconnect deadline.
 
 import (

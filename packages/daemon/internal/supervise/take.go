@@ -82,7 +82,7 @@ func TakesNoTask(contract int) bool { return contract < TaskTakeContract }
 // silence repair's (workflow's repairSilence), whichever task it writes — the work of an owed
 // entry or the phase's resume task — so its writes are counted apart from a resume's: the repair
 // is the backstop of a worker whose own report does not explain its quiet, not a relaunch's
-// resume (decision 7 of INFRA-2811's plan).
+// resume (dispatch://INFRA-2811).
 const (
 	OriginPhaseStart      = "phase-start"
 	OriginResume          = "resume"
@@ -96,7 +96,7 @@ const (
 
 // originOf is the origin a queued task is recorded under: the request's own, or, for a request
 // that names none, a phase start where it names a phase and the operator's otherwise — the
-// reading of a row written before the origin was recorded (decision 7 of INFRA-2811's plan).
+// reading of a row written before the origin was recorded (dispatch://INFRA-2811).
 func originOf(request RequestDeliver) string {
 	switch {
 	case request.Origin != "":
@@ -300,7 +300,7 @@ const (
 
 // taking is a take being answered (Machine.Take): the request, and its answer once it has one.
 // done closes when the answer is in, so a second take of the same claim that arrives meanwhile
-// waits for it and answers from it (decision 11 of INFRA-2811's plan).
+// waits for it and answers from it (dispatch://INFRA-2811).
 type taking struct {
 	request RequestTake
 	answer  TakeAnswer

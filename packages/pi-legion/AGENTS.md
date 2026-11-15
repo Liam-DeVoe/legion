@@ -94,7 +94,11 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 111 (dispatch://INFRA-2560:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 130 (dispatch://INFRA-2811:
+a claim's task is a value its worker takes over `claims/task`, `claims/task-seen` and
+`claims/take`, and the daemon sends no prompt frame), after contract 123's completion head
+(INFRA-3146: the plugin sends the head its handoff record names as the completion's `commit` for
+the planner, the tester and the reviewer too), after contract 111 (dispatch://INFRA-2560:
 every issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`,
 how long it has been still, which a caller below 111 is served without), after contract 104's
 claim recoveries (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no
@@ -375,7 +379,7 @@ attribution, before the capability is set; `claims/ready`, retried three times a
 a 5xx or transport failure only; and right after it the Envoy role, which is the claim token,
 the topic the daemon sends an architect every notice on (no claim subscribes to an issue's notice
 topic, so no phase worker is woken by an architect's notice), and the key the listener relays the
-claim's task value for (decision 15 of INFRA-2811's plan). The daemon pushes no task: the claim
+claim's task value for (dispatch://INFRA-2811). The daemon pushes no task: the claim
 holds its value from the registration's answer on (`@legion/pi-shared/task-take`), sets the
 task-turn mark before the role is claimed, so the lane the listener kept for the role and hands
 over at the claim starts no turn ahead of the task, and takes the task once its ready has
@@ -741,14 +745,19 @@ A turn the provider refused earns no reminder at all, neither the continuation n
 is the provider refusing the turn, worded by the host's `errorMessage`, and it is an input of the
 machine of its own (`refused`) rather than a check on the reminder's answer. Reminding such a
 session only buys another refused turn, which is what left dispatch://INFRA-264's implementer
-reminded for ever. What ends it instead is the daemon: `src/turn-outcome.ts` reports every turn
-this pane's claim ends — clean or refused — to `POST /legion/v1/claims/turn-outcome` from
-`agent_end`, under a sequence this plugin counts itself, monotonic from 1 within the claim's
-launch generation. The daemon keys each outcome by `(generation, sequence)` and derives the
-trailing run of refusals, so a report that arrives late lands in its own place, a repeat writes
-the same cell, and the claim fails once the run reaches `launch_failure_limit`. A report that
-cannot be sent is retried only while the daemon is restarting and otherwise warned about once:
-a turn the daemon never hears of is counted neither way. The reporter runs for an architect's
+reminded for ever. What answers it instead is the daemon: `src/turn-outcome.ts` reports every
+turn this pane's claim ends — clean or refused, a refused one with the provider's failure beside
+it (`providerError`) — to `POST /legion/v1/claims/turn-outcome` from `agent_end`, under a
+sequence this plugin counts itself, monotonic from 1 within the claim's launch generation. The
+daemon keys each outcome by `(generation, sequence)`, so a report that arrives late lands in its
+own place and a repeat writes the same cell. A refused turn that carries the provider's failure
+counts toward no launch failure: on a task's turn it is the provider-error ladder's
+(dispatch://INFRA-956), which keeps the task and gives it to the same session again after a
+wait, and tells the project's controller after six such turns in a row. Only a refusal that
+carries none counts toward the trailing run of refusals that fails the claim once it reaches
+`launch_failure_limit`. A report that cannot be sent is retried only while the daemon is
+restarting and otherwise warned about once: a turn the daemon never hears of is counted neither
+way. The reporter runs for an architect's
 claim as well as a phase worker's, and for a `task` subagent, whose instance registers no claim,
 not at all.
 

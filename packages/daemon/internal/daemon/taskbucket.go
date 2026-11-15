@@ -82,14 +82,19 @@ func openTaskBucket(ctx context.Context, conn *nats.Conn, project string, nc nat
 }
 
 // ensure opens the bucket, or creates it where it does not exist, and reads its epoch, the creation
-// time of its stream. The bucket is created as decision 4 of INFRA-2811's plan shapes it: one
-// revision of each key, kept on file, with no TTL, at the replica count of Envoy's notification
-// stream, so it has as many copies as the stream every daemon already reads. The deployment's
-// daemons create it concurrently, so a create the server answers "already in use" is another
-// daemon's that came first, and the bucket is opened, as Envoy's own bus.EnsureKeyValue opens it.
+// time of its stream. The bucket is created with one revision of each key, kept on file, with no
+// TTL (purgeMarkers drops the delete markers its deletes leave), at the replica count of Envoy's
+// notification stream, so it has as many copies as the stream every daemon already reads. The
+// deployment's daemons create it concurrently, so a create the server answers "already in use" is
+// another daemon's that came first, and the bucket is opened, as Envoy's own bus.EnsureKeyValue
+// opens it.
 //
 // A call the server refuses under the daemon's grant is refused here naming the bucket and the
-// subject (refused), and a boot refuses on it: no wait gives a user a grant it lacks.
+// subject (refused), and a boot refuses on it: no wait gives a user a grant it lacks. Only the
+// calls this open makes are asked here — the stream's info, and for a missing bucket the account
+// info, the notification stream's info, the create and the update — so a grant that lacks the
+// gets, the key writes, the purge or the watch's calls opens the bucket, and each such call is
+// refused where it is made.
 func (b *taskBucket) ensure(ctx context.Context) error {
 	created := false
 	kv, err := b.lookUp(ctx)

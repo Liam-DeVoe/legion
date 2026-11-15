@@ -26,16 +26,19 @@ type imageProber interface {
 // (sandboxBootOf: one value for the check and the probe), the probe on a runtime built from the
 // Options boot reads (sandbox.NewProber), under the credentials runtime.kubernetes names. The task
 // bucket is opened on Envoy's NATS as the daemon's own user (natsConnection), and created where it
-// does not exist yet, as a booting daemon creates it; a server that refuses that user a subject of
-// the bucket refuses the probe with the boot's own refusal, naming the bucket and the subject, and
-// the pane seed's user when that is who the daemon connects as. The probe Sandbox it creates is the
-// one a booting daemon creates, under a name of its own run: built from the operator pod's
-// ServiceAccount, volumes, mounts and environment, so a pod the cluster would not admit, mount or
-// start fails here. It skips every boot stage that reads nothing of the worker pod or the grant —
-// the store and its claims fence and migration and the GitHub App mint, which a booting daemon runs
-// before the probe, the workflow's durable consumers it opens beside the bucket, and the Dispatch
-// listing it runs after — and writes nothing but the task bucket, where it creates it, and its
-// probe Sandbox, which it deletes.
+// does not exist yet, as a booting daemon creates it; a server that refuses that user a subject the
+// open uses (the bucket stream's info, and for a missing bucket the account info, the notification
+// stream's info, the create and the update) refuses the probe with the boot's own refusal, naming
+// the bucket and the subject, and the pane seed's user when that is who the daemon connects as. A
+// grant that lacks only the bucket's gets, key writes, purge or watch passes, as it passes the
+// boot, which first uses them once it runs. The probe Sandbox it creates is the one a booting daemon
+// creates, under a name of its own run: built from the operator pod's ServiceAccount, volumes,
+// mounts and environment, so a pod the cluster would not admit, mount or start fails here. It skips
+// every boot stage that reads nothing of the worker pod or the grant — the store and its claims
+// fence and migration and the GitHub App mint, which a booting daemon runs before the probe, the
+// workflow's durable consumers it opens beside the bucket, and the Dispatch listing it runs after —
+// and writes nothing but the task bucket, where it creates it, and its probe Sandbox, which it
+// deletes.
 func ProbeBoot(ctx context.Context, cfg config.Config, lookup func(string) (string, bool), log *slog.Logger) (bootprobe.ImageReport, error) {
 	return probeBoot(ctx, cfg, lookup, log, func(ctx context.Context, rc *rest.Config, opts sandbox.Options) (imageProber, error) {
 		return sandbox.NewProber(ctx, rc, opts)
@@ -77,7 +80,8 @@ func probeBoot(ctx context.Context, cfg config.Config, lookup func(string) (stri
 
 // probeTaskBucket opens the task bucket as a booting daemon does (openTaskBucket), creating it where
 // it does not exist, on a connection of its own as the daemon's own user, which reads once: one
-// dial and no reconnect, since the probe reports and exits rather than waiting a NATS out.
+// dial, without the boot's endless reconnect (natsauth.ReconnectForever), since the probe reports
+// and exits rather than waiting a NATS out.
 func probeTaskBucket(ctx context.Context, cfg config.Config, reads bootReads, log *slog.Logger) error {
 	conn, err := dialNATS(cfg, reads.nats, log)
 	if err != nil {

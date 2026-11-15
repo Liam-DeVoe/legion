@@ -3092,9 +3092,11 @@ subject at a time; and its watch's consumer create and delete and their flow-con
 watch delivers on a reply inbox, which the `_INBOX.>` subscription already admits, so the bucket
 adds no subscribe. One bucket serves every project and the grant reaches every project's keys and
 the stream's whole purge; a daemon writes, deletes and purges only its own project's, the keys
-that start `legion-<project>-`. A daemon whose user
-lacks these entries cannot open the bucket. A `gcp:NatsHub` user with `daemon: true` receives
-this set; its seed belongs to the daemon, not to a host or session.
+that start `legion-<project>-`. A daemon whose user lacks the stream's info, or, for a bucket not
+created yet, the account info or the create, cannot open the bucket and refuses to boot; one that
+lacks only the gets, the key writes, the purge or the watch's entries boots, and fails each call
+that needs them. A `gcp:NatsHub` user with `daemon: true` receives this set; its seed belongs to
+the daemon, not to a host or session.
 
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of

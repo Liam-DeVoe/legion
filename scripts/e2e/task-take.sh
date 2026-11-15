@@ -68,7 +68,9 @@ PY
 # socket lib/held-port.py holds for it on a port the kernel picked (ENVOY_LISTEN_FD), waits for its
 # /healthz to answer healthy, and names it to the driver in LEGION_E2E_ENVOY_URL. The listener gives
 # its sessions consumer delivery whatever it is told, and the run's NATS user is the server's
-# anonymous one, which holds the session consumers' calls and the task bucket's reads.
+# anonymous one, which holds the session consumers' calls and the task bucket's reads. It runs
+# without the caller's NATS_NKEY_SEED and NATS_NKEY_SEED_FILE, as the other proofs' listeners do:
+# the run's nats-server has no users, and nats.go refuses an nkey such a server does not support.
 start_listener() {
   local listener_pid listener_port listener_url waited=0
   begin listener
@@ -80,7 +82,8 @@ start_listener() {
   HOME="$work/listener-home" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=task-take \
     NATS_URLS="nats://127.0.0.1:$port_nats" \
     python3 "$root/scripts/e2e/lib/held-port.py" exec --port-file "$work/listener.port" \
-    --fd-env ENVOY_LISTEN_FD --env PORT={port} -- "$work/envoy-listener" >>"$evidence/listener.log" 2>&1 &
+    --fd-env ENVOY_LISTEN_FD --env PORT={port} -- env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE \
+    "$work/envoy-listener" >>"$evidence/listener.log" 2>&1 &
   listener_pid=$!
   service_pids="$service_pids $listener_pid"
   read_port_file "$work/listener.port" "$listener_pid" listener_port || waited=$?

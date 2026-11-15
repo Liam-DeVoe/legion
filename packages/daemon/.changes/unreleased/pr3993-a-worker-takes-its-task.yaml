@@ -6,10 +6,15 @@ body: |-
   saw a task and did not take it within `worker_take_timeout_seconds` (300 by default), or took it
   and started no turn within `worker_turn_start_timeout_seconds` (1500 by default). A daemon that
   cannot open or create the bucket refuses to boot and names the missing grant, and so does one
-  that connects as the agents' shared NATS user; `legion probe-boot` makes the same check. A daemon
-  with no `nats_urls` boots and launches no worker, and says so. `legion state` names each claim
-  whose task nobody reported seeing, and the new `legion task-cost` reads from the daemon's log what
-  task delivery cost in a window. Roll out in this order: the envoy-infra release with the bucket
-  grants first, then the listener image, then each project's daemon and worker image together in
-  one apply, then restart any controller an operator started and every worker of a daemon that
-  knows no plugin pair to relaunch onto.
+  that connects as the agents' shared NATS user; `legion probe-boot` makes the same check. The
+  daemon purges its own project's delete markers from the bucket an hour after each delete. A
+  daemon with no `nats_urls` boots and launches no worker, and says so. `legion state` names each
+  claim whose task nobody reported seeing, and the new `legion task-cost` reads from the daemon's
+  log what task delivery cost in a window. A turn that ends in a provider error counts toward no
+  launch failure: what follows it is the provider-error wait's alone. A push onto a pull
+  request's base has the daemon read its merge state in testing, acceptance, retro and merging
+  too, not only while a review round waits on it, so a head the push left conflicting goes back
+  to implementing from each of them. Roll out in this order: the envoy-infra release with the
+  bucket grants first, then the listener image, then each project's daemon and worker image
+  together in one apply, then restart any controller an operator started and every worker of a
+  daemon that knows no plugin pair to relaunch onto.

@@ -130,7 +130,9 @@ So each figure that names a task names its claim too.
   A verdict that fails lists each task that fails it, below it.
 
   1. `no charge of a worker whose turn began within the second bound after its take`.
-     It fails for a charge made while an accepted take stood, if a turn of that claim started within the second bound after that take.
+     It fails for a charge made while an accepted take stood, if a turn of that claim started after that take and no later than the charge's limit.
+     For a `turn-start` charge, the limit is the second bound after the take.
+     For every other charge, the limit is the charge itself.
 
   2. `no write of origin resume to a claim that finished its last task in its session`.
      It fails for each task of origin `resume` written with `finished` set to `true`.

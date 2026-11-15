@@ -139,7 +139,7 @@ type phaseWorkerReading struct {
 // rather than a phase start's or a resume's: the repair fires only where the worker's own report
 // does not explain its quiet, so it is the backstop of a waiting worker and not the relaunch's
 // resume that a worker which finished its last task in its session is given none of, and its
-// writes are counted apart from both (decision 7 of INFRA-2811's plan). The level start keeps its
+// writes are counted apart from both (dispatch://INFRA-2811). The level start keeps its
 // resumeTask mark all the same: that mark is the outbox's rule about already-delivered work and
 // no word on the source.
 //

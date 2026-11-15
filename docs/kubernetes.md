@@ -2069,7 +2069,7 @@ A running issue pod whose own containers are exactly the six role names (a conta
 reviewer, merger, now roles`, and the supervisor relaunches each uncharged.
 The first relaunch replaces the pod — even an installing (stale-plugin) launch
 — on the configured image, and its siblings resume into the new pod;
-a turn a role was in is sent again once its session resumes, as a moved address's relaunch does.
+its task is taken back under its number and taken again once the session resumes, as a moved address's relaunch does.
 The replaced pod takes its disk with it, so the new pod provisions its workspace from the issue's pushed branch ([The disk dies with its pod](#the-disk-dies-with-its-pod)):
 before the rollout, have each running issue's work pushed, stop those issues and stop the earlier daemon, as the cutover's steps 1, 2 and 4 say ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk)), and start them again as its step 7 does, since the boot replaces every issue pod at once and work done after a push is lost with its pod.
 `legion.yaml`'s `resources` takes one `issue` entry in place of the per-role entries ([Configuration](#configuration));
@@ -2334,14 +2334,14 @@ Running `Migrate` again then applied that one migration a second time, reporting
 **Tasks the worker takes (daemon API contract 130).**
 A release at contract 130 hands a worker its task as a value it takes, not as a prompt the daemon pushes:
 the daemon writes the number of each claim's task under the claim's token in the task bucket `legion_tasks` on Envoy's NATS, the Envoy listener relays each value to the session that holds the claim's role, and the worker asks the daemon to take the task (`POST /legion/v1/claims/take`) once its host is idle, so the worker stream carries no task at all.
-The daemon opens the bucket at every boot before it supervises anything, creating it where it does not exist yet, and refuses to boot when it cannot, naming the bucket and the subject its NATS user was refused ([Configuration](#configuration) lists the daemon user's grant);
+The daemon opens the bucket at every boot before it supervises anything, creating it where it does not exist yet, and refuses to boot when it cannot, naming the bucket and the subject its NATS user was refused ([Configuration](#configuration) lists the daemon user's grant, and what a daemon whose grant lacks only the bucket's other subjects, which that open does not use, logs once it runs);
 a daemon whose NATS user is the pane seed's, the session user every pane shares, holds no grant on the bucket and is refused all the same, told to take a user of its own (`nats_daemon_nkey_seed_file`).
 `legion probe-boot` makes the same open ([Probing a configuration before the daemon boots on it](#probing-a-configuration-before-the-daemon-boots-on-it)).
 A daemon whose `nats_urls` names no NATS, which only `runtime: tmux` allows, boots and serves as before and launches no worker, since it has no bucket to write a value in: boot logs, and `legion start --check-config` prints after its OK line, `nats: nats_urls names no NATS, so this daemon has no task bucket (legion_tasks) to hand a worker its task through: it launches no worker, and refuses every spawn, retry and resume of one until nats_urls names Envoy's NATS`.
 
 The pieces reach a deployment in this order, so nothing is used before it exists:
 
-1. the envoy-infra release whose grants carry the bucket: the daemon user's create, update, reads and writes of it (`core.DaemonPermissions`), and the listener user's reads (`ListenerPermissions` and `ListenerHostPermissions`), while no session user gets anything of it;
+1. the envoy-infra release whose grants carry the bucket: the daemon user's create, update, reads and writes of it and the purge of its old delete markers (`core.DaemonPermissions`), and the listener user's reads (`ListenerPermissions` and `ListenerHostPermissions`), while no session user gets anything of it;
 
 2. the listener image of this release, which watches the bucket and relays the values;
 
@@ -2355,7 +2355,7 @@ The pieces reach a deployment in this order, so nothing is used before it exists
    give that daemon a plugin pair before step 3 instead and it relaunches every old worker itself, or replace the pods sooner by deleting each issue's Sandbox once its roles have pushed (`kubectl -n legion delete sandbox <name>`), whose next launch creates it from the configuration.
 
 Nothing stops step 3 before step 2:
-a daemon of this release refuses to boot only without its grant, and with no listener relaying the values a worker is handed its value at its registration and at each new epoch of its relay only.
+a daemon of this release refuses to boot only where its NATS user cannot open or create the bucket, and with no listener relaying the values a worker is handed its value at its registration and at each new epoch of its relay only.
 `legion state` then names every running claim whose value nobody reported seeing for a whole `worker_take_timeout_seconds` (`task values nobody reported seeing`, `unseenTaskValues` in `--json`), which charges no worker: the daemon writes such a value again once per that bound.
 
 A worker whose plugin is below contract 130 (`supervise.TaskTakeContract`) takes no task, so step 3 moves it as soon as the daemon can ("Contract discipline" below):
@@ -2372,7 +2372,7 @@ The migration numbers what the release before it left as each claim's task 1 —
 It drops the push path's three marks on a pending task, which a task the worker takes has no use for:
 `pending_task_deliveries.delivered_at`, `marked_by` and `prompted`.
 
-To roll this release back to contract 111, stop the daemon and run the seventeen statements below, which leave the store at the earlier release's schema and at that release's own version, 20261114031356:
+To roll this release back to contract 123, stop the daemon and run the seventeen statements below, which leave the store at the earlier release's schema and at that release's own version, 20261114031356:
 every database this release migrated records 20261114031356 above this migration's own 20261113175649, so the version the store reports is that release's before the block and after it, and the block deletes no row but this migration's.
 
 ```sh
@@ -2402,7 +2402,7 @@ SQL
 It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>` for the supervise rows whose payload carried the key, twelve more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
 a rerun prints a `NOTICE` for each of the fifteen columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and `COMMIT`, and changes nothing.
 The three `add column`s come first because the earlier release cannot read the claims table without them:
-its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 111), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
+its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 123), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
 They come back at the defaults their own migrations gave them, which that release reads as a task it has queued and not yet sent:
 it sends an unconfirmed pending task at its claim's next ready, as it sends any task it queued itself, and reads a confirmed one as a turn under way.
 The `update` takes `origin` back out of every supervise row of the outbox, as the phase entry's block takes out `entry` and `resendEntry`:
@@ -2414,17 +2414,21 @@ Left standing, the columns would be read as current when nothing kept them so: a
 What the second fill costs is the numbering:
 every claim stands at task 1 again, or at 0, whatever number it stood at before the rollback, and nothing reads a number across the rollback, since the earlier release's worker takes no value and the epochs and revisions start empty again.
 The block needs no migration recorded after this one to build on the twelve columns it drops, and at this release the one recorded after it, 20261114031356_merge_queue_removal, rewrites `outbox_kind_check` and touches none of them.
-A rollback past this release to contract 87, across 20261111225552_phase_entry, runs this block first and the phase entry's block above after it:
-the release before the phase entry reads the three marks as contract 111 does, and the phase entry's block leaves this migration's columns alone.
-The roll-forward after both applies the two migrations again in version order, the phase entry's first, so this migration's second fill reads the `served_entry` the phase entry's second fill wrote.
+The earlier release also refuses this release's two keys, `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, as keys it does not know (`unknown key worker_take_timeout_seconds`), so take them out of `legion.yaml` before you pin it, where the file sets them.
+A rollback past this release to contract 87, across 20261111225552_phase_entry, crosses every release between the two, and runs their ways back newest first, with the daemon stopped and before the earlier image is pinned:
+this block;
+then the `delete` of [Rolling back the release that tells the merger of a merge-queue removal](#rolling-back-the-release-that-tells-the-merger-of-a-merge-queue-removal);
+then the five statements of [Rolling back the release whose update round ends at its bound](#rolling-back-the-release-whose-update-round-ends-at-its-bound), without which contract 87, whose claim read names `update_answered_by_turn_end` and `update_reasked_for_push_check`, reads no claim;
+then the steps of [Rolling back the release that frees the slot past review](#rolling-back-the-release-that-frees-the-slot-past-review) (contract 111) and of [Rolling back the release that names what nothing starts](#rolling-back-the-release-that-names-what-nothing-starts) (contract 98);
+and last the phase entry's block above (contract 94).
+Contract 123's migration, 20261113090512_phase_entry_moved_back, needs no statement on the way back (its header names the one statement its roll-forward runs), and contract 104 adds no migration.
+The release before the phase entry reads the three marks as contract 123 does, and the phase entry's block leaves this migration's columns alone.
+The roll-forward after them applies again, in version order, every migration those ways back re-armed, the phase entry's first and this one last, so this migration's second fill reads the `served_entry` the phase entry's second fill wrote.
 The `20261113175649` is the identifier of `20261113175649_task_numbers.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
-The SQL was run on 2026-11-13 at 18:20Z against PostgreSQL 18.6, on a scratch database migrated to this release's head by `internal/store`'s own `Migrate`, which applied 134 migrations and left 134 versions recorded, the highest 20261113175649, and holding one claim at task 3 whose pending task its worker had taken.
-That run was of the block before its `update` was added, sixteen statements:
-the first run printed `BEGIN`, fifteen `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and the second printed the fifteen `NOTICE`s with their `ALTER TABLE`s, `DELETE 0` and the same `COMMIT`; both exited 0.
-After them the three marks stood, the pending task's at no acknowledgement, no marking prompt and no prompt sent, none of the twelve columns did, and `schema_version` held 133 rows with none of 20261113175649 and its highest at 20261112180548.
-Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the claim stood at task 1 written and taken and not finished, its pending task was number 1 with no origin and no taken text, the three marks were dropped again, and `schema_version` held 134 rows, the highest 20261113175649.
-The seventeen statements as they stand are run twice, as the one transaction an operator runs, by `TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill` in `internal/store`, over a store migrated to this release's head that holds a supervise start carrying `origin`: after them that row's payload carries no `origin` and keeps every other key.
+The seventeen statements as they stand are run twice, as the one transaction an operator runs, by `TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill` in `internal/store`, over a store migrated to this release's head that holds a claim at task 7 whose pending task its worker had taken, a claim that had finished task 4 in its session, and a supervise start carrying `origin`:
+after them that row's payload carries no `origin` and keeps every other key, the pending task's three marks stand at no acknowledgement, no marking prompt and no prompt sent, none of the twelve columns does, and `schema_version` records every migration but this one, its highest version unchanged;
+`Migrate` then applies this one migration again, and the two claims stand at task 1, the first taken and not finished, its pending task number 1 with no origin and no taken text, and the second finished in its session.
 
 ### Contract discipline
 
@@ -3025,7 +3029,13 @@ The notification stream's subjects were verified live: a server granting exactly
 the daemon's permission test (`internal/daemon/nats_permissions_test.go`) creates all three durables and reads their lag under the same grant and expects no refusal, and has the daemon create the task bucket, open it again, and write, read, watch and delete a claim's value under it with no refusal, and report the refused write of a grant without the bucket's key writes.
 The stored-message get reaches a deployment with the envoy-infra release that carries it:
 until then the daemon runs as before, and only the lag's oldest message is `unavailable`.
-The task bucket's entries are not optional in that way: a daemon of contract 130 or later refuses to boot without them, naming the bucket and the subject refused ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+The task bucket's entries are not optional in that way, though a boot asks only those the bucket's open uses:
+a daemon of contract 130 or later refuses to boot, naming the bucket and the subject refused ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), when its user lacks the bucket stream's info, or, where the bucket does not exist yet, the account info, the notification stream's info, the create, or, when another daemon created the bucket first, the update.
+A grant that lacks any other of them boots, and each call that needs the missing subject is refused, logged as below (`NATS refused the daemon a permission`) with that subject:
+without the key writes no value is written and no worker is handed a task (`supervise: the task value could not be written; it is written again at the claim's next chance` at warn);
+without the gets a registration's answer carries no value (`api: the registration answers no task value: the task bucket could not be read` at warn) and `claims/task` answers 500 `TASK_VALUE_UNAVAILABLE`;
+without the watch's consumer create the daemon never reads the bucket whole, at boot or after, so it repairs no value the bucket and the record disagree on, and tries the watch again every 30 seconds (`legion daemon watches the task bucket again` at warn);
+and without the purge each delete marker stays in the bucket (`legion daemon could not purge a delete marker of the task bucket; purging it at the next check` at warn).
 The daemon's seed is read by the same rule and refusals as the pane seed, the group-readable mount included, and neither seed falls back to the other:
 an unusable daemon seed refuses boot even beside a good pane seed.
 Unset, the daemon connects as the pane seed, and with neither, with no credential.
@@ -5318,9 +5328,11 @@ What it holds, and what it touches in production, is in [`scripts/e2e/README.md`
 boot's reads of the configuration, the caller's environment and the files they name (the loader that runs neither App's `private_key_command`, then `readBoot`), then the cluster check (Agent Sandbox installed, no Sandbox of an older layout), then the open of the task bucket a booting daemon makes before it supervises anything, and last the image probe a booting daemon runs, one value for the check and the probe (`sandboxBootOf`).
 The probe Sandbox is built by the same code from the operator's pod
 — its ServiceAccount, volumes, mounts and environment — and judged the same way (`sandbox.NewProber`).
-It connects to Envoy's NATS (`nats_urls`) as the daemon's own user (`nats_daemon_nkey_seed_file`, else the pane seed), once and with no reconnect, and opens the task bucket `legion_tasks`, creating it where it does not exist yet, as a booting daemon does (`openTaskBucket`: one revision of each key, file storage, no TTL, the replica count of `ENVOY_NOTIFICATIONS`).
-So a grant that lacks a subject of the bucket refuses the probe with the boot's own refusal, which names the bucket and the subject the server refused,
-and a daemon that connects as the pane seed's user (`NATS_NKEY_SEED_FILE`), the session user every pane shares and which holds no grant on the bucket, is refused and told to take a user of its own.
+It connects to Envoy's NATS (`nats_urls`) as the daemon's own user (`nats_daemon_nkey_seed_file`, else the pane seed), on one dial and without the boot's endless reconnect (`natsauth.ReconnectForever`), and opens the task bucket `legion_tasks`, creating it where it does not exist yet, as a booting daemon does (`openTaskBucket`: one revision of each key, file storage, no TTL, the replica count of `ENVOY_NOTIFICATIONS`).
+So a grant that lacks a subject that open uses refuses the probe with the boot's own refusal, which names the bucket and the subject the server refused:
+the bucket stream's info, and, for a bucket not created yet, the account info, the notification stream's info and the create, with the update when another daemon created it first.
+A daemon that connects as the pane seed's user (`NATS_NKEY_SEED_FILE`), the session user every pane shares and which holds no grant on the bucket, is refused and told to take a user of its own.
+A grant that lacks only the bucket's gets, its key writes, its purge or its watch's calls passes the probe as it passes the boot, which first uses them once it runs ([Configuration](#configuration) says what such a daemon logs).
 It skips every other boot stage that reads nothing of the worker pod or the grant:
 the store, its legacy-claims fence, the migration and the GitHub App mint, which a booting daemon runs before the probe, the workflow's durable consumers it opens beside the bucket, and the Dispatch listing, which it runs after.
 It writes nothing but the task bucket, where it creates it, and its probe Sandbox, which it deletes.

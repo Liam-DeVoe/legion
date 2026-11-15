@@ -55,11 +55,16 @@ legion start --config legion.yaml --check-config
 **At boot, after the check passes**, the daemon reads the project's repositories and checks the
 cluster and the image:
 
-- **The task bucket is refused.** `create the task bucket legion_tasks: …` or `open the task
-  bucket legion_tasks: …`, ending `NATS refused the daemon's user (U…) the publish of "<subject>",
-  which the grant of a Legion daemon holds (daemonpermissions.Grant)`: the daemon hands each
-  worker its task through that bucket on Envoy's NATS and boots only once it opens or creates it,
-  so it refuses rather than waiting, since no wait gives a user a grant it lacks. Apply the
+- **The task bucket is refused.** `open the task bucket legion_tasks: …`, `create the task
+  bucket legion_tasks: …` or `read the epoch of the task bucket legion_tasks: …`, carrying `NATS
+  refused the daemon's user (U…) the publish of "<subject>", which the grant of a Legion daemon
+  holds (daemonpermissions.Grant)` and then the server's own error in parentheses: the daemon
+  hands each worker its task through that bucket on Envoy's NATS and boots only once it opens or
+  creates it, so it refuses rather than waiting, since no wait gives a user a grant it lacks. The
+  open asks only the bucket stream's info and, for a bucket not created yet, JetStream's account
+  info, the notification stream's info and the create, so a grant that lacks only the bucket's
+  gets, key writes, purge or watch boots, and each call it then refuses is logged
+  ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)). Apply the
   `envoy-infra` release whose daemon grant carries the bucket
   ([Envoy](/legion/dispatch/envoy/#the-nats-grant-a-legion-daemon-needs) lists its subjects),
   then start the daemon again; `legion probe-boot` makes the same open beforehand. When the line
@@ -491,10 +496,14 @@ of this task ended in a provider error; the task is kept and given again`, which
 model, the HTTP status and whether the provider marked the error retryable; the wait it starts
 logs `supervise: this provider error can clear; the task goes to the same session again after a
 wait`, with the attempt and the wait, and its end `supervise: the wait after a provider error is
-over; the task is given again`. The text of the next accepted take tells the agent the turn
-stopped, names the HTTP status the provider answered when it answered one, and carries none of
-the provider's own words. A content filter is given again because the session has already stepped
-down to the next model of its fallback chain, so the next turn goes to another model
+over; the task is given again`. Such a turn is no launch failure: the worker reports it refused
+with the error beside it, its `supervise: a turn ended` line reads `refused=false` and
+`providerError=true`, and only a refused turn that carries no provider error counts toward the
+run of refused turns that fails a claim at `launch_failure_limit`. The text of the next accepted
+take tells the agent the turn stopped, names the HTTP status the provider answered when it
+answered one, and carries none of the provider's own words. A content filter is given again
+because the session has already stepped down to the next model of its fallback chain, so the next
+turn goes to another model
 ([Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged));
 a 429, a 408, a 401, a 403, a 5xx and an error the provider answered no status for are given again
 too: a credential error is the fleet's rather than this claim's work, so it climbs the ladder like
@@ -986,9 +995,9 @@ The daemon adopts only for a task that names a phase, and only for the role that
 - the resume task of the phase owner.
   The daemon writes it in these cases:
 
-  - the owner comes back ready with no task;
+  - the owner comes back ready with no task, and has not finished its last task in the session it holds;
 
-  - a boot resumes an owner that the daemon suspended;
+  - a boot resumes an owner that the daemon suspended, and that has not finished its last task in the session it holds;
 
   - a tree is re-admitted in the middle of a phase;
 
@@ -1124,8 +1133,10 @@ On such a daemon, an update round or a message wake can take the author of the c
   <tree>: tree cleanup is reserved`, on the Error line of the charge that reached the limit:
   `supervise: timer` with `timer=take` for a task its worker saw and did not ask to take within
   `worker_take_timeout_seconds`, and with `timer=turn_start` for an accepted take whose turn did
-  not start within `worker_turn_start_timeout_seconds`; a charge for a refused adoption of the
-  working copy retires the same way. Nothing to do: the lines stop once the tree has closed.
+  not start within `worker_turn_start_timeout_seconds`. A charge for a refused adoption of the
+  working copy retires the same way, its error on the Warn line `supervise: the decision a take
+  was answered in failed after its answer`, with `outcome=refused`. Nothing to do: the lines stop
+  once the tree has closed.
 - **`supervise: the tree's cleanup is reserved and the retired process is stopped; suspending the
   claim for the tree's close`** means the tree's cleanup was reserved while a retirement was
   stopping the process. The claim is suspended by the daemon with no process, and the tree's close
@@ -1204,15 +1215,15 @@ On such a daemon, an update round or a message wake can take the author of the c
   `retake`, `unseen`, `repair`, `boot`); each answer to the worker's take, with its `outcome`
   (`accepted`, `refused` with the `hold` that refused it, or `dropped`); each take-back with its
   `cause`; and each finish with what finished it (`by=report` or `by=end-frame`).
-  [Task delivery cost](/legion/legion/task-delivery-cost/) reads them for a window of the log.
-- **`supervise: prompt failure`** and **`supervise: retired after prompt failures`** at Warn now
+  [Task delivery cost](/legion/legion/task-delivery-cost/) reads all of them but the delete for a
+  window of the log.
+- **`supervise: prompt failure`** and **`supervise: retired after prompt failures`** at Warn
   carry `wait=` — `take` (a task the worker saw and did not ask to take within
   `worker_take_timeout_seconds`), `turn-start` (an accepted take whose turn did not start within
   `worker_turn_start_timeout_seconds`, which also takes the task back, logged as `supervise: no
   turn started within the second bound after the accepted take; the worker is charged and the task
   taken back`) or `adoption` (a refused adoption of the working copy) — and the `bound=` that wait
-  waited. The push path's charges, a prompt the agent refused or acknowledged and started no turn
-  for, are gone with it.
+  waited.
 - **`supervise: nobody reported seeing the claim's latest value within the first bound; it is
   written again under its number, and nobody is charged`** at Info means the relay that carries a
   task value to its worker did not reach it: an Envoy listener stopped or older than the relay, or
@@ -1224,11 +1235,30 @@ On such a daemon, an update round or a message wake can take the author of the c
   number and relaunches it, charging a launch failure; a claim whose launches run out fails with
   the cause word `never_reconnected`.
 - **`supervise: the task value could not be written; it is written again at the claim's next
-  chance`** at Warn means the task bucket did not take a write, usually NATS unreachable; the
+  chance`** at Warn means the task bucket did not take a write, usually NATS unreachable, or a
+  daemon grant without the key writes (`$KV.legion_tasks.>`), which the boot does not check: the
+  line then comes with `NATS refused the daemon a permission` naming the key's subject. The
   daemon's watch of the bucket also writes every value the record owes again once it reads the
   bucket, and a bucket it finds gone or created again is logged `legion daemon found the task
   bucket gone; it creates it again and writes every owed value` or `… created again; it writes
   every owed value into it`.
+- **`legion daemon watches the task bucket again`** at Warn, with its `reason`, means the
+  daemon's watch of the task bucket ended or could not start: the bucket is gone or was created
+  again, the watch's consumer ended, or NATS refused or did not answer the watch's consumer
+  create. The daemon opens the bucket again, creating it where it is gone, and watches it again,
+  at once for a bucket that moved and 30 seconds later otherwise; each watch reads the bucket
+  whole and has every claim write the value its record owes where the bucket differs. A line
+  that keeps coming beside `NATS refused the daemon a permission` naming
+  `$JS.API.CONSUMER.CREATE.KV_legion_tasks.…` is a daemon grant without the watch's subjects,
+  which the boot does not check.
+- **`legion daemon could not purge a delete marker of the task bucket; purging it at the next
+  check`** at Warn, with the `key`, means NATS refused or did not answer the purge of a delete
+  marker of this project's: the daemon purges each marker an hour after the delete that left it,
+  since the bucket keeps one revision of a key with no TTL and would otherwise hold a marker for
+  every claim that ever had a task, and it tries again at its next check of the bucket, every 30
+  seconds. Nothing waits on it. Beside `NATS refused the daemon a permission` naming
+  `$JS.API.STREAM.PURGE.KV_legion_tasks`, the daemon's grant lacks the purge: apply the
+  `envoy-infra` release that carries it.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The
@@ -1316,8 +1346,9 @@ These arrive as messages on the Dispatch issue:
   reports that head one the issue may advance on.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon sends such a head back to
-  `implementing` on its own. And it enqueues nothing on a merge-queue base whose
-  `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
+  `implementing` on its own, once it reads the conflict in GitHub's merge state (below). And it
+  enqueues nothing on a merge-queue base whose `squash_merge_commit_message` still joins the
+  branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
   on, quoting GitHub's own answer: wait for what GitHub waits for, merge again at the head it
@@ -1381,7 +1412,11 @@ These arrive as messages on the Dispatch issue:
 
 An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
 GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
-the issue back to the implementer with the base to merge forward and told the architect. From
+the issue back to the implementer with the base to merge forward and told the architect. GitHub
+sends no event when a head starts conflicting, so after each push onto the base the daemon reads
+GitHub's merge state for every open pull request on that base whose issue is in `testing`,
+`accepting`, `retro` or `merging`, or in `reviewing` with its round waiting on GitHub's answer
+for the head; a head it reads conflicting goes back the same way from each of them. From
 `retro` the implementer kept its turn and was handed the implementing task once that turn ended;
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
@@ -1538,7 +1573,9 @@ notice comes once per handoff commit, from whichever read finds it first.
 - **`NATS refused the daemon a permission: its NATS user lacks that grant`** (an error line with
   the `operation` and `subject`). The daemon's NATS user is missing a grant;
   [Envoy](/legion/dispatch/envoy/) lists the subjects it needs. A daemon can boot healthy and
-  consume events with one grant missing, so search the log for this line after a NATS change.
+  consume events with one grant missing, the task bucket's gets, key writes, purge and watch among
+  them, since its boot asks only what the bucket's open uses; so search the log for this line
+  after a NATS change.
 - **`intake: a durable consumer is behind its stream; every event it has not reached yet waits for
   it`** (a warning with `consumer`, `behindSeconds`, `pending` and `delivered`). The daemon is
   handling events JetStream stored more than five minutes before; it says so at most once a minute

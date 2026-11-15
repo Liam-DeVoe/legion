@@ -18,7 +18,7 @@ your cluster, from one published worker image.
 | A host for the daemon | Reachable from the pods on two ports: the API (`port`, 13370 by default) and the worker stream (`worker_stream_port`, the API port plus one). |
 | Postgres | Two databases: one for the daemon's record (`postgres_dsn`, or `LEGION_POSTGRES_DSN` in its environment), and one for the agents' conversations, which every pod reaches directly (`runtime.kubernetes.session_store`, required, with its key: `postgres` with `session_dsn_secret`, or `cloudsql-iam` with `session_database`; an issue pod's disk is deleted with the pod, so a conversation kept on it would die with it). The second may be another database of the same server; its login needs `USAGE, CREATE ON SCHEMA public`, since Oh My Pi creates its own two tables there. |
 | [Dispatch](/legion/dispatch/) | Its URL and a bearer token for Legion's agents, and the project's repositories mapped to it in Dispatch's Settings → Repositories → Projects, one of them the project's default ([below](#the-projects-repositories)). |
-| The Envoy listener and NATS | The listener's URL and API token, and the NATS URLs. The daemon reads Dispatch's issue events and each repository's GitHub events from Envoy's notification stream on NATS, and reaches agents through the listener. It also hands each worker its task through a key-value bucket on that NATS, `legion_tasks`, which it creates at boot and writes, and which the listener relays to each worker's session; with no NATS a daemon launches no worker. [Envoy](/legion/dispatch/envoy/) covers how a repository's webhooks reach the listener and the NATS subjects the daemon's user needs, which a daemon that lacks any of the bucket's refuses to boot on. |
+| The Envoy listener and NATS | The listener's URL and API token, and the NATS URLs. The daemon reads Dispatch's issue events and each repository's GitHub events from Envoy's notification stream on NATS, and reaches agents through the listener. It also hands each worker its task through a key-value bucket on that NATS, `legion_tasks`, which it creates at boot and writes, and which the listener relays to each worker's session; with no NATS a daemon launches no worker. [Envoy](/legion/dispatch/envoy/) covers how a repository's webhooks reach the listener and the NATS subjects the daemon's user needs: a daemon whose user cannot open or create the bucket refuses to boot, and one that lacks the bucket's other subjects boots and logs each call NATS refuses it. |
 | Three GitHub Apps | An **implement** App (the implementer's and merger's identity), a **review** App (every other role's) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps)). |
 | The worker image | `ghcr.io/cybermonklabs/legion-worker`, pinned by digest. |
 | A model route | An Oh My Pi provider file and settings overlay, and the credential they read ([below](#the-model-route)). |
@@ -682,9 +682,9 @@ What each part is for:
   configuration") shows the overlay and its mount.
 - **`worker_stall_backstop_hours`** (optional) is the daemon's own backstop under a worker whose
   turn has stopped: how long after a role's last recorded step the daemon ends the turn that step
-  belongs to, so the task that turn was serving goes back to waiting and the session comes back
-  and is sent it again. It is a mapping, the shape `worker_backends` and `role_config_files` give
-  a per-role key:
+  belongs to, so the task that turn was serving is taken back under its number and taken again
+  once the session comes back. It is a mapping, the shape `worker_backends` and
+  `role_config_files` give a per-role key:
 
   ```yaml
   worker_stall_backstop_hours:
@@ -994,13 +994,16 @@ Closing the terminal leaves the project without one, and the daemon logs
 
    **The first upgrade to a release where a worker takes its task** (daemon API contract 130)
    goes out in this order, so nothing is used before it exists: first the `envoy-infra` release
-   whose grants carry the task bucket `legion_tasks` (the daemon's user may create, update, read
-   and write it, the listener's user may only read it, and no session user gets anything of it);
-   then the Envoy listener image of the same release, which relays each claim's value to its
+   whose grants carry the task bucket `legion_tasks` (the daemon's user may create, update, read,
+   write and purge it, the listener's user may only read it, and no session user gets anything of
+   it); then the Envoy listener image of the same release, which relays each claim's value to its
    worker; then the daemon and the worker image together, in one apply. The daemon refuses to boot
-   without its grant, naming the bucket and the subject refused, and `legion probe-boot` reports
-   the same. With the listener left behind, a worker is handed its value only when it registers,
-   and `legion state` names each running claim whose value nobody reported seeing
+   when its user cannot open or create the bucket, naming the bucket and the subject refused, and
+   `legion probe-boot` reports the same; a grant that lacks the bucket's other subjects boots, and
+   the daemon logs each call NATS refuses it
+   ([Envoy](/legion/dispatch/envoy/#the-nats-grant-a-legion-daemon-needs)). With the listener left
+   behind, a worker is handed its value only at its registration and at each new epoch of its
+   relay, and `legion state` names each running claim whose value nobody reported seeing
    ([Observe](#observe)). A worker whose plugin predates the release takes no task, so the daemon
    moves it: a worker it can relaunch is relaunched onto the current plugin even inside the update
    round the new image opens, and a role on Claude Code, whose plugin only its pod's image moves,
