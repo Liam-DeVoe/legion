@@ -2122,13 +2122,13 @@ that reports ci-ok, so a run gets one verdict and not seven.
 It also holds the lane to a machine-time budget, in its step `Reading five, the lane's machine
 time`: it sums `completed_at - started_at` over every other job of that workflow that ended with
 a duration, every skipped job apart, out
-of the jobs file its first reading already wrote, and fails above 2,663 s on the full lane and
-863 s on the pull-request lane
+of the jobs file its first reading already wrote, and fails above 2,656 s on the full lane and
+856 s on the pull-request lane
 (`.github/scripts/dispatch-browser-run-reads.sh`, mode `machine-time`).
 Those two numbers are lower than the committed ceiling of 2,700 s and 900 s on purpose: a job
 reading inside its own run cannot see its own cost, because its `completed_at` is still null, so
-each budget is the ceiling less this job's own worst case of 37 s - 36 s measured over five runs,
-and the second the reading step itself was given a budget for - and a lane that passes
+each budget is the ceiling less this job's own worst case of 44 s, measured over this branch's
+runs of 2026-11-15 with the reading step in them, and a lane that passes
 here and then spends that worst case lands on the ceiling exactly.
 That ceiling is a coarse guard above the fleet's own spread and no reading of what
 dispatch://INFRA-1109 delivers: no job can read another run, so what the suite costs against the

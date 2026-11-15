@@ -362,8 +362,8 @@ case "$mode" in
     # this issue delivers. What this issue delivers is read after the run, against the day's
     # base: R5's four fifths and R4's machine-seconds a row.
     #
-    #   full lane:         2,700 - 37 = 2,663 s
-    #   pull-request lane:   900 - 37 =   863 s
+    #   full lane:         2,700 - 44 = 2,656 s
+    #   pull-request lane:   900 - 44 =   856 s
     #
     # So this number answers a suite grown by half and never a slow afternoon. The full lane's
     # bound was 2,040 s when this mode was written, from four runs of 2026-11-11 and 2026-11-12,
@@ -379,22 +379,19 @@ case "$mode" in
     # why the ratio is what R5 and R4 read and this ceiling is not.
     # The pull-request lane keeps 900 s, since the default branch runs no such lane and there
     # is no same-day figure to take a ratio against.
-    # The 37 s is 36 s measured plus 1 s this file's own new step. The 36 s is measured, not
-    # allowed for: the `dispatch-browser / merge` job took 36 s in run 43045412941, 28 s in
-    # 43074443876, 33 s in 43079610268 and 22 s in 43002633713 (the pull-request lane), and
-    # 36 s at the merge base, job 129810291860 of run 42809067358 - the five runs this issue
-    # reads, from the jobs API on 2026-11-11. The merge job's own budget comment in
-    # dispatch-browser.yaml holds another sample, the 32 concluded merge jobs of the last 43
-    # ci.yaml runs of 2026-11-08, whose maximum is 34 s; 36 s is the larger of the two
-    # readings, which is why it is the one taken off. Every one of those jobs ran before the
-    # step this mode is the body of, so neither sample holds it, and the 1 s on top is what
-    # that job's budget comment allots it - one jq over a file an earlier step wrote, with no
-    # request of its own. That job's timeout-minutes is 4, so a merge job above the whole
-    # figure and not cancelled is one whose seconds both comments then understate, and this
-    # budget is the looser for it by exactly the difference.
+    # The 44 s is measured, not allowed for: it is the most the `dispatch-browser / merge` job
+    # took over this branch's fifteen full-lane runs and twenty pull-request runs of
+    # 2026-11-15, read from the jobs API - job 132733634671 of run 43687205491, above the 39 s
+    # of job 132868945016 (run 43731214579) and the 38 s of runs 43672161759 and 43656706589.
+    # Every one of those jobs ran the step this mode is the body of, so the figure holds that
+    # step's second. It replaces 37 s, which was 36 s measured over five runs of 2026-11-11,
+    # before that step existed, plus 1 s allotted to the step; this branch's own merge jobs
+    # went past it. That job's timeout-minutes is 4, so a merge job above the whole figure and
+    # not cancelled is one whose seconds this figure then understates, and this budget is the
+    # looser for it by exactly the difference.
     # Subtracting the maximum rather than the median is what keeps this reading stricter than
-    # the ceiling itself and never looser: a lane that passes here at 2,663 s and then spends a
-    # worst-case 37 s in this job lands on 2,700 exactly.
+    # the ceiling itself and never looser: a lane that passes here at 2,656 s and then spends a
+    # worst-case 44 s in this job lands on 2,700 exactly.
     #
     # This reading is what refuses the growth before the run ends; what the run is held to
     # afterwards, against the day's own base, is R5's and R4's.
@@ -425,7 +422,7 @@ case "$mode" in
     # This job's own worst case, and the one subtraction both lanes' budgets are: a figure
     # changed here moves each budget with it, where a budget written out beside its bound could
     # leave this job's seconds counted twice or not at all.
-    merge_maximum=37
+    merge_maximum=44
     budget=$(( bound - merge_maximum ))
     if [ ! -f "$jobs_file" ]; then
       echo "::error::this run's machine time could not be summed: the jobs of this run are" \

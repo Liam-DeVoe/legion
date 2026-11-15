@@ -606,9 +606,9 @@ check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
 check "and waits not at all" "$(at_most "$seconds" 1)"
 
-# THE MACHINE-TIME CASES. The budgets are 2,663 s on the full lane and 863 s on the
+# THE MACHINE-TIME CASES. The budgets are 2,656 s on the full lane and 856 s on the
 # pull-request lane, which are the committed ceiling of 2,700 s and 900 s less the merge job's
-# own worst case of 37 s (the script's own branch says what that figure is made of, and why
+# own worst case of 44 s (the script's own branch says what that figure is made of, and why
 # that ceiling is no reading of what this issue delivers). Each case below
 # drives the arithmetic to one side of a budget or the other: a budget nothing is ever refused
 # by refuses nothing, which is the defect class this mode exists against (R12 of
@@ -626,9 +626,9 @@ drive machine-time "$work/out.json" full
 check "the full lane passes under its budget" "$(is "$status" 0)"
 check "naming the seconds it summed and the budget they are held to" \
   "$(contains "$(notice_line)" \
-    'the full lane cost 1750 s over 5 concluded jobs, this merge job apart, against a budget of 2663 s')"
+    'the full lane cost 1750 s over 5 concluded jobs, this merge job apart, against a budget of 2656 s')"
 check "which it says is the committed ceiling less this job's own worst case" \
-  "$(contains "$(notice_line)" '2700 s less this job.s own worst case of 37 s')"
+  "$(contains "$(notice_line)" '2700 s less this job.s own worst case of 44 s')"
 check "and prints no ::error:: line" "$(is "$(errors)" 0)"
 # 1,750 s is binaries, both shards, alone and visual: a red leg cost its machine time like any
 # other and is in the sum, while the skipped job (-1 s), the merge job (still running) and the
@@ -643,9 +643,9 @@ check "fails the step" "$(is "$status" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the sum and the pull-request lane's budget" \
   "$(contains "$(error_line)" \
-    'this pull-request lane has cost 1750 s of machine time over its 5 concluded jobs, this merge job apart, which is above the 863 s')"
+    'this pull-request lane has cost 1750 s of machine time over its 5 concluded jobs, this merge job apart, which is above the 856 s')"
 check "and the committed ceiling for that lane with this job's own maximum taken off it" \
-  "$(contains "$(error_line)" "the committed ceiling of 900 s for this lane, less this job's own worst case of 37 s")"
+  "$(contains "$(error_line)" "the committed ceiling of 900 s for this lane, less this job's own worst case of 44 s")"
 check "and says this is the suite costing more and not a failed row" \
   "$(contains "$(error_line)" 'costing more machine time than dispatch://INFRA-1109 left it costing, and not a failed browser row')"
 
@@ -653,20 +653,20 @@ echo "case: each budget bites at its own second"
 # The one case that would catch a budget written one second out, or a `-ge` where the rule is
 # `-gt`: the bound itself passes and one second more does not, on each lane.
 fixture 0
-lane_jobs "dispatch-browser / shard (1)|success|2663"
+lane_jobs "dispatch-browser / shard (1)|success|2656"
 drive machine-time "$work/jobs.json" full
-check "the full lane passes at 2,663 s exactly" "$(is "$status" 0)"
-lane_jobs "dispatch-browser / shard (1)|success|2664"
+check "the full lane passes at 2,656 s exactly" "$(is "$status" 0)"
+lane_jobs "dispatch-browser / shard (1)|success|2657"
 drive machine-time "$work/jobs.json" full
-check "and is refused at 2,664" "$(is "$status" 1)"
+check "and is refused at 2,657" "$(is "$status" 1)"
 check "naming the second it was over by" \
-  "$(contains "$(error_line)" 'cost 2664 s of machine time over its 1 concluded jobs')"
-lane_jobs "dispatch-browser / shard (1)|success|863"
+  "$(contains "$(error_line)" 'cost 2657 s of machine time over its 1 concluded jobs')"
+lane_jobs "dispatch-browser / shard (1)|success|856"
 drive machine-time "$work/jobs.json" pull-request
-check "the pull-request lane passes at 863 s exactly" "$(is "$status" 0)"
-lane_jobs "dispatch-browser / shard (1)|success|864"
+check "the pull-request lane passes at 856 s exactly" "$(is "$status" 0)"
+lane_jobs "dispatch-browser / shard (1)|success|857"
 drive machine-time "$work/jobs.json" pull-request
-check "and is refused at 864" "$(is "$status" 1)"
+check "and is refused at 857" "$(is "$status" 1)"
 
 echo "case: this merge job's own seconds are not in the sum"
 # The reason the budget is R5's bound less this job's maximum rather than R5's bound itself:
@@ -757,7 +757,7 @@ check "the next after it" \
   "$(contains "$(summary_text)" '^| dispatch-browser / binaries | 150 |$')"
 check "and the sum against the budget, with the subtraction that made it" \
   "$(contains "$(summary_text)" \
-    "cost 750 s against a budget of 2663 s, which is the committed ceiling of 2700 s less this job's own worst case of 37 s")"
+    "cost 750 s against a budget of 2656 s, which is the committed ceiling of 2700 s less this job's own worst case of 44 s")"
 
 echo "case: a machine-time call that names no lane, or too much, is a usage error"
 fixture 0

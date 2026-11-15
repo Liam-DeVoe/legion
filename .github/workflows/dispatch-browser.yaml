@@ -55,9 +55,9 @@ name: Dispatch browser suite
 # (run 42868987140).
 #
 # That cost is now held to a budget by the run itself, at the merge job's step "Reading five,
-# the lane's machine time": the jobs of a full lane, this merge job apart, may cost 2,663 s and
-# those of a pull-request lane 863 s, which are the committed ceiling of 2,700 s and 900 s less
-# that job's own worst case of 37 s. The three readings above, each taken as the budget takes
+# the lane's machine time": the jobs of a full lane, this merge job apart, may cost 2,656 s and
+# those of a pull-request lane 856 s, which are the committed ceiling of 2,700 s and 900 s less
+# that job's own worst case of 44 s. The three readings above, each taken as the budget takes
 # it, which is the lane less its own merge job, are 2,025 s (43045412941, whose merge job took
 # 36 s), 1,946 s (43074443876, 28 s) and 1,964 s (43079610268, 33 s), and all three are inside
 # that budget.
@@ -155,10 +155,12 @@ jobs:
     # Measured over three dispatched runs, jobs 128520516081 (83 s), 128528093378 (84 s) and
     # 128528969380 (69 s), whose build steps took 45, 52 and 56 s. The two steps
     # dispatch://INFRA-1109 put in this job, ./.github/actions/setup-bun and the frozen
-    # `bun install`, have no reading of their own here and take the shard job's measured maxima
-    # for them, 19 s and 62 s; the bundle builds the build step gained run beside the
-    # `go build` and are waited on with it, so they add no wall of their own (28 s and about
-    # 30 s against the go build's 104 s in run 42809067358). No step here carries a budget, so
+    # `bun install`, had no reading of their own here and took the shard job's measured maxima
+    # for them, 19 s and 62 s, from the four-leg table this budget was written against (the
+    # two-leg table below now reads 4 s and 15 s); the bundle builds the build step gained run
+    # beside the `go build` and are waited on with it, so they add no wall of their own (28 s
+    # and about 30 s against the go build's 104 s in run 42809067358). No step here carries a
+    # budget, so
     # the rule in this file's head gives this job the measured maximum of every step,
     # 84 + 81 = 165 s, rounded up: three minutes. The figure below is larger than that
     # on purpose and is not that arithmetic. Every run of that sample restored the Go cache; a
@@ -346,8 +348,8 @@ jobs:
     # The budgets below are measured at this job's shape: two legs, in the image this file pins
     # (sha256:69c3a316). The reading is GitHub's jobs API over the nine runs whose browser jobs
     # ran at that shape, 18 legs in all - 43045412941, 43074443876, 43079610268, 43150379433,
-    # 43192333526, 43240954914, 43245766326, 43251567200 and 43347417247, the last at this
-    # file's head (90ee14dd) - read with
+    # 43192333526, 43240954914, 43245766326, 43251567200 and 43347417247, the last at
+    # 90ee14dd - read with
     # `gh api 'repos/cybermonklabs/legion/actions/runs/<id>/jobs?filter=all&per_page=100'`, each
     # step's `completed_at` less its `started_at`. Seventeen legs ended green. Shard 2 of run
     # 43150379433 (job 130958861121) ended red, and its browser step ran 597 s, inside the spread
@@ -357,25 +359,26 @@ jobs:
     # three runs of 2026-11-11, 745 s in run 43251567200 and 769 s in run 43347417247. Shard 2's
     # read 532 to 636 s on 2026-11-11 and 750 s in run 43251567200, about a quarter more. So the
     # budget takes the maximum over every run, as the rule says, and not a median. The maximum
-    # each step reached over those 18 legs and the 20 green legs of this branch's ten full runs
-    # of 2026-11-15 (43672161759, 43674112121, 43676043057, 43687205491, 43689921885,
-    # 43692383387, 43716814270, 43720076901, 43723836932 and 43731214579), read the same way,
-    # in seconds:
+    # each step reached over those 18 legs and every leg of this branch's runs of 2026-11-15 -
+    # its fifteen full-lane runs (43656706589, 43664675139, 43667557013, 43669817025,
+    # 43670689833, 43672161759, 43674112121, 43676043057, 43687205491, 43689921885,
+    # 43692383387, 43716814270, 43720076901, 43723836932 and 43731214579) and its pull-request
+    # runs - read the same way, in seconds:
     #
     #   step                                                 max
     #   Set up job                                             2
-    #   Initialize containers                                 47
+    #   Initialize containers                                 48
     #   actions/checkout                                      13
     #   Start an S3-compatible server for uploaded files       1
-    #   actions/download-artifact, the binaries                6
+    #   actions/download-artifact, the binaries               12
     #   Make the downloaded binaries executable                1
     #   ./.github/actions/setup-bun                            4
-    #   bun install --frozen-lockfile                         12
+    #   bun install --frozen-lockfile                         15
     #   Build contracts for dispatch e2e                       1
     #   actions/download-artifact, the dashboard               3
     #   Read the lanes' PostgreSQL and time its provider       6
     #   Wait for the S3-compatible server                     10
-    #   Browser-test dispatch dashboard                      810   (carries its own budget)
+    #   Browser-test dispatch dashboard                      835   (carries its own budget)
     #   upload-artifact, this leg's blob report                3
     #   What the run left behind                               1
     #   upload-artifact, the record directory                  2
@@ -384,28 +387,30 @@ jobs:
     #   Post Run actions/checkout                              1
     #   Stop containers                                        1
     #   Complete job                                           1
-    #   the whole job                                        892
+    #   the whole job                                        913
     #
-    # The rule is in this file's head. The step's maximum is 810 s: shard 2 of run 43692383387
-    # (job 132746399858, 2026-11-15), above the 792 s of shard 1 of run 43674112121 (job
-    # 132690968751), the most any other leg of those ten runs read, and above every earlier
+    # The rule is in this file's head. The step's maximum is 835 s: shard 2 of run 43667557013
+    # (job 132671046743, 2026-11-15), above the 810 s of shard 2 of run 43692383387 (job
+    # 132746399858), the most any other leg of those runs read, and above every earlier
     # reading - 769 s in shard 1 of run 43347417247 (job 131631089585), 750 s in shard 2 (job
     # 131300609469, run 43251567200), and the 780 s floor of job 131642902948, which the old
-    # 13 minutes stopped before its end. Taken at 810 s: 810 x 1.15 = 931.5 s -> 16 min. The
-    # job's budget is that 960 s plus the maxima above of every step without a budget, which
-    # sum to 120 s - each of the three uploads counted, since each is a step: 3 + 2 + 4, not 4.
-    # 960 + 120 = 1,080 s, which is the 18 minutes below exactly. That is a backstop above the
-    # sum of the step budgets, as this file's head says a job budget is, and above the 892 s the
-    # slowest leg took whole (job 132746399858), and the 860 s of job 131642902948, the leg the
-    # old 13 minutes stopped.
+    # 13 minutes stopped before its end. Taken at 835 s: 835 x 1.15 = 960.25 s -> 17 min. The
+    # job's budget is that 1,020 s plus the maxima above of every step without a budget, which
+    # sum to 130 s - each of the three uploads counted, since each is a step: 3 + 2 + 4, not 4.
+    # The new maxima are `Initialize containers` 48 s (job 132662152729), the binaries download
+    # 12 s (job 132677831857) and `bun install` 15 s (job 132696863686, a pull-request leg).
+    # 1,020 + 130 = 1,150 s, 19 min 10 s, rounded up to the 20 minutes below. That is a backstop
+    # above the sum of the step budgets, as this file's head says a job budget is, and above the
+    # 913 s the slowest leg took whole (job 132671046743), and the 860 s of job 131642902948,
+    # the leg the old 13 minutes stopped.
     #
     # The readings these replace were taken at other shapes, and no number here rests on them
     # now. The browser step's 13 minutes were derived by halving the browser steps of four legs,
     # in runs 42334424798 and 42316487530, since no two-leg run existed then. The table was the
     # maxima of 24 four-leg legs in five runs on the image build sha256:ba003193 (run
     # 42480325123). Two rows moved most at this shape: `Wait for the S3-compatible server`, 24 s
-    # there and 8 s here, now that the store starts just after the checkout and comes up while
-    # the install runs, and `bun install --frozen-lockfile`, 62 s there and 11 s here.
+    # there and 10 s here, now that the store starts just after the checkout and comes up while
+    # the install runs, and `bun install --frozen-lockfile`, 62 s there and 15 s here.
     #
     # The rows: listed at this file's head with `bunx playwright test --config
     # e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,483 rows in 203
@@ -417,7 +422,7 @@ jobs:
     # which that lane's `@pr` grep selects 289, in 148 files. The two `visual` projects hold
     # 22, which the visual job runs one row at a time, and the 51 wall-clock rows are the alone
     # job's.
-    timeout-minutes: 18
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       # Two legs. The count is written here, in the `--shard` denominator of the browser step
@@ -590,13 +595,13 @@ jobs:
         # checkout would leave it dirty afterwards. The blob report goes beside the list
         # reporter's output, so a green run reports what it ran too.
         #
-        # The budget below is the 16 minutes the job's head gives this step by the rule in this
-        # file's head: the step's maximum is 810 s, shard 2 of run 43692383387 (job
-        # 132746399858), above every other leg of this branch's ten full runs of 2026-11-15 and
-        # above every earlier reading, the 780 s floor of job 131642902948 among them, and
-        # 810 x 1.15 = 931.5 s, which rounds up to 16 min. The job's head lists the runs and
+        # The budget below is the 17 minutes the job's head gives this step by the rule in this
+        # file's head: the step's maximum is 835 s, shard 2 of run 43667557013 (job
+        # 132671046743), above every other leg of this branch's runs of 2026-11-15 and above
+        # every earlier reading, the 780 s floor of job 131642902948 among them, and
+        # 835 x 1.15 = 960.25 s, which rounds up to 17 min. The job's head lists the runs and
         # how the legs' times moved.
-        timeout-minutes: 16
+        timeout-minutes: 17
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
           # makes (mkdtempSync in os.tmpdir(), e2e/harness-pool.ts:143) among it, which is what
@@ -850,10 +855,10 @@ jobs:
     # The budgets below are measured at this job's shape: the three projects on one machine, in
     # the image this file pins (sha256:69c3a316). The reading is the shard job's: GitHub's jobs
     # API over the same nine runs, 43045412941, 43074443876, 43079610268, 43150379433,
-    # 43192333526, 43240954914, 43245766326, 43251567200 and 43347417247, the last at this
-    # file's head, each step's `completed_at` less its `started_at`. This job ran once in each
+    # 43192333526, 43240954914, 43245766326, 43251567200 and 43347417247, the last at
+    # 90ee14dd, each step's `completed_at` less its `started_at`. This job ran once in each
     # of them, and green each time. Its browser step read 156, 123 and 135 s on 2026-11-11, 143,
-    # 170, 169, 140 and 170 s on 2026-11-12, and 135 s at this head; the job read 192 to 233 s.
+    # 170, 169, 140 and 170 s on 2026-11-12, and 135 s at 90ee14dd; the job read 192 to 233 s.
     # The maximum each step reached over the nine jobs, in seconds:
     #
     #   step                                                 max
@@ -1731,8 +1736,8 @@ jobs:
     # refused blob download as a refused read", which runs one `echo`, "Reading four, the row
     # durations", which runs one jq over the merged report, and "Reading five, the lane's
     # machine time", which runs one jq over the jobs file reading one already wrote and makes
-    # no request at all. 1 s is what this job's other one-command steps measure, and it is the
-    # second the lane's budget takes off R5's bound for this step
+    # no request at all. 1 s is what this job's other one-command steps measure. The lane's
+    # budget takes this job's whole measured maximum off its bound, 44 s with these steps in it
     # (.github/scripts/dispatch-browser-run-reads.sh, `merge_maximum`).
     # 180 + 39 = 219 s, which is 3 min 39 s, so 4 min. The job's budget is above the step's,
     # so the step's own budget fires first and names the step, which is the reason this file's
@@ -2148,13 +2153,13 @@ jobs:
       # API already answers them - so this reading costs no request and no second route.
       #
       # It is a reading that fails, unlike the four above it: above the lane's budget the step
-      # exits 1 and the job is red. The budgets, 2,663 s on the full lane and 863 s on the
+      # exits 1 and the job is red. The budgets, 2,656 s on the full lane and 856 s on the
       # pull-request lane, are the committed ceiling of 2,700 s and 900 s less this job's own
-      # worst case of 37 s,
+      # worst case of 44 s,
       # which a job reading inside its own run cannot see of itself: its `completed_at` is null
-      # while it runs. The script's `machine-time` branch carries that subtraction, the five
-      # runs the measured 36 s of it came from, the second this step itself adds, and why a
-      # jobs file it cannot read refuses rather than passes.
+      # while it runs. The script's `machine-time` branch carries that subtraction, the runs the
+      # measured 44 s of it came from, and why a jobs file it cannot read refuses rather than
+      # passes.
       #
       # The lane is this workflow's own input, which every other job of the file already reads
       # for the work it does; nothing new is passed in for it.
