@@ -48,6 +48,7 @@ import {
   valuesOf,
 } from "./inbox-view";
 import { searchPath } from "./keyboard-palette";
+import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
 import {
   closeControlPanel,
@@ -83,7 +84,17 @@ const INBOX_TOP_NARROWED = 255;
 /** The window the delivery fixture's two pull requests were merged in, with the list drawn. */
 const DELIVERY_WINDOW = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
 
-/** The seed the Agents and Delivery surfaces are read over. */
+/** The seed the Agents and Delivery surfaces are read over.
+ *
+ *  The Delivery page's freshness rows are pinned to the verdict a reconcile pass reaches here,
+ *  as `delivery.e2e.ts` and `review-seed.ts` pin them. The fake GitHub holds no App
+ *  installation for acme/widgets, so every pass the server runs on its own five-minute tick
+ *  fails with exactly the error written below, and the page's live socket carries that error to
+ *  the PRs, Deploy runs and PR CI rows. Unpinned, a pass that landed between two reads moved
+ *  the first row with no act of the row's own: at 1440x900 the Source freshness block grew from
+ *  one line to two, 16 px to 36 px, between the narrowing's read and the panel's read, and the
+ *  first row went from 681 px to 701 px. With the verdict written here, the page shows the same
+ *  rows whether or not a pass has run. */
 async function seedRealStackSurfaces(): Promise<{
   deliveryQuery: string;
   issue: string;
@@ -91,6 +102,11 @@ async function seedRealStackSurfaces(): Promise<{
 }> {
   const issue = await seedAgents();
   await seedDeliveryFixture();
+  await sql(
+    `UPDATE delivery_settings
+       SET last_error = 'the GitHub App is not installed on acme/widgets'
+     WHERE singleton`
+  );
   return { deliveryQuery: DELIVERY_WINDOW, issue, project: "CORE" };
 }
 
