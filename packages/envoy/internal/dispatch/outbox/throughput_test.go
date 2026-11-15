@@ -512,9 +512,8 @@ func (r *throughputRig) roleArrivals() []int64 {
 // window. What a load test measures is a property of how much it loads, so the sizes are back as
 // main has them and dispatch://INFRA-985 owns every number here (dispatch://INFRA-1075).
 //
-// Serial: it measures the process. It holds the outbox to a drain inside waitTime and to an
-// arrival order under a fixed round trip, and logs the rate beside them; every parallel test's
-// CPU and Postgres work counts against all three (docs/testing.md).
+// Serial: its assertion is a time - every event of each load must be published within waitTime
+// (3 min) of the outbox's start (docs/testing.md).
 func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 	const (
 		backlogIssues = 20

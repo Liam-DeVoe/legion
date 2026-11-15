@@ -370,7 +370,7 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 // registry's own lock would both find the registry empty.
 func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 	// Serial: it sets HeartbeatInterval and LiveWindow, package variables every registration
-	// reads. It also holds a lock on the registry's table open on purpose.
+	// reads.
 	quickRegistry(t)
 	database := storetest.Open(t)
 	gate, err := database.Pool.Begin(context.Background())

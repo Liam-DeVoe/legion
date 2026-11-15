@@ -358,7 +358,9 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 // Against Postgres: a lease another session holds keeps the pass from running, and the retry runs
 // it once that session lets go, with no wake in between.
 func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
-	// Serial: it holds a lease, an advisory lock, open on purpose on a session of its own.
+	// Serial: its assertion is a quiet window: no pass in the 500 ms the lease is held elsewhere,
+	// which a parallel batch's load would make vacuous by holding the loop's first lease attempt
+	// past it.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()

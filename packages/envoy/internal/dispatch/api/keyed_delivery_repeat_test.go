@@ -17,10 +17,7 @@ import (
 // Its key holds the message, so the repeat past the lease neither runs the write again nor answers
 // KEY_COMMITTED: it sends what is owed, once, and answers the message with its deliveries.
 func TestARepeatOfAnIssueMessageDeliversWhatItOwesAndWritesNothing(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 	issue := createTestIssue(t, handler, "KEYD", "Keyed issue messages")

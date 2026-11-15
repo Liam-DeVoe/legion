@@ -52,8 +52,8 @@ func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
 // moment the CLI deletes it, and serves it again the moment the CLI restores it, each on the
 // CLI's own reread; a retag the broker would refuse is reported, and exits 1.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from, and the package-level seams the secret forms are reached
-// through (awsClients, secretStdin); t.Setenv panics under t.Parallel.
+// reads the broker's address from, and awsClients, the seam the secret forms reach the store
+// through (useAWS); t.Setenv panics under t.Parallel.
 func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
 	rig := brokertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)

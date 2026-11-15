@@ -63,10 +63,8 @@ func TestPprofInvalidPortRefusesStartup(t *testing.T) {
 // process's shutdown context ends. It binds port 0, so the kernel chooses a port no other program
 // holds, and the address startPprof reports is the one it bound; the address DISPATCH_PPROF_PORT
 // builds is TestPprofAddressIsLoopbackOnly's.
-// Serial: it installs a route on process-wide state, http.DefaultServeMux, which is where
-// importing net/http/pprof registers the profiler and which this test's sentinel proves the
-// pprof listener does not serve.
 func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bound, err := startPprof(ctx, "127.0.0.1:0")

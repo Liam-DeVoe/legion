@@ -2912,10 +2912,7 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 }
 
 func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
-	// Serial: it binds a durable consumer after closing the connection that held it, and that
-	// bind races at random (dispatch://INFRA-985, which owns the race itself). Run beside the
-	// package's parallel tests, that race would lose more often, so this test stays serial
-	// (dispatch://INFRA-1075).
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	legacyConn := testnats.Connect(t, uri)
 	legacyJS, err := legacyConn.JetStream()
@@ -4743,7 +4740,10 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 // deleted one after another, and each rebuild repairs its fault. No fault outlives its recovery,
 // so the monitor must not count them as one persistent failure and terminate the listener.
 func TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs(t *testing.T) {
-	// Serial: the faults land on a 50 ms wall-clock schedule and four rebuilds must fit in 1.4 s.
+	// Serial: the faults land on a 50 ms wall-clock schedule: the probe the monitor makes right
+	// after each rebuild must come within 50 ms of the repair, or the next fault lands on it and
+	// the count carries, and three such in a row terminate the monitor; after the last repair it
+	// holds a 200 ms quiet window in which the monitor must not terminate.
 	const interval = 100 * time.Millisecond
 	faults := []error{
 		errors.New("ci KV watcher stopped"),

@@ -187,7 +187,9 @@ func TestHoldTakesOverOnTheFirstTryAfterTheLapse(t *testing.T) {
 // process's, which load can only lengthen. That the timer closes Lost at that deadline is
 // TestHoldClosesLostAtItsDeadlineWhenNoRenewalIsAnswered's subject, on a fake clock.
 func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
-	// Serial: it holds the hold's row locked open on purpose, in a transaction of its own.
+	// Serial: the hold must stay live until its row is locked, which it is only while a renewal
+	// is confirmed inside the 2 s loss deadline (TTL less Margin) of the take; a parallel batch's
+	// load can starve them, and a hold lost first queues no renewal behind the lock.
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
@@ -236,9 +238,7 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 // Release frees the name at once, so a standby takes it on its next try, and wakes every session
 // listening on HoldReleasedChannel with the name.
 func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
-	// Serial: the hold must stay live until Release, which its renewals keep only while each is
-	// confirmed inside the 2 s loss deadline (TTL less Margin); a parallel batch's load can
-	// starve them.
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
@@ -366,9 +366,7 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 // The token the take records reads back, SetToken replaces it, and SetToken on a row another
 // holder has taken changes nothing and reports the loss.
 func TestHoldTokenReadsBack(t *testing.T) {
-	// Serial: the hold must stay live until the row is taken over, which its renewals keep only
-	// while each is confirmed inside the 2 s loss deadline (TTL less Margin); a parallel batch's
-	// load can starve them.
+	t.Parallel()
 	database := storetest.Open(t)
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.first"}
 	ctx := context.Background()

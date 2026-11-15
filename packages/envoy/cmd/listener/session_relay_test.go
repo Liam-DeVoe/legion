@@ -250,8 +250,8 @@ func requireFrames(t *testing.T, frames []relayedFrame, want ...contracts.Envelo
 // registers with a new epoch, once and in stream order, from its consumer: nothing it receives
 // comes from a subscription of its own.
 func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T) {
-	// Serial: its assertion is a time (the frames come within 5 s of the return, sooner than the
-	// receipt wait and pause that would send them again without it).
+	// Serial: its assertion is a quiet window: the session gets no frame in the second after the
+	// three it is sent on its return.
 	rig := newRelayRig(t)
 	const sessionID = "ses_away"
 	agent := contracts.AgentSubject(sessionID)
@@ -509,8 +509,7 @@ func TestRelayRunExitTakesOrRefusesEveryWake(t *testing.T) {
 // A run waiting to retry after a failed call or pull restarts at once when the session registers,
 // a registration heard while the failed call ran included, rather than waiting its backoff out.
 func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
-	// Serial: its assertion is a time (the retry wait ends within 5 s on the wake, against the
-	// hour it would otherwise wait).
+	t.Parallel()
 	run := &relayRun{resume: make(chan struct{}, 1)}
 	run.wake()
 	goesOn := make(chan bool, 1)
@@ -520,8 +519,8 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 		if !ok {
 			t.Fatal("the retry wait reported the run stopped")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the retry wait did not end within 5s on the wake sent before it")
+	case <-time.After(listenerWait):
+		t.Fatalf("the retry wait did not end within %s on the wake sent before it", listenerWait)
 	}
 }
 
@@ -534,8 +533,10 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 // Real time, at relayReceiptWait: the relay, the session stand-in and the frames between them are
 // a live NATS server over TCP, which no synctest bubble can hold.
 func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *testing.T) {
-	// Serial: its assertion is a time: the relay stays silent through its receipt wait and sends
-	// again after its pause, windows of wall clock.
+	// Serial: its assertion is a quiet window: past its receipt wait the relay sends nothing in
+	// the 900 ms after e2 is stored, a window that must end before it sends again receipt +
+	// pauseFirst after the frame it got no answer for, and nothing in the second after the two
+	// it sends again.
 	// Shorter than the production bounds, long enough that the silent window below ends before
 	// the first probe: the relay sends again receipt + pauseFirst after the frame it got no
 	// answer for. The receipt wait is this row's own rather than production's three seconds,
@@ -573,8 +574,9 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 // Real time, at relayReceiptWait: the relay and its session stand-in are a live NATS server over
 // TCP, which no synctest bubble can hold.
 func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testing.T) {
-	// Serial: its assertion is a time (the frames come within 5 s of the registration, against a
-	// minute's backoff), after silent windows of wall clock.
+	// Serial: its assertion is a quiet window: past its receipt wait the paused relay sends
+	// nothing in the 1.5 s after e2 is stored, nor in the second after the two the registration
+	// sends.
 	// A backoff no test waits out: only the registration can make the relay send again here.
 	// The receipt wait is this row's own, as in the row above.
 	const receipt = 500 * time.Millisecond
@@ -648,8 +650,8 @@ func TestSessionConsumerRelaySubjectIsNotStored(t *testing.T) {
 // A listener killed while it relays a session (SIGKILL, no shutdown) relays the frames stored while
 // it was down within 10 s of its restart, from its watched session cache, with no new registration.
 func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t *testing.T) {
-	// Serial: its assertion is a time (the frames stored while the listener was down arrive within
-	// 10 s of its restart).
+	// Serial: its assertion is a quiet window: the session gets no frame in the second after the
+	// four the restarted listener relays.
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	const machineID = "relay-owner"
@@ -710,8 +712,7 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 // bus.SessionConsumerAckWait (60 s, internal/bus/session_consumers.go) for the server to deliver
 // the message again.
 func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing.T) {
-	// Serial: its assertion is a time (the next owner is delivered the message within 5 s, at
-	// once rather than after the 60 s ack wait).
+	t.Parallel()
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
 	// it holds, before the row takes the session away.
 	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
@@ -721,7 +722,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
+	requireFrames(t, standIn.collect(t, 1, listenerWait), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 
 	// Losing the machine's durable binding cancels the run that holds the message
@@ -731,7 +732,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	// this pull, which stands in for the listener the session moved to -- is delivered that
 	// message again at once.
 	rig.relays.setOwned(false)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	pull, err := rig.consumers.Pull(ctx, sessionID)
 	if err != nil {
@@ -740,8 +741,8 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	defer pull.Stop()
 	msg, err := pull.Next(ctx)
 	if err != nil || msg.StreamSeq != seq || msg.Delivered != 2 {
-		t.Fatalf("the session's next owner was delivered seq %d (delivery %d), %v; want the message the cancelled relay held, seq %d, again within 5s: the relay left it to wait out bus.SessionConsumerAckWait (%s)",
-			msg.StreamSeq, msg.Delivered, err, seq, bus.SessionConsumerAckWait)
+		t.Fatalf("the session's next owner was delivered seq %d (delivery %d), %v; want the message the cancelled relay held, seq %d, again within %s: the relay left it to wait out bus.SessionConsumerAckWait (%s)",
+			msg.StreamSeq, msg.Delivered, err, seq, listenerWait, bus.SessionConsumerAckWait)
 	}
 }
 

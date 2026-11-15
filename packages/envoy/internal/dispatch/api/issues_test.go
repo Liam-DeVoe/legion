@@ -618,10 +618,7 @@ func TestEventDoesNotMoveIssueUpdatedAtBackward(t *testing.T) {
 // something stamped past it. The PATCH waits on the project's rank lock, which a message takes
 // no part of, so the message's whole transaction begins and commits inside the wait.
 func TestAPatchThatWaitedNeverMovesUpdatedAtBackward(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",

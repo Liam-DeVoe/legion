@@ -422,8 +422,9 @@ A test stays serial when any of these is true of it:
 
 - It swaps process-wide state: an environment variable (`t.Setenv`, which panics in a test that called `t.Parallel()`), the working directory (`t.Chdir`), the default logger (`slog.SetDefault`, or the standard `log` package's output), or a package variable another test reads, such as a seam a test installs.
 
-- It holds a transaction, a row lock or an advisory lock open on purpose, or reads the event log up to its safe horizon.
-  The horizon is proven from `pg_snapshot_xmin`, the oldest transaction running anywhere on the Postgres instance (`packages/envoy/internal/dispatch/events/horizon.go`), so a lock or transaction a test holds stalls every test beside it that reads the event feed, and a test that reads the feed waits on every transaction beside it, other tests' clones and drops included.
+- It holds open a transaction that takes a transaction id - one that writes, or one that takes a row lock with `for update` or `for no key update` - or reads the event log up to its safe horizon.
+  The horizon is proven from `pg_snapshot_xmin`, the oldest transaction running anywhere on the Postgres instance (`packages/envoy/internal/dispatch/events/horizon.go`), so a transaction holding an id stalls every test beside it that reads the event feed, and a test that reads the feed waits on every such transaction beside it, other tests' clones and drops included.
+  An advisory lock is not in this class: Postgres tags one with the database of the session that takes it, as the template section above says, every test has a database of its own, and a lock that takes no transaction id holds the horizon back for nobody.
 
 A serial test says why on the line before its `func` or at the head of its body:
 

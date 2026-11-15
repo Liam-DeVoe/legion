@@ -204,10 +204,8 @@ func (c *labelCheck) Write(p []byte) (int, error) {
 	return os.Stderr.Write(p)
 }
 
-// Serial: in the child it assigns package-level vars the prompt reads (maxPasteDrain,
-// discardInput, readTerminal) and drives this process's own standard input, fd 0, both of which
-// the whole process shares; in the parent it only skips.
 func TestPromptJobHelper(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("AGENT_SECRETS_JOB_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}

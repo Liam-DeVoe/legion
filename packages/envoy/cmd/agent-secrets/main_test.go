@@ -1654,8 +1654,8 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // own OMP_SESSION_ID), so every case sets all three explicitly rather than relying on any being
 // unset already.
 // Serial: it sets process-wide variables, OMP_SESSION_ID, ENVOY_SESSION_ID and
-// CLAUDE_CODE_SESSION_ID, which sessionID reads the session's name from in that order;
-// t.Setenv panics under t.Parallel.
+// CLAUDE_CODE_SESSION_ID, which requestSessionID (identity.go) reads the session's name from in
+// that order; t.Setenv panics under t.Parallel.
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
 	cases := []struct {
 		name               string

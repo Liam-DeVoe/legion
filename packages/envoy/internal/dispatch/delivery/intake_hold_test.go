@@ -1163,8 +1163,7 @@ func requireDeliveredFromTheFloor(t *testing.T, publisher *bus.Client, process *
 // none of the acknowledged messages come back, and none of the others are skipped.
 //
 // Serial: it swaps process-wide state. shrinkIntakeFlowControl and failCreatesWhile set package
-// variables every intake in the process reads (intakeMessageTimeout, createDurable), and the
-// creates it fails are the ones inside a wall-clock window, takeOverFinishWithin of the first.
+// variables every intake in the process reads (intakeMessageTimeout, createDurable).
 func TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)

@@ -275,9 +275,9 @@ const backOffDue = 10 * time.Second
 // step is read from what the outbox and the database recorded - the waits armed, the claims made,
 // the moment the database marked the event published - and never from how long a step took.
 //
-// Serial: it measures the process. What it counts is how often this outbox scanned over a window
-// of wall time, and a parallel test's load lengthens every period inside that window
-// (docs/testing.md).
+// Serial: its assertion is a time - the outbox must make no claim in a 12 s window of wall time,
+// and the back-off's insert must wake a scan that arms its one wait inside backOffDue (10 s), or
+// the row reads no wait armed (docs/testing.md).
 //
 // Real time, at production's waits: every scan it counts is a statement on a Postgres pool with
 // a LISTEN connection beside it, which no synctest bubble can hold.
@@ -486,10 +486,10 @@ func backOffState(t *testing.T, database *store.Store, eventID int64) (published
 // Real time, at publisherHoldOptions: the hold is a Postgres row the two processes renew, and
 // each publishes to a live NATS server, which no synctest bubble can hold.
 //
-// Serial: it measures the process - a holder whose renewals a parallel batch starves for the 4 s
-// from a confirmed renewal to its loss deadline (publisherHoldOptions, TTL less Margin) reports
-// the hold lost, and a sample then reads no outbox publishing, which is the machine's load and not
-// the product (docs/testing.md).
+// Serial: its assertion is a time - every 50 ms sample over 10 s of wall time must read exactly
+// one outbox publishing, and a holder whose renewals a parallel batch starves for the 4 s from a
+// confirmed renewal to its loss deadline (publisherHoldOptions, TTL less Margin) reports the hold
+// lost and leaves a sample with none (docs/testing.md).
 func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
 	url := testnats.URL(t)
 	database := storetest.Open(t)
@@ -695,10 +695,11 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 // lapse 6 s on), not one take and one read per event, which would put a write on duty_holds for
 // every event on every standby.
 //
-// Serial: it measures the process - a holder whose renewals a parallel batch starves for the 4 s
-// from a confirmed renewal to its loss deadline (publisherHoldOptions, TTL less Margin) reports
-// the hold lost, and the standby then takes it and reads its lapse again, which the counts below
-// would charge to the events (docs/testing.md).
+// Serial: its assertion is a time - the standby may send at most 3 takes and 3 lapse reads, one of
+// each per wake of its timer to the hold's lapse (5-6 s apart), while 100 events are written and
+// published, and a holder whose renewals a parallel batch starves for the 4 s from a confirmed
+// renewal to its loss deadline (publisherHoldOptions, TTL less Margin) reports the hold lost, and
+// the standby then takes it and reads its lapse again (docs/testing.md).
 func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	url := testnats.URL(t)
 	database := storetest.Open(t)
@@ -911,8 +912,9 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 // that deadline but bracket the store that turned Publishing() false, so this is the row that
 // holds their order.
 //
-// Serial: it measures the process. It counts the renewal statements sent over a window of wall
-// time, which another test's load stretches (docs/testing.md).
+// Serial: it reads the lost hold's line through the default logger, which it swaps
+// (logtest.SetDefault); and its assertion is a time - publish must return inside the hold's 5 s
+// Renew of the take, and no renewal may be sent in the 7.5 s after the take (docs/testing.md).
 func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)

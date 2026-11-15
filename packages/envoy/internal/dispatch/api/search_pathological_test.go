@@ -144,10 +144,10 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 // first rung, even when a prior rung fills the permitted per-step growth. The helper must fail for
 // both an ordinary first sample and one artificial slow first sample.
 func TestGrowsLinearlyRejectsQuadraticFinalRung(t *testing.T) {
-	// No t.Parallel: this test measures the process. It runs the helper below in a child of
-	// this test binary and reads the growth that child timed.
+	t.Parallel()
 	for _, slowFirstSample := range []bool{false, true} {
 		t.Run(fmt.Sprintf("slow first sample %t", slowFirstSample), func(t *testing.T) {
+			t.Parallel()
 			command := exec.Command(os.Args[0], "-test.run=^TestGrowsLinearlyRejectsQuadraticFinalRungHelper$")
 			command.Env = append(os.Environ(), fmt.Sprintf("GROWS_LINEARLY_SLOW_FIRST=%t", slowFirstSample))
 			output, err := command.CombinedOutput()
@@ -166,8 +166,7 @@ func TestGrowsLinearlyRejectsQuadraticFinalRung(t *testing.T) {
 const quadraticFinalRung = 64
 
 func TestGrowsLinearlyRejectsQuadraticFinalRungHelper(t *testing.T) {
-	// No t.Parallel: this test measures the process. It is the child the test above starts,
-	// and it times the samples growsLinearly judges.
+	t.Parallel()
 	slowFirstValue, helper := os.LookupEnv("GROWS_LINEARLY_SLOW_FIRST")
 	if !helper {
 		t.Skip("subprocess helper")

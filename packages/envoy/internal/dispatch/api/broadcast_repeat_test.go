@@ -199,10 +199,7 @@ func TestConcurrentBroadcastsWithOneKeyMakeOneBroadcast(t *testing.T) {
 // send does (sendHeldMessageOn). It hands no recipient a second frame: not the one already
 // delivered, and not the one a live sender is delivering right now.
 func TestBroadcastRepeatResumesEveryOwedRecipientAndDeliversEachOnce(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	const body = "Status before the deploy?"
 	requested := []string{"planner", "tester", "reviewer", "archivist"}
 	listener, sends := newBroadcastListener(t, broadcastSessionsJSON(t, requested))

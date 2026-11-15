@@ -893,8 +893,7 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 // Control: remove the Pin call from createVersionTable's callback and the widen waits without
 // limit; the context deadline below fires and the error is not a lock timeout.
 //
-// Serial: it holds a lock on purpose, and its assertion is a time - the widen gives up within
-// five seconds of LockTimeout.
+// Serial: its assertion is a time - the widen gives up within five seconds of LockTimeout.
 func TestMigrateCreateVersionTableBoundsTheWidenLock(t *testing.T) {
 	store := openIsolatedStoreWithPool(t, 4)
 	setup := context.Background()

@@ -168,8 +168,7 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 // Control: remove the Pin call after the advisory lock in migrate, and migrate waits until the
 // test's own deadline cancels it.
 //
-// Serial: it holds a table lock on purpose, and its assertion is a time - migrate gives up within
-// ten seconds of LockTimeout.
+// Serial: its assertion is a time - migrate gives up within ten seconds of LockTimeout.
 func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
 	lockTimeout := pgmigrate.LockTimeout
 	ctx := context.Background()

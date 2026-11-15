@@ -247,8 +247,9 @@ func TestADispatchStartWaitsOutAReconcileFailureTheBusRetries(t *testing.T) {
 // limit and the id, and corrects the subjects, the age, the window and discard, to DiscardNew: with
 // the deployment's settings (ENVOY_NATS_REPLICAS=3 and the byte limit), and with both settings
 // unset, a replica count of 1 and no byte limit, which neither lowers the copies nor drops the limit.
-// Serial: it swaps process-wide state, the default slog logger the start's own lines are read
-// out of (connectDispatchStream's logtest.SetDefault), which the whole process shares.
+// Serial: it swaps process-wide state, the default slog logger, which connectDispatchStream
+// (through startDispatchStream) points at a buffer of the start's own for the rest of the test
+// (logtest.SetDefault), and which the whole process shares.
 func TestADispatchStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsTheStream(t *testing.T) {
 	for _, drift := range bustest.StreamDrifts() {
 		for _, settings := range []struct {
@@ -344,8 +345,9 @@ func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testi
 
 // On a single server with the default settings, the Dispatch server's start creates the stream and
 // the webhook redelivery bucket at one copy, and its next start creates and updates nothing.
-// Serial: it swaps process-wide state, the default slog logger the start's own lines are read
-// out of (connectDispatchStream's logtest.SetDefault), which the whole process shares.
+// Serial: it swaps process-wide state, the default slog logger, which connectDispatchStream
+// (through startDispatchStream) points at a buffer of the start's own for the rest of the test
+// (logtest.SetDefault), and which the whole process shares.
 func TestADefaultDispatchStartOnASingleServerCreatesEverythingAtOneCopyAndTheNextWritesNothing(t *testing.T) {
 	_, url := testnats.Start(t)
 	streams := []string{bus.Stream, "KV_" + bus.WebhookRedeliveryBucket}
@@ -372,8 +374,9 @@ const keeperRestoreWait = 30 * time.Second
 // The Dispatch server's publisher, started as main starts it, keeps the stream once its background
 // reconcile has run: an operator who lowers the stream to one copy and half the byte limit finds
 // both back at the deployment's settings within one keeper period.
-// Serial: it swaps process-wide state, the default slog logger the start's own lines are read
-// out of (connectDispatchStream's logtest.SetDefault), which the whole process shares.
+// Serial: it swaps process-wide state, the default slog logger, which connectDispatchStream
+// (through startDispatchStream) points at a buffer of the start's own for the rest of the test
+// (logtest.SetDefault), and which the whole process shares.
 func TestTheDispatchPublishersKeeperRestoresALoweredStream(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	js := cluster.JetStream(t)

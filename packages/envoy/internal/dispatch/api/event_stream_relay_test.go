@@ -205,10 +205,11 @@ func relaySubscribers(relay *eventStreamRelay) int {
 // last one closes. A relay that kept running after its last subscriber left would read the log
 // after every commit until the process exited.
 func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
-	// No t.Parallel: this test counts the reads a relay with no subscriber makes, and the safe
-	// horizon its reads wait on is proven from pg_snapshot_xmin, the oldest transaction id
-	// running anywhere on the instance (internal/dispatch/events, horizon.go); a transaction a
-	// parallel test holds open adds re-reads to that count (dispatch://INFRA-1075).
+	// No t.Parallel: this test's relay start waits on Horizon.Await (firstRelayCursor) and
+	// publishes its commit only once the safe horizon covers it, a horizon proven from
+	// pg_snapshot_xmin, the oldest transaction id running anywhere on the instance
+	// (internal/dispatch/events, horizon.go), so a transaction held open anywhere on the
+	// instance stalls the 5 s receive it waits on (receiveRelayed).
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, reads := newCountedRelay(t, deps)
@@ -248,10 +249,11 @@ func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
 // of the event log and one encoding of its frame, however many streams are open. Every subscriber
 // receives the same frame bytes.
 func TestEventStreamRelayReadsEachCommitOnceForEverySubscriber(t *testing.T) {
-	// No t.Parallel: this test counts the reads one commit costs the relay, and the safe horizon
-	// those reads wait on is proven from pg_snapshot_xmin, the oldest transaction id running
-	// anywhere on the instance (internal/dispatch/events, horizon.go); a transaction a parallel
-	// test holds open adds re-reads to that count (dispatch://INFRA-1075).
+	// No t.Parallel: this test's relay start waits on Horizon.Await (firstRelayCursor) and
+	// publishes the commit only once the safe horizon covers it, a horizon proven from
+	// pg_snapshot_xmin, the oldest transaction id running anywhere on the instance
+	// (internal/dispatch/events, horizon.go), so a transaction held open anywhere on the
+	// instance stalls the 5 s receives it waits on (receiveRelayed).
 	const subscribers = 3
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")

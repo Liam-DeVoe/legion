@@ -432,11 +432,11 @@ func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) 
 // referenceExcerptSchedule end to end, through RunReferenceExcerptReconciliation: the window it
 // watches is what proves the production gap arms no pass of its own.
 //
-// Serial: it measures the process. The windows it watches are on the wall clock, and a parallel
-// neighbour stretches this service's own boot pass into the window the row needs quiet, where
-// its statements read as a loop that armed a pass of its own. The wait for the excerpts
-// themselves is the package's hang guard, since how long three documents take is the machine's
-// to say.
+// Serial: its assertion is a quiet window on the wall clock: no statement on its own traced pool
+// over three seconds once every excerpt is stored (RequireNoStatements), which a parallel
+// neighbour's load can stretch this service's own boot pass into. The loop must also stop within
+// loopStopBound. The wait for the excerpts themselves is the package's hang guard, since how long
+// three documents take is the machine's to say.
 func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 	database := storetest.Open(t)
 	documents := owedDocuments(t, database, 3)
@@ -467,9 +467,8 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 // for no work - and the wake runs a pass no sooner than the gap after the last one began, so the
 // bound is the row's own schedule.minGap plus three seconds: a wake served late fails.
 //
-// Serial: it measures the process, watching a window in which the woken loop must make no
-// statement once its boot pass is done, which a parallel neighbour's load moves this service's
-// own statements into, and it holds each wake's excerpt to a wall-clock bound.
+// Serial: it holds each wake's excerpt to a wall-clock bound, stored within the row's gap and
+// three seconds of the write that left it owed. The loop must also stop within loopStopBound.
 func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 	database := storetest.Open(t)
 	document := owedDocuments(t, database, 1)[0]

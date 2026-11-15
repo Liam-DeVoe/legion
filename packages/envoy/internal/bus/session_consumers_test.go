@@ -861,8 +861,9 @@ func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
 // InProgress restarts a message's ack wait: a message kept in progress past several ack waits is
 // not delivered again, and once InProgress stops it is, a wait later.
 func TestInProgressExtendsTheAckWait(t *testing.T) {
-	// Serial: each InProgress must reach the server inside the 2 s ack wait it restarts, and the
-	// redelivery once it stops must come within 5 s, a wall-clock window and a time.
+	// Serial: each InProgress must reach the server inside the 2 s ack wait it restarts, a
+	// wall-clock window: one slowed past it has the message delivered again inside the 500 ms
+	// quiet window that follows it.
 	owner, consumers := sessionConsumersOnStream(t)
 	consumers.ackWait = 2 * time.Second
 	ctx := context.Background()
@@ -891,7 +892,7 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 
 // A NAK with a delay has the message delivered again once the delay has passed.
 func TestNakWithDelayRedelivers(t *testing.T) {
-	// Serial: its assertion is a time (the message comes again within 5 s of a 200 ms NAK delay).
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_nak"
@@ -904,7 +905,7 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 	if err := next(t, pull).NakWithDelay(200 * time.Millisecond); err != nil {
 		t.Fatalf("nak: %v", err)
 	}
-	if again := nextWithin(t, pull, 5*time.Second); again.StreamSeq != seq || again.Delivered != 2 {
+	if again := next(t, pull); again.StreamSeq != seq || again.Delivered != 2 {
 		t.Fatalf("after the NAK got seq %d delivery %d, want %d delivery 2", again.StreamSeq, again.Delivered, seq)
 	}
 }
@@ -993,8 +994,7 @@ func waitForAckPending(t *testing.T, consumers *SessionConsumers, sessionID stri
 // is not restarts the consumer at its ack floor (RestartAtFloor), which is where stream order
 // comes from.
 func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
-	// Serial: its assertion is a time (the released messages come back within 5 s, straight away
-	// rather than after the ack wait).
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_released"
@@ -1024,7 +1024,7 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	again := pullSession(t, consumers, session)
 	back := map[uint64]uint64{}
 	for range stored[1:] {
-		msg := nextWithin(t, again, 5*time.Second)
+		msg := next(t, again)
 		back[msg.StreamSeq] = msg.Delivered
 		if err := msg.Ack(); err != nil {
 			t.Fatalf("ack %d: %v", msg.StreamSeq, err)

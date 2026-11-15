@@ -409,7 +409,8 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 // it never has, so it ends there.
 //
 // Serial: it swaps process-wide state - the nkey seed grantedNATS puts in the environment, and
-// the default logger this row reads its denial lines from (docs/testing.md).
+// the default logger this row reads for a batch left unrecorded and for an outage line
+// (docs/testing.md).
 func TestRunCountsEveryDeniedJetStreamDestinationOfOneEvent(t *testing.T) {
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
@@ -539,7 +540,7 @@ func (w passingWindow) PublishAsync(item contracts.Envelope) <-chan error {
 // internal/bus's TestAWindowAnswersEachDeniedSendOfOneSubjectItsOwnDenial.
 //
 // Serial: it swaps process-wide state - the nkey seed grantedNATS puts in the environment, and
-// the default logger this row counts its denial lines in (docs/testing.md).
+// the default logger this row reads for an outage line (docs/testing.md).
 func TestRunCountsADeniedSubjectOncePerRefusedMessage(t *testing.T) {
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))

@@ -82,7 +82,7 @@ func TestTheLinesAboutATickNameItsDueAndItsPeriod(t *testing.T) {
 // No period (0) in this row and the two below it: each is about the lease alone, and a period
 // would be a second reason to skip that would hide which one refused the caller.
 func TestExclusiveRefusesASecondCallerWhileTheFirstIsInsideItsPass(t *testing.T) {
-	// Serial: it holds a lease, an advisory lock, open on purpose while a second caller tries it.
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -128,7 +128,7 @@ func TestExclusiveFreesTheLeaseWhenThePassReturns(t *testing.T) {
 // Each loop has a lease of its own, so one loop's long pass never keeps another loop's pass from
 // running: the second key is the name's hashtext.
 func TestExclusiveLeasesOfDifferentNamesDoNotExcludeEachOther(t *testing.T) {
-	// Serial: it holds a lease, an advisory lock, open on purpose while it takes another.
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -149,7 +149,7 @@ func TestExclusiveLeasesOfDifferentNamesDoNotExcludeEachOther(t *testing.T) {
 // a process killed mid-pass - a deploy replacing its task - leaves nothing behind for the survivor
 // to wait out. A connection closed with the lease still locked is that death.
 func TestExclusiveTakesALeaseWhoseHolderDiedWithoutUnlocking(t *testing.T) {
-	// Serial: it takes a lease, an advisory lock, on a session of its own on purpose.
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
@@ -286,8 +286,7 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 // the lease back with its unlock, and returns the connection to the lease pool. A first gate
 // leaves the period read prepared on that connection, as a running process's earlier ticks do.
 func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T) {
-	// Serial: it captures the default logger (logtest.SetDefault), a process-wide swap. It also
-	// holds an access exclusive lock on duty_passes open on purpose.
+	// Serial: it captures the default logger (logtest.SetDefault), a process-wide swap.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	var logs bytes.Buffer
@@ -722,7 +721,7 @@ func recordedPasses(t *testing.T, database *store.Store, name string) int {
 // long as a pass of another deployment on the same server held the lease
 // (cireconcile.RecentPasses).
 func TestALeaseHeldInAnotherDatabaseIsNotHeldHere(t *testing.T) {
-	// Serial: it holds a lease, an advisory lock, open on purpose in another database.
+	t.Parallel()
 	const name = "ci-reconcile"
 	database := storetest.Open(t)
 	elsewhere := storetest.Open(t)

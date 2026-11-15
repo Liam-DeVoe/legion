@@ -298,9 +298,7 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 // reconnect's run. Two events between runs, two runs, never two at once: a recovery that read the
 // hooks as due while the reconnect's run was still in progress started a third, alongside it.
 func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
-	// Serial: it captures the default slog handler (captureBusLogs), a process-wide swap, and the
-	// recovery's second attempt must land inside the hook's 3 s run (hookTakes), a wall-clock
-	// window.
+	// Serial: it captures the default slog handler (captureBusLogs), a process-wide swap.
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -365,7 +363,7 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 // what it last followed, until the next connection event. Here the hooks fail once after an
 // in-place reconnect and run again with no other connection event.
 func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *testing.T) {
-	// Serial: it waits on a whole-process goroutine dump (goroutinetest.Live).
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -410,7 +408,7 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 	// run started, the one thing besides a connection event that runs the hooks, and that recovery
 	// looks once more for hooks due after it clears its flag; once its goroutine has returned, every
 	// chance to run them again has passed.
-	waitFor(t, 15*time.Second, "the recovery that ran the hooks again to end", func() bool { return !goroutinetest.Live(recoveryGoroutine) })
+	waitFor(t, busWait, "the recovery that ran the hooks again to end", func() bool { return !goroutinetest.Live(recoveryGoroutine) })
 	if extra := len(ran); extra != 0 {
 		t.Fatalf("the reconnect hooks ran %d more time(s) after a run succeeded", extra)
 	}
@@ -423,8 +421,7 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 // connection's own recovery finds the first still running, and before the first looked again the
 // client stayed on a closed connection for good.
 func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
-	// Serial: the closed connection's recovery must start inside the second the test sleeps
-	// before it lets the first recovery end, a wall-clock window.
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -446,7 +443,7 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 	var dialed *natsgo.Conn
 	select {
 	case dialed = <-running:
-	case <-time.After(30 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the recovery never ran the hooks on the connection it dialed")
 	}
 	dialed.Close()
@@ -454,7 +451,7 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 	// once; a second is ample for that recovery to find the first still running.
 	time.Sleep(time.Second)
 	close(finish)
-	waitFor(t, 15*time.Second, "the client to replace the connection that closed as the recovery ended", client.Connected)
+	waitFor(t, busWait, "the client to replace the connection that closed as the recovery ended", client.Connected)
 	if client.Conn == dialed {
 		t.Fatal("the client still holds the connection that closed")
 	}

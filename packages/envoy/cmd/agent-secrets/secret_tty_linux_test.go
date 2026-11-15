@@ -426,9 +426,8 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 
 // TestPromptSignalHelper is the process the signal tests start: the value prompt's reader on its
 // standard input, its controlling terminal. It names only the reader's error, never its value.
-// Serial: in the child it reads this process's own standard input, fd 0, its controlling
-// terminal, which the whole process shares; in the parent it only skips.
 func TestPromptSignalHelper(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("AGENT_SECRETS_PROMPT_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}

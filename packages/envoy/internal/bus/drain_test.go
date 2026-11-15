@@ -349,7 +349,9 @@ func TestDrainDoesNotWaitForABindInFlight(t *testing.T) {
 // delivery in its handler finish, and returns once the connection has drained. Closing the
 // connection there would end Drain at once on the CLOSED event and cut the delivery off.
 func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
-	// Serial: Drain's 5 s deadline covers the test's own waits, and its return is bounded at 2 s.
+	// Serial: Drain's 5 s deadline covers the test's own waits (Drain reaching DRAINING, the
+	// release of the held callbacks, the late reconnect callback), so a step slowed past it fails
+	// the drain.
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -441,8 +443,8 @@ func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
 // and marks the connection draining again as soon as the close empties its subscriptions; whether a
 // reader of the state misses it is a race, so the test runs it several times.
 func TestDrainEndsWhenTheConnectionClosesWhileNATSDrainsIt(t *testing.T) {
-	// Serial: its assertion is a time: Drain returns within 1 s of the close, against nats.go's
-	// 5 s wait.
+	// Serial: Drain's 5 s deadline covers the test's own wait for Drain to drain the connection
+	// and the close that follows, in each of ten attempts, so a step slowed past it fails the drain.
 	uri := testnats.URL(t)
 	for attempt := 1; attempt <= 10; attempt++ {
 		client, err := bus.Connect([]string{uri})

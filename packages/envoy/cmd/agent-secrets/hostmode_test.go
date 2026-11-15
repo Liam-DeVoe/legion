@@ -502,8 +502,9 @@ func TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity(t *testing.T) {
 // TestSignWithEnrollmentOverridesTheEnrollmentID proves --enrollment signs with this box's own
 // key for a caller-supplied id instead of the box's own — the deliberate cross-enrollment
 // substitution the broker must refuse.
-// Serial: it sets process-wide variables, AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK,
-// which buildSigner reads for itself; t.Setenv panics under t.Parallel.
+// Serial: it sets process-wide variables, AGENT_SECRETS_KEY_DIR, which sign --enrollment reads
+// the key dir from (fileModeKeyForSign, sign.go), and AGENT_SECRETS_HELPER_SOCK; t.Setenv panics
+// under t.Parallel.
 func TestSignWithEnrollmentOverridesTheEnrollmentID(t *testing.T) {
 	keyDir := newKeyDir(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
@@ -545,8 +546,9 @@ func TestSignWithEnrollmentOverridesTheEnrollmentID(t *testing.T) {
 
 // TestSignEnrollmentRefusedInHelperMode covers "--enrollment works only with a key dir; the
 // helper signs only its own enrollment".
-// Serial: it sets process-wide variables, AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK,
-// which buildSigner reads for itself; t.Setenv panics under t.Parallel.
+// Serial: it sets process-wide variables, AGENT_SECRETS_KEY_DIR, which sign --enrollment reads
+// the key dir from (fileModeKeyForSign, sign.go), and AGENT_SECRETS_HELPER_SOCK; t.Setenv panics
+// under t.Parallel.
 func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "/x/h.sock")

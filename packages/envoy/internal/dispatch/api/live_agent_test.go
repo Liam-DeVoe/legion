@@ -309,9 +309,7 @@ func agentFrameOf(t *testing.T, stream *gatedStream, event string) string {
 // subscription here waits for room as a socket's does while its page reads nothing, so it drains
 // nothing of what the session publishes until the test lets it.
 func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
-	// No t.Parallel: each case holds the whole of one view's byte budget in frames at once
-	// (agentStreamBufferBytes), and a second copy of it beside another test's would take the
-	// pod's memory.
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		frames int
@@ -324,12 +322,13 @@ func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
 		{name: "the whole budget", frames: agentStreamBufferBytes / (1 << 20), size: 1 << 20},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			source := agentstream.NewMemory()
 			_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 			stream := newGatedStream()
 			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
 			t.Cleanup(running.stop)
-			pollUntil(t, 5*time.Second, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
+			pollUntil(t, concurrentWait, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
 
 			for index := range test.frames {
 				source.Publish(plannerSessionID, paddedFrame(index, test.size))
@@ -352,8 +351,7 @@ func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
 // tool call reading "running…" with nothing later to correct it. Ending the subscription costs
 // the page a subscribe, and the subscribe rebuilds from the session's own replay.
 func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
-	// No t.Parallel: this test holds the whole of one view's byte budget in frames at once, and
-	// a second copy of it beside another test's would take the pod's memory.
+	t.Parallel()
 	source := agentstream.NewMemory()
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 	stream := newGatedStream()

@@ -737,11 +737,11 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 // publisher hold, false while it stands by for the other process's, and false again once it has
 // stopped and released the hold. It never decides ok.
 //
-// Serial: it measures the process - the probe a second after the standby starts must read the
+// Serial: its assertion is a time. The probe a second after the standby starts must read the
 // first outbox still publishing, which holds only while its renewals land inside the 4 s from a
 // confirmed renewal to its loss deadline (publisherHoldOptions in internal/dispatch/outbox, TTL
-// less Margin); a parallel test's load that starves them reports the hold lost and hands it to
-// the standby, which is the machine's load and not the product (docs/testing.md).
+// less Margin), and a parallel test's load is what would stretch them past it
+// (dispatch://INFRA-985).
 func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)

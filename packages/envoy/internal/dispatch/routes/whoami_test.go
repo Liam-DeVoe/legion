@@ -515,9 +515,8 @@ func TestWhoamiEventHeadStaysBelowAnEventStillOpen(t *testing.T) {
 // package's test, does not hold every page's load for the two seconds eventFeedHead would otherwise
 // wait -- and the head it answers is still the log's newest id.
 func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
-	// No t.Parallel: holdClusterTransactionID below holds a transaction id on the whole Postgres
-	// instance for thirty seconds, which keeps every horizon on it from being proven
-	// (internal/dispatch/events, horizon.go), and this test bounds how long whoami takes.
+	// No t.Parallel: this test bounds how long whoami takes (one second) while
+	// holdClusterTransactionID holds a transaction id on the whole Postgres instance.
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	createProject(t, handler, "ONE")

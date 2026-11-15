@@ -147,8 +147,8 @@ func (r *outageRig) after(cancel context.CancelFunc, t *testing.T) func(time.Dur
 // takes is asserted instant by instant against the model config.Load refuses by, so the two can
 // never say different things about the same renewer.
 // Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL,
-// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK - which the renew loop reads for itself;
-// t.Setenv panics under t.Parallel.
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK - which sessionContext (main.go) reads the
+// broker's address and the signer from; t.Setenv panics under t.Parallel.
 func TestRenewLoopOutlivesAnOutageOnlyAtTheLeaseBound(t *testing.T) {
 	const sweep = 10 * time.Second
 	model := leasetime.Production()

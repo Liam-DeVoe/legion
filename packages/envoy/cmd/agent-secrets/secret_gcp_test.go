@@ -587,9 +587,9 @@ func refuseValueReads(t *testing.T) {
 func alwaysServed(name string) Reread { return Reread{Name: name, Served: true} }
 
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBrokerWith's t.Setenv), the gcloud and
-// application-credential variables, and the package-level seams the GCP backend is reached
-// through (gcpCredentials, gcpUserinfo, gcpClientDial, secretStdin, readHidden).
+// reads the broker's address from (startSecretBrokerWith's t.Setenv), CLOUDSDK_AUTH_ACCESS_TOKEN
+// (useGCPIdentity's t.Setenv), and the package-level seams the GCP backend is reached through
+// (gcpCredentials, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateShowSetRetagDeleteRestoreLifecycle(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1165,7 +1165,7 @@ func TestGCPSecretWithNoApplicationDefaultCredentialsUsesTheGcloudLogin(t *testi
 // it tried, before any Secret Manager call.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, the gcloud and
 // application-credential variables, and the package-level seams the GCP backend is reached
-// through (gcpCredentials, gcpUserinfo, gcpClientDial, secretStdin).
+// through (gcpCredentials, gcpUserinfo, gcpClientDial).
 func TestGCPSecretWithNoCredentialAtAllIsRefused(t *testing.T) {
 	for _, row := range []struct {
 		name   string
@@ -1357,8 +1357,9 @@ func TestGCPSecretWriteUnderAPersonsADCNeverAsksGcloud(t *testing.T) {
 // TestGCPSecretListSucceedsWithoutUserinfoScope: a read makes no userinfo call, so it succeeds
 // even under a token that lacks the scope that call needs (a machine identity's commonly does),
 // and it runs under the machine's own identity, which can read, with gcloud never run.
-// Serial: it shares process-wide state - AGENT_SECRETS_URL and the package-level seams the GCP
-// backend is reached through (gcpCredentials, gcpUserinfo, gcpClientDial, secretStdin).
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, the gcloud and
+// application-credential variables useGcloud sets, and the package-level seams the GCP backend
+// is reached through (gcpCredentials, gcpUserinfo, gcpClientDial).
 func TestGCPSecretListSucceedsWithoutUserinfoScope(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1515,8 +1516,9 @@ func TestGCPSecretListShowsOwnerTierAndValue(t *testing.T) {
 
 // TestGCPSecretReadsRefuseBadSettings: an invalid kms_key_name is refused before any GCP call.
 // TestCheckSettingsKMSKeyName covers the other checkSettingsKMSKeyName refusals directly.
-// Serial: it shares process-wide state - AGENT_SECRETS_URL and the package-level seams the GCP
-// backend is reached through (gcpCredentials, gcpUserinfo, gcpClientDial, secretStdin).
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN
+// (useGCPIdentity's t.Setenv), and the package-level seams the GCP backend is reached through
+// (gcpCredentials, gcpUserinfo, gcpClientDial).
 func TestGCPSecretReadsRefuseBadSettings(t *testing.T) {
 	startFakeSecretManager(t, newFakeSecretManager())
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
@@ -1560,8 +1562,9 @@ func TestCheckSettingsKMSKeyName(t *testing.T) {
 
 // TestOpenSecretBackendRefusesUnknownStore: a store name neither backend names is refused before
 // any cloud call.
-// Serial: it shares process-wide state - AGENT_SECRETS_URL and the package-level seams the GCP
-// backend is reached through (gcpCredentials, gcpUserinfo, gcpClientDial).
+// Serial: it sets a process-wide variable, AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBrokerWith's t.Setenv); t.Setenv panics under
+// t.Parallel.
 func TestOpenSecretBackendRefusesUnknownStore(t *testing.T) {
 	startSecretBrokerWith(t, Settings{Store: "azure-key-vault"}, alwaysServed)
 	_, stderr, code := runSecret("list")
@@ -1575,8 +1578,9 @@ func TestOpenSecretBackendRefusesUnknownStore(t *testing.T) {
 
 // TestOpenSecretBackendRefusesProfileOnGCP: --profile names an AWS profile; a GCP broker refuses
 // it as a usage error rather than silently ignoring it.
-// Serial: it shares process-wide state - AGENT_SECRETS_URL and the package-level seams the GCP
-// backend is reached through (gcpCredentials, gcpUserinfo, gcpClientDial).
+// Serial: it sets a process-wide variable, AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBrokerWith's t.Setenv); t.Setenv panics under
+// t.Parallel.
 func TestOpenSecretBackendRefusesProfileOnGCP(t *testing.T) {
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 	_, stderr, code := runSecret("list", "--profile", "some-aws-profile")

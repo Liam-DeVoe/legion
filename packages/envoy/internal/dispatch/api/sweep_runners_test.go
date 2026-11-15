@@ -115,10 +115,9 @@ func waitUntil(t *testing.T, within time.Duration, what string, condition func()
 // empty: one judging pass across the two, and both make progress rather than one giving its pass
 // up to the other's.
 func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	// No t.Parallel: this test runs both sweep runners through runSweep, which fails it unless
+	// each returns within sweepReturnBound (10 s) of its context ending, a bound the test
+	// asserts.
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)

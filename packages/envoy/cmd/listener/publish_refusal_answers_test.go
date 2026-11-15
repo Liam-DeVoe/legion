@@ -142,7 +142,8 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 // connected throughout, so nothing but the stalled role-bucket call can end the lookup. A lookup
 // releases nothing, so the claim read is the only role-bucket call it makes.
 func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *testing.T) {
-	// Serial: its assertion is a time (a 500 ms window after sendRequestBudget).
+	// Serial: its assertion is a time (the lookup answers inside 4 s, and it may spend all of
+	// sendRequestBudget, 3.5 s, on the stalled claim read before it answers).
 	const (
 		role   = "reviewer"
 		holder = "ses_lookup_unanswered_holder"

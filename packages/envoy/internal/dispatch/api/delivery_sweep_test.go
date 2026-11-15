@@ -142,12 +142,10 @@ var sweepRoutes = map[string]sweepRoute{
 // drops if the first frame did land; a second pass sends nothing more, and the dead sender's late
 // outcome changes nothing.
 func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	for name, route := range sweepRoutes {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			listener := newHoldingListener(t)
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 				envoyURL: listener.url, envoyTimeout: time.Minute,

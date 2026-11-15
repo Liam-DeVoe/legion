@@ -338,7 +338,11 @@ func TestIssueBlockedByCountLimitOnCreateAndPatch(t *testing.T) {
 }
 
 func TestIssueBlockedByIgnoresIndirectRowActivity(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test holds a row lock (select ... for no key update) open on purpose
+	// while its PATCH runs, and a row lock takes a transaction id. The event log's safe horizon
+	// is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
+	// instance (internal/dispatch/events, horizon.go), so the hold stalls every parallel test
+	// reading that feed.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -413,7 +417,11 @@ func TestStatusPatchRacingReparentUsesCommittedParent(t *testing.T) {
 }
 
 func TestReparentIgnoresUnrelatedGrandchildRowActivity(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test holds a row lock (select ... for no key update) open on purpose
+	// while its PATCH runs, and a row lock takes a transaction id. The event log's safe horizon
+	// is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
+	// instance (internal/dispatch/events, horizon.go), so the hold stalls every parallel test
+	// reading that feed.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 4)
 	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, keys[3], keys[0]); err != nil {
@@ -947,10 +955,7 @@ func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
 }
 
 func TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	other := createListedIssues(t, handler, "SIDE", 2)

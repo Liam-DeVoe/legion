@@ -67,7 +67,7 @@ func TestSecretInvalidUTF8WritesNothing(t *testing.T) {
 
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
 // reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin, stdinTerminal, readHidden).
+// the secret forms are reached through (awsClients, secretStdin).
 func TestSecretDerivedOwnerMustBeAnEmailBeforeWriting(t *testing.T) {
 	for _, session := range []string{"ada", "shared", "ada@example", "ada..name", "ada@example.com/extra"} {
 		for _, form := range []string{"create", "retag"} {
@@ -97,7 +97,7 @@ func TestSecretDerivedOwnerMustBeAnEmailBeforeWriting(t *testing.T) {
 
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
 // reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin, stdinTerminal, readHidden).
+// the secret forms are reached through (awsClients, secretStdin).
 func TestSecretWriteSignInAcceptsAWSPartitions(t *testing.T) {
 	for _, partition := range []string{"aws", "aws-cn", "aws-us-gov", "aws-iso"} {
 		t.Run(partition, func(t *testing.T) {
@@ -368,8 +368,8 @@ func TestSecretRefusesNonLoopbackHTTPBrokerURL(t *testing.T) {
 
 // http on a loopback host is accepted: dev-broker.sh serves the broker there.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretAcceptsLoopbackHTTPBrokerURL(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	startSecretBroker(t, servedBy(local)) // httptest serves http://127.0.0.1:port
@@ -565,8 +565,8 @@ func TestSecretSetReadsTheSecretsOwnShape(t *testing.T) {
 // holds it, since the deployment repository's IAM statement that lets a person tag their own secret
 // conditions on both request tags.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretRetagSendsBothTags(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("OWNED_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	sent := &recordingTags{Local: local}
@@ -620,8 +620,8 @@ func (refusingTags) TagResource(context.Context, *secretsmanager.TagResourceInpu
 // refusal, the sign-in AWS refused, and says whose change it is, and nothing changes. Any other
 // refused retag says only what AWS said, and whom it refused.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 	local := secrets.NewLocal(
 		policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "v1"),
@@ -659,8 +659,8 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 // broker's are refused, naming both accounts, rather than reading that account's secrets as if
 // they were the agent secrets. Reads still take a machine's role in the broker's account.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretReadsRefuseAnotherAccount(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	startSecretBroker(t, servedBy(local))
@@ -689,8 +689,9 @@ func (f failingStdin) Read([]byte) (int, error) {
 // TestSecretWritesCheckTheSignInBeforeReadingTheValue: create and set refuse a sign-in in another
 // account, and create refuses --owner me under a sign-in that names no person, before they read
 // the value, so nobody pastes a secret only to be refused.
-// Serial: it assigns the package-level seams the secret forms read their value through
-// (secretStdin, stdinTerminal, readHidden), which the whole process shares.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
+// the secret forms are reached through (awsClients, secretStdin).
 func TestSecretWritesCheckTheSignInBeforeReadingTheValue(t *testing.T) {
 	refuseValueReads(t)
 	const otherAccount = "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com"
@@ -1005,8 +1006,8 @@ func TestStdinIsATerminalOnlyAtATerminal(t *testing.T) {
 // the listing does not say which window the delete used), whether each has a value, and a missing
 // date or tag as absent; nothing outside the prefix, and never a value.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretListShowsValueAndDeletion(t *testing.T) {
 	deletedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	gone := policytest.Secret("GONE_KEY", "ada@example.com", policy.TierAgent, "gone-value")
@@ -1091,8 +1092,8 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 // prints when it was deleted and the earliest Secrets Manager can purge it, DeletedDate plus 7
 // days, labelled as the earliest rather than the exact purge, and never DeletedDate plus 30.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretShowOfADeletedSecretNamesTheEarliestPurge(t *testing.T) {
 	deletedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	gone := policytest.Secret("GONE_KEY", "ada@example.com", policy.TierAgent, "gone-value")
@@ -1132,8 +1133,8 @@ func TestEarliestPurgeIsTheOnePlaceDeletedDateIsRead(t *testing.T) {
 // requesters, created and last-changed times and versions, a field the secret holds none of as
 // "-", no deletion for a secret not scheduled for one, and never the value, as text or as JSON.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 	const value = "show-must-not-print-this"
 	local := secrets.NewLocal(policytest.Secret("SHOWN_KEY", "ada@example.com", policy.TierHuman, value))
@@ -1175,8 +1176,8 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 // --json carries the tag as the store holds it, "" for a secret carrying none, so a reader of
 // the JSON tells a secret tagged nothing from one tagged a word the broker refuses it for.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretShowAndListPrintTheShape(t *testing.T) {
 	oneLine := policytest.Secret("TOKEN_KEY", "ada@example.com", policy.TierAgent, "tok-abc")
 	oneLine.Tags[policy.TagShape] = policy.ShapeToken
@@ -1270,8 +1271,8 @@ func TestSecretShowAndListPrintTheShape(t *testing.T) {
 // stops serving the secret; restore brings it back and the broker serves it again. Each write
 // rereads once, in order.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretDeleteThenRestoreRereads(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("DOOMED_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	sent := &recordingDeletes{Local: local}
@@ -1318,8 +1319,8 @@ func TestSecretDeleteThenRestoreRereads(t *testing.T) {
 // TestSecretDeleteNeverForces: delete schedules the deletion with the longest recovery window and
 // never forces it.
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretDeleteNeverForces(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("DOOMED_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	sent := &recordingDeletes{Local: local}
