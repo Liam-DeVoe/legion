@@ -1277,8 +1277,11 @@ ending_result "the fixture passes --replay" 0 '^all 16 assertions passed$' "$?" 
 # "rows 38", and the row failed its {"equals":"rows 38"}. Test round 25's cold replay met it
 # on a pod that had just been replaced. The case runs that row's own command, read from
 # claims.jsonl, through the gate's replay, with a fresh TMPDIR and IOC_CACHE and our tree at
-# the commit sources.json pins, and holds it to its own predicate. It needs go, git and the
-# Go module proxy, and prints SKIP when go is missing.
+# the commit sources.json pins, and holds it to its own predicate. GOMODCACHE and GOCACHE
+# are set to empty directories as well: since 49ec14d3dd the row reads the Go caches env.sh
+# puts under IOC_CACHE, and the fixture runs no env.sh, so without them the row would read
+# whatever Go caches the caller's environment names, which a Legion pod sets to warm shared
+# ones. It needs go, git and the Go module proxy, and prints SKIP when go is missing.
 if command -v go >/dev/null 2>&1; then
     row="$(jq -c 'select(.id=="m-ctl-our-row-count")' "$HERE/claims.jsonl")"
     if [ -z "$row" ]; then
@@ -1291,7 +1294,7 @@ if command -v go >/dev/null 2>&1; then
             tar -x -C "$cold/our"
         dir="$(fresh cold-go-cache)"
         plant_behaviour "$dir" "$(printf '%s' "$row" | jq -r '.command')" "$(printf '%s' "$row" | jq -c '.expect')"
-        out="$(TMPDIR="$cold/tmp" IOC_CACHE="$cold/cache" IOC_OUR_TREE="$cold/our" fixture_run "$dir" --replay)"
+        out="$(TMPDIR="$cold/tmp" IOC_CACHE="$cold/cache" GOMODCACHE="$cold/cache/go/mod" GOCACHE="$cold/cache/go/build" IOC_OUR_TREE="$cold/our" fixture_run "$dir" --replay)"
         # go writes its module cache read-only, and the EXIT trap removes $WORK.
         chmod -R u+w "$cold"
         honest_result "m-ctl-our-row-count meets its predicate on a machine with no Go module cache" replay-command "$out"
