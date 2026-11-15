@@ -33,6 +33,7 @@ const PLUGIN_BUILDER = path.join(REPO_ROOT, "packages/claude-envoy/scripts/build
 // partition is valid because the Envoy plugin, installed beside this one, ships it.
 const repoSkillsRoot = path.join(REPO_ROOT, "skills");
 const promptsRoot = path.join(REPO_ROOT, "packages/daemon/internal/prompts");
+const docsSiteRoot = path.join(REPO_ROOT, "docs/site/src/content");
 const agentsRoot = path.join(REPO_ROOT, "packages/pi-legion/agents");
 let staged: string;
 
@@ -68,9 +69,12 @@ test("every relative link resolves to a file inside the staged partition", () =>
 // make (`skill://legion-worker/references/red-at-the-head.md`), and took the sentences that
 // forbade it out of this partition's skills and the daemon's prompts. A forward merge keeps both
 // sides of a deletion with no conflict for anyone to read, so the prohibitions are refused over
-// both roots rather than over the files they were deleted from.
-test("no staged skill or daemon prompt forbids the phase holder's re-run of a red at the head", () => {
-  expect(retiredRerunProhibitions([staged, promptsRoot])).toEqual([]);
+// every root rather than over the files they were deleted from. The documentation site is one of
+// them: an operator reads it, and its running-legion.md carried "re-runs nothing" until this
+// change (test round 1's F4). docs/plans and docs/solutions stay out, since they are dated
+// history that may quote a retired rule on purpose.
+test("no staged skill, daemon prompt or docs page forbids the phase holder's re-run of a red at the head", () => {
+  expect(retiredRerunProhibitions([staged, promptsRoot, docsSiteRoot])).toEqual([]);
 });
 
 // Reads by filesystem path stop at 300 lines, so a worker reaches a reference only through a

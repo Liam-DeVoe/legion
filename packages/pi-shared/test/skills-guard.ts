@@ -410,26 +410,73 @@ const REVIEWER_RERUNS_NOTHING =
  */
 const ONLY_THE_IMPLEMENTER_WAITS = /\ba Legion implementer waits this way only\b/i;
 
-/** The four prohibitions the re-run rule retired, in the order they are written above. */
+/**
+ * The send-back INFRA-1303 retired from the merger's watch
+ * (skills/legion-worker/references/merge-gate.md): "a head the queue took out over its own
+ * `merge_group` checks is work to fix, so the issue goes back", which sent the work back on the
+ * first `failed_checks` removal. The merger's prompt part
+ * (packages/daemon/internal/prompts/roles/merger.md) carried the same rule as "That is work to
+ * fix. Send the issue back", and for a while in this change as "is work to fix, so send the issue
+ * back". A `failed_checks` removal at a head that has not changed now gets that same head queued
+ * once more, and the issue goes back only on the second such removal of that head
+ * (`skill://legion-worker/references/merge-gate.md`, *A `failed_checks` ejection at an unchanged
+ * head is queued once more*): the first-removal rule sent cybermonklabs/legion#3972 round a lap
+ * on a flaky group build (INFRA-3204's retro).
+ *
+ * The subject is the `merge_group` checks, and the gap after them is `.{0,30}` rather than
+ * `[^.]`, so it reaches across the one full stop of the prompt part's "checks failed. That is
+ * work to fix." The clause that replaced it keeps every word up to `goes back` and then says
+ * when: "… is work to fix, so the issue goes back on the second such removal of that head", so a
+ * send-back followed by `on the second` or `only on the second` passes, and so does the prompt
+ * part's "the issue goes back only on the second such removal of that head", which calls nothing
+ * work to fix.
+ */
+const FIRST_EJECTION_GOES_BACK =
+  /\bmerge_group`?\s+checks\b.{0,30}?\bis\s+work\s+to\s+fix\b[,.]?\s+(?:so\s+)?(?:the\s+issue\s+goes\s+back|send\s+the\s+issue\s+back)\b(?!\s+(?:only\s+)?on\s+the\s+second\b)/i;
+
+/**
+ * The ban on a wait INFRA-1303 retired from the tester's prompt part
+ * (packages/daemon/internal/prompts/roles/core/tester.md): "A lane still running is read as
+ * running; never wait for it.", which the tester's evidence rule
+ * (skills/legion-worker/references/pr-body.md) carried as "A lane GitHub shows `queued` or `in
+ * progress` is read as such: the tester never waits for it". The tester holds `testing`, so the
+ * re-run of a red at the head is its own to press and its own to wait on
+ * (`skill://legion-worker/references/red-at-the-head.md`), and a tester told never to wait for a
+ * running lane reads the one wait that page gives it as forbidden.
+ *
+ * The subject is a lane noun — `lane`, `check`, `suite`, `job` — in a running state — `running`,
+ * `queued`, `in progress` — and the ban is `never wait(s) for it` or `them` in the same sentence.
+ * The sentences that replaced it keep a wait and so pass: "you wait for none of them but that
+ * re-run" (tester.md) and "the tester waits for none of them but the re-run …" (pr-body.md). So
+ * does the implementer's "never wait for CI", which names no running lane and no `it`.
+ */
+const NO_WAIT_FOR_A_RUNNING_LANE =
+  /\b(?:lanes?|checks?|suites?|jobs?)\b[^.]{0,60}?\b(?:running|queued|in[\s_]progress)\b[^.]{0,60}?\bnever\s+waits?\s+for\s+(?:it|them)\b/i;
+
+/** The six rules INFRA-1303 retired, in the order they are written above. */
 const RETIRED_RERUN_PROHIBITIONS = [
   NO_LANE_IS_RERUN,
   RERUN_NONE_OF_THEM_YOURSELF,
   REVIEWER_RERUNS_NOTHING,
   ONLY_THE_IMPLEMENTER_WAITS,
+  FIRST_EJECTION_GOES_BACK,
+  NO_WAIT_FOR_A_RUNNING_LANE,
 ];
 
 /**
- * Every place in the Markdown files under `roots` that still forbids the re-run INFRA-1303 turned
- * on, each as one `<file>:<line>`. The four prohibitions were deleted from seven skill files and
- * two daemon prompt parts at once, and a forward merge keeps both sides of a deletion in silence,
- * so the rule is written over whole partitions rather than over the nine files it cleared: a
- * tenth file that acquires one fails here too.
+ * Every place in the Markdown files under `roots` that still carries a rule INFRA-1303 retired,
+ * each as one `<file>:<line>`: a sentence that forbids the re-run it turned on or the wait on that
+ * re-run, gives the wait to the wrong role, or sends the work back on the first `failed_checks`
+ * ejection the merger now queues once more. The six were deleted from skill files and daemon
+ * prompt parts at once, and a forward merge keeps both sides of a deletion in silence, so the rule
+ * is written over whole partitions rather than over the files it cleared: another file that
+ * acquires one fails here too.
  *
  * Each prohibition is matched against the whitespace-collapsed text `prosePinFaults` reads, both
- * of them the same collapse, because each prohibition crosses a line in the file it came from.
- * The hit's offset is mapped back through `collapsedOffsets`, whose per-character map is built
- * once for a file that holds a hit and not at all for any other, to the line a reader opens. One
- * hit per
+ * of them the same collapse, because these files are wrapped and a prohibition can cross a line
+ * wherever it stands. The hit's offset is mapped back through `collapsedOffsets`, whose
+ * per-character map is built once for a file that holds a hit and not at all for any other, to
+ * the line a reader opens: the line where the prohibition's first word stands. One hit per
  * prohibition per file: the patterns carry no `g` flag, so a file that says it twice is named
  * once and reads the same after the first is fixed.
  */
