@@ -900,7 +900,7 @@ What the two processes share, and what each keeps to itself:
 
 - No leased background loop runs a pass beside another process's pass of the same loop.
   Each pass takes a named session-level advisory lease for its length (`duty.Exclusive`), so a process whose attempt lands inside another's pass finds it held and logs a skip.
-  The thirteen timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes, the display tree fill (`texttreefill`, lease `text-tree-fill`) and the records job of the words people ask about (`wordrecords`, lease `word-records`)
+  The fourteen timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes, the display tree fill (`texttreefill`, lease `text-tree-fill`), the records job of the words people ask about (`wordrecords`, lease `word-records`) and the reviewer's sweep of held texts (lease `reviewer-sweep`)
   — also record each pass in `duty_passes` (migration `0115`), in a row per lease and period, so a process whose tick lands between another's passes
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
@@ -912,7 +912,7 @@ What the two processes share, and what each keeps to itself:
   The settlement resumption is leased because a settlement reads the store under the document's lock whichever process runs it, so one process per minute arms every owed settlement.
   The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Eighteen names are leased in all: those fifteen loops, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-two (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot, whether or not this configuration runs its loop, and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
+  Nineteen names are leased in all: those sixteen loops, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-three (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot, whether or not this configuration runs its loop, and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
   The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
@@ -1095,12 +1095,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 22 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 113 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 23 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 114 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 22 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the embeddings `project_key` fill, the display tree fill and the records job among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
+| Leases (`store.LeasePoolSize`) | 23 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the embeddings `project_key` fill, the display tree fill, the records job and the reviewer's sweep of held texts among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1373,6 +1373,9 @@ A process that finds it held tries again
 
 - The records job of the words people ask about (`wordrecords.Job.Run`, lease `word-records`, The word records below) runs every 10 seconds through `duty.RunLeased`, its first pass at start, while `DISPATCH_WORD_RECORDS` is `on` and its model group is set.
   Its tick records its period in `duty_passes`, so one process serves each period; a pass reads the event log after its cursor up to the safe horizon, then classifies up to 100 texts that are due, 4 calls at a time.
+
+- The reviewer's sweep of held texts (`api.Background`'s `SweepHeld`, lease `reviewer-sweep`, The reviewer below) runs every 10 seconds through `duty.RunLeased`, its first pass at start, while the reviewer's model group is set.
+  Its tick records its period in `duty_passes`, so one process serves each period; a pass reviews again each held text a stopped process left in review, posts as `DISPATCH_REVIEWER_UNEDITED` says each held text whose writer did not act within `DISPATCH_REVIEWER_WRITER_WINDOW` or whose writer session has gone, and posts each decided held text whose turn came.
 
 Outside these classes, the document compaction sweep (lease `document-compaction`) runs every hour from a tick at start whether or not NATS is configured, the display tree fill (lease `text-tree-fill`, `texttreefill.Run`) runs every hour from a tick at start and holds its lease for a whole pass, which is as long as it takes to store a tree for every stored text that has none at this build's display-parser version, the outbox's publish scan is woken, never periodic (`outbox.Run`), the settlement resumption still runs every minute, the block index reconciliation (lease `block-index`) runs every 30 s (every 2 s while a batch is full) and the repair of closed and reopened issues' asks (lease `issue-ask-repair`, Database migrations below) every 10 minutes after its boot pass, each recording its passes in `duty_passes` with its period, and the per-feature listeners (the delivery live hub, the event stream relay and the events outbox) keep their own connections and keep-alive pings.
 
@@ -3145,6 +3148,26 @@ Every default keeps each change to a text off.
 
 - `DISPATCH_WRITING_RULES_REFUSAL`: `on` or `off` (default `off`); and `DISPATCH_WRITING_RULES_EXTRA`, a comma list of `reader_words` and `ask_parts` the refusal shows beside the written rules (default none).
 
+### The reviewer
+
+The reviewer (`internal/dispatch/api/reviewer.go`, INFRA-3231's R5) reads an ask, a new issue's title and spec, a comment and a message that an agent session writes to a person, and an agent's reply to a delivery a plugin posts for it (`POST /api/v1/messages/{id}/reply`, `POST /api/v1/comments/{id}/reply`); a reply the plugin marks as generated (`Dispatch-Generated-Text: 1`) posts at once.
+It reads no text a person writes, none the Legion daemon writes, and none whose reader is another agent: the reader is the person the record names (`writing_check_reader.go`).
+It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is set, whatever the kinds say, so the draft route answers; with the group unset it reads nothing.
+
+- `hold` keeps the text in `held_texts` alone: the write answers at once, `201` in its own shape under the id the hold reserved (an issue's key from its project's sequence, else a uuid), with an added `held` object `{state, deadline, waits_on?}`, and no person sees it.
+  Before the hold, the write runs its own path in a transaction that is rolled back, so a write that path refuses is refused at once, as with the reviewer off.
+  The review runs in the background: a clean review posts the text (`passed`); findings go to the writer session as a turn of its own, a `message.created` frame from Dispatch whose message id is the held text's id, with no message row and no event, and the writer has `DISPATCH_REVIEWER_WRITER_WINDOW` to edit or post it; a writer session that has gone, or that does not act in time, gets the setting's choice (`DISPATCH_REVIEWER_UNEDITED`: `rewrite_posted` or `posted_as_written`); a model that fails or runs past `DISPATCH_REVIEWER_TIMEOUT` posts the text as written (`posted_unreviewed`).
+  The post runs the kind's own create path with the stored request, the recorded actor and the reserved id, so it writes the rows and the event the same write writes with the reviewer off, with the post time as their creation time.
+- `after` posts the text at once and reviews it after the post (`reviewed_after`); its findings go to the writer the same way, and nothing more happens when the writer does not act.
+- A write that names a held text (a child issue, an ask, a comment or a message on a held issue, a reply to a held comment, ask or message, and any other write whose path names a held issue, ask, comment or message: a document, a result, a handoff, a claim, an update, an answer) is accepted, stored beside it, and runs right after it posts, in the order the writes came.
+  A create of a kind the reviewer holds answers `201` in its own shape under an id reserved for it; any other write answers `202 {id, held}`.
+- Every decision is a row of `writing_check_events` with its reader and project: `held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`.
+
+The routes: `GET /api/v1/held/{id}` reads a held text (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`); `PATCH /api/v1/held/{id}` edits it, which the reviewer reads again; `POST /api/v1/held/{id}/post {reason}` posts it as written; only its writer session edits or posts it (`403 HELD_NOT_WRITER`).
+The `dispatch` command's `held`, `held-edit` and `held-post` call them.
+`POST /api/v1/reviewer/draft {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, its rewrite and each model call's deployment and served model, and writes nothing.
+The leased sweep (lease `reviewer-sweep`, every 10 seconds, Background loops above) reviews again a text a stopped process left in review, and acts on a writer that did not act in time or has gone.
+
 ### The written rules' refusal
 
 With `DISPATCH_WRITING_RULES_REFUSAL=on`, the `dispatch` command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction of the session's context, and prints the written rules for the person who reads that write (`skills/plain-words`: ce-noslop's tests, its pattern catalog and its terminology, and the six phrases the owner asked to stop).
@@ -3870,6 +3893,16 @@ Each item below names a path with its method and identity, then its purpose.
   Answers `{reader, text}`: `reader` the login of the person who reads the write, as the writing check decides it, `""` for none, and `text` the rules (The written rules' refusal, above).
   It writes nothing. A route that is no such write, a missing body, or a body that is not the JSON of a write to that route is `400 INVALID_BODY`.
   Its body may hold 1 KiB more than a JSON route's 1 MiB, so every write it can name fits inside it; past that it is `413 REQUEST_TOO_LARGE`.
+
+- `/api/v1/held/{id}` (GET, PATCH; cookie, trusted header, or bearer) and `/api/v1/held/{id}/post` (POST; cookie, trusted header, or bearer)
+
+  A text the reviewer holds (The reviewer, above): GET reads it (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`), PATCH edits its wording, which the reviewer reads again, and POST `{reason}` posts it as written, recording the reason.
+  Only its writer session edits or posts it (`403 HELD_NOT_WRITER`), and only while it is in review or awaits its writer (`409 HELD_TEXT_DECIDED`); an id no held text has is `404 HELD_NOT_FOUND`.
+
+- `/api/v1/reviewer/draft` (POST; cookie, trusted header, or bearer)
+
+  The reviewer's review of a draft, `{kind, text, title?, options?, multiple?, issue?, reader?}`: answers `{reader, findings, rewrite, not_applied?, calls}`, each call naming the deployment its request named and the model the provider served, and writes nothing.
+  With no reviewer's model group set it is `503 REVIEWER_NO_MODEL`; a model call that gives no answer is `502 REVIEWER_MODEL_FAILED`.
 
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 

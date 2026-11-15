@@ -130,7 +130,10 @@ type AppContextOptions struct {
 	WritingCheck *api.WritingCheck
 	// WritingRules is the refusal of the written rules (cmd/dispatch:
 	// DISPATCH_WRITING_RULES_REFUSAL, DISPATCH_WRITING_RULES_EXTRA). See api.Deps.WritingRules.
-	WritingRules  api.WritingRulesConfig
+	WritingRules api.WritingRulesConfig
+	// Reviewer is the reviewer of agents' texts to people (cmd/dispatch: DISPATCH_REVIEWER_*);
+	// nil where no reviewer's model group is set. See api.Deps.Reviewer.
+	Reviewer      *api.Reviewer
 	Events        *events.Broker
 	App           *auth.AppConfig
 	GitHubAPIBase string
@@ -214,6 +217,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Answerer:               opts.Answerer,
 		WritingCheck:           opts.WritingCheck,
 		WritingRules:           opts.WritingRules,
+		Reviewer:               opts.Reviewer,
 		Events:                 opts.Events,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,

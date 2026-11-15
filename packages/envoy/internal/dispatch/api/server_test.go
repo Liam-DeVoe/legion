@@ -142,6 +142,9 @@ type testServerOptions struct {
 	// writingRules is the refusal of the written rules as the deployment set it (Deps.WritingRules);
 	// zero is the refusal off with no rule set beside the written rules.
 	writingRules WritingRulesConfig
+	// reviewer is the reviewer of agents' texts (Deps.Reviewer); nil is a deployment that sets no
+	// reviewer's model group.
+	reviewer *Reviewer
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
@@ -278,6 +281,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		DashboardEntry:         options.dashboardEntry,
 		WritingCheck:           writingCheck,
 		WritingRules:           options.writingRules,
+		Reviewer:               options.reviewer,
 		BuildCommit:            options.buildCommit,
 	})
 	if err != nil {

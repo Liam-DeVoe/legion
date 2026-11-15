@@ -1211,7 +1211,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-four tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1266,6 +1266,41 @@ export interface paths {
     get: operations["getApiV1HandoffsById"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/held/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One text the reviewer holds (INFRA-3231's R5): an ask, a new issue, a comment or a message an agent wrote to a person while DISPATCH_REVIEWER_<KIND> is hold, which no person sees until it posts. Answers {id, kind, state, route, writer, reader, issue_key?, wording, original, findings, rewrite, not_applied?, revision, deadline, outcome?, reason?, detail?, waits_on?, written_at, posted_at}: id is the id its write answered (an issue's key, else a uuid), state reviewing, awaiting_writer, posting, posted or failed; wording is the text as it posts now and original as first written, each {title?, body, options?, multiple?}; findings the last review's, each {rule_set, quote, why, fix}; rewrite the reviewer's rewrite or null, and not_applied why it cannot post; deadline when the writer's time to act ends, null while none runs; outcome what posts or posted (passed, posted_as_written, rewrite_posted, posted_unreviewed, not_reviewed); waits_on the held text it posts after. Any agent's token reads it; a person signed in at a browser is 403 HELD_FORBIDDEN. An id no held text has is 404 HELD_NOT_FOUND. */
+    get: operations["getApiV1HeldById"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** @description Edit a held text before it posts {question?, options?, title?, spec?, body?}: an ask takes its question and its options ({label, description?}, up to 8), an issue its title and its spec, a comment or a message its body; a field the kind does not hold is 400 HELD_EDIT_INPUT, and each is checked as the kind's own create checks it. The edit is recorded edited and the reviewer reads the text again, so it answers the held text in review. Only the session that wrote it edits it, 403 HELD_NOT_WRITER for any other caller, and only while it is in review or awaits its writer: a text whose post is decided is 409 HELD_TEXT_DECIDED. */
+    patch: operations["patchApiV1HeldById"];
+    trace?: never;
+  };
+  "/api/v1/held/{id}/post": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Post a held text as written {reason}, over what the reviewer found: reason (required, 400 HELD_POST_INPUT when blank) says why the text is right for its reader, and is recorded with the outcome posted_as_written. The text posts through its kind's own create path before the answer, which is the held text as it then stands. Only the session that wrote it posts it, 403 HELD_NOT_WRITER for any other caller, and only while it is in review or awaits its writer: a text whose post is decided is 409 HELD_TEXT_DECIDED. */
+    post: operations["postApiV1HeldByIdPost"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2644,6 +2679,23 @@ export interface paths {
     put?: never;
     /** @description Retract one recorded result, with the reason it is wrong: {reason, actor?}. {id} is the result's own id. The retraction is a record of its own: the result is neither updated nor deleted, and both records stay readable with the reason and the actor who wrote it. No surface counts a retracted result as evidence. Three callers are admitted and every other is 403 RETRACTION_FORBIDDEN: the session that recorded the result, a session holding the Dispatch claim of the issue the result was recorded on, and a caller whose credential carries a person, which is a personal token or a signed-in person's own session. A closed issue and a check of any when are retracted here, which is what recording refuses. A blank reason is 400 RETRACTION_INPUT, an id no result has is 404 RESULT_NOT_FOUND, and a result a retraction already stands against is 409 RESULT_RETRACTED. The answer is the retraction: {result_id, reason, session, actor, created_at, event_seq}. It is appended as result.retracted on the check's issue. */
     post: operations["postApiV1ResultsByIdRetract"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/reviewer/draft": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description The reviewer's review of a draft {kind, text, title?, options?, multiple?, issue?, reader?}, which writes nothing: kind is ask, issue, comment, message, document or decision_block (400 REVIEWER_DRAFT_INPUT for any other, or a blank text); text an ask's question, an issue's spec or any other kind's body; issue the issue the draft would be on, whose record it reads; reader the person it is for, else the issue's assignee or its project's default. Answers {reader, findings, rewrite, not_applied?, calls}: findings each {rule_set, quote, why, fix}, rewrite {title?, body, options?, multiple?} or null, not_applied why the rewrite would not post, and calls each model call {purpose, deployment, served, fault?}, served being the model id the provider says answered. It answers whenever the reviewer's model group is set, whatever DISPATCH_REVIEWER_<KIND> say; with none set it is 503 REVIEWER_NO_MODEL, and a model call that gives no answer is 502 REVIEWER_MODEL_FAILED. */
+    post: operations["postApiV1ReviewerDraft"];
     delete?: never;
     options?: never;
     head?: never;
@@ -4856,6 +4908,63 @@ export interface components {
       phase: string;
       version: number;
     };
+    HeldDeferred: {
+      held: components["schemas"]["HeldState"];
+      id: string;
+    };
+    HeldEditInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      body?: null | string;
+      options?: null | components["schemas"]["HeldOption"][];
+      question?: null | string;
+      spec?: null | string;
+      title?: null | string;
+    };
+    HeldOption: {
+      description?: string;
+      label: string;
+    };
+    HeldPostInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      reason: string;
+    };
+    HeldRead: {
+      /** Format: date-time */
+      deadline: null | string;
+      detail?: string;
+      findings: components["schemas"]["ReviewFinding"][] | null;
+      id: string;
+      issue_key?: string;
+      kind: string;
+      not_applied?: string;
+      original: components["schemas"]["HeldWording"];
+      outcome?: string;
+      /** Format: date-time */
+      posted_at: null | string;
+      reader: string;
+      reason?: string;
+      revision: number;
+      rewrite: components["schemas"]["HeldWording"] | null;
+      route: string;
+      state: string;
+      waits_on?: string;
+      wording: components["schemas"]["HeldWording"];
+      writer: string;
+      /** Format: date-time */
+      written_at: string;
+    };
+    HeldState: {
+      /** Format: date-time */
+      deadline: null | string;
+      state: string;
+      waits_on?: string;
+    };
+    HeldWording: {
+      body: string;
+      multiple?: boolean;
+      options?: components["schemas"]["AskOption"][];
+      title?: string;
+    };
     HoldPersistenceInput: {
       duration: string;
     };
@@ -5902,6 +6011,34 @@ export interface components {
       basis?: components["schemas"]["CheckBasis"];
       /** @enum {string} */
       reason?: "repository_unreadable" | "read_failed";
+    };
+    ReviewFinding: {
+      fix: string;
+      quote: string;
+      rule_set: string;
+      why: string;
+    };
+    ReviewerCall: {
+      deployment: string;
+      fault?: string;
+      purpose: string;
+      served: string;
+    };
+    ReviewerDraftAnswer: {
+      calls: components["schemas"]["ReviewerCall"][] | null;
+      findings: components["schemas"]["ReviewFinding"][] | null;
+      not_applied?: string;
+      reader: string;
+      rewrite: components["schemas"]["HeldWording"] | null;
+    };
+    ReviewerDraftInput: {
+      issue?: string;
+      kind: string;
+      multiple?: boolean;
+      options?: components["schemas"]["HeldOption"][] | null;
+      reader?: string;
+      text: string;
+      title?: string;
     };
     RoomCounters: {
       awareness_clients: number;
@@ -7198,6 +7335,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
+            held?: components["schemas"]["HeldState"];
           };
         };
       };
@@ -7380,6 +7518,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["CommentWriteResponse"] & {
             advice?: components["schemas"]["WriteAdvice"];
+            held?: components["schemas"]["HeldState"];
           };
         };
       };
@@ -7939,6 +8078,15 @@ export interface operations {
           "application/json": components["schemas"]["AskWithTrees"];
         };
       };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7975,6 +8123,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8015,6 +8172,15 @@ export interface operations {
           "application/json": components["schemas"]["AskWithTrees"];
         };
       };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8051,6 +8217,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8117,6 +8292,15 @@ export interface operations {
       };
     };
     responses: {
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description No Content */
       204: {
         headers: {
@@ -8154,6 +8338,15 @@ export interface operations {
       };
     };
     responses: {
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description No Content */
       204: {
         headers: {
@@ -8197,6 +8390,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8439,6 +8641,15 @@ export interface operations {
           "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8475,6 +8686,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AcceptSuggestionResponse"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8587,6 +8807,15 @@ export interface operations {
           "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8619,6 +8848,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentWithTrees"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8706,6 +8944,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentWithTrees"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9495,6 +9742,116 @@ export interface operations {
       };
     };
   };
+  getApiV1HeldById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  patchApiV1HeldById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["HeldEditInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1HeldByIdPost: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["HeldPostInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Inbox: {
     parameters: {
       query?: {
@@ -9611,6 +9968,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["Issue"] & {
             advice?: components["schemas"]["WriteAdvice"];
+            held?: components["schemas"]["HeldState"];
           };
         };
       };
@@ -9730,6 +10088,15 @@ export interface operations {
           };
         };
       };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9815,6 +10182,15 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactUploadResponse"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9928,6 +10304,15 @@ export interface operations {
           };
         };
       };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description Conflict */
       409: {
         headers: {
@@ -10013,6 +10398,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Version"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10125,6 +10519,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
+            held?: components["schemas"]["HeldState"];
           };
         };
       };
@@ -10164,6 +10559,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ClaimedIssue"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description Conflict */
@@ -10211,6 +10615,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ClaimedIssue"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description Conflict */
@@ -10328,6 +10741,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["CommentWriteResponse"] & {
             advice?: components["schemas"]["WriteAdvice"];
+            held?: components["schemas"]["HeldState"];
           };
         };
       };
@@ -10435,6 +10849,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["IssueDesignGates"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10549,6 +10972,15 @@ export interface operations {
           "application/json": components["schemas"]["HandoffSummary"];
         };
       };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -10655,6 +11087,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["MessageWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
+            held?: components["schemas"]["HeldState"];
           };
         };
       };
@@ -10808,6 +11241,15 @@ export interface operations {
           "application/json": components["schemas"]["CheckResultRecorded"];
         };
       };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -10868,6 +11310,15 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
       /** @description No Content */
       204: {
         headers: {
@@ -11910,6 +12361,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MessageReplyResult"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldRead"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13143,6 +13603,42 @@ export interface operations {
       };
     };
   };
+  postApiV1ReviewerDraft: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ReviewerDraftInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ReviewerDraftAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1SchemaBlocks: {
     parameters: {
       query?: {
@@ -14092,6 +14588,13 @@ export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
 export type GraphReferences = components["schemas"]["GraphReferences"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
+export type HeldDeferred = components["schemas"]["HeldDeferred"];
+export type HeldEditInput = components["schemas"]["HeldEditInput"];
+export type HeldOption = components["schemas"]["HeldOption"];
+export type HeldPostInput = components["schemas"]["HeldPostInput"];
+export type HeldRead = components["schemas"]["HeldRead"];
+export type HeldState = components["schemas"]["HeldState"];
+export type HeldWording = components["schemas"]["HeldWording"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
@@ -14207,6 +14710,10 @@ export type RequirementCoverage = components["schemas"]["RequirementCoverage"];
 export type ResidentRooms = components["schemas"]["ResidentRooms"];
 export type ResolveAskInput = components["schemas"]["ResolveAskInput"];
 export type ResultCommitStands = components["schemas"]["ResultCommitStands"];
+export type ReviewFinding = components["schemas"]["ReviewFinding"];
+export type ReviewerCall = components["schemas"]["ReviewerCall"];
+export type ReviewerDraftAnswer = components["schemas"]["ReviewerDraftAnswer"];
+export type ReviewerDraftInput = components["schemas"]["ReviewerDraftInput"];
 export type RoomCounters = components["schemas"]["RoomCounters"];
 export type RouteIndex = components["schemas"]["RouteIndex"];
 export type RouteIndexEntry = components["schemas"]["RouteIndexEntry"];

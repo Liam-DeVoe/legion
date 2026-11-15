@@ -6,7 +6,8 @@ package api
 // The catalogue is the dispatch tools that write: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. Twenty of the thirty-four tools write,
+// what a model chooses on, and its own argument schema. Twenty of the thirty-seven tools write a
+// row of the graph the bar may propose (the three held-text tools edit the caller's own text),
 // which is under the count where a model's choice measurably falls apart, so the list is read
 // whole: nothing searches it, and no second schema is authored per route.
 //

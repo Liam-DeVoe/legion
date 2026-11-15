@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
 // createDeliveryInput is the body of POST /api/v1/messages/{id}/deliveries.
@@ -871,7 +872,21 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !s.writingCheck(w, r, actor, input) {
+	// A reply to the frame that carried a held text's findings names the held text's id: it is
+	// the writer's answer, kept with the held text, and no message (held_routes.go).
+	if s.answerHeldFrame(w, r, actor, input) {
+		return
+	}
+	// An agent's answer to a person is the reviewer's to read (Decision 9); an error report is
+	// no answer, and goes to the writing check alone.
+	var after *postedReview
+	if input.Body != nil {
+		var proceed bool
+		if after, proceed = s.reviewReply(w, r, actor, input, reviewer.KindMessage, *input.Body,
+			reviewer.Subject{InReplyTo: r.PathValue("id")}); !proceed {
+			return
+		}
+	} else if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 
@@ -881,6 +896,12 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// A held reply's post, or its dry run, runs this route again (held_replay.go).
+	held := heldPostFrom(r.Context())
+	if err := held.lock(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	message, err := scanMessage(tx.QueryRow(r.Context(), `
 		select `+messageColumns+`
 		from messages where id = $1
@@ -919,6 +940,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	var response any
 	status := http.StatusOK
 	var events []model.Event
+	// postedID is the reply this request posted, which the reviewer reads after the post where
+	// its setting is after; "" where it posted none.
+	postedID := ""
 	switch {
 	case attempt.ReplyID != nil:
 		if followUp && input.InReplyToBlock != nil {
@@ -993,12 +1017,20 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		response, events, status = replyRead{shapedMessage: newShapedMessage(reply, wantsDisplayTrees(r))}, append(events, answered), http.StatusCreated
+		postedID = reply.ID
+	}
+	if err := held.finish(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), events...)
+	if postedID != "" {
+		s.reviewPosted(r.Context(), after, postedID)
+	}
 	WriteJSON(w, status, response)
 }
 
@@ -1075,11 +1107,13 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
+	// Under the id a held reply's hold reserved where its post runs this, else a fresh one
+	// (textIDFor).
 	reply, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (issue_key, author, body, target, in_reply_to, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6)
+		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block)
+		values ($1, $2, $3, $4, $5, $6, $7)
 		returning `+messageColumns+`
-	`, parent.IssueKey, author, body, parent.Target, parent.ID, block.nodeID()))
+	`, textIDFor(ctx), parent.IssueKey, author, body, parent.Target, parent.ID, block.nodeID()))
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}

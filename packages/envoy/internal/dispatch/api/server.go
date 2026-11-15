@@ -105,8 +105,12 @@ type Deps struct {
 	// DISPATCH_WRITING_RULES_EXTRA). Its zero value refuses nothing and shows no rule set beside
 	// the written rules.
 	WritingRules WritingRulesConfig
-	Envoy        *envoy.Client
-	Events       *events.Broker
+	// Reviewer is the reviewer of agents' texts to people (INFRA-3231's R5, reviewer.go); nil is a
+	// deployment that sets no reviewer's model group (cmd/dispatch: DISPATCH_REVIEWER_MODEL_*),
+	// which reviews nothing and answers the draft route 503.
+	Reviewer *Reviewer
+	Envoy    *envoy.Client
+	Events   *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
 	// GitHub reads; nil is the "no app credentials yet" state and answers ErrNoAppKey.
 	GitHub *githubapp.Client
@@ -222,7 +226,9 @@ type DepsInput struct {
 	WritingCheck *WritingCheck
 	// WritingRules is the refusal of the written rules; see Deps.WritingRules.
 	WritingRules WritingRulesConfig
-	Events       *events.Broker
+	// Reviewer is the reviewer; nil is none. See Deps.Reviewer.
+	Reviewer *Reviewer
+	Events   *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -331,6 +337,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Answerer:               input.Answerer,
 		WritingCheck:           input.WritingCheck,
 		WritingRules:           input.WritingRules,
+		Reviewer:               input.Reviewer,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,
@@ -391,6 +398,9 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime   context.Context
 	routeIndex []routeIndexEntry
+	// mux is the mux register mounted this server's routes on, which a held text's post runs a
+	// write kept whole through (held_replay.go); nil on a server a test builds directly.
+	mux *http.ServeMux
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
 	going           GoingCatalogue
@@ -585,7 +595,10 @@ type queryer interface {
 // started the relay, or at once under the test hooks.
 func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
+	return Background{
+		Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
+		SweepHeld: s.sweepHeld,
+	}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -607,6 +620,11 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
+	// SweepHeld is one pass of the reviewer's sweep of held texts (sweepHeld): a text left in
+	// review by a stopped process is reviewed again, one whose writer did not act in time or has
+	// gone posts as DISPATCH_REVIEWER_UNEDITED says, and every decided text whose turn came posts.
+	// cmd/dispatch runs it under its lease every ReviewerSweepInterval.
+	SweepHeld func(context.Context)
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
@@ -691,6 +709,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
+	s.mux = mux
 	s.liveKinds = map[string]liveKind{
 		liveEventsView: {resumes: true, start: s.startEventsView},
 		liveAgentView:  {start: s.startAgentView},
@@ -738,11 +757,20 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	replays := s.keyedReplays()
 	for _, route := range routes {
 		handler := route.Handler
+		upload := route.Method+" "+route.Pattern == issueUploadRoute
+		if !upload {
+			// Inside the keyed layer, so a write kept beside a held text it names answers a repeat
+			// under its key with the same 202 rather than keeping it twice (awaitHeldTarget).
+			handler = s.awaitHeldTarget(route, handler)
+		}
 		if keyedMethod(route.Method) {
 			handler = s.keyedWrites(route.Method, route.Pattern, handler, replays[route.Method+" "+route.Pattern])
 		}
-		if route.Method+" "+route.Pattern == issueUploadRoute {
+		if upload {
 			handler = s.refuseUploadToAClosedIssue(handler)
+			// Outside the refusal, which answers 404 for an issue that does not exist yet: an
+			// upload to a held issue is kept beside it and runs once it posts.
+			handler = s.awaitHeldTarget(route, handler)
 		}
 		if route.Method != http.MethodGet {
 			// Outside the keyed layer and the upload's spool, so a write to another project's

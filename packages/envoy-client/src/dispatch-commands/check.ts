@@ -63,6 +63,11 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   // A session's own conversation belongs to no issue: the call names none, and its strict
   // schema refuses the one LEGION_ISSUE would add.
   dispatch_send_to_agent: true,
+  // A held text names its own place: the call names no issue, and its strict schema refuses
+  // the one LEGION_ISSUE would add.
+  dispatch_held: true,
+  dispatch_held_edit: true,
+  dispatch_held_post: true,
 };
 
 function canonicalExternalIssueRef(value: string): string {

@@ -402,8 +402,9 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // reopened issues' asks (api.RunIssueAskRepair), one per delivery durable for the intake's
 // take-over (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the
 // server process registry's prune (processes.RunPrune), the embeddings project_key fill
-// (api.RunEmbeddingProjectKeyFill), the display tree fill (texttreefill.fillLease) and the
-// records job of the words people ask about (wordrecords.Lease) - one caller each, since each
+// (api.RunEmbeddingProjectKeyFill), the display tree fill (texttreefill.fillLease), the records
+// job of the words people ask about (wordrecords.Lease) and the reviewer's sweep of held texts
+// (api.ReviewerSweepLease) - one caller each, since each
 // intake takes its own durable's name from its own goroutine, so each of them can be inside
 // Exclusive at once. The project_key fill is the one that is no loop of a cadence: it labels in a
 // single pass of one to two hours, holds its connection for the whole of it, tries for its lease
@@ -441,7 +442,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 22
+const LeasePoolSize = 23
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass

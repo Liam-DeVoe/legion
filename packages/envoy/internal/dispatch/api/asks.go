@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
@@ -182,7 +183,12 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !s.writingCheck(w, r, actor, input) {
+	create := askCreate{
+		Owner: owner, Kind: kind, Question: input.Question, Options: input.Options,
+		Multiple: multiple, Urgency: urgency, Anchor: input.Anchor,
+	}
+	after, proceed := s.reviewWrite(w, r, actor, input, create.reviewed())
+	if !proceed {
 		return
 	}
 
@@ -192,137 +198,14 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	defer tx.Rollback(r.Context())
-	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
-	defer ledger.Discard()
-	status, err := s.requireOpenOwnerStatus(r.Context(), tx, owner)
+	written, err := s.writeAsk(r.Context(), tx, create, actor, uuid.NewString(), nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var rowID string
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text`).Scan(&rowID); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, docs.MarkAsk, rowID, actor)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-
-	options, err := encodeJSON(input.Options)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	author, err := encodeJSON(actor)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	var anchorJSON any
-	if anchor != nil {
-		anchorJSON, err = encodeJSON(anchor)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	var ask model.Ask
-	if err := tx.QueryRow(r.Context(), `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		returning created_at
-	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind).Scan(&ask.CreatedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := asks.FollowAuthor(r.Context(), tx, rowID, actor); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	ask.ID = rowID
-	ask.IssueKey = owner.IssueKey
-	ask.ArtifactID = owner.ArtifactID
-	ask.Author = actor
-	ask.Question = input.Question
-	ask.Options = input.Options
-	ask.Multiple = multiple
-	ask.Urgency = urgency
-	ask.Anchor = anchor
-	ask.State = "open"
-	ask.Kind = kind
-	if anchor != nil {
-		ask.AnchorArtifact, err = s.loadAskAnchorArtifact(r.Context(), tx, anchor.ArtifactID)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	// The question and the parts of this write through one reader: its parts hold its question,
-	// so the database answers once per kind for both.
-	reader := refs.NewReader(r.Context(), tx, "ask", ask.ID, s.deps.ServerURL)
-	askChanges, err := refs.ReplaceCounted(r.Context(), tx, reader, ask.Question)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// The ask's parts, beside the ask's own references: the row is in, so its state row comes
-	// after it, and the event below names what both moved.
-	askChanges, err = refs.IndexAskPartsCounted(r.Context(), tx, reader, ask, ask.CreatedAt, askChanges)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	appended := []model.Event{}
-	if snapshot != nil {
-		snapshotEvent, err := s.commitArtifactVersionEvent(r.Context(), tx, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		appended = append(appended, snapshotEvent)
-	}
-	openedPayload, err := events.AskEventPayload(r.Context(), tx, ask, askChanges)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// The person this question reaches, read under this write's own transaction through the rule
-	// every read of that person shares, so the caller is told whose Inbox it just landed in
-	// rather than having to read the ask again. It is set after the payload above is built:
-	// model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
-	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
-	ask.WaitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, ask.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	event, err := s.appendEvent(r.Context(), tx, owner.event("ask.opened", actor, openedPayload))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := refs.Stamp(r.Context(), tx, "ask", ask.ID, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	ask.OpenedEventID = &event.ID
-	appended = append(appended, event)
-	// This write opens a question, so it hears about the asks of this issue a person declined to
-	// answer, and the same question is not put to them again.
-	var advice *writeAdvice
-	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
-			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, rowID, *status, true,
-		)
-	}
-	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	s.publish(r.Context(), appended...)
-	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(nil, ask.Question, ask.Options)...)
+	ask := written.ask
+	s.announceAsk(r.Context(), written)
+	s.reviewPosted(r.Context(), after, ask.ID)
 	// The related-item check. An ask on an issue searches that issue's project and, normally, rides its check's
 	// result on the issue's own advice; one on an unlinked project document searches the
 	// document's and has no issue state to report, so its advice carries the result alone, as does
@@ -343,7 +226,155 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		trees: trees,
 	})
 	trees.resolve()
-	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
+	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), written.advice, suggestions))
+}
+
+// askCreate is an ask a write asks, decoded and checked (createAskFor): what writeAsk writes, and
+// what a held ask stores, so that its post writes the ask the write itself would have written.
+type askCreate struct {
+	Owner    owner              `json:"owner"`
+	Kind     string             `json:"kind"`
+	Question string             `json:"question"`
+	Options  []model.AskOption  `json:"options"`
+	Multiple bool               `json:"multiple"`
+	Urgency  string             `json:"urgency"`
+	Anchor   *model.AnchorInput `json:"anchor,omitempty"`
+}
+
+// askWritten is what writeAsk wrote: the ask, the events its commit publishes, and the advice the
+// write answers with, nil for a held ask's post, which answers nobody.
+type askWritten struct {
+	ask    model.Ask
+	events []model.Event
+	advice *writeAdvice
+}
+
+// writeAsk writes create as actor's ask under id in tx, the ask's rows and its ask.opened event,
+// and commits tx. createAskFor runs it with a fresh id, and a held ask's post with the id its hold
+// reserved (held, whose row it takes first and marks posted in the same transaction).
+func (s *server) writeAsk(ctx context.Context, tx pgx.Tx, create askCreate, actor model.Actor, id string, held *heldPost) (askWritten, error) {
+	owner := create.Owner
+	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
+	defer ledger.Discard()
+	if err := held.lock(ctx, tx); err != nil {
+		return askWritten{}, err
+	}
+	status, err := s.requireOpenOwnerStatus(ctx, tx, owner)
+	if err != nil {
+		return askWritten{}, err
+	}
+	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, create.Anchor, docs.MarkAsk, id, actor)
+	if err != nil {
+		return askWritten{}, err
+	}
+	options, err := encodeJSON(create.Options)
+	if err != nil {
+		return askWritten{}, err
+	}
+	author, err := encodeJSON(actor)
+	if err != nil {
+		return askWritten{}, err
+	}
+	var anchorJSON any
+	if anchor != nil {
+		anchorJSON, err = encodeJSON(anchor)
+		if err != nil {
+			return askWritten{}, err
+		}
+	}
+	var ask model.Ask
+	if err := tx.QueryRow(ctx, `
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		returning created_at
+	`, id, owner.IssueKey, owner.ArtifactID, author, create.Question, options, create.Multiple, create.Urgency, anchorJSON, create.Kind).Scan(&ask.CreatedAt); err != nil {
+		return askWritten{}, err
+	}
+	if err := asks.FollowAuthor(ctx, tx, id, actor); err != nil {
+		return askWritten{}, err
+	}
+	ask.ID = id
+	ask.IssueKey = owner.IssueKey
+	ask.ArtifactID = owner.ArtifactID
+	ask.Author = actor
+	ask.Question = create.Question
+	ask.Options = create.Options
+	ask.Multiple = create.Multiple
+	ask.Urgency = create.Urgency
+	ask.Anchor = anchor
+	ask.State = "open"
+	ask.Kind = create.Kind
+	if anchor != nil {
+		ask.AnchorArtifact, err = s.loadAskAnchorArtifact(ctx, tx, anchor.ArtifactID)
+		if err != nil {
+			return askWritten{}, err
+		}
+	}
+	// The question and the parts of this write through one reader: its parts hold its question,
+	// so the database answers once per kind for both.
+	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL)
+	askChanges, err := refs.ReplaceCounted(ctx, tx, reader, ask.Question)
+	if err != nil {
+		return askWritten{}, err
+	}
+	// The ask's parts, beside the ask's own references: the row is in, so its state row comes
+	// after it, and the event below names what both moved.
+	askChanges, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, askChanges)
+	if err != nil {
+		return askWritten{}, err
+	}
+	appended := []model.Event{}
+	if snapshot != nil {
+		snapshotEvent, err := s.commitArtifactVersionEvent(ctx, tx, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
+		if err != nil {
+			return askWritten{}, err
+		}
+		appended = append(appended, snapshotEvent)
+	}
+	openedPayload, err := events.AskEventPayload(ctx, tx, ask, askChanges)
+	if err != nil {
+		return askWritten{}, err
+	}
+	// The person this question reaches, read under this write's own transaction through the rule
+	// every read of that person shares, so the caller is told whose Inbox it just landed in
+	// rather than having to read the ask again. It is set after the payload above is built:
+	// model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
+	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
+	ask.WaitingOnPerson, err = askWaitingOnPerson(ctx, tx, ask.ID)
+	if err != nil {
+		return askWritten{}, err
+	}
+	event, err := s.appendEvent(ctx, tx, owner.event("ask.opened", actor, openedPayload))
+	if err != nil {
+		return askWritten{}, err
+	}
+	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
+		return askWritten{}, err
+	}
+	ask.OpenedEventID = &event.ID
+	appended = append(appended, event)
+	// This write opens a question, so it hears about the asks of this issue a person declined to
+	// answer, and the same question is not put to them again. A held ask's post answers nobody.
+	var advice *writeAdvice
+	if owner.IssueKey != nil && status != nil && held == nil {
+		advice = s.writeAdvice(
+			ctx, tx, routeOpenAsk, *owner.IssueKey, actor, id, *status, true,
+		)
+	}
+	if err := held.finish(ctx, tx); err != nil {
+		return askWritten{}, err
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		return askWritten{}, err
+	}
+	return askWritten{ask: ask, events: appended, advice: advice}, nil
+}
+
+// announceAsk is what follows an ask's commit, a held ask's post as much as the write's own: its
+// events are published and the display trees of its texts stored.
+func (s *server) announceAsk(ctx context.Context, written askWritten) {
+	s.publish(ctx, written.events...)
+	s.storeDisplayTrees(ctx, written.ask.ID, texttrees.AskWrittenTexts(nil, written.ask.Question, written.ask.Options)...)
 }
 
 // editAskInput is the body of PATCH /api/v1/asks/{id}.

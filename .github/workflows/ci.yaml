@@ -1787,6 +1787,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/rank/*'
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/retry/*'
+              # internal/dispatch/reviewer and the prompts it embeds: the API's reviewer
+              # (api/reviewer.go) calls it, so the soak's Dispatch server compiles it (INFRA-3231).
+              - 'packages/envoy/internal/dispatch/reviewer/**'
               - 'packages/envoy/internal/dispatch/sessionanswers/*'
               - 'packages/envoy/internal/dispatch/store/*'
               - 'packages/envoy/internal/dispatch/store/migrations/**'

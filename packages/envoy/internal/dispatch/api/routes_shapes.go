@@ -66,6 +66,9 @@ type routeShape struct {
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
 	// object rather than nesting it, write_advice.go:471-517); nil for an answer that carries none.
 	Advice any
+	// Held is a route whose success answer is, for a write the reviewer holds (reviewer.go), the
+	// same payload with a `held` sibling (heldState) merged into it, as advice is merged.
+	Held bool
 	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
@@ -635,7 +638,7 @@ var routeShapes = map[string]routeShape{
 		Also: []routeAnswer{{Status: http.StatusOK, Body: model.IssueSummaryPage{}}},
 	},
 	"POST /api/v1/issues": {
-		Status: http.StatusCreated, Response: model.Issue{}, Request: createIssueInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: model.Issue{}, Request: createIssueInput{}, Advice: writeAdvice{}, Held: true,
 		// A ref whose external issue already has a Dispatch issue answers that issue, 200.
 		Also:     []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
@@ -686,7 +689,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/issues/{key}/coverage": {Status: http.StatusOK, Response: model.IssueCoverage{}},
 	"POST /api/v1/issues/{key}/messages": {
-		Status: http.StatusCreated, Response: shapedMessage{}, Request: createMessageInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: shapedMessage{}, Request: createMessageInput{}, Advice: writeAdvice{}, Held: true,
 	},
 	"GET /api/v1/issues/{key}/messages":      {Status: http.StatusOK, Response: []messageRead{}},
 	"GET /api/v1/issues/{key}/messages/{id}": {Status: http.StatusOK, Response: messageRead{}},
@@ -710,10 +713,13 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/messages/{id}/reply": {
 		Status: http.StatusCreated, Response: replyRead{}, Request: messageReplyInput{}, Params: messageReplyQuery{},
 		// An attempt already answered is answered the stored reply, 200, marked duplicate
-		// when nothing was posted; an error report answers the attempt itself.
+		// when nothing was posted; an error report answers the attempt itself. A reply to the
+		// frame that carried a held text's findings names the held text and answers it, 202
+		// (answerHeldFrame).
 		Also: []routeAnswer{
 			{Status: http.StatusOK, Body: replyRead{}},
 			{Status: http.StatusOK, Body: model.MessageDelivery{}},
+			{Status: http.StatusAccepted, Body: heldRead{}},
 		},
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
@@ -781,7 +787,7 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/broadcasts":      {Status: http.StatusOK, Response: []broadcastSummary{}},
 	"GET /api/v1/broadcasts/{id}": {Status: http.StatusOK, Response: broadcastRead{}},
 	"POST /api/v1/issues/{key}/asks": {
-		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{}, Held: true,
 	},
 	"GET /api/v1/issues/{key}/asks":                   {Status: http.StatusOK, Response: []issueAskRow{}, Params: issueAsksQuery{}},
 	"GET /api/v1/issues/{key}/decisions":              {Status: http.StatusOK, Response: issueDecisions{}},
@@ -799,7 +805,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: []shapedComment{}, Params: issueCommentsQuery{},
 	},
 	"POST /api/v1/issues/{key}/comments": {
-		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{}, Held: true,
 	},
 	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
@@ -822,11 +828,17 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/artifacts/{id}/asks":   {Status: http.StatusOK, Response: []shapedAsk{}, Params: artifactAsksQuery{}},
 	"POST /api/v1/artifacts/{id}/asks": {
-		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{}, Held: true,
 	},
 	"GET /api/v1/artifacts/{id}/comments": {Status: http.StatusOK, Response: []shapedComment{}},
 	"POST /api/v1/artifacts/{id}/comments": {
-		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
+		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{}, Held: true,
+	},
+	"GET /api/v1/held/{id}":       {Status: http.StatusOK, Response: heldRead{}},
+	"PATCH /api/v1/held/{id}":     {Status: http.StatusOK, Response: heldRead{}, Request: heldEditInput{}},
+	"POST /api/v1/held/{id}/post": {Status: http.StatusOK, Response: heldRead{}, Request: heldPostInput{}},
+	"POST /api/v1/reviewer/draft": {
+		Status: http.StatusOK, Response: reviewerDraftAnswer{}, Request: reviewerDraftInput{},
 	},
 	"GET /api/v1/artifacts/{id}/events":                      {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
 	"GET /api/v1/artifacts/{id}/references":                  {Status: http.StatusOK, Response: model.ArtifactReferences{}},

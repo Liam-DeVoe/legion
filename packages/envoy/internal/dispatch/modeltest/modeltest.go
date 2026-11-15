@@ -53,6 +53,9 @@ type Rule struct {
 	Model string
 	// Contains, when set, matches a request whose text (Request.Text) holds it.
 	Contains string
+	// Match, when set, matches a request it reports true for: a test that matches on more than
+	// one part of the text at once.
+	Match func(Request) bool
 	// Once uses the rule up on the first request it answers, so rules scripted with it answer
 	// the next requests in turn.
 	Once  bool
@@ -179,7 +182,8 @@ func (m *Model) answer(request Request) (Reply, bool) {
 	defer m.mu.Unlock()
 	m.requests = append(m.requests, request)
 	for i, rule := range m.rules {
-		if (rule.Model != "" && rule.Model != request.Model) || !strings.Contains(request.Text, rule.Contains) {
+		if (rule.Model != "" && rule.Model != request.Model) || !strings.Contains(request.Text, rule.Contains) ||
+			(rule.Match != nil && !rule.Match(request)) {
 			continue
 		}
 		if rule.Once {

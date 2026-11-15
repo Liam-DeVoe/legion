@@ -42,6 +42,9 @@ import type {
   GraphReferences,
   Handoff,
   HandoffSummary,
+  HeldEditInput,
+  HeldPostInput,
+  HeldRead,
   InboxRow,
   Issue,
   IssueCheckResults,
@@ -969,6 +972,21 @@ export class DispatchClient {
    *  `route` ("<method> <path>") and the JSON `body` it would send. The route writes nothing. */
   async writingRules(input: WritingRulesInput): Promise<WritingRulesResponse> {
     return this.#json("POST", ["api", "v1", "writing-rules"], input);
+  }
+
+  /** `GET /api/v1/held/{id}`: a text the reviewer holds, which no person sees until it posts. */
+  async getHeld(id: string): Promise<HeldRead> {
+    return this.#json("GET", ["api", "v1", "held", id]);
+  }
+
+  /** `PATCH /api/v1/held/{id}`: the writer's edit of its held text, which the reviewer reads again. */
+  async editHeld(id: string, input: HeldEditInput): Promise<HeldRead> {
+    return this.#json("PATCH", ["api", "v1", "held", id], input);
+  }
+
+  /** `POST /api/v1/held/{id}/post`: the writer posts its held text as written, with its reason. */
+  async postHeld(id: string, input: HeldPostInput): Promise<HeldRead> {
+    return this.#json("POST", ["api", "v1", "held", id, "post"], input);
   }
 
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {

@@ -65,15 +65,18 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !s.writingCheck(w, r, actor, input) {
+	issueKey := r.PathValue("key")
+	create := messageCreate{IssueKey: &issueKey, Input: input, Delivery: delivery}
+	after, proceed := s.reviewWrite(w, r, actor, input, create.reviewed())
+	if !proceed {
 		return
 	}
-	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, actor)
+	message, advice, err := s.writeMessage(r.Context(), create, actor, uuid.NewString(), nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.reviewPosted(r.Context(), after, message.ID)
 	WriteJSON(w, http.StatusCreated, withAdvice(newShapedMessage(message, wantsDisplayTrees(r)), advice))
 }
 
@@ -241,9 +244,8 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 	return owed, rows.Err()
 }
 
-// createStoredMessage writes one message in a single transaction, with it the keyed request's
-// recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
-// however this request ends, then sends a targeted message's first attempt.
+// createStoredMessage writes one message of actor's, under a fresh id, in a single transaction
+// (writeMessage).
 func (s *server) createStoredMessage(
 	ctx context.Context,
 	issueKey *string,
@@ -251,11 +253,33 @@ func (s *server) createStoredMessage(
 	delivery string,
 	actor model.Actor,
 ) (model.Message, *writeAdvice, error) {
+	return s.writeMessage(ctx, messageCreate{IssueKey: issueKey, Input: input, Delivery: delivery}, actor, uuid.NewString(), nil)
+}
+
+// messageCreate is a message a write sends, decoded and checked (validateCreateMessage): what
+// writeMessage writes, and what a held message stores, so that its post writes the message the
+// write itself would have written.
+type messageCreate struct {
+	IssueKey *string            `json:"issue_key,omitempty"`
+	Input    createMessageInput `json:"input"`
+	Delivery string             `json:"delivery"`
+}
+
+// writeMessage writes create as actor's message under id in a single transaction, with it the
+// keyed request's recovery point (bindRequestKeyRecovery), so a repeat under the key is answered
+// with this message however this request ends, then sends a targeted message's first attempt. A
+// held message's post runs it with the id its hold reserved (held, whose row it takes first in
+// the message's transaction and marks posted in it).
+func (s *server) writeMessage(ctx context.Context, create messageCreate, actor model.Actor, id string, held *heldPost) (model.Message, *writeAdvice, error) {
+	issueKey, input, delivery := create.IssueKey, create.Input, create.Delivery
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return model.Message{}, nil, err
 	}
 	defer tx.Rollback(ctx)
+	if err := held.lock(ctx, tx); err != nil {
+		return model.Message{}, nil, err
+	}
 	// The issue row is locked first, the order recordPendingMessageDelivery states, without the
 	// closed refusal: a closed issue still takes a message.
 	var status string
@@ -310,10 +334,10 @@ func (s *server) createStoredMessage(
 		return model.Message{}, nil, err
 	}
 	message, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (issue_key, author, body, target, in_reply_to, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6)
+		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block)
+		values ($1, $2, $3, $4, $5, $6, $7)
 		returning `+messageColumns+`
-	`, issueKey, author, input.Body, input.Target, input.InReplyTo, block.nodeID()))
+	`, id, issueKey, author, input.Body, input.Target, input.InReplyTo, block.nodeID()))
 	if err != nil {
 		return model.Message{}, nil, err
 	}
@@ -368,10 +392,13 @@ func (s *server) createStoredMessage(
 		}
 	}
 	var advice *writeAdvice
-	if issueKey != nil {
+	if issueKey != nil && held == nil {
 		advice = s.writeAdvice(
 			ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, "", status, false,
 		)
+	}
+	if err := held.finish(ctx, tx); err != nil {
+		return model.Message{}, nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err

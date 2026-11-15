@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
 // ResolvedMention binds a canonical mention to the session that owned it when the comment was
@@ -1026,7 +1027,16 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reply_to_block names the block a reply's body answers; an error report has none")
 		return
 	}
-	if !s.writingCheck(w, r, actor, input) {
+	// An agent's answer to a person is the reviewer's to read (Decision 9); an error report is
+	// no answer, and goes to the writing check alone.
+	var after *postedReview
+	if input.Body != nil {
+		var proceed bool
+		if after, proceed = s.reviewReply(w, r, actor, input, reviewer.KindComment, *input.Body,
+			reviewer.Subject{ReplyTo: r.PathValue("id")}); !proceed {
+			return
+		}
+	} else if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 
@@ -1036,6 +1046,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// A held reply's post, or its dry run, runs this route again (held_replay.go).
+	held := heldPostFrom(r.Context())
+	if err := held.lock(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1115,6 +1131,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		if err := held.finish(r.Context(), tx); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		if err := tx.Commit(r.Context()); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1185,11 +1205,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// A callback reply requests no turn, so it hands the turn back the way any session reply
 	// with no `turn` does.
 	turn := thread.replyTurn(actor, nil)
+	// Under the id a held reply's hold reserved where its post runs this, else a fresh one
+	// (textIDFor).
 	reply, err := scanComment(tx.QueryRow(r.Context(), `
-		insert into comments (issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		returning `+commentColumns+`
-	`, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn, block.nodeID(), thread.Answers))
+	`, textIDFor(r.Context()), comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn, block.nodeID(), thread.Answers))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1241,11 +1263,16 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := held.finish(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), event)
 	s.storeDisplayTrees(r.Context(), reply.ID, reply.Body)
+	s.reviewPosted(r.Context(), after, reply.ID)
 	WriteJSON(w, http.StatusCreated, commentWriteResponse{shapedComment: newShapedComment(reply, wantsDisplayTrees(r)), AskWaitingOn: waitingOn})
 }

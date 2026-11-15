@@ -498,6 +498,13 @@ func main() {
 	// The writing check (INFRA-3231) records what its structure rules find in each agent's
 	// write, on every server, and lets every write through; its detector stays off.
 	writingCheck := api.NewWritingCheck(api.WritingCheckConfig{Enabled: true})
+	// The reviewer (INFRA-3231's R5) is nil where its model group is unset, which newReviewer
+	// logs; a group set builds it whatever DISPATCH_REVIEWER_<KIND> say, for the draft route.
+	textReviewer, err := newReviewer(boot.Writing, pacer)
+	if err != nil {
+		slog.Error("dispatch: build the reviewer", "error", err)
+		os.Exit(1)
+	}
 
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
@@ -519,6 +526,7 @@ func main() {
 		Files:          fileStore,
 		Lifetime:       ctx,
 		WritingCheck:   writingCheck,
+		Reviewer:       textReviewer,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -590,9 +598,11 @@ func main() {
 	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
 	//     start, with or without NATS), the display tree fill (texttreefill.Run, every hour
 	//     from a tick at start, whose first pass of a display parser version runs until every
-	//     stored text has a tree at it) and the records job of the words people ask about
+	//     stored text has a tree at it), the records job of the words people ask about
 	//     (wordrecords.Job.Run, lease word-records, every 10 s from a tick at start, only while
-	//     its model group is set), each recording its passes in duty_passes like the timers
+	//     its model group is set) and the reviewer's sweep of held texts (api.Background's
+	//     SweepHeld, lease reviewer-sweep, every 10 s from a tick at start, only while the
+	//     reviewer's model group is set), each recording its passes in duty_passes like the timers
 	//     above; each tick sends its statements whether or not anything is owed. The writing
 	//     check's event sweep (api.RunWritingCheckEventSweep, every day from a tick at start)
 	//     polls too, with no lease and no duty_passes row: its pass is one delete by age, which
@@ -688,6 +698,10 @@ func main() {
 	// reserved here whether or not DISPATCH_WORD_RECORDS and its model group turn it on, so that
 	// this process's count is the same in every configuration.
 	wordRecordsLeases := reserve("word records")
+	// The reviewer's sweep of held texts (api.Background.SweepHeld, lease reviewer-sweep):
+	// reserved here whether or not the reviewer's model group is set, so that this process's
+	// count is the same in every configuration.
+	reviewerSweepLeases := reserve("reviewer sweep")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -1029,6 +1043,15 @@ func main() {
 	}
 	if wordRecords != nil {
 		go wordRecords.Run(ctx, wordRecordsLeases)
+	}
+	// INFRA-3231's R5: the reviewer's sweep of held texts, a pass every 10 seconds under the lease
+	// reviewer-sweep, the first at start, so one process serves each period (duty.RunLeased). It
+	// reviews again a text a stopped process left in review, posts as DISPATCH_REVIEWER_UNEDITED
+	// says each text whose writer did not act in DISPATCH_REVIEWER_WRITER_WINDOW or has gone, and
+	// posts each decided text whose turn came. It runs only while the reviewer's model group is set:
+	// no text is held without it.
+	if textReviewer != nil {
+		go duty.RunLeased(ctx, reviewerSweepLeases, api.ReviewerSweepLease, api.ReviewerSweepInterval, duty.TickAtStart, background.SweepHeld)
 	}
 	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens})
 	server := newHTTPServer(handler, time.Now)

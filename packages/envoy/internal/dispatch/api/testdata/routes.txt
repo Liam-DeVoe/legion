@@ -75,6 +75,9 @@ GET /api/v1/going/catalogue any
 POST /api/v1/going/requests any
 GET /api/v1/going/requests/{id}/stream any
 GET /api/v1/handoffs/{id} any
+GET /api/v1/held/{id} any
+PATCH /api/v1/held/{id} any
+POST /api/v1/held/{id}/post any
 GET /api/v1/inbox any
 GET /api/v1/issues any
 POST /api/v1/issues any
@@ -171,6 +174,7 @@ GET /api/v1/references any
 GET /api/v1/references/questions any
 GET /api/v1/related-checks any
 POST /api/v1/results/{id}/retract any
+POST /api/v1/reviewer/draft any
 GET /api/v1/schema/blocks public
 GET /api/v1/search any
 GET /api/v1/search/coverage any
