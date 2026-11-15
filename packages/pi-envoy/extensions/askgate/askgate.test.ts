@@ -52,6 +52,14 @@ import { createDecisionRecorder, RECORD_CUT_DELAY_MS, type RecordClient } from "
 import type { RuleMatch } from "./rules-check";
 import { renderTemplate } from "./text";
 
+// Every hang guard in this file, a row's or a hook's, is one of 30_000, 60_000 or 120_000. Where
+// its comment gives a measured worst, the guard is at least six times that worst, at the load the
+// comment names, and 120_000 is this file's ceiling: a hang costs its limit once, so one that
+// reaches 120_000 still leaves the pi-envoy job's `timeout-minutes: 10`
+// (.github/workflows/ci.yaml) room to redden with the row named. A guard whose six times passes
+// the ceiling takes the ceiling and says how many times its worst that is; a row whose loaded
+// worst the ceiling cannot cover moves to a lower rung instead, and its comment says so.
+
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;
 
@@ -87,13 +95,13 @@ const callEnders: Array<() => Promise<void>> = [];
 // 0.00 ms to 498.65 ms over the 50 invocations of 10 runs, median 0.53 ms. Bun's unwritten 5 s
 // default is what failed a correct run at that load twice in 20, at 15887.94 ms and 11035.86 ms,
 // charged to a hook of this file as "a beforeEach/afterEach hook timed out", so the load starves
-// the process far past what this body costs. Six times that worst is 95 s, past the ceiling a
-// guard may take here, so this takes 60_000: 3.8 times that worst, and well inside the pi-envoy
-// job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a call end that never returns still
-// reddens with this file named instead of cancelling the job, which names nothing.
+// the process far past what this body costs. Six times that worst is 95 s, so this takes this
+// file's ceiling, 120_000 (the rule above `DryRunner`): 7.6 times that worst, and well inside the
+// pi-envoy job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a call end that never returns
+// still reddens with this file named instead of cancelling the job, which names nothing.
 afterEach(async () => {
   for (const end of callEnders.splice(0)) await end();
-}, 60_000);
+}, 120_000);
 
 /** One marker the gate minted, as the CLI reads it: its file name and its JSON. */
 type MintedMarker = {
@@ -1890,8 +1898,8 @@ console.log(JSON.stringify(args, null, 2));
     // 18111.41 ms over 60 runs under 240 busy loops, 120 per CPU, the rung that reddens this
     // file. Bun's unwritten 5 s default, which this row carried, sat inside that loaded cost and
     // failed a correct run 7 times in 10, at 5125.67 ms to 6316.73 ms. Six times the worst of
-    // those 60 runs is 108_669 ms, rounded up to the 120_000 ceiling a guard may take here: 6.6
-    // times that worst, and well inside the pi-envoy job's timeout-minutes: 10
+    // those 60 runs is 108_669 ms, rounded up to this file's 120_000 ceiling (the rule above
+    // `DryRunner`): 6.6 times that worst, and well inside the pi-envoy job's timeout-minutes: 10
     // (.github/workflows/ci.yaml), so a dry run or a model call that never returns reddens with
     // this test named instead of cancelling the job, which names nothing. The row's remaining
     // load ceiling is the gate's own, not this one, and not the budget asserted above either:
@@ -3221,10 +3229,11 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     // and rules calls the harness answers. The row's own cost, read from bun's junit reporter on
     // this two-CPU pod: 232.68 / 256.52 / 271.79 ms (min/median/max over 5 idle runs), and
     // 5821.59 / 9912.27 / 15938.07 ms over 20 runs under 96 busy loops, 48 per CPU, this row's
-    // acceptance rung. Six times that worst is 95_629 ms, rounded up to the 120_000 ceiling a
-    // guard may take here: 7.5 times that worst, and well inside the pi-envoy job's
-    // timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry run or a model call that never
-    // returns reddens with this test named instead of cancelling the job, which names nothing.
+    // acceptance rung. Six times that worst is 95_629 ms, rounded up to this file's 120_000
+    // ceiling (the rule above `DryRunner`): 7.5 times that worst, and well inside the pi-envoy
+    // job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry run or a model call that
+    // never returns reddens with this test named instead of cancelling the job, which names
+    // nothing.
     // The 30_000 this replaces sat inside that loaded cost: restored at 240 busy loops it failed
     // a correct run 5 times in 10, charged 30638.29 ms to 32534.80 ms, each `this test timed out
     // after 30000ms`. The rung is 96 rather than the 240 the lighter rows of this file take
@@ -3414,8 +3423,8 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     // highest load this guard holds: at 240 the same row cost 145.03 ms to 44509.41 ms under a
     // 300_000 provisional limit, 20 of 20 green, so it is correct there and merely slow, but this
     // guard is 1.35 times that worst and cut one run in 20 at that load. Six times the 240 worst
-    // is 267_056 ms, past the 120_000 ceiling a guard may take here, so no guard of this file
-    // covers that load.
+    // is 267_056 ms, past this file's 120_000 ceiling (the rule above `DryRunner`), so no guard
+    // of this file covers that load.
   }, 60_000);
   test("a subagent's dispatch command is never reviewed or recorded, and gets an argv-only marker", async () => {
     const g = bind({ env: STUB, cwd: work, kind: "sub" });
@@ -4150,20 +4159,20 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       // answers. The row's own cost, read from bun's junit reporter on this two-CPU pod:
       // 41.77 / 43.15 / 82.11 ms (min/median/max over 5 idle runs), and 1881.55 / 7287.44 /
       // 18768.15 ms over 20 runs under 240 busy loops, 120 per CPU, the rung that reddens this
-      // file. Six times that worst is 112_609 ms, rounded up to the 120_000 ceiling a guard may
-      // take here: 6.4 times that worst, and well inside the pi-envoy job's timeout-minutes: 10
-      // (.github/workflows/ci.yaml), so a dry run that never returns reddens with this test
-      // named instead of cancelling the job, which names nothing. The row carried no limit of
-      // its own, so bun's unwritten 5 s default decided it: at that same load it failed a
-      // correct run 5 times in 10, charged 5165.92 ms to 6076.99 ms, each `this test timed out
-      // after 5000ms`. The row's remaining load ceiling is the gate's own, not this guard: at
-      // 240 busy loops a real `dispatch` subprocess cannot finish inside DRY_RUN_TIMEOUT_MS, so
-      // the gate cuts it and runs it once more with what is left of the reads' half, and that
-      // second `g.dryRuns` entry carries a smaller `timeoutMs`, which fails the `every` above —
-      // 2 runs in 20 went that way, charged 43534.88 ms and 53192.69 ms against this 120_000
-      // guard, so no per-test limit guards it. So this row's acceptance rung is 96 busy loops,
-      // 48 per CPU, the rung the here-document and markdown-upload rows take for the same
-      // ceiling.
+      // file. Six times that worst is 112_609 ms, rounded up to this file's 120_000 ceiling (the
+      // rule above `DryRunner`): 6.4 times that worst, and well inside the pi-envoy job's
+      // timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry run that never returns reddens
+      // with this test named instead of cancelling the job, which names nothing. The row carried
+      // no limit of its own, so bun's unwritten 5 s default decided it: at that same load it
+      // failed a correct run 5 times in 10, charged 5165.92 ms to 6076.99 ms, each `this test
+      // timed out after 5000ms`. The row's remaining load ceiling is the gate's own, not this
+      // guard: at 240 busy loops a real `dispatch` subprocess cannot finish inside
+      // DRY_RUN_TIMEOUT_MS, so the gate cuts it and runs it once more with what is left of the
+      // reads' half, and that second `g.dryRuns` entry carries a smaller `timeoutMs`, which fails
+      // the `every` above — 2 runs in 20 went that way, charged 43534.88 ms and 53192.69 ms
+      // against this 120_000 guard, so no per-test limit guards it. So this row's acceptance rung
+      // is 96 busy loops, 48 per CPU, the rung the here-document and markdown-upload rows take
+      // for the same ceiling.
     }, 120_000);
     // The second final review of #2159: Oh My Pi at its pin takes a leading `cd X &&` into the
     // call's directory with no CDPATH (`extractLeadingCdTarget`, then `resolveToCwd`), and its
@@ -6160,22 +6169,23 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     // idle runs), and 3331.80 / 10469.35 / 20906.97 ms over 20 runs under 96 busy loops, 48 per
     // CPU. The 30_000 it replaces sat inside that loaded cost and failed a correct run 7 times
     // in 10, at 30011.27 ms to 30723.57 ms. Six times the worst of those 20 runs is 125_442 ms,
-    // past the 120_000 a guard may take here, so this takes that ceiling: 5.7 times that worst,
-    // and 5.4 times the worst of the 20 further runs at that load this limit was then soaked
-    // over, 20 of them green at 22378.01 ms and under. It is well inside the pi-envoy job's
-    // timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry run or a post that never returns
-    // reddens with this test named instead of cancelling the job, which names nothing. The row's
-    // remaining load ceiling is the gate's own, not this one: at 120 busy loops per CPU the row
-    // fails inside the gate's own DRY_RUN_TIMEOUT_MS, because a real `dispatch` subprocess
-    // cannot finish in 20 s on a host that starved — 12 of 20 runs there, charged 47494.61 ms
-    // to 52948.38 ms — which no per-test limit can guard. What the row receives when that
-    // ceiling fires was read at 240 busy loops with this call's result printed: 3 of 10 runs
-    // red, each with a second `g.dryRuns` entry and the result an `outcome="error"` block
-    // reading `dispatch artifact --dry-run did not finish within 20000 ms, nor within 23325 ms
-    // when run again`, charged 47312.38 / 47714.23 / 56601.36 ms. At the rung itself the row is
-    // 40 of 40, charged 5991.04 / 11642.48 / 23338.86 ms (min/median/max), re-measured after a
-    // testing round found 19 of 20 there; that round's one red charged 46444.05 ms, twice this
-    // worst, so the ceiling reaches 96 only on a host carrying load past the 96 loops.
+    // past this file's 120_000 ceiling (the rule above `DryRunner`), so this takes that ceiling:
+    // 5.7 times that worst, and 5.4 times the worst of the 20 further runs at that load this
+    // limit was then soaked over, 20 of them green at 22378.01 ms and under. It is well inside
+    // the pi-envoy job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry run or a post
+    // that never returns reddens with this test named instead of cancelling the job, which names
+    // nothing. The row's remaining load ceiling is the gate's own, not this one: at 120 busy
+    // loops per CPU the row fails inside the gate's own DRY_RUN_TIMEOUT_MS, because a real
+    // `dispatch` subprocess cannot finish in 20 s on a host that starved — 12 of 20 runs there,
+    // charged 47494.61 ms to 52948.38 ms — which no per-test limit can guard. What the row
+    // receives when that ceiling fires was read at 240 busy loops with this call's result
+    // printed: 3 of 10 runs red, each with a second `g.dryRuns` entry and the result an
+    // `outcome="error"` block reading `dispatch artifact --dry-run did not finish within 20000 ms,
+    // nor within 23325 ms when run again`, charged 47312.38 / 47714.23 / 56601.36 ms. At the rung
+    // itself the row is 40 of 40, charged 5991.04 / 11642.48 / 23338.86 ms (min/median/max),
+    // re-measured after a testing round found 19 of 20 there; that round's one red charged
+    // 46444.05 ms, twice this worst, so the ceiling reaches 96 only on a host carrying load past
+    // the 96 loops.
   }, 120_000);
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the

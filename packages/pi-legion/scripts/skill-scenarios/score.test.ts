@@ -11,6 +11,16 @@ import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 // score reports it as a rig error and leaves it out of the pass counts. An agent that got a turn and
 // then did nothing the scenario asks is a failure.
 
+// Every hang guard in this file is sized from a measured worst at 96 busy loops, 48 per CPU, this
+// suite's calibrated rung. A row's guard is at least six times that worst, taken as 30_000,
+// 60_000 or 120_000, and 120_000 is this file's row ceiling: a hang costs its limit once, so one
+// that reaches 120_000 still leaves the pi-legion job room to redden with the test named. That
+// job's `timeout-minutes: 28` (.github/workflows/ci.yaml) is 1680 s, against the 804 s its own
+// comment adds its slowest run up to. The two `beforeAll` hooks that carry 180_000 take that
+// instead, 2.4 and 3.0 times their worst: they build the staged world and run `score.ts runs` once
+// for every row of the file, at up to 74.8 s, so six times their worst, 449 s, would take half of
+// the 876 s the job has left, and each one's comment says why its value is what it is.
+
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
 const work = temporaryDirectory("skill-scenarios-score");
 const runs = path.join(work, "runs");
@@ -35,12 +45,13 @@ const stagings: (() => void)[] = [];
 // CPU), this suite's calibrated rung. Bun's unwritten 5 s default for a hook is what failed
 // correct runs of these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms; at that default this
 // hook failed 10 of those 10 loaded runs, charged 31550.05 ms in the first, and Bun killed the
-// git commit still running inside it. Three times the worst is 224 s, which does fit under the
-// 600 s the pi-legion job's timeout-minutes: 10 allows (.github/workflows/ci.yaml); 180_000, 2.4
-// times that worst, is the value taken because this change already carries 180_000 on
-// claude-envoy's hook row, so there is one precedent rather than two. It leaves the job room to
-// redden with this file named instead of cancelling, which names nothing; Bun reports a
-// timed-out `beforeAll` as `(unnamed)`, so the row itself is not named.
+// git commit still running inside it. Three times the worst is 224 s, which does fit inside the
+// 876 s the pi-legion job's timeout-minutes: 28 leaves beside the 804 s its own comment adds up
+// (.github/workflows/ci.yaml); 180_000, 2.4 times that worst, is the value taken because this
+// change already carries 180_000 on claude-envoy's hook row, so there is one precedent rather
+// than two. It leaves the job room to redden with this file named instead of cancelling, which
+// names nothing; Bun reports a timed-out `beforeAll` as `(unnamed)`, so the row itself is not
+// named.
 beforeAll(() => {
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
@@ -2671,10 +2682,10 @@ specRun("spec-writing-head-109", {
 // 1.95 / 71.33 / 262.84 ms over 20 runs at 96 busy loops (48 per CPU), this suite's calibrated
 // rung. Run with the rest of the file at that same load the row is charged far more than it
 // works, and Bun's unwritten 5 s default for a test is what failed a correct run of it at
-// 6027.43 ms, in run 9 of a 20-run campaign. 60_000 is 9.9 times that worst charge and the value
-// this file's live-read row carries, and sits well inside the pi-legion job's timeout-minutes: 10
-// (600 s, .github/workflows/ci.yaml), so a row that never returns reddens with this test named
-// instead of cancelling the job, which names nothing.
+// 6027.43 ms, in run 9 of a 20-run campaign. Six times that worst charge is 36 s, so by the rule
+// above `work` this takes 60_000, 9.9 times it, which sits well inside the pi-legion job's
+// timeout-minutes: 28 (1680 s, .github/workflows/ci.yaml), so a row that never returns reddens
+// with this test named instead of cancelling the job, which names nothing.
 test("a run scored from a copy reads the paths it ran with as its own", () => {
   expect(out).not.toContain("spec-writing-head-109\trig error");
   expect(scoresOf("spec-writing-head-109")).toEqual(allPass);
@@ -3115,7 +3126,7 @@ let scoredExitCode: number | null = null;
 // a hook is what failed correct runs of these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms,
 // and at that default no loaded run reached this hook at all: the drain above it was charged past
 // the default first. 180_000 is 3.0 times the worst measured here and the number the hook above
-// carries, and sits well inside the pi-legion job's timeout-minutes: 10 (600 s), so a subprocess
+// carries, and sits well inside the pi-legion job's timeout-minutes: 28 (1680 s), so a subprocess
 // that never returns reddens with this file named instead of cancelling the job, which names
 // nothing; Bun reports a timed-out `beforeAll` as `(unnamed)`, so the row itself is not named.
 beforeAll(() => {
@@ -3589,9 +3600,9 @@ beforeAll(() => {
 // row spawns. Measured on this two-CPU pod: 276 ms to 337 ms idle, median 277 ms over 5 runs, and
 // 4.0 s to 19.7 s under 96 busy loops (48 per CPU, the lowest rung that reddens this file), median
 // 12.4 s over 20 runs, where Bun's unwritten 5 s default for a test failed this row in 9 of 10
-// loaded runs. Six times that worst is 118 s, past the ceiling a guard may take here, so this
-// takes 60_000: 3.1 times the worst measured, and well inside the pi-legion job's
-// timeout-minutes: 10 (.github/workflows/ci.yaml), so a subprocess that never returns still
+// loaded runs. Six times that worst is 118 s, rounded up to this file's row ceiling, 120_000
+// (the rule above `work`): 6.1 times the worst measured, and well inside the pi-legion job's
+// timeout-minutes: 28 (.github/workflows/ci.yaml), so a subprocess that never returns still
 // reddens with this test named instead of cancelling the job, which names nothing.
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
   const read = Bun.spawnSync([
@@ -3613,7 +3624,7 @@ test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]
     `skill://demo/references/notes.md\t${[...otherHeader].length}\t${notesChars}\tfalse\tfalse`,
   ]);
   expect(text).toContain("2 of 4 reads arrived whole\n");
-}, 60_000);
+}, 120_000);
 
 /** A run's row and the lines printed under it. */
 function rowOf(name: string): string {
