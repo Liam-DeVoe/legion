@@ -58,8 +58,9 @@ Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/db FAKE_ENVOY_PORT=9023 \
        (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN; DATABASE_URL
        must name the database that server serves, on this machine, and FAKE_ENVOY_PORT the fake
        Envoy listener it delivers through. The server must have been started with a bus
-       (NATS_URLS): without one the publisher writes no delivered_to tuple and the delivery
-       checks here wait out their poll.)
+       (DISPATCH_E2E_NATS_URLS, which e2e/run-server.sh hands the server as its NATS_URLS):
+       without one the publisher writes no delivered_to tuple and the delivery checks here
+       wait out their poll.)
 USAGE
 }
 
@@ -374,16 +375,16 @@ readonly loose_comment="$comment"
 # tuple is written by the outbox publisher when it records what a batch delivered, so a server
 # whose bus is missing, or whose publishes it refuses, delivers nothing and this count stays 0 -
 # the same reading the store would give if it dropped a tuple it was handed. Measured twice:
-# against a server started with no NATS_URLS, and against a NATS without JetStream, whose
-# publishes the server logs as refused. A route delivery leaves no row in any table this child
-# projects, so there is nothing of the attempt to read here instead; what the driver can do is
-# say so when the poll runs out, which the hint below does.
+# against a server started with no DISPATCH_E2E_NATS_URLS, and against a NATS without JetStream,
+# whose publishes the server logs as refused. A route delivery leaves no row in any table this
+# child projects, so there is nothing of the attempt to read here instead; what the driver can do
+# is say so when the poll runs out, which the hint below does.
 settles G5 "the store holds one delivered_to tuple of it" 1 \
   "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$loose_comment'
      and kind = 'delivered_to' and to_kind = 'session' and to_id = '$loose_session' and asserted" \
   "A zero here is the bus before it is the store: the publisher writes this tuple only for a
      batch it delivered. Read the server's log for 'no NATS client' or 'jetstream not enabled',
-     and start the server with NATS_URLS naming a nats-server run with -js"
+     and start the server with DISPATCH_E2E_NATS_URLS naming a nats-server run with -js"
 want_value G5 "the comment that reached nobody has no delivered_to tuple" 0 \
   "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$quiet_comment'
      and kind = 'delivered_to'"

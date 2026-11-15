@@ -2,11 +2,13 @@ package refs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -38,6 +40,12 @@ import (
 // the graph for a viewer, and the test reads that list out of the package's own source, so a
 // read added later and left out of the census fails here, named. Each read is judged as a
 // whole: it fails, named, when no statement it issues binds a predicate of the registry's.
+//
+// A read that takes no acting person is out of that reach by construction, since the predicate
+// binds the acting credential and such a read has none to bind. So the test also lists every
+// exported read of the store that takes none, from the same source, and holds each one to
+// readsWithoutAViewer, which names it with the reason it answers no reader. A read in neither
+// place fails here, named, and so does an entry of that table that names no such read.
 func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -108,13 +116,72 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 				read.call, marks, tests, len(read.statements), strings.Join(read.statements, "\n----\n"))
 		}
 	}
-	viewing := viewerReads(t)
+	viewing, without := storeReads(t)
 	t.Logf("the package's reads of the graph that take a viewer are %v", viewing)
 	for _, function := range viewing {
 		if !recorded[function] {
 			t.Errorf("%s reads the graph for a viewer and the census records no call of it, so no statement it issues was checked", function)
 		}
 	}
+	t.Logf("the package's reads of the store that take no acting person are %v", without)
+	for _, function := range without {
+		if _, named := readsWithoutAViewer[function]; !named {
+			t.Errorf("%s reads the store and takes no acting person, so it can bind no visibility predicate: "+
+				"give it the acting person and bind the registry's predicate of each kind it answers, "+
+				"or name it in readsWithoutAViewer with the reason it answers no reader", function)
+		}
+	}
+	for _, function := range slices.Sorted(maps.Keys(readsWithoutAViewer)) {
+		if !slices.Contains(without, function) {
+			t.Errorf("readsWithoutAViewer names %s, which is no exported read of this package that takes no acting person: "+
+				"a read that takes one is held to the predicates above, and a read that is gone needs no reason", function)
+		}
+	}
+}
+
+// Why each exported read of the store that takes no acting person binds no visibility
+// predicate. Each reason is one of the few that hold: the read is the server's own work and
+// answers no reader, or it answers no node at all, or it reads one node its caller has already
+// read through a read that binds that node's predicate and answers nothing of any other node. A
+// read whose answer reaches a reader and names a node is none of these: it takes the acting
+// person instead, and the census above holds it to the registry.
+const (
+	serverWork = "the server's own work: a pass or a write calls it, and its answer reaches no reader"
+	noNode     = "it answers no node: a fact about one row the caller names, never a node's id or text"
+	nodeDetail = "it reads a detail of one node its caller has already read through a read that binds that node's predicate " +
+		"(Node, RemovedItemBlockNode, or the caller's own registry predicate), and answers nothing of any other node"
+)
+
+// readsWithoutAViewer names each exported read of the store that takes no acting person, with
+// the reason it binds no predicate (storeReads lists them from the package's source).
+var readsWithoutAViewer = map[string]string{
+	"AskPartIDs":           nodeDetail,
+	"BlockChanges":         nodeDetail,
+	"BlockEmbeddingStates": nodeDetail,
+	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":          nodeDetail,
+	"CanonicalRepo":        noNode,
+	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
+	"CurrentBlockText":     nodeDetail,
+	"CurrentItemBlockText": nodeDetail,
+	"DocumentIsCited":      noNode,
+	"DocumentsOwedWindows": serverWork,
+	"DriftedExcerpts":      serverWork,
+	"IssueAncestors": "every caller is a rule of a write - a reparent's cycle refusal, an issue event's ancestors, the near-copy " +
+		"gate's exclusion, a block pointer's ancestor rule and the scope a result's check resolves in - and a rule that " +
+		"skipped an issue it may not see would let a cycle through that issue or route an event short of its root",
+	"IssueRepository":  noNode,
+	"ItemBlockAt":      nodeDetail,
+	"ItemsOwedWindows": serverWork,
+	"ListOwed":         serverWork,
+	"NewReader":        serverWork + " - the index-time resolver acts for no person, and every edge it lets a write store is held to the predicates of both its ends when it is read",
+	"NextExcerptRetry": serverWork,
+	"OwedItemBlocks":   serverWork,
+	"QueueAskPartIDs":  nodeDetail,
+	"RecordExcerpts":   serverWork,
+	"RemovedBlockNode": nodeDetail,
+	"ScopeSources":     serverWork,
+	"SourceText":       serverWork,
 }
 
 // seedStoreOwnNodes writes one node of each kind the store holds of people and agents. A
@@ -214,7 +281,9 @@ type graphRead struct {
 
 // graphReads calls every read of the graph that takes a viewer and records the SQL each call
 // issues: the reads are run against the database through a queryer that records their
-// statements, so the test reads what Postgres was asked rather than a copy of it.
+// statements, so the test reads what Postgres was asked rather than a copy of it. A read whose
+// answer depends on the kind it is asked for is called once for each kind it answers, and each
+// call is held to the registry on its own, so none of them can bind no predicate.
 func graphReads(t *testing.T, ctx context.Context, database *store.Store) []graphRead {
 	t.Helper()
 	recorder := &recordingQueryer{inner: database.Pool}
@@ -286,6 +355,61 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		}
 		return err
 	})
+	record("Closure", "Closure of CORE-1", func() error {
+		_, _, err := Closure(ctx, recorder, who, "CORE-1")
+		return err
+	})
+	record("Outgoing", "Outgoing of a document", func() error {
+		_, err := Outgoing(ctx, recorder, who, "00000000-0000-4000-8000-000000000001")
+		return err
+	})
+	// Each kind ResolvePrefix answers is its own statement, a pinned block's included; a prefix
+	// nothing carries is its one no-match signal and no failure of the read.
+	for _, asked := range []struct {
+		kind  string
+		scope Scope
+	}{
+		{"ask", Scope{}}, {"comment", Scope{IssueKey: "CORE-1"}}, {"message", Scope{}}, {"artifact", Scope{}},
+		{"block", Scope{Document: "CORE-1/spec"}}, {"block", Scope{Document: "CORE-1/spec", Version: 1}},
+	} {
+		record("ResolvePrefix", fmt.Sprintf("ResolvePrefix of kind %s in %+v", asked.kind, asked.scope), func() error {
+			_, err := ResolvePrefix(ctx, recorder, who, asked.kind, asked.scope, "00000000", Viewer{Human: true})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		})
+	}
+	// A document's own scope is its id, answered with no statement; the three kinds whose scope
+	// is read are read here.
+	for _, kind := range []string{"ask", "comment", "message"} {
+		record("ScopeOf", "ScopeOf of kind "+kind, func() error {
+			_, err := ScopeOf(ctx, recorder, who, kind, "00000000-0000-4000-8000-000000000002")
+			return err
+		})
+	}
+	record("QuestionMap", "QuestionMap of a document", func() error {
+		_, err := QuestionMap(ctx, recorder, who, "00000000-0000-4000-8000-000000000001")
+		return err
+	})
+	record("StoredExcerpts", "StoredExcerpts of CORE-1", func() error {
+		_, err := StoredExcerpts(ctx, recorder, who, "issue", "CORE-1")
+		return err
+	})
+	for _, kind := range []ItemKind{ItemComment, ItemAsk, ItemMessage} {
+		record("ReplyBlocks", "ReplyBlocks of kind "+string(kind), func() error {
+			_, err := ReplyBlocks(ctx, recorder, who, kind, []string{"00000000-0000-4000-8000-000000000002"})
+			return err
+		})
+		record("CurrentItemBlock", "CurrentItemBlock of kind "+string(kind), func() error {
+			_, _, _, err := CurrentItemBlock(ctx, recorder, who, kind, "00000000-0000-4000-8000-000000000002", "b1")
+			return err
+		})
+	}
+	record("IssueDescendants", "IssueDescendants of CORE-1", func() error {
+		_, err := IssueDescendants(ctx, recorder, who, "CORE-1")
+		return err
+	})
 	return reads
 }
 
@@ -323,18 +447,18 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 	return artifact
 }
 
-// viewerReads is every exported function of this package that reads the graph for a viewer,
-// read out of the package's own source rather than kept as a list: one that takes a
-// model.Actor beside the Queryer it reads on, or beside the *pgx.Batch it queues its statement
-// in. A method is named by its receiver's type and its own name.
-func viewerReads(t *testing.T) []string {
+// storeReads is every exported function of this package that reads the store, read out of the
+// package's own source rather than kept as a list: one that takes the Queryer it reads on, or
+// the *pgx.Batch it queues its statement in. viewing is those that take a model.Actor beside it,
+// the reads of the graph for a viewer, and without is the rest. A method is named by its
+// receiver's type and its own name.
+func storeReads(t *testing.T) (viewing, without []string) {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatalf("list the package's source: %v", err)
 	}
 	fileSet := token.NewFileSet()
-	var reads []string
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
 			continue
@@ -357,21 +481,26 @@ func viewerReads(t *testing.T) []string {
 					queries = true
 				}
 			}
-			if !viewer || !queries {
+			if !queries {
 				continue
 			}
 			name := function.Name.Name
 			if function.Recv != nil {
 				name = strings.TrimPrefix(types.ExprString(function.Recv.List[0].Type), "*") + "." + name
 			}
-			reads = append(reads, name)
+			if viewer {
+				viewing = append(viewing, name)
+			} else {
+				without = append(without, name)
+			}
 		}
 	}
-	if len(reads) == 0 {
+	if len(viewing) == 0 {
 		t.Fatal("the package's source holds no read of the graph that takes a viewer, so the census could check none")
 	}
-	sort.Strings(reads)
-	return reads
+	sort.Strings(viewing)
+	sort.Strings(without)
+	return viewing, without
 }
 
 // recordingQueryer is the Queryer a read runs on while this test reads the statements it issues.

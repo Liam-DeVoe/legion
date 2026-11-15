@@ -24,3 +24,21 @@ func (s *server) actingReader(w http.ResponseWriter, r *http.Request) (model.Act
 	}
 	return actor.Recorded(), true
 }
+
+// everyReader is who a read of the graph answers for when what it reads is kept or sent where
+// many readers read it rather than answered to the one person whose request made it. It proves
+// no author, so a node reserved for its author is never in what everyone reads, whoever's
+// request wrote it. Each path that reads as it does so on purpose, because no single acting
+// person is the reader there:
+//
+//   - an event's payload (commentEventPayload) is appended once and read by every subscriber of
+//     the event's topics and every reader of the issue's event log;
+//   - a delivery's frame (finishPendingMessageDelivery) is sent to the session it targets and
+//     read again by every reader of the conversation, not by the person who wrote the message;
+//   - the record of a comment thread a document projects (ProjectMark, from reopenComment,
+//     editComment, commentAction and createCommentFor) is written into the document every
+//     reader of that document reads;
+//   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
+//     and handed to the next reader whose request names the same pair, so an answer read for
+//     one person would be served to another.
+var everyReader = model.Actor{}

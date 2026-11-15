@@ -363,10 +363,10 @@ func writeCostPaths() []writeCostPath {
 // The tick is held to no relative budget at all: the deferral exists to move the index out of
 // the request, so the loop always spends on a document what the request did not, and holding it
 // to a commit that deferred nothing of the kind would refuse the design rather than test it.
-// e2e/acceptance/graph-sizing.sh holds it to two gates that measure it against the work it is
-// given - it drains no slower than deferred work arrives, and it indexes a document no slower
-// than the request path indexes the same document itself, within a tenth - and this run prints
-// its cost beside them.
+// e2e/acceptance/graph-sizing.sh holds it to one gate that measures it against the work it is
+// given - it drains no slower than deferred work arrives - and prints, as a reading that gates
+// nothing, the seconds it spends on a document beside those the request path spends indexing the
+// same document itself; this run prints its cost beside them.
 //
 // A path whose p99 rises by more than 100 ms fails. The 8,001-block path carries a second bound,
 // 1 s absolute, because IndexDocumentReferences already spends 347 ms on that version inside a
@@ -483,14 +483,15 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 			// on it what the request did not: measured on this pod, 0.33 s to write and defer
 			// against 1.44 s to drain. Holding that to the commit before this child, which
 			// deferred nothing of the kind, would refuse the design rather than test it. What
-			// the loop is held to instead is c-growth's two gates, which measure it against
+			// the loop is held to instead is c-growth's one gate, which measures it against
 			// the work it is given rather than against a request that skipped the work: it
-			// drains no slower than deferred work arrives, and it indexes a document no
-			// slower than the request path indexes the same document itself, within a tenth.
-			// Its cost is printed here so a reader sees what the design chose.
+			// drains no slower than deferred work arrives. The seconds it spends on a document
+			// beside those the request path spends indexing the same document are a reading
+			// there and gate nothing. Its cost is printed here so a reader sees what the
+			// design chose.
 			t.Logf("%s: p50 %.1f ms at this child against %.1f ms at the commit before it (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each). "+
 				"This path carries no relative budget: the deferral exists to move the index out of the request, so the loop spends what the request did not, "+
-				"and e2e/acceptance/graph-sizing.sh holds it to the two gates that measure it against the work it is given.",
+				"and e2e/acceptance/graph-sizing.sh holds it to the one gate that measures it against the work it is given.",
 				path.name, costMilliseconds(here.p50()), costMilliseconds(before.p50()),
 				costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings)
 			continue

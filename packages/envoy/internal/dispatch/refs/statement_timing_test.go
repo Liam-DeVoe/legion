@@ -45,7 +45,7 @@ func TestStatementTimings(t *testing.T) {
 	// this package is held to.
 	runner.Pair(t, "refs.Closure",
 		benchtime.Statement{SQL: mainClosureQuery, Args: []any{subjects.Issue}},
-		benchtime.Statement{SQL: closureQuery, Args: []any{subjects.Issue}})
+		benchtime.Statement{SQL: closureQuery(), Args: []any{subjects.Issue, VisibilityArg(model.Actor{})}})
 
 	// The issue read's count: one issue's inbound edges, the number its page carries.
 	issueCount, ok := backlinkCountSQL("issue", nil, false)

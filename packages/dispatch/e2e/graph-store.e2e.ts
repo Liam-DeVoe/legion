@@ -296,10 +296,11 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
  *
  *   - the `delivered_to` tuple of a delivery. Its one writer is the events publisher
  *     (`outbox.recordBatch`), which publishes through NATS, and a browser run has none unless
- *     its caller named one in `NATS_URLS`, which `e2e/run-server.sh` passes through. So the
- *     publisher is given its chance first and the tuple is written here only where it wrote
- *     none. The attempt itself is the server's own either way: the mention is delivered through
- *     the fake Envoy and its row reads `sent`, which is the attempt a delivery records.
+ *     its caller named one in `DISPATCH_E2E_NATS_URLS`, which `e2e/run-server.sh` hands the
+ *     server as its `NATS_URLS`. So the publisher is given its chance first and the tuple is
+ *     written here only where it wrote none. The attempt itself is the server's own either way:
+ *     the mention is delivered through the fake Envoy and its row reads `sent`, which is the
+ *     attempt a delivery records.
  *   - the `alias_of` tuple that makes a session a person's. One credential leaves it - a token
  *     the secrets broker scoped to a person, which proves the session and the person together
  *     and presents a DPoP proof on every request - and no browser can present one, which is why

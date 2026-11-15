@@ -179,6 +179,10 @@ type commentRecovery struct {
 // attempt no lane takes - this process is stopping, or its queue is full - has its claim given
 // back and is the delivery sweep's, as the first request's would have been.
 func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point commentRecovery, stored []byte) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
 	ctx, pool := r.Context(), s.deps.Store.Pool
 	comment, err := s.loadComment(ctx, pool, point.CommentID)
 	if err != nil {
@@ -214,7 +218,7 @@ func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point com
 			s.mentions.enqueue(sending, item)
 		}
 	}
-	hydrated, err := s.hydrateCommentSideTables(ctx, pool, []model.Comment{comment})
+	hydrated, err := s.hydrateCommentSideTables(ctx, pool, who, []model.Comment{comment})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -285,7 +289,7 @@ func (s *server) normalizeCommentThreadTarget(
 		if err != nil || input.ReplyToBlock == nil {
 			return target, err
 		}
-		target.ReplyBlock, err = s.namedReplyBlock(ctx, tx, refs.ItemComment, parent.ID, *input.ReplyToBlock)
+		target.ReplyBlock, err = s.namedReplyBlock(ctx, tx, who, refs.ItemComment, parent.ID, *input.ReplyToBlock)
 		if err != nil {
 			return commentThreadTarget{}, err
 		}
@@ -304,7 +308,7 @@ func (s *server) normalizeCommentThreadTarget(
 	if err != nil || input.ReplyToBlock == nil {
 		return target, err
 	}
-	target.ReplyBlock, err = s.namedReplyBlock(ctx, tx, refs.ItemAsk, *input.AskID, *input.ReplyToBlock)
+	target.ReplyBlock, err = s.namedReplyBlock(ctx, tx, who, refs.ItemAsk, *input.AskID, *input.ReplyToBlock)
 	if err != nil {
 		return commentThreadTarget{}, err
 	}
@@ -317,11 +321,12 @@ func (s *server) normalizeCommentThreadTarget(
 // names a block of that comment, as the client and the tool that write it mean, where only a
 // reply naming the ask names one of the ask's parts. The ask is ordered against a write of its
 // own by the owner row, which this transaction took before it read either (lockCommentOwner,
-// asks.go's lockAskForTransition).
+// asks.go's lockAskForTransition). A block who, the reply's writer, may not see is refused as
+// one the item does not hold.
 func (s *server) namedReplyBlock(
-	ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, blockID string,
+	ctx context.Context, tx pgx.Tx, who model.Actor, kind refs.ItemKind, itemID, blockID string,
 ) (*namedBlock, error) {
-	return s.replyBlockOf(ctx, tx, kind, itemID, blockID, "reply_to_block", "INVALID_COMMENT")
+	return s.replyBlockOf(ctx, tx, who, kind, itemID, blockID, "reply_to_block", "INVALID_COMMENT")
 }
 
 // threadHeadOf climbs reply_to from an already-locked comment to the head of its thread: the
@@ -879,7 +884,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			}
 		}
 		if root.Anchor != nil {
-			replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", root.ID)
+			replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", root.ID)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return

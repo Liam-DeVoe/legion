@@ -87,7 +87,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if query.Direction == "in" {
-		resolved, ok := s.wholeReference(w, r, ref, refs.Viewer{Human: human})
+		resolved, ok := s.wholeReference(w, r, ref, who, refs.Viewer{Human: human})
 		if !ok {
 			return
 		}
@@ -156,7 +156,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if query.Direction == "in" {
-		if err := s.documentMentionExcerpts(r.Context(), query, edges); err != nil {
+		if err := s.documentMentionExcerpts(r.Context(), who, query, edges); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -169,8 +169,9 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 }
 
 // wholeReference is ref with its item id, or its block id, written whole where the request
-// wrote it short: the one item of the owner the reference names that carries the prefix. ok is
-// false once it has written the answer itself, the 409 of a prefix two items or more carry.
+// wrote it short: the one item of the owner the reference names that carries the prefix, among
+// the items who may see. ok is false once it has written the answer itself, the 409 of a prefix
+// two items or more carry.
 //
 // Which owner, and so which set the prefix names one of, is read from the reference by the one
 // rule the index-time resolver reads it by (refs.PrefixScope): an ask's, a comment's or a
@@ -180,14 +181,14 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 // a comment or a message, whose blocks are numbered (`b2`) and are no id a prefix shortens. A
 // prefix nothing carries is left as written too, and the read answers the 404 it always did for
 // a node it has no edge of.
-func (s *server) wholeReference(w http.ResponseWriter, r *http.Request, ref text.Ref, viewer refs.Viewer) (text.Ref, bool) {
+func (s *server) wholeReference(w http.ResponseWriter, r *http.Request, ref text.Ref, who model.Actor, viewer refs.Viewer) (text.Ref, bool) {
 	block := ref.Kind == "block" && ref.Item == ""
 	kind, scope, written, ok := refs.PrefixScope(text.Prefix{Ref: ref, Block: block})
 	if !ok || !text.IsIDPrefix(written) {
 		return ref, true
 	}
 	// A prefix nothing carries is "" and no error, which this route leaves as written.
-	whole, err := s.wholeID(r.Context(), kind, scope, written, viewer)
+	whole, err := s.wholeID(r.Context(), kind, scope, written, who, viewer)
 	if err != nil {
 		s.writeIDPrefixError(w, err)
 		return ref, false
@@ -240,11 +241,12 @@ var questionSourceKinds = []string{"artifact", "ask", "comment", "message"}
 // (refs.ScopeOf, canonicalUUID), which is the one place it is canonicalized, so this route
 // hands on what it was given and `urn:uuid:<uuid>` answers as the canonical id answers.
 func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
-	_, human, err := s.optionalActor(r)
+	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
+	who := actor.Recorded()
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	if !slices.Contains(questionSourceKinds, kind) {
 		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_KIND",
@@ -259,7 +261,7 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 	if text.IsIDPrefix(id) {
 		// A prefix nothing carries is left as written, and the read below answers this route's
 		// own 404 for a source whose text belongs to no document.
-		whole, err := s.wholeID(r.Context(), kind, refs.Scope{}, id, refs.Viewer{Human: human})
+		whole, err := s.wholeID(r.Context(), kind, refs.Scope{}, id, who, refs.Viewer{Human: human})
 		if err != nil {
 			s.writeIDPrefixError(w, err)
 			return
@@ -268,7 +270,7 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 			id = whole
 		}
 	}
-	document, err := refs.ScopeOf(r.Context(), s.deps.Store.Pool, kind, id)
+	document, err := refs.ScopeOf(r.Context(), s.deps.Store.Pool, who, kind, id)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -278,7 +280,7 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 			"the text of %s %s belongs to no document", kind, id))
 		return
 	}
-	questions, err := refs.QuestionMap(r.Context(), s.deps.Store.Pool, document)
+	questions, err := refs.QuestionMap(r.Context(), s.deps.Store.Pool, who, document)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -556,8 +558,9 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 // the document's name. The reconciliation serves the next stored block only after it records a
 // non-null excerpt_version. During the deploy that ships migration 0092, a stale excerpt whose
 // version is still set is served until the reconciliation marks it owed (refs.StoredExcerpts).
-func (s *server) documentMentionExcerpts(ctx context.Context, query refs.Query, edges []model.GraphEdge) error {
-	stored, err := refs.StoredExcerpts(ctx, s.deps.Store.Pool, query.Kind, query.ID)
+// The excerpts are read for who, so one whose document or block who may not see is none.
+func (s *server) documentMentionExcerpts(ctx context.Context, who model.Actor, query refs.Query, edges []model.GraphEdge) error {
+	stored, err := refs.StoredExcerpts(ctx, s.deps.Store.Pool, who, query.Kind, query.ID)
 	if err != nil {
 		return err
 	}
@@ -577,7 +580,8 @@ func (s *server) documentMentionExcerpts(ctx context.Context, query refs.Query, 
 // artifact.versions holding only its latest version, under its own ETag; absent, empty or all is
 // the full answer. A repeated versions is refused rather than read by its first value.
 func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	versionsValues := r.URL.Query()["versions"]
@@ -601,7 +605,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	closure, truncated, err := refs.Closure(r.Context(), s.deps.Store.Pool, issue.Key)
+	closure, truncated, err := refs.Closure(r.Context(), s.deps.Store.Pool, who, issue.Key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -647,7 +651,7 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	outgoing, err := refs.Outgoing(r.Context(), s.deps.Store.Pool, artifact.ID)
+	outgoing, err := refs.Outgoing(r.Context(), s.deps.Store.Pool, who, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

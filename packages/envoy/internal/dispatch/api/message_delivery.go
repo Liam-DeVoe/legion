@@ -569,8 +569,9 @@ func finishPendingMessageDelivery(
 	thread := replyThread
 	if thread == nil {
 		// A retry sends the stored message, so the block it answers is read as its write named
-		// it, for the frame's message and the preview its thread carries.
-		if err := hydrateMessageReplyBlocks(ctx, tx, &message); err != nil {
+		// it, for the frame's message and the preview its thread carries. The frame is sent where
+		// every reader of the conversation reads it, so the block is read as everyReader.
+		if err := hydrateMessageReplyBlocks(ctx, tx, everyReader, &message); err != nil {
 			return err
 		}
 		derived, err := loadMessageReplyThread(ctx, tx, message)
@@ -950,7 +951,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		// A message handed back as it is stored reads the block it answers as every read does.
 		if posted == nil {
-			if err := hydrateMessageReplyBlocks(r.Context(), tx, &read.Message); err != nil {
+			if err := hydrateMessageReplyBlocks(r.Context(), tx, actor, &read.Message); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -984,7 +985,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	default:
 		var block *namedBlock
 		if input.InReplyToBlock != nil {
-			block, err = s.replyBlockOf(r.Context(), tx, refs.ItemMessage, message.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
+			block, err = s.replyBlockOf(r.Context(), tx, actor, refs.ItemMessage, message.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
@@ -1097,7 +1098,7 @@ func (s *server) insertSessionReply(
 	}
 	replyParent := messageReplyParentOf(parent)
 	if block != nil {
-		if err := hydrateMessageReplyBlocks(ctx, tx, &reply); err != nil {
+		if err := hydrateMessageReplyBlocks(ctx, tx, actor, &reply); err != nil {
 			return model.Message{}, model.Event{}, err
 		}
 		replyParent.ReplyBody = messageReplyPreview(block.excerpt)

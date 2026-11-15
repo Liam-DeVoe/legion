@@ -814,7 +814,7 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if withThread {
-		if err := s.attachIssueAskThreads(r.Context(), rows, reader); err != nil {
+		if err := s.attachIssueAskThreads(r.Context(), who, rows, reader); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -823,15 +823,15 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, rows)
 }
 
-// attachIssueAskThreads hangs each row's thread off it. loadAskThreads leaves `answers` empty -
-// an Inbox row, its other caller, is an open ask and can have none - so this list, which does
-// carry answered asks, merges them over the same ask ids itself.
-func (s *server) attachIssueAskThreads(ctx context.Context, rows []issueAskRow, reader *displayTreeReader) error {
+// attachIssueAskThreads hangs each row's thread off it, read for who. loadAskThreads leaves
+// `answers` empty - an Inbox row, its other caller, is an open ask and can have none - so this
+// list, which does carry answered asks, merges them over the same ask ids itself.
+func (s *server) attachIssueAskThreads(ctx context.Context, who model.Actor, rows []issueAskRow, reader *displayTreeReader) error {
 	askIDs := make([]string, len(rows))
 	for index := range rows {
 		askIDs[index] = rows[index].ID
 	}
-	threads, err := s.loadAskThreads(ctx, askIDs, reader)
+	threads, err := s.loadAskThreads(ctx, who, askIDs, reader)
 	if err != nil {
 		return err
 	}
@@ -907,7 +907,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, "ask_id", ask.ID)
+	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "ask_id", ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -343,10 +343,13 @@ fi
 # and a page's `part_of`, and the role, session and page nodes themselves (outbox.recordBatch) -
 # so a driver that proves those writes starts a NATS of its own (`go build
 # github.com/nats-io/nats-server/v2`, a direct dependency of packages/envoy) and names it in
-# NATS_URLS. That one variable is therefore read from the caller's environment and passed on,
-# which also turns the publisher on; everything else a shell exported is still swept below, and a
-# caller that names none gets exactly the server every spec has always run against.
-nats_urls="${NATS_URLS:-}"
+# DISPATCH_E2E_NATS_URLS, which this script hands the server as its NATS_URLS and which turns the
+# publisher on. It is a variable of this rig's own rather than NATS_URLS itself because a
+# developer's shell exports NATS_URLS for the Envoy listener, and a server that took it would
+# publish test notifications to the bus that listener delivers to real sessions. Every NATS_*
+# variable a shell exported is still swept below, and a caller that names none gets exactly the
+# server every spec has always run against.
+nats_urls="${DISPATCH_E2E_NATS_URLS:-}"
 if [ -n "$nats_urls" ]; then
   nats_env=(NATS_URLS="$nats_urls")
 else
