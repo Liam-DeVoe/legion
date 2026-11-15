@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { meetsTarget, targetLabel } from "./target";
+import { meetsTarget, targetLabel, targetWords } from "./target";
 
 test("targetLabel: at least or above for a measure better higher, at most or under for one better lower, off where the target is", () => {
   const minutes = (v: number) => `${v}m`;
@@ -12,6 +12,26 @@ test("targetLabel: at least or above for a measure better higher, at most or und
   expect(targetLabel({ value: 45, inclusive: true }, "lower", minutes)).toBe("\u2264 45m");
   expect(targetLabel({ value: 45, inclusive: false }, "lower", minutes)).toBe("< 45m");
   expect(targetLabel(null, "lower", minutes)).toBe("off");
+});
+
+test("targetWords: the same targets in words, as a chart's caption names them", () => {
+  const minutes = (v: number) => `${v}m`;
+  expect(targetWords({ value: 20, inclusive: true }, "higher", (v) => `${v}/day`)).toBe(
+    "at least 20/day"
+  );
+  expect(targetWords({ value: 20, inclusive: false }, "higher", (v) => `${v}/day`)).toBe(
+    "above 20/day"
+  );
+  expect(targetWords({ value: 45, inclusive: true }, "lower", minutes)).toBe("at most 45m");
+  expect(targetWords({ value: 45, inclusive: false }, "lower", minutes)).toBe("under 45m");
+  expect(targetWords(null, "lower", minutes)).toBe("off");
+});
+
+test("an inclusive target of 0 on a measure better lower reads as the value alone, since none goes below 0", () => {
+  expect(targetLabel({ value: 0, inclusive: true }, "lower", (v) => `${v}`)).toBe("0");
+  expect(targetWords({ value: 0, inclusive: true }, "lower", (v) => `${v}m`)).toBe("0m");
+  expect(targetLabel({ value: 0, inclusive: false }, "lower", (v) => `${v}`)).toBe("< 0");
+  expect(targetLabel({ value: 0, inclusive: true }, "higher", (v) => `${v}`)).toBe("\u2265 0");
 });
 
 test("meetsTarget: a value at an inclusive target meets it, at a strict one misses it, and an off target judges nothing", () => {

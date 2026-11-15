@@ -299,7 +299,7 @@ test("merge to production shows the response's verdict and its target as its eva
   expect(merge.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("false");
   expect(merge.innerHTML).toContain("target missed");
   expect(merge.innerHTML).toContain("p90 38m · 1 PR<");
-  expect(merge.innerHTML).toContain("target &lt; 45m for every change");
+  expect(merge.innerHTML).toContain("target under 45m for every change");
   for (const metric of ["pr_ci", "staging_e2e", "staging_apply", "production_apply"]) {
     expect(card(metric).innerHTML).not.toContain("target");
   }
@@ -316,7 +316,7 @@ test("merge to production shows the response's verdict and its target as its eva
   expect(inclusive.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe(
     "true"
   );
-  expect(inclusive.innerHTML).toContain("target \u2264 52m for every change");
+  expect(inclusive.innerHTML).toContain("target at most 52m for every change");
   cleanup();
 
   view({
@@ -335,7 +335,7 @@ test("PR open to merge shows the response's verdict of its median", () => {
   expect(opened.innerHTML).toContain("PR open to merge");
   expect(opened.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("true");
   expect(opened.innerHTML).toContain("target met");
-  expect(opened.innerHTML).toContain("target median &lt; 60m");
+  expect(opened.innerHTML).toContain("target median under 60m");
   cleanup();
 
   view({ ...PIPELINE, status: { ...PIPELINE.status, opened_to_merge: false } });

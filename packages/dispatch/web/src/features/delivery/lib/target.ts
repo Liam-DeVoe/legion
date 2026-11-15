@@ -13,21 +13,44 @@ export type Target = DeliveryTargets["deploys_per_day"];
 /** Which way a measure is better. */
 export type Better = "higher" | "lower";
 
-/** The sign a target reads with: at least (≥) or above (>) for a measure better higher, at most
- *  (≤) or under (<) for one better lower, by whether the target's own value meets it. */
-export function targetSign(target: NonNullable<Target>, better: Better): string {
-  if (better === "higher") return target.inclusive ? "\u2265" : ">";
-  return target.inclusive ? "\u2264" : "<";
+/** How a target reads, `format` writing its value: at least (≥) or above (>) for a measure better
+ *  higher, at most (≤) or under (<) for one better lower, by whether the target's own value meets
+ *  it, as a sign or in words. Every measure better lower counts or times something and none goes
+ *  below 0, so at most 0 is 0 itself, which reads as the value alone. */
+function phrase(
+  target: NonNullable<Target>,
+  better: Better,
+  words: boolean,
+  format: (value: number) => string
+): string {
+  if (better === "lower" && target.inclusive && target.value === 0) return format(0);
+  const [sign, word] =
+    better === "higher"
+      ? target.inclusive
+        ? ["\u2265", "at least"]
+        : [">", "above"]
+      : target.inclusive
+        ? ["\u2264", "at most"]
+        : ["<", "under"];
+  return `${words ? word : sign} ${format(target.value)}`;
 }
 
-/** A target as a card's caption names it, `format` writing its value: "≥ 20/day", or "off"
- *  where the target is off. */
+/** A target as a card's caption names it: "≥ 20/day", or "off" where the target is off. */
 export function targetLabel(
   target: Target,
   better: Better,
   format: (value: number) => string
 ): string {
-  return target === null ? "off" : `${targetSign(target, better)} ${format(target.value)}`;
+  return target === null ? "off" : phrase(target, better, false, format);
+}
+
+/** A target as a chart's caption names it, in words: "under 45m", or "off" where it is off. */
+export function targetWords(
+  target: Target,
+  better: Better,
+  format: (value: number) => string
+): string {
+  return target === null ? "off" : phrase(target, better, true, format);
 }
 
 /** Whether value meets target, by the rule the server judges the window's figures by: at or past

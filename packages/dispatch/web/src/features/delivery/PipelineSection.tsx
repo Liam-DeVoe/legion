@@ -65,7 +65,7 @@ import {
 } from "./Chart";
 import { formatDue, formatDuration, formatRate } from "./lib/format";
 import { formatAge } from "./lib/freshness";
-import { type Target, targetLabel } from "./lib/target";
+import { type Target, targetWords } from "./lib/target";
 import { liveWindow } from "./lib/window";
 import { SpreadBars } from "./SpreadBars";
 import { TargetBadge } from "./TargetBadge";
@@ -542,7 +542,7 @@ function LeadTimeCard(props: {
   // its table of every number from the series it is handed.
   const series = useMemo(() => leadTimeSeries(timing.days ?? [], target), [timing.days, target]);
   const judgedValue = judged === "longest" ? total.max_minutes : total.median_minutes;
-  const label = targetLabel(target, "lower", (v) => `${v}m`);
+  const label = targetWords(target, "lower", (v) => `${v}m`);
   return (
     <div className={CARD} data-metric={props.metric}>
       <div className="flex items-start justify-between gap-2">

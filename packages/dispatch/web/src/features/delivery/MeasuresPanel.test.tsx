@@ -183,7 +183,8 @@ test("each target reads as its eval holds it: its sign follows inclusive, and on
   expect(
     within(card("Merge \u2192 production")).getByText("target \u2264 45m for every change")
   ).toBeDefined();
-  expect(within(card("P0 issues with no owner")).getByText("target \u2264 0")).toBeDefined();
+  // At most 0 unowned P0 issues is exactly 0, so the inclusive target reads as the value alone.
+  expect(within(card("P0 issues with no owner")).getByText("target 0")).toBeDefined();
   const runs = within(card("Deploy runs reaching production"));
   expect(runs.getByText("target off")).toBeDefined();
   expect(runs.getByText("no data")).toBeDefined();
