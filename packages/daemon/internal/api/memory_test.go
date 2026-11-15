@@ -125,9 +125,9 @@ var (
 // from 87 to 93 the claim views' `leakCheckCause` too, and still neither entry number, nor the
 // held list, nor the quiet time; a pod from 94 to 97 the two entry numbers too, and still no held
 // list and no quiet time; a pod from 98 to 110 the held list too, and still no tree quiet time; a
-// pod from 111 to 131 the quiet time too; a pod below 46 none of the seventeen; and a pod at 132,
-// this daemon's declared contract — the fixture stands no member of the line of the one kind 132
-// added, so 132's strip finds nothing here (waiting_on_issue_test.go reads it) — a pod whose
+// pod from 111 to 131 the quiet time too; a pod below 46 none of the seventeen; and a pod at this
+// daemon's declared contract, 132 or above — the fixture stands no member of the line of the one
+// kind 132 added, so 132's strip finds nothing here (waiting_on_issue_test.go reads it) — a pod whose
 // claims record no contract and a caller in no pod — the operator's `legion state`, whose memory
 // line reads the draws, whose queue line reads the wakes and whose tool-call line reads the step
 // records — are served all of them, the quiet time of every live tree with the rest.

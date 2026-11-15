@@ -1075,7 +1075,7 @@ const quietTimeContract = 111
 // INFRA-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
-// optional. It is the highest of the seventeen bands, this daemon's own contract.
+// optional. It is the highest of the seventeen bands, this daemon's own contract when it was taken.
 const waitingOnIssueContract = 132
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.

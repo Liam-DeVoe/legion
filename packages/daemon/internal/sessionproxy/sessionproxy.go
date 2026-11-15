@@ -392,9 +392,12 @@ const (
 // Credentials API. One impersonated source signs the Admin API calls, and the other gives the
 // login token, so the proxy signs in as the account.
 //
-// ctx is the proxy's serving context, which only Close ends. The sources refresh their one-hour
-// tokens with it for as long as the proxy serves. iam goes to the IAM Credentials API's client:
-// production passes none, and a test passes a fake endpoint.
+// ctx is the proxy's serving context, which only Close ends. The library builds each source's
+// client and finds the pod's credentials with it, so a credential that fetches its own token with
+// that context keeps doing so for as long as the proxy serves; never Start's own context, which
+// ends once the proof dial is over. Each source refreshes its one-hour token by itself when the
+// connector next asks for one. iam goes to the IAM Credentials API's client: production passes
+// none, and a test passes a fake endpoint.
 func connectorOptions(ctx context.Context, account string, iam ...option.ClientOption) ([]cloudsqlconn.Option, error) {
 	opts := make([]cloudsqlconn.Option, 0, 3)
 	opts = append(opts,
