@@ -59,8 +59,9 @@ func startsOf(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) [
 //   - the tree's architect, which the resume by rule never starts: a start with no task and no
 //     phase, so no phase fence ends it while it waits its turn;
 //   - a phase owner level with the entry its phases row names, and one whose turn the release
-//     cut, holding that turn's task: a start of its phase with no task, since the kept task is
-//     sent on the resume and the release's ask is no task;
+//     cut, holding that turn's task: a start of its phase carrying the phase's resume task, so its
+//     ready writes no second start (readyWorkerTask); the outbox sends a claim that still holds
+//     its cut turn's task that task and not this one, and the release's ask is no task;
 //   - a phase owner behind its entry: that entry's work at that entry, as admission's pass sends
 //     it;
 //   - a role of an earlier phase: a start with no task and no phase;
@@ -149,12 +150,22 @@ func TestTheBootStartsEachClaimTheProjectReleaseStoppedOnce(t *testing.T) {
 			t.Fatalf("the boot's start = %+v, want one with no task, no entry, phase %q, the ruleResume mark and no slot", start, wantPhase)
 		}
 	}
+	// resuming is a level phase owner's start: its phase, the phase's resume task marked as one,
+	// and the ruleResume mark, with no entry and no slot.
+	resuming := func(t *testing.T, start record.SuperviseRequest, issue record.Issue) {
+		t.Helper()
+		if want := ResumePhaseTask(issue); start.Task != want || !start.ResumeTask || start.Entry != 0 || start.Phase != issue.Phase ||
+			!start.RuleResume || start.NeedsSlot || start.CheckLook != 0 {
+			t.Fatalf("the boot's start = %+v, want one of phase %q carrying the resume task %q, marked ResumeTask and ruleResume, with no entry and no slot",
+				start, issue.Phase, want)
+		}
+	}
 
 	t.Run("the tree's architect", func(t *testing.T) {
 		taskless(t, one(t, root, claim.RoleArchitect), "")
 	})
 	t.Run("a phase owner level with its entry", func(t *testing.T) {
-		taskless(t, one(t, root, claim.RoleImplementer), phase.Implementing)
+		resuming(t, one(t, root, claim.RoleImplementer), record.Issue{Key: root, Title: "root", Phase: phase.Implementing})
 	})
 	t.Run("a phase owner behind its entry", func(t *testing.T) {
 		start := one(t, "LEGION-209", claim.RoleTester)
@@ -167,7 +178,7 @@ func TestTheBootStartsEachClaimTheProjectReleaseStoppedOnce(t *testing.T) {
 		taskless(t, one(t, root, claim.RolePlanner), "")
 	})
 	t.Run("a cut turn holding its task", func(t *testing.T) {
-		taskless(t, one(t, "LEGION-210", claim.RoleImplementer), phase.Implementing)
+		resuming(t, one(t, "LEGION-210", claim.RoleImplementer), record.Issue{Key: "LEGION-210", Title: "LEGION-210", Phase: phase.Implementing})
 	})
 	t.Run("the role of an open production check look", func(t *testing.T) {
 		start := one(t, "LEGION-212", claim.RoleTester)

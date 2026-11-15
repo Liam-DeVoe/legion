@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -37,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // idleRigImage is the worker image the rig's configuration names, pinned by digest as the runtime
@@ -88,21 +90,34 @@ const idleRigTick = 250 * time.Millisecond
 //   - the real Envoy listener, built from packages/envoy/cmd/listener and run as its own process
 //     (idle_rig_listener_test.go).
 type idleWakeRig struct {
-	t        *testing.T
-	cfg      config.Config
-	pool     *store.Pool
-	natsURL  string
-	js       jetstream.JetStream
-	board    *liveDispatch
-	kube     *issueSandboxAPI
-	pods     *idleRigPods
-	agents   *idleRigAgents
-	listener *idleRigListener
-	records  record.Store
-	project  string
-	logs     *syncBuffer
-	built    *built
-	api      *daemon
+	// t is the test the rig's waits and reads fail, and root, once a step of the test runs as a
+	// subtest (step), the test the rig was made for, which owns every cleanup (owner).
+	t       *testing.T
+	root    *testing.T
+	cfg     config.Config
+	pool    *store.Pool
+	natsURL string
+	js      jetstream.JetStream
+	board   *liveDispatch
+	// kube is the stand-in for the cluster every rig boots its daemon on first, and second the
+	// stand-in for another cluster, made for a test that moves a project between the two
+	// (idleRigOptions.secondCluster), nil otherwise. kubeconfigs is the kubeconfig that reaches
+	// each; the one the configuration names is the cluster the next boot reaches (aimAt).
+	kube        *issueSandboxAPI
+	second      *issueSandboxAPI
+	kubeconfigs map[*issueSandboxAPI]string
+	pods        *idleRigPods
+	agents      *idleRigAgents
+	listener    *idleRigListener
+	records     record.Store
+	project     string
+	logs        *syncBuffer
+	built       *built
+	api         *daemon
+	options     idleRigOptions
+	// work is the remote every pod's workspace is provisioned from and those workspaces, nil
+	// unless the test asked for them (idleRigOptions.workspaces).
+	work *idleRigWorkspaces
 	// issues are the rig's issues, in the order they were seeded.
 	issues []idleRigIssue
 	// daemonLog is where a copy of the daemon's log is kept.
@@ -119,14 +134,54 @@ type idleWakeRig struct {
 	done   chan error
 }
 
-// idleRigIssue is one issue of the rig: its key, the pod its claims run in, and the role that pod
-// runs.
+// idleRigIssue is one issue of the rig: its key, the pod its claims run in, the role that owns its
+// phase, and every role it has a claim of, that one first.
 type idleRigIssue struct {
 	// name is what the test calls the issue; key is the issue key its project gives it.
-	name string
-	key  string
-	pod  string
-	role claim.Role
+	name  string
+	key   string
+	pod   string
+	role  claim.Role
+	roles []claim.Role
+}
+
+// idleRigOptions is what a test asks of the rig beyond what the idle release's tests run on, each
+// left off by those tests: one daemon on one cluster, on a clock whose timers never fire, whose
+// pods hold no workspace.
+type idleRigOptions struct {
+	// holdStream gives the worker stream one port every boot binds again, and the API one port
+	// every restart holds again, as a deployment's worker_stream_port and port are fixed in its
+	// configuration: a launcher of a pod a restart did not end reconnects to the restarted daemon,
+	// and its role process reaches the restarted daemon's API, which is how a restart adopts a pod.
+	holdStream bool
+	// wallClock boots the daemon on the wall clock, as a deployment runs, so a timer a machine
+	// arms fires: a suspension held for a turn ends at its deadline.
+	wallClock bool
+	// orphanSweep is how often the daemon's sweep runs (overrides.orphanSweep), which carries the
+	// pod update rounds; zero is the daemon's minute.
+	orphanSweep time.Duration
+	// entrySweep is how often the daemon converges the phase entries with no fact arriving
+	// (overrides.entrySweep); zero is the daemon's minute.
+	entrySweep time.Duration
+	// workspaces gives each issue pod a workspace made by the real provisioning from a local
+	// remote (idleRigWorkspaces), which the pod's role processes read and push.
+	workspaces bool
+	// secondCluster makes the stand-in for a second cluster beside the first, and aimSecond boots
+	// the daemon on it first.
+	secondCluster, aimSecond bool
+	// configure changes the configuration before the first boot.
+	configure func(*config.Config)
+}
+
+// idleRigSeed is one issue the rig seeds: what the test calls it, every role it has a claim of
+// with the one that owns its phase first, whether it has a pull request open, and the plan each
+// of its role processes follows, set before the daemon's boot starts any of them (nil leaves the
+// rig's own).
+type idleRigSeed struct {
+	name  string
+	roles []claim.Role
+	pull  bool
+	plan  *idleRigPlan
 }
 
 // newIdleWakeRig readies every part and boots the daemon, with one issue per name given. Each
@@ -134,6 +189,17 @@ type idleRigIssue struct {
 // suspended, which the rig then resumes: that launch is what makes the pod, its launcher and its
 // role process.
 func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
+	t.Helper()
+	seeds := make([]idleRigSeed, len(issues))
+	for i, name := range issues {
+		seeds[i] = idleRigSeed{name: name, roles: []claim.Role{claim.RoleImplementer}, pull: name == idleRigChecks}
+	}
+	return newIdleRigWith(t, idleRigOptions{}, seeds...)
+}
+
+// newIdleRigWith is newIdleWakeRig with what options asks beyond it, and with the roles each seed
+// names.
+func newIdleRigWith(t *testing.T, options idleRigOptions, seeds ...idleRigSeed) *idleWakeRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(context.Background(), idleRigSessionTable()); err != nil {
@@ -148,7 +214,10 @@ func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
 	cfg.EnvoyURL = listener.url
 	// One admission slot per issue of the rig, and a cap with room for them all: an issue the
 	// daemon has not admitted is one its boot lingers closed.
-	cfg.AdmissionCap = len(issues) + 4
+	cfg.AdmissionCap = len(seeds) + 4
+	if options.holdStream {
+		cfg.WorkerStreamPort = idleRigFreePort(t)
+	}
 	// Every launcher of the rig reaches that database through its generation's proxy, which
 	// carries the launcher's own startup packet to it unchanged, so the password the rig's DSN
 	// names has to be in the environment before the first launcher starts
@@ -161,6 +230,9 @@ func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
 			Database: ompsessions.Database{Instance: "legion-test:us-central1:sessions", Name: idleRigDatabase(t, pool), User: idleRigUser(t, pool)}},
 		IdleRelease: config.IdleReleaseConfig{IdleMinutes: idleRigIdleMinutes, BackstopMinutes: idleRigBackstopMinutes},
 	}}
+	if options.configure != nil {
+		options.configure(&cfg)
+	}
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
@@ -171,30 +243,102 @@ func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
 	board.lists = true
 	cfg.DispatchURL = board.url
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
-		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
-		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
+		kube: newIssueSandboxAPI(), kubeconfigs: map[*issueSandboxAPI]string{}, agents: newIdleRigAgents(t, pool),
+		listener: listener, records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}, options: options}
 	rig.pods = newIdleRigPods(t, rig.address, cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
-	rig.kube.serve(t)
+	keys := make([]string, len(seeds))
+	for i := range seeds {
+		keys[i] = cfg.Project + "-" + strconv.Itoa(i+1)
+	}
+	if options.workspaces {
+		rig.work = newIdleRigWorkspaces(t, keys)
+		rig.agents.setWorkspaces(func(pod string) (idleRigWorkspaceAnswer, bool) {
+			// A role process names its pod by its issue (LEGION_ISSUE), the one name the runtime
+			// gives an issue's roles.
+			for _, seeded := range rig.issues {
+				if seeded.key == pod {
+					pod = seeded.pod
+				}
+			}
+			live, ok := rig.work.running(pod)
+			if !ok {
+				return idleRigWorkspaceAnswer{}, false
+			}
+			issue := ""
+			for _, seeded := range rig.issues {
+				if seeded.pod == pod {
+					issue = seeded.key
+				}
+			}
+			return idleRigWorkspaceAnswer{Dir: live.dir, Issue: issue, Env: rig.work.env(), Remote: rig.work.remote,
+				URL: workspace.GitHubURL(rig.work.repo)}, true
+		})
+	}
+	rig.kube.prefix = "a-"
+	rig.serveCluster(rig.kube)
+	if options.secondCluster {
+		rig.second = newIssueSandboxAPI()
+		rig.second.prefix = "b-"
+		rig.serveCluster(rig.second)
+	}
 	// Boot reads runtime.kubernetes' kubeconfig whatever runtime it is given (readSandbox,
 	// kubeClient), and with none it reads the pod's in-cluster credentials, so the rig names its
 	// own stand-in API: it runs the same way outside a cluster as in one, and never holds a
-	// credential of the cluster it runs in. Nothing dials this client, since the runtime the
-	// boot is given is the rig's own (prepareSandbox returns before it builds one).
-	rig.cfg.Runtime.Kubernetes.Kubeconfig = writeKubeconfig(t, rig.kube.url, "test")
-	rig.kube.onPodReady = rig.podReady
-	rig.kube.onPodGone = rig.pods.podGone
-	rig.kube.run(t)
+	// credential of the cluster it runs in. The runtime the rig builds reaches its cluster through
+	// that same kubeconfig (newRuntime), so the kubeconfig the boot reads decides the cluster.
+	rig.aimAt(rig.kube)
+	if options.aimSecond {
+		rig.aimAt(rig.second)
+	}
 	t.Setenv(idleRigURLVariable, rig.agents.url)
 
-	for i, name := range issues {
-		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
+	for i, seed := range seeds {
+		rig.issues = append(rig.issues, rig.seed(seed, keys[i], i))
 	}
 	rig.boot()
 	rig.awaitListenerReady()
 	return rig
+}
+
+// serveCluster serves the stand-in for one cluster, writes the kubeconfig that reaches it, and runs
+// its controller stand-in, whose pods start the rig's launchers.
+func (r *idleWakeRig) serveCluster(cluster *issueSandboxAPI) {
+	r.t.Helper()
+	cluster.serve(r.t)
+	r.kubeconfigs[cluster] = writeKubeconfig(r.t, cluster.url, "test")
+	cluster.onPodReady = func(pod, uid string, roles map[string]string) { r.podReady(cluster, pod, uid, roles) }
+	cluster.onPodGone = func(pod string) { r.podGone(cluster, pod) }
+	cluster.run(r.t)
+}
+
+// aimAt names cluster's kubeconfig in the configuration, so the daemon's next boot reaches that
+// cluster, as an operator moves a daemon by changing runtime.kubernetes.kubeconfig. It is called
+// while no daemon runs, and gives the configuration a Kubernetes section of its own, since the
+// stopped daemon's may still be read by what it left running.
+func (r *idleWakeRig) aimAt(cluster *issueSandboxAPI) {
+	r.t.Helper()
+	kubeconfig, ok := r.kubeconfigs[cluster]
+	if !ok {
+		r.t.Fatal("the rig serves no such cluster")
+	}
+	k := *r.cfg.Runtime.Kubernetes
+	k.Kubeconfig = kubeconfig
+	r.cfg.Runtime.Kubernetes = &k
+}
+
+// aimed is the cluster the configuration names, the one the running daemon reaches.
+func (r *idleWakeRig) aimed() *issueSandboxAPI {
+	r.t.Helper()
+	for cluster, kubeconfig := range r.kubeconfigs {
+		if kubeconfig == r.cfg.Runtime.Kubernetes.Kubeconfig {
+			return cluster
+		}
+	}
+	r.t.Fatalf("the configuration names the kubeconfig %s, which reaches no cluster of the rig", r.cfg.Runtime.Kubernetes.Kubeconfig)
+	return nil
 }
 
 // listenerReports is every row of listener_reports, by the project each is filed under.
@@ -320,35 +464,61 @@ func (r *idleWakeRig) address() string {
 	return r.built.address
 }
 
-// podReady starts the pod's launchers, for the roles the rig gave the issue a claim, and records
-// where each launcher writes its generations so the role process can be handed its boot token.
-func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
+// idleRigControllerPod is what the rig calls the project controller's pod among its role processes
+// (idleRigAgents' keys): a controller's role is given no issue to name its pod by, only
+// LEGION_CONTROLLER (sandbox's controllerPod.agentEnv), and a project runs one.
+const idleRigControllerPod = "controller"
+
+// podReady starts the pod's launchers, for the roles the rig gave the issue a claim of — or the
+// controller's, for the project controller's pod — once the pod's workspace is provisioned where
+// the rig makes workspaces, and records where each launcher writes its generations so the role
+// process can be handed its boot token.
+func (r *idleWakeRig) podReady(cluster *issueSandboxAPI, pod, uid string, roles map[string]string) {
 	key := pod
-	for _, issue := range r.issues {
-		if issue.pod == pod {
+	var issue *idleRigIssue
+	for i := range r.issues {
+		if r.issues[i].pod == pod {
+			issue = &r.issues[i]
 			key = issue.key
 		}
 	}
+	keep := []claim.Role{claim.RoleImplementer}
+	switch {
+	case issue != nil:
+		keep = issue.roles
+	case pod == sandbox.SandboxName(claim.ControllerToken(r.project)):
+		key, keep = idleRigControllerPod, []claim.Role{claim.RoleController}
+	}
 	wanted := map[string]string{}
-	for role, token := range roles {
-		if role == string(claim.RoleImplementer) {
-			wanted[role] = token
+	for _, role := range keep {
+		if token, ok := roles[string(role)]; ok {
+			wanted[string(role)] = token
 		}
 	}
-	r.pods.podReady(pod, uid, wanted, func(role, dir string) { r.agents.setPrivate(key, role, dir) })
+	var prepare func(context.Context) error
+	if r.work != nil && issue != nil {
+		disk, issueKey := cluster.diskID(pod), issue.key
+		prepare = func(ctx context.Context) error { return r.work.provision(ctx, cluster.prefix, disk, pod, issueKey) }
+	}
+	r.pods.podReady(cluster.prefix, pod, uid, wanted, prepare, func(role, dir string) { r.agents.setPrivate(key, role, dir) })
 }
 
-// seed records one issue, its tree's lifecycle and its implementer's suspended claim, as
+// podGone stops the launchers of the cluster's pod, and its workspace is no live pod's any more.
+func (r *idleWakeRig) podGone(cluster *issueSandboxAPI, pod string) {
+	r.pods.podGone(cluster.prefix, pod)
+	if r.work != nil {
+		r.work.podGone(cluster.prefix, pod)
+	}
+}
+
+// seed records one issue, its tree's lifecycle and a suspended claim of each of its roles, as
 // check_wake_test.go's rig seeds a claim the daemon will resume. The issue is its own tree root,
 // in the workflow at `implementing`, so the idle rule reads a live tree and the backstop has a
-// phase worker to arm for (workflow.BackstopRole).
-func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
+// phase worker to arm for (workflow.BackstopRole); the daemon's boot starts its implementer, the
+// phase's owner, and a role of any other kind waits for the operator's resume (launch).
+func (r *idleWakeRig) seed(seed idleRigSeed, key string, index int) idleRigIssue {
 	r.t.Helper()
 	r.board.show(key, "in_progress")
-	token, err := claim.NewToken(r.project, key, claim.RoleImplementer)
-	if err != nil {
-		r.t.Fatal(err)
-	}
 	ctx := context.Background()
 	st, err := store.Open(ctx, r.cfg.PostgresDSN)
 	if err != nil {
@@ -366,7 +536,7 @@ func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
 		if err := r.records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: index, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
-		if name != idleRigChecks {
+		if !seed.pull {
 			return nil
 		}
 		return r.records.PutPullRequest(ctx, tx, record.PullRequest{
@@ -379,14 +549,25 @@ func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
 	if _, err := st.OpenTreeLifecycle(ctx, r.project, key, treelifecycle.AuthorityWorkflow); err != nil {
 		r.t.Fatalf("open the lifecycle of %s: %v", key, err)
 	}
-	if _, err := st.AdmitClaim(ctx, supervise.Claim{
-		Token: token, Project: r.project, Tree: key, Issue: key, Role: claim.RoleImplementer, Generation: 1,
-		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
-	}); err != nil {
-		r.t.Fatalf("record the suspended implementer of %s: %v", key, err)
+	var pod string
+	for _, role := range seed.roles {
+		token, err := claim.NewToken(r.project, key, role)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		if _, err := st.AdmitClaim(ctx, supervise.Claim{
+			Token: token, Project: r.project, Tree: key, Issue: key, Role: role, Generation: 1,
+			State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
+		}); err != nil {
+			r.t.Fatalf("record the suspended %s of %s: %v", role, key, err)
+		}
+		writePrompt(r.t, r.cfg, token)
+		if seed.plan != nil {
+			r.agents.setPlan(key, string(role), *seed.plan)
+		}
+		pod = sandbox.SandboxName(token)
 	}
-	writePrompt(r.t, r.cfg, token)
-	return idleRigIssue{name: name, key: key, pod: sandbox.SandboxName(token), role: claim.RoleImplementer}
+	return idleRigIssue{name: seed.name, key: key, pod: pod, role: seed.roles[0], roles: slices.Clone(seed.roles)}
 }
 
 // idleRigPullNumber is the pull request number of an issue, derived from its key so each issue has
@@ -422,21 +603,47 @@ func (r *idleWakeRig) boot() {
 	// registered after r.stopDaemon and so run before it, printing a log that ends where the
 	// shutdown begins, or none at all when the stop is what failed.
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
+	o := overrides{
+		listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, orphanSweep: r.options.orphanSweep,
+		entrySweep:     r.options.entrySweep,
+		workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.owner()),
+	}
+	if r.options.wallClock {
+		o.clock = nil
+	}
 	go func() {
-		done <- run(ctx, r.cfg, logger, overrides{
-			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick,
-			workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.t),
-		})
+		done <- run(ctx, r.cfg, logger, o)
 	}()
 	r.stopMu.Lock()
 	r.stop, r.done = cancel, done
 	r.stopMu.Unlock()
-	r.t.Cleanup(r.stopDaemon)
+	r.owner().Cleanup(r.stopDaemon)
 	awaitHealthz(r.t, r.cfg, done)
 	transport := &http.Transport{}
-	r.t.Cleanup(transport.CloseIdleConnections)
+	r.owner().Cleanup(transport.CloseIdleConnections)
 	r.api = &daemon{t: r.t, cfg: r.cfg, transport: transport, client: &http.Client{Transport: transport, Timeout: 150 * time.Second},
 		base: "http://127.0.0.1:" + strconv.Itoa(r.cfg.Port), stopped: true}
+}
+
+// owner is the test the rig was made for, which every cleanup of the rig is registered on: a step
+// of that test run as a subtest of its own (step) is where a failure is reported, but what the
+// step starts — a daemon, a listener's connections, a log — outlives it.
+func (r *idleWakeRig) owner() *testing.T {
+	if r.root != nil {
+		return r.root
+	}
+	return r.t
+}
+
+// step runs one step of the test that made the rig as a named subtest of it, with the rig's waits
+// and reads failing that subtest. What the step starts is still the owner's, and outlives it.
+func (r *idleWakeRig) step(name string, f func(t *testing.T)) bool {
+	owner := r.owner()
+	return owner.Run(name, func(t *testing.T) {
+		r.root, r.t, r.api.t = owner, t, t
+		defer func() { r.t, r.api.t = owner, owner }()
+		f(t)
+	})
 }
 
 // logFile keeps a copy of the daemon's log beside the test, under the test's own temporary
@@ -541,12 +748,41 @@ func (r *idleWakeRig) stopDaemon() {
 
 // restart stops the daemon and boots it again on the same store, as a deployment's restart does.
 // The wakes the listener reported while it was down are on its durable consumer, which is what
-// makes them wait for it rather than be lost.
+// makes them wait for it rather than be lost. A rig that holds its ports (idleRigOptions.holdStream)
+// boots again on the API port the stopped daemon served, which its role processes still name;
+// any other boots on a fresh one.
 func (r *idleWakeRig) restart() {
 	r.t.Helper()
 	r.stopDaemon()
-	rebindHeldPorts(r.t, &r.cfg)
+	if r.options.holdStream {
+		holdPortAgain(r.owner(), r.cfg.Port)
+	} else {
+		rebindHeldPorts(r.t, &r.cfg)
+	}
 	r.boot()
+}
+
+// holdPortAgain holds the loopback port a stopped daemon served for the next daemon's listen
+// (heldListen), as holdPortOn holds a fresh one. The stopped daemon closed its listener, so the
+// port binds again at once.
+func holdPortAgain(t *testing.T, port int) {
+	t.Helper()
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("hold the daemon's port %d again: %v", port, err)
+	}
+	heldPorts.Lock()
+	heldPorts.byAddress[address] = listener
+	heldPorts.Unlock()
+	t.Cleanup(func() {
+		heldPorts.Lock()
+		if heldPorts.byAddress[address] == listener {
+			delete(heldPorts.byAddress, address)
+		}
+		heldPorts.Unlock()
+		_ = listener.Close()
+	})
 }
 
 // newRuntime is the runtime factory the daemon boots with: the real Sandbox runtime
@@ -603,7 +839,16 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL
 	opts.EnvoyURL = r.cfg.EnvoyURL
-	rt, err := sandbox.New(ctx, sandboxRESTConfig(r.kube.url), opts)
+	// The runtime reaches the cluster the configuration's kubeconfig names, through kubeClient as
+	// the daemon's own boot reaches it (readSandbox), so aiming the rig's configuration at another
+	// cluster (aimAt) is what moves the daemon. The stand-in decodes and encodes JSON alone
+	// (sandboxRESTConfig).
+	restConfig, err := kubeClient(k)
+	if err != nil {
+		return nil, err
+	}
+	restConfig.ContentType, restConfig.AcceptContentTypes = "application/json", "application/json"
+	rt, err := sandbox.New(ctx, restConfig, opts)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox.New: %w", err)
 	}
@@ -649,11 +894,11 @@ func (idleRigTokens) Token(context.Context, ghrepo.Repository) (string, error) {
 	return "idle-rig-provision", nil
 }
 
-// launch waits until the issue's pod runs its role, registered, ready and having told the daemon
-// it runs no background work: the state the idle rule releases. The daemon starts the implementer
-// of an admitted issue whose phase is its own, so nothing here asks for the launch; a claim still
-// suspended is nudged with the operator's resume, which is what a boot that left it suspended
-// needs.
+// launch waits until the issue's pod runs each of its roles, registered, ready and having told the
+// daemon it runs no background work: the state the idle rule releases. The daemon starts the
+// implementer of an admitted issue whose phase is its own, so nothing here asks for that launch; a
+// claim still suspended — another role, which no boot starts, or one a boot left suspended — is
+// nudged with the operator's resume.
 func (r *idleWakeRig) launch(issue idleRigIssue) {
 	r.t.Helper()
 	defer func() {
@@ -661,18 +906,23 @@ func (r *idleWakeRig) launch(issue idleRigIssue) {
 			r.t.Log(r.diagnose())
 		}
 	}()
-	token := r.token(issue)
-	var nudged time.Time
-	idleRigEventually(r.t, idleRigPodWait, "the pod of "+issue.key+" running its role, registered and ready", func() bool {
-		state := r.api.claim(token)
-		if idleRigWorking(state.State) && r.agents.role(issue.key, string(issue.role)).Registered > 0 {
-			return true
+	nudged := map[claim.Role]time.Time{}
+	idleRigEventually(r.t, idleRigPodWait, "the pod of "+issue.key+" running its roles, registered and ready", func() bool {
+		claims := r.api.claims()
+		up := true
+		for _, role := range issue.roles {
+			token := r.roleToken(issue, role)
+			state := listedClaim(r.t, claims, token)
+			if idleRigWorking(state.State) && r.agents.role(issue.key, string(role)).Registered > 0 {
+				continue
+			}
+			up = false
+			if state.State == string(supervise.StateSuspended) && time.Since(nudged[role]) > 3*time.Second {
+				nudged[role] = time.Now()
+				r.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/resume", nil, true)
+			}
 		}
-		if state.State == string(supervise.StateSuspended) && time.Since(nudged) > 3*time.Second {
-			nudged = time.Now()
-			r.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/resume", nil, true)
-		}
-		return false
+		return up
 	})
 }
 
@@ -697,10 +947,16 @@ func idleRigWorking(state string) bool {
 	return false
 }
 
-// token is the claim token of the issue's role.
+// token is the claim token of the issue's role, the one that owns its phase.
 func (r *idleWakeRig) token(issue idleRigIssue) claim.Token {
 	r.t.Helper()
-	token, err := claim.NewToken(r.project, issue.key, issue.role)
+	return r.roleToken(issue, issue.role)
+}
+
+// roleToken is the claim token of one role of the issue.
+func (r *idleWakeRig) roleToken(issue idleRigIssue, role claim.Role) claim.Token {
+	r.t.Helper()
+	token, err := claim.NewToken(r.project, issue.key, role)
 	if err != nil {
 		r.t.Fatal(err)
 	}

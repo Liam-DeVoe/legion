@@ -57,7 +57,9 @@ type projectReleaseStore interface {
 // bound; then its last read, its stop and its delete (stopAndDelete). Once every issue pod ended,
 // the controller's claim and pod, the repository caches and any probe go. The result grows on the
 // record as each Sandbox ends, and the release finishes once each claim it held for an operator in
-// a left pod is stored suspended or its wait ran out.
+// a left pod is stored suspended or its wait ran out. Every goroutine it starts takes a store mark
+// of its own (store.ForConcurrentWorker), since its reads, stops and holds run side by side and the
+// pool refuses a second connection under one mark.
 type projectReleaser struct {
 	// ctx is the release goroutine's lifetime, supervision's: a daemon that stops ends the release
 	// where it stands, and the next boot ends its record and starts the claims it had stopped.
@@ -316,7 +318,7 @@ func (r *projectReleaser) Answer(ctx context.Context, token claim.Token, session
 
 // release is the goroutine of one release, from its inventory to its finish.
 func (r *projectReleaser) release(run *releaseRun) {
-	ctx := r.ctx
+	ctx := store.ForConcurrentWorker(r.ctx)
 	sandboxes, err := r.pods.ProjectSandboxes(ctx)
 	if err != nil {
 		r.fail(ctx, run, fmt.Sprintf("list the project's Sandboxes: %v", err))
@@ -332,7 +334,7 @@ func (r *projectReleaser) release(run *releaseRun) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r.takePod(ctx, run, pod, first[i])
+			r.takePod(store.ForConcurrentWorker(ctx), run, pod, first[i])
 		}()
 	}
 	// A claim of the stop set whose issue has no Sandbox of the project is starting where no pod
@@ -342,7 +344,7 @@ func (r *projectReleaser) release(run *releaseRun) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r.stopClaims(ctx, podless, supervise.SuspendedByProjectRelease, run.bound,
+			r.stopClaims(store.ForConcurrentWorker(ctx), podless, supervise.SuspendedByProjectRelease, run.bound,
 				"the project release stops it; it has no pod of the project", time.Now().Add(r.stopTimeout))
 		}()
 	}
@@ -463,7 +465,7 @@ func (r *projectReleaser) readAll(ctx context.Context, run *releaseRun, pods []*
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			reads[i] = r.read(ctx, pod.sandbox.Issue)
+			reads[i] = r.read(store.ForConcurrentWorker(ctx), pod.sandbox.Issue)
 			r.noteRead(run, pod, reads[i])
 		}()
 	}
@@ -737,7 +739,7 @@ func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *relea
 			continue
 		}
 		go func() {
-			if err := m.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator,
+			if err := m.Handle(store.ForConcurrentWorker(ctx), supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator,
 				Reason: "the project release leaves its pod: " + why}); err != nil && !errors.Is(err, supervise.ErrSuspendHeld) {
 				r.log.Warn("project release: hold a claim of a left pod for an operator", "claim", token, "error", err)
 			}
@@ -773,7 +775,7 @@ func (r *projectReleaser) stopClaims(ctx context.Context, tokens []claim.Token, 
 			request.Deadline = deadline
 		}
 		go func() {
-			if err := m.Handle(ctx, request); err != nil && !errors.Is(err, supervise.ErrSuspendHeld) {
+			if err := m.Handle(store.ForConcurrentWorker(ctx), request); err != nil && !errors.Is(err, supervise.ErrSuspendHeld) {
 				mu.Lock()
 				refused[token] = err.Error()
 				mu.Unlock()

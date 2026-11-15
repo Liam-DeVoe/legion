@@ -68,7 +68,9 @@ import (
 // and after the two other boot steps that can start such a claim, which write their starts
 // before this fact: admission's first pass, the listing's reconcile, which sends a claim behind
 // its entry that entry's work (admit's owedEntryRoles), and the cutover's repair. A claim one of
-// them started is covered by that queued start (StartFor) and gets none here.
+// them started is covered by that queued start (StartFor) and gets none here. A phase owner
+// level with its entry starts with its phase's resume task, so its ready writes no second start
+// (readyWorkerTask); a claim behind its entry gets that entry's work, and any other claim no task.
 //
 // The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
 // (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
@@ -144,19 +146,24 @@ type releaseStopped struct {
 //
 //   - A phase owner behind that entry is sent the work of that entry at that entry
 //     (sendOwedEntry, with the ruleResume mark), as the resume by rule sends it.
+//   - A phase owner level with its entry — its phase unfinished, nothing owed — gets one start of
+//     its phase carrying the phase's resume task (ResumePhaseTask, marked ResumeTask) and the
+//     ruleResume mark: its turn ended with nothing pending, and readyWorkerTask, which gives such
+//     a worker that same task once it reports ready, would otherwise write it a second start.
+//     The outbox delivers no resume task to a claim that still holds a task of the phase, so a
+//     claim whose turn the release cut is sent its own kept task on the resume and not this one.
 //   - Every other claim — an architect, a sub-architect, a role of an earlier phase, the owner of
-//     a phase its terminating fact has met, a phase owner level with its entry, a claim whose turn
-//     the release cut — gets one start with no task and the ruleResume mark, enqueued directly
-//     as admission's start of a role that does not own its member's phase is
+//     a phase its terminating fact has met — gets one start with no task and the ruleResume mark,
+//     enqueued directly as admission's start of a role that does not own its member's phase is
 //     (startMidPhaseMembers), so it waits for no slot. The outbox's start resumes the claim by
-//     rule, paced as every launch is (supervise's reserveWake), and its pending task, a cut
-//     turn's among them, is sent on that resume, since a project release does not retire it
+//     rule, paced as every launch is (supervise's reserveWake), and its pending task, if it holds
+//     one, is sent on that resume, since a project release does not retire it
 //     (supervise.SuspendSource.RetiresPhaseTask). A phase owner's start names its phase, so the
 //     phase rules that read a queued start of the owner (StartFor, OwedEntry, readyWorkerTask's
 //     cover) see it; any other role's names none, as an architect's start names none, so the
-//     outbox's phase fence cannot end it when the phase moves while it waits its turn, which a
-//     cut turn's owner finishing first does. Its cover is read under both, the issue's phase and
-//     none, since a promotion's start of such a role names the member's phase.
+//     outbox's phase fence cannot end it when the phase moves while it waits its turn. Its cover
+//     is read under both, the issue's phase and none, since a promotion's start of such a role
+//     names the member's phase.
 //   - The production check's role gets the open look's start again: a start carrying that look
 //     (CheckLook) and the check it belongs to, the shape startLook writes, without startLook's
 //     Looks++, which opens the next look rather than this one. It is the one start an issue out
@@ -271,7 +278,8 @@ func (e *Engine) startStoppedLook(ctx context.Context, tx pgx.Tx, stopped releas
 }
 
 // startStoppedClaim gives a claim the project release stopped, of an issue in the workflow whose
-// tree runs, its one start of the boot, unless a queued start covers it (startReleaseStopped).
+// tree runs, its one start of the boot, unless a queued start covers it (startReleaseStopped): a
+// phase owner's carries the entry it is behind, or else its phase's resume task.
 func (e *Engine) startStoppedClaim(ctx context.Context, tx pgx.Tx, stopped releaseStopped, run record.RoleRun) error {
 	issue, root, role := stopped.issue, stopped.root, stopped.held.Role
 	owns := role != claim.RoleArchitect && phase.RoleFor(issue.Phase) == role
@@ -302,7 +310,9 @@ func (e *Engine) startStoppedClaim(ctx context.Context, tx pgx.Tx, stopped relea
 				"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry)
 			return nil
 		}
-		request.Phase = issue.Phase
+		// Level with its entry: the phase's resume task rides this start, so readyWorkerTask finds
+		// the task held once the worker reports ready and writes no second start.
+		request.Phase, request.Task, request.ResumeTask = issue.Phase, ResumePhaseTask(issue), true
 	} else if !StartFor(run, root, issue.Generation, "") || !StartFor(run, root, issue.Generation, issue.Phase) {
 		return nil
 	}

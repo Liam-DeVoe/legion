@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -18,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -26,6 +29,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	workershim "github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -39,17 +43,22 @@ const idleRigURLVariable = "LEGION_IDLE_RIG_URL"
 
 // idleRigRole is one role process the rig has seen: the claim it registered, the session it
 // became, every message it was given — the daemon's prompts over the worker stream, and the
-// messages the session's own consumer was relayed — and every adopt-working-copy frame the daemon
-// sent it ahead of a prompt.
+// messages the session's own consumer was relayed — every adopt-working-copy frame the daemon
+// sent it ahead of a prompt, and every bundle request the daemon sent it, which no project
+// release may send (Bundles).
 type idleRigRole struct {
 	Claim       string
 	Secret      string
 	Session     string
 	SessionFile string
 	Registered  int
-	Prompts     []idleRigMessage
-	Messages    []idleRigMessage
-	Adoptions   []idleRigAdoption
+	// RegisteredAt is when the process last registered: a message recorded after it reached the
+	// process that registration started.
+	RegisteredAt time.Time
+	Prompts      []idleRigMessage
+	Messages     []idleRigMessage
+	Adoptions    []idleRigAdoption
+	Bundles      []idleRigMessage
 }
 
 // idleRigMessage is one message a role process recorded, with the moment it arrived. Delivery is
@@ -88,10 +97,15 @@ type idleRigAdoption struct {
 // mid-run is a subagent starting or ending in a live session.
 //
 // The rest is what the process answers a project release (dispatch://INFRA-3583). Unpushed is
-// what its shim reads of the workspace's unpushed work (`read-unpushed`), nothing unpushed when
-// it names none; RefuseRead, when set, is the refusal it answers that read with instead, as a shim
-// older than the read forwards the frame to Oh My Pi, which refuses it. AnswerRelease is whether
-// the process answers the release's ask with ready_for_update, naming the round the ask names.
+// what its shim reads of the workspace's unpushed work (`read-unpushed`) when the plan scripts the
+// read; with none, a process whose pod has a workspace (idleRigWorkspaces) reads that workspace as
+// the shim does (shim.ReadUnpushed), and one whose pod has none reads nothing unpushed. RefuseRead,
+// when set, is the refusal it answers that read with instead, as a shim older than the read
+// forwards the frame to Oh My Pi, which refuses it. AnswerRelease is whether the process answers
+// the release's ask with ready_for_update, naming the round the ask names, and PushOnRelease
+// whether it first pushes its work as the ask tells it to: the working copy's change committed,
+// the issue's branch set to that commit and pushed. StayInTurn has the next prompt's turn begin and
+// never end, as a role still working when the release's bound comes.
 type idleRigPlan struct {
 	TakeTurn      bool             `json:"takeTurn"`
 	Topics        []string         `json:"topics"`
@@ -99,12 +113,26 @@ type idleRigPlan struct {
 	Unpushed      *idleRigUnpushed `json:"unpushed,omitempty"`
 	RefuseRead    string           `json:"refuseRead,omitempty"`
 	AnswerRelease bool             `json:"answerRelease,omitempty"`
+	PushOnRelease bool             `json:"pushOnRelease,omitempty"`
+	StayInTurn    bool             `json:"stayInTurn,omitempty"`
 }
 
 // idleRigUnpushed is a workspace's unpushed work as a shim's read answers it.
 type idleRigUnpushed struct {
 	Commits            int  `json:"commits"`
 	WorkingCopyChanged bool `json:"workingCopyChanged"`
+}
+
+// idleRigWorkspaceAnswer is the workspace of a pod as the rig hands it to the pod's role
+// processes (idleRigAgents.workspace): its directory, which LEGION_WORKSPACE names in a pod, the
+// issue whose branch it is on, the environment its git and jj run under, and the remote that
+// stands for GitHub, which a push reaches in place of the GitHub URL the clone's origin names.
+type idleRigWorkspaceAnswer struct {
+	Dir    string   `json:"dir"`
+	Issue  string   `json:"issue"`
+	Env    []string `json:"env"`
+	Remote string   `json:"remote"`
+	URL    string   `json:"url"`
 }
 
 // idleRigReleaseAsk finds the round a project release's ask names in its text
@@ -133,6 +161,9 @@ type idleRigAgents struct {
 	plans   map[string]idleRigPlan
 	// plan is the plan a role with none of its own gets.
 	plan idleRigPlan
+	// workspace is the workspace of a running pod by pod name, which the rig sets where its pods
+	// have one (idleRigWorkspaces); nil answers none.
+	workspace func(pod string) (idleRigWorkspaceAnswer, bool)
 }
 
 func newIdleRigAgents(t *testing.T, pool *store.Pool) *idleRigAgents {
@@ -162,6 +193,14 @@ func (a *idleRigAgents) setPlan(pod, role string, plan idleRigPlan) {
 	a.plans[idleRigKey(pod, role)] = plan
 }
 
+// setWorkspaces is how the service finds the workspace of a running pod for the pod's role
+// processes.
+func (a *idleRigAgents) setWorkspaces(lookup func(pod string) (idleRigWorkspaceAnswer, bool)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.workspace = lookup
+}
+
 // role is what the rig has seen of a role process, empty when it has seen none.
 func (a *idleRigAgents) role(pod, role string) idleRigRole {
 	a.mu.Lock()
@@ -174,6 +213,7 @@ func (a *idleRigAgents) role(pod, role string) idleRigRole {
 	copied.Prompts = append([]idleRigMessage(nil), seen.Prompts...)
 	copied.Messages = append([]idleRigMessage(nil), seen.Messages...)
 	copied.Adoptions = append([]idleRigAdoption(nil), seen.Adoptions...)
+	copied.Bundles = append([]idleRigMessage(nil), seen.Bundles...)
 	return copied
 }
 
@@ -211,9 +251,29 @@ func (a *idleRigAgents) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.record(w, r)
 	case "/agent/plan":
 		a.servePlan(w, r)
+	case "/agent/workspace":
+		a.serveWorkspace(w, r)
 	default:
 		http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
 	}
+}
+
+// serveWorkspace answers the workspace of the pod the query names, 404 when it has none, as a pod
+// whose environment names no LEGION_WORKSPACE has nothing for a shim to read.
+func (a *idleRigAgents) serveWorkspace(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	lookup := a.workspace
+	a.mu.Unlock()
+	if lookup == nil {
+		http.Error(w, "the rig's pods have no workspace", http.StatusNotFound)
+		return
+	}
+	answer, ok := lookup(r.URL.Query().Get("pod"))
+	if !ok {
+		http.Error(w, "the pod "+r.URL.Query().Get("pod")+" runs no workspace", http.StatusNotFound)
+		return
+	}
+	writeIdleRigJSON(w, answer)
 }
 
 func (a *idleRigAgents) bootToken(w http.ResponseWriter, r *http.Request) {
@@ -265,6 +325,7 @@ func (a *idleRigAgents) registered(w http.ResponseWriter, r *http.Request) {
 	}
 	seen.Claim, seen.Secret, seen.Session, seen.SessionFile = request.Claim, request.Secret, request.Session, request.SessionFile
 	seen.Registered++
+	seen.RegisteredAt = time.Now().UTC()
 	a.mu.Unlock()
 	writeIdleRigJSON(w, map[string]string{})
 }
@@ -273,6 +334,8 @@ func (a *idleRigAgents) registered(w http.ResponseWriter, r *http.Request) {
 // is filed apart from both lists of what the role was told: it is no message, and a frame filed
 // under Messages would read as one the session was given, which is the list
 // ARoleMessageThatKeepsNothingStillWakesTheRole reads for a woken session that was given nothing.
+// A bundle request is filed apart too, since it is the daemon asking the shim for the workspace's
+// work and not a word to the agent.
 func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
 	var request struct{ Pod, Role, Kind, ID, Delivery, Text, Identity string }
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -292,6 +355,8 @@ func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
 		seen.Prompts = append(seen.Prompts, message)
 	case "adopt":
 		seen.Adoptions = append(seen.Adoptions, idleRigAdoption{ID: request.ID, Identity: request.Identity, Ahead: len(seen.Prompts)})
+	case "bundle":
+		seen.Bundles = append(seen.Bundles, message)
 	default:
 		seen.Messages = append(seen.Messages, message)
 	}
@@ -326,6 +391,12 @@ func writeIdleRigJSON(w http.ResponseWriter, body any) {
 // consumer over NATS, and records every message it is given — the daemon's prompts and the
 // consumer's frames alike — with the rig, and every adopt-working-copy frame the daemon sends it
 // as a thing apart, before it answers it.
+//
+// It also does what the shim does on its own: it redials the worker stream when the daemon goes,
+// with the same hello (the shim's run loop), so a restarted daemon adopts it; and it answers a
+// project release's read of its pod's workspace with the shim's own read of that workspace
+// (shim.ReadUnpushed), which the rig provisions and names to it (idleRigAgents.workspace), since
+// LEGION_WORKSPACE names the pod's path and not the rig's.
 //
 // Run by anything but that launcher it does nothing: with no rig service named in its
 // environment there is no rig to serve.
@@ -397,14 +468,25 @@ type idleRigRoleProcess struct {
 	natsURLs   string
 	connect    string
 	tokenFile  string
+	// helloToken is the hello's boot token, which every dial of this generation sends.
+	helloToken string
 
-	conn   net.Conn
-	lines  *bufio.Reader
-	writer *shimwire.Writer
+	// writeMu orders the frames this process writes, and guards the connection, which a redial
+	// replaces: a read of the workspace is answered off the loop that reads the daemon's frames,
+	// as the shim answers it beside the turn.
+	writeMu sync.Mutex
+	conn    net.Conn
+	lines   *bufio.Reader
+	writer  *shimwire.Writer
+	// inTurn is whether the agent is in a turn it has not ended (idleRigPlan.StayInTurn), which
+	// is what get_state answers.
+	inTurn atomic.Bool
 
 	claimToken claim.Token
 	secret     string
 	session    string
+	// sessionFile is the session file the process reports, the one a later resume names.
+	sessionFile string
 	// epoch is this process's one NATS connection, as a plugin's registration names it: a new
 	// one tells the listener to restart the session's relay at its consumer's ack floor.
 	epoch          string
@@ -438,6 +520,9 @@ func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
 	if p.pod == "" {
 		p.pod = os.Getenv("LEGION_ISSUE")
 	}
+	if p.pod == "" && os.Getenv("LEGION_CONTROLLER") == "1" {
+		p.pod = idleRigControllerPod
+	}
 	p.role = os.Getenv("LEGION_ROLE")
 	p.daemon = os.Getenv("LEGION_DAEMON_URL")
 	p.envoy = os.Getenv("ENVOY_URL")
@@ -469,25 +554,41 @@ func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
 	case p.natsURLs == "":
 		return nil, fmt.Errorf("no ENVOY_NATS_URL in the environment: the session's messages come from its own consumer, over NATS")
 	}
-	// The session id is this pod's role, as its registration with the daemon reports it: the
-	// subjects the session is reached on are built from it before anything is registered, so
-	// nothing the listener relays can arrive before this process is listening for it.
-	p.session = "ses-" + p.pod + "-" + p.role
+	// The session is the one the launch resumes, when its agent argv names one (`--resume=<file>`,
+	// sandbox's agent argv), and a new one otherwise, named apart from every other: a launch that
+	// started a fresh session where the claim had one registers another session id, as Oh My Pi
+	// would. The subjects the session is reached on are built from it before anything is
+	// registered, so nothing the listener relays can arrive before this process listens for it.
+	for i, arg := range argv {
+		switch {
+		case strings.HasPrefix(arg, "--resume="):
+			p.sessionFile = strings.TrimPrefix(arg, "--resume=")
+		case arg == "--resume" && i+1 < len(argv):
+			p.sessionFile = argv[i+1]
+		}
+	}
+	if p.sessionFile != "" {
+		p.session = strings.TrimSuffix(filepath.Base(p.sessionFile), ".jsonl")
+	} else {
+		p.session = fmt.Sprintf("ses-%s-%s-%d", p.pod, p.role, time.Now().UnixNano())
+		p.sessionFile = idleRigSessionFile(p.session)
+	}
 	p.epoch = fmt.Sprintf("idle-rig-%d-%d", os.Getpid(), time.Now().UnixNano())
 	return p, nil
 }
 
 // run connects, registers, claims the role, reports ready, and then serves the daemon's frames
-// until it is shut down.
+// until it is shut down, dialling the worker stream again whenever the daemon goes.
 func (p *idleRigRoleProcess) run() error {
 	bootToken, err := p.bootToken()
 	if err != nil {
 		return err
 	}
-	if err := p.dial(bootToken); err != nil {
+	p.helloToken = bootToken
+	if err := p.dial(); err != nil {
 		return err
 	}
-	defer p.conn.Close()
+	defer p.closeConn()
 	if err := p.openDelivery(); err != nil {
 		return err
 	}
@@ -524,7 +625,52 @@ func (p *idleRigRoleProcess) run() error {
 		p.unregister()
 		os.Exit(0)
 	}()
-	return p.serve()
+	for {
+		if shutdown, err := p.serve(); shutdown || err != nil {
+			return err
+		}
+		if err := p.redial(); err != nil {
+			return err
+		}
+	}
+}
+
+// idleRigRedialWait bounds how long a role process dials a daemon that went before it gives up:
+// longer than any restart of the rig takes, and short of the test binary's own deadline. Only the
+// launcher's stop ends a process sooner, which is how every process of a pod ends.
+const idleRigRedialWait = 5 * time.Minute
+
+// redial dials the worker stream again with the same hello once the daemon dropped it, as the
+// shim's run loop does, every half second until a daemon acks it or idleRigRedialWait runs out.
+func (p *idleRigRoleProcess) redial() error {
+	p.closeConn()
+	deadline := time.Now().Add(idleRigRedialWait)
+	for {
+		err := p.dial()
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the daemon did not take the worker stream back within %s: %w", idleRigRedialWait, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// closeConn closes the worker stream connection this process holds, if it holds one.
+func (p *idleRigRoleProcess) closeConn() {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	if p.conn != nil {
+		_ = p.conn.Close()
+	}
+}
+
+// write writes one frame to the daemon, ordered with every other this process writes.
+func (p *idleRigRoleProcess) write(frame shimwire.Frame) error {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	return p.writer.WriteFrame(frame)
 }
 
 // unregister drops the session's role claim and its registration with the listener.
@@ -555,23 +701,30 @@ func (p *idleRigRoleProcess) bootToken() (string, error) {
 	return answer.Token, nil
 }
 
-func (p *idleRigRoleProcess) dial(bootToken string) error {
+// dial opens the worker stream and says this generation's hello, waiting for the daemon's ack.
+// A frame before the ack is meant for nobody yet and is passed over, as the shim passes it over.
+func (p *idleRigRoleProcess) dial() error {
 	conn, err := net.DialTimeout("tcp", p.connect, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial the worker stream %s: %w", p.connect, err)
 	}
+	p.writeMu.Lock()
 	p.conn, p.lines, p.writer = conn, bufio.NewReader(conn), shimwire.NewWriter(conn)
-	if err := p.writer.WriteFrame(shimwire.Hello2{BootToken: bootToken}); err != nil {
+	p.writeMu.Unlock()
+	if err := p.write(shimwire.Hello2{BootToken: p.helloToken}); err != nil {
+		_ = conn.Close()
 		return err
 	}
-	frame, err := p.next(30 * time.Second)
-	if err != nil {
-		return err
+	for {
+		frame, err := p.next(30 * time.Second)
+		if err != nil {
+			_ = conn.Close()
+			return err
+		}
+		if frame.FrameType() == shimwire.TypeHelloAck {
+			return nil
+		}
 	}
-	if frame.FrameType() != shimwire.TypeHelloAck {
-		return fmt.Errorf("the daemon answered the hello with %s", frame.FrameType())
-	}
-	return nil
 }
 
 // openDelivery opens the session's own NATS connection and takes the one subject a session is
@@ -637,14 +790,18 @@ func (p *idleRigRoleProcess) relayed(msg *nats.Msg) {
 			fmt.Fprintf(os.Stderr, "idle rig role process: record a message for %s: %v\n", p.session, err)
 			return
 		}
-		p.answerRelease(item.text())
+		go p.answerRelease(item.text())
 	}
 	p.reply(msg, idleRigRelayDone)
 }
 
 // answerRelease answers a project release's ask with ready_for_update, naming its round, when the
-// rig's plan says this role answers one; any other message, and a plan that does not, answer
-// nothing. A refused answer is said on stderr and changes nothing else, as a plugin's would.
+// rig's plan says this role answers one, and first pushes the workspace's work to the issue's
+// branch when the plan says it pushes, as the ask tells a role to; any other message, and a plan
+// that does neither, answer nothing. It runs off the relay's own callback, as an agent's turn on
+// the ask runs apart from the plugin that took the message. A refused answer and a push that
+// fails are said on stderr, and a failed push answers nothing, as a role that could not push does
+// not say it is ready.
 func (p *idleRigRoleProcess) answerRelease(text string) {
 	asked := idleRigReleaseAsk.FindStringSubmatch(text)
 	if asked == nil {
@@ -654,11 +811,92 @@ func (p *idleRigRoleProcess) answerRelease(text string) {
 	if err != nil || !plan.AnswerRelease {
 		return
 	}
+	if plan.PushOnRelease {
+		if err := p.push(); err != nil {
+			fmt.Fprintf(os.Stderr, "idle rig role process: push the work the release's ask %s names: %v\n", asked[1], err)
+			return
+		}
+	}
 	if err := p.post(p.daemon+"/legion/v1/claims/ready-for-update", claim.ReadyForUpdateRequest{
 		ClaimToken: p.claimToken, SessionID: p.session, Secret: p.secret, Generation: p.generation, Round: asked[1],
 	}, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "idle rig role process: answer the release's ask %s: %v\n", asked[1], err)
 	}
+}
+
+// workspace is the pod's workspace as the rig names it, and whether the pod has one. The process
+// takes the PATH the workspace's environment names as its own, so the jj it starts, and the one
+// shim.ReadUnpushed looks up, is the test's: the pod's environment names the pod's PATH.
+func (p *idleRigRoleProcess) workspace() (idleRigWorkspaceAnswer, bool, error) {
+	var answer idleRigWorkspaceAnswer
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, p.rig+"/agent/workspace?pod="+p.pod, nil)
+	if err != nil {
+		return answer, false, err
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return answer, false, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return answer, false, nil
+	}
+	if response.StatusCode != http.StatusOK {
+		read, _ := io.ReadAll(io.LimitReader(response.Body, 1<<16))
+		return answer, false, fmt.Errorf("GET /agent/workspace = %d %s", response.StatusCode, read)
+	}
+	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+		return answer, false, err
+	}
+	for _, entry := range answer.Env {
+		if path, ok := strings.CutPrefix(entry, "PATH="); ok {
+			if err := os.Setenv("PATH", path); err != nil {
+				return answer, false, err
+			}
+		}
+	}
+	return answer, true, nil
+}
+
+// push pushes the workspace's work to the issue's branch as a role does when the release asks:
+// a change in the working copy is committed first, then the branch is set to the newest commit
+// under the working copy and pushed. The clone's origin names the repository's GitHub URL, which
+// the remote standing for GitHub takes the place of here (git's url.<base>.insteadOf).
+func (p *idleRigRoleProcess) push() error {
+	ws, ok, err := p.workspace()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("the pod runs no workspace to push from")
+	}
+	env := append(slices.Clone(ws.Env), "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url."+ws.Remote+".insteadOf", "GIT_CONFIG_VALUE_0="+ws.URL)
+	jj := func(args ...string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "jj", append([]string{"-R", ws.Dir}, args...)...)
+		cmd.Dir, cmd.Env = ws.Dir, env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("jj %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	changed, err := jj("log", "--no-graph", "-r", "@ & ~empty()", "-T", "commit_id")
+	if err != nil {
+		return err
+	}
+	if changed != "" {
+		if _, err := jj("commit", "-m", "The "+p.role+"'s work, pushed when the project release asked"); err != nil {
+			return err
+		}
+	}
+	branch := "legion/" + ws.Issue
+	if _, err := jj("bookmark", "set", branch, "-r", "@-"); err != nil {
+		return err
+	}
+	_, err = jj("git", "push", "--bookmark", branch)
+	return err
 }
 
 // firstSighting reports whether this process has not recorded the stream sequence yet, taking it
@@ -692,7 +930,7 @@ func (p *idleRigRoleProcess) reply(msg *nats.Msg, word string) {
 }
 
 func (p *idleRigRoleProcess) register(bootToken string) error {
-	sessionFile := idleRigSessionFile(p.pod, p.role)
+	sessionFile := p.sessionFile
 	var answer claim.RegisterResponse
 	if err := p.post(p.daemon+"/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: bootToken, SessionID: p.session, OmpSessionFile: sessionFile,
@@ -816,66 +1054,91 @@ func (p *idleRigRoleProcess) report(kinds []string) error {
 	return err
 }
 
-// serve answers the daemon's frames until the connection ends or a shutdown arrives.
-func (p *idleRigRoleProcess) serve() error {
+// serve answers the daemon's frames until the connection ends, answering false, or a shutdown
+// arrives, answering true. A read of the workspace is answered on a goroutine of its own, as the
+// shim answers it beside the turn, so a slow jj holds back no other frame.
+func (p *idleRigRoleProcess) serve() (shutdown bool, err error) {
 	for {
 		frame, err := p.next(0)
 		if err != nil {
-			return nil
+			return false, nil
 		}
 		switch f := frame.(type) {
 		case shimwire.NegotiateProtocol:
-			if err := p.writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeNegotiateProtocol, Success: true}); err != nil {
-				return err
+			if err := p.write(shimwire.Response{ID: f.ID, Command: shimwire.TypeNegotiateProtocol, Success: true}); err != nil {
+				return false, err
 			}
 		case shimwire.GetState:
-			streaming := false
+			streaming := p.inTurn.Load()
 			data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
-			if err := p.writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data}); err != nil {
-				return err
+			if err := p.write(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data}); err != nil {
+				return false, err
 			}
 		case shimwire.Prompt:
 			if err := p.prompted(f); err != nil {
-				return err
+				return false, err
 			}
 		case shimwire.BundleWorkspace:
-			// The release's save of the workspace's unpushed work. This workspace has none, which
-			// is the empty bundle a clean workspace saves.
-			if err := p.writer.WriteFrame(shimwire.BundleWorkspaceResult{
+			// The idle release's save of the workspace's unpushed work, recorded before it is
+			// answered, since a project release must send none. The answer is the empty bundle a
+			// clean workspace saves.
+			if err := p.post(p.rig+"/agent/record", map[string]any{
+				"pod": p.pod, "role": p.role, "kind": "bundle", "id": f.ID, "text": f.Issue,
+			}, nil); err != nil {
+				return false, err
+			}
+			if err := p.write(shimwire.BundleWorkspaceResult{
 				ID: f.ID, OK: true, Head: "0000000000000000000000000000000000000000", At: time.Now().UTC(),
 			}); err != nil {
-				return err
+				return false, err
 			}
 		case shimwire.ReadUnpushed:
-			if err := p.readUnpushed(f); err != nil {
-				return err
-			}
+			go func() {
+				if err := p.readUnpushed(f); err != nil {
+					fmt.Fprintf(os.Stderr, "idle rig role process: answer the read of %s's workspace: %v\n", p.pod, err)
+				}
+			}()
 		case shimwire.AdoptWorkingCopy:
 			if err := p.adopted(f); err != nil {
-				return err
+				return false, err
 			}
 		case shimwire.Shutdown:
-			return nil
+			return true, nil
 		}
 	}
 }
 
-// readUnpushed answers a project release's read of the workspace's unpushed work with what the
-// rig's plan names: a refusal as an older shim's, or the count and the working-copy flag, nothing
-// unpushed when the plan names none.
+// readUnpushed answers a project release's read of the workspace's unpushed work: with the plan's
+// refusal, as an older shim's; with the count and the working-copy flag the plan scripts; or,
+// where the plan scripts none, with the shim's own read of the pod's workspace
+// (shim.ReadUnpushed), and nothing unpushed for a pod that has none. A read that fails is
+// answered with its failure, as the shim answers it.
 func (p *idleRigRoleProcess) readUnpushed(read shimwire.ReadUnpushed) error {
 	plan, err := p.plan()
 	if err != nil {
 		return err
 	}
 	if plan.RefuseRead != "" {
-		return p.writer.WriteFrame(shimwire.Response{ID: read.ID, Command: shimwire.TypeReadUnpushed, Success: false, Error: plan.RefuseRead})
+		return p.write(shimwire.Response{ID: read.ID, Command: shimwire.TypeReadUnpushed, Success: false, Error: plan.RefuseRead})
 	}
 	answer := shimwire.ReadUnpushedResult{ID: read.ID, OK: true}
 	if plan.Unpushed != nil {
 		answer.Commits, answer.WorkingCopyChanged = plan.Unpushed.Commits, plan.Unpushed.WorkingCopyChanged
+		return p.write(answer)
 	}
-	return p.writer.WriteFrame(answer)
+	ws, ok, err := p.workspace()
+	switch {
+	case err != nil:
+		answer.OK, answer.Error = false, err.Error()
+	case ok:
+		work, err := workershim.ReadUnpushed(context.Background(), ws.Dir, ws.Env, time.Duration(read.TimeoutMs)*time.Millisecond)
+		if err != nil {
+			answer.OK, answer.Error = false, err.Error()
+		} else {
+			answer.Commits, answer.WorkingCopyChanged = work.Commits, work.WorkingCopyChanged
+		}
+	}
+	return p.write(answer)
 }
 
 // adopted records the adopt-working-copy frame and only then answers it, as a shim answers once
@@ -889,34 +1152,35 @@ func (p *idleRigRoleProcess) adopted(adopt shimwire.AdoptWorkingCopy) error {
 	}, nil); err != nil {
 		return err
 	}
-	return p.writer.WriteFrame(shimwire.AdoptWorkingCopyResult{ID: adopt.ID, OK: true})
+	return p.write(shimwire.AdoptWorkingCopyResult{ID: adopt.ID, OK: true})
 }
 
 // prompted records the task and, when the rig's plan says so, takes a turn on it. A plan that
 // takes no turn acknowledges the prompt and nothing else, which is a resume whose woken role
-// never reaches its first turn.
+// never reaches its first turn; a plan that stays in its turn begins one and never ends it, so
+// the claim works until it is stopped.
 func (p *idleRigRoleProcess) prompted(prompt shimwire.Prompt) error {
 	if err := p.post(p.rig+"/agent/record", map[string]any{
 		"pod": p.pod, "role": p.role, "kind": "prompt", "id": prompt.ID, "delivery": prompt.DeliveryID, "text": prompt.Message,
 	}, nil); err != nil {
 		return err
 	}
-	if err := p.writer.WriteFrame(shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: true}); err != nil {
+	if err := p.write(shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: true}); err != nil {
 		return err
 	}
 	plan, err := p.plan()
 	if err != nil {
 		return err
 	}
+	if plan.StayInTurn {
+		p.inTurn.Store(true)
+		return p.write(shimwire.AgentStart{})
+	}
 	if plan.TakeTurn {
-		if err := p.writer.WriteFrame(shimwire.AgentStart{}); err != nil {
-			return err
-		}
-		if err := p.writer.WriteFrame(shimwire.AgentEnd{}); err != nil {
-			return err
-		}
-		if err := p.writer.WriteFrame(shimwire.PromptResult{ID: prompt.ID, AgentInvoked: true}); err != nil {
-			return err
+		for _, frame := range []shimwire.Frame{shimwire.AgentStart{}, shimwire.AgentEnd{}, shimwire.PromptResult{ID: prompt.ID, AgentInvoked: true}} {
+			if err := p.write(frame); err != nil {
+				return err
+			}
 		}
 	}
 	// The report that follows every turn, and every task acknowledged without one: the idle rule
