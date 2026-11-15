@@ -95,7 +95,8 @@ const maxJudgeSeconds = 900
 
 // Validate reports why the file is not valid, naming the entry by its secret name and its
 // index. It reads the entries in order and reports the first failure: a repeated name, an
-// entry with no host, a judge above 900 seconds, or a kind other than "", "aws" or "azure".
+// entry with no host, a judge above 900 seconds, a kind other than "", "aws" or "azure", or
+// a host no request can ever match.
 // Whether it answers nil is the same answer as the Lean model's validate, so a new refusal
 // here is a new refusal there.
 func Validate(rules Rules) error {
@@ -110,6 +111,14 @@ func Validate(rules Rules) error {
 			return fmt.Errorf("%s: judge %d is above %d seconds", entry(i, s), *s.Judge, maxJudgeSeconds)
 		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
 			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
+		}
+		// A host no request's name can equal, and that no "*." suffix can cover, binds the
+		// secret nowhere, exactly as an entry with no host at all does: the command gets
+		// its placeholder and no call of it is ever swapped.
+		for _, h := range s.Hosts {
+			if !HostShapeOK(h) {
+				return fmt.Errorf("%s: host %q is not a DNS name or a %q suffix, so the airlock binds the secret nowhere", entry(i, s), h, "*.")
+			}
 		}
 		seen[s.Name] = true
 	}
@@ -191,6 +200,35 @@ func HostBound(hosts []string, host string) bool {
 			return true
 		}
 	}
+}
+
+// HostShapeOK reports whether HostBound can ever match this entry host. The host a request
+// carries is a name alone: the CONNECT target's host, with its port taken off and compared
+// against 443 on its own, so a host written with a scheme, a path, a port, or "*" without the
+// "*." that HostBound looks up, matches no request ever and binds the secret nowhere. The
+// shapes this accepts are read off HostBound: a name it can hold exactly, or "*." and a
+// suffix it can look up. A label is letters, digits and hyphens, never empty and never
+// starting or ending with a hyphen, which leaves an IPv4 literal accepted, as HostBound can
+// match one exactly.
+func HostShapeOK(host string) bool {
+	name := strings.TrimPrefix(host, "*.")
+	if name == "" {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := range len(label) {
+			c := label[i]
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // allowOK reports whether allow covers the request. A nil list allows any method and path;

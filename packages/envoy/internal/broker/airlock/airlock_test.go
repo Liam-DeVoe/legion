@@ -164,6 +164,48 @@ func TestValidate(t *testing.T) {
 			want: []string{`secrets[0]`, "no host"},
 		},
 		{
+			name: "a host written as a URL",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{"https://slack.com"}},
+			}},
+			want: []string{`secrets[0]`, `"slack"`, `"https://slack.com"`, "binds the secret nowhere"},
+		},
+		{
+			name: "a bare star, which no lookup can ever reach",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "gcloud", Hosts: []string{"*"}},
+			}},
+			want: []string{`secrets[0]`, `"gcloud"`, `"*"`, "binds the secret nowhere"},
+		},
+		{
+			name: "a host with a path",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{"slack.com/"}},
+			}},
+			want: []string{`secrets[0]`, `"slack.com/"`, "binds the secret nowhere"},
+		},
+		{
+			name: "a host with a port, which the request's name never carries",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{"slack.com:443"}},
+			}},
+			want: []string{`secrets[0]`, `"slack.com:443"`, "binds the secret nowhere"},
+		},
+		{
+			name: "an empty label",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{".slack.com"}},
+			}},
+			want: []string{`secrets[0]`, `".slack.com"`, "binds the secret nowhere"},
+		},
+		{
+			name: "one bad host among good ones",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "gcloud", Hosts: []string{"oauth2.googleapis.com", "*"}},
+			}},
+			want: []string{`secrets[0]`, `"*"`, "binds the secret nowhere"},
+		},
+		{
 			name: "a repeated name wins over the entry's own fault",
 			rules: Rules{Secrets: []SecretRule{
 				{Name: "github", Hosts: []string{"a.example.com"}},
@@ -194,11 +236,61 @@ func TestValidate(t *testing.T) {
 		{"kind aws", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "aws"}}}},
 		{"kind azure", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "azure"}}}},
 		{"no secret at all", Rules{}},
+		{"a name", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"slack.com"}}}}},
+		{"a suffix", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"*.googleapis.com"}}}}},
 	}
 	for _, c := range ok {
 		t.Run(c.name, func(t *testing.T) {
 			if err := Validate(c.rules); err != nil {
 				t.Errorf("Validate: %v", err)
+			}
+		})
+	}
+}
+
+// TestHostShapeOK holds HostShapeOK to what HostBound can match. A request host is a name
+// alone — no scheme, no path, no port — so each refused entry here is read against the name
+// whose service someone writing it plainly meant to bind, and HostBound matches none of them.
+// Comparing a refused host with itself would prove nothing, since HostBound matches any
+// string by itself exactly, and "slack.com:443" is never a request host.
+func TestHostShapeOK(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+		// The request host to read the entry against: one HostBound matches by it when the
+		// shape is accepted, and the name the entry meant to bind when it is refused.
+		request string
+	}{
+		{host: "slack.com", want: true, request: "slack.com"},
+		{host: "*.googleapis.com", want: true, request: "oauth2.googleapis.com"},
+		{host: "API.GitHub.com", want: true, request: "api.github.com"},
+		{host: "a-b.example.com", want: true, request: "a-b.example.com"},
+		{host: "localhost", want: true, request: "localhost"},
+		{host: "93.184.216.34", want: true, request: "93.184.216.34"},
+		{host: "https://slack.com", want: false, request: "slack.com"},
+		{host: "*", want: false, request: "slack.com"},
+		{host: "slack.com/", want: false, request: "slack.com"},
+		{host: "slack.com:443", want: false, request: "slack.com"},
+		{host: ".slack.com", want: false, request: "a.slack.com"},
+		{host: "slack..com", want: false, request: "slack.com"},
+		{host: "slack.com.", want: false, request: "slack.com"},
+		{host: "*.", want: false, request: "slack.com"},
+		{host: "", want: false, request: "slack.com"},
+		{host: "-slack.com", want: false, request: "slack.com"},
+		{host: "slack-.com", want: false, request: "slack.com"},
+		{host: "slack_com", want: false, request: "slack.com"},
+	}
+	for _, c := range cases {
+		t.Run(c.host, func(t *testing.T) {
+			if got := HostShapeOK(c.host); got != c.want {
+				t.Fatalf("HostShapeOK(%q) = %v, want %v", c.host, got, c.want)
+			}
+			bound := HostBound([]string{c.host}, c.request)
+			if c.want && !bound {
+				t.Errorf("HostShapeOK accepts %q, but HostBound does not match %q by it", c.host, c.request)
+			}
+			if !c.want && bound {
+				t.Errorf("HostShapeOK refuses %q, but HostBound matches %q by it", c.host, c.request)
 			}
 		})
 	}

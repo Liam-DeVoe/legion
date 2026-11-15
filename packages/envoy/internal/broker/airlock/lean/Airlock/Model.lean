@@ -233,12 +233,43 @@ def judgeOK : Option Nat → Bool
 /-- The three kinds an entry may name. -/
 def kindOK (k : String) : Bool := k == "" || k == "aws" || k == "azure"
 
+/-- A character a host label may hold: a letter, a digit or a hyphen. -/
+def hostCharOK (c : Char) : Bool :=
+  ('a' ≤ c && c ≤ 'z') || ('A' ≤ c && c ≤ 'Z') || ('0' ≤ c && c ≤ '9') || c == '-'
+
+/-- A label of a host: never empty, never starting or ending with a hyphen, and every
+character one `hostCharOK` takes. -/
+def labelOK : List Char → Bool
+  | [] => false
+  | c :: cs => c != '-' && (c :: cs).getLast? != some '-' && (c :: cs).all hostCharOK
+
+/-- The labels of a host, splitting on `'.'`: an empty host has one empty label, and a
+leading, doubled or trailing dot leaves an empty label, which `labelOK` refuses. -/
+def splitDots : List Char → List (List Char)
+  | [] => [[]]
+  | '.' :: rest => [] :: splitDots rest
+  | c :: rest =>
+    match splitDots rest with
+    | [] => [[c]]
+    | l :: ls => (c :: l) :: ls
+
+/-- A host `hostBound` can ever match: a name it can hold exactly, or `"*."` and a suffix
+it can look up. A host written with a scheme, a path, a port, or `"*"` without the `"*."`
+that `hostBound` looks up, matches no request ever and binds the secret nowhere. The
+characters are read as a list, as `hostBound` reads them, so the two cannot drift. -/
+def hostShapeOK (h : String) : Bool :=
+  let cs := h.toList
+  let name := if cs.take 2 == ['*', '.'] then cs.drop 2 else cs
+  !name.isEmpty && (splitDots name).all labelOK
+
 /-- Rules-file validation. This is the same answer as Go's `Validate` returning `nil`:
 the names are distinct, **every** entry binds at least one host (not only a judged one),
-a judge lifetime is at most 900 s, and a kind is `""`, `"aws"` or `"azure"`. -/
+a judge lifetime is at most 900 s, a kind is `""`, `"aws"` or `"azure"`, and every host is
+one the airlock can bind. -/
 def validate (rules : Rules) : Bool :=
   namesUnique (rules.secrets.map (·.name)) &&
-  rules.secrets.all fun s => !s.hosts.isEmpty && judgeOK s.judge && kindOK s.kind
+  rules.secrets.all fun s =>
+    !s.hosts.isEmpty && judgeOK s.judge && kindOK s.kind && s.hosts.all hostShapeOK
 
 /-! ## Decision and rewrite -/
 

@@ -187,7 +187,10 @@ func (s *src) port() uint16 {
 }
 
 var (
-	hostPool   = []string{"api.github.com", "*.github.com", "github.com", "*.com", "*.", "API.GitHub.com", "*.GitHub.COM", "uploads.github.com", "a.b.github.com", ".github.com", "githu\u212a.com", "githuk.com", "\u0130.github.com", ""}
+	// The last five are hosts validate refuses because HostBound can never match them: a
+	// scheme, a path, a port, a bare star, and a label that starts with a hyphen. They are
+	// in the pool so the comparison reaches that refusal from both sides.
+	hostPool   = []string{"api.github.com", "*.github.com", "github.com", "*.com", "*.", "API.GitHub.com", "*.GitHub.COM", "uploads.github.com", "a.b.github.com", ".github.com", "githu\u212a.com", "githuk.com", "\u0130.github.com", "", "https://github.com", "github.com/", "github.com:443", "*", "-github.com"}
 	namePool   = []string{"gh", "aws", "GH", ""}
 	hdrPool    = []string{"authorization", "Authorization", "AUTHORIZATION", "x-api-key", "X-Api-Key", "x-api-\u212aey", "proxy-authorization", "cookie"}
 	methodPool = []string{"GET", "POST", "get"}

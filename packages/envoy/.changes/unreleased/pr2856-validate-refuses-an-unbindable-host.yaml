@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The rules file's validation refuses a host the airlock can never bind, naming the entry and
+  the host: a host written with a scheme, a path or a port, and `*` without the `*.` the
+  matcher looks up. Such an entry bound the secret nowhere, so the command kept its
+  placeholder and no call of it was ever swapped, and the file was called valid.
