@@ -199,7 +199,7 @@ func resolveClaude(_ config.Config, lookupEnv func(string) (string, bool), _ fun
 	}
 	if len(missing) > 0 {
 		slices.Sort(missing)
-		return launchReads{}, fmt.Errorf("worker_backends runs a role on claude, and boot is missing %s", strings.Join(missing, ", "))
+		return launchReads{}, fmt.Errorf("worker_backends runs a role on claude, and the daemon's environment is missing %s", strings.Join(missing, ", "))
 	}
 	return launchReads{
 		launcher: tmux.NewClaudeLauncher(launch),

@@ -53,10 +53,10 @@ const (
 // is one the pacing holds rather than one that runs where it is raised, which is the whole of
 // what these tests are about. The claim keeps the process it records and the state it is in,
 // because the park writes neither (parkWake). PluginRelaunchable is left as the harness leaves
-// it, false: the lane's own pass never reads it — the daemon's pass and the registration path
-// do (refreshStalePlugins, staleRegistration) — so a test that walks a relaunched claim back to
-// ready has its registration accepted rather than refused for a contract this harness gives it
-// no way to speak.
+// it, nil, which answers false: the lane's own pass never reads it — the daemon's pass and the
+// registration path do (refreshStalePlugins, staleRegistration) — so a test that walks a
+// relaunched claim back to ready has its registration accepted rather than refused for a
+// contract this harness gives it no way to speak.
 //
 // rate is the pace it is parked at, which decides when the turn comes: one interval of that
 // rate and the jitter's half-interval after the burst is spent (pacedDeps). Every test here
@@ -128,7 +128,7 @@ func TestAStaleRegistrationsRelaunchWaitsUnderTheLaunchKind(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 	h.m.deps.PluginContract = refreshContract
-	h.m.deps.PluginRelaunchable = true
+	h.m.deps.PluginRelaunchable = func() bool { return true }
 	replaced := h.locator()
 
 	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,

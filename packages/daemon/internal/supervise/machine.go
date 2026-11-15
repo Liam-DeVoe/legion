@@ -821,12 +821,15 @@ type Deps struct {
 	// cannot import api), compared against each claim's recorded PluginContract to decide whether a
 	// registration or a restored claim is stale.
 	PluginContract int
-	// PluginRelaunchable is whether this daemon can relaunch a stale process onto a plugin at all:
-	// true under tmux always (the pane resumes on the host's own plugin, which the boot gate holds
-	// to this daemon's contract), and under Kubernetes iff a plugin pair to install is known. False
-	// means a stale claim is recorded and reported, never relaunched or refused — relaunching
-	// nothing it cannot build, and refusing nothing a relaunch is not already under way to fix.
-	PluginRelaunchable bool
+	// PluginRelaunchable is whether this daemon can relaunch a stale process onto a plugin at all,
+	// asked at each decision that turns on it (pluginRelaunchable), since the plugin pair a relaunch
+	// installs can change under a running daemon: true under tmux always (the pane resumes on the
+	// host's own plugin, which the boot gate holds to this daemon's contract), and under Kubernetes
+	// iff the launch a relaunch is built from names a plugin pair to install now. False means a
+	// stale claim is recorded and reported, never relaunched or refused — relaunching nothing it
+	// cannot build, and refusing nothing a relaunch is not already under way to fix. nil answers
+	// false, as a daemon that states nothing can relaunch onto nothing.
+	PluginRelaunchable func() bool
 	// NoPluginInstall is whether a launch of this claim installs no plugin at all: it runs in a
 	// pod whose image carries its plugin, which no install reaches (a Claude Code role's
 	// claude-envoy under Kubernetes). Only the daemon knows a role's backend and the runtime it

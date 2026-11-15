@@ -422,9 +422,11 @@ func (m *Machine) refreshOverturned() bool {
 // daemon's plugin. Leaving the round open would hold the claim's next task behind it until a
 // sweep ended it.
 //
-// A daemon with nothing to relaunch onto (PluginRelaunchable false, LEGION-164's degraded
+// A daemon with nothing to relaunch onto now (PluginRelaunchable false, LEGION-164's degraded
 // Kubernetes mode) relaunches nothing and refuses nothing: the registration stands, accepted, and
-// one Error line records the gap for the operator to close with runtime.kubernetes.plugins.
+// one Error line records the gap for the operator to close with runtime.kubernetes.plugins. It is
+// asked here, at the registration, so a pair dropped since an earlier relaunch of this claim was
+// decided charges the claim nothing for a relaunch that found no pair to install.
 //
 // A registration no relaunch can take past the daemon's contract is accepted and charged
 // nothing, exactly as that one is: a claim whose launch installs no plugin (Deps.NoPluginInstall
@@ -477,7 +479,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract)
 		return nil
 	}
-	if !m.deps.PluginRelaunchable {
+	if !m.deps.pluginRelaunchable() {
 		m.log.Error(NoPluginSourceMessage,
 			"incarnation", m.claim.Locator.Incarnation, "pluginContract", got, "daemonApiVersion", m.deps.PluginContract)
 		return nil
@@ -502,10 +504,10 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 // StaleRefusesCalls is the stale-plugin refusal's own rule, held in one place because two
 // packages decide by it: whether a daemon speaking daemonContract would refuse this claim's own
 // `legion` calls for the contract its process speaks. pluginRelaunchable is whether that daemon
-// can relaunch onto a plugin at all (Deps.PluginRelaunchable, api.Options.PluginRelaunchable)
-// and noPluginInstall whether this claim's own launch installs one (Deps.NoPluginInstall,
-// api.Options.NoPluginInstall); nil is every launch installing a plugin, which is what a tmux
-// daemon and a harness that builds neither hold.
+// can relaunch onto a plugin at all, as it answers now (Deps.PluginRelaunchable,
+// api.Options.PluginRelaunchable), and noPluginInstall whether this claim's own launch installs
+// one (Deps.NoPluginInstall, api.Options.NoPluginInstall); nil is every launch installing a
+// plugin, which is what a tmux daemon and a harness that builds neither hold.
 //
 // The terms are the three a stale claim is refused by: the recorded contract is not this
 // daemon's, the claim is in no update round — a round's whole point is that the daemon serves
@@ -548,11 +550,15 @@ func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noP
 // sendPending hands nothing to a claim that is not ready or idle, so every claim that reaches
 // this is out of a turn, which is the claim staleClaim refuses.
 func (m *Machine) staleRefusesClaim() bool {
-	return StaleRefusesCalls(m.claim, m.deps.PluginContract, m.deps.PluginRelaunchable, m.deps.NoPluginInstall)
+	return StaleRefusesCalls(m.claim, m.deps.PluginContract, m.deps.pluginRelaunchable(), m.deps.NoPluginInstall)
 }
 
-// NoPluginSourceMessage is logged whenever a daemon that can relaunch nothing onto a plugin
+// pluginRelaunchable is Deps.PluginRelaunchable as the daemon answers it now, false where it
+// states none.
+func (d Deps) pluginRelaunchable() bool { return d.PluginRelaunchable != nil && d.PluginRelaunchable() }
+
+// NoPluginSourceMessage is logged whenever a daemon that can relaunch nothing onto a plugin now
 // (supervise.Deps.PluginRelaunchable false, LEGION-164's degraded Kubernetes mode) finds a stale
-// process instead of relaunching it: staleRegistration here, refreshStalePlugins
-// (internal/daemon/daemon.go) at boot.
+// process instead of relaunching it: staleRegistration here at every such registration, and
+// refreshStalePlugins (internal/daemon/daemon.go) at boot.
 const NoPluginSourceMessage = "supervise: the process speaks another plugin contract, and this daemon knows no plugin versions to relaunch it onto; set runtime.kubernetes.plugins"

@@ -82,10 +82,12 @@ type specs struct {
 	// runtimeName is cfg.Runtime.Name: a stale-plugin install (stalePluginInstall) is Kubernetes'
 	// alone, since a tmux pane always resumes on the plugin installed on the daemon's host.
 	runtimeName string
-	// plugins is this daemon's resolved plugin pair under Kubernetes — the file's
+	// plugins is the plugin pair a stale-plugin relaunch installs under Kubernetes, resolved from
+	// the configuration these specs were built from (ResolvedPlugins) — the file's
 	// `runtime.kubernetes.plugins`, or the binary's linked pair when the file names none — with
-	// Contract already set to api.DaemonAPIVersion; nil when the daemon knows none
-	// (LEGION-164's degraded mode). Never read under any other runtime.
+	// Contract already set to api.DaemonAPIVersion, so a change of the pair reaches the next such
+	// relaunch; nil when the configuration names none (LEGION-164's degraded mode). Never read
+	// under any other runtime.
 	plugins *runtime.PluginInstall
 	// backend is the backend a role runs on (config.Config.BackendFor); nil runs every role on Oh
 	// My Pi.
@@ -304,12 +306,12 @@ var refusalCooldownVariables = []string{
 	"LEGION_REFUSAL_COOLDOWN_MS",
 }
 
-// stalePluginInstall is spec.Plugins for c's launch (LEGION-164): the daemon's resolved pair,
-// with Contract already api.DaemonAPIVersion, iff the launch runs on Oh My Pi, the runtime is
-// Kubernetes, c has registered a session, and its recorded contract differs from this daemon's —
-// never for a launch that is not replacing a process on another plugin contract, and never when
-// the daemon knows no pair (s.plugins nil, the degraded mode). A fresh copy, so a caller mutating
-// one launch's spec never reaches another's.
+// stalePluginInstall is spec.Plugins for c's launch (LEGION-164): the pair these specs resolved
+// from their configuration, with Contract already api.DaemonAPIVersion, iff the launch runs on Oh
+// My Pi, the runtime is Kubernetes, c has registered a session, and its recorded contract differs
+// from this daemon's — never for a launch that is not replacing a process on another plugin
+// contract, and never when the configuration names no pair (s.plugins nil, the degraded mode). A
+// fresh copy, so a caller mutating one launch's spec never reaches another's.
 //
 // backend is the launch's, as SpawnSpec resolved it (launchBackend). A Claude Code launch gets
 // nothing: that install is `@sjawhar/pi-legion` and `@sjawhar/pi-envoy` from npm
@@ -329,6 +331,12 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 	install := *s.plugins
 	return &install
 }
+
+// pluginRelaunchable is whether a relaunch built from these specs can bring a stale process onto
+// this daemon's plugin at all (supervise.Deps.PluginRelaunchable): under tmux always, since a pane
+// resumes on the plugin installed on the daemon's host, and under Kubernetes iff the
+// configuration these specs were built from names a pair to install.
+func (s specs) pluginRelaunchable() bool { return s.runtimeName == "tmux" || s.plugins != nil }
 
 // controllerSpawnSpec is the daemon's controller's launch (`controller: daemon`): its role part and
 // the headless part; as its addressing the design-gate steps the project gates, then the

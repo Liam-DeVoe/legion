@@ -152,7 +152,7 @@ func newHandoffHarness(t *testing.T, github *handoffGitHub, grants *credential.G
 			Steps:         config.DesignGateRootIssues.Steps(),
 		}),
 		Controller: h.store, Grants: grants, Pool: h.store.Pool(), Record: record.NewStore(),
-		Handlers: []intake.Handler{facts}, Dispatch: h.handoffs, PluginRelaunchable: true,
+		Handlers: []intake.Handler{facts}, Dispatch: h.handoffs, PluginRelaunchable: func() bool { return true },
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
 	}).Handler
 	return h, facts

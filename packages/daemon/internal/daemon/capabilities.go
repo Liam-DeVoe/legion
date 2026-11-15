@@ -64,8 +64,8 @@ func Deployment(cfg config.Config) capabilities.Deployment {
 // the gap's place at the next read of the state, with nothing rebuilt.
 func (s *supervision) deployment() capabilities.Deployment {
 	d := Deployment(*s.live())
-	if s.plan.secretsLogin != nil {
-		d.SecretsLogin = s.plan.secretsLogin.LoginStatus().State
+	if login, held := s.plan.secretsLogin.loginState(); held {
+		d.SecretsLogin = login
 	}
 	d.Probed, d.ModelFallback = s.probed, s.imageReport.ModelFallback
 	d.ProbeCapacityWaits, d.ProbeCapacityReason = s.imageReport.CapacityWaits, s.imageReport.CapacityReason

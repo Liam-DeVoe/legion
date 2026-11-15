@@ -27,7 +27,7 @@ func newStaleHarness(t *testing.T) (*harness, *bytes.Buffer) {
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: operatorSettings(),
 		Controller: h.store, Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		PromptAgents: testPromptAgents, PluginRelaunchable: true,
+		PromptAgents: testPromptAgents, PluginRelaunchable: func() bool { return true },
 		State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 		Log: slog.New(slog.NewJSONHandler(logs, nil)),
 	}).Handler
@@ -43,7 +43,7 @@ func newNoInstallHarness(t *testing.T, noInstall func(supervise.Claim) bool) *ha
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: operatorSettings(),
 		Controller: h.store, Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		PromptAgents: testPromptAgents, PluginRelaunchable: true, NoPluginInstall: noInstall,
+		PromptAgents: testPromptAgents, PluginRelaunchable: func() bool { return true }, NoPluginInstall: noInstall,
 		State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 		Log: slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	}).Handler

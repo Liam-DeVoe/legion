@@ -125,7 +125,7 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 			drive: func(t *testing.T) (*harness, time.Time) {
 				h := newHarness(t)
 				h.launch()
-				h.m.deps.PluginRelaunchable = true
+				h.m.deps.PluginRelaunchable = func() bool { return true }
 				register := func() {
 					t.Helper()
 					err := h.handle(RequestRegister{

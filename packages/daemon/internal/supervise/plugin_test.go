@@ -253,7 +253,7 @@ func TestAStaleRegistrationRelaunchesOnceUnchargedThenChargesUntilFailed(t *test
 	h := newHarness(t)
 	h.launch()
 	h.m.deps.PluginContract = 24
-	h.m.deps.PluginRelaunchable = true
+	h.m.deps.PluginRelaunchable = func() bool { return true }
 	moveBudgets(&h.m.deps, func(l *Limits, _ *Timeouts) { l.LaunchFailures = 2 })
 
 	register := func() error {
@@ -290,7 +290,7 @@ func TestAStaleRegistrationWithNoDeclaredContractNamesIt(t *testing.T) {
 	h := newHarness(t)
 	h.launch()
 	h.m.deps.PluginContract = 24
-	h.m.deps.PluginRelaunchable = true
+	h.m.deps.PluginRelaunchable = func() bool { return true }
 
 	err := h.handle(RequestRegister{
 		Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
@@ -309,7 +309,7 @@ func TestACurrentRegistrationClearsPluginRelaunchFor(t *testing.T) {
 	h := newHarness(t)
 	h.launch()
 	h.m.deps.PluginContract = 24
-	h.m.deps.PluginRelaunchable = true
+	h.m.deps.PluginRelaunchable = func() bool { return true }
 
 	if err := h.handle(RequestRegister{
 		Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
@@ -338,7 +338,7 @@ func TestANoSourceDaemonRecordsAndAcceptsAStaleRegistrationWithoutRelaunching(t 
 	h := newHarness(t)
 	h.launch()
 	h.m.deps.PluginContract = 24
-	// PluginRelaunchable is left at its zero value, false: the daemon knows no plugin source.
+	// PluginRelaunchable is left nil, which answers false: the daemon knows no plugin source.
 
 	if err := h.handle(RequestRegister{
 		Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
@@ -354,4 +354,43 @@ func TestANoSourceDaemonRecordsAndAcceptsAStaleRegistrationWithoutRelaunching(t 
 	}
 	h.wantCalls("Resume", 0)
 	h.wantCalls("Spawn", 1)
+}
+
+// Whether the daemon can relaunch onto a plugin at all is asked at each registration, so a pair
+// the configuration stops naming after a stale relaunch was made charges the relaunched process
+// nothing: its registration, still stale because that relaunch found no pair to install, is
+// recorded and accepted as on a daemon that never knew a pair. Under a daemon that still could
+// relaunch, the same registration is the charged path that walks the claim down to failed
+// (TestAStaleRegistrationRelaunchesOnceUnchargedThenChargesUntilFailed).
+func TestAStaleRegistrationAfterThePairIsDroppedIsAcceptedUncharged(t *testing.T) {
+	h := newHarness(t)
+	h.launch()
+	h.m.deps.PluginContract = 24
+	relaunchable := true
+	h.m.deps.PluginRelaunchable = func() bool { return relaunchable }
+	register := func() error {
+		return h.handle(RequestRegister{
+			Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+			CapabilityHash: []byte("capability"), PluginContract: 1,
+		})
+	}
+	var refusal claim.Refusal
+	if err := register(); !errors.As(err, &refusal) || refusal != claim.StalePluginContract(1, 24) {
+		t.Fatalf("the first stale registration = %v, want the refusal naming 1 and 24", err)
+	}
+	if c := h.claim(); c.PluginRelaunchFor != 24 {
+		t.Fatalf("PluginRelaunchFor after the first stale registration = %d, want 24", c.PluginRelaunchFor)
+	}
+	launches := len(h.rt.Calls())
+
+	relaunchable = false
+	if err := register(); err != nil {
+		t.Fatalf("the relaunched process's stale registration once the pair is dropped = %v, want it accepted", err)
+	}
+
+	h.wantState(StateRegistered)
+	h.wantBudgets(Budgets{})
+	if calls := h.rt.Calls()[launches:]; len(calls) != 0 {
+		t.Fatalf("the runtime was asked %+v after the pair was dropped, want nothing", calls)
+	}
 }

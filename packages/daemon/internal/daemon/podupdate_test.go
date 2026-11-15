@@ -244,7 +244,7 @@ func newPodUpdateRigOn(t *testing.T, live *config.Live, roles ...podUpdateRole) 
 	s := &supervision{
 		cfg:     cfg,
 		log:     log,
-		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval, live: live},
+		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: relaunching(true), orphanSweep: orphanSweepInterval, live: live},
 		runtime: rt, supervisor: sup,
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
@@ -258,7 +258,7 @@ func newPodUpdateRigOn(t *testing.T, live *config.Live, roles ...podUpdateRole) 
 		// says it can: a registration's relaunch and its refusal are decided by this field alone
 		// (staleRegistration), and a rig that left it false would accept every stale registration
 		// whatever the rest of the rule says.
-		PluginRelaunchable: true,
+		PluginRelaunchable: relaunching(true),
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, s.plan.live, c) },
 		RefreshGate:        supervise.NewRefreshGate(0),
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision

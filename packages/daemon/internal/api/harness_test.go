@@ -202,12 +202,13 @@ func newHarnessUnrelaunchable(t *testing.T) *harness {
 }
 
 // newHarnessDeps is newHarness with control over whether this daemon can relaunch a stale-plugin
-// claim at all (PluginRelaunchable, wired identically onto supervise.Deps and Options so the two
-// always agree, as daemon.go wires them in production). PluginContract is always this daemon's own
-// (DaemonAPIVersion): the stale-plugin trigger lives in internal/supervise, exercised by its own
-// tests.
+// claim at all (PluginRelaunchable, one read wired identically onto supervise.Deps and Options so
+// the two always agree, as daemon.go wires them in production). PluginContract is always this
+// daemon's own (DaemonAPIVersion): the stale-plugin trigger lives in internal/supervise,
+// exercised by its own tests.
 func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 	t.Helper()
+	pluginRelaunchable := func() bool { return relaunchable }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	st := testStore(t)
@@ -224,7 +225,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 					Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
 				}),
 			PluginContract:     DaemonAPIVersion,
-			PluginRelaunchable: relaunchable,
+			PluginRelaunchable: pluginRelaunchable,
 			RefreshGate:        supervise.NewRefreshGate(0),
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
 			TreeClosable: func(ctx context.Context, c supervise.Claim) (bool, error) {
@@ -256,7 +257,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 	server := NewServer("127.0.0.1", 8437, Options{
 		Supervisor: sup, BootTokens: tokens, Project: testProject, Settings: operatorSettings(), Controller: st, Log: quiet,
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
-		PluginRelaunchable: relaunchable,
+		PluginRelaunchable: pluginRelaunchable,
 		ClaimReady:         func(c supervise.Claim) { *readied = append(*readied, c) },
 		PromptAgents:       testPromptAgents,
 		PodUpdateRounds:    func() PodUpdateRounds { return *rounds },

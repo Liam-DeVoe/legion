@@ -660,7 +660,7 @@ func TestPodUpdateRelaunchesAStaleRegistrationAtOnce(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
 	h.reach(StateReady)
 	h.m.deps.PluginContract = PodUpdateContract + 1
-	h.m.deps.PluginRelaunchable = true
+	h.m.deps.PluginRelaunchable = func() bool { return true }
 
 	err := h.handle(RequestRegister{
 		Claim:          h.token,
@@ -987,7 +987,7 @@ func TestPodUpdateACurrentRegistrationEndsThePluginRound(t *testing.T) {
 	h.must(RequestDeliver{Claim: h.token, Task: "review the pull request"})
 	h.wantPrompts(sent + 1)
 	h.m.deps.PluginContract = PodUpdateContract + 1
-	h.m.deps.PluginRelaunchable = true
+	h.m.deps.PluginRelaunchable = func() bool { return true }
 
 	h.must(RequestRegister{
 		Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
@@ -1047,7 +1047,7 @@ func TestAPluginRoundAnEarlierDaemonLeftEndsAndReleasesTheTaskItHeld(t *testing.
 			// The walk to idle delivers a phase task and works it, so one prompt is already sent.
 			sent := len(h.prompts())
 			// This daemon speaks the contract the round was opened for; the claim's process
-			// still speaks the one it registered on. PluginRelaunchable is left false.
+			// still speaks the one it registered on. PluginRelaunchable is left nil, which answers false.
 			h.m.deps.PluginContract = PodUpdateContract + 1
 			// The round an earlier daemon opened, answered by the worker and holding the task
 			// the claim was handed next: the state this boot finds the claim in.

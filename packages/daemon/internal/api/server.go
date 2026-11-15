@@ -112,11 +112,12 @@ type Options struct {
 	// answer is the boot's for the server's whole life.
 	ControllerLaunched bool
 	// PluginRelaunchable is supervise.Deps.PluginRelaunchable as the API sees it: whether this
-	// daemon can relaunch a stale process onto a plugin at all. False is Kubernetes's degraded
-	// mode, where a stale registration is recorded and the process is left running: nothing here
-	// refuses it either, since refusing calls with no relaunch under way would stall agents that
-	// work today.
-	PluginRelaunchable bool
+	// daemon can relaunch a stale process onto a plugin at all, asked at each call it decides,
+	// since the plugin pair a relaunch installs can change under a running daemon. False is
+	// Kubernetes's degraded mode, where a stale registration is recorded and the process is left
+	// running: nothing here refuses it either, since refusing calls with no relaunch under way
+	// would stall agents that work today. nil answers false.
+	PluginRelaunchable func() bool
 	// NoPluginInstall is supervise.Deps.NoPluginInstall as the API sees it: whether this claim's
 	// launch installs no plugin at all, which only the daemon knows, since a role's backend and
 	// the runtime it launches into are its configuration (internal/daemon's noPluginInstall — a
@@ -310,7 +311,7 @@ type server struct {
 	// controllerLaunched is Options.ControllerLaunched.
 	controllerLaunched bool
 	// pluginRelaunchable is Options.PluginRelaunchable, noPluginInstall Options.NoPluginInstall.
-	pluginRelaunchable bool
+	pluginRelaunchable func() bool
 	noPluginInstall    func(c supervise.Claim) bool
 	// backend is Options.Backend: the harness one role's claims run on.
 	backend func(role claim.Role) runtime.Backend

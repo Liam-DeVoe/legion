@@ -27,7 +27,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
@@ -223,9 +222,10 @@ type overrides struct {
 	// ready, which is what /readyz answers 503 for.
 	beforeServingLatched func(ctx context.Context)
 	// pluginRelaunchable overrides whether a stale-plugin claim can be relaunched onto a plugin
-	// (supervise.Deps.PluginRelaunchable), bypassing the configuration-derived default: nil keeps
-	// that default, which a kubernetes-runtime test without a real cluster has no other way to
-	// drive, since such a test configures no runtime.kubernetes.plugins and links no plugin pair.
+	// (supervise.Deps.PluginRelaunchable), bypassing the launch specs' own answer: nil keeps that
+	// answer, read from the plugin pair each build of the specs resolves. A test forces it to
+	// drive a relaunch with no install under a runtime it replaced, or to pin the degraded mode
+	// whatever the configuration names.
 	pluginRelaunchable *bool
 	// checkLaunch stands in for the store's own CheckLaunch (supervise.Store), wrapping the real
 	// store so every launch's recheck refuses first when this does, then asks the real store
@@ -827,8 +827,7 @@ type plan struct {
 	secrets       map[string]string
 	// nats is the user the daemon's own NATS connection authenticates as (natsConnection); no launch
 	// carries its seed unless it is the pane seed.
-	nats         natsConnection
-	instructions string
+	nats natsConnection
 	// memoryInstructions is the daemon's copy of the project's memory instructions
 	// (config.WriteMemoryInstructions), the last fragment of a memory-group launch's system
 	// prompt; "" when the project names no memory block or its block names no instructions file.
@@ -879,25 +878,25 @@ type plan struct {
 	controllerRetry time.Duration
 	// stopBudget is how long the stop waits for the daemon's own work once it begins (stopBudget).
 	stopBudget time.Duration
-	// secretsEnroller is the daemon's agent-secrets token login as the machines' Enroller
-	// (newSecretsLogin); nil when the deployment enrolls no pod.
-	secretsEnroller supervise.Enroller
-	// pluginRelaunchable is supervise.Deps.PluginRelaunchable: whether this daemon can relaunch a
-	// stale-plugin claim onto a plugin at all. True under tmux always; under Kubernetes, true iff
-	// a plugin pair to install is known — plugins below, resolved by ResolvedPlugins from the
-	// file's runtime.kubernetes.plugins or the release's linked pair.
-	pluginRelaunchable bool
-	// plugins is this daemon's resolved Kubernetes plugin pair (ResolvedPlugins), with Contract
-	// already api.DaemonAPIVersion: what specs.SpawnSpec installs for a stale-plugin relaunch, and
-	// what the boot log and `legion start --check-config` name. nil under tmux, and under
-	// Kubernetes when the daemon knows no pair (LEGION-164's degraded mode); pluginsSource is
-	// "legion.yaml" or "binary" with a pair, "" without one.
+	// secretsLogin is the daemon's own login at the secrets broker (secretsLoginHolder): the
+	// machines' Enroller, the login whose state the state route and the capability report read,
+	// and a holder the rebuild observer builds again. Nil under tmux, which enrolls no process.
+	secretsLogin *secretsLoginHolder
+	// pluginRelaunchable is supervise.Deps.PluginRelaunchable, and what the API and the
+	// stale-plugin pass ask too: whether this daemon can relaunch a stale-plugin claim onto a
+	// plugin at all, as the launch specs a relaunch is built from answer it now (specs'
+	// pluginRelaunchable), so a pair the configuration names after boot relaunches and a pair it
+	// stops naming stops relaunching. prepare sets it only from overrides.pluginRelaunchable;
+	// openSupervision fills it from the launch specs it builds otherwise.
+	pluginRelaunchable func() bool
+	// plugins is the Kubernetes plugin pair the boot resolved (ResolvedPlugins), with Contract
+	// already api.DaemonAPIVersion, which the boot log names. The launch specs resolve the pair a
+	// stale-plugin relaunch installs, and whether there is one, from the configuration each build
+	// of them is given (buildSpecs), never from this. nil under tmux, and under Kubernetes when
+	// the boot knew no pair (LEGION-164's degraded mode); pluginsSource is "legion.yaml" or
+	// "binary" with a pair, "" without one.
 	plugins       *runtime.PluginInstall
 	pluginsSource string
-	// secretsLogin is the same login's client, read-only, for the state route to show its
-	// current status (source.State, agentsecrets.Client.LoginStatus); nil when the deployment
-	// enrolls no pod.
-	secretsLogin *agentsecrets.Client
 	// strandedReported is overrides.strandedReported; nil runs nothing.
 	strandedReported func()
 	// beforeServingLatched is overrides.beforeServingLatched; nil runs nothing.
@@ -937,9 +936,12 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		return plan{}, fmt.Errorf("construct role prompts: %w", err)
 	}
 
-	instructions := ""
+	// The copy every launch's prompt ends with is written here with boot's other writes, so a
+	// state directory that will not take it refuses the boot before the plugin gate runs. Its
+	// path is no boot's to keep: every build of the launch specs writes the copy again from the
+	// configuration it is given, or none (buildSpecs).
 	if reads.instructions != nil {
-		if instructions, err = config.WriteDeploymentInstructions(reads.instructions, cfg.StateDir, cfg.Project); err != nil {
+		if _, err := config.WriteDeploymentInstructions(reads.instructions, cfg.StateDir, cfg.Project); err != nil {
 			return plan{}, err
 		}
 	}
@@ -967,19 +969,19 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if stop == 0 {
 		stop = stopBudget
 	}
-	secretsEnroller, secretsLogin := newSecretsLogin(cfg, log)
+	secretsLogin := newSecretsLogin(cfg, log)
 	plugins, pluginsSource := ResolvedPlugins(cfg)
-	pluginRelaunchable := cfg.Runtime.Name == "tmux" || plugins != nil
-	if o.pluginRelaunchable != nil {
-		pluginRelaunchable = *o.pluginRelaunchable
+	var pluginRelaunchable func() bool
+	if forced := o.pluginRelaunchable; forced != nil {
+		pluginRelaunchable = func() bool { return *forced }
 	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames),
-		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
+		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats,
 		memoryInstructions: memoryInstructions,
 		dispatchToken:      reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
-		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
+		secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 		environ: o.environment(),
@@ -1699,12 +1701,19 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	rt := newRuntimeHolder(built, stopBuilt, log, buildRuntime)
 	// The launch specs behind theirs: everything a launch reads that the claim does not carry,
 	// built again from the configuration a `launch` change settled, read by the next launch.
+	// The instructions and the plugin pair a stale-plugin relaunch installs are each read from
+	// the configuration the build is given, so a change of either, a removal included, reaches
+	// the next launch.
 	buildSpecs := func(c config.Config) (specs, error) {
 		secrets, err := readLaunchSecrets(c, environLookup(p.environ))
 		if err != nil {
 			return specs{}, err
 		}
-		instructions := p.instructions
+		// readInstructions answers nil only for a configuration that names no instructions: a
+		// file it names that the daemon cannot read, or that holds nothing, is an error, which
+		// fails this build and leaves the specs the daemon has serving. So a key removed is a
+		// launch told no instructions, and never the copy an earlier build wrote.
+		instructions := ""
 		if contents, err := readInstructions(c); err != nil {
 			return specs{}, err
 		} else if contents != nil {
@@ -1712,12 +1721,13 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 				return specs{}, err
 			}
 		}
+		plugins, _ := ResolvedPlugins(c)
 		return specs{
 			stateDir: c.StateDir, project: p.project, instructions: instructions, secrets: secrets, prompts: p.prompts,
 			identity: p.identity, repository: p.repository,
 			repositories: func() api.RepositoriesView { return p.repositories.view(nil) },
 			designSteps:  c.Gates.Steps(), slackChannels: c.Projects[c.Project].SlackChannels,
-			runtimeName: c.Runtime.Name, plugins: p.plugins,
+			runtimeName: c.Runtime.Name, plugins: plugins,
 			commitIssueTrailerRepos: c.Projects[c.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: c.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			memoryInstructions: p.memoryInstructions, memoryGroup: treeMemoryGroup(st),
@@ -1730,12 +1740,32 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		return nil, err
 	}
 	launchSpecs := newSpecsHolder(settled, buildSpecs)
+	// Whether a stale-plugin claim can be relaunched onto a plugin at all is asked of these specs
+	// at each decision, rather than of the configuration: they are what the relaunch is built
+	// from, so the decision to relaunch and the install that relaunch needs come from one build.
+	// A rebuild of the specs that failed then relaunches nothing without an install — the specs
+	// the daemon keeps answer for the pair they would install — and a pair named or dropped
+	// after boot decides the next relaunch as soon as the specs are built from it.
+	if p.pluginRelaunchable == nil {
+		p.pluginRelaunchable = func() bool { return launchSpecs.current.Load().pluginRelaunchable() }
+	}
 	// The Envoy listener behind its holder, built here so that every reader of it holds the one
 	// holder: the machines' clean stop below, the outbox the workflow attaches to this supervision
 	// (workflowRuntime.attach), and the settings announcer and the controller's liveness probe
 	// serve starts. A change of `envoy_url` or `envoy_token_file` swaps the client inside it.
 	envoy := newPublisherHolder(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"])
-	p.rebuild.register(newWorkerStreamHolder(listener), rt, launchSpecs, envoy)
+	// The daemon's own login at the secrets broker is a holder of its own, registered after the
+	// runtime: a change of `agent_secrets.url` builds the runtime that tells new pods the broker
+	// first and the login that enrolls them second, and a new pod takes the seconds of its boot
+	// to say hello, so it is enrolled where it was told to look (secretsLoginHolder). Under tmux
+	// there is none, and the machines enroll nothing.
+	var secrets supervise.Enroller
+	holders := []rebuilt{newWorkerStreamHolder(listener), rt}
+	if p.secretsLogin != nil {
+		secrets = p.secretsLogin
+		holders = append(holders, p.secretsLogin)
+	}
+	p.rebuild.register(append(holders, launchSpecs, envoy)...)
 	sup.deps = supervise.Deps{
 		Runtime:                 rt,
 		Conns:                   listener,
@@ -1743,7 +1773,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Specs:                   launchSpecs,
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
-		Secrets:                 p.secretsEnroller,
+		Secrets:                 secrets,
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
@@ -2063,10 +2093,11 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // reads as and why, because the count of what the lane has left must name the claims this pass
 // posts and no others (claimsToRefresh).
 //
-// A daemon that cannot relaunch onto a plugin (PluginRelaunchable false, LEGION-164's degraded
-// Kubernetes mode) posts nothing; it logs one Error line per stale claim at boot only — a sweep's
-// finding would only repeat a line the boot already wrote, since nothing relaunchable has changed
-// in between.
+// A daemon that cannot relaunch onto a plugin now (PluginRelaunchable false, LEGION-164's
+// degraded Kubernetes mode) posts nothing; it logs one Error line per stale claim at boot only,
+// since a sweep's finding would repeat that line every minute. The answer is asked at every pass,
+// so a pair the configuration names after boot is posted at the next sweep, and a pair it stops
+// naming stops the posts at the next one.
 //
 // Every claim it does post takes a credit of the refresh gate but the two named below, and a
 // claim the gate refuses is not posted at all (supervise.RefreshGate, dispatch://INFRA-2712
@@ -2141,7 +2172,7 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 		if !staleForTheLane(c, noInstall) {
 			continue
 		}
-		if !s.plan.pluginRelaunchable {
+		if relaunchable := s.plan.pluginRelaunchable; relaunchable == nil || !relaunchable() {
 			if trigger == "boot" {
 				s.log.Error(supervise.NoPluginSourceMessage,
 					"claim", c.Token, "incarnation", c.Locator.Incarnation, "pluginContract", c.PluginContract, "daemonApiVersion", api.DaemonAPIVersion)
@@ -2226,7 +2257,7 @@ func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bo
 // and a count that left it out would read as a drained lane over a fleet still working.
 //
 // Whether this daemon can relaunch onto a plugin at all is deliberately not a term of it
-// (plan.pluginRelaunchable). On a daemon that cannot, the pass posts nothing and writes one
+// (plan.pluginRelaunchable). On a daemon that cannot now, the pass posts nothing and writes one
 // Error line per stale claim at boot, and this count is what that gap costs, standing at the
 // claims the lane cannot act on beside those lines. A count zeroed there would read as a lane
 // with nothing left, which is the one thing such a daemon is not.
@@ -2675,7 +2706,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		ApplySettings:      p.rebuild.route(p.settings.Route),
 		Controller:         st,
 		ControllerLaunched: keeper != nil,
-		PluginRelaunchable: p.pluginRelaunchable,
+		PluginRelaunchable: s.plan.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, p.live, c) },
 		// The harness a role's claims run on is read as the route asks, like every other value
 		// the live holder keeps. `worker_backends` is a launch key, so between a change and a
@@ -2841,9 +2872,10 @@ type source struct {
 	// `admission_cap` takes effect at once, with nothing rebuilt.
 	admissionCap func() int
 	startedAt    time.Time
-	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
-	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
-	secretsLogin *agentsecrets.Client
+	// secretsLogin is the daemon's own agent-secrets login (secretsLoginHolder), whose state the
+	// state route reports as it stands at each read; nil under tmux, and it holds no login while
+	// the configuration names no broker.
+	secretsLogin *secretsLoginHolder
 	// deployment is the deployment's capabilities as this boot knows them (supervision.deployment),
 	// whose report the state carries.
 	deployment func() capabilities.Deployment
@@ -3117,8 +3149,8 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		return api.State{}, nil, err
 	}
 	state.ControllerLocator = api.ControllerLocatorOf(s.runtime, controller)
-	if s.secretsLogin != nil {
-		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
+	if login, held := s.secretsLogin.loginState(); held {
+		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: login}
 	}
 	state.Capabilities = api.CapabilityStatesOf(s.deployment().Report())
 	if s.repositories != nil {

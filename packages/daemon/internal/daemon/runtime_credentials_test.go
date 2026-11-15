@@ -264,6 +264,31 @@ func TestAChangedDispatchURLOrNatsURLsRebuildsTheRuntimeTheNextLaunchReads(t *te
 	}
 }
 
+// `instructions` is a launch key of both pod kinds, which the Sandbox runtime records in every
+// pod's launch-settings annotation for an update round to read the pod's drift from
+// (sandbox.Options.LaunchSettings, runtime/sandbox's LaunchSettings); each build of the runtime
+// makes that record once. So the runtime holds the key beside the launch specs (config.Classes'
+// row, Also), and a change of it through the route builds the runtime again on a record that
+// names the new file. Held by the launch specs alone, the runtime kept the record it booted on,
+// and no pod launched on the old instructions read as drifted.
+func TestAChangedInstructionsPathRebuildsTheRuntimeThatRecordsEachPodsLaunch(t *testing.T) {
+	rig := newSandboxRebuildRig(t, kubeconfigOf(unreachedCluster, "", "kube-bearer"), true)
+	instructions := rig.write("instructions.md", "Never push to main.\n")
+
+	apply(t, rig.live, map[string]any{"instructions": instructions})
+
+	if builds := rig.builds(); builds != 2 {
+		t.Fatalf("after a route change of instructions the runtime was built %d times, want twice", builds)
+	}
+	var recorded map[string]string
+	if err := json.Unmarshal([]byte(rig.last().opts.LaunchSettings), &recorded); err != nil {
+		t.Fatalf("decode the launch settings the rebuilt runtime records: %v", err)
+	}
+	if got := recorded["instructions"]; got != instructions {
+		t.Fatalf("the rebuilt runtime records every pod's instructions as %q, want %q", got, instructions)
+	}
+}
+
 // Whether a Kubernetes daemon has a pane NATS seed decides where every pod reads it: a daemon
 // with one names NATS_NKEY_SEED among the launch secrets and among the providers Secret's keys,
 // so each pod mounts the deployment's copy and is pointed at it (NATS_NKEY_SEED_FILE); a daemon

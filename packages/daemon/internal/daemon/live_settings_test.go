@@ -496,6 +496,54 @@ func TestADesignGateChangedThroughTheRouteReachesTheNextArchitectsLaunch(t *test
 	}
 }
 
+// The operator's instructions reach the next launch however they move, their removal included:
+// every build of the launch specs reads `instructions` from the configuration it is given, and
+// a configuration that names none is a launch told none. A build that fell back to the copy boot
+// wrote whenever the key was unset handed every launch after the operator deleted the key the
+// words the daemon booted on, while a changed path was read anew. The file is the way a removal
+// comes, since the route sets a path or hands the key back to the file.
+func TestRemovedInstructionsReachTheNextLaunch(t *testing.T) {
+	instructions := filepath.Join(t.TempDir(), "instructions.md")
+	if err := os.WriteFile(instructions, []byte("Never push to main.\n"), 0o600); err != nil {
+		t.Fatalf("write the instructions: %v", err)
+	}
+	line := "instructions: " + instructions
+	live := liveSettings(t, line)
+	rt := fake.NewRuntime()
+	d := startDaemonOn(t, live, fakeRuntime(rt, &built{}), quietLogger(), 10*time.Second)
+	if booted := lastLaunch(t, rt, d.spawn(architect())); booted.Prompt.DeploymentInstructionsPath == "" {
+		t.Fatal("the first launch reads no deployment instructions, want the copy of the operator's file")
+	}
+
+	// The operator deletes the key from legion.yaml, and the watcher's settle reads the file
+	// again (internal/settings' Keeper.File).
+	body, err := os.ReadFile(live.Path())
+	if err != nil {
+		t.Fatalf("read legion.yaml: %v", err)
+	}
+	edited := strings.Replace(string(body), line+"\n", "", 1)
+	if edited == string(body) {
+		t.Fatalf("legion.yaml holds no line %q to delete:\n%s", line, body)
+	}
+	if err := os.WriteFile(live.Path(), []byte(edited), 0o600); err != nil {
+		t.Fatalf("rewrite legion.yaml: %v", err)
+	}
+	applied, refused, err := live.Apply(config.SourceFile, "", nil)
+	if err != nil || len(refused) != 0 {
+		t.Fatalf("settle the edited file: %v, refused %+v", err, refused)
+	}
+	if _, held := changeOf(applied, "instructions"); !held {
+		t.Fatalf("the settle reported %+v, want the removed instructions among the changes", applied)
+	}
+
+	next := lastLaunch(t, rt, d.spawn(api.SpawnRequest{
+		Tree: "LEGION-2", Issue: "LEGION-2", Role: claim.RoleArchitect, Prompt: "Reply ready and wait.",
+	}))
+	if next.Prompt.DeploymentInstructionsPath != "" {
+		t.Fatalf("the launch after the key was removed reads deployment instructions from %q, want none", next.Prompt.DeploymentInstructionsPath)
+	}
+}
+
 // A change of the project block rebuilds the launch specs and the runtime: the diff names
 // `projects` whatever member moved, since the block is compared whole. So one change of any
 // member, here the project's production_check (Slack channels need a daemon-launched controller

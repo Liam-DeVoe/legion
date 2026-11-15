@@ -75,15 +75,15 @@ func TestResolveToolsPrefersTheOverrideAndNamesEveryMissingTool(t *testing.T) {
 }
 
 // A configuration that puts a role on claude needs Claude Code, bun for its MCP server, and the
-// built claude-envoy plugin: boot names every gap in one refusal, and takes each tool's override
-// before PATH.
+// built claude-envoy plugin: the resolver names every gap in one refusal, whether boot or a
+// rebuild of the runtime for a later change asks it, and takes each tool's override before PATH.
 func TestResolveClaudeNamesEveryGap(t *testing.T) {
 	onPath, plugin := t.TempDir(), t.TempDir()
 	env := map[string]string{"PATH": onPath}
 	lookup := func(name string) (string, bool) { v, ok := env[name]; return v, ok }
 	resolve := func() (launchReads, error) { return resolveClaude(config.Config{}, lookup, nil) }
 	_, err := resolve()
-	want := "worker_backends runs a role on claude, and boot is missing bun (set LEGION_BUN_PATH to an absolute executable path), " +
+	want := "worker_backends runs a role on claude, and the daemon's environment is missing bun (set LEGION_BUN_PATH to an absolute executable path), " +
 		"claude (set LEGION_CLAUDE_PATH to an absolute executable path), the claude-envoy plugin (set LEGION_CLAUDE_PLUGIN_DIR to its package directory)"
 	if err == nil || err.Error() != want {
 		t.Fatalf("resolveClaude with nothing = %v\nwant %s", err, want)

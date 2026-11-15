@@ -2410,6 +2410,8 @@ runtime.kubernetes.plugins or run a release build` when it does not.
 A Kubernetes daemon that knows no pair is in a degraded mode:
 it still records every claim's contract and still writes one Error per stale claim, `supervise: the process speaks another plugin contract, and this daemon
 knows no plugin versions to relaunch it onto; set runtime.kubernetes.plugins`, but relaunches nothing and refuses nothing.
+Whether the daemon knows a pair is asked at every decision that turns on it rather than once at boot: each build of the launch specs reads the pair from the configuration it is given, and a stale registration, a call a stale contract would refuse and each stale-plugin sweep ask those specs whether a relaunch would install a pair now (docs/deployment.md, "What a change of each `legion.yaml` key needs").
+So a pair named under a running daemon, through the settings route or the file, relaunches each stale claim at the next sweep onto that pair, and a pair it stops naming, which only a build that links none can leave unset, puts the daemon in the degraded mode above from the next decision on, where a stale registration is accepted and charged nothing.
 Under `runtime: tmux` a relaunch is always possible regardless:
 the pane resumes on the host's own `pi-legion`, which the boot gate already holds to the daemon's contract, so there is no install to source a pair for.
 A Claude Code pane is exempt from nothing there:
@@ -3701,8 +3703,8 @@ a launcher dials it and never redials elsewhere.
 The other five reach a generation's Oh My Pi in the start command its launcher receives, never in the pod spec, so they are fixed for that generation's life:
 `LEGION_DAEMON_URL` (`daemon_url`), `ENVOY_NATS_URL` (`nats_urls`), `ENVOY_URL` (`envoy_url`), `DISPATCH_URL` (`dispatch_url`) and, when the runtime enrolls pods, `AGENT_SECRETS_URL` (`runtime.kubernetes.agent_secrets.url`);
 the daemon-launched controller's generation also carries `LEGION_SLACK_CHANNELS` (the project's `slack_channels`), recorded and compared like these.
-Each moves when the daemon restarts with its key changed, and with no `advertise_host` set the stream also moves when the daemon restarts on another host.
-A daemon that restarts re-adopts each live claim by its recorded locator (the boot orphan sweep), and re-adoption alone would leave the role holding the old addresses:
+Each moves when its key changes, at the next build of the runtime, which a settings change of the key makes under the running daemon (docs/deployment.md, "What a change of each `legion.yaml` key needs") and a restart makes at boot, and with no `advertise_host` set the stream also moves when the daemon restarts on another host.
+A daemon that restarts re-adopts each live claim by its recorded locator (the boot orphan sweep), as a runtime built again under a running daemon adopts every process the one it replaced supervised, and re-adoption alone would leave the role holding the old addresses:
 a launcher dialling a stale stream never reaches the new daemon, and a stale `LEGION_DAEMON_URL` fails every call the agent makes to the daemon's API (its phase completion, its record read) while its stream still works.
 
 So the runtime compares a role's addresses with what it hands now on every evaluation of the role (each watch event, the probe-interval sweep, each probe):
@@ -3728,7 +3730,7 @@ path=token, now audience=agent-secrets-next expiry=3600s path=token`).
 The supervisor logs that detail, so every printed endpoint is constructed from its scheme, host and port alone, adding `xxxxx@` when userinfo is present.
 Path, query and fragment never appear, which also protects a value an earlier daemon accepted before the current endpoint grammar refused queries and fragments, and a value that yields no scheme and host is named only `xxxxx`.
 `ENVOY_NATS_URL` is named entry by entry from the URLs the loader accepted, never by splitting the joined value, since raw commas are valid in userinfo.
-A role this daemon started always compares equal, so only the roles a daemon under another configuration started are ever reported, from the boot that re-adopts them; nobody runs a command for it.
+A role the runtime now running started always compares equal, so only the roles a runtime built from another configuration started are ever reported, from the boot that re-adopts them or from the first evaluation of each by a runtime a settings change built again; nobody runs a command for it.
 The operator's own variables (`runtime.kubernetes.pod.env`) are not compared: a change there reaches the pods created after it.
 
 The supervisor relaunches each reported claim at once, through the launch path a death uses:
@@ -3736,7 +3738,7 @@ a `Resume` of its recorded session, or a `Spawn` when it has not registered yet.
 What the relaunch replaces follows from what moved.
 An issue pod whose launcher dials a stale stream, or which runs the layout before one container, cannot run its roles as a pod created now would, and no worker of it can be asked to push first:
 such a launcher never redials, so it never reaches this daemon to be tasked, and that layout's workers predate the contract that added the op (`movedInPod`, `packages/daemon/internal/runtime/sandbox/addresses.go`).
-Every role of such a pod is reported at once, from the boot that re-adopts them:
+Every role of such a pod is reported at once, from the boot that re-adopts them or the runtime built again for the change:
 the first of them relaunched replaces the pod, under the pod's launch turn, and the others, whose relaunches wait on that turn, resume into the new pod, whose launcher dials the current stream for every role.
 None of them is charged, and none is found gone when the pod is replaced under it.
 What an issue pod lacks that its workers can be asked about first — the broker enrollment its roles are started against now, the operator mount holding a file `role_config_files` names for any of its roles, and the session store it was created under — is drift rather than a moved address (`driftedInPod`):
@@ -5676,7 +5678,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The daemon logs in with that token at boot, on a background context, and again halfway through each credential's life and whenever the broker refuses it, reading the file each time so it presents the kubelet's current token;
   no person approves any of it, a restart included, so the block names no approver and a file that sets `operator` is refused at load naming the key.
   The broker logs the daemon in only while its `BROKER_SERVICE_LOGINS` names the daemon's ServiceAccount for `legion-daemon` (the broker's operate page, "What to run"), and keeps each account's one launcher credential across logins.
-  The daemon keeps one key for its process's life, in memory only, and proves it again at each renewal, so a renewal changes only the credential's expiry and an enrollment in flight never waits for one;
+  The daemon keeps one key for as long as its login stands, in memory only, and proves it again at each renewal, so a renewal changes only the credential's expiry and an enrollment in flight never waits for one;
   a restart brings a new key, which the next login moves the credential to, so the pods the daemon enrolled before the restart stay its own.
   Each login is logged (`agent-secrets: logged in with the daemon's ServiceAccount
   token`, or `agent-secrets: the token login failed; retrying` with the class the failure was sorted into, the schedule that class takes and the cause), and `GET /legion/v1/state`'s `agentSecretsLogin` reads its `state`:
@@ -5689,6 +5691,10 @@ each issue's pod (every role of it alike) and the image probe's.
   One line is logged per failed login: its class (`broker-unavailable`, `daemon-side-fault`, `broker-refusal` or `login-not-made`), the schedule that class takes (`short` or `long`), the wait before the next login, and the cause.
   Running the daemon off the cluster (the Stage 4a live proof), `token_file` holds a token the operator mints, at most an hour long, for a ServiceAccount of the proof's own that `BROKER_SERVICE_LOGINS` lists for `legion-daemon` and no running daemon uses, with `kubectl create token <account> -n <namespace> --audience agent-secrets --duration 1h`:
   each account holds one credential, so a proof logging in as a running daemon's account would take that daemon's credential.
+
+- **A change of the block under a running daemon** builds the daemon's login again from the configuration the change settles (`agent-secrets-login`, docs/deployment.md, "What a change of each `legion.yaml` key needs"):
+  a change of `url` or `token_file` starts a new login with a new key at the broker and the file it names, so every pod enrolled after it is enrolled at the broker it is told, and a block removed ends the login, after which an enrollment is refused for good.
+  The kubelet's rewrite of the token in place keeps a login that holds a live credential, whose next renewal reads the new token under the key it holds, and replaces one that holds none, which logs in at once on the new token rather than at the end of its retry's wait.
 
 - A held enrollment can come long after the shim's hello, which carries the pod's projected token as the shim read it then, and that token lives `token_expiry_seconds` from when the kubelet wrote it;
   the broker refuses an expired one as `POD_TOKEN_EXPIRED`, naming its expiry.
