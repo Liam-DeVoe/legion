@@ -68,7 +68,11 @@ It carries:
 
 - the leak guard in front of those two, which is what makes a pod's own writes pass Legion's check before a byte reaches a remote:
   `/opt/legion/bin/git` and `/opt/legion/bin/jj`, root-owned wrappers that lead every pod's `PATH`, and `/opt/legion/githooks/pre-push`, root's hook in a root-owned directory no role can write (`packages/daemon/docker/git`, `docker/jj` and `docker/githooks/pre-push`).
-  The git wrapper runs the real git with the arguments it was given and nothing else, except for a push, which it runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with the push's own `--no-verify` taken out:
+  The git wrapper changes two commands, a commit and a push, and runs every other one unchanged.
+  A commit goes to `legion git --real /usr/bin/git`, which adds the commit's `Omp-Session` and `Legion-Role` trailers and then runs the real git.
+  It adds each line only when its value is valid, and only when git alone would accept the commit's message and the two lines change nothing else.
+  The two lines record which session and which role made the commit, and they guard nothing.
+  A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with the push's own `--no-verify` taken out:
   git itself computes the update lines and hands them to that hook, which runs `legion leak-check pre-push`, and `jj git push` makes its push by shelling out to the `git` its `PATH` names, so this one wrapper catches a role's own push and jj's.
   git takes the last `-c` of a name, so that placement outranks a caller's own `-c core.hooksPath` and the runtime's `core.hooksPath=/dev/null` pin alike, and the pin still holds for every other command.
   The jj wrapper adds one check, and only before a `jj git push`:
@@ -2260,15 +2264,15 @@ where handed_over_from <> '' and memory_drawn_at is null
 
 **The issue key in a pane's commits (daemon API contract 52).**
 A release at contract 52 tells a pane the issue key it stamps into its commits, `LEGION_ISSUE_TRAILER`, whenever `projects.<KEY>.commit_issue_trailer_repos` names the repository that pane works:
-the pane's jj then appends a `Dispatch: <KEY>` line to every commit made in the pane's own workspace, beside the `Omp-Session:` line it already appended, so a squash landing that branch carries the issue key in its message.
+the pane's jj then appends a `Dispatch: <KEY>` line to every commit made in the pane's own workspace, after the `Omp-Session:` and `Legion-Role:` lines it appends to every commit, so a squash landing that branch carries the issue key in its message.
 The repositories a project serves stay Dispatch's mapping (Settings → Repositories → Projects), and the key only selects among them:
 a name the project does not serve stamps nothing, and boot says so once per name, `workflow: commit_issue_trailer_repos names a repository this project does not serve, so no pane stamps a commit with the issue key for it`, serving the project as before.
-The variable is the runtime's own under both runtimes, so `runtime.kubernetes.pod.env` and `runtime.tmux.pane_env` are refused for setting it, and a pane of a repository the key does not name is told nothing and carries the session line alone.
+The variable is the runtime's own under both runtimes, so `runtime.kubernetes.pod.env` and `runtime.tmux.pane_env` are refused for setting it, and a pane of a repository the key does not name is told nothing and carries the session and role lines alone.
 
 To roll this release back to contract 51, put `legion.yaml` back without `projects.<KEY>.commit_issue_trailer_repos`, which the earlier release refuses as a key it does not know (`unknown key projects.<KEY>.commit_issue_trailer_repos`), and re-pin it.
 There is no SQL to run and no column to drop: the change adds no store migration, and no record holds the key or the trailer.
 What the rollback costs is the line:
-a pane of the earlier release is told no key and stamps none, so every commit it makes carries the session line alone, and a base branch that requires the issue line in the commit that lands refuses such a branch until a role describes a commit of it with that line by hand.
+a pane of the earlier release is told no key and stamps none, so no commit it makes carries the issue line, and a base branch that requires the issue line in the commit that lands refuses such a branch until a role describes a commit of it with that line by hand.
 The commits already stamped keep their line: it is in their messages, which nothing rewrites.
 
 **The phase entry (daemon API contract 94).**
@@ -2277,19 +2281,19 @@ A release at contract 94 holds the work a role is owed as numbers of the record 
 An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where `phase.RoleFor` names a role for the issue's current phase (`internal/projection/project.go`), and the daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
 Both keys are absent together for an issue in a phase no role works — `awaiting_person`, `done` and `held` — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
 A root at `admitted` carried neither key at contract 94, when `phase.RoleFor` named no role for that phase;
-from contract 133 that phase is the architect's, so such a root carries its architect's two numbers by the same rules, and the two times the next paragraph names by its own.
+from contract 139 that phase is the architect's, so such a root carries its architect's two numbers by the same rules, and the two times the next paragraph names by its own.
 A caller from a pod whose claims record a contract below 94 is served the issues without either key (`withoutPhaseEntries` in `internal/api/server.go`).
 Store migration 20261111225552_phase_entry adds the six columns, fills them from the assignment token the release before it minted at each phase change (a role that release had handed work stands at entry 1, with the task of the start row its issue still owes it), stamps that entry into the payload of each of those start rows, and drops the three columns that token was held in:
 `phases.assignment`, `claims.serving_assignment` and `pending_task_deliveries.assignment`.
 
-**A root's architect in the phase entry (daemon API contract 133).**
-A release at contract 133 gives a root's own architect a `phases` row, and each start that hands that architect work it was not on raises the row's entry and writes the entry's task, as a phase worker's start does.
+**A root's architect in the phase entry (daemon API contract 139).**
+A release at contract 139 gives a root's own architect a `phases` row, and each start that hands that architect work it was not on raises the row's entry and writes the entry's task, as a phase worker's start does.
 An issue of `GET /legion/v1/state` carries two more keys beside `phaseEntry` and `givenEntry`: `entryQueuedAt`, when a task of an entry was first queued to a claim, and `entryConfirmedAt`, when a turn of that claim's worker first confirmed one.
 Both are read from the claim's own record of its handshake of the last entry it was queued a task of (`internal/projection/project.go`), so both stay after the turn that confirmed the task has ended and the task is retired.
 A tree's own root carries its architect's handshake whatever phase it stands in, through `awaiting_person` and the phases a phase role works, where `phaseEntry` and `givenEntry` are that role's;
 any other issue carries the handshake of the role of its current phase.
 Both are absent where no entry was queued to that claim in the issue's current generation, so a root re-admitted carries neither until its new architect entry is queued, and `entryConfirmedAt` alone is absent while no turn has confirmed a task of the entry.
-A caller from a pod whose claims record a contract below 133 is served the issues without either time and without `architectStalls` (`withoutEntryTimes` in `internal/api/server.go`).
+A caller from a pod whose claims record a contract below 139 is served the issues without either time and without `architectStalls` (`withoutEntryTimes` in `internal/api/server.go`).
 The daemon wakes the project's controller with `architect-stalled on <KEY>` (`skill://legion-controller/references/wakes.md`), once for each arm in each run of the root:
 
 - the architect took nothing: the task of its entry was queued to its claim more than ten minutes ago, and no turn confirmed it.
@@ -2316,11 +2320,12 @@ The state of such a root carries its two numbers and neither time, since the upg
 Store migration 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, the mark that the sweep sends a root architect's entry again as written, which the resume of a root a person answered sets and every other raise of an entry clears;
 every row it finds takes the default, false, which the sweep derives again.
 
-To roll a release at contract 133 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
-A rollback below contract 132 also takes the steps of the releases it crosses, which "Rolling back the release that frees the slot past review", "Rolling back the release whose update round ends at its bound" and "Rolling back the release that tells the merger of a merge-queue removal" above give.
-Contract 132, cybermonklabs/legion#3715, has no section of its own here: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
+To roll a release at contract 139 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
+A rollback below contract 133 also takes the steps of the releases it crosses, which "Rolling back the release that frees the slot past review", "Rolling back the release whose update round ends at its bound" and "Rolling back the release that tells the merger of a merge-queue removal" above give.
+Contract 133, cybermonklabs/legion#3937, has no section of its own here: its one migration, `20261112070503_pull_request_state_read_at.up.sql`, adds the column `pull_requests.state_read_at` at a default every row takes, which a release before it neither reads nor writes, since its pull request reads and its insert name each column they touch, and its header gives no step.
+Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
-To roll it back to contract 132 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
+To roll a release at contract 139 back to contract 133 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -2381,11 +2386,12 @@ After them the store reported 20261113110610 with 137 versions recorded: that is
 That run was before the forward merge that brought in dispatch://INFRA-3274's 20261114031356_merge_queue_removal, which neither block touches either, so on a store this release migrates the two blocks leave that migration's row the highest, and the store reports 20261114031356 after them.
 It was also before the forward merge that brought in cybermonklabs/legion#3793's 20261113090512_phase_entry_moved_back, which neither block touches and whose version is below 20261113181500, so a store this release migrates records one more version at each count above and still reports 20261114031356 after the two blocks.
 And it was before the forward merge that brought in cybermonklabs/legion#3715's 20261111214351_issue_released_for_wait, which neither block touches and whose version is below 20261111225552, so a store this release migrates records one more version again at each count above and still reports 20261114031356 after the two blocks.
+The same holds for cybermonklabs/legion#3937's 20261112070503_pull_request_state_read_at, which a later forward merge brought in: neither block touches it and its version is below 20261113181500, so a store this release migrates records one more version again at each count above and still reports 20261114031356 after the two blocks.
 Neither `architect_stalled_notices` nor the wake stood, the claims table held no `handshake_` column, and the architect's `phases` row stood without `entry_verbatim` and the entry columns and its claim without `given_entry` and `served_entry`.
 Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 142 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
-On a store that a release at contract 133 migrated, run the contract 133 block above first.
+On a store that a release at contract 139 migrated, run the contract 139 block above first.
 The eleven statements, after that block where it runs, leave the store at the earlier release's schema and at that release's own version, 20261112180548:
 the version the store reports is its highest recorded row (`schemaVersion` in `internal/store/store.go`), every database a release from contract 94 on migrated records 20261112180548 above this migration's own 20261111225552, and neither block deletes a version row but its own.
 
@@ -2428,13 +2434,14 @@ The re-arm needs nothing of the other rows:
 What the block does need is that no migration recorded after this one builds on the six columns it drops.
 Such a migration keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever it built on those columns, an index or a constraint on `phases.entry`, say:
 reverse such a migration by its own way back first, and run this block after it.
-Nine migrations are recorded above this one at contract 133.
+Ten migrations are recorded above this one at contract 139.
 20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
 20261113082214_outbox_kinds_with_the_update_ask and 20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982, and 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touch none of the six either, so the block holds over them too, and a rollback to a release before them reverses them by their own steps.
 20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
-20261113182000_architect_entry_upgrade writes into three of the six, and 20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 133 block above reverses both first.
-20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 133 block above reverses it too, because the earlier release writes no handshake into them.
-20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 133 block above reverses it too, so that the roll-forward can add it again.
+20261112070503_pull_request_state_read_at, of cybermonklabs/legion#3937, adds `pull_requests.state_read_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, the zero time.
+20261113182000_architect_entry_upgrade writes into three of the six, and 20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 139 block above reverses both first.
+20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 139 block above reverses it too, because the earlier release writes no handshake into them.
+20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 139 block above reverses it too, so that the roll-forward can add it again.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database migrated to this release's head by `internal/store`'s own `Migrate`, which applied 133 migrations and left 133 versions recorded, the highest 20261112180548, and holding four outbox rows:
@@ -4862,7 +4869,7 @@ The wakes are these:
 
 - a phase start, task, backward move, notice, phase-ended message, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
 
-- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact, or the daemon's own two-minute read).
+- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own read of a pull request runs as the workflow runtime starts and once an agent's handoff has been recorded, on no timer).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon, one sent with `keep: false` included: that message is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
@@ -6058,6 +6065,7 @@ Containers, in order:
    Every assignment to this pod -- the first, and a live idle worker re-prompted after another role's pod has touched the shared working copy -- first adopts `@` for the assigned role:
    the daemon sends the shim an `adopt-working-copy` frame (`jjUser`, `jjEmail`, `timeoutMs` — never a command or a path), the shim runs the same `jj metaedit --update-author` in its own workspace (`LEGION_WORKSPACE`/`LEGION_ROOT_WORKSPACE`) and answers `adopt-working-copy-result`;
    `ok: false` fails the delivery exactly as a failed `metaedit` does on tmux.
+   The metaedit fills an empty author, and `jj git push` refuses a commit with an empty author.
 
 Volumes and mounts:
 

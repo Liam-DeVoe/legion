@@ -52,15 +52,19 @@ const (
 )
 
 // preEntryStore is a database carrying the schema of the release before the phase entry: every
-// embedded migration that release records, each applied as Store.Migrate applies one — the
+// embedded migration up to that release's newest, each applied as Store.Migrate applies one — the
 // migration's SQL, the widening of schema_version for a timestamped version, and the version row
 // — and phaseEntryMigration itself withheld, for the test's own Store.Migrate to run. The
-// migrations above it are the fixture's too where the release before this one records them: the
-// one standing there, 20261112180548_claim_leak_check_cause, is the contract 87 release's own, so
-// a database that release migrated holds its row and its claims.leak_check_cause before the phase
-// entry runs. That column is one no statement of the phase entry reads or writes. Every version
-// above that release's newest (olderReleasesNewestMigration) is withheld with the phase entry, so
-// Store.Migrate, which decides each migration on its own row, applies the phase entry and those.
+// migrations above it up to that release's newest are the fixture's too, and two stand there.
+// 20261112180548_claim_leak_check_cause is the contract 87 release's own, so a database that
+// release migrated holds its row and its claims.leak_check_cause before the phase entry runs.
+// 20261112070503_pull_request_state_read_at (dispatch://INFRA-3027) is applied first as well,
+// though that release records no such version, because its version stands below that release's
+// newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
+// touches no pull_requests column. Neither column is one any statement of the phase entry reads
+// or writes. Every version above that release's newest (olderReleasesNewestMigration) is withheld
+// with the phase entry, so Store.Migrate, which decides each migration on its own row, applies
+// the phase entry and those.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
