@@ -277,14 +277,17 @@ SH
   echo "$root"
 }
 
-# GATE_BOUND: the seconds one call of the gate may take before this harness calls it hung and
+# GATE_BOUND: how long one call of the gate may take before this harness calls it hung and
 # stops, naming the case that ran it. Measured on 2026-11-14 on an INFRA issue pod (2 CPUs,
 # gVisor): an unmutated harness run made 147 gate calls, median 1.5 s, 99th percentile 1.87 s,
-# slowest 1.94 s (`declaration-two-loops-below`). 60 s is about thirty times that slowest call,
-# which is the margin: a slow runner does not trip it, and a gate that never returns fails here
-# a minute in, under its case's name, rather than at the test job's own key with GitHub's bare
-# timeout line. Round 32's mutation pass found two mutants of rule 8 that hang the gate
-# (dispatch://INFRA-1545), and before this bound nothing below the job key ended them.
+# slowest 1.94 s (`declaration-two-loops-below`). run_gate does not read a clock: it polls the
+# call GATE_BOUND x 10 times, 600 polls of `sleep 0.1`, which is at least 60 s and longer under
+# load, since each poll's sleep stretches with the load that slows the gate. That is at least
+# thirty times the slowest call, so it cannot fail a correct run on a slow runner, and a gate
+# that never returns fails here a minute or so in, under its case's name, rather than at the test
+# job's own key with GitHub's bare timeout line. Round 32's mutation pass found two mutants of
+# rule 8 that hang the gate (dispatch://INFRA-1545), and before this bound nothing below the job
+# key ended them.
 GATE_BOUND=60
 
 # run_gate <stderr: out|null> <root> <args…>: runs the gate in a session of its own with its
@@ -2184,6 +2187,91 @@ check "names the recomputed sum and says the key does not strictly exceed it" \
   "$(contains "$out" "1350 + 1050 = 2400 s, which this key does not strictly exceed")"
 check "says what the key must be" "$(contains "$out" 'timeout-minutes: 41. or more')"
 
+# The derivation clause reads the sum whose arrow names the job's own key, and no other sum of
+# its block. A block may derive the job and a step together, and a reviewer made the clause take
+# the block's last sum whatever its arrow names (`if True:` in place of the arrow's test against
+# the key): it read the step's 1663 s, under the job's 2280 s, and the job's own 2300 s, which
+# 38 minutes does not exceed, went unread (dispatch://INFRA-1545, review round 28).
+echo "case: of two derivations in a block, the one whose arrow names the key is read"
+root=$(fixture job-derivation-arrow-names-key)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 650 + 1650 = 2300 s -> 38 min. The step: 13 + 1650 = 1663 s -> 28 min.
+    timeout-minutes: 38
+    steps:
+      - name: The browser download
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a browser" 300 -- curl -fsSL --max-time 300 -o c https://example.com/c
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "reads the sum whose arrow is the job's key" \
+  "$(contains "$out" "job 'build' carries .timeout-minutes: 38., 2280 s, and its own comment derives 650 + 1650 = 2300 s, which that key does not strictly exceed")"
+check "says what to write" "$(contains "$out" 'timeout-minutes: 39. or more')"
+
+# Of two sums whose arrows both name the key, the clause reads the last, the one written nearest
+# the key. A `break` after the first match made it read the first, 2250 s, and the job went
+# through under its second, 2350 s (dispatch://INFRA-1545, review round 28).
+echo "case: of two derivations naming the key, the one nearest the key is read"
+root=$(fixture job-derivation-last-of-two)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget, as first measured: 600 + 1650 = 2250 s -> 38 min.
+    # As measured since the checkout slowed: 700 + 1650 = 2350 s -> 38 min.
+    timeout-minutes: 38
+    steps:
+      - name: The browser download
+        # The browser download's 5 x 300 + 150 = 1650 s -> 28 min.
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a browser" 300 -- curl -fsSL --max-time 300 -o c https://example.com/c
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "reads the second sum" \
+  "$(contains "$out" "its own comment derives 700 + 1650 = 2350 s, which that key does not strictly exceed")"
+check "says what to write" "$(contains "$out" 'timeout-minutes: 40. or more')"
+
+# The clause reads its block upwards from the key and joins it back in reading order, so a sum
+# split over two lines reads as one. Joined in the order the walk collects it, the block below
+# reads `1750 s -> 28 min. 700 + 1050 =`, which is no derivation, and a key under its own sum
+# went through (dispatch://INFRA-1545, review round 28, the mutation that dropped `reversed`).
+echo "case: a derivation split over two comment lines is read in order"
+root=$(fixture job-derivation-split)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 700 s measured, plus the large fetch's 1050 s:
+    # 700 + 1050 =
+    # 1750 s -> 28 min.
+    timeout-minutes: 28
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "reads the sum the two lines state" \
+  "$(contains "$out" "its own comment derives 700 + 1050 = 1750 s, which that key does not strictly exceed")"
+check "says what to write" "$(contains "$out" 'timeout-minutes: 30. or more')"
+
 # The stand-aside, which is the clause's whole design: `tool-fallback` of this repository states
 # `114 is the 104 this construction gives with ten minutes added`, which .github/ci-budgets.md
 # holds for that job, and carries a position rule,
@@ -2245,6 +2333,118 @@ YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+# KEY_LINE reads a key line to its end. `timeout-minutes: 28 junk` is no key: YAML reads its value
+# as the string `28 junk`, which written_minutes takes as no key at all, so the job below writes
+# none and no clause holding a job's key reads it. With the `$` dropped from the pattern, the line
+# read as key 28, and the block above it was refused for pricing 30 against a key YAML never
+# reads (dispatch://INFRA-1545, review round 28).
+echo "case: a timeout-minutes line with words after its number is no key a block prices"
+root=$(fixture arrow-over-string-key)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: the large fetch's 1050 s and the steps beside it -> 30 min.
+    timeout-minutes: 28 junk
+    steps:
+      - name: The large fetch
+        # The large fetch's 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "pairs no key 28 with the block" "$(is "$(contains "$out" 'this comment prices')" false)"
+
+# A key line may carry a YAML comment after its number, and its key is that number, as YAML reads
+# it. Without the pattern's `\s+#.*` alternative such a line read as no key, so the job below
+# priced nothing and was refused (dispatch://INFRA-1545, review round 28).
+echo "case: a key carrying a trailing comment is the key its block prices"
+root=$(fixture arrow-key-trailing-comment)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the large fetch's 1050 s: 1200 + 1050 = 2250 s -> 38 min.
+    timeout-minutes: 38  # the sum above
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# The same key lowered to 37 with its arrow, the trailing comment kept: the block still prices the
+# key, and the derivation clause reads the 37 YAML reads and refuses it under its 2250 s.
+echo "case: the same key lowered under its derivation, its trailing comment kept, is refused"
+root=$(fixture arrow-key-trailing-comment-lowered)
+sed 's/-> 38 min/-> 37 min/; s/^    timeout-minutes: 38  # the sum above$/    timeout-minutes: 37  # the sum above/' \
+  "$work/arrow-key-trailing-comment/.github/workflows/case.yaml" > "$root/.github/workflows/case.yaml"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "the derivation clause refuses the key it reads" \
+  "$(contains "$out" "job 'build' carries .timeout-minutes: 37., 2220 s, and its own comment derives 1200 + 1050 = 2250 s, which that key does not strictly exceed")"
+check "and the block still prices that key" \
+  "$(is "$(contains "$out" 'no comment block prices that key')" false)"
+
+# Each line of a block loses its indentation before its `#`, so an arrow split over two indented
+# lines joins as `-> 38 min`. With the `#` stripped alone, the indented second line kept its `#`
+# and joined as `-> # 38 min`, which prices nothing, and the job was refused
+# (dispatch://INFRA-1545, review round 28).
+echo "case: an arrow split over two indented comment lines prices the key below"
+root=$(fixture arrow-split-indented)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the large fetch's 1050 s: 1200 + 1050 = 2250 s ->
+    # 38 min.
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# A block's keys are read down to the next comment line, so a block above `runs-on:` never reaches
+# past the job's own priced block to its key. Without that stop the first block below took 38 as
+# its own key and refused it against its 30 (dispatch://INFRA-1545, review round 28).
+echo "case: a block's reach ends at the next comment block"
+root=$(fixture arrow-ends-at-next-block)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    # The runner queue's own wait, priced apart from this job -> 30 min.
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the large fetch's 1050 s: 1200 + 1050 = 2250 s -> 38 min.
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
 # EVERY CLAIM THIS RULE'S HEADER MAKES ABOUT WHAT IT REFUSES HAS A CASE HERE THAT FAILS WHEN
 # THAT BEHAVIOUR IS REMOVED. The claims were written from memory of the change three rounds
 # running and were wrong each time: a reviewer turned `<=` back into `<` and the gate and all
@@ -2258,8 +2458,8 @@ on: [push]
 jobs:
   build:
     runs-on: ubuntu-24.04
-    # Budget: 1200 s measured, plus its slowest retried step alone — the large fetch,
-    # 1050 s. 1200 + 1050 = 2250 s -> 37 min.
+    # Budget: 1170 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1170 + 1050 = 2220 s -> 37 min.
     timeout-minutes: 37
     steps:
       - name: The large fetch
@@ -2271,10 +2471,13 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "says the key does not strictly exceed the sum" \
-  "$(contains "$out" "its own comment derives 1200 + 1050 = 2250 s, which that key does not strictly exceed")"
-# 37 minutes is 2220 s, under the sum; 38 is 2280 s, above it. The case above and the case
-# below therefore fail together when `allowed <= total` becomes `allowed < total`, which is the
-# mutation that exposed this gap.
+  "$(contains "$out" "its own comment derives 1170 + 1050 = 2220 s, which that key does not strictly exceed")"
+# 37 minutes is 2220 s, the sum to the second, and 38 minutes is 2280 s, a minute above it. The
+# case above fails when `allowed <= total` becomes `allowed < total`: the key is then refused by
+# the recomputed sum's sentence and not by the stated sum's, which it pins. The case below fails
+# when the refusal reaches a key above the sum. This case stood at 1200 + 1050 = 2250 s against
+# 37 minutes, under the sum and not at it, so it stayed green under the first of those mutations
+# (dispatch://INFRA-1545, review round 28).
 echo "case: one minute above that sum passes"
 root=$(fixture job-key-above-sum)
 sed 's/-> 37 min/-> 38 min/; s/^    timeout-minutes: 37$/    timeout-minutes: 38/' \
@@ -2309,6 +2512,32 @@ check "names the two clauses that read a price, by what they are and where" \
   "$(contains "$out" "rule 8's priced-comment and job-derivation clauses in .github/scripts/check-download-retry.sh")"
 check "says what to write" "$(contains "$out" 'as .-> N min. in a comment block inside this job')"
 
+# PRICED reads an arrow only where `min` follows its number: `-> 38.` names no unit, and the
+# pricing clause asks for `-> N min`. With `min` dropped from the pattern, the job below went
+# through (dispatch://INFRA-1545, review round 28).
+echo "case: an arrow with no unit prices nothing"
+root=$(fixture arrow-without-min)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the large fetch's 1050 s: 1200 + 1050 = 2250 s -> 38.
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the key" "$(contains "$out" "job 'build' carries .timeout-minutes: 38. and holds a retried step")"
+check "says no comment block prices that key" \
+  "$(contains "$out" "no comment block prices that key")"
+
 echo "case: the same job priced as -> N min passes, wherever the block sits"
 root=$(fixture job-priced-above-its-id)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
@@ -2328,6 +2557,41 @@ jobs:
           . .github/scripts/ci-retry.sh
           retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
 YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# The pricing refusal's advice is the pairing rule in words: a block above the job's id prices
+# the key only with no comment line between the two. A note above the key ends the block's reach,
+# so the job below is refused, and the refusal says what stands in the way; the same job without
+# the note passes (dispatch://INFRA-1545, review round 28).
+echo "case: a note between a job's priced block and its key is refused, and told why"
+root=$(fixture job-priced-note-between)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  # Budget: 600 s measured, plus the browser download's 1650 s: 600 + 1650 = 2250 s -> 38 min.
+  build:
+    runs-on: ubuntu-24.04
+    # A note about the runner.
+    timeout-minutes: 38
+    steps:
+      - name: The browser download
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a browser" 300 -- curl -fsSL --max-time 300 -o c https://example.com/c
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the key" "$(contains "$out" "job 'build' carries .timeout-minutes: 38. and holds a retried step")"
+check "says no comment line may stand between the block and the key" \
+  "$(contains "$out" "with no comment line and no other .timeout-minutes. between that block and this key")"
+
+echo "case: the same job with the note removed passes"
+root=$(fixture job-priced-note-removed)
+sed '/# A note about the runner\./d' \
+  "$work/job-priced-note-between/.github/workflows/case.yaml" > "$root/.github/workflows/case.yaml"
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
@@ -2374,6 +2638,146 @@ check "refuses typecheck's key, which no block prices" \
 check "does not refuse the job whose own step comment it is" \
   "$(is "$(printf '%s\n' "$out" | grep -c "job 'arm'")" 0)"
 
+# The walk stops at another job's id. Job `a`'s step comment prices a step that writes no key, so
+# with that stop removed it reached job `b`'s key, priced it, and `b` went through with no comment
+# of its own (dispatch://INFRA-1545, review round 28).
+echo "case: one job's step comment does not price the next job's key"
+root=$(fixture job-id-ends-step-comment)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      # Prose for this step, priced -> 29 min.
+      - name: Say hello
+        run: echo hello
+  b:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 29
+    steps:
+      - name: The browser download
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a browser" 300 -- curl -fsSL --max-time 300 -o c https://example.com/c
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses b, which no block of its own prices" \
+  "$(contains "$out" "line=12::job 'b' carries .timeout-minutes: 29. and holds a retried step")"
+
+# The same stop where a step comment's second figure finds no key in its own job: `arm`'s step
+# comment prices its step at 8 and a slow mirror's floor at 12, and the walk looking for a key
+# for that 12 ends at `typecheck`'s id rather than taking `typecheck`'s 12 (dispatch://INFRA-1545,
+# review round 28, the job-id stop removed).
+echo "case: a step comment's unpaired figure does not price the next job's key"
+root=$(fixture job-id-ends-second-figure)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  arm:
+    runs-on: ubuntu-24.04
+    steps:
+      # The small fetch's 5 x 60 + 150 = 450 s -> 8 min, and the floor a slow mirror takes,
+      # 720 s -> 12 min.
+      - name: The small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+  typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: The other small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "another small asset" 60 -- curl -fsSL --max-time 60 -o d https://example.com/d
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses typecheck, which no block of its own prices" \
+  "$(contains "$out" "line=16::job 'typecheck' carries .timeout-minutes: 12. and holds a retried step")"
+check "does not refuse arm, whose step its comment prices" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "job 'arm'")" 0)"
+
+# The one id a block passes is its own job's, written directly below a block indented no deeper
+# than that id. A comment at step depth at the end of job `a` is `a`'s, though it sits directly
+# above `b:`; with the indentation test dropped, it priced `b`'s key (dispatch://INFRA-1545,
+# review round 28).
+echo "case: a step-depth comment directly above the next job's id does not price that job"
+root=$(fixture job-id-deeper-comment)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Say hello
+        run: echo hello
+      # Priced for the job below -> 29 min.
+  b:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 29
+    steps:
+      - name: The browser download
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a browser" 300 -- curl -fsSL --max-time 300 -o c https://example.com/c
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses b, which no block of its own prices" \
+  "$(contains "$out" "line=12::job 'b' carries .timeout-minutes: 29. and holds a retried step")"
+
+# A key is paired by its file and its line. The two files below put their job keys on the same
+# line, and only the first prices its own; compared by the line alone, the pairing the first file
+# made passed the second (dispatch://INFRA-1545, review round 28).
+echo "case: a key priced in one file does not price the key on the same line of another"
+root=$(fixture paired-by-file)
+cat > "$root/.github/workflows/priced.yaml" <<'YAML'
+name: Priced
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the large fetch's 1050 s: 1200 + 1050 = 2250 s -> 38 min.
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+cat > "$root/.github/workflows/unpriced.yaml" <<'YAML'
+name: Unpriced
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the large fetch's 1050 s, 2250 s, the minute above: 38.
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the unpriced file's key" \
+  "$(contains "$out" "file=.github/workflows/unpriced.yaml,line=7::job 'build' carries .timeout-minutes: 38. and holds a retried step")"
+check "and nothing in the priced file" \
+  "$(is "$(contains "$out" 'file=.github/workflows/priced.yaml')" false)"
+
 echo "case: a job priced by its own arrow more than forty lines above its key passes"
 root=$(fixture job-priced-far-above)
 {
@@ -2381,6 +2785,33 @@ root=$(fixture job-priced-far-above)
   printf '    # Budget: 1200 s measured, plus the large fetch, 1200 + 1050 = 2250 s -> 38 min.\n'
   for line in $(seq 1 45); do
     printf '    # Line %s of the reasoning behind that sum, which this check never reads.\n' "$line"
+  done
+  cat <<'YAML'
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+} > "$root/.github/workflows/case.yaml"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# The same distance made of the job's own YAML rather than of its comment: a block's keys are
+# read however many lines below it they sit. A 40-line reach on the walk let the 45 `env:` lines
+# below hide the key from its own block, and the case above never measured that distance, since
+# its 45 lines belong to the block and the walk starts below them (dispatch://INFRA-1545, review
+# round 28).
+echo "case: a job priced by its own arrow above forty-five lines of env passes"
+root=$(fixture job-priced-far-above-env)
+{
+  printf 'name: Case\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-24.04\n'
+  printf '    # Budget: 1200 s measured, plus the large fetch, 1200 + 1050 = 2250 s -> 38 min.\n'
+  printf '    env:\n'
+  for line in $(seq 1 45); do
+    printf '      SETTING_%s: "%s"\n' "$line" "$line"
   done
   cat <<'YAML'
     timeout-minutes: 38
@@ -2423,6 +2854,31 @@ check "names the 450 s step" "$(contains "$out" "whose retries take 450 s to exh
 check "says no comment block prices that key" \
   "$(contains "$out" "no comment block prices that key")"
 
+# The pricing refusal names the job's slowest retried step by the step's own name, which is what
+# a reader searches the workflow for. With the job's name put in its place, the refusal below
+# named a step 'fetch-assets' that the workflow does not hold (dispatch://INFRA-1545, review
+# round 28).
+echo "case: an unpriced job's refusal names its slowest step by the step's own name"
+root=$(fixture job-prices-nothing-step-name)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  fetch-assets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    steps:
+      - name: The small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step, not the job, as the slowest" \
+  "$(contains "$out" "job 'fetch-assets' carries .timeout-minutes: 13. and holds a retried step — 'The small fetch', whose retries take 450 s")"
+
 # The priced-comment clause holds a key to BEING ONE OF its block's figures. A reviewer weakened
 # `key in figures` to `key >= min(figures)` and `re-record`, whose block prices both a step at 9
 # and the job at 69, went through at 50 (review round 27): a key between two figures of its block
@@ -2449,6 +2905,57 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names both figures and the key between them" \
   "$(contains "$out" "this comment prices what it sits above at 9 min and 69 min, and the .timeout-minutes: 50. below it, the key of job 'build', carries 50")"
+
+# The same rule from above: a key over every figure its block prices names none of them. A
+# reviewer let any key above the largest figure through (`key > max(figures)`), and a key raised
+# while its sentence was left alone, a sentence as stale as one under a lowered key, went through
+# (dispatch://INFRA-1545, review round 28).
+echo "case: a key above every figure its block prices is refused"
+root=$(fixture arrow-under-key)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: the large fetch's 1050 s and the steps beside it -> 28 min.
+    timeout-minutes: 40
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the figure and the key above it" \
+  "$(contains "$out" "this comment prices what it sits above at 28 min, and the .timeout-minutes: 40. below it, the key of job 'build', carries 40")"
+
+# A block's walk reads one key for each figure it states, so a block pricing two figures holds
+# the second key below it too. Stopped after the first key, the walk never read the step's 25
+# below a block naming 28 and 18 (dispatch://INFRA-1545, review round 28).
+echo "case: a block pricing two figures holds its second key too"
+root=$(fixture arrow-second-key)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: the job's measured run and its large fetch -> 28 min, and the fetch's own -> 18 min.
+    timeout-minutes: 28
+    steps:
+      - name: The large fetch
+        timeout-minutes: 25
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names both figures and the step's key" \
+  "$(contains "$out" "this comment prices what it sits above at 28 min and 18 min, and the .timeout-minutes: 25. below it, the key of step 'The large fetch' of job 'build', carries 25")"
 
 echo "case: a job whose comment derives its key another way is passed over"
 root=$(fixture job-derivation-construction)
@@ -3387,6 +3894,63 @@ check "exits 1" "$(is "$status" 1)"
 check "names the step by the action it runs" \
   "$(contains "$out" "step 'the step running .github/actions/install-elan/action.yml' holds 607 s of retries")"
 check "never names it '-'" "$(is "$(contains "$out" "step '-'")" false)"
+
+# The pricing refusal names a job's slowest step as step_name does: a nameless `uses:` step by the
+# action it runs. With the bare `budget.step` kept in JOB_SLOWEST in place of step_name, the
+# refusal below named a step '-' (dispatch://INFRA-1545, review round 28).
+echo "case: an unpriced job's nameless action step is named by the action it runs"
+root=$(fixture job-prices-nothing-action-step)
+mkdir -p "$root/.github/actions/fetch-asset"
+cat > "$root/.github/actions/fetch-asset/action.yml" <<'YAML'
+name: Fetch an asset
+description: Fetches the asset a job's tests read.
+runs:
+  using: composite
+  steps:
+    - name: Fetch the asset
+      shell: bash
+      run: |
+        . .github/scripts/ci-retry.sh
+        retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    steps:
+      - uses: ./.github/actions/fetch-asset
+        timeout-minutes: 8
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the slowest step by the action it runs" \
+  "$(contains "$out" "holds a retried step — 'the step running .github/actions/fetch-asset/action.yml', whose retries take 450 s")"
+
+# step_name names a step by an action only where the step runs one. A nameless `run:` step runs
+# none, and with `and budget.uses` dropped the refusal below named it 'the step running None'. It
+# names the step '-', as the workflow reads it (dispatch://INFRA-1545, review round 28).
+echo "case: an unpriced job's nameless run step is named '-', never by an action"
+root=$(fixture job-prices-nothing-nameless-run)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    steps:
+      - timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step '-'" "$(contains "$out" "holds a retried step — '-', whose retries take 450 s")"
+check "never names an action it does not run" "$(is "$(contains "$out" 'None')" false)"
 
 # The slowest step is the first one with the largest arithmetic: a later step that only ties it
 # does not take its place, so the refusal names the step written first.
