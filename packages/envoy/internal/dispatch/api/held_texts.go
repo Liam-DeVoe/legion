@@ -410,15 +410,11 @@ func (answer heldAnswer) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	encoded := make([]byte, 0, len(payload)+len(held)+9)
-	encoded = append(encoded, payload[:len(payload)-1]...)
+	separator := []byte(`"held":`)
 	if len(payload) > 2 {
-		encoded = append(encoded, ',')
+		separator = []byte(`,"held":`)
 	}
-	encoded = append(encoded, `"held":`...)
-	encoded = append(encoded, held...)
-	encoded = append(encoded, '}')
-	return encoded, nil
+	return slices.Concat(payload[:len(payload)-1], separator, held, []byte("}")), nil
 }
 
 // heldAnswerOf is the answer a held write gets: today's response shape for its kind, built from
