@@ -51,8 +51,9 @@ type listenerDeps struct {
 	// handlers without it.
 	roleLane *bus.Client
 	// consumers manages the session consumers registrations ask for (sessionDelivery); nil in a
-	// test that builds the handlers without it, which answers every such registration with core.
-	// delivery, below, is the delivery handlers' own configuration, which the routes share.
+	// test that builds the handlers without it, which refuses every registration with
+	// consumer_error. delivery, below, is the delivery handlers' own configuration, which the
+	// routes share.
 	consumers *sessionDelivery
 	// caches lists the stores above that are open, for the sites that treat every cache alike.
 	caches []listenerCache
@@ -69,13 +70,13 @@ type listenerDeps struct {
 	// session it confirms in its dedupeCache (so the handlers do not deliver that key to it again),
 	// and writes each send's delivery line and delivery_status count through its logger and
 	// messagesDelivered, reading as the role lane's do, beside the route's own request record
-	// (request_record.go). The route never reads that dedupeCache, since the handlers also
-	// record a self-subscribed session whose delivery they skipped without hearing from it.
+	// (request_record.go). The route never reads that dedupeCache, since the handlers write it
+	// for deliveries of their own, which are not the route's forwards.
 	delivery *listenerDeliveryHandlerConfig
-	// confirmed is the publish route's own record of each (dedupe key, session) whose receipt arrived
-	// through the route, which only the route writes. A send skips a holder or recipient recorded
-	// there, so envoy-client's retry of a send does not forward again to one the first attempt
-	// confirmed, and no one is counted as confirming a message without having sent its receipt.
+	// confirmed is the publish route's own record of each (dedupe key, session) the route stored a
+	// forward for, which only the route writes. A send skips a holder or recipient recorded there,
+	// so envoy-client's retry of a send does not forward again to one the first attempt already
+	// had the stream store the message for.
 	confirmed *dedupe.Cache
 	// sendsToUnresponsive counts the sends POST /v1/messages/send took for a recipient past the
 	// live window and stored for it (sendHandler). It is how a box's operator sees that a growing
@@ -129,7 +130,8 @@ func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry,
 // its next cycle.
 //
 // A reaper answers no caller, so it holds no request context and reads under context.Background()
-// with roleHolderReadTimeout as its bound, the same bound role delivery's resolution waits.
+// with roleHolderReadTimeout as its bound, the same bound each read of role delivery's resolution
+// waits.
 func sessionMayBeLive(sessions *session.SessionRegistry, sessionID string) (bool, error) {
 	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone)
 	if errors.Is(err, nats.ErrKeyNotFound) {
@@ -503,8 +505,9 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // gone, unbound, or whose info read did not answer is still 503, since a listener that receives
 // nothing is not the case the 200 is for. That answer is 200 "degraded" and not 503, because the
 // probes act on /healthz: the ECS container health check is curl -sf /healthz, every 30 s with 3
-// retries (infra/aws/rendering/listener.go:202-203), on a service of one task
-// (infra/aws/webhooklistener.go:227), and GKE's readiness probe reads it too
+// retries (infra/aws/rendering/listener.go, the healthCheck entry of
+// ListenerContainerDefinitions), on a service of one task (infra/aws/webhooklistener.go,
+// DesiredCount), and GKE's readiness probe reads it too
 // (infra/gcp/dispatch_kube.go, readyProbe). A 503 would replace, or unroute, the only listener
 // there is, and its replacement rebuilds into the same failing rewatch with cold caches that warm
 // up empty, whose fanout then acknowledges general-topic messages as unmatched and loses them
@@ -540,6 +543,25 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // For the same reason the view is no part of Ping or WatchErr, whose terminal failures the
 // self-health monitor self-terminates the listener over: a restart completes no scan that keeps
 // timing out.
+//
+// The answer reports the role claim copy's freshness too, under "role_claim_repair"
+// (roleClaimRepairHealth): when the role claim watcher's last whole read of the role bucket
+// completed, as RFC 3339 in UTC, and how long ago on the registry's clock, both null until a read
+// has completed; the bound that age is held to, store.RoleClaimRepairBound, in seconds; and how many
+// claims that read put back into the copy and took out of it (store.Registry.RoleClaimRepair). The
+// healthy answer carries it, and so does every degraded answer that keeps the healthy body's
+// fields, so a reader and an alert see how stale the copy is in either. A copy whose last whole
+// read is older than the bound (store.RoleClaimRepairReport.Err) is 200 "degraded" with the
+// error "role claim repair unavailable: …", keeping every other field. It is judged after the role
+// claim view and only while the view answers: a view that cannot answer refuses every read of the
+// copy whatever its last read's age, and is reported as itself. Degraded and never unhealthy,
+// whatever the age: the dispatch-listener's readiness probe runs curl -fsS against /healthz and
+// would take that pod out of service in about ten seconds on a 503, and every listener runs this
+// one binary. A late repair is the scheduled read's to repair, while the grant guard
+// (roleOwnSessionVerdict) refuses to give a role away from its holder meanwhile, and GET
+// /v1/sessions keeps answering the copy, which it refuses only when the view cannot be served. The
+// answers writeDependencyHealth gives carry only status and error, as before: they report a fault
+// below the copy, not its freshness.
 func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -614,14 +636,57 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		response["num_ack_pending"] = consumerInfo.NumAckPending
 		// Last, so that no fault above is reported as this one: every check before it that can
 		// answer 503 has passed. The answer keeps the fields above it, so a reader of the counters
-		// loses none while the view fills.
-		if err := d.registry.RoleViewErr(); err != nil {
+		// loses none while the view fills or while its repair is late. A view that cannot answer
+		// is reported before a late repair, since it is what every read of the copy is refused by.
+		// The repair is read once, and after the view: the field and the error are one reading,
+		// and a view that answers already has a completed whole read in that reading.
+		viewErr := d.registry.RoleViewErr()
+		repair := d.registry.RoleClaimRepair()
+		response["role_claim_repair"] = roleClaimRepairHealthOf(repair)
+		if viewErr != nil {
 			response["status"] = "degraded"
-			response["error"] = dependencyUnavailable("role claim view", err)
+			response["error"] = dependencyUnavailable("role claim view", viewErr)
+		} else if err := repair.Err(); err != nil {
+			response["status"] = "degraded"
+			response["error"] = dependencyUnavailable("role claim repair", err)
 		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(response)
 	}
+}
+
+// roleClaimRepairHealth is the "role_claim_repair" field of a /healthz answer: the role claim
+// watcher's last whole read of the role bucket that completed, which repairs the copy every claim
+// view answers from (store.Registry.RoleClaimRepair), beside the bound its age is held to. The two
+// fields that name that read are null until one has completed, so a reader never takes the zero
+// time for a read; the counts are 0 then, as they are for the first read of an epoch, which fills
+// the copy rather than repairing it.
+type roleClaimRepairHealth struct {
+	// CompletedAt is when the read completed, RFC 3339 in UTC.
+	CompletedAt *string `json:"completed_at"`
+	// AgeSeconds is how long before the answer the read completed, on the registry's clock, the
+	// age store.RoleClaimRepairReport.Err judges.
+	AgeSeconds *float64 `json:"age_seconds"`
+	// BoundSeconds is store.RoleClaimRepairBound, past which the answer is degraded.
+	BoundSeconds float64 `json:"bound_seconds"`
+	// PutBack and TookOut are the claims the read put back into the copy and took out of it.
+	PutBack int `json:"put_back"`
+	TookOut int `json:"took_out"`
+}
+
+// roleClaimRepairHealthOf is report as /healthz answers it, its age to the millisecond.
+func roleClaimRepairHealthOf(report store.RoleClaimRepairReport) roleClaimRepairHealth {
+	health := roleClaimRepairHealth{
+		BoundSeconds: store.RoleClaimRepairBound.Seconds(),
+		PutBack:      report.PutBack,
+		TookOut:      report.TookOut,
+	}
+	if report.Completed > 0 {
+		completedAt := report.CompletedAt.UTC().Format(time.RFC3339Nano)
+		age := report.Age.Round(time.Millisecond).Seconds()
+		health.CompletedAt, health.AgeSeconds = &completedAt, &age
+	}
+	return health
 }
 
 // healthzBudget bounds the bus checks of one /healthz answer.
@@ -809,6 +874,17 @@ func listenerStreamOptions(cfg config.Service) []bus.ConnectOption {
 // /v1 opens, and while a list would answer the refilling 503, a gauge writes no sample: a count of
 // a copy that cannot be served is no count of the live sessions, and a missing sample is not read
 // as zero, which only a complete empty copy reads.
+//
+// Beside them it registers the three gauges of the role claim copy's repair, which report what
+// /healthz's "role_claim_repair" reports (store.Registry.RoleClaimRepair), so an alert reads the
+// copy's freshness without a person: envoy_role_claim_repair_completed_timestamp_seconds, the Unix
+// time the role claim watcher's last whole read of the role bucket completed, whose age past
+// store.RoleClaimRepairBound is the late repair /healthz reports degraded, and
+// envoy_role_claim_repair_put_back and envoy_role_claim_repair_took_out, what that read put back
+// into the copy and took out of it. Each writes no sample before /v1 opens or before the first
+// read completes: a time of zero would read as a repair late by decades, and a count of zero as a
+// read that found the copy right. After that each always has one, the copy's view serving or not,
+// since a stale timestamp is what the alert is for.
 func registerListGauges(met *metrics.Registry, served *atomic.Pointer[listenerDeps]) {
 	met.NewOptionalGaugeFunc("envoy_active_sessions", "Number of active sessions", func() (int64, bool) {
 		d := served.Load()
@@ -832,6 +908,28 @@ func registerListGauges(met *metrics.Registry, served *atomic.Pointer[listenerDe
 		}
 		return int64(len(interests)), true
 	})
+	roleClaimRepairGauge := func(name, help string, value func(store.RoleClaimRepairReport) int64) {
+		met.NewOptionalGaugeFunc(name, help, func() (int64, bool) {
+			d := served.Load()
+			if d == nil {
+				return 0, false
+			}
+			report := d.registry.RoleClaimRepair()
+			if report.Completed == 0 {
+				return 0, false
+			}
+			return value(report), true
+		})
+	}
+	roleClaimRepairGauge("envoy_role_claim_repair_completed_timestamp_seconds",
+		"Unix time the last whole read of the role claims completed, which repairs the listener's copy of them",
+		func(report store.RoleClaimRepairReport) int64 { return report.CompletedAt.Unix() })
+	roleClaimRepairGauge("envoy_role_claim_repair_put_back",
+		"Role claims the last whole read of the role claims put back into the listener's copy",
+		func(report store.RoleClaimRepairReport) int64 { return int64(report.PutBack) })
+	roleClaimRepairGauge("envoy_role_claim_repair_took_out",
+		"Role claims the last whole read of the role claims took out of the listener's copy",
+		func(report store.RoleClaimRepairReport) int64 { return int64(report.TookOut) })
 }
 
 // inactiveThresholdFor is the threshold the server removes an idle session consumer after, as
@@ -959,6 +1057,14 @@ func main() {
 	// /healthz is always reachable, before NATS setup as well as after it.
 	mux.HandleFunc("/healthz", healthzHandler(&deps))
 
+	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
+	// durable consumer. It says only that the process answers, for the startup and liveness
+	// probes, which must not wait on or fail with NATS: a listener whose bus is down repairs
+	// itself, and a restart would only drop its warm caches. /healthz stays the readiness route,
+	// the one that reads the bus, because its HTTP status is what tells a starting pod from a
+	// serving one.
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+
 	// GaugeFunc for consumer pending — queries NATS at scrape time
 
 	// The webhook and /v1 routes answer 503 "service starting" until their dependencies are open
@@ -1061,8 +1167,8 @@ func main() {
 	// roles - GET /v1/sessions and GET /v1/registry/<session_id> - answer a live client the
 	// bus-unavailable 503 while the bus is healthy, because the role claim view refuses every read
 	// until its watcher has delivered every claim. So the gate waits for that view to be complete,
-	// not merely ready: a first scan nats.go's idle timer ended releases readiness, and the
-	// watcher's rescan ends this wait.
+	// not merely ready: a first scan that its idle wait ended (kvwatch.ScanIdleTimeout) releases
+	// readiness, and the watcher's own re-read of the bucket ends this wait.
 	//
 	// Bounded at 30s: a healthy NATS cluster completes the scan in milliseconds. The wait also
 	// ends before that bound with the role claim watcher's terminal error - a first start that
@@ -1265,9 +1371,11 @@ func main() {
 	go watchRoleLaneSlowConsumers(roleLaneWatchCtx, roleLaneClient, logger, roleLaneSlowConsumerInterval)
 	lane := roleLane{client: roleLaneClient, forwards: roleForwards, stopWatch: roleLaneWatchCancel}
 
-	// The session consumers a registration asks for are managed on a connection of their own
-	// (bus.ConnectSessionConsumers). One that fails to connect leaves every session on core
-	// delivery, which a listener of an earlier release serves too, rather than ending the start.
+	// Every session takes its messages from a session consumer this listener manages on a
+	// connection of its own (bus.ConnectSessionConsumers), and its relay needs a reply inbox to
+	// answer frames on. There is nothing left to fall back to, so either failure ends the start:
+	// a listener that refuses every registration would stop at each session rather than at the
+	// rollout, where an operator learns of it at once.
 	//
 	// The threshold the server removes an idle session consumer after is derived from this
 	// deployment's own windows first and given to that connection, so every consumer the
@@ -1277,18 +1385,20 @@ func main() {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
-	// The relay of those consumers hears registrations from the moment /v1 opens, and relays once
-	// this task holds its machine's durable binding (below). Without its reply inbox no frame could
-	// be answered, so a relay that cannot subscribe one leaves every session on core delivery too.
-	var relays *sessionRelays
-	if delivery.consumers != nil {
-		relays, err = startSessionRelays(delivery, deliveryConfig)
-		if err != nil {
-			logger.Error("session relay reply subscription failed; every session stays on core delivery", slog.String("error", err.Error()))
-			delivery.close()
-			delivery = &sessionDelivery{logger: logger, now: time.Now}
-		}
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
+	if err != nil {
+		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
+		client.Conn.Close()
+		os.Exit(1)
+	}
+	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
+	// machine's durable binding (below).
+	relays, err := startSessionRelays(delivery, deliveryConfig)
+	if err != nil {
+		logger.Error("session relay reply subscription failed: no relayed frame could be answered", slog.String("error", err.Error()))
+		delivery.close()
+		client.Conn.Close()
+		os.Exit(1)
 	}
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
@@ -1401,11 +1511,27 @@ func main() {
 		registry.StartReaper(kvLoopsCtx, func(sessionID string) (bool, error) { return sessionMayBeLive(sessions, sessionID) }, 5*time.Minute, store.InterestReapGrace),
 		registry.StartRoleClaimReaper(kvLoopsCtx, func(sessionID string) bool { return roleHolderMayBeLive(logger, sessions, sessionID) }, roleClaimReapInterval, sessionLive, sessionLive),
 		// The session reaper is the one loop that deletes a session's record, and the one place
-		// the bucket's maximum age is settled while the listener runs (session.ReapSessions).
+		// the bucket's maximum age is settled while the listener runs (session.ReapSessions). It
+		// deletes the session consumer of each record it deletes, so the stream holds a consumer
+		// for each session this deployment has rather than for each that reached the gone horizon
+		// inside the consumers' inactive threshold (bus.SessionConsumerInactiveThreshold).
 		sessions.StartSessionReaper(kvLoopsCtx, sessionReapInterval, session.SessionReaper{
 			Client:              client,
 			Reaped:              sessionsReaped,
 			StoredAfterLastSeen: sessionStoredAfterLastSeen,
+			// The pass runs in a loop of its own, and the delete confirms the session is gone
+			// against the leader of the session bucket's stream before it removes anything,
+			// so a session that registered between the pass's decision and its delete keeps
+			// the consumer that registration was answered with; one that registered on
+			// another listener between that read and the delete is given its consumer back,
+			// at the floor the delete recorded, from the record and the interest row the
+			// bucket then holds (sessionDelivery.deleteConsumer, repairRegistered). That
+			// body logs whatever became of the consumer and answers no error, which is why
+			// the field carries none: the pass deletes the records behind this one either
+			// way, and the reaper's own log line would say no more than the delete's.
+			DeleteConsumer: func(ctx context.Context, sessionID string) {
+				delivery.deleteConsumer(ctx, ready, sessionID, nil)
+			},
 		}),
 	}
 
@@ -1432,6 +1558,7 @@ func main() {
 	kvLoopsDone = append(kvLoopsDone, startSessionConsumerSweep(kvLoopsCtx, &sessionConsumerSweep{
 		delivery: delivery,
 		sessions: sessions,
+		deps:     ready,
 		relays:   relays,
 		logger:   logger,
 	}, sessionConsumerSweepInterval))
@@ -1578,6 +1705,42 @@ type listenerParts struct {
 	stopWakes func()
 }
 
+// The listener's stop budget: the deadlines shutdownListener spends after SIGTERM, one after
+// another. A runtime's termination grace period, less the pre-stop wait it spends before SIGTERM,
+// has to cover stopBudget, and a pod of this listener grants listenerGraceMargin above it;
+// TestListenerPodGracesCoverTheStopBudget holds the rendered pods to both.
+const (
+	// stopHTTPGrace bounds the first part of the stop: six waits run under the one context it
+	// opens, in this order - the relays' stop, the HTTP server's shutdown, the consumer deletes
+	// still in flight, the session-consumer drain, the wait for a self-health rebuild still
+	// running (loops.monitorDone) and the wait for each KV bucket pass still running
+	// (loops.kvLoopsDone). The last two are the ones that most plausibly spend it on a loaded
+	// node, so whoever sizes this number reads them too.
+	stopHTTPGrace = 10 * time.Second
+	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
+	stopLaneDrain = 3 * time.Second
+	// stopLaneGrace is the role lane's whole stop, and the invariant is the two waits the drain
+	// makes in order: stopLaneDrain for the lane's own client, then the wait roleLane.drain gives
+	// the handed-over forwards, which is roleForwardTimeout (role_lane.go). Every pod's grace is
+	// rendered from stopBudget, so a change to either wait moves the rendered grace with it.
+	stopLaneGrace = stopLaneDrain + roleForwardTimeout
+	// stopClientDrain bounds the main client's drain: 10 s for the deliveries in their handlers,
+	// as before the drain hooks, and the hooks' 3 s on top (bus's drainHookReserve).
+	stopClientDrain = 13 * time.Second
+	// stopBudget is the whole stop, the three deadlines added, and is inside every runtime's
+	// 30 s after the pre-stop wait.
+	stopBudget = stopHTTPGrace + stopLaneGrace + stopClientDrain
+	// listenerGraceMargin is what a pod of this listener grants above its pre-stop wait and
+	// stopBudget: it covers the kubelet's own latency between the pre-stop hook's return and
+	// SIGTERM, the container's teardown and a late tick on a loaded node, and never a listener
+	// that runs over its own deadlines, which it cannot. It is the one place this number is
+	// decided: every sentence that states the margin cites this constant, the two listener pod
+	// components render their grace as their pre-stop wait plus the budget plus it, and
+	// TestListenerPodGracesCoverTheStopBudget holds each rendered pod's grace less its pre-stop
+	// wait less stopBudget equal to it, so a pod that grants more or less reds.
+	listenerGraceMargin = 7 * time.Second
+)
+
 // shutdownListener is the ordered shutdown every end of a start that serves /v1 comes to, a
 // signal, a fatal error or a bind that did not complete, and exits non-zero so the runtime's
 // restart policy restores the listener.
@@ -1597,7 +1760,7 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	//    messages it holds to the server with a nak (sessionRelays.release), so they are
 	//    delivered again at once rather than after their ack wait.
 	// 2. HTTP server — stop accepting new requests, drain in-flight.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), stopHTTPGrace)
 	defer cancel()
 	parts.relays.stop(shutdownCtx)
 	if err := parts.server.Shutdown(shutdownCtx); err != nil {
@@ -1637,18 +1800,14 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 		}
 	}
 	// The role lane drains before the main client: a delivery still in its handler, and each role
-	// forward, publishes through the main client and reads the caches stopped below. It gets 3 s
-	// for its handler and the receipt window on top for the forwards it handed over
-	// (roleLane.drain), 5 s. Core NATS retries nothing, so a delivery still blocked at the
-	// deadline is lost, as one sent while no listener runs is.
-	parts.lane.drain(logger, 3*time.Second)
+	// forward, publishes through the main client and reads the caches stopped below. Core NATS
+	// retries nothing, so a delivery still blocked at the deadline is lost, as one sent while no
+	// listener runs is.
+	parts.lane.drain(logger, stopLaneDrain)
 	for _, c := range parts.caches {
 		c.cache.StopWatch()
 	}
-	// 10 s for the deliveries in their handlers, as before the drain hooks, and the hooks' 3 s on
-	// top (bus's drainHookReserve): with the HTTP stop's 10 s and the role lane's 5 s, 28 s, inside
-	// every runtime's 30 s.
-	if err := parts.client.Drain(13 * time.Second); err != nil {
+	if err := parts.client.Drain(stopClientDrain); err != nil {
 		logger.Warn("nats drain error", slog.String("error", err.Error()))
 	}
 

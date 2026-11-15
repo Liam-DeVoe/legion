@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -28,7 +29,7 @@ import (
 
 // freshSessionHarness is the one daemon both doors are driven against: the operator's bearer and
 // a controller grant on the same server, with the workflow's facts recorded and the role of each
-// phase known (workflow.RoleFor), which the start of a phase worker whose process is gone reads.
+// phase known (phase.RoleFor), which the start of a phase worker whose process is gone reads.
 func freshSessionHarness(t *testing.T, handler intake.Handler) *harness {
 	t.Helper()
 	return freshSessionHarnessStopping(t, handler, context.Background(), NewRouteDecisions())
@@ -43,7 +44,7 @@ func freshSessionHarnessStopping(t *testing.T, handler intake.Handler, stopping 
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{handler}, RoleFor: workflow.RoleFor,
+		Handlers: []intake.Handler{handler}, RoleFor: phase.RoleFor,
 		Stopping: stopping, Decisions: decisions,
 	}).Handler
 	return h
@@ -333,10 +334,10 @@ func stoppedWaitingImplementer(t *testing.T, h *harness) claim.Token {
 	return token
 }
 
-// freshSessionLine is admission's waiting line and the facts it is read from, read exactly as a
-// promotion reads them — blockers.JudgeLine, the one place the line is judged, which fills the
-// held set and the children-first waits the line cannot judge itself: the order in which the
-// next slot is offered.
+// freshSessionLine is admission's waiting line and the facts it is read from, judged by
+// blockers.JudgeLine from the stored state: the held set, the children-first waits and the waits
+// of started issues (record.LineFacts.Held, ChildWaits and Waits). It runs none of the releases
+// a pass runs before it judges the line.
 func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.LineEntry, record.LineFacts) {
 	t.Helper()
 	var (
@@ -358,7 +359,7 @@ func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.
 		if facts, err = record.ReadLineFacts(h.ctx, tx, records, testDispatchProject, issues, config.DesignGateRootIssues.Steps()); err != nil {
 			return err
 		}
-		_, facts, line, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil)
+		_, facts, line, _, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil, time.Now())
 		return err
 	}); err != nil {
 		t.Fatalf("read the waiting line: %v", err)

@@ -6,7 +6,7 @@ package api
 // The catalogue is the dispatch tools that write: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. Twenty of the thirty-three tools write,
+// what a model chooses on, and its own argument schema. Twenty of the thirty-four tools write,
 // which is under the count where a model's choice measurably falls apart, so the list is read
 // whole: nothing searches it, and no second schema is authored per route.
 //
@@ -202,10 +202,19 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/plan-reviews",
 		Path: map[string]string{"id": "artifact"},
 	}},
-	"dispatch_result": {{
-		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/results",
-		Path: map[string]string{"key": "issue"},
-	}},
+	// A retraction and a record are two shapes of one tool: the retraction's row names the
+	// result in its path, so a call carrying `retract` fills it and a record, which carries
+	// none, falls through to the row below.
+	"dispatch_result": {
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/results/{id}/retract",
+			Path: map[string]string{"id": "retract"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/results",
+			Path: map[string]string{"key": "issue"},
+		},
+	},
 	"dispatch_artifact": {
 		{
 			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/artifacts",

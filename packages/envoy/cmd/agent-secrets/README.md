@@ -19,20 +19,21 @@ quoted wherever an agent's output is, so none names the store's account, region 
 none names the broker's host but two: a broker that could not be reached, named by its URL so a
 stale address reads as one, and a pending secret request, whose line names the page on the broker
 where its approver decides it, the `approve_url` the broker's own answer carries. The secret
-forms below, which a person runs under their own cloud
-sign-in, name the account or project they write to. No output of `agent-secrets`,
+forms below, which call the store itself, name the account or project they read and write. No
+output of `agent-secrets`,
 `agent-secrets-helper` or `agent-secrets-devrelay` prints a credential the broker's URL carries:
 the URL prints only when it is provably a plain http(s) URL (no user info, query, fragment,
 escape or control byte), and as `(not printed: the value carries a credential or is not a plain
 http(s) URL)` otherwise. People and launchers use its other forms to log a machine in
 (`agent-secrets machine
 login`), register an agent session (`agent-secrets register --exec -- <agent>`), and inspect a
-session's grants (`agent-secrets self`). People manage the agent secrets themselves with
+session's grants (`agent-secrets self`). People and agents manage the agent secrets themselves with
 `agent-secrets secret list|show|create|set|retag|delete|restore`, which calls the broker's own
-store (AWS Secrets Manager or GCP Secret Manager) under their own cloud sign-in and then asks the
-broker to reread each secret written, so the change
+store (AWS Secrets Manager or GCP Secret Manager) under whatever cloud credential its environment
+gives it - the store's own IAM decides what that credential may do - and then asks the broker to
+reread each secret written, so the change
 is served at once; those forms need no helper and no session. From their own shell on a machine
-that runs the helper, they list and end their own machines' logins and their live grants with
+that runs the helper, people list and end their own machines' logins and their live grants with
 `agent-secrets machine list|revoke` and `agent-secrets grant list|revoke`, under that machine's
 login; a service's login is revoked on Dispatch's machine-login page. The helper refuses these
 forms to a process inside a registered session's process tree (`IN_SESSION`), so an agent's own
@@ -44,21 +45,30 @@ any session. `agent-secrets enroll --helper` is open to any process of the user,
 can also enroll a box and read the operator's agent secrets. `agent-secrets --help` lists every
 form, and each form answers `-h`.
 
-A value is injected exactly as it is stored, line endings and all: a stored secret may
-legitimately be several lines, a PEM document among them. A one-line credential that ends in a
-line ending, though, is nearly always a seeding mistake — the trailing newline of whatever
-produced it, kept by a `gcloud secrets versions add --data-file=-` or an `aws secretsmanager
-put-secret-value` where a single trailing LF is what `secret set` would have removed. It is
-invisible where it is written
-and expensive where it is read: a caller that puts such a value straight into an HTTP header gets
-a rejected header, and the error reporting that can quote the whole secret into a log or a saved
-session (dispatch://INFRA-1042). So the exec form writes one more line to standard error before
-the command runs, naming each released secret whose value ends in a line ending and never any
-part of a value. Keep the ending where the value is meant to end that way; where it is not,
-store the value again with `agent-secrets secret set`, piping it with the ending already
-removed, because that form drops one final LF from its standard input and no carriage return —
-a value re-piped as it stands keeps the CR of a CRLF, keeps a lone CR, and keeps every LF but
-the last.
+Before the broker spends a stored value, it removes that value's trailing line endings under one
+rule, and the secret's `shape` tag says how to read the value. `shape: token` is a one-line
+credential, an API key or a bearer token: the whole trailing run of carriage returns and line
+feeds goes, unless the value is nothing but line endings, which stays as it is. `shape: document`
+is a value whose every byte is part of it, a PEM key for one, and nothing goes. A secret with no
+tag is read by the broker's own reading of the value: that run goes only where the rest of the
+value is not empty and holds no carriage return and no line feed, so a PEM document keeps the
+line feed that ends it.
+
+The rule reaches the stored value alone, in both of the broker's reads of the store: the value a
+session is handed, and the input a minter reads. A token a minter makes is never changed. The
+broker writes one line at INFO for each value it changed, `broker: a stored value's trailing line
+ending was removed name=<NAME>`, which carries the secret's name and no part of any value. An
+owner whose value the rule reads wrongly answers that line with one retag: `agent-secrets secret
+retag <NAME> --shape document`.
+
+`agent-secrets secret create --shape token|document` writes the tag, `secret retag --shape
+token|document|none` changes it or removes it, `secret show` prints it as a `shape:` line, and
+`secret list` prints it as a `SHAPE` column. `secret create` and `secret set` read the value they
+store by this same rule, so a value stored through this client and a value stored by any other
+writer are spent alike. `secret set` reads the secret's own shape tag first, so a document's
+owner stores a document. Where the rule changes nothing, the client still removes one final line
+feed, which it has always done, so `echo` and a file that ends in a newline store the value
+without one.
 
 On a machine that runs agents directly, `agent-secrets-helper` (`../agent-secrets-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
@@ -242,7 +252,13 @@ agent-secrets-helper sessions
 `machine list` shows your machines' logins, `grant list` the live grants of your sessions and
 those you approved, and `agent-secrets-helper sessions` the sessions this machine's helper holds.
 
-Owners manage the secrets themselves under their own cloud sign-in, with no helper:
+Owners manage the secrets themselves, with no helper, under whatever cloud credential the
+environment gives the command: on AWS, `--profile`, else `AWS_PROFILE`, else the SDK's default
+chain, in the broker's account; on Google Cloud, `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the
+Application Default Credentials, else the gcloud login. The store's IAM decides what each may
+do. `--owner me` is the email of the person that credential names, and is refused where it names
+none (a machine's role, a service account, a token without an email scope); `--owner <email>`
+names the owning person outright:
 
 ```sh
 agent-secrets secret list
