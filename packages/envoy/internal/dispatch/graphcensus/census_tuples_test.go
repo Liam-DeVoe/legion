@@ -55,17 +55,21 @@ func appendTuple(t *testing.T, database *store.Store, tuple graphstore.Tuple) {
 // of its kind, and nothing anywhere else. The pairs are the ones each row states: a block's
 // in_document to its document, a comment's owned_by and anchored_to to the artifacts its
 // artifact_id and its anchor name and its authored_by to the person graphstore.AuthorOf reads
-// off its author, and a block reference's own link under its kind to its far end. The last case
-// is the other direction: a link the store states out of a block that no row of that block
-// names.
+// off its author, and a block reference's own link under its kind to its far end. The last two
+// cases are the other direction: a link the store states out of a block that no row of that
+// block names, on a block whose rows name another link, and on a block no block_refs row names
+// at all, which the census reads as a live node no row projects. graph_edges answers that link
+// either way, so a node side that began at the block_refs rows would read zero differences.
 func TestTheStoreCensusHoldsEachRowToTheTuplesThatAnswerIt(t *testing.T) {
 	for _, test := range []struct {
 		name string
-		// kind is the census kind that reads the difference, at the row at names; lose breaks
-		// the one link in the store alone.
+		// kind is the census kind that reads the difference, at the row or node at names; lose
+		// breaks the one link in the store alone. node says the difference is a live node no
+		// row projects rather than a row that disagrees with its node.
 		kind string
 		at   func(seeded agreeingStore) string
 		lose func(t *testing.T, database *store.Store, seeded agreeingStore)
+		node bool
 	}{{
 		name: "a block whose in_document tuple is missing",
 		kind: "block",
@@ -120,6 +124,17 @@ func TestTheStoreCensusHoldsEachRowToTheTuplesThatAnswerIt(t *testing.T) {
 				ToKind: "issue", ToID: "CORE-2", Asserted: true,
 			})
 		},
+	}, {
+		name: "a block's link on a block no block reference row names",
+		kind: "block_ref",
+		at:   func(seeded agreeingStore) string { return refs.BlockNodeKind + " " + seeded.outer },
+		lose: func(t *testing.T, database *store.Store, seeded agreeingStore) {
+			appendTuple(t, database, graphstore.Tuple{
+				FromKind: refs.BlockNodeKind, FromID: seeded.outer, Kind: "mentions",
+				ToKind: "issue", ToID: "CORE-2", Asserted: true,
+			})
+		},
+		node: true,
 	}} {
 		t.Run(test.name, func(t *testing.T) {
 			database := storetest.Open(t)
@@ -128,13 +143,22 @@ func TestTheStoreCensusHoldsEachRowToTheTuplesThatAnswerIt(t *testing.T) {
 			report := storeCensusOf(t, database)
 			wantAt := test.at(seeded)
 			for _, kind := range report.Kinds {
-				t.Logf("kind=%s rows=%d nodes=%d row differences=%d node differences=%d %+v",
-					kind.Kind, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows)
+				t.Logf("kind=%s rows=%d nodes=%d row differences=%d node differences=%d %+v %+v",
+					kind.Kind, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
 				if kind.Kind != test.kind {
 					if kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
 						t.Errorf("%s: the census reads %d row and %d node difference(s) of kind %s (%+v %+v), want none there",
 							test.name, kind.RowDifferences, kind.NodeDifferences, kind.Kind, kind.ReportedRows, kind.ReportedNodes)
 					}
+					continue
+				}
+				if test.node {
+					if kind.NodeDifferences != 1 || len(kind.ReportedNodes) != 1 || kind.ReportedNodes[0].At != wantAt ||
+						kind.ReportedNodes[0].Cause != "a live node no row projects" || kind.RowDifferences != 0 {
+						t.Fatalf("%s: the census reads %d node difference(s) %+v and %d row difference(s) of kind %s, want the one live node at %s that no row projects: the census does not read the store's links against the rows",
+							test.name, kind.NodeDifferences, kind.ReportedNodes, kind.RowDifferences, kind.Kind, wantAt)
+					}
+					t.Logf("%s: the census reads kind %s at %s: %s", test.name, kind.Kind, kind.ReportedNodes[0].At, kind.ReportedNodes[0].Cause)
 					continue
 				}
 				if kind.RowDifferences != 1 || len(kind.ReportedRows) != 1 || kind.ReportedRows[0].At != wantAt ||

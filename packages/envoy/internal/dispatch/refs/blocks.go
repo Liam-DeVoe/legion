@@ -608,35 +608,17 @@ func reconcileBlockParents(
 	if len(nodes) == 0 {
 		return nil, nil
 	}
-	// A block whose address is no key of the store is no node of it: the parent it reaches is
-	// the nearest block above it that is one, or the document, and nothing is stated about the
-	// block itself.
-	held := blockParents(nodes)
-	parents := make([]int, len(nodes))
-	for index := range nodes {
-		parents[index] = -1
-		for above := held[index]; above >= 0; above = held[above] {
-			if fits[above] {
-				parents[index] = above
-				break
-			}
-		}
-	}
-	blockIDs := make([]string, 0, len(nodes))
-	parentIDs := make([]*string, 0, len(nodes))
-	for index := range nodes {
-		if !fits[index] {
-			continue
-		}
-		blockIDs = append(blockIDs, nodes[index].ID)
-		var parent *string
-		if parents[index] >= 0 {
-			parent = &nodes[parents[index]].ID
-		}
-		parentIDs = append(parentIDs, parent)
-	}
-	if len(blockIDs) == 0 {
+	placed, parents := placeBlocks(nodes, fits)
+	if len(placed) == 0 {
 		return nil, nil
+	}
+	blockIDs := make([]string, len(placed))
+	parentIDs := make([]*string, len(placed))
+	for index, block := range placed {
+		blockIDs[index] = nodes[block].ID
+		if parents[index] >= 0 {
+			parentIDs[index] = &nodes[parents[index]].ID
+		}
 	}
 	differences, err := heldBlockParentDifferences(ctx, tx, refKey, blockIDs, parentIDs)
 	if err != nil {
@@ -669,6 +651,47 @@ func reconcileBlockParents(
 		return nil, fmt.Errorf("project the parents of the blocks of %s: %w", artifactID, err)
 	}
 	return tuples, nil
+}
+
+// PlaceBlocks is where the block index places each block of a version of the document refKey
+// names. It answers the version's unique blocks (the first block of each id), the index among
+// them of each block it states a part_of for, in document order, and beside each of those the
+// index among them of the block that holds it, -1 for a block the document holds. blocks are
+// the version's rendered blocks, as IndexBlocks takes them.
+//
+// It is the one walk the index states each part_of from (reconcileBlockParents) and the sizing
+// counts the parents a version moved with (graphcensus), so what the sizing counts and what the
+// writer appends cannot drift.
+func PlaceBlocks(refKey string, blocks []model.ArtifactBlock) (nodes []model.ArtifactBlock, placed, parents []int) {
+	nodes, _, _ = uniqueBlocks(blocks)
+	fits, _ := blockFits(refKey, nodes)
+	placed, parents = placeBlocks(nodes, fits)
+	return nodes, placed, parents
+}
+
+// placeBlocks is PlaceBlocks over a version's unique blocks and whether each one's address fits
+// the store's key. A block whose address is no key of the store is no node of it: nothing is
+// stated about the block itself, and a block it holds is placed in the nearest block above it
+// that is a node, or in the document.
+func placeBlocks(nodes []model.ArtifactBlock, fits []bool) (placed, parents []int) {
+	held := blockParents(nodes)
+	placed = make([]int, 0, len(nodes))
+	parents = make([]int, 0, len(nodes))
+	for index := range nodes {
+		if !fits[index] {
+			continue
+		}
+		parent := -1
+		for above := held[index]; above >= 0; above = held[above] {
+			if fits[above] {
+				parent = above
+				break
+			}
+		}
+		placed = append(placed, index)
+		parents = append(parents, parent)
+	}
+	return placed, parents
 }
 
 // parentTuple is one statement about the block that holds another: an assertion of the parent

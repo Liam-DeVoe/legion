@@ -93,7 +93,10 @@ type inventoryRow struct {
 // against a database of the run's own, so that build's own migrations run, and its own API
 // writes the comments, the document blocks and the block references. An inventory of those rows
 // is then read out of the database by this test's own SQL, over that build's own columns, and
-// kept as a file: no code of this branch produces it.
+// kept as a file: no code of this branch produces it. Over that same database, before anything
+// of this branch has migrated it, this build's `census --store --sizing` runs, because that is
+// the database R4 takes its readings from: it must say the store is absent and pass on its growth
+// pass alone (requireTheSizingRunsBeforeTheMigration).
 //
 // This build then boots over the same database, runs this child's migrations and its backfill,
 // and is held to that inventory twice - once for the store and once for the projections. The two
@@ -140,6 +143,7 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	sessions := readSessionInventory(t, ctx, databaseURL)
 	before.Cmd.Process.Signal(os.Interrupt)
 	<-before.Exited
+	requireTheSizingRunsBeforeTheMigration(t, databaseURL)
 
 	// ───── this build migrates the same database and backfills it ─────
 	_, natsURL := testnats.Start(t)
@@ -1395,6 +1399,33 @@ func requireTheLongRoleIsCountedPastTheBound(t *testing.T, report []kindCensus) 
 				t.Errorf("the census counted %d %s address(es) past the bound, want at least the one addressALongRole addressed",
 					kind.addressesPastBound, want)
 			}
+		}
+	}
+}
+
+// requireTheSizingRunsBeforeTheMigration runs `envoy-dispatch census --store --sizing` of this
+// build over the database the older build left, before this build has migrated it. R4 takes its
+// readings on such a database, so the growth pass must read only tables that exist before this
+// branch's first migration: the census reads no kind and says the store is absent, the growth
+// pass names the store's tables as not held, and the command exits 0 on the growth pass alone.
+func requireTheSizingRunsBeforeTheMigration(t *testing.T, databaseURL string) {
+	t.Helper()
+	code, out := runDispatchCommand(t, cmdtest.Build(t, "envoy-dispatch"), databaseURL, "census", "--store", "--sizing")
+	t.Logf("census --store --sizing before this build's migrations:\n%s", out)
+	if code != 0 {
+		t.Fatalf("census --store --sizing exited %d over the database before this build's migrations, want 0: the growth pass reads only what exists before them", code)
+	}
+	// The command's output comes back with its last line ending in no line feed, so each line is
+	// looked for with one put back.
+	printed := out + "\n"
+	for _, line := range []string{
+		"census: store absent (",
+		"census: sizing table name=graph_nodes held=false\n",
+		"census: sizing tuples-a-write kind=block_parent_moved ",
+		"census: store absent, sizing ok\n",
+	} {
+		if !strings.Contains(printed, line) {
+			t.Errorf("census --store --sizing before this build's migrations printed no line %q", line)
 		}
 	}
 }

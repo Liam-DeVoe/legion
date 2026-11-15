@@ -2800,7 +2800,7 @@ A block that states no parent at all digests differently from one the document h
 The kinds are:
 
 - `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds a table projects, whose counts the report prints.
-  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is the live block nodes its rows name, and every row of a block is held, as the set of links that block's rows name, against every link its node states now other than its `in_document` and `part_of`, so a link with no tuple and a tuple with no row are both read.
+  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every live block node that states a link now other than its `in_document` and `part_of`, whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
   A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
 
 - `person`, `session`, `role` and a role's page, which no table projects.
@@ -2814,13 +2814,18 @@ The kinds are:
   An address past the store's bound is no part of the store on purpose: a role name longer than the bound is no node and no page, a comment anchored to or owned by a document whose `ref_key` is longer states no such tuple, and a session named past it is no node either.
   The census leaves each such address out of both comparisons and counts it as a class of its own, reporting the count as `addresses_past_bound` on the kind's line rather than as a difference, in both directions.
 
-It passes only when it checked more than zero rows and found zero differences in both directions:
-a census over a database whose projections are empty proves nothing, and passing it would read as green on a fresh database or on a read that reached the wrong one.
+It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it.
+A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
 
 Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, never tuples.
 
 `envoy-dispatch census --store --sizing` adds the growth pass after that census, each line a driver can look for by its leading fields:
-the write rate by kind over the last 28 days of `events`; the row count and total relation size of every table this branch's migrations touch; the tuples and nodes one write of each kind states, with the rate its rows arrive at; the rows a day that puts in `graph_tuples` and in `graph_nodes`; the bytes a row each is measured at; and where each reaches in a year against `pgmigrate.CensusTableLimit`.
+the write rate by kind over the last 28 days of `events`; the row count and total relation size of every table this branch's migrations touch; the tuples and nodes one write of each kind states, with how many such writes the window holds; the rows a day that puts in `graph_tuples` and in `graph_nodes`; the bytes a row each is measured at; and where each reaches in a year against `pgmigrate.CensusTableLimit`.
+The kinds are the terms R4 states for all five children of dispatch://INFRA-1098, each printed on a `census: sizing tuples-a-write ` line and a `census: sizing share ` line that names the child that moves it, its writes inside the window and its share of the tuples a day:
+a comment's node and two base attributes, and its `authored_by`, `anchored_to`, `owned_by` and aliases where its row names each; a comment delivery's `delivered_to`; a block a version inserts afresh, restores, drops (its `gone` state) or moves to another parent (the old parent's retraction and the new one's assertion); a block reference's assertion and the retraction that may end it; dispatch://INFRA-1253's text and rank values; and dispatch://INFRA-1152's message deliveries, read marks, clears, dismissals and snoozes.
+Each is read from tables that exist before this branch's first migration, so the growth pass runs on a database the store does not exist in yet, which is where R4 takes its readings; there the census prints `census: store absent` and the growth pass alone decides the exit.
+No such table holds a block's parent, so the moved parents are counted by parsing each version the block index indexed in the window beside the one it indexed before, placing the blocks as `refs.PlaceBlocks` places them, and matching the two versions' blocks by their text, since a version's markdown names no paragraph's id; blocks of one document with equal text are matched in document order, so that term is exact except there, and its share line carries `versions_read=` and `versions_unreadable=`.
 It last prints the block-index reconciliation's backlog on two `census: sizing backlog ` lines, because a loop that falls behind fails nothing and nobody would otherwise see it:
 `owed_documents=` is how many documents are owed a block index (`document_block_versions.version` null), and `oldest_owed_at=` is when the oldest of those debts was incurred, with `oldest_owed_age_seconds=` beside it and `against=` naming the time that age is measured to.
 No column dates a debt, so a debt is dated by the write that owed it — the `created_at` of the latest markdown version the document holds, or the document's own `created_at` where it holds no version — and the line says so under `dated_by=`.
@@ -2847,6 +2852,7 @@ The report counts them on its `kind=role` line, and `remaining=` is how many rol
 
 A block's parent is the one fact it does not write.
 The parent is the nesting of the rendered version, which no column of `document_blocks` holds, so the run marks each document it touched owed a block index — `document_block_versions.version` to null, the mark `rebuild-refs` sets — and the reconciliation states the `part_of` tuple and writes `parent_block_id`, which is that column's one writer.
+The batch that names a document's block nodes writes that mark in its own transaction, so a run stopped after any batch leaves every document of its committed batches owed (`TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed`).
 So `census --store` reads a difference on every backfilled block until that reconciliation has drained the mark, at twenty documents a tick;
 `TestTheBlockParentCensusReachesZeroAfterTheBackfill` is that whole route end to end.
 

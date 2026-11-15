@@ -584,18 +584,21 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 	}
 	var printed strings.Builder
 	report.Write(&printed)
-	var commentRows int64
+	// The seed routes no issue to a role, so the census as a whole refuses on the kinds it
+	// checked no row of (graphcensus.StoreReport.Refused); what this holds it to is the comment
+	// kind, which must have checked rows and read no difference in either direction.
+	var commentKind graphcensus.KindReport
 	for _, kind := range report.Kinds {
 		if kind.Kind == commentNodeKind {
-			commentRows = kind.Rows
+			commentKind = kind
 		}
 	}
-	if commentRows == 0 {
+	if commentKind.Rows == 0 {
 		t.Fatalf("the store census read no comment row, so it proves nothing about them:\n%s", printed.String())
 	}
-	if report.Differences() != 0 || report.Refused() {
-		t.Errorf("the store census reads %d difference(s) over the seeded database:\n%s",
-			report.Differences(), printed.String())
+	if report.Differences() != 0 || commentKind.RowDifferences != 0 || commentKind.NodeDifferences != 0 {
+		t.Errorf("the store census reads %d difference(s) over the seeded database, %d and %d of them of comments:\n%s",
+			report.Differences(), commentKind.RowDifferences, commentKind.NodeDifferences, printed.String())
 	}
 
 	type commentAuthor struct {

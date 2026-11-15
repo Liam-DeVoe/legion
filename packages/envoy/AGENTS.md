@@ -2021,7 +2021,8 @@ The file's `nodes` and `marks` are the Proof schema's, which each build carries 
 A type's or an attribute's `since` and `creatable_since` are values its node carries and the tuples that state them, where the file gives them (migration `20261115130000_graph_supertags_element_versions`).
 The server installs the schema it builds from those nodes (`pmdoc/schemanodes`), so it serves the file's schema only while the store's type migrations match the file.
 A change to `blocks.json` therefore ships with a store migration that writes the node of each type or attribute the change adds or alters and moves every block type's supertag node to the file's new version;
-migration `20261113230000_graph_supertags_check_ci_check`, which added `check`'s `ci_check` at version 4, is the example.
+that migration appends each value it states, the moved version included, as a `value` tuple at the `source_event` sentinel 0, since a node row's attributes are the projection of its tuples, and `TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt` fails on a value the row carries and no tuple states.
+Migration `20261113230000_graph_supertags_check_ci_check`, which added `check`'s `ci_check` at version 4, is the example.
 Without one, `TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt` fails, and a binary built for the new version installs the old one.
 That test runs every type migration a second time (`typeMigrations` in `cmd/dispatch/supertag_nodes_test.go`), so a new one joins that list.
 A store above the version a build was made for, which the next release's type migration leaves while the previous build still serves, is installed by that build at its own version, with the elements whose `since` is at or below it and nothing else (`pmdoc.Install`); the build keeps serving, and neither its boot nor `/healthz` reads the store's version as a failure (`TestAnOlderBuildServesOverANewerStoreSchema`).

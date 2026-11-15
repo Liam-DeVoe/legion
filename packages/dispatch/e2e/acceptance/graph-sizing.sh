@@ -351,7 +351,7 @@ SQL
   printf 'graph-sizing.sh: removed the corpus it wrote under %s: %s document(s), %s block(s), %s node(s) and %s tuple(s), with every row that references those documents\n' \
     "$key" "${counted%%|*}" "${counted##*|}" \
     "$(echo "$removed" | cut -d'|' -f2)" "$(echo "$removed" | cut -d'|' -f3)"
-  printf 'graph-sizing.sh: it leaves %s itself, closed, and the one comment C2 wrote with that comment'"'"'s own node and tuples, which no run of this driver grows; the spec this run wrote with the issue went with the corpus, as a document of that issue\n' "$key"
+  printf 'graph-sizing.sh: it leaves %s itself, closed and routed to its role, and the one comment C2 wrote with that comment'"'"'s own node and tuples, which no run of this driver grows; the spec and the citing document this run wrote with the issue went with the corpus, as documents of that issue\n' "$key"
 }
 
 # want_line SECTION WHAT PATTERN: the report holds a line matching the extended regex PATTERN.
@@ -526,6 +526,35 @@ query C2 "read that comment through DATABASE_URL" \
   fail C2 "read that comment through DATABASE_URL" \
     "the comment the server wrote is not in the database DATABASE_URL names (count $answer)"
 pass C2 "DATABASE_URL is the database the server serves"
+
+# C2: a row of every kind the store census covers. The census refuses a kind it checked no row of
+# (R19), and a database this driver runs over need hold no block reference and no role: a
+# document of this issue that cites the issue gives the block references a row, and the issue
+# routed to a role gives the role and its page theirs. The publisher writes the role's node and its
+# page from the route's event, so the driver waits for both before the census. The document goes
+# with the corpus at the end; the route stays on the closed issue, with the role's node and page.
+readonly census_role="graph-sizing-reader"
+send POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg s "$session" --arg key "$key" \
+  '{name: "sizing-cites.md", content: ("# Cites\n\nThe block reference of this run, to " + $key + ".\n"), actor: {kind: "session", id: $s}}')"
+want_status 201 C2 "write a document of $key that cites it"
+send PATCH "/api/v1/issues/$key" "$(jq -cn --arg r "role:$census_role" --arg s "$session" \
+  '{route: $r, actor: {kind: "session", id: $s}}')"
+want_status 200 C2 "route $key to role $census_role"
+populated_polls=0
+while :; do
+  query C2 "read the block reference and the role's node and page" \
+    "select (select count(*) from block_refs r join artifacts a on a.id = r.artifact_id
+              where a.issue_key = '$key' and r.node_kind is not null)
+         || '|' || (select count(*) from graph_nodes
+              where (kind = 'role' and id = '$census_role') or (kind = 'page' and id = 'role/$census_role'))"
+  [[ "${answer%%|*}" -gt 0 && "${answer##*|}" == 2 ]] && break
+  populated_polls=$((populated_polls + 1))
+  [[ "$populated_polls" -le 150 ]] ||
+    fail C2 "give every census kind a row" \
+      "after 30s $key's documents hold ${answer%%|*} block reference(s) naming their node and the store ${answer##*|} of role $census_role's node and page, want at least 1 and 2"
+  sleep 0.2
+done
+pass C2 "$key's documents hold ${answer%%|*} block reference(s), and the store holds role $census_role's node and its page"
 
 # C3: the store before the census, which must be the store after it.
 query C3 "read the highest tuple sequence" "select coalesce(max(seq), 0) from graph_tuples"

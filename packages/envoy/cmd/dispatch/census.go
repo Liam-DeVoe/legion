@@ -18,10 +18,14 @@ import (
 //     one-off task under the service's own database credentials, before it rolls the service to
 //     this binary's image.
 //   - `--store`, the node and tuple store held against the tables that project it
-//     (graphcensus.StoreCensus), in both directions and for every kind.
+//     (graphcensus.StoreCensus), in both directions and for every kind, refusing a kind it
+//     checked no row of.
 //   - `--store --sizing`, that census and the growth pass after it: what the database is
 //     written at, what every table this branch's migrations touch holds now, and where
-//     graph_tuples and graph_nodes reach in a year against pgmigrate.CensusTableLimit.
+//     graph_tuples and graph_nodes reach in a year against pgmigrate.CensusTableLimit. The
+//     growth pass reads only tables that exist before this branch's first migration, so it runs
+//     on a database the store does not exist in yet, where the census says so and the growth
+//     pass alone decides the exit.
 //
 // Each keeps the one exit convention: 0 when nothing refuses, 1 when the report refuses (every
 // reason is in the report), 2 when the census could not be taken (errOut says why). Each prints

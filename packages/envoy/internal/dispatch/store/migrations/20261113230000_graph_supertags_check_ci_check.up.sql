@@ -75,6 +75,24 @@ where node.kind = 'attribute' and node.id = 'check/ci_check'
       and held.source_event = 0 and held.asserted
   );
 
+-- The values the node carries, as the tuples they are, read back off the row just written as the
+-- seed reads every type node's: a `value` tuple whose kind is the attribute's name and whose far
+-- end is its value as text, at the `source_event` sentinel.
+insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+select node.kind, node.id, fact.kind, 'value', fact.value, node.made_at, node.made_by, 0, null, true
+from graph_nodes node
+cross join lateral (
+  select attribute.key, attribute.value #>> '{}' from jsonb_each(node.attributes) as attribute
+) as fact(kind, value)
+where node.kind = 'attribute' and node.id = 'check/ci_check'
+  and not exists (
+    select 1 from graph_tuples held
+    where held.from_kind = node.kind and held.from_id = node.id and held.kind = fact.kind
+      and held.to_kind = 'value' and held.to_id = fact.value
+      and held.source_event = 0 and held.asserted
+  )
+order by fact.kind;
+
 -- The version. The seed wrote the schema's version on every block type's supertag node, and the
 -- schema the nodes build takes the highest of them. Each one moves to 4, not `check` alone, so
 -- every type node goes on carrying the version of the schema the store holds, as the seed left
@@ -82,3 +100,21 @@ where node.kind = 'attribute' and node.id = 'check/ci_check'
 update graph_nodes
 set attributes = jsonb_set(attributes, '{version}', to_jsonb(4))
 where kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false);
+
+-- The move, as the tuple it is: a moved attribute is a later value appended under its name, so
+-- each block type's newest `version` tuple is the 4 its row now carries and the seed's 3 stays in
+-- its history. The tuples carry this migration's writer and its own time.
+with change as (
+  select now() as at, '{"kind": "system", "id": "block-schema-check-ci-check"}'::jsonb as writer
+)
+insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+select node.kind, node.id, 'version', 'value', node.attributes->>'version', change.at, change.writer, 0, null, true
+from change, graph_nodes node
+where node.kind = 'supertag' and coalesce((node.attributes->>'block_type')::boolean, false)
+  and not exists (
+    select 1 from graph_tuples held
+    where held.from_kind = node.kind and held.from_id = node.id and held.kind = 'version'
+      and held.to_kind = 'value' and held.to_id = node.attributes->>'version'
+      and held.source_event = 0 and held.asserted
+  )
+order by node.id;

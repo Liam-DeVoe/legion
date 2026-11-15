@@ -75,6 +75,10 @@ type Difference struct{ Cause, At string }
 // reads a difference has done its job, and the deployment reading it decides.
 type StoreReport struct {
 	Kinds []KindReport
+	// Absent is true where the database holds no store at all: graph_nodes is created by the
+	// first migration of this branch (20261109013400), so a database it has not reached has no
+	// kind to read, and the census reads none.
+	Absent bool
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
 }
@@ -97,12 +101,31 @@ func (r *StoreReport) Differences() int64 {
 	return found
 }
 
-// Refused reports whether the census refuses. It passes only on a census that read more than
-// zero rows and found no difference in either direction: a census over a database holding
-// nothing proves nothing, and passing it would make the gate read as green wherever the
-// projections are empty - a fresh database, or a read that reached the wrong one.
+// Unpopulated is every kind the census checked no row of, in the order it read them.
+func (r *StoreReport) Unpopulated() []string {
+	var empty []string
+	for _, kind := range r.Kinds {
+		if kind.Rows == 0 {
+			empty = append(empty, kind.Kind)
+		}
+	}
+	return empty
+}
+
+// Refused reports whether the census refuses. It passes only where it checked more than zero
+// rows of every kind it covers and found no difference in either direction (R19). A total over
+// the kinds is no such proof: two empty sides of one kind agree, and one kind's rows say nothing
+// about another's, so a census whose comments carried every row would pass while it proved
+// nothing of the blocks, the roles or the sessions.
+//
+// A database the store does not exist in yet (Absent) has nothing to census. The sizing is taken
+// on just such a database (R4 reads before the first migration), so there the sizing alone
+// decides, and a census asked for without it refuses, since it read nothing.
 func (r *StoreReport) Refused() bool {
-	if r.Rows() == 0 || r.Differences() > 0 {
+	if r.Absent {
+		return r.Sizing == nil || r.Sizing.Refused()
+	}
+	if len(r.Unpopulated()) > 0 || r.Differences() > 0 {
 		return true
 	}
 	return r.Sizing != nil && r.Sizing.Refused()
@@ -187,8 +210,9 @@ var projections = []projection{{
 	nodeKind: refs.BlockNodeKind,
 	table:    "block_refs",
 	note: "a row is one link out of a block and its node is that block's, so several rows share one node:" +
-		" the node side is the live block nodes the rows name, and the digest is every link the rows of that" +
-		" block name against every link its node states now beside its in_document and part_of",
+		" the node side is every live block node that states a link now beside its in_document and part_of," +
+		" whether a row names it or not, and the digest is every link the rows of that block name against" +
+		" every such link its node states now",
 	rows: `
 		select 'block_ref ' || r.from_node || ' ' || r.kind || ' -> ' || r.to_kind || ' ' || r.to_id,
 		       r.node_kind, r.node_address, md5(r.from_node || '|' || named.links)
@@ -202,12 +226,18 @@ var projections = []projection{{
 			group by b.from_node
 		) named on named.from_node = r.from_node
 		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound,
+	// Every block node is read, and not only those a row names: a mention or a pointer the store
+	// states out of a block no block_refs row names is a link graph_edges answers, and a node
+	// side that began at the rows could never find it. A block whose only links are its
+	// placement states no link here and is no node of this kind; the block kind holds it.
 	nodes: `
-		select n.id, md5(n.id || '|' || ` + currentLinks(refs.BlockNodeKind,
-		`t.kind not in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
-		from graph_nodes n
-		where n.kind = '` + refs.BlockNodeKind + `'
-		  and exists (select 1 from block_refs r where r.node_kind = n.kind and r.node_address = n.id)`,
+		select held.id, md5(held.id || '|' || held.links)
+		from (
+			select n.id, ` + currentLinks(refs.BlockNodeKind,
+		`t.kind not in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + ` as links
+			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'
+		) held
+		where held.links <> ''`,
 	pastBound: `
 		select count(*) from block_refs r
 		where octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound,
@@ -474,7 +504,9 @@ func readAddressedRoles(ctx context.Context, tx pgx.Tx) ([]string, error) {
 // the newest asserting tuple per far end, which is that same fact, and this census counts nodes
 // and projection rows rather than tuples.
 //
-// sizing adds the growth pass (SizingReport), which reads the same snapshot.
+// sizing adds the growth pass (SizingReport), which reads the same snapshot. The growth pass
+// reads no table of the store, so it runs on a database this branch's migrations have not
+// reached, where the census reads no kind and says the store is absent.
 func StoreCensus(ctx context.Context, databaseURL string, sizing bool) (*StoreReport, error) {
 	return storeCensus(ctx, databaseURL, sizing, nil)
 }
@@ -495,27 +527,14 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 	}
 	defer tx.Rollback(ctx)
 	report := &StoreReport{}
-	// The roles are read before the first kind that binds them and kept for every kind after it.
-	var addressed []string
-	for _, held := range projections {
-		var args []any
-		if held.addressed {
-			if addressed == nil {
-				if addressed, err = readAddressedRoles(ctx, tx); err != nil {
-					return nil, err
-				}
-			}
-			args = []any{addressed}
-		}
-		kind, err := censusOfKind(ctx, tx, held, args)
-		if err != nil {
+	// The store is looked up before any kind is read, so a database the store does not exist in
+	// answers that rather than failing at the first statement that names graph_nodes.
+	if err := tx.QueryRow(ctx, `select to_regclass('graph_nodes') is null`).Scan(&report.Absent); err != nil {
+		return nil, fmt.Errorf("look up the store: %w", err)
+	}
+	if !report.Absent {
+		if report.Kinds, err = censusOfKinds(ctx, tx, afterKind); err != nil {
 			return nil, err
-		}
-		report.Kinds = append(report.Kinds, kind)
-		if afterKind != nil {
-			if err := afterKind(ctx, held.name); err != nil {
-				return nil, err
-			}
 		}
 	}
 	if sizing {
@@ -526,6 +545,36 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 		report.Sizing = sized
 	}
 	return report, nil
+}
+
+// censusOfKinds reads every kind of projections in order, running afterKind after each.
+func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Context, kind string) error) ([]KindReport, error) {
+	var kinds []KindReport
+	// The roles are read before the first kind that binds them and kept for every kind after it.
+	var addressed []string
+	for _, held := range projections {
+		var args []any
+		if held.addressed {
+			if addressed == nil {
+				var err error
+				if addressed, err = readAddressedRoles(ctx, tx); err != nil {
+					return nil, err
+				}
+			}
+			args = []any{addressed}
+		}
+		kind, err := censusOfKind(ctx, tx, held, args)
+		if err != nil {
+			return nil, err
+		}
+		kinds = append(kinds, kind)
+		if afterKind != nil {
+			if err := afterKind(ctx, held.name); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return kinds, nil
 }
 
 // censusOfKind reads one kind: how many rows and live nodes there are, and the differences in
@@ -635,25 +684,41 @@ func readDifferences(ctx context.Context, tx pgx.Tx, kind, sql string, args []an
 // addresses of rows and nodes; no body, no actor and no value of an attribute leaves the
 // database.
 func (r *StoreReport) Write(w io.Writer) {
+	if r.Absent {
+		fmt.Fprintln(w, "census: store absent (the database holds no graph_nodes: this branch's migrations have not run, so no kind was read)")
+	}
 	for _, kind := range r.Kinds {
 		fmt.Fprintf(w, "census: store kind=%s nodes=%s rows=%s table=%s rows_without_a_node=%s nodes_without_a_row=%s addresses_past_bound=%s\n",
 			kind.Kind, pgmigrate.Thousands(kind.Nodes), pgmigrate.Thousands(kind.Rows), kind.Table,
 			pgmigrate.Thousands(kind.RowDifferences), pgmigrate.Thousands(kind.NodeDifferences),
 			pgmigrate.Thousands(kind.PastBound))
 		fmt.Fprintf(w, "census: store kind=%s checks %s\n", kind.Kind, kind.Note)
+		if kind.Rows == 0 {
+			fmt.Fprintf(w, "census: store kind=%s checked no row, so the census proves nothing of it\n", kind.Kind)
+		}
 		writeDifferences(w, kind.Kind, kind.RowDifferences, kind.ReportedRows)
 		writeDifferences(w, kind.Kind, kind.NodeDifferences, kind.ReportedNodes)
 	}
-	fmt.Fprintf(w, "census: store rows_checked=%s differences=%s\n",
-		pgmigrate.Thousands(r.Rows()), pgmigrate.Thousands(r.Differences()))
+	if !r.Absent {
+		fmt.Fprintf(w, "census: store rows_checked=%s differences=%s\n",
+			pgmigrate.Thousands(r.Rows()), pgmigrate.Thousands(r.Differences()))
+	}
 	if r.Sizing != nil {
 		r.Sizing.Write(w)
 	}
+	empty := r.Unpopulated()
 	switch {
-	case r.Rows() == 0:
-		fmt.Fprintln(w, "census: store REFUSED (the census read no projection row at all, so it proves nothing)")
+	case r.Absent && r.Sizing == nil:
+		fmt.Fprintln(w, "census: store REFUSED (the database holds no store, so the census read nothing)")
+	case r.Absent && r.Sizing.Refused():
+		fmt.Fprintf(w, "census: store absent, sizing REFUSED (%d reason(s))\n", len(r.Sizing.Refusals))
+	case r.Absent:
+		fmt.Fprintln(w, "census: store absent, sizing ok")
 	case r.Differences() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s difference(s))\n", pgmigrate.Thousands(r.Differences()))
+	case len(empty) > 0:
+		fmt.Fprintf(w, "census: store REFUSED (kind(s) %s checked no row, so the census proves nothing of them)\n",
+			strings.Join(empty, ", "))
 	case r.Sizing != nil && r.Sizing.Refused():
 		fmt.Fprintf(w, "census: store ok, sizing REFUSED (%d reason(s))\n", len(r.Sizing.Refusals))
 	default:

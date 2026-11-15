@@ -255,3 +255,133 @@ func TestThePointerGuardRefusesAPairWhoseBlockNodeIsGone(t *testing.T) {
 			done, tuplesAfter-tuplesBefore)
 	}
 }
+
+// R13: the backfill marks every document whose blocks it gave nodes owed a block index, and a
+// run stopped anywhere leaves each document of its committed batches owed, since a second run
+// reads no row a committed batch named and so could never mark those documents again.
+//
+// The corpus is two documents an older build indexed, so neither is owed when the run starts:
+// CORE-1's of exactly one batch of blocks and CORE-2's of two, whose node addresses sort after
+// every one of CORE-1's, so the first batch is CORE-1's alone and the second CORE-2's. A
+// transaction holds CORE-2's issue row, which the second batch takes first, and once the run
+// queues behind it the run's backend is terminated, as a killed process leaves it. The first
+// batch has committed: its blocks name their nodes, and CORE-1's document must be owed. A second
+// run then finishes the second batch and leaves both documents owed.
+func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank) values
+			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U'),
+			('CORE-2', 'CORE', 2, 'Two', '{"kind":"user","id":"alice"}', 'V');
+	`); err != nil {
+		t.Fatalf("seed issues CORE-1 and CORE-2: %v", err)
+	}
+	documents := map[string]string{}
+	for _, issue := range []struct {
+		key    string
+		blocks int
+	}{{"CORE-1", backfillBatch}, {"CORE-2", 2}} {
+		var id, refKey string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ($1, 'CORE', 'spec', 'spec.md', 'doc', false, '{"kind":"user","id":"alice"}')
+			returning id::text, ref_key
+		`, issue.key).Scan(&id, &refKey); err != nil {
+			t.Fatalf("create the document of %s: %v", issue.key, err)
+		}
+		documents[issue.key] = id
+		if _, err := database.Pool.Exec(ctx, `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1, 1, 'Written before the store existed.', '[{"kind":"user","id":"alice"}]')
+		`, id); err != nil {
+			t.Fatalf("write version 1 of the document of %s: %v", issue.key, err)
+		}
+		if _, err := database.Pool.Exec(ctx, `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			select $1::uuid, 'b' || lpad(n::text, 3, '0'), $2 || '#b' || lpad(n::text, 3, '0'), 'paragraph', '', 'A block.', 1, now()
+			from generate_series(0, $3 - 1) n
+		`, id, refKey, issue.blocks); err != nil {
+			t.Fatalf("write the blocks of the document of %s: %v", issue.key, err)
+		}
+		// The older build indexed the version, which settles the mark the version's own row left.
+		if tag, err := database.Pool.Exec(ctx, `
+			update document_block_versions set version = 1 where artifact_id = $1::uuid
+		`, id); err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("settle the block index of the document of %s: %d rows, %v", issue.key, tag.RowsAffected(), err)
+		}
+	}
+	owed := func(issue string) bool {
+		t.Helper()
+		var owes bool
+		if err := database.Pool.QueryRow(ctx, `
+			select version is null from document_block_versions where artifact_id = $1::uuid
+		`, documents[issue]).Scan(&owes); err != nil {
+			t.Fatalf("read whether the document of %s is owed a block index: %v", issue, err)
+		}
+		return owes
+	}
+	named := func(issue string) int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(ctx, `
+			select count(*) from document_blocks where artifact_id = $1::uuid and node_kind is not null
+		`, documents[issue]).Scan(&count); err != nil {
+			t.Fatalf("count the blocks of %s that name their node: %v", issue, err)
+		}
+		return count
+	}
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	if _, err := holder.Exec(ctx, `select 1 from issues where key = 'CORE-2' for update`); err != nil {
+		t.Fatalf("hold issue CORE-2's row: %v", err)
+	}
+	pid, answered := startBackfill(t, database)
+	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
+		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on its second batch's owner row", early.report, early.err)
+	}
+	var terminated bool
+	if err := database.Pool.QueryRow(ctx, `select pg_terminate_backend($1)`, int64(pid)).Scan(&terminated); err != nil || !terminated {
+		t.Fatalf("terminate the backfill's backend %d: %t, %v", pid, terminated, err)
+	}
+	select {
+	case answer := <-answered:
+		if answer.err == nil {
+			t.Fatalf("the backfill whose backend was terminated answered %#v and no error", answer.report)
+		}
+		t.Logf("the killed run answered: %v", answer.err)
+	case <-time.After(time.Minute):
+		t.Fatal("the backfill did not answer within a minute of its backend's termination")
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("release issue CORE-2's row: %v", err)
+	}
+	if first, second := named("CORE-1"), named("CORE-2"); first != backfillBatch || second != 0 {
+		t.Fatalf("after the killed run %d of CORE-1's blocks and %d of CORE-2's name their node, want all %d and none: the run was not stopped after its first batch",
+			first, second, backfillBatch)
+	}
+	if !owed("CORE-1") {
+		t.Errorf("the killed run committed the batch of CORE-1's blocks and left its document unmarked: no later run marks it, since none reads those rows again")
+	}
+	if owed("CORE-2") {
+		t.Errorf("the killed run marked CORE-2's document, whose batch never committed")
+	}
+
+	report, err := Backfill(ctx, database, io.Discard)
+	if err != nil {
+		t.Fatalf("run the backfill again: %v", err)
+	}
+	if blocks := blockKind(t, report); blocks.Rows != 2 || blocks.Owed != 1 || !blocks.Complete {
+		t.Errorf("the second run reports %#v for blocks, want CORE-2's two rows, its one document owed and the cutover complete", blocks)
+	}
+	for _, issue := range []string{"CORE-1", "CORE-2"} {
+		if !owed(issue) {
+			t.Errorf("after the second run the document of %s is not owed a block index", issue)
+		}
+	}
+}

@@ -261,6 +261,32 @@ where node.kind in ('supertag', 'attribute')
   )
 order by node.kind, node.id, fact.kind;
 
+-- The values of every attribute a type node carries, stated as the tuples they are: a `value`
+-- tuple whose kind is the attribute's name and whose far end is its value, as text. A node row's
+-- attributes column is the projection of these tuples (R1), so a reader of the log reads a type's
+-- version, an attribute's kind, its choices, its default, whether the server owns it, what it may
+-- point at and its scope from the log as the schema reader reads them from the row. A value the
+-- seed reads as JSON is written as that JSON's text, a string as itself, so `version` is `3` and
+-- `choices` is `["note", "warning"]`.
+--
+-- The values are read back off the rows this seed just wrote, as the base attributes are, and the
+-- tuples carry the `source_event` sentinel 0, which neither repeat key of 20261109013400 covers, so
+-- a value of any length is written whole and no index key holds it.
+insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+select node.kind, node.id, fact.kind, 'value', fact.value, node.made_at, node.made_by, 0, null, true
+from graph_nodes node
+cross join lateral (
+  select attribute.key, attribute.value #>> '{}' from jsonb_each(node.attributes) as attribute
+) as fact(kind, value)
+where node.kind in ('supertag', 'attribute')
+  and not exists (
+    select 1 from graph_tuples held
+    where held.from_kind = node.kind and held.from_id = node.id and held.kind = fact.kind
+      and held.to_kind = 'value' and held.to_id = fact.value
+      and held.source_event = 0 and held.asserted
+  )
+order by node.kind, node.id, fact.kind;
+
 -- What ties an attribute to its supertag. The id of an attribute node is
 -- `<supertag>/<store name>`, and no type name holds a `/`, so the supertag it belongs to is read
 -- back from the id here, and from this tuple everywhere else: a reader of the schema follows the

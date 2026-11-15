@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -109,55 +113,191 @@ var branchTables = []struct {
 	{"server_build_announcements", true},
 }
 
-// StoreKind is one kind of row this tree writes beside the store, with how many nodes and how
-// many tuples one such row states and the rate its rows arrive at.
+// The children of dispatch://INFRA-1098 whose writes the sizing sums (R4): this one, the one that
+// moves the inbox, the messages and the read state, and the one that moves a block's text and rank.
+const (
+	movedHere       = "dispatch://INFRA-1149"
+	movedWithInbox  = "dispatch://INFRA-1152"
+	movedWithBlocks = "dispatch://INFRA-1253"
+)
+
+// StoreKind is one term of the projection: one kind of write the five children of
+// dispatch://INFRA-1098 move, the child that moves it, how many nodes and how many tuples one such
+// write appends, and how many such writes the database's own history holds inside the window.
+// Rows a day is the sum over the terms of writes a day times tuples a write (R4).
 //
-// The tuple counts are this tree's, read off its writers, and each counts the two base
-// attributes graphstore.Write states for a node its insert makes beside the relations the
-// writer states itself:
-//   - a comment states its visibility and its state, which that call states for its node, the
-//     artifact it is anchored to and the one that owns it (api's commentStored), and the
-//     authored_by tuple of whoever wrote it (graphstore.Authored): five on a comment that has
-//     both relations and an author the store can name, which is the upper bound this
-//     projection takes;
-//   - a block states its visibility and its state the same way, the block or document that
-//     holds it and its membership of that document (refs.IndexBlocks): four; a block that
-//     moves states a retraction and an assertion, which is the same two relations again;
-//   - a block reference states the pair's own tuple, and its node is its block's, so it makes
-//     no node and no base attribute of its own;
-//   - a delivery states one delivered_to tuple (outbox.deliveredGraph). The role, session and
-//     page nodes under it, and each role's held_by, are written only where they change, so
-//     they are no part of a steady rate.
+// Every term reads tables that exist before this branch's first migration, so the sizing reads
+// the same history on a database the store does not exist in yet, which is the database R4
+// takes its readings from. Where a writer's tuples vary from one write to the next, each fact is
+// a term of its own, counted over the writes that state it: a comment states its node and two
+// base attributes always, and an authored_by, an anchored_to, an owned_by and its author's
+// aliases only where its row names each. The role, session, person and page nodes a write makes,
+// and each role's held_by, are written once for each thing and never again, so they are no part
+// of a steady rate.
 type StoreKind struct {
-	Name, Driver  string
-	Nodes, Tuples int
+	Name, MovedBy, Driver string
+	Nodes, Tuples         int
+	// Writes is how many writes of the kind the window holds.
+	Writes int64
 	// RowsADay is what the database was written at over the window, TuplesADay and
-	// NodeRowsADay what that puts in graph_tuples and in graph_nodes a day.
-	RowsADay, TuplesADay, NodeRowsADay float64
-	// rateQuery counts the kind's own rows inside the window.
-	rateQuery string
+	// NodeRowsADay what that puts in graph_tuples and in graph_nodes a day, and Share the
+	// kind's part of every term's tuples a day.
+	RowsADay, TuplesADay, NodeRowsADay, Share float64
+	// Replayed and Unreadable are the version rows the moved-parent term parsed and how many
+	// of them did not parse (replayParents), zero for every other term.
+	Replayed, Unreadable int64
+	// count is the scalar SQL that counts the kind's writes inside the window, over the rows
+	// sizingWritesWith names, and empty for the term replayParents counts.
+	count string
 }
 
-// storeKinds are the four, each with the rate read from the rows the projection itself holds
-// rather than from an event type: a row of the projection is exactly one write of its kind, and
-// its own created_at is when that write happened.
+// movedParents is the name of the term no statement can count: a block's parent is the nesting
+// of its rendered version, which no table written before the store holds (replayParents).
+const movedParents = "block_parent_moved"
+
+// storeKinds are the terms R4 states, each beside the writer whose tuples it counts:
+//   - a comment's node and its visibility and state (graphstore.Write), the authored_by and the
+//     aliases of whoever wrote it (graphstore.AuthorFacts), and the artifacts it is anchored to
+//     and owned by (api's commentStored);
+//   - a delivery to a comment's mention, one delivered_to (outbox.deliveredGraph);
+//   - a version's blocks as refs.IndexBlocks states them: a block it inserts afresh, its node, its
+//     two base attributes, its in_document and its part_of; a block it restores, its state and
+//     its in_document, with at most the retraction and the assertion of a parent the restore
+//     moved; a block it drops, its state gone; a block whose parent moved, the retraction of the
+//     old parent and the assertion of the new; and a block reference, the pair's assertion and,
+//     at most, the retraction that ends it, which no table records once the pair is gone;
+//   - dispatch://INFRA-1253's text value and rank value of each block whose text a version wrote;
+//   - dispatch://INFRA-1152's delivered_to of a message, and one tuple for each read mark, clear,
+//     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of
+//     a key and no earlier one, so its term counts every key marked inside the window once.
 func storeKinds() []StoreKind {
 	return []StoreKind{{
-		Name: "comment", Driver: "comments.created_at", Nodes: 1, Tuples: 5,
-		rateQuery: fmt.Sprintf(`select count(*) from comments where created_at > %s`, sizingWindow),
+		Name: "comment", MovedBy: movedHere, Nodes: 1, Tuples: 2,
+		Driver: "comments.created_at: the comment's node and its visibility and state",
+		count:  `(select count(*) from sized_comments)`,
 	}, {
-		Name: "block", Driver: "document_blocks.created_at", Nodes: 1, Tuples: 4,
-		rateQuery: fmt.Sprintf(`select count(*) from document_blocks where created_at > %s`, sizingWindow),
+		Name: graphstore.TupleAuthoredBy, MovedBy: movedHere, Tuples: 1,
+		Driver: "comments.created_at, each naming an author the store can key",
+		count:  `(select count(*) from sized_comments where authored)`,
 	}, {
-		Name: "block_ref", Driver: "block_refs.created_at", Nodes: 0, Tuples: 1,
-		rateQuery: fmt.Sprintf(`select count(*) from block_refs where created_at > %s`, sizingWindow),
+		Name: tupleAnchoredTo, MovedBy: movedHere, Tuples: 1,
+		Driver: "comments.created_at, each anchored to a document the store can key",
+		count:  `(select count(*) from sized_comments where anchored)`,
 	}, {
-		Name: "delivery", Driver: "comment_deliveries and message_deliveries, sent", Nodes: 0, Tuples: 1,
-		rateQuery: fmt.Sprintf(`select
-			(select count(*) from comment_deliveries where state = 'sent' and created_at > %[1]s)
-			+ (select count(*) from message_deliveries where state = 'sent' and created_at > %[1]s)`, sizingWindow),
+		Name: tupleOwnedBy, MovedBy: movedHere, Tuples: 1,
+		Driver: "comments.created_at, each owned by a document the store can key",
+		count:  `(select count(*) from sized_comments where owned)`,
+	}, {
+		Name: "author_alias", MovedBy: movedHere, Tuples: 1,
+		Driver: "comments.created_at: each alias_of and recorded_as the credential that wrote one proved",
+		count:  `(select coalesce(sum(aliases), 0) from sized_comments)`,
+	}, {
+		Name: "delivery", MovedBy: movedHere, Tuples: 1,
+		Driver: "comment_deliveries.created_at, sent: a delivered_to for each attempt that reached its destination",
+		count:  `(select count(*) from comment_deliveries where state = '` + graphstore.DeliverySent + `' and created_at > ` + sizingWindow + `)`,
+	}, {
+		Name: "block", MovedBy: movedHere, Nodes: 1, Tuples: 4,
+		Driver: "document_block_texts of the versions written in the window, a block's first row: its node, its visibility" +
+			" and state, its in_document and its part_of",
+		count: `(select count(*) from sized_texts where written and earlier is null)`,
+	}, {
+		Name: "block_restored", MovedBy: movedHere, Tuples: 4,
+		Driver: "document_block_texts of the versions written in the window, a text after a row that deleted the block:" +
+			" its state and its in_document, and at most the retraction and the assertion of a parent the restore moved",
+		count: `(select count(*) from sized_texts where written and not earlier)`,
+	}, {
+		Name: "block_gone", MovedBy: movedHere, Tuples: 1,
+		Driver: "document_block_texts of the versions written in the window, a row that deleted the block: its state gone",
+		count:  `(select count(*) from sized_texts where not written)`,
+	}, {
+		Name: movedParents, MovedBy: movedHere, Tuples: 2,
+		Driver: "each version the block index indexed in the window against the one it indexed before, parsed and placed" +
+			" as refs.PlaceBlocks places them, with blocks matched by their text, those of one document with equal text" +
+			" in document order, so the term is exact except there: the old parent's retraction and the new one's assertion",
+	}, {
+		Name: "block_ref", MovedBy: movedHere, Tuples: 2,
+		Driver: "block_refs.created_at: the pair's assertion and, at most, the retraction that ends it",
+		count:  `(select count(*) from block_refs where created_at > ` + sizingWindow + `)`,
+	}, {
+		Name: "block_text", MovedBy: movedWithBlocks, Tuples: 2,
+		Driver: "document_block_texts of the versions written in the window, each row with a text: a text value and a rank value",
+		count:  `(select count(*) from sized_texts where written)`,
+	}, {
+		Name: "message_delivery", MovedBy: movedWithInbox, Tuples: 1,
+		Driver: "message_deliveries.created_at, sent: a delivered_to for each attempt that reached its session",
+		count:  `(select count(*) from message_deliveries where state = '` + graphstore.DeliverySent + `' and created_at > ` + sizingWindow + `)`,
+	}, {
+		Name: "read_mark", MovedBy: movedWithInbox, Tuples: 1,
+		Driver: "user_threads.read_through and user_agent_read.read_through in the window, and user_agent_reply_read" +
+			" of a reply written in the window: a read_through or reply_read",
+		count: `((select count(*) from user_threads where read_through > ` + sizingWindow + `)
+			+ (select count(*) from user_agent_read where read_through > ` + sizingWindow + `)
+			+ (select count(*) from user_agent_reply_read r join messages m on m.id = r.reply_id
+			   where m.created_at > ` + sizingWindow + `))`,
+	}, {
+		Name: "clear", MovedBy: movedWithInbox, Tuples: 1,
+		Driver: "user_agent_state.cleared_before in the window: a cleared",
+		count:  `(select count(*) from user_agent_state where cleared_before > ` + sizingWindow + `)`,
+	}, {
+		Name: "dismissal", MovedBy: movedWithInbox, Tuples: 1,
+		Driver: "user_agent_thread_dismissed.dismissed_at and user_threads.dismissed_at in the window: a dismissed",
+		count: `((select count(*) from user_agent_thread_dismissed where dismissed_at > ` + sizingWindow + `)
+			+ (select count(*) from user_threads where dismissed_at > ` + sizingWindow + `))`,
+	}, {
+		Name: "snooze", MovedBy: movedWithInbox, Tuples: 1,
+		Driver: "user_ask_snooze.snoozed_until after the window opened, which every snooze written in it is: a snoozed",
+		count:  `(select count(*) from user_ask_snooze where snoozed_until > ` + sizingWindow + `)`,
 	}}
 }
+
+// sizingWritesWith is the two sets of rows several terms count over, each read once for every
+// term that counts it: the comments written inside the window with the facts each one's write
+// states beside its node, and the document_block_texts rows of the versions written inside it,
+// each with whether the block's row before it held a text (null for the block's first row).
+//
+// A comment's facts are read off its row as their writers read them: its author as commentAuthor
+// does (graphstore.AuthorOf), a document it is anchored to or owned by only where the document's
+// address fits the store's bound, and its aliases as graphstore's aliases states them - the owner a
+// session's credential proved, the session a person's credential proved, and the raw id a person
+// was recorded under where that is not their canonical login.
+var sizingWritesWith = `
+	with sized_comments as (
+		select (case when c.author->>'kind' <> '` + graphstore.KindSession + `'
+		                  or octet_length(coalesce(c.author->>'id', '')) <= ` + addressBound + `
+		             then ` + commentAuthor + ` end) is not null as authored,
+		       coalesce(octet_length(anchor.ref_key) <= ` + addressBound + `, false) as anchored,
+		       coalesce(octet_length(owner.ref_key) <= ` + addressBound + `, false) as owned,
+		       (case when c.author->>'kind' = '` + graphstore.KindSession + `' and coalesce(c.author->>'id', '') <> ''
+		                  and octet_length(c.author->>'id') <= ` + addressBound + `
+		                  and c.author->'act'->>'session' = c.author->>'id'
+		                  and user_threads_login(coalesce(c.author->>'owner', '')) <> '' then 1 else 0 end)
+		       + (case when person.login <> '' and coalesce(c.author->'act'->>'session', '') <> ''
+		                    and coalesce(c.author->'act'->>'token_id', '') = ''
+		                    and octet_length(c.author->'act'->>'session') <= ` + addressBound + ` then 1 else 0 end)
+		       + (case when person.login <> '' and coalesce(c.author->>'id', '') <> ''
+		                    and c.author->>'id' <> person.login then 1 else 0 end) as aliases
+		from comments c
+		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
+		left join artifacts owner on owner.id = c.artifact_id
+		cross join lateral (select case
+			when c.author->>'kind' = 'user' and coalesce(c.author->>'id', '') <> ''
+				then user_threads_login(c.author->>'id')
+			when c.author->>'kind' = '` + graphstore.KindSession + `' and coalesce(c.author->>'id', '') <> '' then null
+			when coalesce(c.author->>'owner', '') <> '' then user_threads_login(c.author->>'owner')
+		end) person (login)
+		where c.created_at > ` + sizingWindow + `
+	),
+	sized_texts as (
+		select t.text is not null as written, earlier.held as earlier
+		from artifact_versions v
+		join document_block_texts t on t.artifact_id = v.artifact_id and t.version = v.number
+		left join lateral (
+			select p.text is not null as held from document_block_texts p
+			where p.artifact_id = t.artifact_id and p.block_id = t.block_id and p.version < t.version
+			order by p.version desc limit 1
+		) earlier on true
+		where v.created_at > ` + sizingWindow + `
+	)`
 
 // EventRate is one event type's rate over the sizing window.
 type EventRate struct {
@@ -236,21 +376,20 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 				size.Name, bytesText(size.Bytes), bytesText(report.Limit)))
 		}
 	}
-	kinds := storeKinds()
-	for index := range kinds {
-		var window int64
-		if err := tx.QueryRow(ctx, kinds[index].rateQuery).Scan(&window); err != nil {
-			return nil, fmt.Errorf("read the write rate of %s: %w", kinds[index].Name, err)
-		}
-		kinds[index].RowsADay = float64(window) / sizingWindowDays
-		kinds[index].TuplesADay = kinds[index].RowsADay * float64(kinds[index].Tuples)
-		kinds[index].NodeRowsADay = kinds[index].RowsADay * float64(kinds[index].Nodes)
+	kinds, err := readStoreKinds(ctx, tx)
+	if err != nil {
+		return nil, err
 	}
 	report.Kinds = kinds
 	var tuplesADay, nodesADay float64
 	for _, kind := range kinds {
 		tuplesADay += kind.TuplesADay
 		nodesADay += kind.NodeRowsADay
+	}
+	for index := range report.Kinds {
+		if tuplesADay > 0 {
+			report.Kinds[index].Share = report.Kinds[index].TuplesADay / tuplesADay
+		}
 	}
 	for _, growth := range []struct {
 		name     string
@@ -279,6 +418,249 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 	}
 	report.Backlog = backlog
 	return report, nil
+}
+
+// readStoreKinds reads how many writes of each term the window holds: every term a statement
+// counts in one statement over sizingWritesWith, so each set of rows it names is read once, and
+// the moved parents by replayParents.
+func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
+	kinds := storeKinds()
+	counts := make([]string, 0, len(kinds))
+	targets := make([]any, 0, len(kinds))
+	for index := range kinds {
+		if kinds[index].count == "" {
+			continue
+		}
+		counts = append(counts, kinds[index].count)
+		targets = append(targets, &kinds[index].Writes)
+	}
+	if err := tx.QueryRow(ctx, sizingWritesWith+"\n\tselect "+strings.Join(counts, ",\n\t\t")).Scan(targets...); err != nil {
+		return nil, fmt.Errorf("read the writes of each kind inside the window: %w", err)
+	}
+	for index := range kinds {
+		kind := &kinds[index]
+		if kind.Name == movedParents {
+			replayed, err := replayParents(ctx, tx)
+			if err != nil {
+				return nil, err
+			}
+			kind.Writes, kind.Replayed, kind.Unreadable = replayed.moved, replayed.read, replayed.unreadable
+		}
+		kind.RowsADay = float64(kind.Writes) / sizingWindowDays
+		kind.TuplesADay = kind.RowsADay * float64(kind.Tuples)
+		kind.NodeRowsADay = kind.RowsADay * float64(kind.Nodes)
+	}
+	return kinds, nil
+}
+
+// replayVersionsQuery is every version the block index indexed whose row was written inside the
+// window, with the version that document's index indexed before it, each with its markdown and
+// its document's ref_key. Ahead of each windowed version come its document_block_texts rows, each
+// with the text the block's row before it held. The rows come in document and version order, a
+// version's texts before the version itself, so the replay holds one document's last version and
+// one version's texts at a time.
+//
+// A version's row is dated once, when it is written, and a document's versions are numbered in
+// the order they are written, so the versions inside the window are each document's last ones
+// and the one before the first of them is the one whose next version lies inside it.
+var replayVersionsQuery = `
+	with indexed as (
+		select i.artifact_id, i.version, v.created_at > ` + sizingWindow + ` as inside,
+		       coalesce(lead(v.created_at > ` + sizingWindow + `)
+		                over (partition by i.artifact_id order by i.version), false) as followed_inside
+		from document_indexed_versions i
+		join artifact_versions v on v.artifact_id = i.artifact_id and v.number = i.version
+	),
+	replayed as (select artifact_id, version, inside from indexed where inside or followed_inside)
+	select r.artifact_id::text, r.version, 1, a.ref_key, v.markdown, null::text, null::text, null::text
+	from replayed r
+	join artifact_versions v on v.artifact_id = r.artifact_id and v.number = r.version
+	join artifacts a on a.id = r.artifact_id
+	union all
+	select r.artifact_id::text, r.version, 0, null, null, t.block_id, t.text, earlier.text
+	from replayed r
+	join document_block_texts t on t.artifact_id = r.artifact_id and t.version = r.version
+	left join lateral (
+		select p.text from document_block_texts p
+		where p.artifact_id = t.artifact_id and p.block_id = t.block_id and p.version < t.version
+		order by p.version desc limit 1
+	) earlier on true
+	where r.inside
+	order by 1, 2, 3, 6`
+
+// replayedParents is what replayParents read: how many blocks the windowed versions moved to
+// another parent, over how many version rows, and how many of those rows did not parse.
+type replayedParents struct{ moved, read, unreadable int64 }
+
+// replayParents counts the blocks each version the block index indexed inside the window placed
+// under another parent than the version it indexed before did, which is how many part_of moves
+// that index stated (refs' reconcileBlockParents). No table written before the store holds a
+// block's parent, so each version's markdown is parsed and its blocks placed by the walk the
+// index places them by (refs.PlaceBlocks).
+//
+// A version's markdown names no paragraph's id - a parse mints a fresh one for every block that
+// writes none - so the two versions' blocks are matched by their text, which is the body the index
+// sums (markdown[From:To]): a block the later version left alone holds one text in both, and a
+// block it wrote or dropped is the one its document_block_texts row names, under its earlier text
+// in the version before and its new text in the later one (blockIdentities). Blocks of one
+// document with equal text are matched in document order, so the count is exact except there. A
+// version that does not parse is counted as read and unreadable, and neither it nor the version
+// after it is compared, as the index wrote no blocks for it.
+func replayParents(ctx context.Context, tx pgx.Tx) (replayedParents, error) {
+	rows, err := tx.Query(ctx, replayVersionsQuery)
+	if err != nil {
+		return replayedParents{}, fmt.Errorf("read the indexed versions of the window: %w", err)
+	}
+	defer rows.Close()
+	var done replayedParents
+	var document string
+	var earlier *placedVersion
+	var changes []blockTextChange
+	for rows.Next() {
+		var artifactID string
+		var version, part int
+		var refKey, markdown, blockID, text, before *string
+		if err := rows.Scan(&artifactID, &version, &part, &refKey, &markdown, &blockID, &text, &before); err != nil {
+			return replayedParents{}, fmt.Errorf("read an indexed version of the window: %w", err)
+		}
+		if artifactID != document {
+			document, earlier, changes = artifactID, nil, changes[:0]
+		}
+		if part == 0 {
+			changes = append(changes, blockTextChange{id: *blockID, text: text, earlier: before})
+			continue
+		}
+		done.read++
+		later := placeVersion(*refKey, markdown)
+		if later == nil {
+			done.unreadable++
+		}
+		if earlier != nil && later != nil {
+			done.moved += movedBlocks(earlier, later, changes)
+		}
+		earlier, changes = later, changes[:0]
+	}
+	if err := rows.Err(); err != nil {
+		return replayedParents{}, fmt.Errorf("read the indexed versions of the window: %w", err)
+	}
+	return done, nil
+}
+
+// blockTextChange is one document_block_texts row of a version: the block it names, the text the
+// version gave it (nil where the version dropped it), and the text its row before held (nil where
+// there was none, or where that row recorded the block deleted).
+type blockTextChange struct {
+	id            string
+	text, earlier *string
+}
+
+// placedVersion is one version as the replay reads it: its canonical markdown, its unique
+// blocks, the index among them of each block the index places, in document order, and beside
+// each of those the index of the block holding it, -1 for the document (refs.PlaceBlocks).
+type placedVersion struct {
+	markdown        string
+	blocks          []model.ArtifactBlock
+	placed, parents []int
+}
+
+// placeVersion parses one version's markdown and places its blocks, and answers nil for a
+// version with no markdown or one that does not parse. The blocks are those of the render, as
+// the index takes them from it, so their ranges index into the render's markdown.
+func placeVersion(refKey string, markdown *string) *placedVersion {
+	if markdown == nil {
+		return nil
+	}
+	tree, err := pmdoc.ParseRendering(*markdown)
+	if err != nil {
+		return nil
+	}
+	rendered, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil {
+		return nil
+	}
+	blocks := make([]model.ArtifactBlock, len(offsets))
+	for index, offset := range offsets {
+		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To}
+	}
+	nodes, placed, parents := refs.PlaceBlocks(refKey, blocks)
+	return &placedVersion{markdown: rendered, blocks: nodes, placed: placed, parents: parents}
+}
+
+// blockIdentity is a block as the replay matches it across two versions: the id a
+// document_block_texts row names it by, or, for a block the later version left alone, its text
+// and its place among the blocks of one version holding that text.
+type blockIdentity struct {
+	id         string
+	text       string
+	occurrence int
+}
+
+// blockPlacement is where a block sits: inside the block parent names, or, where held is false,
+// in the document itself.
+type blockPlacement struct {
+	parent blockIdentity
+	held   bool
+}
+
+// movedBlocks counts the blocks both versions hold whose placement the later one moved. changes
+// are the later version's document_block_texts rows, in block id order.
+func movedBlocks(earlier, later *placedVersion, changes []blockTextChange) int64 {
+	wasNamed, nowNamed := map[string][]string{}, map[string][]string{}
+	for _, change := range changes {
+		if change.earlier != nil {
+			wasNamed[*change.earlier] = append(wasNamed[*change.earlier], change.id)
+		}
+		if change.text != nil {
+			nowNamed[*change.text] = append(nowNamed[*change.text], change.id)
+		}
+	}
+	was := blockIdentities(earlier, wasNamed)
+	placedBefore := make(map[blockIdentity]blockPlacement, len(earlier.placed))
+	for index, block := range earlier.placed {
+		placedBefore[was[block]] = placementOf(was, earlier.parents[index])
+	}
+	now := blockIdentities(later, nowNamed)
+	var moved int64
+	for index, block := range later.placed {
+		before, both := placedBefore[now[block]]
+		if both && placementOf(now, later.parents[index]) != before {
+			moved++
+		}
+	}
+	return moved
+}
+
+// blockIdentities names each placed block of one version as movedBlocks matches it with the
+// other version, at the block's index among the version's blocks. named maps a text to the ids
+// of the document_block_texts rows that name a block holding it in this version; the blocks of
+// one text take those ids in document order, and every block left over, which the later version
+// left alone, is its text and its place among the blocks of this version holding that text. The
+// text is a slice of the version's markdown, so no block's text is copied.
+func blockIdentities(version *placedVersion, named map[string][]string) []blockIdentity {
+	identities := make([]blockIdentity, len(version.blocks))
+	taken := map[string]int{}
+	left := map[string]int{}
+	for _, index := range version.placed {
+		block := &version.blocks[index]
+		text := version.markdown[block.From:block.To]
+		if ids := named[text]; taken[text] < len(ids) {
+			identities[index] = blockIdentity{id: ids[taken[text]]}
+			taken[text]++
+			continue
+		}
+		identities[index] = blockIdentity{text: text, occurrence: left[text]}
+		left[text]++
+	}
+	return identities
+}
+
+// placementOf is the placement of a block whose parent is the block at parent among the
+// version's blocks, -1 for the document.
+func placementOf(identities []blockIdentity, parent int) blockPlacement {
+	if parent < 0 {
+		return blockPlacement{}
+	}
+	return blockPlacement{parent: identities[parent], held: true}
 }
 
 // readBlockIndexBacklog reads what the block-index reconciliation owes documents and the clock
@@ -395,6 +777,13 @@ func (s *SizingReport) Write(w io.Writer) {
 		fmt.Fprintf(w, "census: sizing tuples-a-write kind=%s tuples=%d nodes=%d rows_a_day=%.2f"+
 			" tuples_a_day=%.2f nodes_a_day=%.2f driver=%s\n",
 			kind.Name, kind.Tuples, kind.Nodes, kind.RowsADay, kind.TuplesADay, kind.NodeRowsADay, kind.Driver)
+		// The share has a line of its own, so the line above keeps the fields a driver reads it by.
+		replay := ""
+		if kind.Name == movedParents {
+			replay = fmt.Sprintf(" versions_read=%d versions_unreadable=%d", kind.Replayed, kind.Unreadable)
+		}
+		fmt.Fprintf(w, "census: sizing share kind=%s moved_by=%s writes_in_window=%d share_of_tuples=%.4f%s\n",
+			kind.Name, kind.MovedBy, kind.Writes, kind.Share, replay)
 	}
 	for _, growth := range s.Growth {
 		fmt.Fprintf(w, "census: sizing rows-a-day table=%s rows_a_day=%.2f\n", growth.Name, growth.RowsADay)

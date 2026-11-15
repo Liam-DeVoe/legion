@@ -83,7 +83,9 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	requireAttributeNodesMatchTheFile(t, ctx, pool, file, drift)
 	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file, drift)
 	drift.report(t)
+	requireTypeNodeValuesAreTheirTuples(t, ctx, pool)
 	requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t, ctx, pool)
+	requireTypeNodeValuesAreTheirTuples(t, ctx, pool)
 	requireNoRouteOrCommandWritesAType(t)
 	requireTheEraseRefusesATypeNode(t, ctx, pool)
 	requireTheServedSchemaFollowsTheNodes(t, ctx, pool)
@@ -154,6 +156,85 @@ func requireBaseAttributes(t *testing.T, ctx context.Context, pool *store.Pool, 
 				node.Kind, node.ID, attribute, value, held, want)
 		}
 	}
+}
+
+// requireTypeNodeValuesAreTheirTuples holds every type node's row to the log it projects (R1):
+// each attribute the row's attributes column carries is the newest value tuple of that name out
+// of the node, and every value tuple out of the node other than its two base attributes names an
+// attribute the row carries. A value a migration set on the row alone, which a reader of the log
+// could not read back, fails here, and so does a tuple the row has no attribute for.
+//
+// A value is compared as the migrations write it: a JSON string as the string itself, and any
+// other JSON value as its text, so a version reads `4` and a list of choices `["note", "warning"]`.
+func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	rows, err := pool.Query(ctx, `
+		select n.kind, n.id, n.attributes::text,
+		       coalesce((
+		           select jsonb_object_agg(newest.kind, newest.to_id)
+		           from (
+		               select distinct on (t.kind) t.kind, t.to_id
+		               from graph_tuples t
+		               where t.from_kind = n.kind and t.from_id = n.id and t.to_kind = $3 and t.asserted
+		               order by t.kind, t.seq desc
+		           ) newest
+		       ), '{}')::text
+		from graph_nodes n where n.kind in ($1, $2)
+		order by n.kind, n.id
+	`, schemanodes.KindSupertag, schemanodes.KindAttribute, graphstore.KindValue)
+	if err != nil {
+		t.Fatalf("read the type nodes and their value tuples: %v", err)
+	}
+	defer rows.Close()
+	compared := 0
+	for rows.Next() {
+		var kind, id, attributesText, tuplesText string
+		if err := rows.Scan(&kind, &id, &attributesText, &tuplesText); err != nil {
+			t.Fatalf("read a type node and its value tuples: %v", err)
+		}
+		var attributes map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(attributesText), &attributes); err != nil {
+			t.Fatalf("read the attributes of %s/%s: %v", kind, id, err)
+		}
+		var tuples map[string]string
+		if err := json.Unmarshal([]byte(tuplesText), &tuples); err != nil {
+			t.Fatalf("read the value tuples of %s/%s: %v", kind, id, err)
+		}
+		for name := range tuples {
+			if graphstore.IsBaseAttribute(name) {
+				delete(tuples, name)
+			}
+		}
+		for name, raw := range attributes {
+			want := string(raw)
+			var text string
+			if json.Unmarshal(raw, &text) == nil {
+				want = text
+			}
+			held, stated := tuples[name]
+			switch {
+			case !stated:
+				t.Errorf("type node %s/%s carries %s = %s on its row and no value tuple states it: a type migration appends a value tuple for each value it sets, as %s does",
+					kind, id, name, want, typeMigrationExample)
+			case held != want:
+				t.Errorf("type node %s/%s carries %s = %s on its row, and its newest value tuple states %s: a type migration appends a value tuple for each value it moves, as %s does",
+					kind, id, name, want, held, typeMigrationExample)
+			}
+			compared++
+		}
+		for name, held := range tuples {
+			if _, carried := attributes[name]; !carried {
+				t.Errorf("type node %s/%s states %s = %s as its newest value tuple, which its row carries no attribute for", kind, id, name, held)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the type nodes and their value tuples: %v", err)
+	}
+	if compared == 0 {
+		t.Fatalf("no type node carries an attribute value, so the comparison of rows with their tuples proved nothing")
+	}
+	t.Logf("every type node's %d attribute value(s) are the newest value tuples out of it", compared)
 }
 
 // requireAttributeNodesMatchTheFile holds every typed block type's attribute nodes to the file,

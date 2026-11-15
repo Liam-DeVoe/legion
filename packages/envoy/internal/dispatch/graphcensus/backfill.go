@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -92,7 +91,9 @@ type BackfillReport struct {
 // rendered version, which no column of document_blocks holds, so the run marks the document
 // owed a block index instead - document_block_versions.version to null, as refs.RebuildAll
 // marks it - and the reconciliation states the part_of tuple and writes parent_block_id, which
-// is the one writer of that column.
+// is the one writer of that column. The mark is written by the batch that names the document's
+// block nodes, in its transaction, so a run stopped anywhere leaves every document whose batch
+// committed owed, and a second run, which reads no row a batch marked, need not find them again.
 //
 // Each pass walks only the rows its marker does not mark, which for the three projected tables is
 // the node column pair the view's old arms test (migration 20261109215947), names their nodes on
@@ -149,13 +150,14 @@ type blockRow struct {
 }
 
 // backfillBlocks writes a node and an in_document tuple for every block row that names none,
-// and marks each document it touched owed a block index. A block whose address is past
-// refs.MaxBlockNodeBytes is no node of the store by design, so it is neither written nor
+// and marks each document it touched owed a block index (writeBlockBatch). A block whose address
+// is past refs.MaxBlockNodeBytes is no node of the store by design, so it is neither written nor
 // counted as skipped: the writers leave it unprojected too. A row a version write deleted after
 // its batch was read is not written either (writeBlockBatch), and is counted nowhere: it is no
 // row of the database any more.
 func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: refs.BlockNodeKind}
+	// The documents the run marked, each once however many of its batches marked it.
 	documents := map[string]struct{}{}
 	after := ""
 	for {
@@ -181,11 +183,7 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 			break
 		}
 	}
-	owed, err := markDocumentsOwed(ctx, database, documents)
-	if err != nil {
-		return done, err
-	}
-	done.Owed = owed
+	done.Owed = int64(len(documents))
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from document_blocks
 		where node_kind is null and octet_length(node_id) <= `+addressBound).Scan(&done.Remaining); err != nil {
@@ -269,6 +267,14 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 // node already, and only the rows left are written: a node written for a deleted row would bring
 // the block back as a live node with an in_document tuple and no projection row.
 //
+// The same transaction marks each document it wrote a block of owed a block index, which is how
+// the block's parent is reached (Backfill). The mark commits with the rows that name their nodes:
+// marked after the whole pass instead, a run stopped by an error in a later batch, or killed,
+// would leave the documents of its committed batches unmarked, and a second run reads no row a
+// committed batch named, so nothing would mark them again. Their document_block_versions rows
+// are the ones lockBlockDocuments already holds, so the mark takes no lock out of the store's
+// order.
+//
 // The count is this batch's own tuples and the two base attributes graphstore.Write states
 // for each node its insert makes, which this batch does not state itself: every node here is
 // new, since a row that already names one is never written.
@@ -322,6 +328,16 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 		where d.artifact_id = b.artifact_id::uuid and d.block_id = b.block_id
 	`, artifacts, blockIDs, addresses, refs.BlockNodeKind); err != nil {
 		return nil, 0, fmt.Errorf("name the nodes of a block batch on their rows: %w", err)
+	}
+	// In id order and each once, the order lockBlockDocuments took these rows in.
+	owed := slices.Clone(artifacts)
+	slices.Sort(owed)
+	if _, err := tx.Exec(ctx, `
+		insert into document_block_versions (artifact_id)
+		select id::uuid from unnest($1::text[]) as document (id)
+		on conflict (artifact_id) do update set version = null
+	`, slices.Compact(owed)); err != nil {
+		return nil, 0, fmt.Errorf("mark the documents of a block batch owed a block index: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, 0, fmt.Errorf("commit a block batch: %w", err)
@@ -423,30 +439,6 @@ func heldBlockRows(ctx context.Context, tx pgx.Tx, batch []blockRow) ([]blockRow
 		}
 	}
 	return held, nil
-}
-
-// markDocumentsOwed marks every document the run gave blocks nodes owed a block index, which
-// is how the parent reaches document_blocks.parent_block_id: the reconciliation is that
-// column's one writer, and this is the mark it drains (refs.RebuildAll sets the same one).
-func markDocumentsOwed(ctx context.Context, database *store.Store, documents map[string]struct{}) (int64, error) {
-	if len(documents) == 0 {
-		return 0, nil
-	}
-	ids := make([]string, 0, len(documents))
-	for id := range documents {
-		ids = append(ids, id)
-	}
-	// In id order, so two runs over one database take the rows in one order.
-	sort.Strings(ids)
-	owed, err := database.Pool.Exec(ctx, `
-		insert into document_block_versions (artifact_id)
-		select id::uuid from unnest($1::text[]) as document (id)
-		on conflict (artifact_id) do update set version = null
-	`, ids)
-	if err != nil {
-		return 0, fmt.Errorf("mark the documents the backfill touched owed a block index: %w", err)
-	}
-	return owed.RowsAffected(), nil
 }
 
 // blockRefRow is one block_refs row the backfill reads: the pair it holds, the block node it

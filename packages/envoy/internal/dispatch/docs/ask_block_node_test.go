@@ -95,10 +95,13 @@ func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
 			t.Errorf("the census reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
 		}
 	}
+	// The fixture is one document, so the census as a whole refuses on the kinds it checked no
+	// row of (graphcensus.StoreReport.Refused); what this holds it to is the block kind, which
+	// must have checked rows and read no difference in either direction.
 	blocks := censusOfBlocks(t, census)
-	if census.Differences() != 0 || census.Refused() || blocks.Rows == 0 || blocks.Nodes == 0 {
-		t.Fatalf("the census read %d difference(s), refused=%t, over %d block row(s) and %d block node(s), want zero differences over the ask's blocks",
-			census.Differences(), census.Refused(), blocks.Rows, blocks.Nodes)
+	if census.Differences() != 0 || blocks.RowDifferences != 0 || blocks.NodeDifferences != 0 || blocks.Rows == 0 || blocks.Nodes == 0 {
+		t.Fatalf("the census read %d difference(s), %d and %d of them of blocks, over %d block row(s) and %d block node(s), want zero differences over the ask's blocks",
+			census.Differences(), blocks.RowDifferences, blocks.NodeDifferences, blocks.Rows, blocks.Nodes)
 	}
 	t.Logf("the ask block's node %s is %s with %d state tuple(s), and the census reads zero differences over %d row(s), %d of them block rows against %d block node(s)",
 		address, node.State, len(history), census.Rows(), blocks.Rows, blocks.Nodes)

@@ -408,24 +408,54 @@ want_status 201 E2 "write a comment the erase does not touch"
 pass E2 "the session that wrote both keeps a row the erase leaves"
 
 # The rows of other nodes that hold the same bytes: a document of another issue and a comment of
-# that issue, each its own text. No erase here derives from them, so each run lists them and
-# leaves them byte for byte as they are.
+# that issue, each quoting the leak whole inside text of its own. The erase lists a row that holds
+# the text it erases, which is the leak, so a row holding the secret alone would name nothing it
+# lists. No erase here derives from them, so each run lists them and leaves them byte for byte.
 send POST "/api/v1/issues" "$(jq -cn --arg p "$project" --arg s "$session" \
   '{project: $p, title: "Store erasure check, another node", spec: "Another issue, quoting nothing yet.", actor: {kind: "session", id: $s}}')"
 want_status 201 E2 "create the other issue"
 other_key="$(jq -er '.key' "$work/body")" || fail E2 "create the other issue" "no key: $(body)"
-send POST "/api/v1/issues/$other_key/artifacts" "$(jq -cn --arg s "$session" --arg secret "$secret" \
-  '{name: "quoted-notes.md", content: ("# Quoted notes\n\nSomebody else wrote " + $secret + " down here too.\n"), actor: {kind: "session", id: $s}}')"
+send POST "/api/v1/issues/$other_key/artifacts" "$(jq -cn --arg s "$session" --arg leak "$leak" \
+  '{name: "quoted-notes.md", content: ("# Quoted notes\n\nSomebody else wrote this down too: " + $leak + "\n"), actor: {kind: "session", id: $s}}')"
 want_status 201 E2 "write the other issue's document"
 other_document="$(jq -er '.artifact.id' "$work/body")" || fail E2 "write the other issue's document" "no id: $(body)"
 other_ref="$(jq -er '.artifact.ref_key' "$work/body")" ||
   fail E2 "write the other issue's document" "no ref_key: $(body)"
-send POST "/api/v1/issues/$other_key/comments" "$(jq -cn --arg s "$session" --arg secret "$secret" \
-  '{body: ("Another comment repeats " + $secret + " on its own."), actor: {kind: "session", id: $s}}')"
+send POST "/api/v1/issues/$other_key/comments" "$(jq -cn --arg s "$session" --arg leak "$leak" \
+  '{body: ("Another comment repeats it on its own: " + $leak), actor: {kind: "session", id: $s}}')"
 want_status 201 E2 "write the other issue's comment"
 other_comment="$(jq -er '.id' "$work/body")" || fail E2 "write the other issue's comment" "no id: $(body)"
 readonly other_key other_document other_ref other_comment
 pass E2 "planted the secret in $other_ref and comment:$other_comment of $other_key, which no erase here derives from"
+
+# A row of every kind the store census covers, which E8 reads: the census refuses a kind it checked
+# no row of (R19), and a database this driver runs over need hold no block reference and no role.
+# A document of the other issue that cites that issue gives the block references a row, and the
+# other issue routed to a role gives the role and its page theirs. Neither holds the secret, and no
+# erase here derives from them. The publisher writes the role's node and its page from the route's
+# event, so the driver waits for both.
+readonly census_role="graph-erase-reader"
+send POST "/api/v1/issues/$other_key/artifacts" "$(jq -cn --arg s "$session" --arg key "$other_key" \
+  '{name: "census-cites.md", content: ("# Cites\n\nA block reference of this run, to " + $key + ".\n"), actor: {kind: "session", id: $s}}')"
+want_status 201 E2 "write a document of $other_key that cites it"
+send PATCH "/api/v1/issues/$other_key" "$(jq -cn --arg r "role:$census_role" --arg s "$session" \
+  '{route: $r, actor: {kind: "session", id: $s}}')"
+want_status 200 E2 "route $other_key to role $census_role"
+populated_polls=0
+while :; do
+  query E2 "read the block reference and the role's node and page" \
+    "select (select count(*) from block_refs r join artifacts a on a.id = r.artifact_id
+              where a.issue_key = '$other_key' and r.node_kind is not null)
+         || '|' || (select count(*) from graph_nodes
+              where (kind = 'role' and id = '$census_role') or (kind = 'page' and id = 'role/$census_role'))"
+  [[ "${answer%%|*}" -gt 0 && "${answer##*|}" == 2 ]] && break
+  populated_polls=$((populated_polls + 1))
+  [[ "$populated_polls" -le 150 ]] ||
+    fail E2 "give every census kind a row" \
+      "after 30s $other_key's documents hold ${answer%%|*} block reference(s) naming their node and the store ${answer##*|} of role $census_role's node and page, want at least 1 and 2"
+  sleep 0.2
+done
+pass E2 "$other_key's documents hold ${answer%%|*} block reference(s), and the store holds role $census_role's node and its page"
 
 # Every row planted for those two nodes, read whole, so a read after the erases can say whether a
 # byte of one moved: the comment, its own events' payloads, the document's versions, its blocks,

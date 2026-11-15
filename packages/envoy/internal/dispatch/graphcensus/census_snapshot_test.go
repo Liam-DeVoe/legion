@@ -15,14 +15,23 @@ import (
 
 // agreeingStore is a database whose store and projections agree on every kind the census reads
 // rows of: one document of two blocks, the inner one inside the outer one, one block reference
-// out of the inner block, and one comment that the document owns and is anchored to, written by
-// a person. outer and inner are the two blocks' node addresses, comment the comment's id, and
-// mention the block reference's row as the census names it.
+// out of the inner block, one comment that the document owns and is anchored to, written by a
+// person, one comment on the issue written by a session, and the issue routed to a role. outer and
+// inner are the two blocks' node addresses, comment the person's comment's id, and mention the
+// block reference's row as the census names it.
 type agreeingStore struct {
 	document              preStoreDocument
 	outer, inner, comment string
 	mention               string
 }
+
+// agreeingSession and agreeingRole are the session that wrote the agreeing store's second
+// comment and the role its issue is routed to: they give the census's session, role and page
+// kinds rows of their own, so the store the census agrees with is one it passes.
+const (
+	agreeingSession = "census-agreeing-session"
+	agreeingRole    = "census-agreeing-role"
+)
 
 // censusWriter is who this file's own fixture writes are made by.
 var censusWriter = backfillActor
@@ -58,6 +67,15 @@ func seedAgreeingStore(t *testing.T, database *store.Store) agreeingStore {
 		returning id::text
 	`, document.artifactID).Scan(&seeded.comment); err != nil {
 		t.Fatalf("write the comment on the document: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into comments (issue_key, author, body)
+		values ('CORE-1', jsonb_build_object('kind', 'session', 'id', $1::text), 'A session''s remark on the issue.')
+	`, agreeingSession); err != nil {
+		t.Fatalf("write the session's comment on the issue: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `update issues set route = 'role:' || $1 where key = 'CORE-1'`, agreeingRole); err != nil {
+		t.Fatalf("route the issue to role %s: %v", agreeingRole, err)
 	}
 	if _, err := Backfill(ctx, database, io.Discard); err != nil {
 		t.Fatalf("backfill the store: %v", err)
@@ -103,13 +121,14 @@ func storeCensusOf(t *testing.T, database *store.Store) *StoreReport {
 	return report
 }
 
-// seededKinds are the kinds seedAgreeingStore writes rows of, each of which must count rows and
-// live nodes: a kind that read zero of either compared nothing, and its zero differences would
-// prove nothing.
-var seededKinds = []string{"comment", "block", "block_ref", graphstore.KindPerson}
+// seededKinds are the kinds seedAgreeingStore writes rows of, which are every kind the census
+// reads, each of which must count rows and live nodes: a kind that read zero of either compared
+// nothing, and its zero differences would prove nothing.
+var seededKinds = []string{"comment", "block", "block_ref", graphstore.KindPerson, graphstore.KindSession,
+	graphstore.KindRole, graphstore.KindPage}
 
 // requireTheCensusAgrees fails the test unless the census read no difference in either direction
-// over any kind, and read rows and live nodes of every kind the fixture seeded.
+// over any kind, read rows and live nodes of every kind the fixture seeded, and passes.
 func requireTheCensusAgrees(t *testing.T, what string, report *StoreReport) {
 	t.Helper()
 	for _, kind := range report.Kinds {
@@ -125,8 +144,8 @@ func requireTheCensusAgrees(t *testing.T, what string, report *StoreReport) {
 				what, kind.Rows, kind.Nodes, name)
 		}
 	}
-	if report.Differences() != 0 {
-		t.Fatalf("%s read %d difference(s), want none", what, report.Differences())
+	if report.Differences() != 0 || report.Refused() {
+		t.Fatalf("%s read %d difference(s) and refused=%t, want none and a pass", what, report.Differences(), report.Refused())
 	}
 }
 
@@ -142,17 +161,43 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 	return KindReport{}
 }
 
+// The census passes only where it checked more than zero rows of every kind it covers and found
+// zero differences (R19): a total over the kinds is no such proof, because two empty sides of one
+// kind agree. The census of the agreeing store, which checked rows of every kind, passes. The
+// same report with any one kind's rows and nodes taken out, which still reads zero differences
+// and still holds rows of every other kind, must refuse and name that kind in its verdict.
+func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
+	database := storetest.Open(t)
+	seedAgreeingStore(t, database)
+	report := storeCensusOf(t, database)
+	if report.Refused() {
+		t.Fatalf("the census of the agreeing store refuses, so taking a kind out of it would prove nothing")
+	}
+	for index, held := range report.Kinds {
+		emptied := *report
+		emptied.Kinds = append([]KindReport{}, report.Kinds...)
+		emptied.Kinds[index].Rows, emptied.Kinds[index].Nodes = 0, 0
+		var printed strings.Builder
+		emptied.Write(&printed)
+		verdict := "census: store REFUSED (kind(s) " + held.Kind + " checked no row, so the census proves nothing of them)\n"
+		if !emptied.Refused() || emptied.Rows() == 0 || !strings.HasSuffix(printed.String(), verdict) {
+			t.Errorf("a census that checked no %s row but %d rows of the other kinds reads refused=%t, want a refusal ending %q:\n%s",
+				held.Kind, emptied.Rows(), emptied.Refused(), verdict, printed.String())
+		}
+	}
+}
+
 // The census reads one snapshot: every kind it reports is read in the one repeatable-read
 // transaction it opens, so a write another connection commits while it runs reaches none of
 // its reads after the first.
 //
 // The write is placed between two of its reads rather than raced against them. The census's
-// own hook (storeCensus's afterKind) runs once the comment kind has been read, which is the
-// census's first statement and the one its snapshot is taken at, and there the test commits, on
+// own hook (storeCensus's afterKind) runs once the comment kind has been read, which is after
+// the census's first statement, the one its snapshot is taken at, and there the test commits, on
 // a connection of its own, a live block node no document_blocks row projects. The block kind is
 // read next, and a read under a fresh snapshot would count that node as a live node no row
 // projects. The census reads zero differences, because its block read answers the snapshot its
-// comment read took; a census taken afterwards reads the node, which is what says the write
+// first statement took; a census taken afterwards reads the node, which is what says the write
 // committed and the census would have counted it.
 func TestTheStoreCensusReadsOneSnapshot(t *testing.T) {
 	ctx := context.Background()

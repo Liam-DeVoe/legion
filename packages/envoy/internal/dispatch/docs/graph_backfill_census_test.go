@@ -77,13 +77,17 @@ func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
 		settle(t, database, id)
 		documents = append(documents, id)
 	}
-	// One comment of the same build: a row of another projected kind, so the census reads
-	// the comment and the person who wrote it against rows rather than against nothing.
+	// One comment of the same build by a person and one by a session, and the issue routed to a
+	// role: rows of every other kind the census reads, so it reads the comments, the person, the
+	// session, the role and its page against rows rather than against nothing, and passes only
+	// where each of them agrees as well (R19).
 	if _, err := database.Pool.Exec(ctx, `
-		insert into comments (issue_key, author, body)
-		values ('CORE-1', '{"kind":"user","id":"Alice"}', 'A remark written before the store existed.')
+		insert into comments (issue_key, author, body) values
+			('CORE-1', '{"kind":"user","id":"Alice"}', 'A remark written before the store existed.'),
+			('CORE-1', '{"kind":"session","id":"block-parent-census-session"}', 'A session''s remark written before the store existed.');
+		update issues set route = 'role:block-parent-census-role' where key = 'CORE-1';
 	`); err != nil {
-		t.Fatalf("seed the comment: %v", err)
+		t.Fatalf("seed the comments and the route: %v", err)
 	}
 	// The first indexing writes the rows a build before the store would have written. Taking
 	// the store back off them is what makes this a pre-store database: the rows stay exactly

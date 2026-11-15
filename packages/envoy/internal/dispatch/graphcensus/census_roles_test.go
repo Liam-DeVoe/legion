@@ -404,8 +404,15 @@ func requireRoleHistoryOnly(t *testing.T, database *store.Store, role string) {
 // any kind, and reads exactly one role row and one page row, each with its live node, per role of
 // addressed. Each of those roles must hold its node and its page live, with the page part_of the
 // role now.
+//
+// The fixture seeds no block, so the census as a whole refuses on the kinds it checked no row of
+// (StoreReport.Refused); what this holds it to is the two kinds the fixture is about, each of
+// which checked rows and read no difference.
 func requireTheRoleCensusAgrees(t *testing.T, database *store.Store, addressed ...string) {
 	t.Helper()
+	if len(addressed) == 0 {
+		t.Fatalf("no role is addressed, so the role census would compare nothing")
+	}
 	report := storeCensusOf(t, database)
 	for _, kind := range report.Kinds {
 		t.Logf("kind=%s rows=%d nodes=%d row differences=%d node differences=%d",
@@ -414,8 +421,8 @@ func requireTheRoleCensusAgrees(t *testing.T, database *store.Store, addressed .
 			t.Errorf("the census reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
 		}
 	}
-	if report.Differences() != 0 || report.Refused() {
-		t.Fatalf("the census read %d difference(s) and refused=%t, want none", report.Differences(), report.Refused())
+	if report.Differences() != 0 {
+		t.Fatalf("the census read %d difference(s), want none", report.Differences())
 	}
 	for _, name := range []string{graphstore.KindRole, graphstore.KindPage} {
 		if kind := censusKind(t, report, name); kind.Rows != int64(len(addressed)) || kind.Nodes != int64(len(addressed)) {
