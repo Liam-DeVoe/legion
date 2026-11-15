@@ -221,9 +221,15 @@ func TestStalePluginClaudeRoleInAPodIsReleasedWhenIdle(t *testing.T) {
 		rig.w.releaseIdlePods(context.Background())
 
 		wantReleasedOntoTheImage(t, rig)
-		if line := logs.String(); !strings.Contains(line, "a plugin that takes no task, so the role comes back on the configured image") ||
-			!strings.Contains(line, string(rig.token)) {
-			t.Errorf("the release logged %s, want the line naming the claim it was made for", line)
+		var release string
+		for _, l := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(l, "a plugin that takes no task, so the role comes back on the configured image") {
+				release = l
+				break
+			}
+		}
+		if release == "" || !strings.Contains(release, string(rig.token)) {
+			t.Errorf("the release logged %q, want the line naming the claim it was made for", release)
 		}
 	})
 	t.Run("a role whose launch installs a plugin", func(t *testing.T) {

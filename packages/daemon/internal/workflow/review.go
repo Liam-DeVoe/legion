@@ -932,13 +932,18 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	if err != nil || pr == nil {
 		return err
 	}
-	return e.askMergeStateFor(ctx, tx, pr)
+	return e.askMergeStateFor(ctx, tx, pr, false)
 }
 
-// askMergeStateFor queues the read for one pull request whose round waits on GitHub's answer. The
+// askMergeStateFor queues the read for one pull request. In reviewing the read is asked for when
+// the round waits on GitHub's answer (reviewRound), for a base push as for every other fact. A
+// base push (basePush) moved the base under a head GitHub recomputes with no event of its own, so
+// it also asks in every other phase a conflict with the base is acted on - testing, accepting,
+// retro, merging (conflictReadPhase) - where no round reads the state and this read is the only
+// thing that would find the conflict (mergeability, TriggerConflict in every later phase). The
 // guard on a daemon with no reader is here as well as in askMergeState, because a base push
 // reaches this from its handler's walk rather than through that switch (basePush).
-func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest) error {
+func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, basePush bool) error {
 	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
 		return nil
 	}
@@ -946,16 +951,33 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if err != nil || issue == nil {
 		return err
 	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
-	if err != nil {
-		return err
+	ask := basePush && conflictReadPhase(issue.Phase)
+	if !ask {
+		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		if err != nil {
+			return err
+		}
+		ask = e.reviewRound(*issue, reviewer, pr).waitsOnMergeState
 	}
-	if !e.reviewRound(*issue, reviewer, pr).waitsOnMergeState {
+	if !ask {
 		return nil
 	}
 	key := issue.Key
 	intake.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
 	return nil
+}
+
+// conflictReadPhase is whether a base push asks for a merge-state read of an open pull request
+// whose issue sits in p: the later phases but reviewing, where a conflict with the base is acted
+// on (mergeability, TriggerConflict) yet no round reads the state. Reviewing has its own rule
+// (reviewRound) and is left to it, so the reviewing case asks exactly as it did before.
+func conflictReadPhase(p phase.Phase) bool {
+	switch p {
+	case phase.Testing, phase.Accepting, phase.Retro, phase.Merging:
+		return true
+	default:
+		return false
+	}
 }
 
 // recordPass counts the implementer one more pass through the implementing, testing and reviewing

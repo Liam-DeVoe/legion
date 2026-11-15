@@ -59,7 +59,7 @@
 //
 // The ladder's claim is seeded with the task step 1 measures, and step 1 reads the daemon's own
 // first send of it rather than making one. That also keeps the repair off the planner for the
-// whole run: a provider error takes the task back unconfirmed (supervise's takeBackPending), so
+// whole run: a provider error takes the task back unconfirmed (supervise's takeBack), so
 // it is still worked at every rung and while step 5 leaves the claim stopped. The other two
 // claims are seeded with a warm-up task their stand-in answers (providerStandin.arm), so each is
 // idle and live — a state the repair passes over too — by the time its own step delivers the
@@ -679,10 +679,9 @@ func (r *providerErrorLive) awaitFreshSession(token claim.Token, old string) str
 
 // awaitFirstSend waits until the claim's pending task is task and the daemon has put it in front
 // of its agent, and answers the instant it did: the start of the first turn the claim began after
-// the task was queued, which that first send started. The read mark the shim's acknowledgement
-// set is memory only since migration 20261113175649_task_numbers and no claim view carries it,
-// so the turn's start, which the claim records, stands for it. The wait answers at the first turn
-// it reads, which is the first send's, since the ladder's next send comes 30 s after it.
+// the task was queued, which that first send started. The wait reads the turn's start, which the
+// claim records, and answers at the first turn it reads, which is the first send's, since the
+// ladder's next send comes 30 s after it.
 func (r *providerErrorLive) awaitFirstSend(token claim.Token, task string) time.Time {
 	r.t.Helper()
 	var at time.Time

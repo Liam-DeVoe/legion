@@ -414,7 +414,7 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	r.note("POST /legion/v1/handoff/complete as %s naming %s (verdict pass): %d", tester.session, rewritten.id, status)
 	// The tester's turn ends with its completion, as a worker's does. Main's supervision holds a
 	// phase task while another role of the issue is in a turn, since the two would share the
-	// working copy (supervise's sendPending), so the reviewer is prompted only once it has.
+	// working copy (supervise's take, hold issue-in-turn), so the reviewer takes it only once it has.
 	tester.endTurn()
 	got := r.waitPhase(r.a7, phase.Reviewing)
 	r.note("read back: %s is in %s", r.a7, got.Phase)
@@ -448,7 +448,7 @@ func (r *handoffRecordsLive) notNew() {
 	}
 	r.note("POST /legion/v1/handoff/complete as %s naming %s: %d", implementer.session, first.id, status)
 	// The implementer's turn ends with its completion, as the tester's does below: the tester's
-	// task is held while another role of the issue is in a turn (supervise's sendPending).
+	// task is held while another role of the issue is in a turn (supervise's take, hold issue-in-turn).
 	implementer.endTurn()
 	r.waitPhase(r.renew, phase.Testing)
 	r.note("read back: %s is in testing", r.renew)

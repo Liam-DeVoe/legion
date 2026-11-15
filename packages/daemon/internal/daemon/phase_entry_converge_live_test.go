@@ -246,9 +246,10 @@ type convergeClaimant struct {
 }
 
 // convergeTask is a task the claim's worker took: the number and the text of the take, and the
-// id of the delivery it is of, which names the outbox row that queued it (supervise.Delivery.ID,
-// as the operator's claim listing shows the task the claim holds), "" for one the claim no longer
-// holds when it is read.
+// id of the delivery the claim holds when ofDelivery reads it (supervise.Delivery.ID, as the
+// operator's claim listing shows the task the claim holds). That is the take's own while its turn
+// runs, "" when the claim holds nothing, and a later task's once one is pending — a task drained
+// after its turn ended carries whatever the claim holds then, not the take's own id.
 type convergeTask struct {
 	takenTask
 	DeliveryID string

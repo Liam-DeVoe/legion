@@ -695,7 +695,7 @@ func TestAPhaseTaskWaitsForTheTurnOfAnotherClaimOfItsIssue(t *testing.T) {
 // could each read the other as idle and adopt the working copy they share at the same time
 // (dispatch://INFRA-314). The tester's take is accepted at the end of the turn that take started,
 // as it is for a turn already running.
-func TestAPhaseTaskWaitsForASendInFlightOnAnotherClaimOfItsIssue(t *testing.T) {
+func TestAPhaseTaskWaitsForAnAcceptedTakeOnAnotherClaimOfItsIssue(t *testing.T) {
 	rig := newIssueRig(t)
 	implementer, writing := rig.ready(claim.RoleImplementer, fake.NewConn())
 	tester, waiting := rig.ready(claim.RoleTester, fake.NewConn())

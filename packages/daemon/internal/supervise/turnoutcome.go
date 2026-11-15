@@ -129,6 +129,15 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // (dispatch://INFRA-714). A run short of the limit is the report written, and then what the
 // report says of the claim's task (reportedTask).
 //
+// A turn that carries a provider error is not counted here, whatever outcome its producer named
+// it: a provider error is the provider-error ladder's (reportedTask, providererror.go), which has
+// no attempt limit (dispatch://INFRA-956 R2) and tells the project's controller at a run of its
+// own (providerErrorRunTold), so counting it here as well would fail the claim out of the launch
+// budget before that run could ever be reached. Both producers report such a turn as refused with
+// the failure beside it (claudebridge's turnEnded, pi-legion's turn-outcome), so the launch
+// budget's own run is derived over the turns a provider error did not end: the refusals the
+// producer named with no provider error of their own, which is the fault INFRA-714 exists for.
+//
 // A repeat (recordTurnOutcome) is written and goes no further. The producer sends a report again
 // when its first attempt had no answer, which a daemon restart in the middle of the request
 // leaves too, so the repeat can find a claim the first attempt already changed: a task that
@@ -138,11 +147,12 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // repeat of it still does what it says of the task.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
-	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message}
+	refused := r.Refused && r.ProviderError == nil
+	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: refused, Message: r.Message}
 	repeat := m.recordTurnOutcome(o)
 	run := m.claim.RefusedRun()
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
-		"refused", r.Refused, "refusedRun", run, "limit", m.deps.Limits.LaunchFailures)
+		"refused", refused, "providerError", r.ProviderError != nil, "refusedRun", run, "limit", m.deps.Limits.LaunchFailures)
 	if run >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, CauseProviderError, refusalCause(run, m.claim.LastRefusal()))
 	}

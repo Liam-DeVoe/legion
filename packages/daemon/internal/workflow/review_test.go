@@ -495,6 +495,48 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 	}
 }
 
+// A base push moves the base under heads GitHub recomputes with no event of its own, so the daemon
+// asks for a merge-state read of every open pull request on that base whose issue sits in a phase a
+// conflict with the base is acted on: testing, reviewing, accepting, retro, merging alike
+// (mergeability, TriggerConflict in every later phase). Only that read finds a head that went
+// conflicting under the move. Reviewing keeps its own rule, that the read is asked for when the
+// round waits on GitHub's answer (reviewRound); the later phases, where no round reads the state,
+// are read for whenever a base moved under an open head. Implementing is not read for: a conflict
+// there needs work that is already where it is read.
+func TestABasePushAsksForAMergeStateReadInEveryPhaseAConflictIsActedOn(t *testing.T) {
+	for _, tc := range []struct {
+		phase  phase.Phase
+		status string
+		want   bool
+	}{
+		{phase.Testing, "testing", true},
+		{phase.Accepting, "needs_review", true},
+		{phase.Retro, "retro", true},
+		{phase.Merging, "retro", true},
+		{phase.Implementing, "in_progress", false},
+	} {
+		t.Run(string(tc.phase), func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: tc.phase, Generation: 1, Status: tc.status, Rank: "U"})
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
+				Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: headOne, Failing: []string{}})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+			var asked []string
+			engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3,
+				Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+				Clock:          func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
+				ReadMergeState: func(issue string) { asked = append(asked, issue) }}, nil)
+
+			applyFacts(t, pool, engine)("base-push", intake.BasePush{Repo: "sjawhar/legion", Branch: "main", After: "base-2"})
+			if got := len(asked) > 0; got != tc.want {
+				t.Fatalf("a base push with the issue in %s asked for %d reads %v, want asked=%v: a conflict a moved base causes is acted on in every later phase, and only this read finds it",
+					tc.phase, len(asked), asked, tc.want)
+			}
+		})
+	}
+}
+
 // seedMergeStateRound seeds LEGION-208 in reviewing, its pull request at head with GitHub's
 // mergeability read mergeable and its merge state state, and its reviewer's round not yet
 // decided. CI settled on the head, reporting the one check run GitHub made there: a round

@@ -715,9 +715,6 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	if got := machine.Claim(); got.Pending == nil || got.Pending.Entry != 2 || got.Pending.Task != row.EntryTask || got.GivenEntry != 2 {
 		t.Fatalf("the claim after the sweep's start row = %+v, want it queued entry 2's task and given entry 2", got)
 	}
-	testwait.Eventually(t, "entry 2's task to be queued", func() bool {
-		return machine.Claim().Pending != nil
-	})
 	acceptTake(ctx, t, machine)
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester}); err != nil {
 		t.Fatalf("start the turn of entry 2's task: %v", err)

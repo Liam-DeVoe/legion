@@ -522,8 +522,8 @@ func TestAConflictStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.
 		*after.Locator != *before.Locator || !bytes.Equal(after.CapabilityHash, before.CapabilityHash) {
 		t.Fatalf("after the send-back the tester is %+v, want idle on its launch, session and capability", after)
 	}
-	if conflictTasks() != 1 {
-		t.Fatalf("the implementer was handed %d conflict tasks, want the one the start delivered", conflictTasks())
+	if n := conflictTasks(); n != 1 {
+		t.Fatalf("the implementer was handed %d conflict tasks, want the one the start delivered", n)
 	}
 	for _, method := range []string{"Suspend", "Release"} {
 		for _, call := range rt.CallsOf(method) {

@@ -1197,7 +1197,7 @@ func TestTheWorkflowsTreeCloseIsNotPutToTheOperatorsPredicate(t *testing.T) {
 // its issue has left the phase the task was queued for: the worker's next take of it is answered
 // dropped. A predicate that reads anything the take-back rewrites answers this wrong in production
 // and green in a test that skips it.
-func TestAWorkflowTaskIsDroppedAfterItsRetryRewritesTheDelivery(t *testing.T) {
+func TestAWorkflowTaskIsDroppedAfterACompactionTakesItBack(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

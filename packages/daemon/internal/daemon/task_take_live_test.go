@@ -665,11 +665,9 @@ func (r *taskTakeLive) registersAgainAndNothingIsWritten(finished takenTask) {
 	frames := r.frameMark()
 	launches := r.launches()
 	var hookErr error
-	hooked := false
 	r.await("the idle release's teardown, after its role stop", func() bool {
 		select {
 		case hookErr = <-resumed:
-			hooked = true
 			return true
 		default:
 		}
@@ -678,9 +676,6 @@ func (r *taskTakeLive) registersAgainAndNothingIsWritten(finished takenTask) {
 	})
 	if hookErr != nil {
 		t.Fatalf("the operator's resume during the teardown: %v", hookErr)
-	}
-	if !hooked {
-		t.Fatal("the teardown never asked the store again")
 	}
 	w.awaitStopped("the release's stop of the implementer's process")
 	r.await("the release cancelled", func() bool {

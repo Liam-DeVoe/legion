@@ -2381,9 +2381,9 @@ func (r *keptRun) applyReadyFact(tree *keptTree, key string, launch uint64) erro
 	return nil
 }
 
-// turnEnabled is whether an architect holds a task it acknowledged and has not started a turn on,
-// or is working a turn that confirmed its task — the turn a restart's get_state found, or one the
-// agent started itself — which only its end retires.
+// turnEnabled is whether an architect holds a task it took and has not started a turn on, or is
+// working a turn that its take started — the turn a restart's get_state found, or one the agent
+// started itself — which only its end retires.
 func (r *keptRun) turnEnabled(tree *keptTree) bool {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2418,10 +2418,10 @@ func (r *keptRun) turn(tree *keptTree) {
 	r.tracef("turn tree=%s state=%s pending=%t", tree.key, machine.Claim().State, machine.Claim().Pending != nil)
 }
 
-// endTurn is a turn's end as Oh My Pi reports it: the agent_end, and, for the turn a confirmed
-// task's prompt ran, that prompt's result, which is what retires the delivery now that a role's
-// own background work can start turns the daemon never prompted (supervise's promptResulted). A
-// turn no confirmed task was running in ends with no result, as on the wire; a result for a
+// endTurn is a turn's end as Oh My Pi reports it: the agent_end, and, for the turn a take's own
+// ran, the turn-outcome report naming its number, which is what finishes the delivery now that a
+// role's own background work can start turns the daemon never gave a task (supervise's
+// reportedTask). A turn no take's turn ran in ends with no report naming a number; a report for a
 // delivery the claim no longer holds is fenced out by the machine.
 func (r *keptRun) endTurn(tree *keptTree, machine *supervise.Machine) {
 	pending := machine.Claim().Pending
@@ -2498,10 +2498,10 @@ func (r *keptRun) handOverInsideAHeldTask(over keptHandOver) {
 	}
 }
 
-// heldTask is whether the architect's claim holds a task of a run that nobody has sent and nobody
-// has acknowledged: a root architect's start task held back because its root has no architect to
-// hear it (supervise's sendPending, Deps.RootHears). The rows it names are held by its delivery,
-// and its own confirmation is what tells them.
+// heldTask is whether the architect's claim holds a task of a run that nobody has taken and that
+// no take has answered: a root architect's start task held back because its root has no architect
+// to hear it (the take's rootHears, Deps.RootHears). The rows it names are held by its delivery,
+// and its own accepted take is what tells them.
 func (r *keptRun) heldTask(tree *keptTree) bool {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2532,10 +2532,10 @@ func (r *keptRun) foreignTurn(tree *keptTree) {
 		machine.Claim().Pending != nil)
 }
 
-// restartStreaming is the daemon dying and booting while an architect holds a task nobody sent,
+// restartStreaming is the daemon dying and booting while an architect holds a task nobody took,
 // and its agent then answering get_state that it is in a turn. The restored claim is one the
-// machine has to ask about before it acts (askFirst), and the answer it gets is what
-// sendPending's askFirst block reads before anything asks whether the root hears.
+// machine has to ask about before it acts (askFirst), and the answer it gets is what askFirst
+// reads before anything asks whether the root hears.
 func (r *keptRun) restartStreaming(tree *keptTree) {
 	r.restart()
 	tree.conn.SetStreaming(true)
@@ -2544,11 +2544,11 @@ func (r *keptRun) restartStreaming(tree *keptTree) {
 		tree.key, r.sup.count(), keptClaimState(r.claimState(tree)))
 }
 
-// awaitingItsTurn is whether this tree's architect holds a task its agent acknowledged and no turn
-// has started on: the prompt was answered, the machine waits for the turn it opens (TimerTurn),
-// and the next agent_start is taken for this task's and confirms it (table.go's turnStarted). It
-// is the window both take-backs of a confirmation are reached through, and the claim is the same
-// one the turn step would drive.
+// awaitingItsTurn is whether this tree's architect holds a task its take answered and no turn has
+// started on: the take was answered, the machine waits for the turn to start (Delivery.awaitsTurn),
+// and the next agent_start is taken for this task's and starts it (table.go's turnStarted). It is
+// the window both take-backs of a take's turn are reached through, and the claim is the same one
+// the turn step would drive.
 func (r *keptRun) awaitingItsTurn(tree *keptTree) bool {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2645,10 +2645,10 @@ func (r *keptRun) confirmedPending(tree *keptTree) bool {
 	return pending != nil && !pending.ConfirmedAt.IsZero()
 }
 
-// endTurnUnconfirmed ends a turn that confirmed no task, which is a turn this machine takes for a
-// foreign one: a restart loses the wait for the task's turn (TimerTurn) while the store keeps the
-// task acknowledged, and a turn of the agent's own is then nobody's to confirm. There is no
-// confirmation to take back, so the step counts nothing and leaves the claim as the turn step
+// endTurnUnconfirmed ends a turn that started no take's, which is a turn this machine takes for a
+// foreign one: a restart loses the wait for the task's turn (Delivery.awaitsTurn) while the store
+// keeps the task taken, and a turn of the agent's own is then nobody's to confirm. There is no
+// take's turn to take back, so the step counts nothing and leaves the claim as the turn step
 // would.
 func (r *keptRun) endTurnUnconfirmed(tree *keptTree, machine *supervise.Machine, what, sent string) {
 	r.handle(machine, supervise.StreamTurnEnd{Claim: tree.token})

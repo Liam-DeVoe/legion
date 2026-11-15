@@ -40,9 +40,13 @@ func TestADecisionToldInATurnWhoseConfirmationFailedIsToldAgain(t *testing.T) {
 			t.Fatalf("make the confirmation's write fail: %v", err)
 		}
 	}
-	// The worker takes the task, and the turn the take answered starts and ends with its report.
+	// The worker takes the task. The telling the accepted take owes is the write the trigger
+	// refuses, so the take returns that failure; the adoption it made stands in memory, so the
+	// turn still starts and ends with its report.
 	c := machine.Claim()
-	_, _ = machine.Take(r.ctx, supervise.RequestTake{Claim: r.token, Generation: c.Generation, Session: c.Session, Number: pending.Number})
+	if _, err := machine.Take(r.ctx, supervise.RequestTake{Claim: r.token, Generation: c.Generation, Session: c.Session, Number: pending.Number}); err == nil {
+		t.Fatal("the take whose confirmation write the trigger refused returned no error, want the write's failure")
+	}
 	machine.Wait()
 	for _, ev := range []supervise.Event{
 		supervise.StreamTurnStart{Claim: r.token},

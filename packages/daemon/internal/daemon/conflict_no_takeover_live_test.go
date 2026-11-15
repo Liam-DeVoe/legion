@@ -184,8 +184,8 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 	r.note("read back: %s is in %s, status %s", r.key, got.Phase, got.Status)
 
 	r.test = r.claimant(claim.RoleTester, "ses_tester")
-	prompt := r.test.takeTask("Phase: testing")
-	r.note("read back: the tester was launched, registered and took its testing task (%s)", firstLine(prompt.Text))
+	task := r.test.takeTask("Phase: testing")
+	r.note("read back: the tester was launched, registered and took its testing task (%s)", firstLine(task.Text))
 	working := r.d.claim(r.test.token)
 	if working.State != string(supervise.StateWorking) || working.Pending == nil || working.Pending.ConfirmedAt == nil {
 		t.Fatalf("the tester is %s holding %+v, want working on a confirmed delivery of its testing task", working.State, working.Pending)
@@ -195,7 +195,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 }
 
 // Step 2. CI settles the tester's head red. The issue goes back to implementing and the
-// implementer is prompted its fix task at once — while the tester is still working the turn it
+// implementer takes its fix task at once — while the tester is still working the turn it
 // started in step 1, which the daemon neither ends nor asks after: its connection is sent nothing
 // at all, its claim stays working on the delivery it confirmed, and its process is not suspended.
 // The start waits for no turn: it acts in the drain that moved the phase.
@@ -209,11 +209,11 @@ func (r *conflictNoTakeoverLive) redStartsAtOnce() {
 	r.driveConflict()
 	r.note("drove the base of %s past %s, so GitHub answers its head conflicting, while the tester's turn runs", r.key, conflictFirstHead)
 
-	// The start's own act, read where production reads it: the implementer's prompt. The read is
-	// bounded by the connection's own five seconds (shim.next), so a start that waited for the
+	// The start's own act, read where production reads it: the implementer's take. The take is
+	// bounded by mustTake's minute of polling (take_driver), so a start that waited for the
 	// tester's turn to end would fail here rather than hang.
-	prompt := r.imp.takeTask("the head conflicts with " + conflictBase)
-	r.note("read back: the implementer took its fix task while the tester's turn ran (%s)", firstLine(prompt.Text))
+	fix := r.imp.takeTask("the head conflicts with " + conflictBase)
+	r.note("read back: the implementer took its fix task while the tester's turn ran (%s)", firstLine(fix.Text))
 	got := r.issue(r.key)
 	if got.Phase != phase.Implementing {
 		t.Fatalf("%s is in %s after the red, want implementing", r.key, got.Phase)
@@ -229,7 +229,7 @@ func (r *conflictNoTakeoverLive) redStartsAtOnce() {
 	r.note("read back: when the start acted the tester was still %s on delivery %s, the one it confirmed before the red",
 		held.State, held.Pending.ID)
 	r.test.silent(liveSettle)
-	r.note("read back over %s: the daemon sent the tester's connection nothing at all — no abort (the frame is gone), no shutdown, no prompt", liveSettle)
+	r.note("read back over %s: the daemon sent the tester's connection nothing at all — no abort (the frame is gone), no shutdown", liveSettle)
 	after := r.d.claim(r.test.token)
 	if after.State != string(supervise.StateWorking) || after.Pending == nil || after.Pending.ID != before.Pending.ID {
 		t.Fatalf("the tester is %s holding %+v after the red settled, want it still working its own delivery", after.State, after.Pending)
@@ -313,8 +313,8 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	// writes for that work, at that head, never with the record or the head the refused completion
 	// named, and it is taken.
 	r.test.endTurn()
-	prompt := r.test.takeTask("Phase: testing")
-	r.note("read back: the tester's first turn ended and it took the second assignment's task (%s)", firstLine(prompt.Text))
+	task := r.test.takeTask("Phase: testing")
+	r.note("read back: the tester's first turn ended and it took the second assignment's task (%s)", firstLine(task.Text))
 	second := r.test.handoff("test")
 	if status, failure := r.test.complete("tested the fix", conflictSecondHead, "pass", second); status != http.StatusOK {
 		t.Fatalf("the completion from the tester's new turn = %d %s %s, want 200", status, failure.Code, failure.Error)
@@ -329,7 +329,7 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 // session holds its role topic. A red in reviewing ends the reviewer's phase: the phase-ended row
 // is published to a topic the listener answers "no live session holds the role" (notify.ErrNoHolder),
 // which finishes the row rather than retrying it for ever, and the start acts all the same — the
-// implementer is prompted the new fix task.
+// implementer takes the new fix task.
 func (r *conflictNoTakeoverLive) noHolderFinishesTheRow() {
 	t := r.t
 	topic := notify.RoleTopicPrefix + string(r.reviewer)
@@ -341,8 +341,8 @@ func (r *conflictNoTakeoverLive) noHolderFinishesTheRow() {
 	r.driveConflict()
 	r.note("drove the base of %s past %s, so GitHub answers its head conflicting, while the issue is in reviewing", r.key, conflictThirdHead)
 
-	prompt := r.imp.takeTask("the head conflicts with " + conflictBase)
-	r.note("read back: the start still acted — the implementer took its fix task (%s)", firstLine(prompt.Text))
+	fix := r.imp.takeTask("the head conflicts with " + conflictBase)
+	r.note("read back: the start still acted — the implementer took its fix task (%s)", firstLine(fix.Text))
 	if got := r.issue(r.key); got.Phase != phase.Implementing {
 		t.Fatalf("%s is in %s after the red in reviewing, want implementing", r.key, got.Phase)
 	}

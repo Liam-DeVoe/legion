@@ -1271,16 +1271,11 @@ func (d *taskDaemon) reported() claim.TurnOutcomeRequest {
 	}
 }
 
-// takingRig is a bridge whose pane names the stand-in daemon, which it reports its turns to and
-// takes its claim's task from.
-type takingRig struct {
-	*rig
-	daemon *taskDaemon
-}
-
 // newTakingRig runs a resumed session's bridge whose pane names d at url — d's own server,
-// started here, when url is "" — and which sends its seen reports and takes with calls.
-func newTakingRig(t *testing.T, d *taskDaemon, url string, calls daemonCalls) *takingRig {
+// started here, when url is "" — and which sends its seen reports and takes with calls. It is a
+// plain *rig: the stand-in daemon is the d the caller already holds, so the rig keeps no second
+// handle to it.
+func newTakingRig(t *testing.T, d *taskDaemon, url string, calls daemonCalls) *rig {
 	t.Helper()
 	tokenFile := filepath.Join(t.TempDir(), "boot-token")
 	if err := os.WriteFile(tokenFile, []byte(testBootToken+"\n"), 0o600); err != nil {
@@ -1295,7 +1290,7 @@ func newTakingRig(t *testing.T, d *taskDaemon, url string, calls daemonCalls) *t
 		"LEGION_BOOT_TOKEN_FILE=" + tokenFile,
 		"LEGION_GENERATION=4",
 	}, calls, "-p", "--resume", sessionID)
-	return &takingRig{rig: r, daemon: d}
+	return r
 }
 
 // handTask hands the bridge the claim's task value as claude-envoy writes it to the inbox

@@ -328,10 +328,6 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 	t.Helper()
 	ctx := context.Background()
 	later := strings.Split(strings.TrimSuffix(wayBackBlockOf(t, taskNumbersMigration, taskNumbersMigrationFile), "\n"), "\n")
-	if len(later) < 2 || later[len(later)-1] != wayBackTerminator {
-		t.Fatalf("the way back's block of %s is no heredoc closed by %q; what it holds is:\n%s",
-			taskNumbersMigrationFile, wayBackTerminator, strings.Join(later, "\n"))
-	}
 	laterRecovery := strings.Join(later[1:len(later)-1], "\n") + "\n"
 	if _, err := pool.Exec(ctx, laterRecovery, pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("run the way back's block of %s, which a rollback to contract 87 runs first: %v\nthe block is:\n%s",

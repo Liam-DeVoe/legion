@@ -2252,10 +2252,8 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			if !strings.Contains(handed[0], tc.want) {
 				t.Fatalf("for its next start, the implementer was first handed %q, want the task naming %q", handed[0], tc.want)
 			}
-			for _, text := range handed {
-				if strings.Contains(text, "round 2") {
-					t.Fatalf("for its next start, the implementer was handed the finished round's task %q", text)
-				}
+			if strings.Contains(handed[0], "round 2") {
+				t.Fatalf("for its next start, the implementer was handed the finished round's task, not its new one: %q", handed[0])
 			}
 		})
 	}

@@ -244,7 +244,7 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 // The turn facts are events, in wire order, and an answer is not one of them: an answered
 // get_state, then OMP's agent_start, the tool call it makes, and its agent_end, then the close,
 // is exactly Hello, TurnStart, ToolStep, TurnEnd, Closed (F4, B4).
-func TestEventsCarryTheTurnInWireOrderAndNoAck(t *testing.T) {
+func TestEventsCarryTheTurnInWireOrderAndNoAnswer(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := dial(t, h.listener.Addr())
 	p.hello(testToken)

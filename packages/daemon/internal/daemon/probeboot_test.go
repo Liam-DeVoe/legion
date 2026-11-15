@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
 	"k8s.io/client-go/rest"
 
 	"github.com/sjawhar/envoy/legiontasks"
@@ -238,8 +239,15 @@ func TestProbeBootCreatesTheTaskBucketABootingDaemonOpens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the task bucket's status: %v", err)
 	}
-	if status.History() != 1 || status.TTL() != 0 || status.BackingStore() != "JetStream" {
-		t.Fatalf("the task bucket keeps %d revisions with TTL %s on %s, want one revision, no TTL, on JetStream", status.History(), status.TTL(), status.BackingStore())
+	if status.History() != 1 || status.TTL() != 0 {
+		t.Fatalf("the task bucket keeps %d revisions with TTL %s, want one revision and no TTL", status.History(), status.TTL())
+	}
+	stream, err := workflowJetStream(t, natsURL).Stream(ctx, legiontasks.Stream)
+	if err != nil {
+		t.Fatalf("read the task bucket's stream: %v", err)
+	}
+	if got := stream.CachedInfo().Config.Storage; got != jetstream.FileStorage {
+		t.Fatalf("the task bucket is on %s storage, want file storage (decision 4)", got)
 	}
 }
 

@@ -62,14 +62,17 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		if err := e.store.PutPullRequest(ctx, tx, *own); err != nil {
 			return intake.Result{}, err
 		}
-		// A base that moved is what takes a head from clean to behind, which is the one answer
-		// that holds an approved issue in reviewing, so every pull request this push moved is
-		// read for. The read is asked for here rather than from Apply's askMergeState because
+		// A base that moved is what takes a head from clean to behind, which holds an approved
+		// issue in reviewing, and what turns a head conflicting with no event of GitHub's own,
+		// which sends an issue back to implementing from testing, reviewing, accepting, retro or
+		// merging alike (mergeability, TriggerConflict); so every pull request this push moved is
+		// read for in each of those phases (askMergeStateFor with basePush set). The read is asked
+		// for here rather than from Apply's askMergeState because
 		// the line above has just overwritten what tells a redelivery from a first delivery: a
 		// second walk after the handler would find every pull request on the base recorded at
 		// this push's commit and ask for all of their reads again, however many times the push
 		// was delivered.
-		if err := e.askMergeStateFor(ctx, tx, own); err != nil {
+		if err := e.askMergeStateFor(ctx, tx, own, true); err != nil {
 			return intake.Result{}, err
 		}
 	}

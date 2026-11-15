@@ -702,7 +702,11 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	started := time.Now()
 	answered := make(chan compactRun, 1)
 	go func() {
-		out, err := r.legionClaimsTry("compact", "--claim", string(token))
+		// Oh My Pi writes the summary in two passes and the stand-in holds each for
+		// compactHeldSummary, so the compaction answers after about twice it. The command's --wait
+		// is a client bound apart from the daemon's own CompactTimeout, so it is given room past
+		// that or it would give up on a compaction that is still running as the step intends.
+		out, err := r.legionClaimsTry("compact", "--claim", string(token), "--wait", (4 * compactHeldSummary).String())
 		answered <- compactRun{out: out, err: err}
 	}()
 	r.awaitLogFrom("the claim to be taken for its compaction", from, time.Minute, func(record loggedRecord) bool {
