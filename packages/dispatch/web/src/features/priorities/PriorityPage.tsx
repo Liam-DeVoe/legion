@@ -16,6 +16,7 @@ import {
 } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
+import { useKeymapScope } from "../shell/keymap";
 import { InPlaceField } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
 import { PriorityMargin } from "./PriorityMargin";
@@ -39,8 +40,12 @@ const OWNER_FIELD = "priority-owner";
  * The description is an attribute of the priority node and not a Dispatch document, so this
  * page shows no versions, no comments on it and no anchors; there is no delete, since a
  * priority is retired by its state. What happened to it is beside the page, in the margin.
+ *
+ * The work table registers its keys in the `project` scope, which the page pushes, so the `j`
+ * and `k` the shortcut help lists for it walk its rows here as on a project's List.
  */
 export function PriorityPage(): ReactNode {
+  useKeymapScope("project");
   const { id = "" } = useParams();
   const priorities = useQuery(prioritiesQuery());
   const work = useQuery({ ...advancesIssuesQuery({ advances: id }, true), enabled: id !== "" });

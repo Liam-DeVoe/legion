@@ -10,6 +10,7 @@ import {
 import { focusOnDocument } from "../features/shell/roving";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL } from "./control-names";
+import { outOfSight } from "./focus-place";
 
 export interface SelectionBarProps {
   /** The bar's own element, for a page whose keymap puts the reader on it: Escape from a control
@@ -57,13 +58,15 @@ export interface SelectionBarProps {
  * goes from it: **Select all**, which the bar stops offering once it has run. The page only names
  * the target; the hand-off itself is the bar's. A bar that goes while the focus is elsewhere moves
  * nothing, and neither does one whose going left the focus somewhere other than the body, since
- * the reader put it there, nor the later going of a control the reader had moved the focus off.
+ * the reader put it there, nor the later going of a control the reader had moved the focus off,
+ * nor the going of one they had scrolled out of their sight - the bar's line of actions scrolls
+ * sideways - which the page's focus rescue answers as it answers every such loss (`outOfSight`).
  */
 export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactNode {
-  // Set by the drawn bar when the focus it held drops with what held it - the bar's element, as
-  // it goes, or the focused control inside a bar that stays - and read after the commit that took
-  // it away.
-  const wentHolding = useRef(false);
+  // Set by the drawn bar to what held the focus when the focus dropped with it - the bar's
+  // element, or a control in it, as the bar goes, or the focused control inside a bar that stays -
+  // and read after the commit that took it away.
+  const wentHolding = useRef<Element | null>(null);
   // After every commit, so after the one that removed the bar's element, or the control, and
   // dropped the focus with it. No dependency list: the `returnFocus` called is this commit's own,
   // so a page that hands a new function on every render starts nothing by it. Passive rather than
@@ -71,9 +74,10 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
   // which runs in the layout phase after this bar's own layout effects and would scroll the list
   // back over the target that focusing brought into view.
   useEffect(() => {
-    if (!wentHolding.current) return;
-    wentHolding.current = false;
-    if (focusOnDocument()) returnFocus?.()?.focus();
+    const held = wentHolding.current;
+    if (held === null) return;
+    wentHolding.current = null;
+    if (focusOnDocument() && !outOfSight(held)) returnFocus?.()?.focus();
   });
   if (bar.count === 0 && bar.state === undefined) return null;
   return <DrawnBar {...bar} wentHolding={wentHolding} />;
@@ -89,8 +93,9 @@ function DrawnBar({
   state,
   wentHolding,
 }: Omit<SelectionBarProps, "returnFocus"> & {
-  /** Set when the bar, or the control inside it that held the focus, goes with the focus. */
-  readonly wentHolding: RefObject<boolean>;
+  /** Set to what held the focus when the bar, or the control inside it that held the focus, goes
+   *  with it. */
+  readonly wentHolding: RefObject<Element | null>;
 }): ReactNode {
   const ownRef = useRef<HTMLElement>(null);
   const ref = barRef ?? ownRef;
@@ -102,7 +107,8 @@ function DrawnBar({
   useLayoutEffect(() => {
     const node = ref.current;
     return () => {
-      if (node?.contains(document.activeElement) === true) wentHolding.current = true;
+      if (node?.contains(document.activeElement) === true)
+        wentHolding.current = document.activeElement;
     };
   }, [ref, wentHolding]);
   // After every render that leaves the bar drawn. A press can take the focused control out of a
@@ -117,7 +123,7 @@ function DrawnBar({
     const held = focused.current;
     if (held === null || held === document.activeElement) return;
     focused.current = null;
-    if (!held.isConnected && focusOnDocument()) wentHolding.current = true;
+    if (!held.isConnected && focusOnDocument()) wentHolding.current = held;
   });
   return (
     <div

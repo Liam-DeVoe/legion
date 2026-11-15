@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, useState } from "react";
 
+import { useFocusRescue } from "./focus-place";
 import { SelectionBar } from "./SelectionBar";
 
 /**
@@ -285,5 +286,40 @@ test("a control the reader moved the focus off moves nothing when it later goes 
     expect(asked).toBe(1);
   } finally {
     view.unmount();
+  }
+});
+
+// INFRA-3135's review round 1, R10: the bar's hand-off keeps the rescue's rule. The bar's line
+// of actions scrolls sideways, and the reader had scrolled it so far that the focused Clear
+// selection was out of their sight when a refetch emptied the selection and took the bar away.
+// Read from the rescue's own record of what the reader can see, the bar hands the focus to no
+// row, so the list is not scrolled to one the reader did not pick.
+test("the bar going with a control the reader scrolled out of sight hands the focus to nothing", () => {
+  const rescue = renderHook(() => useFocusRescue({ current: null }));
+  let asked = 0;
+  const returnFocus = () => {
+    asked += 1;
+    return rowBox("CORE-2");
+  };
+  const view = render(<MarkedList count={2} returnFocus={returnFocus} />);
+  try {
+    const clear = screen.getByRole("button", { name: "Clear selection" });
+    act(() => clear.focus());
+    // The line 300 px wide at the foot of the window, scrolled until Clear selection is 400 px
+    // past its left edge.
+    const line = clear.parentElement as HTMLElement;
+    line.getBoundingClientRect = () => new DOMRect(0, 700, 300, 44);
+    clear.getBoundingClientRect = () => new DOMRect(-400, 704, 120, 36);
+    act(() => {
+      line.dispatchEvent(new Event("scroll"));
+    });
+    view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(rowBox("CORE-2")).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
+    expect(asked).toBe(0);
+  } finally {
+    view.unmount();
+    rescue.unmount();
   }
 });

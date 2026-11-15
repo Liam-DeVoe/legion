@@ -24,6 +24,14 @@ export function focusableIn(container: Element): HTMLElement[] {
   );
 }
 
+/** A ref that focuses its element once, as it enters the page: React calls a ref callback again
+ *  only when the callback itself is a new one, so this single function never pulls the focus back
+ *  on a later render, after the reader has moved it on (AskCard's **Ask back instead**, the issue
+ *  title's editor). */
+export function focusOnMount(element: HTMLElement | null): void {
+  element?.focus();
+}
+
 /** Where a hand-off sends the focus a control took away with it, nearest first: the control now
  *  at `index` in `controls`, then each control before that place, walking back. However many
  *  controls went together, the focus lands where they were, and by the same walk in every engine
@@ -75,7 +83,11 @@ interface Place {
  * The check runs after every commit of the component, so after the one that took the element
  * away, and moves the focus only when the element has left the page and the focus is on the
  * body. An element still in the page that no longer holds the focus is one the reader moved off,
- * so it is forgotten, and its going later moves nothing.
+ * so it is forgotten, and its going later moves nothing. Nor does the going of an element the
+ * reader had scrolled out of their sight (`outOfSight`), the page's rescue's rule read from the
+ * rescue's own record: a live update taking a control out of a row drawn beyond the view, or
+ * Mark all read going while the reader is scrolled away, pulls neither a list nor the page back
+ * to the control at its place.
  */
 export function useFocusPlace(
   containerOf: (element: Element) => Element | null,
@@ -95,7 +107,7 @@ export function useFocusPlace(
       return;
     }
     place.current = null;
-    if (held.element.isConnected || !focusOnDocument()) return;
+    if (held.element.isConnected || !focusOnDocument() || outOfSight(held.element)) return;
     const placed = held.container.isConnected
       ? placesFrom(focusableIn(held.container), held.index)[0]
       : undefined;
@@ -193,7 +205,7 @@ function land(element: HTMLElement): boolean {
 }
 
 /** Whether any part of `element` is in the reader's sight: its box meets the viewport and every
- *  box in `boxes`, the scroll boxes around it that have scrolled. An element whose edge only
+ *  box in `boxes`, the boxes around it that can hide it (`Sight`). An element whose edge only
  *  touches the edge of what is in sight counts as in sight. */
 function inSight(element: Element, boxes: Iterable<Element>): boolean {
   let top = 0;
@@ -211,14 +223,52 @@ function inSight(element: Element, boxes: Iterable<Element>): boolean {
   return drawn.bottom >= top && drawn.top <= bottom && drawn.right >= left && drawn.left <= right;
 }
 
+/** The overflow values that clip what overflows a box. */
+const CLIPPING_OVERFLOW: Record<string, true> = {
+  auto: true,
+  clip: true,
+  hidden: true,
+  scroll: true,
+};
+
+/** The boxes around `element` that clip what overflows them, nearest first: every ancestor whose
+ *  overflow clips (`CLIPPING_OVERFLOW`), short of the body and the root, whose overflow is the
+ *  viewport's. */
+function clippingBoxes(element: Element): Element[] {
+  const boxes: Element[] = [];
+  for (
+    let box = element.parentElement;
+    box !== null && box !== document.body && box !== document.documentElement;
+    box = box.parentElement
+  ) {
+    const { overflowX, overflowY } = getComputedStyle(box);
+    if (CLIPPING_OVERFLOW[overflowX] || CLIPPING_OVERFLOW[overflowY]) boxes.push(box);
+  }
+  return boxes;
+}
+
 /** The element the focus was last noted on, and whether the reader can still see it: read off
- *  every scroll that can move it - the page's, or a box's around it, which `boxes` keeps - while
- *  it is in the page. The rescue reads it when it answers a loss of that element, which may have
- *  gone by then, so it holds what the last scroll before that saw. */
+ *  every scroll that can move it - the page's, or a box's around it, which `boxes` keeps - and
+ *  every resize of the window, against every box around it that clips it, which `boxes` keeps
+ *  from then on, while it is in the page and drawn. The rescue reads it when it answers a loss
+ *  of that element, which may have gone by then, so it holds what the last read before that saw. */
 interface Sight {
   readonly boxes: Set<Element>;
   readonly element: HTMLElement;
   seen: boolean;
+}
+
+/** The page's one record of what the reader can see of the element the focus was last noted on,
+ *  which the page's rescue keeps (`useFocusRescue`), mounted once in the app shell: null while no
+ *  rescue is mounted. The component hand-offs read it too, so one record decides for all. */
+let sight: Sight | null = null;
+
+/** Whether the reader had scrolled `element` out of their sight, as the page's rescue last read
+ *  it: false for an element the rescue has not noted, and wherever no rescue is mounted. Every
+ *  hand-off asks this of the element that went before it moves the focus, so none pulls a list
+ *  or the page back to a place the reader scrolled away from (`useFocusPlace`, `SelectionBar`). */
+export function outOfSight(element: Element): boolean {
+  return sight?.element === element && !sight.seen;
 }
 
 /** Answers a loss the reader can no longer see, in a region still in the page: nothing scrolls,
@@ -406,11 +456,17 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * the noted element, the page's or a box's around it, reads whether any of it is still in sight
  * (`Sight`), while a loss of it could still be answered; the document's capture listener hears a
  * box's scroll before the box's own listeners, so a virtual list that takes the row away in its
- * listener has it read while it is still in the page. Nothing scrolls and no control the reader
- * did not pick takes the focus, so neither a list nor the page is pulled back to a row the reader
+ * listener has it read while it is still in the page. So does every resize of the window, which
+ * can move the element with nothing scrolled - a box sized to the window shrinks under its row,
+ * which the virtual list may then stop drawing - read against every box around it that clips
+ * it, since none of them has to have scrolled. An element no longer drawn is read no more: what
+ * the last read before it went saw stands. Nothing scrolls and no control the reader did not
+ * pick takes the focus, so neither a list nor the page is pulled back to a row the reader
  * scrolled away from - a live update taking that row away, say - and their next key acts on
  * nothing they did not choose. The focus stays on the body, except in a dialog, which takes it
- * itself without a scroll, so the page behind a modal one is never reached (`leaveUnseen`).
+ * itself without a scroll, so the page behind a modal one is never reached (`leaveUnseen`). The
+ * record is the page's one (`outOfSight`), which the component hand-offs read too, so none of
+ * them answers such a loss before the rescue's check.
  */
 export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
   useEffect(() => {
@@ -425,12 +481,9 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     let moving: { from: Loss | null; to: Element } | null = null;
     /** Cancels the check or the wait still out for the latest loss. */
     let pending: (() => void) | null = null;
-    /** The element the focus was last noted on, and whether the reader can still see it. */
-    let sight: Sight | null = null;
     /** Whether the reader had scrolled `loss`'s element out of their sight before it went, in a
      *  region still in the page. */
-    const unseen = (loss: Loss) =>
-      sight?.element === loss.element && !sight.seen && present(loss.region);
+    const unseen = (loss: Loss) => outOfSight(loss.element) && present(loss.region);
 
     /** Waits for `loss`'s element, which the press disabled, to be enabled again or to go. */
     const wait = (loss: Loss): (() => void) => {
@@ -564,19 +617,35 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       pending = afterComponents(() => check(loss));
     });
     watcher.observe(document.body, { childList: true, subtree: true });
-    // A scroll that can move the noted element reads whether the reader can still see it, while a
-    // loss of it could still be answered: it holds the focus, or a check or a wait is out. A box's
+    /** The record a scroll or a resize reads into: the noted element's, while a loss of it could
+     *  still be answered - it holds the focus, or a check or a wait is out - and while the page
+     *  still draws it. A hidden element's box is the viewport's top-left corner, which would read
+     *  as in sight, so what the last read before it went saw stands. */
+    const readable = (): Sight | null => {
+      const watched = sight;
+      if (watched === null || (focused === null && pending === null)) return null;
+      return watched.element.isConnected && rendered(watched.element) ? watched : null;
+    };
+    // A scroll that can move the noted element reads whether the reader can still see it. A box's
     // `scroll` does not bubble; the document hears it in its capture phase, before the box's own
     // listeners.
     const noteScroll = (event: Event) => {
-      const watched = sight;
-      if (watched === null || (focused === null && pending === null)) return;
-      if (!watched.element.isConnected) return;
+      const watched = readable();
+      if (watched === null) return;
       const { target } = event;
       if (target instanceof Element) {
         if (!target.contains(watched.element)) return;
         watched.boxes.add(target);
       }
+      watched.seen = inSight(watched.element, watched.boxes);
+    };
+    // A resize moves the noted element with nothing scrolled - a shorter window, a zoom, a box
+    // sized to the window shrinking under it - so it reads against every box around it that clips
+    // it, none of which has to have scrolled, and keeps those boxes for the scrolls after it.
+    const noteResize = () => {
+      const watched = readable();
+      if (watched === null) return;
+      for (const box of clippingBoxes(watched.element)) watched.boxes.add(box);
       watched.seen = inSight(watched.element, watched.boxes);
     };
     const readerMoved = () => {
@@ -598,6 +667,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     document.addEventListener("pointerdown", readerMoved, true);
     document.addEventListener("keydown", noteEscape, true);
     document.addEventListener("scroll", noteScroll, { capture: true, passive: true });
+    window.addEventListener("resize", noteResize);
     return () => {
       watcher.disconnect();
       document.removeEventListener("focusin", noteFocus, true);
@@ -605,7 +675,9 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       document.removeEventListener("pointerdown", readerMoved, true);
       document.removeEventListener("keydown", noteEscape, true);
       document.removeEventListener("scroll", noteScroll, true);
+      window.removeEventListener("resize", noteResize);
       pending?.();
+      sight = null;
     };
   }, [main]);
 }

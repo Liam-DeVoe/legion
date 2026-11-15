@@ -140,6 +140,7 @@ function Deploys({
   highlighted,
   layoutColumns = LAYOUT_COLUMNS,
   layoutKey = "deploys",
+  names = DEPLOY_NAMES,
   noun = DEPLOY_NOUN,
   pageSize = 25,
   pager = DEPLOY_PAGER,
@@ -157,6 +158,8 @@ function Deploys({
   highlighted?: string;
   layoutColumns?: LayoutColumns;
   layoutKey?: string;
+  /** The caller's own words, which name the keys and where they are answered from. */
+  names?: DataTableNames;
   /** What this caller calls its rows, which its filters and its pager count in. */
   noun?: RowNoun;
   pageSize?: number;
@@ -189,7 +192,7 @@ function Deploys({
           },
         }),
     layout,
-    names: DEPLOY_NAMES,
+    names,
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange: setGlobalFilter,
     onGroupingChange: setGrouping,
@@ -275,7 +278,9 @@ function draw(tree: ReactNode, boxWidth?: number) {
     },
   });
   if (boxWidth !== undefined) {
-    const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    // On `Element.prototype`, which owns the method: bun's `mockRestore` leaves a copy on a
+    // prototype that only inherits it, which would hide every later test's spy on `Element`.
+    const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement
     ) {
       return new DOMRect(0, 0, this.dataset.testid?.endsWith("-scroll") ? boxWidth : 100, 40);
@@ -550,6 +555,64 @@ test("walks the rows by the attribute and the keymap scope the caller gives", as
   await user.keyboard("k");
   expect(rows[0]).toHaveFocus();
 });
+
+/** The same words for a table drawn beside the page's main one, as the priorities page draws its
+ *  fault lists beside the priorities: the same keys under the same ids, answered only from one of
+ *  this table's own rows. */
+const BESIDE_NAMES: DataTableNames = {
+  ...DEPLOY_NAMES,
+  keymap: { ...DEPLOY_NAMES.keymap, moveFrom: "row" },
+};
+
+// INFRA-3135's review round 1, R10: a page that draws several tables over the same keys - the
+// priorities page, whose priorities table and issue tables all take `j` and `k` - answers each
+// key from the table the focus is in. A table beside the main one walks its own rows from one of
+// them; the main one walks its rows from anywhere the focus is in no table, and from its own.
+// The keymap answers a key with the first registration whose `when` holds, so this holds in
+// either order the tables register in, with rows of the same ids under the same attribute.
+for (const order of [
+  ["main", "beside"],
+  ["beside", "main"],
+]) {
+  test(`each of two tables on a page answers its keys from its own rows, and the main one from outside every table (${order.join(" before ")})`, async () => {
+    const user = userEvent.setup();
+    draw(
+      <KeymapProvider>
+        <Scope />
+        {order.map((key) => (
+          <Deploys key={key} layoutKey={key} names={key === "main" ? DEPLOY_NAMES : BESIDE_NAMES} />
+        ))}
+      </KeymapProvider>
+    );
+    await screen.findByRole("table", { name: "Deploys beside" });
+    const [main, beside] = ["main", "beside"].map((key) => [
+      ...screen
+        .getByRole("table", { name: `Deploys ${key}` })
+        .querySelectorAll<HTMLElement>("[data-deploy-row]"),
+    ]);
+
+    // Nowhere in a table: the main table's first row.
+    await user.keyboard("j");
+    expect(main?.[0], "j from the page").toHaveFocus();
+    // In a row of the table beside it: that table's own next and previous rows.
+    act(() => beside?.[0]?.focus());
+    await user.keyboard("j");
+    expect(beside?.[1], "j from the table beside").toHaveFocus();
+    await user.keyboard("k");
+    expect(beside?.[0], "k from the table beside").toHaveFocus();
+    // Back in a row of the main table: its own.
+    act(() => main?.[1]?.focus());
+    await user.keyboard("j");
+    expect(main?.[2], "j from the main table").toHaveFocus();
+    // On a control of the table beside that is no row: neither table takes the key.
+    const sort = within(screen.getByRole("table", { name: "Deploys beside" })).getByRole("button", {
+      name: "Minutes",
+    });
+    act(() => sort.focus());
+    await user.keyboard("j");
+    expect(sort, "j from the header of the table beside").toHaveFocus();
+  });
+}
 
 // R10, one test per thing a caller of the core decides. Each names the caller that asked for
 // it: the priorities page of dispatch://INFRA-2947, the evals tab of dispatch://INFRA-2918, or

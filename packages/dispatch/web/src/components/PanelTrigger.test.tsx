@@ -380,11 +380,45 @@ test("a group of radios is one Tab stop: Tab from the chosen radio of the panel'
   }
 });
 
+// INFRA-3135's review round 1, R10: opening a panel puts the focus on its first control by the
+// rule its Tab stops and every dialog's trap follow (`focusableIn`): a disabled button takes no
+// focus, so the focus goes on to the first control that does - a link included - and a panel
+// with no control takes the focus itself, so the reader is in the panel they opened either way.
+test("opening a panel puts the focus on its first control that takes the focus, else on the panel", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <PanelInDialog>
+      <button disabled type="button">
+        Saved views
+      </button>
+      <a href="/help">How filters work</a>
+    </PanelInDialog>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    expect(screen.getByRole("link", { name: "How filters work" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+  const prose = render(
+    <PanelInDialog>
+      <p>No filter applies to this list.</p>
+    </PanelInDialog>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    expect(screen.getByRole("dialog", { name: "Filter" })).toHaveFocus();
+  } finally {
+    prose.unmount();
+  }
+});
+
 /** Lays out what happy-dom does not: `trigger` drawn 28 px tall from `top`, and every panel
- *  `panelHeight` tall. Answers what puts happy-dom's own layout back. */
+ *  holding `panelHeight` px of content, which is what the placement reads of it (`scrollHeight`,
+ *  with no border). Answers what puts happy-dom's own layout back. */
 function layOut(trigger: HTMLElement, top: number, panelHeight: number): () => void {
-  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
-  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
     configurable: true,
     get(this: HTMLElement) {
       return this.getAttribute("role") === "dialog" ? panelHeight : 0;
@@ -402,8 +436,8 @@ function layOut(trigger: HTMLElement, top: number, panelHeight: number): () => v
       y: top,
     }) as DOMRect;
   return () => {
-    if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
-    else Object.defineProperty(HTMLElement.prototype, "offsetHeight", own);
+    if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+    else Object.defineProperty(HTMLElement.prototype, "scrollHeight", own);
   };
 }
 

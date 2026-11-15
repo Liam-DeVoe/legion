@@ -805,3 +805,74 @@ test("a control scrolled out of sight while its write is out is left alone when 
     scrolls.mockRestore();
   }
 });
+
+// (ae) A resize can put the focused element out of the reader's sight with nothing scrolled: a
+// shorter window, or a zoom, shrinks the box a table is sized to under its focused row, and the
+// virtual list may then stop drawing that row. The resize reads the sight again, against every
+// box around the element that clips what overflows it - this box has never scrolled - so the
+// row's removal after it moves nothing and scrolls nothing. A resize that leaves the row in its
+// box changes nothing: its removal is answered as before. INFRA-3135's review round 1, R10.
+test("a resize that puts the focused row out of its box, then the row's removal, moves nothing", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await withRescue(async () => {
+      const { box, buttons } = scrollBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      box.style.overflowY = "auto";
+      const [, second, third] = buttons;
+      second?.focus();
+      // Under the box's bottom edge at 400 px, where the window still holds it.
+      placeAt(second as HTMLElement, 450);
+      window.dispatchEvent(new Event("resize"));
+      second?.remove();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(third).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+  await withRescue(async () => {
+    const { box, buttons } = scrollBoxIn(mainOf("Before").main, "One", "Two", "Three");
+    box.style.overflowY = "auto";
+    const [, second, third] = buttons;
+    second?.focus();
+    placeAt(second as HTMLElement, 300);
+    window.dispatchEvent(new Event("resize"));
+    second?.remove();
+    await waitFor(() => expect(third).toHaveFocus());
+  });
+});
+
+// (af) An element the page no longer draws is no longer read: a hidden one's box is the
+// viewport's top-left corner, which a read would count as in sight. A control the reader's press
+// disabled, scrolled out of their sight while its write was out, and then hidden, stays out of
+// their sight however many scrolls land before the wait settles, so the focus is handed to no
+// control and nothing scrolls. INFRA-3135's review round 1, R10.
+test("a control hidden after the reader scrolled it out of sight stays out of sight at the scrolls after", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await withRescue(async () => {
+      const [, saving, after] = mainOf("Before", "Save", "After").buttons;
+      const button = saving as HTMLButtonElement;
+      button.focus();
+      button.blur();
+      button.disabled = true;
+      await settled();
+      placeAt(button, 5_000);
+      document.dispatchEvent(new Event("scroll"));
+      // Hidden: the box a browser gives an element under `[hidden]`, and one more page scroll
+      // before the wait settles.
+      button.hidden = true;
+      button.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);
+      document.dispatchEvent(new Event("scroll"));
+      await settled();
+      await settled();
+      expect(document.activeElement).toBe(document.body);
+      expect(after).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+});

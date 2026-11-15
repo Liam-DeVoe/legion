@@ -15,9 +15,10 @@ export interface NestedPanel {
  * panel starts with none.
  *
  * Nothing here refuses the filter panel's own close. `AnchoredPanel` counts a press in an inner
- * panel as a press in the filter panel, so no page has an outside press to refuse; and Escape,
- * or Tab past the filter panel's end, always closes the filter panel, inner panel and all, so a
- * reader who has left an inner list is never held in the panel behind it.
+ * panel as a press in the filter panel, so no page has an outside press to refuse. Escape, or Tab
+ * or Shift+Tab past either end of the filter panel itself, closes it with any inner panel; pressed
+ * in an inner list, they close that list alone and put the reader back on its trigger in the
+ * filter panel. So a reader who has left an inner list is never held in the panel behind it.
  *
  * Answers, for each inner panel's name, the props its trigger takes. Opening one shuts whichever
  * was open; a close that reaches one already replaced leaves the replacement alone.

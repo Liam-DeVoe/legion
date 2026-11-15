@@ -374,8 +374,8 @@ const FILTER_REMOVALS: Record<SearchFilterName, SearchBarFilters> = {
   updatedSince: { updatedSince: undefined },
 };
 
-/** Which narrowing has a list of its own open inside the panel: one at a time, as on the Delivery
- *  page's facets. */
+/** The two lists the panel opens inside itself, which `useNestedPanels` keeps one open at a time,
+ *  as the Delivery page's facets are. */
 type FilterMenuName = "project" | "status";
 
 /**

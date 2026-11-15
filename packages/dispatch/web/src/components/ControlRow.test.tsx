@@ -1,9 +1,10 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { ControlRow, type ControlRowProps } from "./ControlRow";
+import { useFocusRescue } from "./focus-place";
 
 /**
  * Tailwind's own definitions of the utilities the row's height rule is written in. happy-dom
@@ -576,6 +577,70 @@ test("a page's own control that takes itself away hands the focus to the next co
     await user.keyboard("{Enter}");
     expect(screen.queryByRole("button", { name: "Blocked on you" })).toBeNull();
     expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The shell's main content holding a row whose page slot draws exactly `names`, as a live update
+ *  leaves them, with the page's focus rescue mounted on it as `app.tsx` mounts it. */
+function LivePage({ names }: { names: readonly string[] }) {
+  const main = useRef<HTMLElement>(null);
+  useFocusRescue(main);
+  return (
+    <main ref={main}>
+      <ControlRow
+        trigger={
+          <button data-control="panel-trigger" type="button">
+            Filter
+          </button>
+        }
+      >
+        {names.map((name) => (
+          <button key={name} type="button">
+            {name}
+          </button>
+        ))}
+      </ControlRow>
+    </main>
+  );
+}
+
+/** Lets the rescue's own check run: a frame and then a task after a loss, so a frame and two
+ *  zero-delay turns of the event loop here come after it. */
+async function afterRescue(): Promise<void> {
+  await act(async () => {
+    const drawn = Promise.withResolvers<void>();
+    requestAnimationFrame(() => drawn.resolve());
+    await drawn.promise;
+    for (const _ of [0, 1]) {
+      const turn = Promise.withResolvers<void>();
+      setTimeout(turn.resolve, 0);
+      await turn.promise;
+    }
+  });
+}
+
+// INFRA-3135's review round 1, R10: a live update - the last unread item read in another tab -
+// takes Mark all read away while it holds the focus, after the reader scrolled it out of their
+// sight. The slot's hand-off keeps the rescue's rule, read from the rescue's own record of what
+// the reader can see: it hands the focus to no control, so neither Blocked on you takes it nor
+// the page is scrolled back to the row.
+test("a page's own control the reader scrolled out of sight goes with a live update and hands the focus to nothing", async () => {
+  const view = render(<LivePage names={["Mark all read", "Blocked on you"]} />);
+  try {
+    const mark = screen.getByRole("button", { name: "Mark all read" });
+    act(() => mark.focus());
+    // The page scrolled the row 2,000 px above the window's top edge.
+    mark.getBoundingClientRect = () => new DOMRect(0, -2_000, 120, 44);
+    act(() => {
+      document.dispatchEvent(new Event("scroll"));
+    });
+    view.rerender(<LivePage names={["Blocked on you"]} />);
+    await afterRescue();
+    expect(screen.queryByRole("button", { name: "Mark all read" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Blocked on you" })).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
   } finally {
     view.unmount();
   }

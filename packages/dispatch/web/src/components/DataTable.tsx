@@ -382,9 +382,9 @@ export interface DataTableProps<Row> {
   /** Draws the filter in a header cell, for every column that filters. */
   readonly renderFilter?: ColumnFilterRenderer<Row>;
   /** The column whose header stacks its sort and its filter one above the other in a box under
-   *  640 px, where the two side by side leave the name of a narrow column unreadable. The List
-   *  and the priorities table each name their `title`; a caller that names none stacks none, and
-   *  every header keeps the two side by side at every width. */
+   *  640 px, where the two side by side leave the name of a narrow column unreadable. The List,
+   *  the priorities table and the Delivery list each name their `title`; a caller that names none
+   *  stacks none, and every header keeps the two side by side at every width. */
   readonly stackColumn?: string;
   /** The width of a last, unheaded column that each row draws itself (`DataTableCells`'
    *  `trailing`). */

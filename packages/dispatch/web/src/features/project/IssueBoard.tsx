@@ -367,8 +367,12 @@ export function IssueBoard({
   const [pressedOpen, setPressedOpen] = useState(false);
   /** The reader's own open or close of the panel - the trigger's press either way, Escape, Tab
    *  past either end, a press outside it that closes it - which is the one thing that writes the
-   *  stored choice, and only when it changes what the panel shows. A chip's removal, a press
-   *  while the panel is shut and the choice read again on a new identity write nothing. */
+   *  stored choice, and only when it changes what the panel shows. A press while the panel is
+   *  shut, a chip's removal while it is shut or from the keyboard beside a panel the stored
+   *  choice opened, and the choice read again on a new identity write nothing. A pointer press on
+   *  a chip while the panel is open is a press outside it - the chips sit in the control row, and
+   *  the panel is portalled over the page - so it closes the panel and writes that close, as any
+   *  press outside it does. */
   const openFilterPanel = (open: boolean) => {
     setPressedOpen(open);
     if (open !== filtersExpanded) setFiltersExpanded(open);

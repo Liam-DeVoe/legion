@@ -22,6 +22,7 @@ import type {
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
+import { focusOnMount } from "../../components/focus-place";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -625,7 +626,7 @@ export function AskCard({
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
         disabled={isSubmitting}
         onClick={sendClarification}
-        ref={(node) => node?.focus()}
+        ref={focusOnMount}
         type="button"
       >
         {clarification.isPending ? "Sending…" : "Ask back instead"}

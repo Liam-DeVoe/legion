@@ -4824,6 +4824,60 @@ test("the Agents page draws part of a long list, with its scrollbar measuring th
   }
 });
 
+// INFRA-3135's review round 1, R10: the window draws a part of the list, so a screen reader that
+// counted the drawn items would hear a list of twenty-odd where the page holds sixty-four, and no
+// item would say where it sits. The box is a list, and each drawn item - a group's heading or a
+// session's card - says how many items the whole list holds and its own place among them, drawn
+// or not, before a scroll and after one.
+test("the windowed list tells a screen reader how many items it holds and where each drawn one sits", async () => {
+  const listed = manySessions(60);
+  const layout = scrollingList();
+  const page = renderAgents({ listedAgents: listed });
+  // The page's order: each group's heading, with the sixty Idle sessions under theirs.
+  const order = [
+    "group:needs-you",
+    "group:active",
+    "group:idle",
+    ...listed.map((agent) => agent.session_id),
+    "group:quiet",
+  ];
+  /** The list's own items, as each says its place - its key, `aria-posinset`, `aria-setsize` -
+   *  read by the roles a screen reader reads them by, which leave a hidden item out. */
+  const places = () => {
+    const region = screen.getByRole("region", { name: "Agents" });
+    const list = within(region)
+      .getAllByRole("list")
+      .find((each) => each.matches("[data-agents-list]"));
+    expect(list).toBeDefined();
+    return within(list as HTMLElement)
+      .getAllByRole("listitem")
+      .filter((item) => item.parentElement === list)
+      .map((item) => [
+        item.getAttribute("data-row-key"),
+        item.getAttribute("aria-posinset"),
+        item.getAttribute("aria-setsize"),
+      ]);
+  };
+  const expected = () =>
+    places().map(([key]) => [key, String(order.indexOf(key ?? "") + 1), String(order.length)]);
+
+  try {
+    await within(await screen.findByRole("region", { name: "Agents" })).findByText("Session 00", {
+      exact: true,
+    });
+    expect(places().length).toBeLessThan(order.length);
+    expect(places()[0]).toEqual(["group:needs-you", "1", "64"]);
+    expect(places()).toEqual(expected());
+    layout.scrollTo(2_000);
+    expect(places()[0]?.[1]).not.toBe("1");
+    expect(places()).toEqual(expected());
+  } finally {
+    layout.restore();
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // D1: an open row holds the reply target, the unread set and the composer's draft, so the window
 // draws it wherever it has scrolled to. A plain window would unmount it with the scroll and the
 // draft would be gone when the reader scrolled back.

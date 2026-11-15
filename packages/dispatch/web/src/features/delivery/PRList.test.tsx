@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
@@ -304,6 +304,31 @@ test("the list registers no select key, so the shortcut help lists no x for it",
     expect(await taken(user, "x")).toBe(false);
   } finally {
     cleanup();
+    restore();
+  }
+});
+
+// INFRA-3135's review round 1, R10: the List and the priorities table name their title column as
+// the one whose header stacks in a box under 640 px; the Delivery list named none, so on a phone
+// its Title header was drawn as no other table's is. It names its `title` too.
+test("the list stacks its title's header in a box under 640 px, and no other", () => {
+  const restore = measureBoxAt(10 * ROW_HEIGHT_PX);
+  // On `Element.prototype`, which owns the method: bun's `mockRestore` leaves a copy on a
+  // prototype that only inherits it, which would hide every later test's spy on `Element`.
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return new DOMRect(0, 0, this.dataset.testid === "delivery-pr-list" ? 390 : 100, 40);
+  });
+  try {
+    renderList(prs(3));
+    const header = (name: RegExp) =>
+      screen.getByRole("columnheader", { name }).querySelector("span");
+    expect(header(/^Title/)).toHaveClass("flex-col");
+    expect(header(/^Author/)).not.toHaveClass("flex-col");
+  } finally {
+    cleanup();
+    rect.mockRestore();
     restore();
   }
 });

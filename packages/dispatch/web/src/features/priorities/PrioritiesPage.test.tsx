@@ -1,11 +1,13 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -148,7 +150,9 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   const view = render(
     <MemoryRouter initialEntries={["/priorities"]}>
       <QueryClientProvider client={client}>
-        <PrioritiesPage />
+        <KeymapProvider>
+          <PrioritiesPage />
+        </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -600,7 +604,9 @@ test("a grouped table counts each group in the plural its rows are called by", a
 // unreadable, so the title's header stacks the two. The core stacks only the column its caller
 // names, and this table names its `title`, as the project List does.
 test("the priorities table stacks its title's header in a box under 640 px", async () => {
-  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  // On `Element.prototype`, which owns the method: bun's `mockRestore` leaves a copy on a
+  // prototype that only inherits it, which would hide every later test's spy on `Element`.
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return new DOMRect(0, 0, this.dataset.testid?.endsWith("-scroll") ? 390 : 100, 40);
@@ -620,4 +626,80 @@ test("the priorities table stacks its title's header in a box under 640 px", asy
       .getByRole("columnheader", { name: /^Owner/ })
       .querySelector("span")
   ).not.toHaveClass("flex-col");
+});
+
+// INFRA-3135's review round 1, R10: the priorities table registered `x`, "Select or deselect the
+// priority", though the table selects nothing, so the shortcut help listed a key that did
+// nothing. It registers no select key, as the Delivery list does.
+test("the priorities table registers no select key, so the shortcut help lists no x for it", async () => {
+  page(FIFTEEN);
+  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  expect(
+    appKeymap
+      .describe()
+      .filter((entry) => entry.id.startsWith("priorities-"))
+      .map((entry) => [entry.id, entry.keys])
+  ).toEqual([
+    ["priorities-next", ["j"]],
+    ["priorities-previous", ["k"]],
+    ["priorities-open", ["o"]],
+    ["priorities-open-enter", ["Enter"]],
+  ]);
+});
+
+/** The rows `table` draws under `attribute`, in the order it draws them. */
+function rowsOf(table: HTMLElement, attribute: string): HTMLElement[] {
+  return [...table.querySelectorAll<HTMLElement>(`[${attribute}]`)];
+}
+
+// INFRA-3135's review round 1, R10: the page draws the priorities table and an issue table for
+// each fault, and one for an opened row's work, and every one of them registered `j` and `k`
+// page-wide in the `project` scope, a scope this page never pushed: measured here before the
+// change, `j` moved the focus nowhere at all. The page pushes the scope its tables register in;
+// the priorities table, the page's main one, walks its rows from anywhere the focus is in no
+// table; and each issue table walks its own rows from one of them.
+test("j and k walk the priorities from outside every table, and each issue table's rows from one of its own", async () => {
+  const user = userEvent.setup();
+  page(
+    body({
+      ...FIFTEEN,
+      work_under_no_priority: { by_project: { CORE: 2 }, count: 2, issues: null },
+    }),
+    [
+      issue("CORE-1"),
+      issue("CORE-2"),
+      issue("OPS-1", ["legion-first"]),
+      issue("OPS-2", ["legion-first"]),
+    ]
+  );
+  const priorities = await screen.findByRole("table", { name: "Priorities table" });
+  const faults = await screen.findByRole("table", {
+    name: "Issues in flight under no priority table",
+  });
+  await within(faults).findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const priorityRows = rowsOf(priorities, "data-priority-row");
+  const faultRows = rowsOf(faults, "data-issue-row");
+
+  // From the page, where no table holds the focus: the priorities.
+  await user.keyboard("j");
+  expect(priorityRows[0], "j from the page").toHaveFocus();
+  await user.keyboard("j");
+  expect(priorityRows[1], "a second j").toHaveFocus();
+  // From a fault list's row: that list's own rows, not the priorities.
+  act(() => faultRows[0]?.focus());
+  await user.keyboard("j");
+  expect(faultRows[1], "j from a fault row").toHaveFocus();
+  await user.keyboard("k");
+  expect(faultRows[0], "k from a fault row").toHaveFocus();
+
+  // The work under an opened row is a table of its own: its rows walk it.
+  await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
+  const work = await screen.findByRole("region", {
+    name: "Work advancing Legion works reliably first",
+  });
+  await within(work).findByRole("row", { name: "OPS-2 Work OPS-2" });
+  const workRows = rowsOf(work, "data-issue-row");
+  act(() => workRows[0]?.focus());
+  await user.keyboard("j");
+  expect(workRows[1], "j from a row of the opened work").toHaveFocus();
 });

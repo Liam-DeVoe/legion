@@ -44,7 +44,9 @@ const NOUN: RowNoun = {
 };
 /** The priorities table's own words, which the table core reads and never invents: its rows'
  *  attributes, and the keys that walk them under ids of their own, beside the issue tables'
- *  `list-*` keys on the same page. */
+ *  `list-*` keys on the same page. It is the page's main table, so `j` and `k` walk it from
+ *  anywhere the focus is in no other table; each issue table beside it walks its own rows from
+ *  one of them. It selects nothing, so it names no select key. */
 const NAMES: DataTableNames = {
   groupAttribute: PRIORITY_GROUP_ATTRIBUTE,
   keymap: {
@@ -53,7 +55,6 @@ const NAMES: DataTableNames = {
     openOnEnter: { id: "priorities-open-enter", keys: "Enter", label: "Open the focused priority" },
     previous: { id: "priorities-previous", keys: "k", label: "Previous priority" },
     scope: "project",
-    select: { id: "priorities-select", keys: "x", label: "Select or deselect the priority" },
   },
   linkAttribute: PRIORITY_LINK_ATTRIBUTE,
   rowAttribute: PRIORITY_ROW_ATTRIBUTE,
@@ -303,6 +304,7 @@ export function PrioritiesTable({
           </h3>
           <IssuesTable
             listing={{ advances: open.priority.id }}
+            moveFrom="row"
             priorityTitles={titles}
             stateKey={WORK_PREFIX}
           />

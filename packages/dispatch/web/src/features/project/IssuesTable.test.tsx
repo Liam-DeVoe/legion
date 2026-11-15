@@ -1292,7 +1292,9 @@ test("resizing a column on a phone leaves the saved key and title widths alone",
     "dispatch.project-table.CORE",
     JSON.stringify({ sizing: { key: 200, title: 500 } })
   );
-  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  // On `Element.prototype`, which owns the method: bun's `mockRestore` leaves a copy on a
+  // prototype that only inherits it, which would hide every later test's spy on `Element`.
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return new DOMRect(0, 0, this.dataset.testid === "issues-table-scroll" ? 390 : 100, 40);
@@ -1355,7 +1357,8 @@ test("a stored width under an inherited name such as toString is dropped", () =>
 /** Each header cell of the List, left to right, as `<its column's words> <width> <the offset a
  *  pinned cell is held at, or ->`, drawn with the scroll box `width` pixels wide. */
 async function headerLayout(width: number): Promise<string[]> {
-  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  // On `Element.prototype`, which owns the method (see above).
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return new DOMRect(0, 0, this.dataset.testid === "issues-table-scroll" ? width : 100, 40);

@@ -39,8 +39,9 @@ const EDGE: CSSProperties = {
  * on the roomier side where it has room on neither, so it never covers its anchor - and kept
  * there while the page resizes or scrolls, and dismissed by the same rules everywhere — a
  * pointer press outside it or its anchor, Escape, or Tab or Shift+Tab past its last or first
- * control, the last three of which also return focus to the anchor. Opening moves focus into
- * the panel, unless the host opens it without (`focusOnOpen`).
+ * control, the last three of which also return focus to the anchor. Opening moves focus to the
+ * panel's first control that takes it, by the rule its edges and every dialog's trap follow
+ * (`focusableIn`), else to the panel itself, unless the host opens it without (`focusOnOpen`).
  *
  * Tab never leaves the panel for whatever the body holds after it: portalled there, the panel is
  * outside the dialog it was opened in, whose own Tab cycle never sees it, so the focus would go
@@ -96,6 +97,9 @@ export function AnchoredPanel({
   const endEdge = useRef<HTMLSpanElement>(null);
   // The panels opened from inside this one that stand open now, each counted by `hold`.
   const [inner] = useState(() => new Set<HTMLElement>());
+  // The tallest the panel's own class lets it be, read whenever no cut of this placement's is on
+  // it: what its height is capped at, cut or not.
+  const classMax = useRef(Number.POSITIVE_INFINITY);
   const enclosing = useContext(EnclosingPanel);
   const hold = useCallback<HoldPanel>(
     (panel) => {
@@ -115,7 +119,9 @@ export function AnchoredPanel({
   }, [enclosing]);
 
   // Placed after every render - the anchor moves when its own row reflows - and on resize and
-  // scroll, which is when the viewport coordinates it is placed at change.
+  // scroll, which is when the viewport coordinates it is placed at change. A scroll inside the
+  // panel, or inside a panel opened from it, moves neither the panel nor its anchor, so it
+  // places nothing.
   useLayoutEffect(() => {
     const place = () => {
       const anchor = anchorRef.current;
@@ -141,12 +147,18 @@ export function AnchoredPanel({
         8,
         Math.min(align === "right" ? box.right - width : box.left, window.innerWidth - width - 8)
       );
-      // The panel's height as its own class allows it, read with no cut of this placement's on
-      // it, so the side it goes on is decided by what it holds rather than by the last cut.
-      const cut = panel?.style.maxHeight ?? "";
-      if (panel) panel.style.maxHeight = "";
-      const height = panel?.offsetHeight ?? 200;
-      if (panel) panel.style.maxHeight = cut;
+      // The panel's height as its own class allows it, so the side it goes on is decided by what
+      // it holds rather than by the last cut: all it holds (`scrollHeight`) with its border, up
+      // to the class's own cap. Read without touching the panel: a layout forced at another
+      // height would clamp the panel's own scroll to that layout's, so a cut panel could never
+      // be scrolled to its end.
+      if (panel && panel.style.maxHeight === "") {
+        const cap = Number.parseFloat(getComputedStyle(panel).maxHeight);
+        classMax.current = Number.isNaN(cap) ? Number.POSITIVE_INFINITY : cap;
+      }
+      const height = panel
+        ? Math.min(panel.scrollHeight + panel.offsetHeight - panel.clientHeight, classMax.current)
+        : 200;
       // Under the anchor where it fits, else over it where it fits there, else on the side with
       // more room and cut to that room - never over the anchor itself, so the control that
       // opened a panel is always there to press again and close it: a list low in a filter
@@ -170,19 +182,27 @@ export function AnchoredPanel({
           : next
       );
     };
+    const placeOnScroll = (event: Event) => {
+      const target = event.target;
+      if (target instanceof Node) {
+        if (panelRef.current?.contains(target)) return;
+        for (const held of inner) if (held.contains(target)) return;
+      }
+      place();
+    };
     place();
     window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
+    window.addEventListener("scroll", placeOnScroll, true);
     return () => {
       window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("scroll", placeOnScroll, true);
     };
   });
 
   useEffect(() => {
     const panel = panelRef.current;
     if (takesFocus.current && panel !== null && !panel.contains(document.activeElement))
-      panel.querySelector<HTMLElement>("input, button, select, [tabindex]")?.focus();
+      (focusableIn(panel)[0] ?? panel).focus();
     inside.current = panel?.contains(document.activeElement) === true;
     // Every move of the focus: onto one of the panel's two edges, which is answered here, or
     // anywhere else, which is noted.

@@ -90,6 +90,15 @@ const ISSUE_TABLE_NAMES: DataTableNames = {
   rowAttribute: ISSUE_ROW_ATTRIBUTE,
 };
 
+/** The same words for an issue table a page draws beside its main table over the same keys - the
+ *  priorities page's fault lists, and the work under an opened priority - whose `j` and `k` walk
+ *  it only from one of its own rows (`moveFrom: "row"`), so they never take those keys from the
+ *  main table. */
+const ISSUE_TABLE_BESIDE_NAMES: DataTableNames = {
+  ...ISSUE_TABLE_NAMES,
+  keymap: { ...ISSUE_TABLE_NAMES.keymap, moveFrom: "row" },
+};
+
 /** What the List's rows are, which its header filters count in and its pager counts: issues, in
  *  groups, over rows. */
 const ISSUE_TABLE_NOUN: RowNoun = {
@@ -110,6 +119,7 @@ export function IssuesTable({
   label,
   layout: ownLayout,
   listing,
+  moveFrom = "page",
   priorityTitles,
   stateKey,
 }: {
@@ -123,6 +133,10 @@ export function IssuesTable({
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
   listing: IssueListing;
+  /** Where its `j` and `k` walk its rows from (`RowKeymap.moveFrom`): anywhere on the page the
+   *  focus is in no other table, for the page's one table or its main one (the default); or only
+   *  from one of its own rows, for a table drawn beside the page's main one. */
+  moveFrom?: "page" | "row";
   /** Each priority's title by its id. Given, the table has the Advances column, which names each
    *  priority a row advances by its title; unset, it has none (`listingColumns`). */
   priorityTitles?: ReadonlyMap<string, string>;
@@ -257,7 +271,7 @@ export function IssuesTable({
     columns,
     getRowId: (item) => item.issue.key,
     layout,
-    names: ISSUE_TABLE_NAMES,
+    names: moveFrom === "row" ? ISSUE_TABLE_BESIDE_NAMES : ISSUE_TABLE_NAMES,
     state: { sorting, grouping, columnFilters: filters, globalFilter: search, pagination },
     onSortingChange: setSorting,
     onGroupingChange: setGrouping,

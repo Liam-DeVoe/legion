@@ -605,6 +605,7 @@ export function PRList({
         />
       )}
       scrollTestId="delivery-pr-list"
+      stackColumn="title"
     />
   );
 }

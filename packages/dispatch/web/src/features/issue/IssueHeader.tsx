@@ -21,6 +21,7 @@ import {
 import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
+import { focusOnMount } from "../../components/focus-place";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -425,7 +426,7 @@ export function IssueHeader({
                   }
                   saveTitleOnEnter(event);
                 }}
-                ref={(node) => node?.focus()}
+                ref={focusOnMount}
                 value={drafts.title}
               />
             ) : (

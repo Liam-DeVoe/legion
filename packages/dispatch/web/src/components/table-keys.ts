@@ -2,6 +2,7 @@ import type { Row } from "@tanstack/react-table";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { type KeymapScope, useKeymap } from "../features/shell/keymap";
 import { closestMatching } from "../features/shell/roving";
+import { CONTROL } from "./control-names";
 
 /** One key a reader walks the table with, as the page that draws the table names it: the
  *  palette and the shortcut help read these words, so they are the caller's and not the
@@ -20,12 +21,15 @@ export interface RowKeymap {
   readonly scope: KeymapScope;
   readonly next: RowKeyBinding;
   readonly previous: RowKeyBinding;
-  /** Where next and previous are answered: anywhere on the page while the table holds a row
-   *  (`page`, the default), for keys nothing else on the page answers, such as `j` and `k`; or
-   *  only while the focus is in a row (`row`), for keys the page answers itself everywhere
-   *  else, such as the arrows, which scroll it. */
+  /** Where next and previous are answered: anywhere on the page while the table holds a row and
+   *  the focus is in no other table (`page`, the default), for keys nothing else on the page
+   *  answers, such as `j` and `k`; or only while the focus is in one of this table's own rows
+   *  (`row`), for keys the page answers itself everywhere else, such as the arrows, which scroll
+   *  it, and for every table a page draws beside its main one over the same keys - the
+   *  priorities page's issue tables beside its priorities - so each table answers from its own
+   *  rows and the main one from everywhere else. */
   readonly moveFrom?: "page" | "row";
-  /** Opens the row in hand; the one binding of the five the palette lists. */
+  /** Opens the row in hand; the one binding the palette lists. */
   readonly open: RowKeyBinding;
   /** Opens the row in hand from Enter, which only a focused row answers. */
   readonly openOnEnter: RowKeyBinding;
@@ -70,7 +74,12 @@ export function useRowKeymap<TData>({
 }): FocusRow {
   /** The row that takes the focus once the virtualizer draws it, and what inside it does. */
   const pendingFocus = useRef<{ key: string; selector: string | undefined } | null>(null);
-  const focusedRow = () => closestMatching(document.activeElement, `[${rowAttribute}]`);
+  // The row in hand: the row of this table that holds the focus, or one of its controls does. A
+  // row of another table on the page, under the same attribute, is none of this table's.
+  const focusedRow = () => {
+    const row = closestMatching(document.activeElement, `[${rowAttribute}]`);
+    return row !== null && scrollRef.current?.contains(row) === true ? row : null;
+  };
   const rowElement = (key: string) =>
     scrollRef.current?.querySelector<HTMLElement>(`[${rowAttribute}="${CSS.escape(key)}"]`);
   // What it focused, or null: a row the virtualizer has not drawn is focused once it lands, and a
@@ -117,12 +126,22 @@ export function useRowKeymap<TData>({
   });
   const openFocusedRow = () =>
     focusedRow()?.querySelector<HTMLElement>(`[${linkAttribute}]`)?.click();
-  // Where the moving keys apply (`RowKeymap.moveFrom`): a row must hold the focus for keys the
-  // page answers itself everywhere else, and the table need only hold a row for the others.
+  // Where the moving keys apply (`RowKeymap.moveFrom`): one of this table's rows must hold the
+  // focus for keys the page answers itself everywhere else; for the others the table need only
+  // hold a row, and the focus be in no other table, whose own keys are its to answer.
   const canMove =
     keymap.moveFrom === "row"
       ? () => focusedRow() !== null
-      : () => displayRows.some(({ row }) => !row.getIsGrouped());
+      : () => {
+          const table = closestMatching(
+            document.activeElement,
+            `[data-control="${CONTROL.dataTable}"]`
+          );
+          return (
+            (table === null || table === scrollRef.current) &&
+            displayRows.some(({ row }) => !row.getIsGrouped())
+          );
+        };
   const { select } = keymap;
   useKeymap(keymap.scope, [
     {
@@ -146,7 +165,8 @@ export function useRowKeymap<TData>({
       ...keymap.openOnEnter,
       palette: false,
       run: openFocusedRow,
-      when: () => document.activeElement?.matches(`[${rowAttribute}]`) === true,
+      when: () =>
+        document.activeElement?.matches(`[${rowAttribute}]`) === true && focusedRow() !== null,
     },
     ...(select === undefined
       ? []

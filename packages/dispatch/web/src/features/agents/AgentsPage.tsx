@@ -1295,7 +1295,7 @@ function rowNode(list: HTMLElement | null, sessionID: string): HTMLElement | nul
 
 /** What the page draws its list from: which items, where each sits, and how tall the list is. */
 interface ListWindow {
-  containerRef: RefObject<HTMLDivElement | null>;
+  containerRef: RefObject<HTMLUListElement | null>;
   /** Every item the list draws, as indices into the keys it was given, ascending. */
   drawn: readonly number[];
   /** Where each item starts, in pixels from the list's own top. */
@@ -1316,7 +1316,7 @@ interface ListWindow {
  * arriving inside an open row - with a height that has not changed costing no render.
  */
 function useListWindow(keys: readonly string[], kept: ReadonlySet<string>): ListWindow {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLUListElement>(null);
   const [view, setView] = useState(() => ({ scrollTop: 0, viewportHeight: window.innerHeight }));
   const [measured, setMeasured] = useState<MeasuredHeights>(() => new Map());
   /** Every item the list has drawn, each carrying the key its height is cached under. Queried
@@ -1400,6 +1400,11 @@ function useListWindow(keys: readonly string[], kept: ReadonlySet<string>): List
  * sorts and filters every listed session on each of its own renders; here a scroll re-renders
  * this box alone, and what the page worked out - `items`, `kept`, `keptAside` and `renderItem` -
  * is untouched by it.
+ *
+ * The box is a list, and each drawn item - a group's heading or a session's card - is one of its
+ * items that says how many the whole list holds (`aria-setsize`) and its own place among them
+ * (`aria-posinset`), so a screen reader hears the whole list and where it is in it rather than
+ * the drawn items alone. A kept row it no longer holds is a hidden item, which it does not count.
  */
 function WindowedList({
   items,
@@ -1423,7 +1428,7 @@ function WindowedList({
     kept
   );
   return (
-    <div
+    <ul
       className="relative"
       data-agents-list=""
       ref={list.containerRef}
@@ -1434,19 +1439,21 @@ function WindowedList({
           const item = items[index];
           if (item === undefined) return [];
           return [
-            <div
+            <li
+              aria-posinset={index + 1}
+              aria-setsize={items.length}
               className="absolute inset-x-0 pb-3"
               data-row-key={item.key}
               key={item.key}
               style={{ top: `${list.tops[index] ?? 0}px` }}
             >
               {renderItem(item)}
-            </div>,
+            </li>,
           ];
         }),
         ...keptAside,
       ]}
-    </div>
+    </ul>
   );
 }
 
@@ -1687,14 +1694,16 @@ export function AgentsPage(): ReactNode {
   );
   // A row the reader has opened that the list no longer holds - its group is closed, or the
   // filters exclude it - stays mounted and hidden among the drawn items, in the same parent and
-  // under the same key, so a fold and a filter discard no draft, as a scroll discards none.
+  // under the same key, so a fold and a filter discard no draft, as a scroll discards none. Its
+  // item is the same element a drawn one is, so a row moving between the two is moved rather
+  // than remounted, and hidden with its row, so it is no item a screen reader counts.
   const keptAside = AGENT_GROUPS.flatMap((group) =>
     grouped[group]
       .filter((agent) => kept.has(agent.session_id) && !(shown[group] && matches(agent, group)))
       .map((agent) => (
-        <div className="absolute inset-x-0" key={agent.session_id}>
+        <li className="absolute inset-x-0" hidden key={agent.session_id}>
           {agentRow(agent, group, true)}
-        </div>
+        </li>
       ))
   );
   // A heading or a row, which the windowed box draws at the place it measured for it.
