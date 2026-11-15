@@ -585,9 +585,19 @@ test("the Delivery page's Legion section reads 84 days and its Previous 84 days 
 
     const compare = workTime.locator(`select[data-chart-compare="${label}"]`);
     await expect(compare.locator('option[value="preceding"]')).toHaveText("Previous 84 days");
+    // The compare range is read as a window of its own: its items read's from is the window's,
+    // 84 days earlier.
+    const windowItems = evalReads.filter((read) => read.url.includes("/items"));
+    const windowFrom = new URL(windowItems[0].url).searchParams.get("from") ?? "";
     await compare.selectOption("preceding");
     await expect
-      .poll(() => evalReads.filter((read) => read.url.includes("compare_from")).length)
+      .poll(
+        () =>
+          evalReads.filter(
+            (read) =>
+              read.url.includes("/items") && new URL(read.url).searchParams.get("to") === windowFrom
+          ).length
+      )
       .toBeGreaterThan(0);
     await expect(section.getByText("Couldn't load the issues of this metric.")).toHaveCount(0);
     await expect(section.getByText("Couldn't load the Legion metrics.")).toHaveCount(0);
