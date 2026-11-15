@@ -432,6 +432,24 @@ measure: compare `"$LEGION_OMP_PATH" --version` with the pin first, and say whic
 figure came from
 (`docs/solutions/testing/a-worker-pods-oh-my-pi-is-the-fleets-pin-not-the-branchs-fetch-the-branchs-build-and-say-which-pin-each-figure-came-from-LEGION-247.md`).
 
+## Working on a fork with knives in a pod
+
+knives finds a checkout only under `$HOME`, at most three directories deep, and takes only a
+colocated clone bound by its `upstream` remote (knives v3.2.6, `src/bind.rs` `scan`,
+`checkouts_under`). Your issue workspace is a git worktree under `/legion/workspaces`, so knives
+never sees it. The shared clone under `/legion/repos` is what it binds:
+
+1. Run every knives command as `KNIVES_OWNER=legion-<project>-<key> HOME=/legion/repos knives …`,
+   with the project and the issue key lower-cased.
+2. Write the repository's registry entry where that `HOME` reads it,
+   `/legion/repos/.config/knives/repos.toml`, with its `workspaces` path under `$TMPDIR`.
+3. Add the `upstream` remote, and the `release` remote where the entry names one, to
+   `/legion/repos/github.com/<owner>/<repo>`, and fetch every base the entry names.
+4. Name the fork with `--repo` on every `gh` command after that: the clone's two remotes name two
+   owners, so a `gh` command that names no repository is refused.
+
+`knives repos` then lists the repository at that clone.
+
 ## The tests your pod cannot run
 
 Some tests fail in a Kubernetes issue pod whatever your change, because of the pod, not the branch.
