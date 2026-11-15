@@ -293,6 +293,15 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
+	// The release's hold is read once more before the role starts, whether the pod was kept or
+	// replaced: the claim's launching write came before this launch reached the runtime, so either
+	// the release's mark is set before its stop set is read, which then holds this claim and stops
+	// it, or this read sees the mark and the launch waits (errProjectReleased, uncharged). Without
+	// it a launch into a kept pod that passed the launch gate just before the mark would start its
+	// role after the release read its stop set, and the release would delete the pod under it.
+	if err := r.releaseHolds("launch " + string(spec.Claim) + ": start its role"); err != nil {
+		return runtime.Locator{}, err
+	}
 	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), launcherCommand(l, r)); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,7 +13,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // heldRig is a rig whose runtime reads held as the daemon's project release mark
@@ -93,6 +96,37 @@ func TestProjectReleaseHoldsEverySandboxTheRuntimeWouldMake(t *testing.T) {
 		}
 		if mode := g.sandbox(name).mode(); mode != modeRunning {
 			t.Fatalf("the relaunch with the mark clear left the Sandbox %s, want it running", mode)
+		}
+	})
+
+	t.Run("a launch of another role into a kept pod", func(t *testing.T) {
+		g, held := heldRig(t)
+		loc := g.spawn(workerSpec(t))
+		name := loc.Sandbox.Name
+		spec := roleSpec(t, claim.RoleImplementer)
+		g.launcher(spec.Claim)
+		held.Store(true)
+		g.clearActions()
+		_, err := g.r.Spawn(g.ctx, spec)
+		wantReleased(t, g, "the launch into the kept pod", err)
+		started := func() bool {
+			return slices.ContainsFunc(g.sent(spec.Claim), func(frame shimwire.Frame) bool {
+				_, ok := frame.(shimwire.LauncherStart)
+				return ok
+			})
+		}
+		if started() {
+			t.Fatal("the launch into the kept pod started its role while the project release holds")
+		}
+		if mode := g.sandbox(name).mode(); mode != modeRunning {
+			t.Fatalf("the refused launch left the Sandbox %s, want it running", mode)
+		}
+		held.Store(false)
+		if _, err := g.r.Spawn(g.ctx, spec); err != nil {
+			t.Fatalf("the launch with the mark clear: %v", err)
+		}
+		if !started() {
+			t.Fatal("the launch with the mark clear sent its role's launcher no start")
 		}
 	})
 
