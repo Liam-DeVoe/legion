@@ -209,7 +209,7 @@ func seriesNames(entry catalogueEntry) []string {
 // TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild: each Legion eval's series are exactly
 // those its rows in the day builders' zero day hold (ZeroLegionDay), every cut included, and by
 // the rule of the splitting eval's root figures (metrics.RootFigures, which count roots alone) the
-// children cut of each of those, which no day row is ever written for; and they are LegionSeries'.
+// children cut of each of those, which no day row is ever written for.
 // Each delivery and CI eval's series are exactly those of its rows in the day builders' zero day
 // (ZeroDeliveryDay, under settings naming both staging jobs), pr-ci's job series row beside them.
 // change-fail-rate and failed-deploy-recovery, which get no day rows, are the only evals with no
@@ -229,11 +229,6 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 		}
 		built[SlugLegionSplitting] = append(built[SlugLegionSplitting], children)
 		unwritten++
-	}
-	for _, slug := range legionDaySlugs {
-		if got, want := slices.Sorted(slices.Values(LegionSeries(slug))), seriesNames(entryOf(t, slug)); !slices.Equal(got, want) {
-			t.Errorf("%s: LegionSeries is %v, the catalogue's series %v", slug, got, want)
-		}
 	}
 	settings := delivery.DeliverySettings{StagingE2EJobName: new("e2e"), StagingApplyJobName: new("staging-apply")}
 	zero := ZeroDeliveryDay(settings, "EVAL", day)
@@ -321,22 +316,6 @@ func TestTheRequiredMethodsSayWhatTheSpecRequires(t *testing.T) {
 			if !strings.Contains(method, phrase) {
 				t.Errorf("%s's method does not say %q", slug, phrase)
 			}
-		}
-	}
-}
-
-// TestASeriesRowNamesTheSeriesThatDefinesAStoredSeries: a job series of pr-ci is defined by
-// SeriesJobs, and every other stored series, a series of another eval named like a job's
-// included, by its own row.
-func TestASeriesRowNamesTheSeriesThatDefinesAStoredSeries(t *testing.T) {
-	for _, test := range []struct{ slug, series, want string }{
-		{SlugPRCI, "job:lint", SeriesJobs},
-		{SlugPRCI, measures.SeriesMinutes, measures.SeriesMinutes},
-		{"my-eval", "job:lint", "job:lint"},
-		{SlugLegionWorkTime, "hours:roots", "hours:roots"},
-	} {
-		if got := SeriesRow(test.slug, test.series); got != test.want {
-			t.Errorf("SeriesRow(%s, %s) = %s, want %s", test.slug, test.series, got, test.want)
 		}
 	}
 }

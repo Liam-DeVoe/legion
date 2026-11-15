@@ -20,11 +20,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// evalDaysBuild is the build the day rows these tests write record.
-const evalDaysBuild = "eval-days-test"
 
 // The windows TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer compares: how many, the
 // seed that picks them, and the widest the delivery routes allow (maxDeliveryWindow, 84 days).
@@ -34,29 +32,26 @@ const (
 	evalDaysMaxWindow  = 84
 )
 
-// writeDeliveryDays writes the delivery and CI day rows of every UTC day of [from, to), each for
-// every project its rows count for, and answers the projects each day wrote.
-func writeDeliveryDays(t *testing.T, registry *evals.Store, settings delivery.DeliverySettings, from, to time.Time) map[string][]string {
+// refreshEvalDays writes the day rows of database as the server's refresher writes them, as of now
+// (evals.Store.RefreshThrough, under testServerBuild): every project seeded, and every family's
+// rows from its first input day through now's UTC day, each day with its zero rows.
+func refreshEvalDays(t *testing.T, registry *evals.Store, database *store.Store, now time.Time) {
 	t.Helper()
-	written := map[string][]string{}
-	for day := from; day.Before(to); day = day.AddDate(0, 0, 1) {
-		projects, err := registry.WriteDeliveryDay(t.Context(), settings, day, "", evalDaysBuild)
-		if err != nil {
-			t.Fatalf("write the day rows of %s: %v", day.Format(time.DateOnly), err)
-		}
-		written[day.Format(time.DateOnly)] = projects
+	deps := evals.RefresherDeps{Horizon: events.NewHorizon(database.Pool), Build: testServerBuild}
+	if err := registry.RefreshThrough(t.Context(), deps, now); err != nil {
+		t.Fatalf("refresh the day rows as of %s: %v", now.Format(time.RFC3339), err)
 	}
-	return written
 }
 
-// storedDayRows reads every eval_days row of project, listed or not, every repository's, in key
-// order: the rows the partition is checked over, and the unlisted job series DayWindow leaves out.
+// storedDayRows reads every eval_days row of project but its unowned-p0 row of today (which the
+// refresher writes for every project), listed or not, every repository's, in key order: the rows
+// the partition is checked over, and the unlisted job series DayWindow leaves out.
 func storedDayRows(t *testing.T, pool *store.Pool, project string) []evals.DayRow {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `
 		select eval_id, series, repo, day, listed, n, sum, num, den, max, samples, counts, via_repository
-		from eval_days where project_key = $1 order by eval_id, series, repo, day
-	`, project)
+		from eval_days where project_key = $1 and eval_id <> $2 order by eval_id, series, repo, day
+	`, project, evals.EvalID(project, evals.SlugUnownedP0))
 	if err != nil {
 		t.Fatalf("read the day rows of %s: %v", project, err)
 	}
@@ -83,12 +78,12 @@ func storedDayRows(t *testing.T, pool *store.Pool, project string) []evals.DayRo
 
 // checkDayRowPartition is the repository partition over rows, one project's: for every eval,
 // series and day, the rows of its repositories add up to its all-repositories row (n, sum, num,
-// den, every count and
-// via_repository; sums within 1e-9 of each other, relative to the larger), and their samples, put
-// together, are its samples. A repository's row with no all-repositories row beside it, or an
-// all-repositories row with no repository's row, fails too: every counted row is in one
-// repository's rows; and so does a row whose via_repository is more than its n, the rows it
-// counts. It answers how many series days it checked and how many repository rows they held.
+// den, every count and via_repository; sums within 1e-9 of each other, relative to the larger),
+// and their samples, put together, are its samples. A repository's row with no all-repositories
+// row beside it, or an all-repositories row that counts a row with no repository's row, fails too:
+// every counted row is in one repository's rows (a zero row, which counts none, has none); and so
+// does a row whose via_repository is more than its n, the rows it counts. It answers how many
+// series days it checked and how many repository rows they held.
 func checkDayRowPartition(t *testing.T, rows []evals.DayRow) (seriesDays, repositoryRows int) {
 	t.Helper()
 	type key struct {
@@ -127,7 +122,9 @@ func checkDayRowPartition(t *testing.T, rows []evals.DayRow) (seriesDays, reposi
 		whole, parts := all[k], byRepo[k]
 		name := fmt.Sprintf("%s %s on %s", k.evalID, k.series, k.day.Format(time.DateOnly))
 		if len(parts) == 0 {
-			t.Errorf("%s has an all-repositories row and no repository's row", name)
+			if whole.N != 0 {
+				t.Errorf("%s has an all-repositories row of %d rows and no repository's row", name, whole.N)
+			}
 			continue
 		}
 		seriesDays, repositoryRows = seriesDays+1, repositoryRows+len(parts)
@@ -448,11 +445,12 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 // TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer: over a deliverytest history whose every
 // pull request counts for one project (Spec.OneProject: each names an issue of DELIV or none, and
 // every repository is DELIV's), so the project's day rows hold every row the deployment-wide
-// delivery routes count, the day rows of every day of the history are written; their partition by
-// repository is checked; and for evalDaysWindows seeded windows of 1 to 84 whole days, the
-// rows of each cut, read by evals.Store.DayWindow, folded by the folds the routes answer through,
-// equal the routes' answers (compareDayRowsWithRoutes): integers exact, floats within 1e-9. Then
-// one day's rows of the first window are deleted, and the same comparison must differ.
+// delivery routes count, the day rows of every day of the history are written as the server's
+// refresher writes them (refreshEvalDays); their partition by repository is checked; and for
+// evalDaysWindows seeded windows of 1 to 84 whole days, the rows of each cut, read by
+// evals.Store.DayWindow, folded by the folds the routes answer through, equal the routes' answers
+// (compareDayRowsWithRoutes): integers exact, floats within 1e-9. Then one day's rows of the first
+// window are deleted, and the same comparison must differ.
 func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true})
@@ -465,12 +463,7 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	entries := seededEntries(t, registry, fixture.Project)
 
 	started := time.Now()
-	written := writeDeliveryDays(t, registry, settings, fixture.From, fixture.To)
-	for day, projects := range written {
-		if !slices.Equal(projects, []string{fixture.Project}) {
-			t.Fatalf("the day rows of %s were written for %v, want %s alone: every pull request names an issue of it or none", day, projects, fixture.Project)
-		}
-	}
+	refreshEvalDays(t, registry, database, fixture.To.Add(-time.Minute))
 	stored := storedDayRows(t, database.Pool, fixture.Project)
 	for _, row := range stored {
 		if slug := strings.TrimPrefix(row.EvalID, fixture.Project+"/"); slug == evals.SlugChangeFailRate || slug == evals.SlugFailedDeployRecovery {
@@ -481,6 +474,10 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 		t.Fatalf("%s holds %d day rows, want none: no row of this history counts for it", fixture.SecondProject, len(other))
 	}
 	seriesDays, repositoryRows := checkDayRowPartition(t, stored)
+	written := map[time.Time]bool{}
+	for _, row := range stored {
+		written[row.Day] = true
+	}
 	t.Logf("wrote %d days of %s's day rows (%d rows) in %s; the partition holds for %d series days over %d repository rows",
 		len(written), fixture.Project, len(stored), time.Since(started).Round(time.Millisecond), seriesDays, repositoryRows)
 
@@ -532,10 +529,6 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916})
 	ctx := t.Context()
-	settings, err := delivery.GetSettings(ctx, database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
 	registry := evals.New(database, deps.Docs, deps.Events)
 
 	// The projects each deploy ships, by the attribution rule over the fixture's own containment:
@@ -606,7 +599,7 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 	if wide != deploys {
 		t.Fatalf("GET /api/v1/delivery/measures?%s counts %d deploys, want the %d deploys the window holds, each once", query, wide, deploys)
 	}
-	writeDeliveryDays(t, registry, settings, from, to)
+	refreshEvalDays(t, registry, database, fixture.To.Add(-time.Minute))
 	folded := map[string]int{}
 	for _, project := range []string{fixture.Project, fixture.SecondProject} {
 		entries := seededEntries(t, registry, project)

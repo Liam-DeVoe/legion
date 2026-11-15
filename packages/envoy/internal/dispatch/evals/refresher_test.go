@@ -401,7 +401,8 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 
 // TestANewBuildRewritesEveryRowOfAFamily: once a build has walked every family, a pass of another
 // build walks them all again and rewrites every computed row with its own build, although no value
-// moved; while the two builds run in turn, each one's pass walks the days again.
+// moved; then, while the two builds run in turn, neither begins again the walk the other recorded,
+// so a turn of each walks no day.
 func TestANewBuildRewritesEveryRowOfAFamily(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedHistories(t)
@@ -425,11 +426,41 @@ func TestANewBuildRewritesEveryRowOfAFamily(t *testing.T) {
 
 	for _, build := range []string{testBuild, "another-build"} {
 		r.build = build
-		_, again := r.settle(t)
-		if len(again.days) < len(walked.days) {
-			t.Errorf("build %s's turn walked %d project days, want every one of the %d", build, len(again.days), len(walked.days))
+		if _, again := r.settle(t); len(again.days) != 0 {
+			t.Errorf("build %s's turn after both walks reached today walked %d project days, want none", build, len(again.days))
 		}
 	}
+}
+
+// TestTwoBuildsOnOneDatabaseEachFinishTheirOwnWalk: while two builds' refreshers share a database
+// (a rolling deploy), each pass continues its own build's walks rather than beginning again the
+// ones the other build recorded. Passes taken in turn by the two builds, two days of each walk a
+// pass, bring both builds' walks to today; begun again at each turn, neither walk would get past
+// its first two days.
+func TestTwoBuildsOnOneDatabaseEachFinishTheirOwnWalk(t *testing.T) {
+	r := newRefresherRig(t)
+	r.batch = 2
+	r.seedHistories(t)
+	other := *r
+	other.build, other.seeds = "other-build", &seeding{}
+	done := map[string]bool{}
+	passes := 0
+	for passes < 80 && !(done[r.build] && done[other.build]) {
+		passes++
+		rig := r
+		if passes%2 == 0 {
+			rig = &other
+		}
+		_, next := rig.pass(t)
+		done[rig.build] = !next.Equal(rig.now)
+	}
+	if !done[r.build] || !done[other.build] {
+		t.Fatalf("after %d passes taken in turn, %s's walks reached today %t and %s's %t, want both", passes, r.build, done[r.build], other.build, done[other.build])
+	}
+	if walks := r.count(t, `select count(distinct built_by) from eval_days_walks`); walks != 2 {
+		t.Errorf("the walks are recorded under %d builds, want the two that run", walks)
+	}
+	t.Logf("both builds' walks reached today after %d passes taken in turn", passes)
 }
 
 // TestTheTickPrunesChangesOlderThanTheirRetention: a pass deletes every delivery change older

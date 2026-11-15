@@ -1,15 +1,17 @@
 package evalfixture_test
 
 import (
+	"context"
 	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -28,6 +30,26 @@ func count(t *testing.T, database *store.Store, statement string, args ...any) i
 		t.Fatalf("%s: %v", statement, err)
 	}
 	return answer
+}
+
+// refresh writes database's day rows as the server's refresher writes them, as of now
+// (evals.Store.RefreshThrough): every project seeded, and every family's rows from its first input
+// day through now's.
+func refresh(t *testing.T, database *store.Store) {
+	t.Helper()
+	broker := events.NewBroker()
+	// Settlement is an hour away, so no background settlement writes while a test reads.
+	documents := docs.New(docs.Deps{Store: database, Events: broker, Settle: time.Hour})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut down the document service: %v", err)
+		}
+	})
+	registry := evals.New(database, documents, broker)
+	deps := evals.RefresherDeps{Horizon: events.NewHorizon(database.Pool), Build: "evalfixture-test"}
+	if err := registry.RefreshThrough(t.Context(), deps, now); err != nil {
+		t.Fatalf("refresh the day rows as of %s: %v", now.Format(time.RFC3339), err)
+	}
 }
 
 // TestTheLegionModeWritesAHistoryObservedFromPartway: -legion writes at least the finished issues
@@ -189,9 +211,9 @@ func TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema(t *testing.T) {
 
 // TestTheAttributionModeWritesK15sCase: -attribution writes its three projects, two mapped
 // repositories, two pull requests, two deploys and a CI job, and each row counts, in the day rows
-// the refresher builds from them, for the projects the result names and through what it names
-// (D1): pr-open-to-merge counts the pull requests, deploy-frequency the deploys and pr-ci the CI
-// run, and the third project holds no row.
+// the refresher builds from them (evals.Store.RefreshThrough), for the projects the result names
+// and through what it names (D1): pr-open-to-merge counts the pull requests, deploy-frequency the
+// deploys and pr-ci the CI run, and the third project holds no delivery or CI row.
 func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
@@ -199,15 +221,8 @@ func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("write k15's case: %v", err)
 	}
-	settings, err := delivery.GetSettings(ctx, database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
-	registry := evals.New(database, nil, nil)
 	day := now.Truncate(24*time.Hour).AddDate(0, 0, -1)
-	if _, err := registry.WriteDeliveryDay(ctx, settings, day, "", "evalfixture-test"); err != nil {
-		t.Fatalf("write the delivery rows of %s: %v", day.Format(time.DateOnly), err)
-	}
+	refresh(t, database)
 	type tally struct{ n, via int }
 	want := map[string]map[string]tally{}
 	for _, row := range written.Rows {
@@ -249,8 +264,11 @@ func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 			}
 		}
 	}
-	if rows := count(t, database, `select count(*) from eval_days where project_key = $1`, written.Nothing); rows != 0 {
-		t.Errorf("%s, the project with nothing, holds %d day rows", written.Nothing, rows)
+	// Its one row is the unowned-p0 row of today, which every project holds (its count reads
+	// issues alone).
+	if rows := count(t, database, `select count(*) from eval_days where project_key = $1 and eval_id <> $2`,
+		written.Nothing, evals.EvalID(written.Nothing, evals.SlugUnownedP0)); rows != 0 {
+		t.Errorf("%s, the project with nothing, holds %d day rows beside its unowned-p0 row", written.Nothing, rows)
 	}
 	for _, row := range written.Rows {
 		t.Logf("%s counts for %v, through a repository %v", row.Row, row.CountsFor, row.ViaRepository)

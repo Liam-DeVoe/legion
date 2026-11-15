@@ -152,6 +152,35 @@ func collectDays(rows pgx.Rows, at map[string]*time.Time) error {
 	return err
 }
 
+// owedDay is one project's day of a family a write left owing a rewrite (eval_days_owed).
+type owedDay struct {
+	project string
+	family  string
+	day     time.Time
+}
+
+// owedDays is every day of projects that a write left owing a rewrite and no write of the day
+// has cleared (eval_days_owed, by its primary key): an item moved off it, or off the deploy run
+// whose day it is, by a write of another day; those a failed pass left among them.
+func (s *Store) owedDays(ctx context.Context, projects []string) ([]owedDay, error) {
+	rows, err := s.database.Pool.Query(ctx, `
+		select project_key, family, day from eval_days_owed where project_key = any($1) order by project_key, family, day
+	`, projects)
+	if err != nil {
+		return nil, fmt.Errorf("read the days owed a rewrite: %w", err)
+	}
+	var owed []owedDay
+	var one owedDay
+	if _, err := pgx.ForEachRow(rows, []any{&one.project, &one.family, &one.day}, func() error {
+		one.day = measures.Midnight(one.day)
+		owed = append(owed, one)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the days owed a rewrite: %w", err)
+	}
+	return owed, nil
+}
+
 // heldMember is where eval_day_members holds an item: the project and the day it was last counted
 // on.
 type heldMember struct {
@@ -281,6 +310,43 @@ func (s *Store) subtreeFilingDays(ctx context.Context, keys []string) ([]project
 	return days, nil
 }
 
+// subtreeCloseDays is the project and the UTC day of the close of each of keys and of every issue
+// below them, down the parent links to refs.IssueDepthCap, as issue_facts holds it now, and the day
+// eval_day_members holds each under: the Legion close days whose repository rows a move of those
+// issues' repository or parent can move, since an issue with no repository of its own resolves to
+// the repository of the issue above it (ReadLegionDay), which no stored fact of its own changes
+// with. Each is a primary-key read of the issue's row.
+func (s *Store) subtreeCloseDays(ctx context.Context, keys []string) ([]projectDay, error) {
+	rows, err := s.database.Pool.Query(ctx, `
+		with recursive below as (
+			select key, project_key, 0 as depth from issues where key = any($1)
+			union all
+			select child.key, child.project_key, below.depth + 1 from issues child join below on child.parent_key = below.key
+			where below.depth < $2
+		)
+		select facts.project_key, facts.closed_at
+		from below join issue_facts facts on facts.project_key = below.project_key and facts.issue_key = below.key
+		where facts.closed_at is not null
+		union
+		select member.project_key, member.day::timestamp at time zone 'UTC'
+		from below join eval_day_members member on member.project_key = below.project_key and member.family = $3
+			and member.row_key = below.key
+	`, keys, refs.IssueDepthCap, KindLegion)
+	if err != nil {
+		return nil, fmt.Errorf("read the closes below %d issues: %w", len(keys), err)
+	}
+	var days []projectDay
+	var project string
+	var closed time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&project, &closed}, func() error {
+		days = append(days, projectDay{project: project, day: measures.Midnight(closed)})
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the closes below %d issues: %w", len(keys), err)
+	}
+	return days, nil
+}
+
 // firstDays is the first day of project's all-repositories rows of each eval rows names, by eval
 // id, among the computation's rows: the earliest over the series rows names of the eval (a zero
 // day's rows, which name each series an eval's builder writes on every day it has input), each the
@@ -348,27 +414,6 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 		return nil, fmt.Errorf("read the first Legion input of %s: %w", project, err)
 	}
 	return earliest, nil
-}
-
-// insertZeroRows writes each of rows that no stored row has the key of (insertMissingDays), in one
-// transaction, as the pass's build, after the change log's lock (delivery.LockChanges): the
-// insert logs the rows it adds under that lock, which every writer of the day rows takes first.
-func (r *refresh) insertZeroRows(ctx context.Context, rows []DayRow) error {
-	tx, err := r.store.database.Pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin the zero rows of %s: %w", rows[0].ProjectKey, err)
-	}
-	defer tx.Rollback(ctx)
-	if err := delivery.LockChanges(ctx, tx); err != nil {
-		return err
-	}
-	if err := insertMissingDays(ctx, tx, rows, r.build); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the zero rows of %s: %w", rows[0].ProjectKey, err)
-	}
-	return nil
 }
 
 // fillLoggedZeros writes, for each series of project's logged evals (every one where ids is nil,

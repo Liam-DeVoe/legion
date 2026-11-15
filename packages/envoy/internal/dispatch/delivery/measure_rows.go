@@ -10,9 +10,9 @@ import (
 
 // The rows the delivery and CI measures count, read by one function for every reader that counts
 // them: the delivery routes (api's readDeliveryRows and readPipelinePopulation) read their
-// window's, and the eval registry's day rows (evals.ReadDeliveryDay) one UTC day's, so a route and
-// a day row count the same rows by the same reads, and a deploy's shipped pull requests by the
-// same rule (Deploys.ShippedBy).
+// window's, and the eval registry's day rows (the refresher's read of a day, evals'
+// readDeliveryDay) one UTC day's, so a route and a day row count the same rows by the same reads,
+// and a deploy's shipped pull requests by the same rule (Deploys.ShippedBy).
 
 // MergedRows is the population pull requests merged in a window and the deploy runs that can have
 // shipped them.

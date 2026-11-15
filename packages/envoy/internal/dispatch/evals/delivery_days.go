@@ -20,12 +20,13 @@ import (
 )
 
 // The delivery and CI evals' day rows (dispatch://INFRA-2916, R12, R15, R16 and D1). One UTC day's
-// delivery population is read once (ReadDeliveryDay), by the reads the delivery routes read their
+// delivery population is read once (readDeliveryDay), by the reads the delivery routes read their
 // window with (delivery.ReadDeploys, ReadMergedRows and ReadCIRows); each row of it is
 // attributed to the projects it counts for; each project's rows are built into day parts by the
 // measures package's day builders, the builders the delivery routes build their window's parts
-// with (DeliveryDay.Rows); and the parts are written as that project's rows of the day
-// (WriteProjectDay), which the eval routes and the delivery routes fold through the same folds.
+// with (DeliveryDay.Rows); and the refresher writes the parts as that project's rows of the day
+// (refresh.writeDelivery, through WriteProjectDay), which the eval routes and the delivery routes
+// fold through the same folds.
 //
 // A day holds the population pull requests merged that day (merge-to-production,
 // first-commit-to-production, open-to-production, pr-open-to-merge and rework-share), the deploy
@@ -150,13 +151,17 @@ type Member struct {
 }
 
 // ProjectDay is one project's delivery and CI rows of one UTC day, as WriteProjectDay writes them:
-// the day rows (their built_by and updated_at are the write's) and the items they counted.
+// the day rows (their built_by and updated_at are the write's) and the items they counted; and
+// Gaps, the zero rows of the later days the day leaves with no row where it moves an eval's first
+// input day earlier (refresh.gapsBehind), which the write inserts where a day holds no row of their
+// key, in its own transaction.
 type ProjectDay struct {
 	Project string
 	// Day is the day's UTC midnight.
 	Day     time.Time
 	Rows    []DayRow
 	Members []Member
+	Gaps    []DayRow
 }
 
 // WithZeros is p with each of zeros (the explicit zero rows of ZeroDeliveryDay) that p holds no row
@@ -222,7 +227,7 @@ type dayCIRun struct {
 	project string
 }
 
-// DeliveryDay is one UTC day's delivery and CI rows, read by ReadDeliveryDay, each attributed to
+// DeliveryDay is one UTC day's delivery and CI rows, read by readDeliveryDay, each attributed to
 // the projects it counts for.
 type DeliveryDay struct {
 	// Day is the day's UTC midnight.
@@ -236,24 +241,19 @@ type DeliveryDay struct {
 	checkJobs, pushJobs map[int64][]delivery.DeliveryRunJob
 }
 
-// ReadDeliveryDay reads the delivery and CI rows of the UTC day day is on, under settings, and
+// readDeliveryDay reads the delivery and CI rows of the UTC day day is on, under settings, and
 // attributes each to its projects. Its reads are the delivery routes' for a window of that day:
 // the day's deploys and the rows before the day their shipped sets read (delivery.ReadDeploys);
 // the pull requests merged in the day with every deploy run created from the day's start on
 // (delivery.ReadMergedRows); the day's CI runs (delivery.ReadCIRows); the projects of the issues
 // those pull requests name; and repo_projects. Each deploy's shipped pull requests are
 // delivery.Deploys.ShippedBy's, the rule the routes count with_prs by; the pull requests merged
-// before the day are read for them alone.
-func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time) (DeliveryDay, error) {
-	return s.readDeliveryDay(ctx, settings, day, nil, nil)
-}
-
-// readDeliveryDay is ReadDeliveryDay, its deploy runs created from the day's start on taken from
-// applyRows where it is not nil (delivery.MergedRowsWith): rows a walk read once from the first of
-// its days, which every later day of the walk takes its part of rather than reading every run
-// created from its own start to now again; and its repo_projects taken from repos where it is not
-// nil, a read the refresher makes once a page (refresh.repos). The deploys, the merged rows and the
-// CI runs depend on none of each other, and are read side by side.
+// before the day are read for them alone. Its deploy runs created from the day's start on are
+// taken from applyRows where it is not nil (delivery.MergedRowsWith): rows a walk read once from
+// the first of its days, which every later day of the walk takes its part of rather than reading
+// every run created from its own start to now again; and its repo_projects from repos where it is
+// not nil, a read the refresher makes once a page (refresh.repos). The deploys, the merged rows
+// and the CI runs depend on none of each other, and are read side by side.
 func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time, applyRows *delivery.ApplyRows, repos *repoProjects) (DeliveryDay, error) {
 	pool := s.database.Pool
 	day = measures.Midnight(day)
@@ -488,24 +488,6 @@ func (s *Store) PipelineSlowestJobsMinN(ctx context.Context, deployRepo string) 
 	return SlowestJobsMinN(minN), nil
 }
 
-// Projects is every project a row of the day counts for, by key.
-func (d DeliveryDay) Projects() []string {
-	projects := map[string]bool{}
-	for _, pr := range d.prs {
-		projects[pr.project] = true
-	}
-	for _, deploy := range d.deploys {
-		for _, c := range deploy.projects {
-			projects[c.project] = true
-		}
-	}
-	for _, run := range slices.Concat(d.checks, d.pushes) {
-		projects[run.project] = true
-	}
-	delete(projects, "")
-	return slices.Sorted(maps.Keys(projects))
-}
-
 // countedFor is every project the day counts the item member for (a pull request, a deploy run or
 // a CI run, by its row key in eval_day_members), by key: none where the day holds no such item.
 func (d DeliveryDay) countedFor(member string) []string {
@@ -711,28 +693,6 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 	return built
 }
 
-// WriteDeliveryDay reads the delivery and CI rows of the UTC day day is on (ReadDeliveryDay) and
-// writes the rows of project, or of every project they count for where project is "", each
-// project in a transaction of its own (WriteProjectDay), and answers the projects written. A
-// project named that no row of the day counts for has its delivery and CI rows of the day written
-// as zero rows. builtBy is the running build, which every row written records.
-func (s *Store) WriteDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time, project, builtBy string) ([]string, error) {
-	read, err := s.ReadDeliveryDay(ctx, settings, day)
-	if err != nil {
-		return nil, err
-	}
-	projects := read.Projects()
-	if project != "" {
-		projects = []string{project}
-	}
-	for _, key := range projects {
-		if err := s.WriteProjectDay(ctx, read.Rows(key), builtBy); err != nil {
-			return nil, err
-		}
-	}
-	return projects, nil
-}
-
 // WriteProjectDay writes day as its project's delivery and CI rows of its day, in one transaction:
 // each row with `insert … on conflict … do update … where (…) is distinct from (…)`, so a row
 // whose every value is what it holds is left as it is (and logs no change, migration
@@ -767,6 +727,12 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 				row.EvalID, row.ProjectKey, row.Day.Format(time.DateOnly))
 		}
 	}
+	for _, row := range day.Gaps {
+		if row.ProjectKey != day.Project || !row.Day.After(date) || !slices.Contains(evalIDs, row.EvalID) {
+			return fmt.Errorf("evals: a %s gap row of %s after %s is %s of %s on %s", what, day.Project, date.Format(time.DateOnly),
+				row.EvalID, row.ProjectKey, row.Day.Format(time.DateOnly))
+		}
+	}
 	for _, member := range day.Members {
 		if !slices.Contains(families, member.Family) {
 			return fmt.Errorf("evals: a %s day item of %s on %s is %s of family %s", what, day.Project, date.Format(time.DateOnly),
@@ -787,10 +753,43 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 	if err := zeroStaleDays(ctx, tx, day.Project, date, evalIDs, day.Rows, builtBy); err != nil {
 		return err
 	}
+	if err := insertMissingDays(ctx, tx, day.Gaps, builtBy); err != nil {
+		return err
+	}
 	count := len(day.Members)
 	memberFamilies, keys, memberRepos, shippedBy := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
 	for i, member := range day.Members {
 		memberFamilies[i], keys[i], memberRepos[i], shippedBy[i] = member.Family, member.RowKey, member.Repo, member.ShippedBy
+	}
+	// An item this write takes from another day leaves that day's rows counting it until the day
+	// is written again: one it moves here from the day it was counted on, and, for a pull request
+	// it moves to another deploy run or stops counting, the day of the run that shipped it. Each
+	// such day is recorded owed (eval_days_owed, migration 20261113082154) in this transaction,
+	// before the members that name it move, so a pass that fails before it rewrites that day still
+	// finds it (owedDays) where no stored member names it any more.
+	if _, err := tx.Exec(ctx, `
+		with given as (
+			select * from unnest($3::text[], $4::text[], $5::text[]) as given(family, row_key, shipped_by)
+		), held as (
+			select stored.family, stored.row_key, stored.day, stored.shipped_by, given.shipped_by as shipped_now
+			from given join eval_day_members stored
+				on stored.project_key = $1 and stored.family = given.family and stored.row_key = given.row_key
+			union all
+			select family, row_key, day, shipped_by, null from eval_day_members stored
+			where project_key = $1 and family = any($6) and day = $2
+			  and (family, row_key) not in (select family, row_key from given)
+		), left_days as (
+			select family, day from held where day <> $2
+			union
+			select run.family, run.day from held
+			join eval_day_members run on run.project_key = $1 and run.family = $7 and run.row_key = held.shipped_by
+			where held.shipped_by <> '' and held.shipped_by is distinct from held.shipped_now
+		)
+		insert into eval_days_owed (project_key, family, day)
+		select $1, family, day from left_days where day <> $2
+		on conflict do nothing
+	`, day.Project, date, memberFamilies, keys, shippedBy, families, KindDelivery); err != nil {
+		return fmt.Errorf("record the days %s's items left for %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into eval_day_members (project_key, family, row_key, day, repo, shipped_by)
@@ -810,6 +809,10 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 		  and (family, row_key) not in (select * from unnest($4::text[], $5::text[]))
 	`, day.Project, families, date, memberFamilies, keys); err != nil {
 		return fmt.Errorf("delete the items %s no longer counts on %s: %w", day.Project, date.Format(time.DateOnly), err)
+	}
+	// This write is the rewrite a day owed of its families.
+	if _, err := tx.Exec(ctx, `delete from eval_days_owed where project_key = $1 and family = any($2) and day = $3`, day.Project, families, date); err != nil {
+		return fmt.Errorf("clear what %s owed %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the day rows of %s on %s: %w", day.Project, date.Format(time.DateOnly), err)

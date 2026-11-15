@@ -1,7 +1,6 @@
 package evals
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -84,21 +83,9 @@ type refresh struct {
 	walkApplies     *delivery.ApplyRows
 	walkAppliesFrom time.Time
 	// walking is set while the pass walks, whose days run in order and so need no gap filled
-	// behind a first day they move (lowered).
+	// behind a first day they move (gapsBehind).
 	walking bool
-	lowered []lowered
 	report  refreshed
-}
-
-// lowered is a series' first day that a written day moved earlier, outside a walk: the days from
-// the day after it to the day before the first day the eval held before (today, where it held
-// none) have no row of the eval, and the pass fills them with zero rows (fillGaps).
-type lowered struct {
-	family  string
-	project string
-	evalID  string
-	from    time.Time
-	before  *time.Time
 }
 
 // load reads the projects and the delivery settings and seeds the projects the pass owes a seed
@@ -274,7 +261,7 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 // have passed over changes it never read (changesLost): the cursor moves to the log's head and
 // every walk begins again, which covers every change the log ever held.
 func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error) {
-	r.reads, r.done, r.unowned, r.repos = map[time.Time]DeliveryDay{}, map[builtDay]bool{}, map[string]bool{}, nil
+	r.beginPage()
 	cursors, err := r.store.readRefresherCursors(ctx)
 	if err != nil {
 		return false, err
@@ -291,7 +278,7 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 		work.restartAll()
 	} else {
 		after := cursors[changesCursor]
-		lost, err := changesLost(ctx, r.store, after)
+		lost, err := changesLost(ctx, r.store, after, r.now)
 		if err != nil {
 			return false, err
 		}
@@ -340,29 +327,40 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 	return full, nil
 }
 
-// changesLost reports whether the change cursor may have passed over changes it never read: the
-// change at its position is gone from the log though it was recorded less than ChangeRetention
-// ago by the database's clock, the clock PruneChanges cuts by, so no prune took it (a log reset,
-// or rows deleted by hand). A change gone after its retention was pruned in its time, as the
-// refresher's own prune takes the change its cursor rests on whenever a day brings no newer one,
-// and is no loss: api's delivery hub reads its cursor by the same rule. A cursor of 0 has read
-// nothing and lost nothing, and one with no time recorded is judged as a pruned one.
-func changesLost(ctx context.Context, s *Store, cursor feedCursor) (bool, error) {
-	if cursor.position == 0 || cursor.at == nil {
-		return false, nil
-	}
-	var lost bool
-	if err := s.database.Pool.QueryRow(ctx, `
-		select $2::timestamptz > now() - make_interval(secs => $3)
-		   and not exists (select 1 from delivery_changes where seq = $1)
-	`, cursor.position, *cursor.at, delivery.ChangeRetention.Seconds()).Scan(&lost); err != nil {
-		return false, fmt.Errorf("read the delivery change at %d: %w", cursor.position, err)
-	}
-	return lost, nil
+// beginPage starts a page: its delivery reads, the days it wrote, the unowned-p0 rows it wrote and
+// its read of repo_projects begin empty (refresh's rule on why they hold for one page).
+func (r *refresh) beginPage() {
+	r.reads, r.done, r.unowned, r.repos = map[time.Time]DeliveryDay{}, map[builtDay]bool{}, map[string]bool{}, nil
 }
 
-// apply writes every day w names, then fills the zero rows behind a first day those writes moved
-// earlier.
+// changesLost reports whether the change cursor may have passed over changes it never read: the
+// change at its position is gone from the log, and either it was recorded less than
+// ChangeRetention ago by the database's clock, the clock PruneChanges cuts by, so no prune took it
+// (a log reset, or rows deleted by hand), or no pass has committed for longer than ChangeRetention
+// before now, the moment this pass runs as of, which is the clock every pass stamps its cursors
+// with (commitPage): while the refresher stood still the reconcile's prune, every five minutes,
+// may have taken changes after the cursor that no pass read. A change gone after its retention,
+// with a pass committed within it, was pruned in its time, as the refresher's own prune takes the
+// change its cursor rests on whenever a day brings no newer one, and is no loss: api's delivery hub
+// reads its cursor by the same rule. A cursor with no time recorded (a position no change held) is
+// judged by its pass's time alone. A cursor of 0 has read nothing and lost nothing.
+func changesLost(ctx context.Context, s *Store, cursor feedCursor, now time.Time) (bool, error) {
+	if cursor.position == 0 {
+		return false, nil
+	}
+	var gone, young bool
+	if err := s.database.Pool.QueryRow(ctx, `
+		select not exists (select 1 from delivery_changes where seq = $1),
+		       coalesce($2::timestamptz > now() - make_interval(secs => $3), false)
+	`, cursor.position, cursor.at, delivery.ChangeRetention.Seconds()).Scan(&gone, &young); err != nil {
+		return false, fmt.Errorf("read the delivery change at %d: %w", cursor.position, err)
+	}
+	stalled := now.Sub(cursor.updatedAt) > delivery.ChangeRetention
+	return gone && (young || stalled), nil
+}
+
+// apply writes every day w names, each with the zero rows of the days behind a first day it moves
+// earlier (gapsBehind), and then every day a write left owed (writeOwed).
 func (r *refresh) apply(ctx context.Context, w *pageWork) error {
 	if err := r.applyDelivery(ctx, w); err != nil {
 		return err
@@ -384,7 +382,45 @@ func (r *refresh) apply(ctx context.Context, w *pageWork) error {
 			}
 		}
 	}
-	return r.fillGaps(ctx)
+	return r.writeOwed(ctx)
+}
+
+// owedRounds bounds how many times one page writes the owed days again: a write of an owed day may
+// leave another owed, where the store moved since the page read its changes, which a later page's
+// read of the same move names too.
+const owedRounds = 3
+
+// writeOwed writes every day of the pass's projects a write left owing a rewrite (owedDays): a day
+// an item moved off, or the day of the deploy run a pull request moved off, which a pass that
+// failed after the moving write and before the day's own left unwritten, or this page's own writes
+// left so. Each is written whole, as a change naming it is, though the page wrote it already: the
+// mark may be younger than that write.
+func (r *refresh) writeOwed(ctx context.Context) error {
+	for range owedRounds {
+		owed, err := r.store.owedDays(ctx, r.projects)
+		if err != nil || len(owed) == 0 {
+			return err
+		}
+		for _, day := range owed {
+			switch {
+			case slices.Contains(deliveryDayFamilies, day.family) && r.settings != nil:
+				delete(r.done, builtDay{family: walkDelivery, project: day.project, day: day.day})
+				read, err := r.readDelivery(ctx, day.day, nil)
+				if err != nil {
+					return err
+				}
+				if err := r.writeDelivery(ctx, read, day.project, true); err != nil {
+					return err
+				}
+			case slices.Contains(legionDayFamilies, day.family):
+				delete(r.done, builtDay{family: walkLegion, project: day.project, day: day.day})
+				if err := r.writeLegion(ctx, day.project, day.day, true); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // deliveryItem is a pull request or a run by its row key, and the UTC midnight of its day as its
@@ -555,9 +591,9 @@ func (r *refresh) rewriteDelivery(ctx context.Context, items []deliveryItem, fol
 	return linked, former, nil
 }
 
-// readDelivery is the delivery rows of day (ReadDeliveryDay), read once a page (refresh.reads),
+// readDelivery is the delivery rows of day (readDeliveryDay), read once a page (refresh.reads),
 // its deploy runs taken from applies where it is not nil and its repo_projects from the page's
-// one read of them (refresh.repos), made by the first day the page reads (readDeliveryDay).
+// one read of them (refresh.repos), made by the first day the page reads.
 func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies *delivery.ApplyRows) (DeliveryDay, error) {
 	if read, ok := r.reads[day]; ok {
 		return read, nil
@@ -596,6 +632,7 @@ func (r *refresh) writeDelivery(ctx context.Context, read DeliveryDay, project s
 	if len(day.Rows) == 0 && !explicit {
 		return nil
 	}
+	day.Gaps = r.gapsBehind(walkDelivery, project, read.Day, built.Rows, first)
 	if err := r.store.WriteProjectDay(ctx, day, r.build); err != nil {
 		return err
 	}
@@ -605,8 +642,9 @@ func (r *refresh) writeDelivery(ctx context.Context, read DeliveryDay, project s
 }
 
 // applyLegion writes the Legion days w names: the close day and the held day of each issue whose
-// stored facts changed, the filing days that moved, and the filing days of every issue below an
-// issue whose repository or parent moved.
+// stored facts changed, the filing days that moved, and the filing days and the close and held days
+// of every issue below an issue whose repository or parent moved, whose repository rows resolve
+// through it.
 func (r *refresh) applyLegion(ctx context.Context, w *pageWork) error {
 	days := map[string]map[time.Time]bool{}
 	add := func(project string, day time.Time) {
@@ -625,11 +663,16 @@ func (r *refresh) applyLegion(ctx context.Context, w *pageWork) error {
 		}
 	}
 	if len(w.reparented) > 0 {
-		touched, err := r.store.subtreeFilingDays(ctx, slices.Sorted(maps.Keys(w.reparented)))
+		moved := slices.Sorted(maps.Keys(w.reparented))
+		filed, err := r.store.subtreeFilingDays(ctx, moved)
 		if err != nil {
 			return err
 		}
-		for _, day := range touched {
+		closed, err := r.store.subtreeCloseDays(ctx, moved)
+		if err != nil {
+			return err
+		}
+		for _, day := range slices.Concat(filed, closed) {
 			add(day.project, day.day)
 		}
 	}
@@ -677,6 +720,7 @@ func (r *refresh) writeLegion(ctx context.Context, project string, day time.Time
 	if len(written.Rows) == 0 && !explicit {
 		return nil
 	}
+	written.Gaps = r.gapsBehind(walkLegion, project, read.Day, built.Rows, first)
 	if err := r.store.WriteLegionProjectDay(ctx, written, r.build); err != nil {
 		return err
 	}
@@ -759,78 +803,75 @@ func zerosFrom(zeros []DayRow, first map[string]time.Time, day time.Time) []DayR
 	return kept
 }
 
+// gapsBehind is the zero rows of every day a write of day leaves with no row of an eval whose
+// first input day the write moves earlier, outside a walk: for each eval built holds an
+// all-repositories row of, where day is before its first input day (first) or the eval held none,
+// the days after day up to the day before that first day (to today, where there was none). They
+// are written in the transaction of day's own write (ProjectDay.Gaps), so a pass that fails after
+// that write leaves no day behind it without a row: the retry reads the first day from the store,
+// day itself by then, and would find no gap to fill. A walk writes its days in order from the first
+// input day, so it leaves none.
+func (r *refresh) gapsBehind(family, project string, day time.Time, built []DayRow, first map[string]time.Time) []DayRow {
+	if r.walking {
+		return nil
+	}
+	moved := map[string]*time.Time{}
+	for _, row := range built {
+		if row.Repo != "" {
+			continue
+		}
+		if since, ok := first[row.EvalID]; !ok {
+			moved[row.EvalID] = nil
+		} else if day.Before(since) {
+			moved[row.EvalID] = &since
+		}
+	}
+	var gaps []DayRow
+	for _, evalID := range slices.Sorted(maps.Keys(moved)) {
+		end := r.today
+		if before := moved[evalID]; before != nil {
+			end = before.AddDate(0, 0, -1)
+		}
+		slug := strings.TrimPrefix(evalID, project+"/")
+		for gap := day.AddDate(0, 0, 1); !gap.After(end); gap = gap.AddDate(0, 0, 1) {
+			var zero []DayRow
+			switch family {
+			case walkDelivery:
+				zero = ZeroDeliveryDay(*r.settings, project, gap).Rows
+			case walkLegion:
+				zero = ZeroLegionDay(project, gap, slug).Rows
+			}
+			for _, row := range zero {
+				if row.EvalID == evalID {
+					gaps = append(gaps, row)
+				}
+			}
+		}
+	}
+	return gaps
+}
+
 // noteBuilt moves the first input day of each eval built holds an all-repositories row of to day,
-// where day is before it or the eval held none: its first input day is now. Outside a walk the
-// days from day to the old first day (to today, where there was none) have no row of the eval, and
-// the pass fills them (fillGaps).
+// where day is before it or the eval held none: its first input day is now. The write of day wrote
+// the zero rows of the days that leaves behind it (gapsBehind).
 func (r *refresh) noteBuilt(family, project string, day time.Time, built []DayRow) {
 	first := r.first[walkKey{family: family, project: project}]
 	for _, row := range built {
 		if row.Repo != "" {
 			continue
 		}
-		since, ok := first[row.EvalID]
-		if ok && !day.Before(since) {
+		if since, ok := first[row.EvalID]; ok && !day.Before(since) {
 			continue
-		}
-		if !r.walking {
-			moved := lowered{family: family, project: project, evalID: row.EvalID, from: day}
-			if ok {
-				moved.before = &since
-			}
-			r.lowered = append(r.lowered, moved)
 		}
 		first[row.EvalID] = day
 	}
-}
-
-// fillGaps writes the zero rows of every day behind a first day the pass moved earlier, from the
-// day after the new first day to the day before the old one (to today, where the eval held no
-// row), each project's of each family in one transaction. A day that holds a row of a series
-// already keeps it (insertMissingDays).
-func (r *refresh) fillGaps(ctx context.Context) error {
-	if len(r.lowered) == 0 {
-		return nil
-	}
-	gaps := map[walkKey][]DayRow{}
-	for _, moved := range r.lowered {
-		end := r.today
-		if moved.before != nil {
-			end = moved.before.AddDate(0, 0, -1)
-		}
-		slug := strings.TrimPrefix(moved.evalID, moved.project+"/")
-		for day := moved.from.AddDate(0, 0, 1); !day.After(end); day = day.AddDate(0, 0, 1) {
-			var zero []DayRow
-			switch moved.family {
-			case walkDelivery:
-				zero = ZeroDeliveryDay(*r.settings, moved.project, day).Rows
-			case walkLegion:
-				zero = ZeroLegionDay(moved.project, day, slug).Rows
-			}
-			key := walkKey{family: moved.family, project: moved.project}
-			for _, row := range zero {
-				if row.EvalID == moved.evalID {
-					gaps[key] = append(gaps[key], row)
-				}
-			}
-		}
-	}
-	r.lowered = nil
-	for _, key := range slices.SortedFunc(maps.Keys(gaps), func(a, b walkKey) int {
-		return cmp.Or(strings.Compare(a.family, b.family), strings.Compare(a.project, b.project))
-	}) {
-		if err := r.insertZeroRows(ctx, gaps[key]); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // walk makes a batch of each walk: the delivery walk (where delivery settings exist), and each
 // project's Legion walk, logged zero fill and unowned-p0 row of today. It answers whether a walk
 // has days left, which asks for the next pass at once.
 func (r *refresh) walk(ctx context.Context) (bool, error) {
-	walks, err := r.store.readWalks(ctx)
+	walks, err := r.store.readWalks(ctx, r.build)
 	if err != nil {
 		return false, err
 	}
@@ -865,14 +906,14 @@ func (r *refresh) walk(ctx context.Context) (bool, error) {
 }
 
 // walkDays makes one batch of the walk key: from the first day it has not built, or, where it is
-// to begin (no record, a record of another build, or one begun again), from the first input day
-// begin answers, it builds up to r.batch days through today with build, and records where it
-// stands. A walk with nothing to walk (begin answers nil) stands at tomorrow. It answers whether
-// days before today are left.
+// to begin (no record of the running build's, which is how each build makes its own walk, or one
+// begun again), from the first input day begin answers, it builds up to r.batch days through today
+// with build, and records where it stands. A walk with nothing to walk (begin answers nil) stands
+// at tomorrow. It answers whether days before today are left.
 func (r *refresh) walkDays(ctx context.Context, walks map[walkKey]walkState, key walkKey,
 	begin func(context.Context) (*time.Time, error), build func(context.Context, time.Time) error) (bool, error) {
 	state, found := walks[key]
-	begun := !found || state.build != r.build || state.next == nil
+	begun := !found || state.next == nil
 	next := state.next
 	if begun {
 		start, err := begin(ctx)
@@ -981,13 +1022,13 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 }
 
 // walkDaily makes the once-a-day write of the walk key: write runs on the first pass of each UTC
-// day, and on the first pass of a walk begun again (no record, or one of another build), and the
+// day, and on the first pass of a walk begun again (no record of the running build's), and the
 // walk then stands at tomorrow. The logged evals' zero fill is one (fillLogged through today), and
 // the unowned-p0 row of today another (writeUnowned): its count reads issues alone, so it is
 // written whether or not delivery settings exist, a project made since the last pass included.
 func (r *refresh) walkDaily(ctx context.Context, walks map[walkKey]walkState, key walkKey, write func(context.Context) error) error {
 	state, found := walks[key]
-	if found && state.build == r.build && state.next != nil && state.next.After(r.today) {
+	if found && state.next != nil && state.next.After(r.today) {
 		return nil
 	}
 	if err := write(ctx); err != nil {

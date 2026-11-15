@@ -558,8 +558,17 @@ func storedSeries(project string, rows []DayRow, into map[string]map[string]bool
 	}
 }
 
+// seriesRow is the name of the eval_series row of slug's eval that defines the day rows stored
+// under series: SeriesJobs for one of pr-ci's job series, and series itself for any other.
+func seriesRow(slug, series string) string {
+	if slug == SlugPRCI && strings.HasPrefix(series, measures.JobSeriesPrefix) {
+		return SeriesJobs
+	}
+	return series
+}
+
 // requireCatalogueHolds fails the test unless every series written holds a series row of its
-// eval in the catalogue (SeriesRow), and every catalogue series of the evals in want is written
+// eval in the catalogue (seriesRow), and every catalogue series of the evals in want is written
 // but those unwritten names by eval, which by their rule no day row is ever written of and none
 // may be; it answers how many series it compared.
 func requireCatalogueHolds(t *testing.T, written map[string]map[string]bool, want []string, unwritten map[string][]string) int {
@@ -573,7 +582,7 @@ func requireCatalogueHolds(t *testing.T, written map[string]map[string]bool, wan
 		}
 		rows := map[string]bool{}
 		for series := range written[slug] {
-			row := SeriesRow(slug, series)
+			row := seriesRow(slug, series)
 			rows[row] = true
 			if !slices.Contains(seriesNames(catalogue[index]), row) {
 				t.Errorf("%s: day rows of series %s are written, and the catalogue holds no series row %s of it", slug, series, row)
@@ -627,11 +636,11 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 	written := map[string]map[string]bool{}
 	days, rows := 0, 0
 	for day := fixture.From; day.Before(fixture.To); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.ReadDeliveryDay(ctx, settings, day)
+		read, err := r.registry.readDeliveryDay(ctx, settings, day, nil, nil)
 		if err != nil {
 			t.Fatalf("read the delivery day %s: %v", day.Format(time.DateOnly), err)
 		}
-		for _, project := range read.Projects() {
+		for _, project := range dayProjects(read) {
 			built := read.Rows(project).Rows
 			storedSeries(project, built, written)
 			rows += len(built)
@@ -645,7 +654,7 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 	storedSeries(fixture.Project, []DayRow{r.day(t, EvalID(fixture.Project, SlugUnownedP0), SeriesUnownedP0, "", fixture.To)}, written)
 	jobs := 0
 	for series := range written[SlugPRCI] {
-		if SeriesRow(SlugPRCI, series) == SeriesJobs {
+		if seriesRow(SlugPRCI, series) == SeriesJobs {
 			jobs++
 		}
 	}

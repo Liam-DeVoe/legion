@@ -602,42 +602,30 @@ func readGoldenLegionWindows(t *testing.T) []goldenLegionWindow {
 }
 
 // seedEvalHistories writes into database, behind handler, the two histories the eval reads are
-// checked over, each with its evals seeded (evals.Store.Ensure) and its day rows written as the
-// refresher writes them: deliverytest's (DELIV, every pull request of it, and DELIVX, which holds
-// none) over days of history, and the legiontest history legion/metrics' golden files were recorded
-// over (GOLDEN). It answers the delivery fixture and the golden windows.
+// checked over, and then refreshes their day rows as the server's refresher writes them, as of
+// the later end of the two (refreshEvalDays), which seeds every project's evals too:
+// deliverytest's (DELIV, every pull request of it, and DELIVX, which holds none) over days of
+// history, and the legiontest history legion/metrics' golden files were recorded over (GOLDEN).
+// It answers the delivery fixture and the golden windows.
 func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int) (deliverytest.Fixture, []goldenLegionWindow) {
 	t.Helper()
-	ctx := t.Context()
-	registry := evals.New(database, deps.Docs, deps.Events)
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: days})
-	settings, err := delivery.GetSettings(ctx, database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
-	for day := fixture.From; day.Before(fixture.To); day = day.AddDate(0, 0, 1) {
-		if _, err := registry.WriteDeliveryDay(ctx, settings, day, "", testServerBuild); err != nil {
-			t.Fatalf("write the delivery rows of %s: %v", day.Format(time.DateOnly), err)
-		}
-	}
-
 	windows := readGoldenLegionWindows(t)
 	spec := windows[0].Spec
 	history := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
-	writeLegionEvals(t, database, registry, history.Project, history.From, spec.Now)
-	for _, project := range []string{fixture.Project, fixture.SecondProject, history.Project} {
-		if _, err := registry.Ensure(ctx, project); err != nil {
-			t.Fatalf("seed the evals of %s: %v", project, err)
-		}
+	storeLegionFacts(t, database, history.Project, spec.Now)
+	end := spec.Now
+	if fixture.To.After(end) {
+		end = fixture.To
 	}
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, end.Add(-time.Minute))
 	return fixture, windows
 }
 
-// writeLegionEvals stores what the server derives from project's Legion history, as of now: the
-// facts of every issue and the filings metric 4 classes (legionfacts.ComputeProject, as the facts
-// consumer computes them), and the project's Legion day rows of every UTC day from the day of
-// from to now's, written as the refresher writes them.
-func writeLegionEvals(t *testing.T, database *store.Store, registry *evals.Store, project string, from, now time.Time) {
+// storeLegionFacts stores what the facts consumer derives from project's Legion history, as of
+// now: the facts of every issue and the filings metric 4 classes (legionfacts.ComputeProject, as
+// the facts consumer computes them), from which the refresher writes the project's Legion day rows.
+func storeLegionFacts(t *testing.T, database *store.Store, project string, now time.Time) {
 	t.Helper()
 	ctx := t.Context()
 	rows, filings, err := legionfacts.ComputeProject(ctx, database.Pool, project, now)
@@ -649,15 +637,6 @@ func writeLegionEvals(t *testing.T, database *store.Store, registry *evals.Store
 	}
 	if err := legionfacts.WriteFilings(ctx, database.Pool, legionfacts.FilingsWrite{Project: project, Filings: filings, Whole: true}); err != nil {
 		t.Fatalf("write the filings of %s: %v", project, err)
-	}
-	since, err := registry.ReadLegionSince(ctx, project)
-	if err != nil {
-		t.Fatalf("read the first observations of %s: %v", project, err)
-	}
-	for day := measures.Midnight(from); day.Before(now); day = day.AddDate(0, 0, 1) {
-		if err := registry.WriteLegionDay(ctx, project, day, since, testServerBuild); err != nil {
-			t.Fatalf("write the Legion rows of %s: %v", day.Format(time.DateOnly), err)
-		}
 	}
 }
 
@@ -1009,17 +988,8 @@ func mustString(t *testing.T, raw json.RawMessage) string {
 // that started before them and failed a job inside them, and over a whole-day window.
 func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	ctx := t.Context()
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
-	registry := evals.New(database, deps.Docs, deps.Events)
-	for day := fixture.From; day.Before(fixture.To); day = day.AddDate(0, 0, 1) {
-		if _, err := registry.WriteDeliveryDay(ctx, fixture.Settings, day, "", testServerBuild); err != nil {
-			t.Fatalf("write the delivery rows of %s: %v", day.Format(time.DateOnly), err)
-		}
-	}
-	if _, err := registry.Ensure(ctx, fixture.Project); err != nil {
-		t.Fatalf("seed the evals of %s: %v", fixture.Project, err)
-	}
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, fixture.To.Add(-time.Minute))
 
 	// A pull-request checks run that failed a job, ending the window one second past the 24 hours
 	// after its start: it started before the 24 hours the table counts and completed inside them.
@@ -1080,17 +1050,8 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 // and one that does not keeps them all.
 func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	ctx := t.Context()
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
-	registry := evals.New(database, deps.Docs, deps.Events)
-	for day := fixture.From; day.Before(fixture.To); day = day.AddDate(0, 0, 1) {
-		if _, err := registry.WriteDeliveryDay(ctx, fixture.Settings, day, "", testServerBuild); err != nil {
-			t.Fatalf("write the delivery rows of %s: %v", day.Format(time.DateOnly), err)
-		}
-	}
-	if _, err := registry.Ensure(ctx, fixture.Project); err != nil {
-		t.Fatalf("seed the evals of %s: %v", fixture.Project, err)
-	}
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, fixture.To.Add(-time.Minute))
 	query := url.Values{"from": {fixture.From.AddDate(0, 0, 4).Format(time.RFC3339)}, "to": {fixture.From.AddDate(0, 0, 11).Format(time.RFC3339)}}.Encode()
 	ranked := func() (pipeline, items []string) {
 		t.Helper()

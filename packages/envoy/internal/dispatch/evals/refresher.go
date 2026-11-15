@@ -2,6 +2,7 @@ package evals
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -42,10 +43,10 @@ import (
 // zero rows, and one per project writing its unowned-p0 row of today, which reads issues alone and
 // so is written whether or not delivery settings exist. A walk builds every day from the first
 // input day of what it walks to today, a batch of days a pass (walkBatch), then the day of each new
-// UTC day as it comes, which is what writes the zero rows of a day nothing happened on. A walk
-// recorded by another build is begun again, so a release rebuilds every row of each family the
-// build before it wrote, and while two builds run each rebuilds in turn, as issue_facts_computed
-// makes the Legion facts consumer read each project whole again.
+// UTC day as it comes, which is what writes the zero rows of a day nothing happened on. Each build
+// makes walks of its own (eval_days_walks is keyed by the build), so a release rebuilds every row
+// of each family the build before it wrote, as issue_facts_computed makes the Legion facts
+// consumer read each project whole again, and while two builds run each continues its own walk.
 //
 // A day written is every row of its project's family of that day, upserted where a value moved
 // (upsertDays), the rows the day no longer builds written as zero rows (zeroStaleDays: each had
@@ -180,6 +181,41 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 	})
 }
 
+// refreshThroughPasses bounds RefreshThrough: a pass builds walkBatch days of each walk, so this
+// many cover a history far longer than any a caller loads.
+const refreshThroughPasses = 100
+
+// RefreshThrough runs the refresher's pass, the one RunRefresher's loop runs, as of now and under
+// deps.Build (deps.Leases and the wakes unused), pass after pass until one leaves no walk with days
+// left: every project's day rows then stand from each family's first input day through now's UTC
+// day as the server's refresher leaves them, every project seeded. It takes no lease, so it is for
+// a database no refresher of a running server writes: a caller that loads one and then reads it,
+// such as the tests of the eval routes, which so read the rows production writes. The event log is
+// read through everything committed before the call (events.Horizon.Await).
+func (s *Store) RefreshThrough(ctx context.Context, deps RefresherDeps, now time.Time) error {
+	if deps.Build == "" {
+		return errors.New("evals: RefresherDeps.Build is empty, and the refresher needs the build it writes as")
+	}
+	if _, err := deps.Horizon.Await(ctx); err != nil {
+		return fmt.Errorf("await the event log's safe horizon: %w", err)
+	}
+	now = now.UTC()
+	sched := serverRefresherSchedule
+	sched.now = func() time.Time { return now }
+	seeds := &seeding{}
+	for range refreshThroughPasses {
+		_, next, err := s.refresh(ctx, deps, sched, seeds)
+		if err != nil {
+			return err
+		}
+		// A pass that leaves a walk with days left asks for the next at once (nextPass).
+		if !next.Equal(now) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%d refresher passes as of %s left a walk with days still to build", refreshThroughPasses, now.Format(time.RFC3339))
+}
+
 // refreshed is what one pass wrote: each family's day of each project it built and wrote, which is
 // what a check of which days a change touches reads, and each project whose seed it ran, in the
 // order it ran them. The unowned-p0 row of today is recorded under its slug, and a logged eval's
@@ -281,26 +317,28 @@ func (r *refresh) nextPass(ctx context.Context, pending bool) (time.Time, error)
 	return next, nil
 }
 
-// feedCursor is where one feed stands: the position the last committed pass read through and,
-// for the change cursor, when the change at that position was recorded (delivery_changes.at),
-// which tells a change pruned in its time from one lost (changesLost); nil for the event cursor
-// and for a position no change holds.
+// feedCursor is where one feed stands: the position the last committed pass read through; for
+// the change cursor, when the change at that position was recorded (delivery_changes.at), which
+// tells a change pruned in its time from one lost (changesLost), nil for the event cursor and for
+// a position no change holds; and when the last committed pass ran as of (updatedAt), which tells
+// a log pruned past changes no pass read while the refresher stood still.
 type feedCursor struct {
-	position int64
-	at       *time.Time
+	position  int64
+	at        *time.Time
+	updatedAt time.Time
 }
 
 // readRefresherCursors is where each feed stands, by cursor name; no row at all is a database no
 // refresher pass has committed on.
 func (s *Store) readRefresherCursors(ctx context.Context) (map[string]feedCursor, error) {
-	rows, err := s.database.Pool.Query(ctx, `select name, position, at from eval_days_cursor where name = any($1)`, refresherCursors)
+	rows, err := s.database.Pool.Query(ctx, `select name, position, at, updated_at from eval_days_cursor where name = any($1)`, refresherCursors)
 	if err != nil {
 		return nil, fmt.Errorf("read the eval day-row refresher's cursors: %w", err)
 	}
 	cursors := map[string]feedCursor{}
 	var name string
 	var cursor feedCursor
-	if _, err := pgx.ForEachRow(rows, []any{&name, &cursor.position, &cursor.at}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&name, &cursor.position, &cursor.at, &cursor.updatedAt}, func() error {
 		cursors[name] = cursor
 		return nil
 	}); err != nil {
@@ -352,12 +390,20 @@ func (r *refresh) commitPage(ctx context.Context, cursors map[string]feedCursor,
 		for i, key := range restarts {
 			families[i], projects[i] = key.family, key.project
 		}
+		// Every build's walk begins again: a change this page passed is read by no other pass,
+		// whichever build's process runs it.
+		if _, err := tx.Exec(ctx, `
+			update eval_days_walks walk set next_day = null, updated_at = $3
+			from unnest($1::text[], $2::text[]) as given(family, project)
+			where walk.family = given.family and walk.project_key = given.project
+		`, families, projects, r.now); err != nil {
+			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
+		}
 		if _, err := tx.Exec(ctx, `
 			insert into eval_days_walks (family, project_key, built_by, next_day, updated_at)
 			select family, project, $3, null, $4 from unnest($1::text[], $2::text[]) as given(family, project)
 			order by family, project
-			on conflict (family, project_key) do update
-			set built_by = excluded.built_by, next_day = null, updated_at = excluded.updated_at
+			on conflict (family, project_key, built_by) do nothing
 		`, families, projects, r.build, r.now); err != nil {
 			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
 		}
@@ -374,23 +420,27 @@ type walkKey struct {
 	project string
 }
 
-// walkState is one walk's record: the build it was recorded under and the first day it has not
-// built, nil while it is to begin at its first input day.
+// walkState is one walk's record under the running build: the first day it has not built, nil
+// while it is to begin at its first input day.
 type walkState struct {
-	build string
-	next  *time.Time
+	next *time.Time
 }
 
-// readWalks is every walk's record.
-func (s *Store) readWalks(ctx context.Context) (map[walkKey]walkState, error) {
-	rows, err := s.database.Pool.Query(ctx, `select family, project_key, built_by, next_day from eval_days_walks`)
+// staleWalk is how long another build's record of a walk stands unmoved before a build whose own
+// walk reached today drops it: a running build's walk that reached today moves at least once a UTC
+// day, so a record two days still is one no running process holds.
+const staleWalk = 48 * time.Hour
+
+// readWalks is every record of a walk under build.
+func (s *Store) readWalks(ctx context.Context, build string) (map[walkKey]walkState, error) {
+	rows, err := s.database.Pool.Query(ctx, `select family, project_key, next_day from eval_days_walks where built_by = $1`, build)
 	if err != nil {
 		return nil, fmt.Errorf("read the walks of the day rows: %w", err)
 	}
 	walks := map[walkKey]walkState{}
 	var key walkKey
 	var state walkState
-	if _, err := pgx.ForEachRow(rows, []any{&key.family, &key.project, &state.build, &state.next}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&key.family, &key.project, &state.next}, func() error {
 		kept := state
 		if state.next != nil {
 			next := measures.Midnight(*state.next)
@@ -404,15 +454,25 @@ func (s *Store) readWalks(ctx context.Context) (map[walkKey]walkState, error) {
 	return walks, nil
 }
 
-// recordWalk records that the walk key under the pass's build has built every day before next.
+// recordWalk records that the walk key under the pass's build has built every day before next,
+// and, where that is past today, drops another build's record of the walk that has not moved for
+// staleWalk.
 func (r *refresh) recordWalk(ctx context.Context, key walkKey, next time.Time) error {
 	if _, err := r.store.database.Pool.Exec(ctx, `
 		insert into eval_days_walks (family, project_key, built_by, next_day, updated_at)
 		values ($1, $2, $3, $4, $5)
-		on conflict (family, project_key) do update
-		set built_by = excluded.built_by, next_day = excluded.next_day, updated_at = excluded.updated_at
+		on conflict (family, project_key, built_by) do update
+		set next_day = excluded.next_day, updated_at = excluded.updated_at
 	`, key.family, key.project, r.build, next, r.now); err != nil {
 		return fmt.Errorf("record the %s walk of %q through %s: %w", key.family, key.project, next.Format(time.DateOnly), err)
+	}
+	if !next.After(r.today) {
+		return nil
+	}
+	if _, err := r.store.database.Pool.Exec(ctx, `
+		delete from eval_days_walks where family = $1 and project_key = $2 and built_by <> $3 and updated_at < $4
+	`, key.family, key.project, r.build, r.now.Add(-staleWalk)); err != nil {
+		return fmt.Errorf("drop the stale %s walks of %q: %w", key.family, key.project, err)
 	}
 	return nil
 }

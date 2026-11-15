@@ -64,6 +64,14 @@
 --                   request, moves which run ships it (containment), and the run it left counts it
 --                   in its own day's rows: this is how the refresher finds that day once the
 --                   stored rows no longer say it.
+-- eval_days_owed holds each project's day of a family whose rows count an item that a write of
+-- another day took from them: a write that moves a member's day off this one (an issue closed
+-- again on another day, a pull request merged again), or moves a pull request's shipped_by off a
+-- deploy run, or stops counting a pull request a run shipped (the run's own day), records the day
+-- it leaves, in its own transaction, and the next write of that day clears it. The refresher
+-- writes every owed day, so a pass that fails between the write that moves an item and the one
+-- that rewrites the day the item left still finds that day on its retry, though no stored member
+-- names it any more.
 -- Only the computation counts items: a logged eval's day folds readings, each of which is its own
 -- row of eval_readings, so no member names a writer.
 -- eval_day_members_day, (project_key, family, day), is the read of the items one write of a day
@@ -72,9 +80,11 @@
 -- of the project's family, one row per pull request, run or issue it ever counted.
 -- eval_day_members_shipped, (project_key, shipped_by) over the pull requests a deploy shipped, is
 -- the read of the pull requests one deploy run shipped, by project.
+-- eval_days_owed's primary key, (project_key, family, day), is both the refresher's read of the
+-- owed days, a handful between two writes, and the read a write of a day clears its own with.
 --
--- Two new tables, both empty: nothing existing is read or rewritten, and the release before this
--- one neither reads nor writes either, so the two builds roll together (cmd/dispatch/README.md,
+-- Three new tables, all empty: nothing existing is read or rewritten, and the release before this
+-- one neither reads nor writes any, so the two builds roll together (cmd/dispatch/README.md,
 -- "Database migrations"). The foreign keys to projects take SHARE ROW EXCLUSIVE on projects for
 -- the length of this transaction, which holds a project write and no project read. The census
 -- answers 0, and rolling back past it is an image rollback alone.
@@ -114,3 +124,9 @@ create table eval_day_members (
 );
 create index eval_day_members_day on eval_day_members (project_key, family, day);
 create index eval_day_members_shipped on eval_day_members (project_key, shipped_by) where shipped_by <> '';
+create table eval_days_owed (
+    project_key text not null references projects (key) on delete cascade,
+    family text not null,
+    day date not null,
+    primary key (project_key, family, day)
+);

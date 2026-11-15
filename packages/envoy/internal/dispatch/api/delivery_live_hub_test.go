@@ -1092,6 +1092,53 @@ func TestResumeFromBeforeTheKeptDayGetsASnapshot(t *testing.T) {
 	kept.none(t, time.Second, "a resume from the change the view's body reflects")
 }
 
+// TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook: a hub that has read nothing of the
+// change log for longer than its retention (a catch-up failing for a day; here no listener wakes
+// it) finds the change its cursor rests on pruned, and with it a merge in its view's window that
+// it never read. It reads the log as lost and recomputes every view, so the merge reaches the
+// view. Read as a change pruned in its time, the cursor would read only the change the prune kept
+// after it, which touches no timeline, and the view would never learn of the merge.
+func TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook(t *testing.T) {
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		hub.dial = func(context.Context) (*pgx.Conn, error) { return nil, context.DeadlineExceeded }
+	})
+	seedHubSettings(t, rig.database)
+	now := rig.clock.Now()
+	upsertPR(t, rig.database, hubPR(1, now.Add(-2*time.Hour)))
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
+	conn.snapshot(t, 5*time.Second, "t")
+	if rig.changeCursor() == 0 {
+		t.Fatal("the hub's cursor rests on no change")
+	}
+	upsertPR(t, rig.database, hubPR(2, now.Add(-time.Hour)))
+	for _, statement := range []string{
+		`update delivery_changes set at = now() - interval '2 days'`,
+		`delete from delivery_changes where at < now() - interval '1 day'`,
+		`insert into delivery_changes (kind, repo, ref) values ('eval_readings', 'NONE', 'NONE/kept')`,
+	} {
+		if _, err := rig.database.Pool.Exec(t.Context(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	// The hub last read the log, and the change at its cursor, a day and an hour ago.
+	rig.hub.mu.Lock()
+	rig.hub.generation.changeAt = now.Add(-25 * time.Hour)
+	rig.hub.generation.changeRead = now.Add(-25 * time.Hour)
+	epoch := rig.hub.generation.epoch
+	rig.hub.mu.Unlock()
+	rig.hub.catchUpNow()
+	rig.hub.mu.Lock()
+	resets := rig.hub.generation.epoch - epoch
+	rig.hub.mu.Unlock()
+	if resets != 1 {
+		t.Fatalf("the catch-up after a day with no read counted %d resets of the log, want 1: it read past the merge the prune took as a change pruned in its time", resets)
+	}
+	if got := liveUpsertIDs(t, conn.delta(t, 5*time.Second, "t"), "prs"); !slices.Contains(got, "acme/widgets#2") {
+		t.Fatalf("after a day with no read the delta upserts %v, want acme/widgets#2, the merge the prune took", got)
+	}
+}
+
 func TestAReconnectCatchesUpWhatTheListenerMissed(t *testing.T) {
 	var blind atomic.Bool
 	rig := newHubRig(t, func(hub *deliveryHub) {

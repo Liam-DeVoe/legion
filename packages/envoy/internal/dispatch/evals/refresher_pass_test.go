@@ -89,7 +89,9 @@ func TestAChangeLandingBetweenTwoPagesOfAPassIsWritten(t *testing.T) {
 // on a day with no newer change, and the next pass begins no walk again and writes no day. The
 // change the cursor rests on leaving the log younger than its retention, as a reset log or a
 // delete by hand takes it, is a loss no one can name, and the pass after it begins every walk
-// again, which writes the days of each.
+// again, which writes the days of each. So is the change it rests on pruned after its retention
+// when no pass had committed for longer than the retention: while the refresher stood still the
+// prune may have taken changes after the cursor that no pass read.
 func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedLegionEval(t)
@@ -126,6 +128,25 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 	}
 	t.Logf("pruned %d changes through the cursor's %d: the pass after wrote nothing; a young change vanished: the pass after wrote %d days",
 		pruned, resting.position, len(lost.days))
+
+	r.settle(t)
+	r.exec(t, "log a change for the cursor to rest on", `insert into delivery_changes (kind, repo, ref) values ('session_group', null, 'stall')`)
+	r.pass(t)
+	if cursors, err = r.registry.readRefresherCursors(ctx); err != nil {
+		t.Fatal(err)
+	}
+	resting = cursors[changesCursor]
+	r.exec(t, "age the log past its retention", `update delivery_changes set at = now() - interval '25 hours' where seq <= $1`, resting.position)
+	r.exec(t, "age the cursor's change with it", `update eval_days_cursor set at = now() - interval '25 hours' where name = $1`, changesCursor)
+	if _, err := delivery.PruneChanges(ctx, r.database.Pool); err != nil {
+		t.Fatalf("prune the log: %v", err)
+	}
+	r.exec(t, "stamp the last pass 25 hours before the next", `update eval_days_cursor set updated_at = $1`, r.now.Add(-25*time.Hour))
+	stalled, _ := r.pass(t)
+	if !slices.Contains(stalled.sorted(), line(walkLegion, "EVAL", legionHistoryDay(2))) {
+		t.Errorf("the pass after 25 hours with no pass committed wrote %v, want every walk begun again, EVAL's Legion days among them", stalled.sorted())
+	}
+	t.Logf("after a stall past the retention the pass wrote %d days", len(stalled.days))
 }
 
 // TestTheUnownedP0RowOfEachDayIsWrittenWithNoDeliverySettings: with no delivery settings, so no

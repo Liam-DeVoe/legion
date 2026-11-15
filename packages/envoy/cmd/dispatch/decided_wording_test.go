@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A database a release before LEGION-651 wrote holds decided asks whose rows a document's
@@ -160,17 +161,22 @@ Ship on Tuesday?
 			t.Errorf("the restored ask reads %s %s %s, want its decided options and urgency, still answered", label, urgency, state)
 		}
 	}
-	// The boot also seeds CORE's evals (the eval seed's boot pass, or the refresher's for a
-	// project it finds unseeded), and the seed creates the project's `evals-md` document, which
-	// owes a settlement of its own like every document write. Once the boot pass has logged, that
-	// seed has committed, so the owed set is exact: the spec, the record copy and that document.
-	process.WaitForOutput(t, `msg="dispatch: the eval seed ran"`)
+	// The boot also seeds CORE's evals (the eval day-row refresher's pass seeds every project it
+	// finds unseeded), and the seed creates the project's `evals-md` document, which owes a
+	// settlement of its own like every document write. The document and the row that owes its
+	// settlement commit in the seed's one transaction, so once the document exists the owed set is
+	// exact: the spec, the record copy and that document.
 	var evalsDocument string
-	if err := database.Pool.QueryRow(ctx, `
-		select id::text from artifacts
-		where project_key = 'CORE' and issue_key is null and session_id is null and slug = 'evals-md'
-	`).Scan(&evalsDocument); err != nil {
-		t.Fatalf("read CORE's evals-md: %v", err)
+	if !testwait.Holds(time.Minute, 50*time.Millisecond, func() bool {
+		if err := database.Pool.QueryRow(ctx, `
+			select coalesce(max(id::text), '') from artifacts
+			where project_key = 'CORE' and issue_key is null and session_id is null and slug = 'evals-md'
+		`).Scan(&evalsDocument); err != nil {
+			t.Fatalf("read CORE's evals-md: %v", err)
+		}
+		return evalsDocument != ""
+	}) {
+		t.Fatalf("the boot seeded no evals-md for CORE within a minute:\n%s", process.Output.String())
 	}
 	var owed []string
 	rows, err := database.Pool.Query(ctx, `select artifact_id::text from doc_settlements_pending order by artifact_id`)

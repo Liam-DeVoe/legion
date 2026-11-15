@@ -21,9 +21,12 @@
 -- rows builds every project's; the Legion rows of one project (family `legion`); the zero rows of
 -- one project's logged evals (family `logged`); and one project's unowned-p0 row of today (family
 -- `unowned`), a walk of one day at a time that stands at tomorrow once today's row is written.
---   built_by   the build whose walk this is. A walk whose build is not the running one is begun
---              again by that build, which is how a release rebuilds every row of a family an
---              older build wrote, and while two builds run, each rebuilds in turn.
+--   built_by   the build whose walk this is, part of the walk's key: each build makes walks of
+--              its own, begun at its start, which is how a release rebuilds every row of a family
+--              an older build wrote, and while two builds run (a rolling deploy), each continues its
+--              own walk rather than beginning again the one the other recorded, and neither stops
+--              the other from reaching today. A build whose walk reaches today drops another
+--              build's record of it that has not moved for two days, a build no process runs.
 --   next_day   the first day the walk has not built yet; null while the walk is to begin, at the
 --              first input day of what it walks. A walk that has built today stands at tomorrow,
 --              and the first pass of a new UTC day builds that day.
@@ -47,5 +50,5 @@ create table eval_days_walks (
     built_by text not null,
     next_day date,
     updated_at timestamptz not null default now(),
-    primary key (family, project_key)
+    primary key (family, project_key, built_by)
 );

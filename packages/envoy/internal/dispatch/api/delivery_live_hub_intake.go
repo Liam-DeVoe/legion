@@ -172,7 +172,7 @@ func (h *deliveryHub) readChangeCursor(g *hubGeneration) bool {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	g.changeSeq, g.changeAt = seq, timeOrZero(at)
+	g.changeSeq, g.changeAt, g.changeRead = seq, timeOrZero(at), h.clock.Now()
 	return true
 }
 
@@ -185,27 +185,31 @@ func (h *deliveryHub) catchUp(g *hubGeneration) {
 }
 
 // catchUpChanges reads every delivery change after the cursor, marking the views each can touch.
-// Before each read it checks for a reset log: one holding no row as far as the cursor, or one whose
-// row at the cursor was recorded at another time than the hub read (a TRUNCATE ... RESTART IDENTITY
-// refilled past it, e2e/seed.ts:150). A reset moves the cursor to the newest row and marks every
-// view dirty.
+// Before each read it checks for a lost cursor: a reset log, one holding no row as far as the
+// cursor, or one whose row at the cursor was recorded at another time than the hub read (a
+// TRUNCATE ... RESTART IDENTITY refilled past it, e2e/seed.ts:150); or a log pruned past changes
+// the hub never read, its row at the cursor gone while the hub had read nothing for longer than
+// the log's retention (a catch-up failing for a day), since the prune may then have taken changes
+// after the cursor too. A lost cursor moves to the newest row and marks every view dirty.
 func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 	ctx, pool := g.readContext(), h.server.deps.Store.Pool
 	for {
 		h.mu.Lock()
-		seq, at := g.changeSeq, g.changeAt
+		seq, at, readAt := g.changeSeq, g.changeAt, g.changeRead
 		h.mu.Unlock()
 		latest, err := delivery.LatestChangeSeq(ctx, pool)
 		if err != nil {
 			return err
 		}
 		reset := latest < seq
-		if !reset && seq > 0 && h.clock.Now().Sub(at) < delivery.ChangeRetention {
+		now := h.clock.Now()
+		young, stalled := now.Sub(at) < delivery.ChangeRetention, now.Sub(readAt) > delivery.ChangeRetention
+		if !reset && seq > 0 && (young || stalled) {
 			read, err := delivery.ChangeAt(ctx, pool, seq)
 			if err != nil {
 				return err
 			}
-			reset = read == nil || !read.Equal(at)
+			reset = read == nil || (young && !read.Equal(at))
 		}
 		if reset {
 			var latestAt *time.Time
@@ -217,7 +221,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 			now := h.clock.Now()
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			g.changeSeq, g.changeAt = latest, timeOrZero(latestAt)
+			g.changeSeq, g.changeAt, g.changeRead = latest, timeOrZero(latestAt), now
 			g.epoch++
 			h.dirtyAllLocked(g, now)
 			return nil
@@ -226,7 +230,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 		if err != nil {
 			return err
 		}
-		now := h.clock.Now()
+		now = h.clock.Now()
 		h.mu.Lock()
 		for _, change := range changes {
 			for _, view := range g.views {
@@ -236,6 +240,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 			}
 			g.changeSeq, g.changeAt = change.Seq, change.At
 		}
+		g.changeRead = now
 		h.mu.Unlock()
 		if len(changes) < deliveryLivePage {
 			return nil

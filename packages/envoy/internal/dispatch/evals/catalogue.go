@@ -22,15 +22,15 @@ import (
 //
 // The series are those the day builders write (delivery_days.go, legion_days.go), every cut of a
 // Legion series included, so every stored day row names a series of its eval; and the splitting
-// eval's root figures in their children cut, which no day row holds (LegionSeries), so every
-// Legion series has its three cuts and the list read answers that one with no value. A listed
-// series is one the list read folds; pr-ci's job series are not, and are read by the items route
-// alone. A series is a headline one where a card of the eval states it, every cut of a Legion
-// series included (R6: a chart draws the cut it needs, and no toggle picks one), and a control
-// one where it qualifies another (change-fail-rate's upper bound, pr-ci's job series). An eval's
-// primary series is the one its target judges, or the one its card leads with; an eval whose
-// series are parts of equal standing (a bar per role, a count per class of filing) has none, and
-// a target set on it names the series it judges.
+// eval's root figures in their children cut, which no day row holds (metrics.RootFigures count
+// roots alone), so every Legion series has its three cuts and the list read answers that one with
+// no value. A listed series is one the list read folds; pr-ci's job series are not, and are read
+// by the items route alone. A series is a headline one where a card of the eval states it, every
+// cut of a Legion series included (R6: a chart draws the cut it needs, and no toggle picks one),
+// and a control one where it qualifies another (change-fail-rate's upper bound, pr-ci's job
+// series). An eval's primary series is the one its target judges, or the one its card leads with;
+// an eval whose series are parts of equal standing (a bar per role, a count per class of filing)
+// has none, and a target set on it names the series it judges.
 //
 // The seeded targets are main's (measures.DefaultTargets) where main sets one, and off where it
 // sets none: "at least" is an inclusive target of a higher_better eval, "under" a strict one of a
@@ -40,15 +40,6 @@ import (
 // (`job:<name>`, measures.JobSeriesPrefix and the job's name): the unit, the fold, the listing and
 // the min_n each job's series takes. A job's name is data, so no seeded row can name each job.
 const SeriesJobs = measures.JobSeriesPrefix + "*"
-
-// SeriesRow is the name of the eval_series row of slug's eval that defines the day rows stored
-// under series: SeriesJobs for one of pr-ci's job series, and series itself for any other.
-func SeriesRow(slug, series string) string {
-	if slug == SlugPRCI && strings.HasPrefix(series, measures.JobSeriesPrefix) {
-		return SeriesJobs
-	}
-	return series
-}
 
 // catalogueEntry is one computed eval of the catalogue: the fields its version 1 holds in every
 // project (all but its id, its project, its doc block, its state and its writer, which Ensure

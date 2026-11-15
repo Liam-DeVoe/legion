@@ -204,13 +204,61 @@ func allFacts(rows []DayRow) []string {
 	return facts
 }
 
-// TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo: over seedAttribution's day, a pull
-// request counts for its issue's project and one with no issue for its repository's, with
-// via_repository 1; the deploy that ships both counts in both; the deploys that ship none count for
-// the deploy repository's project; the CI run counts for its repository's project; the pull
-// request of an unmapped repository counts nowhere; and GAMMA, with nothing, gets no row. Then the
-// day is written again unchanged (no row rewritten), and
-// once acme/alpha#2 names BETA-1 the day's rewrite moves it, and the deploy that shipped it, out of
+// dayProjects is every project a row of read counts for, by key.
+func dayProjects(read DeliveryDay) []string {
+	projects := map[string]bool{}
+	for _, pr := range read.prs {
+		projects[pr.project] = true
+	}
+	for _, deploy := range read.deploys {
+		for _, c := range deploy.projects {
+			projects[c.project] = true
+		}
+	}
+	for _, run := range slices.Concat(read.checks, read.pushes) {
+		projects[run.project] = true
+	}
+	delete(projects, "")
+	return slices.Sorted(maps.Keys(projects))
+}
+
+// refreshDays writes days, in order, as a pass of the refresher's walks writes them, each day one
+// page of the pass, under testBuild as of the end of the last day: each day's delivery and CI rows
+// of every project (refresh.deliveryWalkDay), where delivery settings exist, and each day's Legion
+// rows of each project of legion (refresh.writeLegion), each with the zero rows of the series
+// begun before it. The pass first loads what a pass loads, its seed of every project no seed has
+// reached included (refresh.load). It answers the days written.
+func (r rig) refreshDays(t *testing.T, legion []string, days ...time.Time) []string {
+	t.Helper()
+	ctx := t.Context()
+	pass := r.registry.newRefresh(testBuild, days[len(days)-1].AddDate(0, 0, 1).Add(-time.Minute), walkBatch)
+	if err := pass.load(ctx, &seeding{everyProject: true}); err != nil {
+		t.Fatalf("load the refresher's pass: %v", err)
+	}
+	pass.walking = true
+	for _, day := range days {
+		pass.beginPage()
+		if pass.settings != nil {
+			if err := pass.deliveryWalkDay(ctx, day); err != nil {
+				t.Fatalf("write the delivery rows of %s: %v", day.Format(time.DateOnly), err)
+			}
+		}
+		for _, project := range legion {
+			if err := pass.writeLegion(ctx, project, day, false); err != nil {
+				t.Fatalf("write the Legion rows of %s on %s: %v", project, day.Format(time.DateOnly), err)
+			}
+		}
+	}
+	return pass.report.sorted()
+}
+
+// TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo: over seedAttribution's day, written
+// as the refresher's walk writes it, a pull request counts for its issue's project and one with no
+// issue for its repository's, with via_repository 1; the deploy that ships both counts in both;
+// the deploys that ship none count for the deploy repository's project; the CI run counts for its
+// repository's project; the pull request of an unmapped repository counts nowhere; and GAMMA, with
+// nothing, gets no row. Then the day is written again unchanged (no row rewritten), and once
+// acme/alpha#2 names BETA-1 the day's rewrite moves it, and the deploy that shipped it, out of
 // ALPHA: ALPHA's acme/alpha rows of the pull-request evals, which held it alone, become zero rows
 // rather than going, and its items of the day that it no longer holds are deleted; written again,
 // the moved day rewrites nothing.
@@ -219,18 +267,14 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	settings := seedAttribution(t, r)
 	ctx := t.Context()
 
-	read, err := r.registry.ReadDeliveryDay(ctx, settings, attributionDay)
+	read, err := r.registry.readDeliveryDay(ctx, settings, attributionDay, nil, nil)
 	if err != nil {
 		t.Fatalf("read the day: %v", err)
 	}
-	if got := read.Projects(); !slices.Equal(got, []string{"ALPHA", "BETA"}) {
+	if got := dayProjects(read); !slices.Equal(got, []string{"ALPHA", "BETA"}) {
 		t.Fatalf("the day's rows count for %v, want ALPHA and BETA alone (acme/zeta#1 for none, GAMMA holds nothing)", got)
 	}
-	written, err := r.registry.WriteDeliveryDay(ctx, settings, attributionDay, "", testBuild)
-	if err != nil {
-		t.Fatalf("write the day: %v", err)
-	}
-	t.Logf("wrote the day rows of %v", written)
+	t.Logf("wrote %v", r.refreshDays(t, nil, attributionDay))
 
 	// Run 101, created at 10:30, shipped at 10:49, when its production job completed; every job of
 	// the history runs 17 minutes and every run 19.
@@ -320,9 +364,7 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	if err := r.database.Pool.QueryRow(ctx, `select max(updated_at) from eval_days`).Scan(&newest); err != nil {
 		t.Fatalf("read the newest write: %v", err)
 	}
-	if _, err := r.registry.WriteDeliveryDay(ctx, settings, attributionDay, "", testBuild); err != nil {
-		t.Fatalf("write the day again: %v", err)
-	}
+	r.refreshDays(t, nil, attributionDay)
 	if rewritten := r.count(t, `select count(*) from eval_days where updated_at > $1`, newest); rewritten != 0 {
 		t.Errorf("writing the unchanged day again rewrote %d rows, want none", rewritten)
 	}
@@ -331,9 +373,7 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	if _, err := r.database.Pool.Exec(ctx, `update delivery_pull_requests set issue_key = 'BETA-1' where repo = $1 and number = 2`, alphaRepo); err != nil {
 		t.Fatalf("move acme/alpha#2 to BETA-1: %v", err)
 	}
-	if _, err := r.registry.WriteDeliveryDay(ctx, settings, attributionDay, "", testBuild); err != nil {
-		t.Fatalf("write the moved day: %v", err)
-	}
+	r.refreshDays(t, nil, attributionDay)
 	alpha := allFacts(r.stored(t, "ALPHA"))
 	for _, zeroed := range []string{"rework-share prs acme/alpha: n=0 via=0 share=0/0", "merge-to-production minutes acme/alpha: n=0 via=0 samples=[]"} {
 		if !slices.Contains(alpha, zeroed) {
@@ -343,9 +383,7 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	if err := r.database.Pool.QueryRow(ctx, `select max(updated_at) from eval_days`).Scan(&newest); err != nil {
 		t.Fatalf("read the newest write: %v", err)
 	}
-	if _, err := r.registry.WriteDeliveryDay(ctx, settings, attributionDay, "", testBuild); err != nil {
-		t.Fatalf("write the moved day again: %v", err)
-	}
+	r.refreshDays(t, nil, attributionDay)
 	if rewritten := r.count(t, `select count(*) from eval_days where updated_at > $1`, newest); rewritten != 0 {
 		t.Errorf("writing the moved day again rewrote %d rows, want none: a zero row already zero is left as it is", rewritten)
 	}

@@ -19,7 +19,7 @@ import (
 // every day, makes one pass, and reads back which days the pass wrote and which rows' updated_at
 // moved (expectDays).
 
-// deliveryDays reads every day of the delivery history as ReadDeliveryDay reads it.
+// deliveryDays reads every day of the delivery history as the refresher reads it (readDeliveryDay).
 func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	t.Helper()
 	settings, err := delivery.GetSettings(t.Context(), r.database.Pool)
@@ -28,7 +28,7 @@ func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	}
 	var days []DeliveryDay
 	for day := refresherToday.AddDate(0, 0, -5); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.ReadDeliveryDay(t.Context(), settings, day)
+		read, err := r.registry.readDeliveryDay(t.Context(), settings, day, nil, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %s: %v", day.Format(time.DateOnly), err)
 		}
@@ -554,6 +554,23 @@ func TestEachLegionChangeRewritesExactlyItsDays(t *testing.T) {
 
 	r.write(t, "build-minutes", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "run-1", "value": 3.0, "measured_at": r.now}))
 	r.expectDays(t, "a reading of a logged eval", r.dayRows(t), nil, nil)
+}
+
+// TestAMoveOfAnAncestorRewritesTheCloseDaysBelowIt: an issue with no repository of its own resolves
+// to the repository of the issue above it, so a write that moves an ancestor's repository moves
+// the repository rows of every issue closed below it, though no stored fact of those issues
+// changes. Over the hand-written Legion history of EVAL, with EVAL-3 (closed on the history's
+// third day) below EVAL-4 (open, with no filing), a write moving EVAL-4's repository rewrites
+// EVAL-3's close day.
+func TestAMoveOfAnAncestorRewritesTheCloseDaysBelowIt(t *testing.T) {
+	r := newRefresherRig(t)
+	history := r.seedLegionEval(t)
+	r.exec(t, "put EVAL-3 below EVAL-4", `update issues set parent_key = 'EVAL-4' where key = 'EVAL-3'`)
+	r.settle(t)
+	r.pass(t)
+	before := r.dayRows(t)
+	r.writeIssueEvent(t, "EVAL-4", "issue.updated", `{"key":"EVAL-4","status":"in_progress","changed":["repo"]}`)
+	r.expectDays(t, "the repository of EVAL-3's parent moved", before, []string{line(walkLegion, "EVAL", history.d2)}, nil)
 }
 
 // TestARepoProjectsChangeReattributesWithinOnePass: once every day is walked, the deploy

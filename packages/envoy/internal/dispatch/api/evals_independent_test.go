@@ -36,11 +36,8 @@ func TestTheLegionEvalsEqualTheIndependentReading(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load the Legion history: %v", err)
 	}
-	registry := evals.New(database, deps.Docs, deps.Events)
-	writeLegionEvals(t, database, registry, loaded.Project, loaded.From, now)
-	if _, err := registry.Ensure(ctx, loaded.Project); err != nil {
-		t.Fatalf("seed the evals of %s: %v", loaded.Project, err)
-	}
+	storeLegionFacts(t, database, loaded.Project, now)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, now)
 	t.Logf("%s: %d issues, %d finished, %d trees (%d unobserved), first observation %s, first finished %s",
 		loaded.Project, loaded.Issues, loaded.Finished, loaded.Trees, loaded.Unobserved,
 		loaded.FirstObserved.Format(time.RFC3339), loaded.FirstFinished.Format(time.RFC3339))
