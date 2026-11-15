@@ -178,6 +178,8 @@ on:
       - 'packages/envoy/internal/dispatch/redeliver/*'
       - 'packages/envoy/internal/dispatch/refs/*'
       - 'packages/envoy/internal/dispatch/retry/*'
+      - 'packages/envoy/internal/dispatch/reviewer/*'
+      - 'packages/envoy/internal/dispatch/reviewer/prompts/*'
       - 'packages/envoy/internal/dispatch/routes/*'
       - 'packages/envoy/internal/dispatch/sessionanswers/*'
       - 'packages/envoy/internal/dispatch/startup/*'

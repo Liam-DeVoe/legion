@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
 // writing_settings.go reads the settings of the work on agents' texts (INFRA-3231): the reviewer,
@@ -54,14 +55,23 @@ const (
 )
 
 var (
-	// reviewerRuleSets are the rule sets DISPATCH_REVIEWER_RULES may name, and
-	// defaultReviewerRules those it names unset.
-	reviewerRuleSets     = []string{"noslop", "phrases", "reader_words", "ask_parts", "structure", "detector"}
-	defaultReviewerRules = []string{"noslop", "phrases", "reader_words", "ask_parts"}
+	// reviewerRuleSets are the rule sets DISPATCH_REVIEWER_RULES may name, the reviewer's own
+	// (reviewer.AllRuleSets), and defaultReviewerRules those it names unset.
+	reviewerRuleSets     = ruleSetNames(reviewer.AllRuleSets...)
+	defaultReviewerRules = ruleSetNames(reviewer.RuleNoslop, reviewer.RulePhrases, reviewer.RuleReaderWords, reviewer.RuleAskParts)
 	// writingRulesExtraSets are the rule sets DISPATCH_WRITING_RULES_EXTRA may name, the ones the
 	// server's writing rules show (api.WritingRulesConfig).
 	writingRulesExtraSets = []string{api.WritingRulesReaderWords, api.WritingRulesAskParts}
 )
+
+// ruleSetNames is the names of sets, as a setting spells them.
+func ruleSetNames(sets ...reviewer.RuleSet) []string {
+	names := make([]string, len(sets))
+	for i, set := range sets {
+		names[i] = string(set)
+	}
+	return names
+}
 
 const (
 	defaultReviewerTimeout      = 120 * time.Second

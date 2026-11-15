@@ -539,6 +539,10 @@ jobs:
               - 'packages/envoy/internal/dispatch/redeliver/*'
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/retry/*'
+              # internal/dispatch/reviewer: the model component of the reviewer, Rewrite and Define,
+              # which embeds prompts/ (INFRA-3231).
+              - 'packages/envoy/internal/dispatch/reviewer/*'
+              - 'packages/envoy/internal/dispatch/reviewer/prompts/*'
               - 'packages/envoy/internal/dispatch/routes/*'
               - 'packages/envoy/internal/dispatch/sessionanswers/*'
               - 'packages/envoy/internal/dispatch/startup/*'
