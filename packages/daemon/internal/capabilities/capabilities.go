@@ -357,22 +357,22 @@ const heldSequence = `\x{FFFE}|\x{FDD0}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 const jwtFirstHeldSequence = `\x{FFFE}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 
 // labeledWord is the value of the API-key and bare bearer rules: the whole word after the label,
-// whatever its shape, held markers included. It runs to the next space or quote, and a backslash
-// or a closing bracket (`)`, `]`, `}`, `>`, where the Authorization rule's unquoted value ends)
-// starts a run of backslashes, closing brackets and the punctuation `,;:.!?` that it takes only
-// where a character that is none of these, and no space or quote, follows the run. So the word
-// ends before a backslash or a bracket that only such a run and then a space, a quote or the
-// line's end follow: a quoted value keeps its closing quote, escaped or not
-// (`\"x-api-key\":\"***\"`), and a header the Authorization rule masked keeps its closing bracket
-// and the text after it, such as `): 401` or `), retrying`, where a word that took the bracket
-// would leave that header's value no bracket to end at on the next pass, so it would be masked to
-// the line's end. A run that another of the word's characters follows (an IPv6 host's `]:8080`,
-// `ab).x`, `ab).)x`) is masked with the rest of the word. Only the run's alternative takes a
-// backslash or a bracket, and the run shares no character with the one that must follow it, so
-// the word reads each run once, from the backslash or bracket that starts it: in the plugin's
-// JavaScriptCore, which backtracks, an alternative that could start inside a run would read that
-// run once per start.
-const labeledWord = `(?:[^ "'\\)\]}>]|[\\)\]}>][\\)\]}>,;:.!?]*[^ "'\\)\]}>,;:.!?])+`
+// whatever its shape, held markers included. It runs to the next space or quote, and a backslash,
+// a closing bracket (`)`, `]`, `}`, `>`, where the Authorization rule's unquoted value ends) or
+// the punctuation `,;:.!?` starts a run of those characters that it takes only where a character
+// that is none of these, and no space or quote, follows the run. So the word ends before such a
+// run that only a space, a quote or the line's end follows: a quoted value keeps its closing
+// quote, escaped or not (`\"x-api-key\":\"***\"`), a word keeps the punctuation of the sentence
+// after it (`Bearer ***, retrying`, `api-key: ***: why`), and a header the Authorization rule
+// masked keeps its closing bracket and the text after it, such as `): 401` or `), retrying`,
+// where a word that took the bracket would leave that header's value no bracket to end at on the
+// next pass, so it would be masked to the line's end. A run that another of the word's characters
+// follows (a URL's `://` and `:8080/`, an IPv6 host's `]:8080`, `ab).x`, `ab).)x`) is masked with
+// the rest of the word. Only the run's alternative takes a character of the run, and the run
+// shares no character with the one that must follow it, so the word reads each run once, from
+// the character that starts it: in the plugin's JavaScriptCore, which backtracks, an alternative
+// that could start inside a run would read that run once per start.
+const labeledWord = `(?:[^ "'\\)\]}>,;:.!?]|[\\)\]}>,;:.!?]+[^ "'\\)\]}>,;:.!?])+`
 
 // credentialRules are the credential shapes redactCredentials replaces, each keeping what names
 // the credential and replacing the secret with `***`. The shared fixture is the fixed list of the

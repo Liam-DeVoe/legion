@@ -237,6 +237,18 @@
     },
     {
       "pattern": "api-key-header",
+      "name": "the colon of the sentence after an api-key value, left outside the word",
+      "detail": "said api-key: abc123: why",
+      "want": "said api-key: ***: why"
+    },
+    {
+      "pattern": "api-key-header",
+      "name": "a URL after an api-key label followed by a full stop, the full stop left outside the word",
+      "detail": "api-key: http://h/x?q=1. done",
+      "want": "api-key: ***. done"
+    },
+    {
+      "pattern": "api-key-header",
       "name": "a URL with no at sign after an api-key label, masked whole as the word it is, an at sign after a tab left as it is",
       "detail": "api-key: http://u:SECRET\t\u0040h",
       "want": "api-key: *** @h"
@@ -377,6 +389,24 @@
       "pattern": "bearer",
       "name": "a closing bracket, a dot and another closing bracket inside the word, masked with the rest of it",
       "detail": "Bearer ab).)SECRET",
+      "want": "Bearer ***"
+    },
+    {
+      "pattern": "bearer",
+      "name": "the comma of the sentence after a bearer token, left outside the word",
+      "detail": "request failed with Bearer abc123, retrying",
+      "want": "request failed with Bearer ***, retrying"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a semicolon, a question mark and an exclamation mark after a bearer token, each left outside the word",
+      "detail": "Bearer abc; Bearer def? Bearer ghi!",
+      "want": "Bearer ***; Bearer ***? Bearer ***!"
+    },
+    {
+      "pattern": "bearer",
+      "name": "a colon inside the word, followed by more of it, masked with the rest of the word",
+      "detail": "Bearer user:SECRET",
       "want": "Bearer ***"
     },
     {
