@@ -2,11 +2,13 @@
 
 Read this when a tree's architect sends you a matter, when a `held` wake carries
 `reason: "escalated"`, or when an `update-stalled` wake says the daemon cannot replace an issue's
-pod. Three matters come to you from an architect: a child that looks independent of its tree,
-capacity (an architect says its tree cannot run what it needs under the slots it has), and a
-conflict between trees. An issue-design decision is not one of them: the owning architect writes
-it as a decision block and opens its own finding asks. Send a design decision back to that
-architect with `envoy_publish` to its role, because it is not yours to make.
+pod. Two matters come to you from an architect: a child that looks independent of its tree, and
+capacity (an architect says its tree cannot run what it needs under the slots it has). A conflict
+between trees is not one of them: the architect that finds it writes to the other tree's
+architect itself (`skill://legion-architect`, "Escalation judgment"). An issue-design decision is
+not one either: the owning architect writes it as a decision block and opens its own finding
+asks. Send a design decision back to that architect with `envoy_publish` to its role, because it
+is not yours to make.
 
 For capacity, the only lever is order. You cannot change `admission.cap`: it is the operator's
 `legion.yaml` setting, and `set_status` is your only admission move. The cap counts the issues the
@@ -15,9 +17,6 @@ daemon has started, a root or a child, not trees, and an issue holds one as
 tree's. Read `admission.active`, `admission.waiting` and `admission.trees`, tell the architect
 where its tree's issues stand in the line with `envoy_publish`, and
 open a finding ask when the deployment needs a larger cap.
-
-For a conflict between trees, read both roots in `read_state` and Dispatch, publish what you read
-to both architects' roles, and open a finding ask when the two need a person's decision.
 
 ## An escalated hold
 

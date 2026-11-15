@@ -84,13 +84,15 @@ fail for one cause yourself; keep a group of three or more. A group that one fix
 is a set of duplicates: fold it as step 1 says. Keep for this step only a group whose issues each
 need their own change beyond the shared cause.
 
-Root each cause you keep once, whichever trees its issues sit in, as
-`skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` says. Post its
-evidence comment on the report issue first, its first line `Clear defect from controller`, naming
-the cause, each issue of the group and the shared evidence; catch-up step 4 of that reference
-brings it back at a later start until it carries a reply. Then take its steps 2 to 5: comment on
-the open issue that already tracks the cause, else hand it to the running tree whose code it is,
-else file one issue for it, and reply under the evidence comment. The filed issue names each issue
+Root each cause you keep once, whichever trees its issues sit in. When an open issue already
+tracks the cause, comment the evidence there. When a running tree owns the code, write the cause
+to that tree's architect, as `skill://legion-worker/references/findings.md#write-to-the-owner`
+says. Otherwise post its evidence comment on the report issue, its first line
+`Clear defect from controller`, naming the cause, each issue of the group and the shared
+evidence, and file one issue for it, as
+`skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns` says;
+catch-up step 4 of that reference brings the comment back at a later start until it carries a
+reply. The filed issue names each issue
 of the group and the shared evidence, and carries the `Filed for` line of `finding-asks.md` for
 the person who asked for this pass: `Filed for <them> at their request:
 dispatch://INFRA-460/comment/67cf2b86-5c76-41a9-a53a-7bf2dce03602`. It takes the `legion` label
@@ -106,7 +108,7 @@ the report issue reaches a person's Inbox, and the day's report posts only while
 no message from that day. Add at the top of the record you read, or of a new one, a section headed
 `## Consolidation pass <block start>` with three counts, each with its keys: the issues read; the
 pairs folded (closed, commented or sent to an architect); and the causes rooted (issues commented,
-handed or filed for a recurring cause). Then every pair and group you skipped, with what settles
+written to a tree or filed for a recurring cause). Then every pair and group you skipped, with what settles
 it. Drop sections older than eight days, which the artifact's earlier versions keep, and upload
 the whole record, which makes its next version:
 

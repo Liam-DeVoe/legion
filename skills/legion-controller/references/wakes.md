@@ -480,9 +480,13 @@ answers; a claim that moved is otherwise answered as that second read finds it. 
 
 Read the mention and its artifact. Answer a mention that asks you for triage or for information
 that `read_state` or Dispatch holds.
-Send any other to the owning architect: find its role in `read_state` and `envoy_publish` the
-mention's URL, its text and the issue key you checked. Never build a role token from a partial
-issue reference, because a wrong token reaches nobody.
+Any other is for the architect of the tree that owns its issue, and you forward no message.
+Write the person's words, the mention's URL and the issue key you checked as a Dispatch comment
+on the owning issue, with `--mention 'role:<token>'`: the token
+`issues.<ROOT>.architect.locator.claim` names for the tree's root in `read_state`, or, when it
+names none, `legion-<project>-<root key, lower case>-architect`, the form `roleToken` builds.
+Then answer the person on GitHub with that comment's link. Never build a role token from a
+partial issue reference, because a wrong token reaches nobody.
 
 A person who asks how to let a root past its design gate approves, in Dispatch, the document of
 each step the deployment gates, which your system prompt's `Design gate steps:` sentence names:

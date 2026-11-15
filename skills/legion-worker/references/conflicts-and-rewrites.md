@@ -1,16 +1,16 @@
 # Conflicts, retargets, fingerprints, and rewriting pushed commits
 
-Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`, the
-controller asks you to resolve a conflict, the change needs something only the base has, the pull
-request is retargeted to a new base, you compare two heads after such a merge, or you are about to
-rewrite a commit you already pushed.
+Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`,
+another tree's architect asks you to resolve a conflict, the change needs something only the base
+has, the pull request is retargeted to a new base, you compare two heads after such a merge, or
+you are about to rewrite a commit you already pushed.
 Every path it cites is in cybermonklabs/legion.
 
 ## Reintegrating the base
 
 - **Merge the base forward only on a real conflict, a need only the base meets, a retarget, or a
   parent's last round, and never with `jj rebase`.**
-  The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the controller asks
+  The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, another tree's architect asks
   because of a conflict, the architect's backward move names a parent's last round,
   the change needs something that exists only on the base (a fix for its
   only red check, or a sentence it must change), or after the pull request is retargeted to a new

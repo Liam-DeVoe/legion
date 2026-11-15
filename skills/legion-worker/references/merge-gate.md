@@ -201,8 +201,8 @@ it there until that answer comes clean.
   deployment gates it, since that step records the root's Verification document, and a child's
   is gated by nothing. It also reads the reviewer's prose commits here with the rest, no new
   round, and does
-  not accept while the issue holds a finding ask no controller took (`findings.md`, "When no
-  controller takes it"). Approval is gated by the `before_merge` checks of the issue's own
+  not accept while the issue holds a finding ask the controller has not taken (`findings.md`,
+  "Where it goes"). Approval is gated by the `before_merge` checks of the issue's own
   Verification document at its head, so a child's result against a root's check proves nothing:
   a root's checks are proven at its own head, in its last round. No `after_merge` result is
   asked here: it is recorded after the close, where the project opens a check (*The production
@@ -329,11 +329,13 @@ it there until that answer comes clean.
     `- Check <block id> (after_merge): not yet run`.
   - `fail`, for a requirement observed as not met, one still unobserved at the last look, or a
     defect: record the failing result with `dispatch result --verdict fail`, file no issue, and
-    take the path `skill://legion-worker/references/findings.md` gives it — a clear fix to the
-    controller topic, with its evidence comment on the controller's report issue; one needing a
-    decision as a `dispatch ask` there, whose reference you publish to that topic. Either names
-    this issue, the pull request, the merge commit, what you drove and what failed, and the
-    result's `observed` and the summary name it (`dispatch://<REPORT KEY>/ask/<id>`).
+    take the path `skill://legion-worker/references/findings.md` gives it — a clear fix to its
+    owner, as a Dispatch comment that mentions the architect of the tree whose code it is, or the
+    project's controller, to file, when no tree owns that code; only a defect needing a decision
+    is a `dispatch ask` on the controller's report issue, whose reference you publish to the
+    controller topic. Either names this issue, the pull request, the merge commit, what you drove
+    and what failed, and the result's `observed` and the summary name it
+    (`dispatch://<KEY>/comment/<id>` or `dispatch://<REPORT KEY>/ask/<id>`).
 - **Numbers the daemon holds are read with the `legion` tool.** Where the verdict rests on what a
   deployment's idle release has done, `read_release_records` answers a window of the daemon's own
   records of its releases, resumes and holds: its one argument `since` is the RFC 3339 instant
@@ -373,9 +375,9 @@ it there until that answer comes clean.
   and a result for an `after_merge` or `default_branch` check on a closed issue, and refuses an
   ask there (`ISSUE_CLOSED`), so the deployment instructions' "on the pull request and the issue"
   is the pull request and that result, and a defect reaches Dispatch by the `fail` verdict's two
-  paths alone — the message to the controller, which gives it to the tree that owns that code,
-  and the ask on the controller's report issue. The architect accepted before the
-  merge and is asked nothing after. `pass` or
+  paths alone — the comment to its owner, the architect of the tree whose code it is or the
+  controller when no tree owns it, and the ask on the controller's report issue. The architect
+  accepted before the merge and is asked nothing after. `pass` or
   `fail` closes the check: your claim is retired and the issue's Sandbox goes with its pod and
   disk, for a root as for a child. Neither ending retires or suspends anything of an issue back in
   the workflow (a root reopened inside its linger): its claim and pod are the new run's.

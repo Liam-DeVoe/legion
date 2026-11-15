@@ -121,8 +121,8 @@ a copy on the old root's document for its step, which belongs to the old tree: n
 that document after the carry closes your gate, and a gate carried closed opens when a human
 approves the old document at the carried version or a later one; you are told so with
 `carried-gate-opened`, never `design-approved`, and start nothing for it. Do nothing else about
-an old root's document: never revise it, request its approval, or register it; when the tree's
-work waits on that approval, tell the controller. Resume the tree from there; a root carried in
+an old root's document: never revise it, request its approval, or register it. Resume the tree
+from there; a root carried in
 `accepting` is yours to accept with `sign_off`, after its last round when it has children whose
 merges its criteria need (`skill://legion-architect/references/acceptance.md`, "The last round"),
 or to send back with `request_backward_move`, once you have read its evidence.
@@ -152,12 +152,16 @@ fold it by the duplicate rule of `skill://dispatch-first`, which stands because 
 records a child only at its release; a released duplicate goes out with `park_child`, because
 its work is folded into the issue you keep.
 Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Name the issue you keep in that comment.
-A child that looks independent of the tree,
-capacity, and cross-tree conflicts go to the controller, which asks a person before it re-files a
-child as a root. A problem outside the tree is never an issue you file: a clear defect in code
-this tree touches or depends on is fixed in this tree's own pull request, any other clear defect
-goes to the controller, which gives it to the tree that owns that code, and a problem that needs a
-decision is a `dispatch ask`
+A child that looks independent of the tree, and
+capacity, go to the controller, which asks a person before it re-files a child as a root. A
+cross-tree conflict goes to the other tree's architect, as a Dispatch comment on its issue that
+mentions its role. A problem outside the tree is never an issue you file. A clear defect is this
+tree's to fix, in whichever repository it is: in an open pull request of the tree, or in a child.
+It goes to another tree's architect only when the fix would collide with that tree's open pull
+request, or when it is in a repository this tree's token does not reach; when no tree owns that
+code, it goes to that repository's project's controller, to file. A defect that needs a person's
+decision, a deploy window or work much larger than this tree's own, and any other problem that
+needs a decision, is a `dispatch ask`
 (`skill://legion-worker/references/findings.md`). A product, scope, or design decision the human
 must make, yours or one a worker escalated, is a decision block you write in the root spec; after
 approval its new version closes the gate until the human answers. When their answer is the whole

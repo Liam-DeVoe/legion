@@ -39,10 +39,13 @@ its work is folded into the issue you keep.
 Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Name the issue you keep in that comment.
 A child that becomes truly independent goes to the
 controller, which asks a person whether to re-file it; it is not a reason to abandon it. A problem
-outside this tree is never an issue you file: a clear defect in code this tree touches or depends
-on is fixed in this tree's own pull request, any other clear defect goes to the controller, which
-gives it to the tree that owns that code, and a problem that needs a decision is a `dispatch ask`
-(`skill://legion-worker/references/findings.md`).
+outside this tree is never an issue you file. A clear defect is this tree's to fix, in whichever
+repository it is: in an open pull request of the tree, or in a child. It goes to another tree's
+architect only when the fix would collide with that tree's open pull request, or when it is in a
+repository this tree's token does not reach; when no tree owns that code, it goes to that
+repository's project's controller, to file. A defect that needs a person's decision, a deploy
+window or work much larger than this tree's own, and any other problem that needs a decision, is
+a `dispatch ask` (`skill://legion-worker/references/findings.md`).
 
 ## Gates and children
 
@@ -81,8 +84,9 @@ read none of its own earlier work. You start no worker.
 
 | Situation | Action |
 | --- | --- |
-| A child that looks independent of the tree, capacity, or a cross-tree conflict | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
-| A problem outside this tree | Never file an issue for it. A clear defect in code this tree touches or depends on is fixed in this tree's own pull request. Send any other clear defect to the controller with its evidence, and it goes to the tree that owns that code. Open a `dispatch ask` for a problem that needs a decision, as `skill://legion-worker/references/findings.md` says. |
+| A child that looks independent of the tree, or capacity | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
+| A cross-tree conflict | Write to the other tree's architect: a Dispatch comment on its issue that mentions its role, as `skill://legion-worker/references/findings.md` says ("Write to the owner"). |
+| A problem outside this tree | Never file an issue for it. Fix a clear defect in this tree, in an open pull request of the tree or in a child, in whichever repository it is. Write it to another tree's architect only when the fix would collide with that tree's open pull request, or when its repository is one this tree's token does not reach; when no tree owns that code, write it to that repository's project's controller, which files it. Open a `dispatch ask` for a defect that needs a person's decision, a deploy window or work much larger than this tree's own, and for any other problem that needs a decision, as `skill://legion-worker/references/findings.md` says. |
 | Product, scope, or design decision, yours or a worker's | Answer from tree context, or make it a decision block. A sub-architect writes one about its child into the child's spec (never gated) and sends one about the root design to the architect above it. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree until the human answers. An answer that is the whole change since the version they approved carries their approval to the new version, so it requests nothing. After an answer that changes the spec's text outside the block, it rewrites that text and runs the two fresh reviews of the new version. `plan-gap-analyst` finds its gaps, and `plan-reviewer`, told that the document is a spec, checks each factual claim. It resolves every finding, and checks with a command or removes each claim either review marks unverified. Then it requests approval again with a `--summary` of two sentences: what changed since the earlier approval, and both reviews' results. A to-do only a human can do uses `dispatch ask`. |
 | Worker question or failure | Handle it or message the worker with `envoy_publish` to its role token. |
 

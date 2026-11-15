@@ -8,8 +8,9 @@ executable form of that order. The deployment instructions name the weekly-plann
 ## Controller routing address
 
 Claim no Envoy role other than `legion-<project>-controller`, your startup role, because changing
-roles ends the controller's wake delivery. Scope questions, routing requests and findings
-reach you on `notifications.role.legion-<project>-controller`.
+roles ends the controller's wake delivery. Scope questions, routing requests, finding-ask
+references and clear defects no tree owns reach you on
+`notifications.role.legion-<project>-controller`.
 
 ## Reconcile the weekly plan
 
@@ -51,8 +52,9 @@ A directive triggers the full reconciliation pass even when it appears to affect
 
 Read every delivery to `notifications.role.legion-<project>-controller` against live Dispatch and
 daemon state. You decide labels, the statuses `todo`, `backlog` and `icebox`, and board order.
-Answer a scope question from the weekly plan and the deployment instructions. Anything else goes
-with `envoy_send` to the session the plan's one-owner map names for that issue.
+Answer a scope question from the weekly plan and the deployment instructions. Answer a routing
+request with the owner the plan's one-owner map names for that issue, and that owner's address,
+so the asker writes to it. Send nothing on: you forward no message to another session.
 
 Never merge or use a GitHub credential to merge from the controller, because the merger merges the
 pull request itself, at the head it read and under the repository's own rules.

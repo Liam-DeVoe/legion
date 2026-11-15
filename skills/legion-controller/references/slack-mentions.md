@@ -147,11 +147,13 @@ architect for it, whatever it asks. For a person's mention, take the first of th
 - **Something an issue's architect owns.** A question about a tree's design, a change of direction,
   a decision only the tree's architect can make about an issue Legion runs. Find the tree: follow
   `Links:` up through each `child_of` parent with `dispatch read` until you reach the issue
-  `read_state` records with an `architect`. When `issues.<ROOT>.architect.locator.claim` is there,
-  `envoy_publish` the person's words to `notifications.role.` followed by it, with the channel id
-  and `thread_ts` you reply on, and reply in the thread that you passed it to the architect that
-  owns `<ROOT>`, which answers on the issue. When the architect is not running (no locator), say
-  that in the thread instead and what `read_state` shows for the tree. Never invent a role token.
+  `read_state` records with an `architect`. Write the person's words, with the channel id and
+  `thread_ts` you reply on, as a Dispatch comment on the issue they are about, with
+  `--mention 'role:<token>'`: the token `issues.<ROOT>.architect.locator.claim` names, or, when
+  it names none, `legion-<project>-<root key, lower case>-architect`, the form `roleToken`
+  builds. Dispatch delivers the mention and retries it. Reply in the thread with that comment's
+  link, and say that the architect that owns `<ROOT>` answers on the issue. Never invent a role
+  token.
 - **Anything else** (a greeting, a question about Legion itself): answer it briefly in the thread.
 
 A request to approve a design is answered as `skill://legion-controller/references/wakes.md`

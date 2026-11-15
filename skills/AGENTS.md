@@ -15,7 +15,7 @@ They are Markdown instructions loaded by Oh My Pi sessions; the daemon and the t
 | `dispatch-writing-specs/` | any session with Dispatch, before a spec or text a person reads | the aim, the outline, the text rules, questions, each version's check, decisions, old specs, approval, and the plan as `plan.md` |
 | `envoy/` | every role | subscriptions, agent-to-agent messages, and topic formats |
 | `legion-architect/` | root and sub-architects | tree ownership, decomposition, gates, integration, the acceptance before the merge |
-| `legion-controller/` | the controller root process | wake routing, admitting the work a person hands over, giving each clear defect a role reports to the tree that owns its code and filing one no tree owns, asking a person about every other finding, re-admitting a tree it parked on a person's decision, the daily report, escalation |
+| `legion-controller/` | the controller root process | wake routing, admitting the work a person hands over, filing each clear defect a role reports that no tree owns, asking a person about every other finding, re-admitting a tree it parked on a person's decision, the daily report, escalation |
 | `legion-oracle/` | any role doing research | repository-grounded research |
 | `legion-retro/` | the implementer, at retro | the pre-merge retrospective, its learnings as one `dispatch comment` for the skill librarian, its Dispatch message, and the PR body content the pull request's changed paths require at that head (it commits nothing and pushes nothing) |
 | `legion-worker/` | planner, implementer, tester, reviewer, merger | the phase contracts: handoff records on the Dispatch issue, GitHub identity, PR body and merge discipline, the merge-gate order |

@@ -940,8 +940,9 @@ The daemon then stops the role's process, keeps its session, releases the issue'
 a time less than 60 seconds ahead becomes 60 seconds ahead, and a time at or after the check's own bound starts no look of its own, because the look at the bound already stands.
 Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no daemon boot, and the daemon reads no deployment's production workflows at all.
 `fail` for a defect, recorded as a failing result, never an issue the checking role files:
-a defect with a clear fix goes to the controller, which gives it to the running tree whose code it is and files a Legion root only when none does, and one that needs a decision is a `dispatch ask` on the controller's report issue whose reference goes to the controller;
-either names the issue, the pull request, the merge commit, what was driven and what failed, and the result names the message or the ask.
+a defect with a clear fix goes to its owner, as a Dispatch comment on the owning issue that mentions the architect of the tree whose code it is, or, when no tree owns that code, the project's controller, which files it;
+only a defect that needs a decision is a `dispatch ask` on the controller's report issue, whose reference goes to the controller;
+either names the issue, the pull request, the merge commit, what was driven and what failed, and the result names the comment or the ask.
 A completion is a report on a look when the caller's own live assignment is that look, and a phase completion otherwise, so a phase verdict a close outlived is never read as a verdict on production; a completion of a `done` issue, which runs no phase, from a session working no look is neither and is refused `CHECK_LOOK_NOT_SERVED`, recording nothing, with the look's own task named as the turn its report belongs to.
 A report is refused when the issue has no open check, or the one it has is not the check the look belongs to (`CHECK_NOT_OPEN`), when the look has ended (`CHECK_LOOK_NOT_OPEN`), when the verdict is none of the three (`CHECK_VERDICT_REQUIRED`), when the reporting role is not the check's (`CHECK_ROLE_MISMATCH`), when a `pending` on a look that is not the last carries no `wake_at` (`CHECK_WAKE_REQUIRED`, which records nothing and leaves the look open, so the same report with a time is taken), and when a `wake_at` rides a `pass`, a `fail` or a `pending` on the last look (`CHECK_WAKE_UNEXPECTED`, which the daemon also answers a phase completion that carries a `wake_at`).
 Each look is bounded at 2 hours, and a look nobody reported — its 2 hours, an operator's hold, or a claim that failed to start — starts the next look two hours later; on the last look it closes the check as `not_run`.
@@ -967,11 +968,13 @@ A recorded root a person moved back to `triage` is never queued again.
 The controller starts no other work on its own:
 a free admission slot is no reason to label or admit an issue (`skills/legion-controller/SKILL.md`, "Free slots").
 No other Legion agent files an issue for a finding outside its own issue.
-A defect with a clear fix in code a tree touches or depends on is fixed in that tree's own pull request, while the role is there.
-Any other defect with a clear fix goes to the controller with its evidence, and the controller gives it to the running tree whose code it is.
-Only when no tree owns that code does it file a Legion root, with the label and a `Filed for Legion from <role> on <issue>: <evidence>` line, which its triage admits (the operator's answer on one such case:
+A defect with a clear fix is fixed by the role that found it, in its own pull request or a separate pull request of its tree, in whichever repository the defect is.
+It goes to another tree's architect only when the fix would collide with that tree's open pull request.
+A defect in a repository the finder's token does not reach goes to the architect of the tree whose code it is, as a Dispatch comment on the owning issue that mentions that architect's role.
+Only when no tree owns that code does it go to that repository's project's controller, which files a Legion root, with the label and a `Filed for Legion from <role> on <issue>: <evidence>` line, which its triage admits (the operator's answer on one such case:
 a clear defect is fixed, not asked about).
-A finding that needs a person's authority, taste or risk appetite is a Dispatch ask, and a person decides whether it needs an issue (`skills/legion-worker/references/findings.md`).
+The controller forwards no message from one agent to another.
+A defect that needs a person's decision, a deploy window or work much larger than the finder's own, and any other finding that needs a person's authority, taste or risk appetite, is a Dispatch ask, and a person decides whether it needs an issue (`skills/legion-worker/references/findings.md`).
 A root in `todo` without the label is never admitted, and a root in `triage` without it never wakes the controller.
 A child needs none: it runs under its tree's architect once its root is admitted, and its architect's `release_children` records it in the tree even when Dispatch already showed it `todo`.
 A `todo` child of a live tree that no event of it ever recorded

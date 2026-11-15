@@ -54,11 +54,11 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 - No `after_merge` result is asked here: the production check records it after the close, where
   the project's `production_check` opens one.
 - A finding ask on the issue holds the acceptance: one a worker sent you, or one `dispatch read`
-  lists under `Open asks:` whose question opens `Finding from ` or `Clear defect from `
-  (`skill://legion-worker/references/findings.md`, "When no controller takes it"). Follow each
+  lists under `Open asks:` whose question opens `Finding from `
+  (`skill://legion-worker/references/findings.md`, "Where it goes"). Follow each
   (`dispatch follow --ask <id> --action follow`) and, once answered, publish its reference to the
   controller topic. Accept only once each is resolved or carries the controller's
-  `Filed dispatch://`, `Handed dispatch://` or `Not filed:` reply, because a closed issue hides
+  `Filed dispatch://` or `Not filed:` reply, because a closed issue hides
   its asks from the controller.
 
 ## The last round
@@ -204,8 +204,9 @@ request GitHub has already merged closes at once.
 
 Nothing of the production check is yours. Its record is the pull request and the result of the
 issue's `after_merge` check, whether or not the issue is closed. A defect it finds is never an
-issue the checking role files: a clear defect goes to the controller, and any other is a
-`dispatch ask`. `read_record` shows a closed issue's open check (`check`: the pull request, the
+issue the checking role files: a clear defect goes to the architect of the tree whose code it is,
+or to the controller to file when no tree owns that code, and only a defect that needs a decision
+is a `dispatch ask`. `read_record` shows a closed issue's open check (`check`: the pull request, the
 merge commit, the role the check records as the one that works it, the looks, what woke the last
 one, and `nextWakeAt`, when the next look is due — the time the checking agent named for itself on
 a `pending`, the retry of a look nobody reported, or the check's own bound where neither stands).

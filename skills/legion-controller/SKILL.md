@@ -84,10 +84,9 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | An answer to a park ask (`Park it`, `Leave it admitted`) or a deferral ask (`Defer it`, `Let it run`) | The procedure that opened it: `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4, or `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 |
-| A clear defect a role sends | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |
-| A finding sent as text | Open an ask ([Findings](#findings-and-the-issues-you-file)) |
+| A clear defect no tree owns, which a role writes to you | `skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns` |
 | A scope question or a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
-| A GitHub mention | Answer it, or route it to the owning architect |
+| A GitHub mention | Answer it, or write it on the owning issue for its architect (`skill://legion-controller/references/wakes.md#github-mentions`) |
 | A Slack mention | `skill://legion-controller/references/slack-mentions.md` |
 
 ## Trees waiting on a root claim
@@ -202,10 +201,11 @@ itself, so a row ends when a person acts or when the tree that owns the work mov
 ## Findings, and the issues you file
 
 File an issue only when a person asks you to (a direct message, a Slack request, or their answer
-to a finding ask), for a clear defect no running tree owns, and the report issue. A clear defect,
-yours or a role's, goes first to the tree that owns its code, and becomes a Legion root only when
-no tree does: `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect`.
-Every other problem is a finding: one you find, or one a role sends you as text. Open a
+to a finding ask), for a clear defect no running tree owns, and the report issue. A clear defect
+goes to the tree that owns its code from the role that found it
+(`skill://legion-worker/references/findings.md`), and you forward none. One no tree owns becomes
+a Legion root you file: `skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns`.
+Every other problem you find is a finding. Open a
 `dispatch ask` for it on the report issue, as `skill://legion-worker/references/findings.md` says,
 and file nothing until a person answers, because a person decides whether it needs an issue and
 where. Each issue you file carries a `Filed for` line:
