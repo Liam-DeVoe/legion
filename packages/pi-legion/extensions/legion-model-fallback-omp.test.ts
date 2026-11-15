@@ -109,6 +109,20 @@ function refuses(id: string, refusal: Refusal = {}): Response {
   });
 }
 
+/**
+ * The gateway's answer to one request of a long turn that waits for the return: on the weaker
+ * model it asks again, after a shell sleep of `seconds`, so the model of each request says where
+ * the session stood at that moment; the first request on any other model is the return, wherever
+ * it went, and ends the turn. The turn ends on that fact, not on a window of the wall clock, so a
+ * pane a loaded box slows still asks until it is back, and the case's assertions judge when and to
+ * which model it came back.
+ */
+function asksUntilBack(model: string, nth: number, seconds: number): Response {
+  return model === "weak-model"
+    ? replies([sleeps(seconds)], `ping_${nth}`)
+    : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+}
+
 /** The text of every user message in a Messages request, joined: which assignment the turn that
  * carried it was started by. */
 function userText(request: Request): string {
@@ -239,22 +253,15 @@ function returnAfter(
 test.skipIf(skip)(
   "a refusal before any output is retried on the chain's next model, which is the host's own walk",
   async () => {
-    /** When the second assignment's turn must stop pinging the gateway and let the run settle:
-     * well past the wait the refusal bought, so the case sees both sides of it. */
-    let until = 0;
     const pane = await fallbackPane({
-      // The second assignment is one long turn that asks the gateway every second, so the model
-      // of each of its requests says where the session stood at that moment.
+      // The second assignment is one long turn that asks the gateway every second until the
+      // session is back, so the model of each of its requests says where the session stood at
+      // that moment, and the case sees both sides of the wait the refusal bought.
       prompt: ["Start FALL-1.", "Keep working."],
-      answer: (_model, nth) => {
-        if (nth === 1) {
-          until = Date.now() + 2 * COOLDOWN_MS;
-          return refuses("refusal_1");
-        }
+      answer: (model, nth) => {
+        if (nth === 1) return refuses("refusal_1");
         if (nth === 2) return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
-        return Date.now() < until
-          ? replies([sleeps(1)], `ping_${nth}`)
-          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        return asksUntilBack(model, nth, 1);
       },
     });
 
@@ -293,25 +300,19 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a refusal of the fallback model after the host's own walk steps down again and comes back to the model the session started on",
   async () => {
-    /** When the turn that pings the gateway every second must stop and let the run settle: past
-     * the doubled wait the second refusal bought. */
-    let until = 0;
     const pane = await fallbackPane({
       chains: TWO_STEPS,
       prompt: ["Start FALL-1.", "Keep working."],
-      answer: (_model, nth) => {
+      answer: (model, nth) => {
         // Refused before any output: the host walks its own chain to the middle model and
         // replays the turn there.
         if (nth === 1) return refuses("refusal_1");
         // The replay is refused after text, which the host leaves where it is: the plugin's own
         // walk takes it from the middle model to the weaker one.
-        if (nth === 2) {
-          until = Date.now() + 4 * COOLDOWN_MS;
-          return refuses("refusal_2", { text: "Looking at it." });
-        }
-        return Date.now() < until
-          ? replies([sleeps(1)], `ping_${nth}`)
-          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        if (nth === 2) return refuses("refusal_2", { text: "Looking at it." });
+        // The second assignment's turn asks the gateway every second until the session leaves the
+        // weaker model: the return, whose moment and model the case judges below.
+        return asksUntilBack(model, nth, 1);
       },
     });
 
@@ -389,8 +390,9 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a second refusal of the same model doubles its wait, so the return does not come at the first one",
   async () => {
-    /** When the turn that pings every two seconds must stop and let the run settle. */
-    let until = 0;
+    /** Whether the stronger model has been refused the second time: that refusal's wait is the
+     * doubled one. */
+    let refusedAgain = false;
     const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Keep working.", "Keep going."],
       answer: (model, nth) => {
@@ -398,17 +400,16 @@ test.skipIf(skip)(
         if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
         // The second runs long enough for the return, and is refused again the moment it lands
         // on the stronger model: that refusal is the one whose wait has doubled.
-        if (model === "strong-model" && until === 0) {
-          until = Date.now() + 4 * COOLDOWN_MS;
+        if (model === "strong-model" && !refusedAgain) {
+          refusedAgain = true;
           return refuses("refusal_2", { text: "Looking at it again." });
         }
         if (nth === 2) return replies([sleeps(6)], `msg_${nth}`);
-        if (until === 0) return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
-        // The third assignment's turn keeps asking the gateway every two seconds, so the model
-        // of each request says where the session stood at that moment.
-        return Date.now() < until
-          ? replies([sleeps(2)], `ping_${nth}`)
-          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        if (!refusedAgain) return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
+        // The third assignment's turn keeps asking the gateway every two seconds until the
+        // session is back, so the model of each request says where the session stood at that
+        // moment.
+        return asksUntilBack(model, nth, 2);
       },
     });
 
@@ -438,9 +439,9 @@ test.skipIf(skip)(
   "a clean turn on the model the session came back to puts its wait back to the base",
   async () => {
     /** How many turns the stronger model has been sent: the first is refused, the second is the
-     * clean turn that puts the wait back, the third is refused again. */
+     * clean turn that puts the wait back, the third is refused again, and the fourth is the
+     * return, which ends the last assignment's turn. */
     let onStrong = 0;
-    let until = 0;
     const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Keep working.", "Keep going.", "Carry on."],
       answer: (model, nth) => {
@@ -449,18 +450,13 @@ test.skipIf(skip)(
           if (onStrong === 1) return refuses("refusal_1", { text: "Looking at it." });
           // The clean turn: it ends the second assignment's run on the stronger model.
           if (onStrong === 2) return replies([{ type: "text", text: "Back on it." }], `msg_${nth}`);
-          if (onStrong === 3) {
-            until = Date.now() + 2 * COOLDOWN_MS;
-            return refuses("refusal_2", { text: "Looking at it again." });
-          }
+          if (onStrong === 3) return refuses("refusal_2", { text: "Looking at it again." });
         }
         if (nth === 2) return replies([sleeps(6)], `msg_${nth}`);
-        if (until === 0) return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
-        // The last assignment's turn asks the gateway every second, so the model of each request
-        // says where the session stood at that moment.
-        return Date.now() < until
-          ? replies([sleeps(1)], `ping_${nth}`)
-          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        if (onStrong < 3) return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
+        // The last assignment's turn asks the gateway every second until the session is back, so
+        // the model of each request says where the session stood at that moment.
+        return asksUntilBack(model, nth, 1);
       },
     });
 
@@ -493,20 +489,16 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a pane whose process is gone resumes its own transcript's arming, and comes back no earlier than it says",
   async () => {
-    /** When the resumed life's long turn must stop pinging the gateway. */
-    let until = 0;
     const pane = await fallbackPane({
       cooldownMs: RESUME_COOLDOWN_MS,
       // The second assignment is a tool-call turn: its own entries carry the arming written at
       // the end of the refused turn to disk, which is where the resumed life reads it.
       prompt: ["Start FALL-1.", "Note that."],
-      answer: (_model, nth) => {
+      answer: (model, nth) => {
         if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
         if (nth === 2) return replies([call("bash", { command: "echo noted" })], `msg_${nth}`);
         if (nth === 3) return replies([{ type: "text", text: "Noted." }], `msg_${nth}`);
-        return Date.now() < until
-          ? replies([sleeps(2)], `ping_${nth}`)
-          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        return asksUntilBack(model, nth, 2);
       },
     });
 
@@ -520,8 +512,8 @@ test.skipIf(skip)(
     const firstLife = pane.served.length;
 
     // The daemon relaunches the worker: a fresh process whose only memory of the fallback is the
-    // transcript it resumes. Its turn asks the gateway until a little past the due time.
-    until = dueAt + 2 * 1_000;
+    // transcript it resumes. Its turn asks the gateway every two seconds until the session is
+    // back, however long the relaunch took.
     await pane.resume([], "Carry on after the relaunch.");
 
     expect(pane.served.length - firstLife).toBeGreaterThan(1);
