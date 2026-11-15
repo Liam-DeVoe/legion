@@ -327,10 +327,10 @@ RUN set -eu; \
     install -m 0755 "$t/mise/bin/mise" /usr/local/bin/mise; \
     mise --version; \
     rm -rf "$t"
-# The pinned Oh My Pi is installed, then its bin/omp is held to the digest .omp-pin.sha256 records
-# (.github/scripts/omp-digest.sh) before anything runs it: the pin names a fork's release tag, which
-# can be moved, so the bytes mise fetched are checked here. The copy and the --version run follow
-# the check.
+# The pinned Oh My Pi is installed, then .github/scripts/omp-digest.sh holds its bin/omp to the
+# digest .omp-pin.sha256 records and refuses an install directory that holds anything else, before
+# anything runs it: the pin names a fork's release tag, which can be moved, and the copy below puts
+# the whole directory on every role's PATH. The copy and the --version run follow the check.
 COPY .omp-pin /omp-pin
 COPY .omp-pin.sha256 /omp-pin.sha256
 COPY .github/scripts/omp-digest.sh /usr/local/bin/

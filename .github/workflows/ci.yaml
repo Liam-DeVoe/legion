@@ -3860,6 +3860,9 @@ jobs:
       - name: Test the gitleaks version check
         run: .github/scripts/check-gitleaks-version.test.sh
 
+      - name: Test the Oh My Pi digest check
+        run: .github/scripts/omp-digest.test.sh
+
       - name: Test the workflow path model the path checks import
         run: .github/scripts/workflow_paths.test.sh
 
