@@ -153,15 +153,16 @@ func ownerGHConfigDir(ownersDir, owner string) (string, error) {
 // (ownerGHConfigDir), except where a configured rename moved that one repository to another
 // owner, which is the `to` owner's directory instead. name is the repository as the bundle keys
 // one (ghconfig.RepositoryName) and is "" where the caller names an owner and no repository of
-// it — a `gh` command naming an owner alone or two of its repositories, a credential request
-// whose path carries one segment — which is the owner's own directory, the widest token the
-// bundle holds for that account and never another's.
+// it — a `gh` command's selector naming the owner alone, a credential request whose path carries
+// one segment — which is the owner's own directory, the widest token the bundle holds for that
+// account and never another's.
 //
 // The pairs are the bundle's own file, written by the daemon that wrote the directories
 // (ghconfig.ReadPairs, ghconfig.PairsFile), and no other source is read: a pane's own
 // configuration is the pane user's to write, and a token is what routing by it would hand out.
-// A pair's `from` is compared against `<owner>/<name>` without case, as GitHub compares a
-// repository's two halves.
+// The rule is ghconfig.RouteDir, which the daemon routes the bundle's own default by as well
+// (appauth's bundleDirs), so the directory GH_CONFIG_DIR names for an issue is the one this
+// answers for the issue's repository.
 //
 // A pair whose `to` owner the bundle holds no directory for is refused, naming the pair and the
 // directory: no lease of this bundle reaches the repository that pair moved — the role's App is
@@ -176,18 +177,14 @@ func ghConfigDirFor(ownersDir, owner, name string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read the gh bundle's configured renames: %w", err)
 	}
-	repository := owner + "/" + name
-	for _, pair := range pairs {
-		if !strings.EqualFold(pair.From.String(), repository) {
-			continue
-		}
-		moved := strings.ToLower(pair.To.Owner())
-		dir, err := ownerGHConfigDir(ownersDir, moved)
-		if err != nil {
-			return "", fmt.Errorf("the configured rename %s -> %s serves %s from %s's gh directory, and %w; GitHub holds the repository under the name it moved to, so no other token of this bundle reaches it",
-				pair.From, pair.To, repository, moved, err)
-		}
-		return dir, nil
+	dir, pair, moved := ghconfig.RouteDir(pairs, owner, name)
+	if !moved {
+		return ownerGHConfigDir(ownersDir, owner)
 	}
-	return ownerGHConfigDir(ownersDir, owner)
+	answer, err := ownerGHConfigDir(ownersDir, dir)
+	if err != nil {
+		return "", fmt.Errorf("the configured rename %s -> %s serves %s from %s's gh directory, and %w; GitHub holds the repository under the name it moved to, so no other token of this bundle reaches it",
+			pair.From, pair.To, owner+"/"+name, dir, err)
+	}
+	return answer, nil
 }

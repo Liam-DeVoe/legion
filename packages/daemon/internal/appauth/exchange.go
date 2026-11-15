@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -114,6 +115,13 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 			return Lease{}, fmt.Errorf("%w: %w", errInstallationGone, failed)
 		}
 		refused := transient(response, body, failed)
+		// A 403 is two answers GitHub gives with the one status: its secondary rate limit, which
+		// transient has already read off the headers and the body and which says nothing about the
+		// installation, and an installation suspended on its account, which its message names and
+		// which is GitHub's definitive statement that the installation serves nothing.
+		if _, trouble := refused.(*TransientError); !trouble && response.StatusCode == http.StatusForbidden && namesSuspension(body) {
+			return Lease{}, fmt.Errorf("%w: %w", errInstallationSuspended, refused)
+		}
 		if response.StatusCode == http.StatusUnprocessableEntity {
 			// GitHub documents its rate limits on a 429 and a 403 (githubrest.RateLimited), but
 			// the headers or the secondary-limit text of a limit on a 422 are that limit too,
@@ -147,4 +155,20 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 		return Lease{}, err
 	}
 	return Lease{Token: payload.Token, ExpiresAt: expiresAt, Minted: m.now()}, nil
+}
+
+// errInstallationSuspended is a token exchange GitHub refused because the App is suspended on the
+// installation's account: an answer about the installation, which a bundle leaves that owner's
+// directory out over (credential.go's leaveOutReason), where a rate limit or GitHub's own trouble
+// is not one.
+var errInstallationSuspended = errors.New("the installation is suspended")
+
+// namesSuspension says whether body, a 403's, is GitHub's refusal of a suspended installation: its
+// message says the installation is suspended ("This installation has been suspended"). The
+// message is read and nothing else, since the status alone is also GitHub's secondary rate limit.
+func namesSuspension(body []byte) bool {
+	var answer struct {
+		Message string `json:"message"`
+	}
+	return json.Unmarshal(body, &answer) == nil && strings.Contains(strings.ToLower(answer.Message), "suspended")
 }

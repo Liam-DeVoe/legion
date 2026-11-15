@@ -444,23 +444,11 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // sorted here, so each is searched and named in one order.
 func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, bool) {
 	name := roleVolume(ghVolume, role)
-	at := slices.IndexFunc(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == name })
-	if at < 0 {
+	projected, found := ghProjectionOf(pod, role)
+	if !found {
 		return movedAddress{}, false
 	}
-	var held []string
-	projection := pod.Spec.Volumes[at].Secret
-	pairs := false
-	if projection != nil {
-		for _, item := range projection.Items {
-			if item.Key == GitHubPairsKey {
-				pairs = true
-			}
-			if dir, ok := GitHubHostsDir(item.Key); ok {
-				held = append(held, dir)
-			}
-		}
-	}
+	held := projected.dirs
 	slices.Sort(held)
 	owned := ghOwnerDirs(held)
 	// A `<owner>/<repo>` directory is no bundle of this daemon's: the pod was launched by one
@@ -474,7 +462,7 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 	// A pod launched with no directory at all projects no Secret and so no pairs file either,
 	// and a launch now would hand it the same empty directory: it is compared for its owner
 	// directories alone, below.
-	if projection != nil && !pairs {
+	if projected.secret && !projected.pairs {
 		return movedAddress{where: name + " holds no " + ghconfig.PairsFile, held: ghDirsName(owned),
 			handed: "the same directories beside the configured renames the wrappers route by"}, true
 	}
@@ -488,6 +476,41 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 		return movedAddress{}, false
 	}
 	return movedAddress{where: name, held: ghDirsName(owned), handed: ghDirsName(served)}, true
+}
+
+// ghProjection is what one role's gh volume of a pod projects, read off its items, which are
+// fixed for the pod's life: dirs, the bundle directories they name (GitHubHostsDir), in the order
+// they come, pairs, whether they hold the bundle's pairs file (GitHubPairsKey), and secret,
+// whether the volume is a Secret projection at all — not one of a pod launched with no directory,
+// whose gh volume is an empty directory projecting nothing. The drift check reads it (movedGhDirs)
+// and so does the refresher, which serves a pod the layout it names (servedLayout).
+type ghProjection struct {
+	dirs          []string
+	pairs, secret bool
+}
+
+// ghProjectionOf is what role's gh volume of pod projects, and whether pod has such a volume at
+// all: one with none is no pod of this runtime's making.
+func ghProjectionOf(pod *corev1.Pod, role claim.Role) (ghProjection, bool) {
+	name := roleVolume(ghVolume, role)
+	at := slices.IndexFunc(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == name })
+	if at < 0 {
+		return ghProjection{}, false
+	}
+	source := pod.Spec.Volumes[at].Secret
+	if source == nil {
+		return ghProjection{}, true
+	}
+	projected := ghProjection{secret: true}
+	for _, item := range source.Items {
+		if item.Key == GitHubPairsKey {
+			projected.pairs = true
+		}
+		if dir, ok := GitHubHostsDir(item.Key); ok {
+			projected.dirs = append(projected.dirs, dir)
+		}
+	}
+	return projected, true
 }
 
 // podAppRoles are the GitHub Apps a pod of kind holds a bundle of, each named once
@@ -505,8 +528,9 @@ func podAppRoles(kind podKind) []appauth.AppRole {
 }
 
 // ghOwnerDirs is the owner directories of a gh directory set, in the order they come: the names
-// holding no slash, where a repository's directory is `<owner>/<repo>` (ghconfig.IsDirName). It
-// is what movedGhDirs compares, a repository directory a pod lacks being no address of its own.
+// holding no slash, where a repository's directory a pod launched before INFRA-2543 projects is
+// `<owner>/<repo>`. It is what movedGhDirs compares, a repository directory a pod lacks being no
+// address of its own.
 func ghOwnerDirs(dirs []string) []string {
 	owners := make([]string, 0, len(dirs))
 	for _, dir := range dirs {

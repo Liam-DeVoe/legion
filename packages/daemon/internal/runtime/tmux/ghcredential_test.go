@@ -756,6 +756,58 @@ func TestAPaneWithNoRepositoryIsRenderedForThatSameAbsentRepository(t *testing.T
 	}
 }
 
+// pairTokens is leaseTokens with the App installed on both accounts of the pair sjawhar/legion ->
+// cybermonklabs/legion: cybermonklabs, which holds the repository the pair moved, and sjawhar,
+// which holds every other repository of that account.
+type pairTokens struct{ leaseTokens }
+
+func (pairTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"cybermonklabs", "sjawhar"}, nil
+}
+
+// A pane whose issue is recorded on a configured pair's `from` keeps refreshing: its bundle's
+// default is the directory its repository routes to (ghconfig.RouteDir), cybermonklabs, where
+// the repository GitHub serves for that name is, and the refresher holds the render to that same
+// rule. Held to the recorded owner instead, every refresh of the pane would be refused and its
+// tokens would expire within the hour.
+func TestAPaneRecordedOnAPairsFromKeepsRefreshing(t *testing.T) {
+	ctx := context.Background()
+	var logs strings.Builder
+	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+	credential := appauth.GitHubCredential(pairTokens{}, pairTokens{},
+		func() []ghrepo.Repository {
+			return []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion"), ghrepo.MustParse("sjawhar/ygo")}
+		},
+		pair, nil, nil, slog.Default())
+	f := newFakeServerRuntime(t, credential, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	token, err := claim.NewToken("omp", "LEGION-48", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.claimRepository = func(context.Context, claim.Token) (ghrepo.Repository, error) {
+		return ghrepo.MustParse("sjawhar/legion"), nil
+	}
+	f.track(runtime.Locator{
+		Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "4242:8",
+		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%8"},
+	}, "", ghrepo.Repository{}, "")
+
+	f.refreshGitHubCredentials(ctx)
+
+	if failed := logLines(logs.String(), "github credential refresh failed"); len(failed) != 0 {
+		t.Fatalf("the runtime logged failures %q, want the pane refreshed", failed)
+	}
+	root := runtime.GHConfigDir(f.stateDir, token)
+	for _, owner := range []string{"cybermonklabs", "sjawhar"} {
+		if got := readHostsToken(t, ghconfig.Dir(root, owner)); got != "write-"+owner {
+			t.Errorf("the pane's %s hosts.yml holds %q, want that owner's own lease write-%s", owner, got, owner)
+		}
+	}
+	if pairs, err := ghconfig.ReadPairs(root); err != nil || len(pairs) != 1 {
+		t.Errorf("the pane's bundle routes by %v (%v), want the one configured pair", pairs, err)
+	}
+}
+
 // One walk of the tracked panes builds one gh bundle per App role and repository
 // (appauth.Bundles): a bundle is that pair and no more, and each build opens with a live read
 // of every page of its App's installations under a fresh JWT (appauth.GitHubCredential), so

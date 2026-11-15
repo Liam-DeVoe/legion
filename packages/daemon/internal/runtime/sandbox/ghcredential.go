@@ -3,6 +3,8 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -62,8 +64,9 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // of the Secret but the rewritten directories' gh keys changes: the launcher token, whose hash
 // binds the launcher (credentialFromSecret), the default, the annotations, and the keys of a
 // directory the render no longer holds, which the pod's projection may still name, stay as they
-// are. Every live issue pod's provisioning Secret is brought to the implement App's current
-// lease for the pod's own repository too (refreshProvisioningToken), whatever its
+// are, so no key a running pod projects is ever deleted. Every live issue pod's provisioning
+// Secret is brought to the implement App's current lease for the pod's own repository too
+// (refreshProvisioningToken), whatever its
 // workspace-fetch has already done: the kubelet runs a pod's init containers afresh whenever it
 // rebuilds the pod's sandbox, at any point in the pod's life (a relaunch that replaces the pod
 // provisions it anew instead), and the fetch re-reads the token's file before every transfer, so
@@ -177,17 +180,12 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // read off its workspace fetch once for every role of the pod.
 //
 // A workflow role's credential is rendered for that repository, and not for the Secret's
-// recorded default, which names an owner and so could never name a repository: a bundle
-// rendered from an owner alone would mint nothing, every mint now naming the repositories it
-// reaches. A pod the previous daemon created carries no repository in its Secret and needs
-// none, since its fetch argument names it, so its refresh keeps working and no live issue is
-// stopped. What such a pod lacks is the repository directories of a bundle built now, which a
-// pod's gh projection is fixed at and only a new pod carries. The drift check does not answer
-// that: movedGhDirs runs the directories the pod holds and the directories a bundle built now
-// would hold alike through ghOwnerDirs, which keeps the names holding no slash, so a
-// repository directory a pod lacks is no address of its own and opens no update round. An
-// owner directory the pod lacks is what opens one, and this refresh writes the tokens of the
-// directories the pod does project, whatever else a bundle built now would hold.
+// recorded default, which names an owner and so could never name a repository: the repository
+// is what the bundle's default is routed by (ghconfig.RouteDir). A pod the previous daemon
+// created carries no repository in its Secret and needs none, since its fetch argument names it,
+// so its refresh keeps working and no live issue is stopped. An owner directory the pod lacks is
+// what opens an update round (movedGhDirs), and this refresh writes the tokens of the directories
+// the pod does project (servedLayout), whatever else a bundle built now would hold.
 //
 // The controller's is fetched by owner instead (Options.ControllerCredential), the one its
 // Secret records: it works no repository, so a bundle asked for by repository would take its
@@ -199,6 +197,20 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // The Secret's recorded default is what the bundle is held to either way: a render whose default
 // is another owner is refused rather than written, since the pod's GH_CONFIG_DIR was fixed at
 // that directory.
+//
+// What it writes is the layout the pod's own gh projection can read (servedLayout), which a pod
+// is served until its update round replaces it: the projection is fixed for the pod's life, and
+// a layout the pod cannot read would cost it more than any drift does. A pod projecting the
+// pairs file reads the bundle as it is built now. One projecting none was launched before the
+// bundle carried one, and its wrappers route by owner alone, so it is served the layout it was
+// launched with: each configured pair's `from` owner's directory holding the `to` owner's lease,
+// and its default the repository's own owner, which is what its Secret records — so it is held to
+// that default and refreshed rather than refused, and neither loses nor gains what it reaches. A
+// pod projecting a `<owner>/<repo>` directory, which a daemon before INFRA-2543 cut one of for
+// each repository of an owner, has each of those keys filled at every refresh with the lease that
+// repository routes to (ghconfig.RouteDir): no bundle of this daemon holds such a directory, yet
+// that pod's wrappers still read it, and a key left as its launch wrote it would expire within
+// the hour while the pod lives.
 //
 // Beside the leases it rewrites the bundle's configured renames where they differ
 // (GitHubPairsKey, ghconfig.PairsFile): a pod the launch keeps projects the file of its
@@ -250,13 +262,14 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 		failed(err)
 		return
 	}
-	if bundle.Default != owner {
-		failed(fmt.Errorf("the credential's default owner %s is not the Secret's %s", bundle.Default, owner))
+	dflt, served := servedLayout(pod, role, repo, bundle)
+	if dflt != owner {
+		failed(fmt.Errorf("the credential's default owner %s is not the Secret's %s", dflt, owner))
 		return
 	}
 	var changed []string
-	for _, dir := range bundle.DirNames() {
-		if string(secret.Data[GitHubHostsKey(dir)]) != bundle.Dirs[dir].Hosts {
+	for _, dir := range slices.Sorted(maps.Keys(served)) {
+		if string(secret.Data[GitHubHostsKey(dir)]) != served[dir].Hosts {
 			changed = append(changed, dir)
 		}
 	}
@@ -274,7 +287,7 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 			secret.Data = map[string][]byte{}
 		}
 		for _, dir := range changed {
-			rendered := bundle.Dirs[dir]
+			rendered := served[dir]
 			secret.Data[GitHubHostsKey(dir)], secret.Data[GitHubConfigKey(dir)] = []byte(rendered.Hosts), []byte(rendered.Config)
 		}
 		secret.Data[GitHubPairsKey] = []byte(pairs)
@@ -297,7 +310,45 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 			return
 		}
 	}
-	written := bundle.Dirs[owner]
+	written := served[dflt]
 	r.log.Info("sandbox runtime: github credential refreshed", "sandbox", sandbox, "role", role, "app", written.App,
 		"expiresAt", written.ExpiresAt, "dirs", changed, "renames", stalePairs)
+}
+
+// servedLayout is what the refresh writes into role's Secret of pod out of bundle, rendered for
+// repo, the pod's own repository: the default the pod's layout chooses, which the Secret's
+// recorded one is held to, and the gh files by the directory each is written under — the layout
+// that role's gh projection of the pod can read (ghProjectionOf), which a pod is served until its
+// update round replaces it (movedGhDirs).
+//
+// A projection holding the pairs file reads bundle as it is built. One holding none routes by
+// owner alone, so it is handed bundle routed by owner (ghconfig.Bundle.RoutedByOwner): each
+// configured pair's `from` owner's directory holding the `to` owner's lease, and repo's own owner
+// its default, as the daemon that launched it chose. Every `<owner>/<repo>` directory a
+// projection names, which a daemon before INFRA-2543 cut, is filled with the lease that
+// repository routes to (ghconfig.RouteDir, the rule `legion gh` and `legion git-credential`
+// route by): the owner's own for every repository but one a configured pair moved, which is
+// filled with the lease of the owner it moved to, the installation that holds it now. That lease
+// reaches at least the repository the directory was cut for, and is refreshed as the pod's
+// other directories are, where the key left as its launch wrote it would expire within the hour
+// while the pod still reads it. A directory whose lease the bundle does not hold is not written,
+// and keeps what it holds, as any directory the render no longer holds does.
+func servedLayout(pod *corev1.Pod, role claim.Role, repo ghrepo.Repository, bundle ghconfig.Bundle) (string, map[string]ghconfig.Rendered) {
+	projected, _ := ghProjectionOf(pod, role)
+	layout := bundle
+	if projected.secret && !projected.pairs {
+		layout = bundle.RoutedByOwner(repo)
+	}
+	served := maps.Clone(layout.Dirs)
+	for _, dir := range projected.dirs {
+		owner, name, nested := strings.Cut(dir, "/")
+		if !nested {
+			continue
+		}
+		routed, _, _ := ghconfig.RouteDir(bundle.Pairs, owner, name)
+		if lease, held := bundle.Dirs[routed]; held {
+			served[dir] = lease
+		}
+	}
+	return layout.Default, served
 }

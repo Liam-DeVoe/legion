@@ -9,6 +9,7 @@ package appauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -147,7 +148,8 @@ type saidShortfall struct {
 // A cut that leaves no permission at all refuses the mint instead: GitHub reads a request with
 // no permissions as every permission the installation holds, so a body without them would mint
 // wider than the role's set asks for rather than narrower. The refusal names the role, the
-// owner and the set asked for (askedFor), and carries no token.
+// owner and the set asked for (askedFor), and carries no token. A gh bundle leaves that owner's
+// directory out over it, unless it is the bundle's own default (mintBundle).
 //
 // A 422 from the exchange after this cut is a grant that changed between the two calls
 // (ErrNarrowingRefused): it stays the hard refusal it is.
@@ -159,11 +161,16 @@ func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string,
 	permissions, short := narrowToGranted(request.permissions, granted)
 	m.sayShortfalls(request.role, request.owner, short)
 	if len(permissions) == 0 {
-		return Lease{}, fmt.Errorf("the %s App's installation on %s is granted none of the permissions its token asks for (%s), and a token request naming no permission holds every permission the installation has",
-			request.role, request.owner, askedFor(request.permissions))
+		return Lease{}, fmt.Errorf("the %s App's installation on %s is granted none of the permissions its token asks for (%s), and a token request naming no permission holds every permission the installation has: %w",
+			request.role, request.owner, askedFor(request.permissions), errGrantedNone)
 	}
 	return m.exchange(ctx, jwt, installation, permissions)
 }
+
+// errGrantedNone is the refusal exchangeGranted makes of an installation granted none of what the
+// request asks for: an answer about the installation, read from what its account approved, which
+// a bundle leaves that owner's directory out over (credential.go's leaveOutReason).
+var errGrantedNone = errors.New("the installation is granted none of the permissions asked for")
 
 // grantedPermissions is what owner's account approved for the App's installation: GET
 // /app/installations/{id} under the App's JWT answers the installation, whose permissions object

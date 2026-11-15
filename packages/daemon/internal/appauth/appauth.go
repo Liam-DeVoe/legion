@@ -510,11 +510,12 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 // 422 as a TransientError alone (exchange.go), and token mode returns its trouble before it
 // builds the refusal (mintFromCommand), so excluding it here is a guard for a later producer. It
 // is the one predicate every caller that acts on a refusal reads — a Manager deciding what to
-// remember (refusals), a bundle deciding which directories it holds (credential.go's dirEntry),
-// the leak check's token (internal/daemon's leakCheckToken) and the controller route's answer
-// (internal/api) — so that none of them reads a rate limit as an answer about what an
-// installation grants. The daemon's provisioning adapter reads it no longer: it returns every
-// error of its mint as it came (internal/daemon's implementTokens).
+// remember (refusals), a bundle deciding which directories it leaves out (credential.go's
+// leaveOutReason), the leak check's token (internal/daemon's leakCheckToken) and the controller
+// route's answer (internal/api) — so that none of them reads a rate limit as an answer about what
+// an installation grants.
+// The daemon's provisioning adapter reads it no longer: it returns every error of its mint as it
+// came (internal/daemon's implementTokens).
 func NarrowingRefused(err error) bool {
 	var trouble *TransientError
 	return errors.Is(err, ErrNarrowingRefused) && !errors.As(err, &trouble)
@@ -646,11 +647,12 @@ var errInstallationGone = errors.New("the installation is gone")
 // request names one (exchange), so there is none for GitHub to refuse. In token mode it is the
 // secrets broker refusing the narrowing its own release names (brokerNarrowingRefused).
 //
-// It is exported because its callers read it rather than fail on it: a role's gh bundle leaves
-// out the directory whose lease is refused and keeps the rest (mintBundle), and refuses a
-// bundle whose own default owner it leaves out (bundleDefault), which the API's controller
-// route answers as a refusal of its own (internal/api's controllerGitHubCredential). The
-// Manager remembers it per scope and serves it without asking GitHub again while the window
+// It is exported because its callers read it rather than fail on it: a controller's gh bundle
+// that cannot mint its own default owner's lease fails wrapping it, which the API's controller
+// route answers as a refusal of its own (internal/api's controllerGitHubCredential), while a
+// bundle leaves out every other owner GitHub answers this way, as it does for the few other
+// answers that are about the installation (mintBundle, leaveOutReason).
+// The Manager remembers it per scope and serves it without asking GitHub again while the window
 // holds (lease, narrowingRefusalWindow), which it does for no other refusal. No other refusal
 // is read any of these ways. The daemon's provisioning adapter once fell back on it, serving
 // the owner's own write token where the reading lease was refused; it does so no longer, and
@@ -676,7 +678,10 @@ type OwnerInstallations interface {
 // from GitHub at the moment of the call: GET /app/installations under the App's own JWT, every
 // page of it (discoverInstallations), or, in token mode, the accounts the command's release of
 // every installation names (runTokenCommand with no owner, which records them as this role's
-// installations itself).
+// installations itself). An installation GitHub lists as suspended is none of them: GitHub
+// refuses every token of a suspended installation, so it is its own statement that the
+// installation serves nothing (discoverInstallations), and the secrets broker leaves one out of
+// every release for the same reason (its GitHubApp.Mint), which is why a release names none.
 //
 // It asks GitHub every time rather than answering from the installations the Manager has found
 // before, because its caller builds a bundle from the answer: an owner the account removed the
@@ -694,32 +699,52 @@ type OwnerInstallations interface {
 // bearable: there the read is runTokenCommand with no owner, the release of every installation
 // the App has, which is a subprocess, a request to the secrets broker and a whole set of
 // tokens thrown away but for the owner names.
+//
+// The shared read belongs to no caller (readSharedInstallations): it runs on a context detached
+// from the one that started it, bounded by installationReadLimit, and every caller, the first
+// among them, waits for it under its own context. Run under the first caller's context, an API
+// request that a client cancelled would end the read and hand `context canceled` to a launch
+// that joined it, failing a bundle over nothing that happened to the launch or to GitHub.
 func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
 	m.mu.Lock()
-	if waiting, ok := m.pendingInstallations[role]; ok {
-		m.mu.Unlock()
-		select {
-		case <-waiting.done:
-			return slices.Clone(waiting.owners), waiting.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	read, joined := m.pendingInstallations[role]
+	if !joined {
+		read = &pendingInstallations{done: make(chan struct{})}
+		m.pendingInstallations[role] = read
+		go m.readSharedInstallations(context.WithoutCancel(ctx), role, read)
 	}
-	waiting := &pendingInstallations{done: make(chan struct{})}
-	m.pendingInstallations[role] = waiting
 	m.mu.Unlock()
-
-	owners, err := m.readInstalledOwners(ctx, role)
-	m.mu.Lock()
-	waiting.owners, waiting.err = owners, err
-	delete(m.pendingInstallations, role)
-	close(waiting.done)
-	m.mu.Unlock()
-	return owners, err
+	select {
+	case <-read.done:
+		return slices.Clone(read.owners), read.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
-// readInstalledOwners is the read itself, made by the one caller that found no read of role's
-// App already running (InstalledOwners).
+// installationReadLimit bounds the one installation read every overlapping caller of an App
+// shares (InstalledOwners), which no caller's own deadline bounds: longer than the thirty
+// seconds a runtime gives a call (sandbox's apiTimeout), so a caller that joins late is still
+// answered, and short enough that a read GitHub never answers is dropped and the next caller
+// asks afresh rather than joining it for ever.
+const installationReadLimit = time.Minute
+
+// readSharedInstallations makes the read the callers of InstalledOwners share and hands its
+// answer to every one of them through read. detached carries the values of the context that
+// started it and none of its cancellation.
+func (m *Manager) readSharedInstallations(detached context.Context, role AppRole, read *pendingInstallations) {
+	bounded, cancel := context.WithTimeout(detached, installationReadLimit)
+	defer cancel()
+	owners, err := m.readInstalledOwners(bounded, role)
+	m.mu.Lock()
+	read.owners, read.err = owners, err
+	delete(m.pendingInstallations, role)
+	close(read.done)
+	m.mu.Unlock()
+}
+
+// readInstalledOwners is the read itself, made once for every caller of role's App whose call
+// overlaps it (InstalledOwners, readSharedInstallations).
 func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
 	app, err := m.app(role)
 	if err != nil {
@@ -788,11 +813,19 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 			Account struct {
 				Login string `json:"login"`
 			} `json:"account"`
+			SuspendedAt *string `json:"suspended_at"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, fmt.Errorf("GitHub App installation discovery returned an invalid response")
 		}
 		for _, installation := range payload {
+			// A suspended installation is GitHub's own statement that it serves nothing: every
+			// token asked of it is refused 403. Listed, its owner would be a directory of every
+			// role's bundle whose mint can only fail, and an owner nothing can be minted on is
+			// what not being installed means.
+			if installation.SuspendedAt != nil {
+				continue
+			}
 			id, err := installationID(installation.ID)
 			if err != nil || installation.Account.Login == "" {
 				return nil, fmt.Errorf("GitHub App installation discovery returned an invalid installation account")

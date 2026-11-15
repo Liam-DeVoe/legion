@@ -118,9 +118,10 @@ daemon asks GitHub to narrow none of them to a repository. The bundle's root als
 of its own, `renames.txt`, the configured renames the project's pairs resolve to, which both
 wrappers route a repository a rename moved by and read from there and from nowhere else
 (`ghconfig.PairsFile`). `legion gh` runs the real gh with
-`GH_CONFIG_DIR` at the directory of the owner of the repository the command targets, or of the
-owner a configured rename moved that one repository to,
-the target read as gh reads it, with pflag's rules, from the real gh's own help of
+`GH_CONFIG_DIR` at the one directory every repository the command targets is routed to: its
+owner's, or for a repository a configured rename moved, the directory of the owner it moved to,
+each repository routed on its own and an owner the command names alone routed to its own
+directory, the targets read as gh reads them, with pflag's rules, from the real gh's own help of
 each command down to its leaf (`-R`/`--repo` before or after the command, a repository or owner
 argument, before `--` or as a clone's or fork's first after it, a `github.com` URL argument — for a
 `pr` command or `agent-task view` only a pull request's, since gh reads any other as a branch of
@@ -139,10 +140,14 @@ know, a first word gh's own help does not list, anything before the command but 
 `--help`, an argument the leaf's usage has no place for or names in a way it does not know, a
 search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as
 `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
-extension exec`), one naming two owners (an option or a second repository naming one owner while
-gh acts on another's, or a workspace whose remotes name two), one naming an owner the bundle
-holds no directory for, one naming a repository a configured rename moved to an owner the bundle
-holds no directory for, which names the pair, every command where `PATH`'s first `gh` is not
+extension exec`), one whose repositories route to two directories (two owners' repositories, an
+option or a second repository naming one owner while gh acts on another's, a workspace whose
+remotes name two, or a repository a configured rename moved beside another of the owner it moved
+from, which run under one directory's token would answer for the other's with less than GitHub
+holds and no error; a moved repository named by both of its names is one directory), one naming
+an owner the bundle holds no directory for, one naming a repository a configured rename moved to
+an owner the bundle holds no directory for, which names the pair, every command where `PATH`'s
+first `gh` is not
 Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,

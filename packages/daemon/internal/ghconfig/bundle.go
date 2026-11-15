@@ -15,18 +15,18 @@ import (
 )
 
 // Bundle is one role's gh directories: Default, the lowercased owner whose directory GH_CONFIG_DIR
-// names (the issue's owner; the controller's first owner), Dirs, each directory's Rendered
-// files keyed by the directory's name under the bundle root, and Pairs, the configured renames
-// that route a request by repository. A directory's name is a lowercased owner login,
+// names (the one the issue's own repository routes to, RouteDir; the controller's asked-for or
+// first owner), Dirs, each directory's Rendered files keyed by the directory's name under the
+// bundle root, and Pairs, the configured renames that route a request by repository. A
+// directory's name is a lowercased owner login (IsOwner) and nothing narrower,
 // whose token is that account's installation lease and reaches every repository it holds. A
 // workflow role's every directory carries that lease at the role's own permissions and none is
 // read-only; a controller's bundle is the one made of reading leases (appauth's
 // GitHubCredential and ControllerCredential, INFRA-2543). The name authorises nothing — the
-// token in the directory does. No bundle this daemon builds holds a `<owner>/<repo>` directory
-// (appauth's bundleDirs), and this package answers for that shape (IsDirName) only to clean up
-// after a run of before that ruling: WriteBundle prunes the repository directories such a run
-// left under an owner's own, and the Sandbox drift check reads them off a pod launched then
-// (sandbox's movedGhDirs).
+// token in the directory does. A run of before that ruling also wrote `<owner>/<repo>`
+// directories under an owner's own; no bundle holds one now, and the one trace of that shape left
+// here is WriteBundle's prune, which removes every subdirectory of an owner's directory such a
+// run left behind.
 //
 // Pairs are the configured renames that moved a repository to another owner's installation and
 // resolve for this project (ghrepo.Renames.Moving), which WriteBundle writes into the root as
@@ -50,49 +50,14 @@ type Bundle struct {
 // hyphen. A login is a path segment under a bundle's root, so nothing else is one.
 var ownerLogin = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
-// repositoryName is a lowercased GitHub repository name: at most 100 letters, digits, `-`, `_`
-// and `.`, which is GitHub's own grammar (ghrepo.Parse) lowercased. A name is a path segment
-// under an owner's directory, and `.` and `..` are refused beside it, since either would name
-// another directory than the repository's.
-var repositoryName = regexp.MustCompile(`^[a-z0-9._-]{1,100}$`)
-
 // IsOwner says whether owner is a lowercased GitHub login, and so a directory a bundle may hold.
-// It is the rule for a caller that means an owner and nothing narrower: the bundle's Default,
-// which GH_CONFIG_DIR names, and the owner a `gh` or a git-credential request names.
+// It is the rule for every directory of a bundle, its Default among them, and for the owner a
+// `gh` or a git-credential request names: a bundle's directory is one owner's whole lease, so
+// there is no narrower name for one to have. PairsFile can never collide with it: its name holds
+// a dot, which no GitHub login does.
 func IsOwner(owner string) bool { return ownerLogin.MatchString(owner) }
 
-// IsDirName says whether name is a directory a bundle may hold: a lowercased owner login
-// (IsOwner), or that login and one of its repositories as `<owner>/<repo>`, both lowercased. A
-// GitHub login holds no slash and a repository name holds none either, so the one slash of a
-// name splits it exactly.
-//
-// HostsFile and ConfigFile are no repository directory, though both are repository names GitHub
-// allows: an owner's own two gh files sit beside a repository directory, so a bundle holding
-// `<owner>/hosts.yml` would have WriteBundle make a directory where that owner's hosts.yml is
-// and fail every directory of the bundle. PairsFile needs no such rule: it is the root's own
-// file, and its name holds a dot, which no GitHub login does, so no directory of a bundle is
-// ever named for it.
-//
-// No bundle this daemon builds holds a repository directory at all: a role's token reaches every
-// repository its App's installation holds, so one directory per owner carries it (appauth's
-// bundleDirs). The `<owner>/<repo>` shape stays a name this answers for, because a root an
-// earlier run wrote still holds such directories, which WriteBundle prunes, and a pod launched
-// before that change projects them, which the Sandbox drift check reports (sandbox's
-// movedGhDirs). No token is read out of one: `legion gh` and `legion git-credential` answer for
-// every repository of an owner from that owner's own directory.
-func IsDirName(name string) bool {
-	owner, repo, nested := strings.Cut(name, "/")
-	if !IsOwner(owner) {
-		return false
-	}
-	if !nested {
-		return true
-	}
-	return repo != "." && repo != ".." && repo != HostsFile && repo != ConfigFile && repositoryName.MatchString(repo)
-}
-
-// Dir is the directory a bundle entry's two gh files live in under a bundle root: <root>/<name>,
-// which for a `<owner>/<repo>` entry is a directory under the owner's own.
+// Dir is the directory an owner's two gh files live in under a bundle root: <root>/<owner>.
 func Dir(root, name string) string { return filepath.Join(root, name) }
 
 // RepositoryName is the one key a repository's every spelling has: lowercased, and without the
@@ -174,15 +139,63 @@ func ReadPairs(root string) ([]ghrepo.Rename, error) {
 	return ParsePairs(data)
 }
 
-// DirNames is the bundle's directory names, sorted. An owner sorts before its own repositories'
-// directories, since each of those begins with the owner's name.
+// RouteDir is the directory that answers for the repository owner/name in a bundle routing by
+// pairs, lowercased: the `to` owner of the pair whose `from` is that repository, compared
+// without case as GitHub compares a repository's two halves, and owner's own directory for
+// every other repository. pair is the pair that routed it, and moved whether one did, so a
+// caller refusing a directory the bundle lacks can name the pair that sent it there.
+//
+// It is the one rule a repository is routed to a directory by, so no two places can route one
+// repository to two directories: `legion gh` and `legion git-credential` route every command
+// and every credential request by it over the bundle's own pairs file (cmd/legion's
+// ghConfigDirFor), and appauth's bundleDirs routes the issue's own repository by it to the
+// bundle's Default, the directory GH_CONFIG_DIR names. A Default picked by the recorded owner
+// alone is the `from` owner's directory for a repository a pair moved away from it, and where
+// the App is installed on that owner too, that directory holds the owner's own lease, which
+// cannot write the repository that moved.
+func RouteDir(pairs []ghrepo.Rename, owner, name string) (dir string, pair ghrepo.Rename, moved bool) {
+	repository := owner + "/" + name
+	for _, pair := range pairs {
+		if strings.EqualFold(pair.From.String(), repository) {
+			return strings.ToLower(pair.To.Owner()), pair, true
+		}
+	}
+	return strings.ToLower(owner), ghrepo.Rename{}, false
+}
+
+// RoutedByOwner is b as a reader that routes by owner alone must be handed it: a pod whose gh
+// projection holds no PairsFile, launched before a bundle carried one, whose wrappers answer
+// every repository of an owner from that owner's directory. Each pair's `from` owner's directory
+// holds the `to` owner's lease, the one that reaches the repository the pair moved — and is left
+// out where b holds no `to` directory, there being no lease of that repository to put there —
+// and Default is recorded's own owner, the directory such a pod's GH_CONFIG_DIR was fixed at. That
+// is the layout the pod was launched with, so it neither loses what it reaches nor gains what it
+// cannot read until its update round replaces it with a pod that projects the pairs (sandbox's
+// movedGhDirs). A zero recorded keeps b's Default: a controller's is the owner it asked for. b is
+// not changed.
+func (b Bundle) RoutedByOwner(recorded ghrepo.Repository) Bundle {
+	routed := Bundle{Default: b.Default, Dirs: maps.Clone(b.Dirs), Pairs: b.Pairs}
+	for _, pair := range b.Pairs {
+		from := strings.ToLower(pair.From.Owner())
+		if lease, held := b.Dirs[strings.ToLower(pair.To.Owner())]; held {
+			routed.Dirs[from] = lease
+		} else {
+			delete(routed.Dirs, from)
+		}
+	}
+	if !recorded.IsZero() {
+		routed.Default = strings.ToLower(recorded.Owner())
+	}
+	return routed
+}
+
+// DirNames is the bundle's directory names, sorted.
 func (b Bundle) DirNames() []string { return slices.Sorted(maps.Keys(b.Dirs)) }
 
 // Validate refuses a bundle with no Default, a Default absent from Dirs or that is not a
-// lowercased GitHub login — GH_CONFIG_DIR always names an owner's directory, never a
-// repository's — a directory that is neither shape a bundle holds (IsDirName), each name being a
-// path under the bundle's root, or a pair naming no repository on either side, which PairsFile
-// could hold no line for.
+// lowercased GitHub login, a directory that is not one either (IsOwner) — each name being a path
+// under the bundle's root, and a `<owner>/<repo>` name among what it refuses — or a pair naming
+// no repository on either side, which PairsFile could hold no line for.
 //
 // A pair whose `to` owner the bundle holds no directory for is no refusal here: the bundle is
 // written and served, and the wrapper that routes a request to that missing directory is what
@@ -193,8 +206,8 @@ func (b Bundle) Validate() error {
 		return errors.New("gh bundle names no default owner")
 	}
 	for _, name := range b.DirNames() {
-		if !IsDirName(name) {
-			return fmt.Errorf("gh bundle directory %q is no lowercased GitHub login or owner/repository", name)
+		if !IsOwner(name) {
+			return fmt.Errorf("gh bundle directory %q is no lowercased GitHub login", name)
 		}
 	}
 	if !IsOwner(b.Default) {
@@ -211,19 +224,17 @@ func (b Bundle) Validate() error {
 	return nil
 }
 
-// WriteBundle brings root to bundle: root made 0700, each directory as Write brings one, the
-// bundle's pairs written into the root as PairsFile, and both levels cleaned of what the bundle
-// no longer holds. An entry of the root that is neither an owner of the
-// bundle nor that file goes — an owner no longer served, the two files of a directory written
-// before bundles, which held one role's files at its top, and anything else — and under each
-// owner's directory a
-// subdirectory that is no repository entry of the bundle goes too, so a repository the mapping no
-// longer serves is left holding no stale token; the owner's own hosts.yml and config.yml stay.
-// root is the bundle's alone, and it records nothing of the bundle but the gh files and those
-// pairs: the pane's own
-// user can write it, so a reader of the bundle's default or write owner reads the daemon's own
-// record instead. It returns the directories whose hosts.yml changed, sorted, and writes nothing
-// for a bundle Validate refuses.
+// WriteBundle brings root to bundle: root made 0700, each owner's directory as Write brings one,
+// the bundle's pairs written into the root as PairsFile, and both levels cleaned of what the
+// bundle does not hold. An entry of the root that is neither an owner of the bundle nor that file
+// goes — an owner no longer served, the two files of a directory written before bundles, which
+// held one role's files at its top, and anything else — and so does every subdirectory of an
+// owner's directory, the `<owner>/<repo>` directories a run of before INFRA-2543 cut a token per
+// repository into, so none of them is left holding a stale token; the owner's own hosts.yml and
+// config.yml stay. root is the bundle's alone, and it records nothing of the bundle but the gh
+// files and those pairs: the pane's own user can write it, so a reader of the bundle's default or
+// write owner reads the daemon's own record instead. It returns the directories whose hosts.yml
+// changed, sorted, and writes nothing for a bundle Validate refuses.
 func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 	if err := bundle.Validate(); err != nil {
 		return nil, err
@@ -234,8 +245,7 @@ func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 	if err := os.Chmod(root, 0o700); err != nil {
 		return nil, err
 	}
-	// Sorted, so an owner's own directory is written before any of its repositories' are made
-	// under it.
+	// Sorted, so the directories a log line names come in one order.
 	for _, name := range bundle.DirNames() {
 		dirChanged, err := Write(Dir(root, name), bundle.Dirs[name])
 		if err != nil {
@@ -252,20 +262,6 @@ func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 	if _, err := replaceFile(filepath.Join(root, PairsFile), RenderPairs(bundle.Pairs)); err != nil {
 		return nil, fmt.Errorf("write the gh bundle's %s: %w", PairsFile, err)
 	}
-	// held is each owner of the bundle by the repository directories it holds, which is the whole
-	// of what either level of the root may keep.
-	held := map[string]map[string]bool{}
-	for name := range bundle.Dirs {
-		owner, repo, nested := strings.Cut(name, "/")
-		repos, ok := held[owner]
-		if !ok {
-			repos = map[string]bool{}
-			held[owner] = repos
-		}
-		if nested {
-			repos[repo] = true
-		}
-	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -274,20 +270,21 @@ func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 		if entry.Name() == PairsFile && !entry.IsDir() {
 			continue
 		}
-		repos, owned := held[entry.Name()]
-		if !owned || !entry.IsDir() {
+		if _, owned := bundle.Dirs[entry.Name()]; !owned || !entry.IsDir() {
 			if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
 				return nil, fmt.Errorf("remove %s from the gh bundle: %w", entry.Name(), err)
 			}
 			continue
 		}
+		// Nothing under an owner's directory but its own two files is the bundle's: a
+		// subdirectory there was cut by a run of before INFRA-2543 for one repository, and goes.
 		ownerDir := Dir(root, entry.Name())
 		under, err := os.ReadDir(ownerDir)
 		if err != nil {
 			return nil, err
 		}
 		for _, sub := range under {
-			if !sub.IsDir() || repos[sub.Name()] {
+			if !sub.IsDir() {
 				continue
 			}
 			if err := os.RemoveAll(filepath.Join(ownerDir, sub.Name())); err != nil {

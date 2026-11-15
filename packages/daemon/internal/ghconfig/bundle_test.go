@@ -102,47 +102,21 @@ func TestWriteBundleWritesOneDirectoryPerOwnerAndRemovesTheRest(t *testing.T) {
 	}
 }
 
-// A bundle whose directories name repositories is written two levels deep: the owner's own
-// hosts.yml and config.yml at `<root>/<owner>`, and each repository's pair at
-// `<root>/<owner>/<repo>`. WriteBundle cleans both levels, so a repository directory a run
-// before INFRA-2543 left under an owner's own is left holding no stale token, while the
-// owner's own two files stay where they are. No bundle the daemon builds holds such a
-// directory now (appauth's bundleDirs writes one key per owner), and a root a run of before it
-// wrote outlives that run, which is what the cleaning is for.
-func TestWriteBundleWritesAndPrunesTheDirectoriesOfRepositories(t *testing.T) {
+// A root a run of before INFRA-2543 wrote still holds the `<owner>/<repo>` directories that run
+// cut a token per repository into, and no bundle holds one now: WriteBundle removes every one of
+// them, so none is left holding a stale token, while the owner's own hosts.yml and config.yml
+// stay where they are. A bundle that names such a directory is no bundle at all, and nothing of
+// it is written: the shape is one the prune reads and nothing writes.
+func TestWriteBundlePrunesTheRepositoryDirectoriesAnOlderRunLeft(t *testing.T) {
 	expires := time.Date(2026, 10, 16, 18, 0, 0, 0, time.UTC)
 	root := filepath.Join(t.TempDir(), "gh")
-	bundle := twoOwnerBundle("ghs_acme_write")
-	bundle.Dirs["acme/widgets"] = Render("ghs_acme_widgets", "implement", expires)
-	bundle.Dirs["acme/gadgets"] = Render("ghs_acme_gadgets", "implement", expires)
-	changed, err := WriteBundle(root, bundle)
-	if err != nil {
-		t.Fatalf("WriteBundle: %v", err)
-	}
-	if want := []string{"acme", "acme/gadgets", "acme/widgets", "sjawhar"}; !slices.Equal(changed, want) {
-		t.Fatalf("WriteBundle changed %q, want %q", changed, want)
-	}
-	for name, token := range map[string]string{
-		"acme": "ghs_acme_write", "acme/widgets": "ghs_acme_widgets", "acme/gadgets": "ghs_acme_gadgets",
-		"sjawhar": "ghs_sjawhar_read",
-	} {
-		hosts, err := os.ReadFile(filepath.Join(Dir(root, name), HostsFile))
-		if err != nil {
+	for _, repo := range []string{"widgets", "gadgets"} {
+		if _, err := Write(Dir(root, "acme/"+repo), Render("ghs_acme_"+repo, "implement", expires)); err != nil {
 			t.Fatal(err)
 		}
-		if got, err := TokenFromHosts(hosts); err != nil || got != token {
-			t.Fatalf("%s's hosts.yml token = %q, %v, want %q", name, got, err, token)
-		}
 	}
-
-	// gadgets leaves the mapping: its directory goes, widgets' stays, and the owner's own two
-	// files are untouched.
-	delete(bundle.Dirs, "acme/gadgets")
-	if _, err := WriteBundle(root, bundle); err != nil {
-		t.Fatalf("second WriteBundle: %v", err)
-	}
-	if _, err := os.Stat(Dir(root, "acme/gadgets")); !os.IsNotExist(err) {
-		t.Fatalf("the directory of a repository the bundle no longer holds survived: %v", err)
+	if _, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write")); err != nil {
+		t.Fatalf("WriteBundle over a root an older run wrote: %v", err)
 	}
 	entries, err := os.ReadDir(Dir(root, "acme"))
 	if err != nil {
@@ -153,40 +127,76 @@ func TestWriteBundleWritesAndPrunesTheDirectoriesOfRepositories(t *testing.T) {
 		names = append(names, entry.Name())
 	}
 	slices.Sort(names)
-	if want := []string{ConfigFile, HostsFile, "widgets"}; !slices.Equal(names, want) {
-		t.Fatalf("acme's directory holds %q, want %q", names, want)
+	if want := []string{ConfigFile, HostsFile}; !slices.Equal(names, want) {
+		t.Fatalf("acme's directory holds %q, want %q: every repository directory an older run cut goes", names, want)
+	}
+	hosts, err := os.ReadFile(filepath.Join(Dir(root, "acme"), HostsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := TokenFromHosts(hosts); err != nil || got != "ghs_acme_write" {
+		t.Fatalf("acme's hosts.yml token = %q, %v, want the owner's own ghs_acme_write", got, err)
+	}
+
+	nested := twoOwnerBundle("ghs_acme_write")
+	nested.Dirs["acme/widgets"] = Render("ghs_acme_widgets", "implement", expires)
+	fresh := filepath.Join(t.TempDir(), "gh")
+	if _, err := WriteBundle(fresh, nested); err == nil || !strings.Contains(err.Error(), `"acme/widgets"`) {
+		t.Fatalf("WriteBundle of a bundle naming acme/widgets = %v, want the refusal naming it", err)
+	}
+	if _, err := os.Stat(fresh); !os.IsNotExist(err) {
+		t.Fatalf("WriteBundle of a refused bundle left %s: %v", fresh, err)
 	}
 }
 
-// IsDirName takes the two shapes a bundle directory has and nothing else; IsOwner stays the
-// stricter rule for the callers that mean an owner, the bundle's Default among them. A repository
-// named like one of gh's own two files is no directory either: the owner's hosts.yml and
-// config.yml sit where that directory would be made, and WriteBundle would fail every directory
-// of the bundle over the one repository (appauth's bundleDirs leaves it out instead).
-func TestIsDirNameTakesAnOwnerOrOneOfItsRepositories(t *testing.T) {
+// IsOwner takes a lowercased GitHub login and nothing else: a bundle's every directory, its
+// Default among them, is one owner's whole lease, so an `<owner>/<repo>` name is no directory.
+func TestIsOwnerTakesALowercasedLoginAndNothingNarrower(t *testing.T) {
 	for name, want := range map[string]bool{
-		"acme": true, "acme-labs": true, "acme/widgets": true, "acme/gadgets.io": true, "acme/x_1-2": true,
-		"acme/hosts.yaml": true, "acme/my-hosts.yml": true,
-		"": false, "Acme": false, "acme_labs": false, "-acme": false, "acme/": false, "/widgets": false,
-		"acme/Widgets": false, "acme/.": false, "acme/..": false, "acme/a/b": false, "../x": false,
-		"acme/" + HostsFile: false, "acme/" + ConfigFile: false,
+		"acme": true, "acme-labs": true, "a1": true,
+		"": false, "Acme": false, "acme_labs": false, "-acme": false, "acme/widgets": false, "acme/": false,
+		"/widgets": false, "../x": false, PairsFile: false,
 	} {
-		if got := IsDirName(name); got != want {
-			t.Errorf("IsDirName(%q) = %t, want %t", name, got, want)
-		}
-	}
-	for name, want := range map[string]bool{"acme": true, "acme/widgets": false, "Acme": false} {
 		if got := IsOwner(name); got != want {
 			t.Errorf("IsOwner(%q) = %t, want %t", name, got, want)
 		}
 	}
 }
 
+// RouteDir is the one rule a repository is routed to a directory by: the `to` owner of the pair
+// whose `from` is the repository, without regard to case, and the owner's own directory for every
+// other repository of that owner, the pair's `to` itself among them. A name the caller gives no
+// repository for routes to the owner's own.
+func TestRouteDirRoutesAMovedRepositoryToItsNewOwner(t *testing.T) {
+	pairs := []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion")}
+	for _, tc := range []struct {
+		owner, name string
+		dir         string
+		moved       bool
+	}{
+		{"sjawhar", "legion", "cybermonklabs", true},
+		{"Sjawhar", "Legion", "cybermonklabs", true},
+		{"sjawhar", "ygo", "sjawhar", false},
+		{"cybermonklabs", "legion", "cybermonklabs", false},
+		{"Acme", "widgets", "acme", false},
+		{"sjawhar", "", "sjawhar", false},
+	} {
+		dir, pair, moved := RouteDir(pairs, tc.owner, tc.name)
+		if dir != tc.dir || moved != tc.moved || (moved && pair != pairs[0]) {
+			t.Errorf("RouteDir(%s/%s) = %q, %v, %t; want %q, moved %t", tc.owner, tc.name, dir, pair, moved, tc.dir, tc.moved)
+		}
+	}
+	if dir, _, moved := RouteDir(nil, "sjawhar", "legion"); dir != "sjawhar" || moved {
+		t.Errorf("RouteDir with no pair = %q, %t; want sjawhar's own directory", dir, moved)
+	}
+}
+
 // Validate refuses a bundle whose default is missing, not lowercased, absent from its
 // directories or naming a repository rather than an owner — GH_CONFIG_DIR always names an
-// owner's directory — and one with a directory that is neither a lowercased GitHub login nor a
-// lowercased `<owner>/<repo>` under one, since a directory name is a path under the bundle's
-// root; WriteBundle writes nothing for a bundle Validate refuses.
+// owner's directory — and one with a directory that is no lowercased GitHub login, an
+// `<owner>/<repo>` directory among them, since a directory name is a path under the bundle's
+// root and every directory is one owner's whole lease; WriteBundle writes nothing for a bundle
+// Validate refuses.
 func TestValidateRefusesABundleThatCannotNameItsDirectories(t *testing.T) {
 	good := twoOwnerBundle("ghs_acme")
 	if err := good.Validate(); err != nil {
@@ -216,16 +226,16 @@ func TestValidateRefusesABundleThatCannotNameItsDirectories(t *testing.T) {
 			b.Default = "acme/widgets"
 			return b
 		}, `"acme/widgets"`},
+		{"a repository directory under an owner", func() Bundle {
+			b := twoOwnerBundle("t")
+			b.Dirs["acme/widgets"] = b.Dirs["sjawhar"]
+			return b
+		}, `"acme/widgets"`},
 		{"a repository name that walks out of its owner", func() Bundle {
 			b := twoOwnerBundle("t")
 			b.Dirs["acme/.."] = b.Dirs["sjawhar"]
 			return b
 		}, `"acme/.."`},
-		{"a repository name not lowercased", func() Bundle {
-			b := twoOwnerBundle("t")
-			b.Dirs["acme/Widgets"] = b.Dirs["sjawhar"]
-			return b
-		}, `"acme/Widgets"`},
 		{"a directory nested two deep", func() Bundle {
 			b := twoOwnerBundle("t")
 			b.Dirs["acme/widgets/deep"] = b.Dirs["sjawhar"]
@@ -249,15 +259,9 @@ func TestValidateRefusesABundleThatCannotNameItsDirectories(t *testing.T) {
 	}
 }
 
-// DirNames is the bundle's directories, sorted, which the runtimes' log lines name. An owner
-// sorts before its own repositories' directories, each of which begins with the owner's name.
+// DirNames is the bundle's directories, sorted, which the runtimes' log lines name.
 func TestDirNamesIsSorted(t *testing.T) {
 	if got, want := twoOwnerBundle("t").DirNames(), []string{"acme", "sjawhar"}; !slices.Equal(got, want) {
-		t.Fatalf("DirNames() = %q, want %q", got, want)
-	}
-	nested := twoOwnerBundle("t")
-	nested.Dirs["acme/widgets"] = nested.Dirs["sjawhar"]
-	if got, want := nested.DirNames(), []string{"acme", "acme/widgets", "sjawhar"}; !slices.Equal(got, want) {
 		t.Fatalf("DirNames() = %q, want %q", got, want)
 	}
 }

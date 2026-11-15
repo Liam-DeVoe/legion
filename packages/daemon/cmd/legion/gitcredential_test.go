@@ -255,7 +255,8 @@ func (namedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, 
 // renamedCredentialBundle writes to disk the bundle appauth.GitHubCredential builds for an
 // implementer whose issue's record names sjawhar/legion — the repository as it was recorded
 // before the transfer — in a project that serves served, under renames. It returns the bundle's
-// root and sjawhar's directory, which the pod's GH_CONFIG_DIR names.
+// root and its default directory, which the pod's GH_CONFIG_DIR names: the directory the record's
+// repository routes to (ghconfig.RouteDir), cybermonklabs' wherever the pair resolves.
 func renamedCredentialBundle(t *testing.T, served []ghrepo.Repository, renames ghrepo.Renames) (root, defaultDir string) {
 	t.Helper()
 	repos := func() []ghrepo.Repository { return served }

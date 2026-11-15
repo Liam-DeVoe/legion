@@ -1017,18 +1017,32 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 // refusal now turns on, and a stand-in that read the permissions asked for instead could not
 // tell one owner's refusal from another's. The exchange is recorded before it is refused, as
 // GitHub's own refusal of one is a request it answered.
+//
+// suspended is the owners whose installation GitHub lists with a suspended_at, every other one
+// listed with it null, as GitHub lists each installation; a suspended installation's exchange is
+// answered 403, as GitHub refuses every token of one. forbids, when it is set, is the owners whose
+// exchange is answered that same 403 while their installation is listed as any other: an
+// installation suspended between the listing and the mint, or one named in the configuration.
+// answers, when it is set, answers an owner's exchange itself where it reports that it did:
+// GitHub's trouble and its rate limits, which a test sends one owner alone.
 type keyModeGitHub struct {
-	mu      sync.Mutex
-	owners  []string
-	slug    string
-	grants  map[string]string
-	bodies  []accessTokensBody
-	raw     []string
-	reads   []string
-	answer  func(exchange int, body accessTokensBody) (int, string)
-	granted func(installation string, read int) (int, string)
-	refuses func(owner string) bool
+	mu        sync.Mutex
+	owners    []string
+	slug      string
+	grants    map[string]string
+	bodies    []accessTokensBody
+	raw       []string
+	reads     []string
+	answer    func(exchange int, body accessTokensBody) (int, string)
+	granted   func(installation string, read int) (int, string)
+	refuses   func(owner string) bool
+	suspended map[string]bool
+	forbids   func(owner string) bool
+	answers   func(w http.ResponseWriter, owner string) bool
 }
+
+// suspendedAnswer is GitHub's 403 to a token request on a suspended installation.
+const suspendedAnswer = `{"message":"This installation has been suspended","documentation_url":"https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app","status":"403"}`
 
 // ownerOf is the account the installation id names, as /app/installations lists them.
 func (g *keyModeGitHub) ownerOf(installation string) string {
@@ -1048,11 +1062,15 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 		switch {
 		case r.URL.Path == "/app/installations":
 			g.mu.Lock()
-			owners := slices.Clone(g.owners)
+			owners, suspended := slices.Clone(g.owners), g.suspended
 			g.mu.Unlock()
 			listed := make([]string, 0, len(owners))
 			for i, owner := range owners {
-				listed = append(listed, fmt.Sprintf(`{"id":%d,"account":{"login":%q}}`, 101+i, owner))
+				since := "null"
+				if suspended[strings.ToLower(owner)] {
+					since = `"2026-11-14T08:00:00Z"`
+				}
+				listed = append(listed, fmt.Sprintf(`{"id":%d,"account":{"login":%q},"suspended_at":%s}`, 101+i, owner, since))
 			}
 			fmt.Fprintf(w, "[%s]", strings.Join(listed, ","))
 		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
@@ -1060,9 +1078,18 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 			g.mu.Lock()
 			g.bodies = append(g.bodies, body)
 			g.raw = append(g.raw, text)
-			exchange, refuses := len(g.bodies), g.refuses
+			exchange, refuses, suspended, forbids, answers := len(g.bodies), g.refuses, g.suspended, g.forbids, g.answers
 			g.mu.Unlock()
-			if owner := g.ownerOf(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens")); refuses != nil && refuses(owner) {
+			owner := g.ownerOf(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens"))
+			if answers != nil && answers(w, owner) {
+				return
+			}
+			if suspended[owner] || (forbids != nil && forbids(owner)) {
+				w.WriteHeader(http.StatusForbidden)
+				fmt.Fprint(w, suspendedAnswer)
+				return
+			}
+			if refuses != nil && refuses(owner) {
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				fmt.Fprint(w, refusedNarrowingAnswer)
 				return
@@ -1702,5 +1729,92 @@ func TestOverlappingInstallationReadsOfOneAppShareOneRead(t *testing.T) {
 	}
 	if got := reads.Load(); got != 2 {
 		t.Fatalf("the read after the shared one left GitHub asked %d times, want it read again", got)
+	}
+}
+
+// The installation read the overlapping callers of one App share belongs to none of them: the
+// first caller's context ending ends that caller's own wait and not the read, so a caller that
+// joined the read — a launch beside an API request whose client went away — is answered with the
+// owners GitHub lists rather than with `context canceled`, and GitHub is asked once
+// (InstalledOwners, readSharedInstallations).
+func TestTheSharedInstallationReadOutlivesItsFirstCallersCancellation(t *testing.T) {
+	_, privatePEM := testAppKey(t)
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	var reads atomic.Int64
+	reading, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations" {
+			t.Errorf("unexpected GitHub path %s", r.URL.Path)
+			return
+		}
+		if reads.Add(1) == 1 {
+			close(reading)
+		}
+		// GitHub answers once release is closed, unless the request that asked was cancelled
+		// first, which is what the read sharing the first caller's context made of it.
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprint(w, `[{"id":77,"account":{"login":"Acme"},"suspended_at":null},{"id":78,"account":{"login":"sjawhar"},"suspended_at":null}]`)
+	}))
+	defer server.Close()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	tokens := New(config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	defer tokens.Close()
+
+	first, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := tokens.InstalledOwners(first, Implement)
+		firstErr <- err
+	}()
+	select {
+	case <-reading:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first caller never asked GitHub")
+	}
+	type answer struct {
+		owners []string
+		err    error
+	}
+	second := make(chan answer, 1)
+	go func() {
+		owners, err := tokens.InstalledOwners(context.Background(), Implement)
+		second <- answer{owners, err}
+	}()
+	// The second caller joins the read the first started while GitHub holds its answer.
+	time.Sleep(50 * time.Millisecond)
+
+	cancelFirst()
+	select {
+	case err := <-firstErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the cancelled first caller = %v, want its own context's end", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cancelled first caller is still waiting")
+	}
+	close(release)
+	select {
+	case got := <-second:
+		if got.err != nil || !slices.Equal(got.owners, []string{"acme", "sjawhar"}) {
+			t.Fatalf("the caller that joined the read = %v, %v; want acme and sjawhar: the first caller's cancellation is not the read's", got.owners, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the caller that joined the read was never answered")
+	}
+	if got := reads.Load(); got != 1 {
+		t.Errorf("GitHub was asked %d times, want once: the second caller shares the first's read", got)
 	}
 }
