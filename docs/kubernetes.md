@@ -5302,7 +5302,7 @@ A second `POST` to the same daemon process, a dry run's included, answers the re
 The release does five things, in this order:
 
 1. It sets a mark in the daemon's memory, and then records itself in the daemon's database.
-   The mark comes first, so no start can come between the record and the mark.
+   The mark comes first, before the record and before the release reads which claims it stops, and every role start reads the mark once more just before its role starts, so a start either sees the mark or is among the claims the release stops.
    A record that does not commit clears the mark again, and the command prints the daemon's refusal.
    From the mark until the daemon's process ends, the daemon starts nothing of the project: it creates no Sandbox, pod, repository cache or image probe, starts no role process, and hands no claim a task.
    The operator's spawn, retry, resume and deliver, and a fresh session and a compaction, are refused `409 PROJECT_RELEASED` (`… refused: the project release holds every start until the daemon's next boot`).
@@ -5324,10 +5324,12 @@ The release does five things, in this order:
    It asks the role to push to `legion/<KEY>`, to answer with the `legion` tool's `ready_for_update` naming the ask's round (`release:<id>`), and to end its turn.
    Each asked pod waits until each asked role answered and no role of it is in a turn, or until the bound.
    An answer that comes after the bound changes nothing, and the pod's line keeps the bound.
+   When the ask cannot be written to the daemon's database, no role is asked: the pod's line names no asked role and gives the reason `the ask to its running roles could not be written: …`, and the pod waits for no answer but goes straight to its last read.
    A pod that the first read did not ask is read once more just before its stop, and a commit, a refusal or a turn found then makes the release ask it and wait for it as for any other pod.
    The bound is `--bound`, or the daemon's `pod_update_grace_minutes` (30 minutes by default), one moment for every pod, counted from the release's start, and at it the release cuts each turn that still runs.
 
 4. As each pod's wait ends, it reads that pod's workspace one last time and stops its role processes.
+   When that last read finds no role process running, as when the asked role's process ended during the wait, the pod's line keeps what the earlier read found.
    It waits until the database holds each of the pod's claims suspended, by `project_release` or by any source that took the claim over meanwhile, or until `worker_stop_timeout_seconds` passed after the later of the stop and the bound.
    A role in a turn is stopped when its turn ends or at the bound, whichever comes first, so the release waits for that turn rather than leave the pod while the turn may still run.
    It reads each claim from the database, not from the daemon's memory, so a claim whose suspension the database did not take keeps the pod from being deleted, and the pod is left.
@@ -5341,12 +5343,16 @@ The release does five things, in this order:
    The release opens no pod update round, replaces no pod, and takes each claim it stops out of any round it was in.
    A claim of the project whose issue has no Sandbox, one whose role is starting where no pod stands yet, is stopped at the same time as the pods and waited for in the same way, and its line says so when it was not stored suspended in that time.
 
-5. Once every issue pod ended, it stops the claim of the project's controller, where the daemon runs one, and waits for it as for an issue pod's claims, so a controller in a turn is stopped when its turn ends or at the bound.
-   Then it deletes the project's other Sandboxes one at a time, in the order of their names: the repository caches (`legion-<project>-cache-…`) come before the controller's pod (`legion-<project>-controller`), and any image-probe Sandbox (`legion-probe-<project>-…`) takes its place in that order.
+5. Once every issue pod ended, it lists the project's Sandboxes again, from the Kubernetes API rather than the daemon's watch of it, since a Sandbox whose create the daemon sent just before the mark can land after the first list.
+   Each Sandbox that the first list did not hold gets a line: an issue's pod is taken as in steps 2 to 4, from its claims as they stand then, and every other Sandbox goes with the rest of this step.
+   A list that fails here stops the release short, as the first one does.
+   Then it stops the claim of the project's controller, where the daemon runs one, and waits for it as for an issue pod's claims, so a controller in a turn is stopped when its turn ends or at the bound.
+   Then it deletes the project's other Sandboxes one at a time, in the order of their names, those of the second list after those of the first: the repository caches (`legion-<project>-cache-…`) come before the controller's pod (`legion-<project>-controller`), and any image-probe Sandbox (`legion-probe-<project>-…`) takes its place in that order.
 
 The command reads the release every 5 seconds until it finishes.
 Then it prints one line for each Sandbox, `sandbox <name> <kind> <issue> <outcome>`, and one for each claim it stopped, `claim <token> <issue> <role> <session> <how it ended>`, or with `--json` the daemon's object.
-An issue pod's outcome is `deleted_clean` (its last read found no unpushed commit), `deleted_unread` (no role process ran there), `deleted_lost` (deleted with the unpushed commits the line counts), `deleted_read_refused` (its shim refused the last read, with the refusal) or `left` (with its reason).
+An issue pod's outcome is `deleted_clean` (its last read found no unpushed commit), `deleted_unread` (no role process ran there at any read), `deleted_lost` (deleted with the unpushed commits the line counts), `deleted_read_refused` (its workspace went unread at the end) or `left` (with its reason).
+A `deleted_read_refused` pod's shim refused the last read, and the line gives the refusal, or no role process ran at the last read after an earlier read reached one: the line then gives what that earlier read found, its count `at an earlier read`, and the reason `no role process ran at the last read`.
 Every other Sandbox is `deleted` or `left`.
 The line of an asked pod names each asked role, and when it answered or that the bound passed first.
 The line of a claim stored suspended by `project_release` ends `(the next boot starts it)`, and `legion claims list` shows such a claim `suspended:project_release`.

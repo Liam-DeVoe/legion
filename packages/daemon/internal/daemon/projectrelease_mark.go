@@ -24,16 +24,23 @@ import (
 //     (record.HeldByProjectRelease);
 //   - the operator's routes that start or prompt a role (api.Options.ProjectReleaseHolds).
 //
-// The release sets it just before its record commits (store.StartProjectRelease), so no launch
-// slips between the record and the mark, and clears it only when that commit fails; otherwise only
-// the process's end clears it, and the next boot, which ends the record, starts the claims the
-// release stopped. The zero value holds nothing, and so does a nil mark: a test that builds a part
-// of the daemon by hand reads every start as free.
+// The release sets it before its record commits (store.StartProjectRelease) and before that
+// transaction reads the claims it stops, and every role start reads it once more after its
+// claim's `launching` write, just before the launcher starts the role (the Sandbox runtime's
+// launch), so a launch either sees the mark or is among the claims the release stops. It clears
+// the mark only when that commit fails; otherwise only the process's end clears it, and the next
+// boot, which ends the record, starts the claims the release stopped. The zero value holds
+// nothing, and so does a nil mark: a test that builds a part of the daemon by hand reads every
+// start as free.
 type projectRelease struct {
 	marked atomic.Bool
-	// id is the running release's record id once its record has committed (recorded), 0 before:
-	// what the release's own ask round is named by (askRound).
+	// id is the release's record id once its record has committed (recorded), 0 before: what the
+	// release's own ask round is named by (ownRound).
 	id atomic.Int64
+	// finished is set once the release finished its acts (finish): its round is then no round the
+	// outbox publishes an ask under without the claim-round read (askRound), while the mark itself
+	// stays held.
+	finished atomic.Bool
 	// unmarked runs once unmark has cleared the mark: the machines' send of every task the mark
 	// held back (supervisor.sendHeldTasks). openSupervision sets it once, at boot, before anything
 	// can set the mark; nil runs nothing.
@@ -47,10 +54,17 @@ func (r *projectRelease) mark() bool {
 	return r.marked.CompareAndSwap(false, true)
 }
 
-// recorded names the running release once StartProjectRelease committed its record, so the
-// outbox lets that release's own asks through (askRound).
+// recorded names the release once StartProjectRelease committed its record, so the outbox lets
+// that release's own asks through (ownRound, askRound).
 func (r *projectRelease) recorded(id int64) {
 	r.id.Store(id)
+}
+
+// finish records that the release finished its acts: from then on an ask of its round is
+// published only where the claim records that round, which no claim does (askRound), so none is
+// published. The mark stays held until the process ends.
+func (r *projectRelease) finish() {
+	r.finished.Store(true)
 }
 
 // unmark clears the mark of a release whose record did not commit, the one way the mark is
@@ -71,10 +85,10 @@ func (r *projectRelease) held() bool {
 	return r != nil && r.marked.Load()
 }
 
-// askRound is the update round the running release asks its roles under (projectReleaseRound),
-// "" while no release is marked or its record has not committed yet: the one round of update asks
-// the outbox runs while the mark is held.
-func (r *projectRelease) askRound() string {
+// ownRound is the round the release of this process asks its roles under (projectReleaseRound),
+// running or finished, "" while no release is marked or its record has not committed yet: the
+// one round of update asks the outbox runs while the mark is held (record.HeldByProjectRelease).
+func (r *projectRelease) ownRound() string {
 	if !r.held() {
 		return ""
 	}
@@ -83,6 +97,18 @@ func (r *projectRelease) askRound() string {
 		return ""
 	}
 	return projectReleaseRound(id)
+}
+
+// askRound is ownRound while the release runs, and "" once it finished (finish): the round whose
+// asks the outbox publishes without the claim-round read, since only a running release holds the
+// answers to them (projectReleaser.AskRound, which answers the same). An ask of the release's round
+// that runs after its finish meets the claim-round read, and since no claim records that round it
+// finishes without a publish.
+func (r *projectRelease) askRound() string {
+	if r == nil || r.finished.Load() {
+		return ""
+	}
+	return r.ownRound()
 }
 
 // projectReleaseRound is the round a project release's ask rides (record.UpdateAsk.Round), named

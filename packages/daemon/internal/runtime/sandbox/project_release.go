@@ -29,14 +29,43 @@ func (r *Runtime) ProjectSandboxes(context.Context) ([]runtime.ProjectSandbox, e
 	}
 	var listed []runtime.ProjectSandbox
 	for _, obj := range r.sandboxes.GetStore().List() {
-		u := obj.(*unstructured.Unstructured)
-		if u.GetDeletionTimestamp() != nil {
-			continue
-		}
-		listed = append(listed, r.projectSandbox(u))
+		listed = r.appendProjectSandbox(listed, obj.(*unstructured.Unstructured))
 	}
-	slices.SortFunc(listed, func(a, b runtime.ProjectSandbox) int { return strings.Compare(a.Name, b.Name) })
+	sortProjectSandboxes(listed)
 	return listed, nil
+}
+
+// ProjectSandboxesFromAPI is ProjectSandboxes listed from the API server rather than read from the
+// informer's store: the same selector (legion.dev/project alone), the same Sandboxes left out and
+// the same order, each told as ProjectSandboxes tells it, its pod read from the store. A Sandbox
+// the API holds and the store has not heard of yet is in it: a project release lists the project
+// this way once more before it takes the controller and the caches, since a create whose check of
+// the release's mark passed just before the mark was set can land after the release's first list.
+func (r *Runtime) ProjectSandboxesFromAPI(ctx context.Context) ([]runtime.ProjectSandbox, error) {
+	list, err := r.sandboxClient().List(ctx, metav1.ListOptions{LabelSelector: labelProject + "=" + r.project})
+	if err != nil {
+		return nil, fmt.Errorf("list the project's Sandboxes from the API server: %w", err)
+	}
+	var listed []runtime.ProjectSandbox
+	for i := range list.Items {
+		listed = r.appendProjectSandbox(listed, &list.Items[i])
+	}
+	sortProjectSandboxes(listed)
+	return listed, nil
+}
+
+// appendProjectSandbox appends u to listed as ProjectSandboxes lists it (projectSandbox), unless u
+// is already being deleted.
+func (r *Runtime) appendProjectSandbox(listed []runtime.ProjectSandbox, u *unstructured.Unstructured) []runtime.ProjectSandbox {
+	if u.GetDeletionTimestamp() != nil {
+		return listed
+	}
+	return append(listed, r.projectSandbox(u))
+}
+
+// sortProjectSandboxes puts listed in name order.
+func sortProjectSandboxes(listed []runtime.ProjectSandbox) {
+	slices.SortFunc(listed, func(a, b runtime.ProjectSandbox) int { return strings.Compare(a.Name, b.Name) })
 }
 
 // projectSandbox is u as ProjectSandboxes lists it.

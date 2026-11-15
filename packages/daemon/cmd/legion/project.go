@@ -193,10 +193,11 @@ func printProjectRelease(c *operatorCall, release api.ProjectReleaseResponse, an
 
 // releasedSandboxLine is one Sandbox's line: `sandbox <name> <kind> <issue> <outcome>`, then what
 // the outcome carries — the workspace's unpushed commits and whether its working copy held a
-// change at the last read, the shim's refusal, or why the Sandbox was left — then a pod that runs
-// another image than the daemon's own, and each role the release asked, with when it answered or
-// that the bound passed. On a dry run the outcome is the one a release would give now, and the
-// asked roles are the ones it would ask.
+// change at the last read, or at an earlier read where no role process ran at the last one, the
+// shim's refusal, why the Sandbox was left, or the other reasons an issue pod's line gives — then
+// a pod that runs another image than the daemon's own, and each role the release asked, with when
+// it answered or that the bound passed. On a dry run the outcome is the one a release would give
+// now, and the asked roles are the ones it would ask.
 func releasedSandboxLine(line api.ReleasedSandbox, dryRun bool) string {
 	words := []string{"sandbox", line.Name, string(line.Kind), orNone(line.Issue), line.Outcome}
 	var details []string
@@ -205,13 +206,23 @@ func releasedSandboxLine(line api.ReleasedSandbox, dryRun bool) string {
 		if line.WorkingCopyChanged != nil && *line.WorkingCopyChanged {
 			changed = "a change"
 		}
-		details = append(details, fmt.Sprintf("the workspace of %s held %d unpushed commit(s) and its working copy %s at the last read", orNone(line.Issue), *line.Commits, changed))
+		// A refused last read writes no count, so a count on a deleted_read_refused line is the one
+		// an earlier read took, kept because no role process ran at the last (api.ReleasedSandbox).
+		read := "the last read"
+		if line.Outcome == api.ReleaseDeletedReadRefused {
+			read = "an earlier read"
+		}
+		details = append(details, fmt.Sprintf("the workspace of %s held %d unpushed commit(s) and its working copy %s at %s", orNone(line.Issue), *line.Commits, changed, read))
 	}
 	if line.Refusal != "" {
 		details = append(details, "the shim refused the read: "+line.Refusal)
 	}
 	if line.Reason != "" {
-		details = append(details, "left because "+line.Reason)
+		why := line.Reason
+		if line.Outcome == api.ReleaseLeft {
+			why = "left because " + why
+		}
+		details = append(details, why)
 	}
 	if line.OtherImage {
 		details = append(details, "its pod runs an image other than the daemon's own")

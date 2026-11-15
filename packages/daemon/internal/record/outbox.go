@@ -129,8 +129,9 @@ func LaneKinds(lane OutboxLane) []OutboxKind {
 //     check_look and check_bound;
 //   - the idle release's own save and teardown (issue_bundle, issue_release), which the project
 //     release took over;
-//   - an update round's ask (update_ask), but for the running release's own (releaseRound, the
-//     round its asks ride; "" before its record committed, which holds every ask).
+//   - an update round's ask (update_ask), but for the asks of the daemon's own release
+//     (releaseRound, the round its asks ride, while it runs and once it finished; "" before its
+//     record committed, which holds every ask).
 //
 // Every other row runs: the Dispatch writes and publishes (dispatch_status, dispatch_message,
 // gated_steps_publish, design_gates_publish), the release of a Dispatch claim (claim_release), a

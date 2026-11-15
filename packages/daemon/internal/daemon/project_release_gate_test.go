@@ -394,6 +394,16 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 		if round := release.askRound(); round != ownRound {
 			t.Fatalf("the round once release 7 is recorded = %q, want %q", round, ownRound)
 		}
+		// Once the release finished, its own asks still run, where they meet the claim-round
+		// read, and no ask is published without that read.
+		release.finish()
+		if ask, own := release.askRound(), release.ownRound(); ask != "" || own != ownRound || !release.held() {
+			t.Fatalf("once release 7 finished the ask round is %q and its own %q, held %t; want none, %q and the mark held",
+				ask, own, release.held(), ownRound)
+		}
+		if record.HeldByProjectRelease(record.UpdateAsk{Round: ownRound}, release.ownRound()) {
+			t.Fatal("an ask of the finished release is held, want it run to meet the claim-round read")
+		}
 	})
 }
 

@@ -1587,10 +1587,10 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // The project release's ask rides this row too, under the release's own round ("release:<id>",
 // projectReleaseRound), which no claim records: the release keeps its asks on its own record and
 // writes no round column of a claim, so no pod update round reads it as its own. So an ask whose
-// round is the release's of this process (projectRelease.askRound) is published without that read.
-// One this process did not ask, a row an earlier process left, meets the claim-round read like
-// any other once the boot that ended its release lets it run, and since no claim records that
-// round it finishes without a publish.
+// round is that of the release this process runs (projectRelease.askRound) is published without
+// that read. One of that release once it finished, and one an earlier process left once the boot
+// that ended its release lets it run, meets the claim-round read like any other, and since no
+// claim records that round it finishes without a publish: no release would take the role's answer.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row with one log line. Every other
 // failure of the publish keeps the ordinary retry, as phaseEnded's does: a holder that did not

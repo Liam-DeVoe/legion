@@ -1051,10 +1051,13 @@ const legionReleasedAsk = z.object({
 
 /** `api.ReleasedSandbox` — one Sandbox of the project as a project release ended it, or on a dry
  * run as a release would end it now: an issue pod `deleted_clean`, `deleted_unread` (no role
- * process to read it), `deleted_lost` (with the unpushed `commits` and whether the working copy
- * held a change at the last read), `deleted_read_refused` (with the shim's `refusal`) or `left`
- * (with its `reason`); every other Sandbox `deleted` or `left`; `waiting` until the release ends
- * it. `otherImage` marks an issue pod whose pod runs an image other than the daemon's own. */
+ * process to read it at any read), `deleted_lost` (with the unpushed `commits` and whether the
+ * working copy held a change at the last read), `deleted_read_refused` (with the shim's `refusal`,
+ * or, when no role process ran at the last read, with what an earlier read found and that as its
+ * `reason`) or `left` (with its `reason`); every other Sandbox `deleted` or `left`; `waiting`
+ * until the release ends it. An issue pod's `reason` also says when its ask could not be written,
+ * and several reasons are joined by `; `. `otherImage` marks an issue pod whose pod runs an image
+ * other than the daemon's own. */
 const legionReleasedSandbox = z.object({
   name: nonEmptyString,
   kind: z.enum(["issue", "controller", "cache", "probe", "unknown"]),

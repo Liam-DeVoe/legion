@@ -11,6 +11,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -81,7 +83,8 @@ func (s *releaseRecord) Claims(context.Context) ([]supervise.Claim, error) {
 }
 
 // releasePods is a runtime's part of a project release over the Sandboxes it lists: each issue
-// pod's delete asks its authorize and records the issue it deleted.
+// pod's delete asks its authorize and records the issue it deleted. The API server lists the same
+// Sandboxes as its store.
 type releasePods struct {
 	sandboxes []runtime.ProjectSandbox
 	mu        sync.Mutex
@@ -99,6 +102,10 @@ func (p *releasePods) SuspendIssue(ctx context.Context, issue, _ string, authori
 }
 
 func (p *releasePods) ProjectSandboxes(context.Context) ([]runtime.ProjectSandbox, error) {
+	return p.sandboxes, nil
+}
+
+func (p *releasePods) ProjectSandboxesFromAPI(context.Context) ([]runtime.ProjectSandbox, error) {
 	return p.sandboxes, nil
 }
 
@@ -159,5 +166,60 @@ func TestProjectReleaseDeletesThePodOfAStoppedClaimThatFailedOrRetired(t *testin
 				t.Fatalf("the claim's line is %+v, want it ended %s, which the next boot does not start", result.Claims, ended)
 			}
 		})
+	}
+}
+
+// The release's asks end with it: once the release finished, an ask of its round that the outbox
+// runs meets the claim-round read as any other update ask does, and since no claim records that
+// round it finishes without a publish, while the mark still holds every start until the process
+// ends. The route that takes an answer reads the same round as the outbox (AskRound), and neither
+// reads the release's round once it finished.
+func TestProjectReleaseAsksNothingOnceItFinished(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: "LEGION-208", Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	if _, _, err := sup.Create(ctx, supervise.Claim{Token: mustClaimToken(t, "LEGION-208", claim.RoleImplementer), Project: "legion",
+		Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer, State: supervise.StateQueued}, ""); err != nil {
+		t.Fatal(err)
+	}
+	mark := &projectRelease{}
+	release := &releaseRecord{claims: sup.deps.Store.(*outboxClaimStore), finished: make(chan json.RawMessage, 1)}
+	r := &projectReleaser{ctx: ctx, project: "legion", mark: mark, store: release, machines: sup, pods: &releasePods{},
+		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond, now: time.Now, log: quietLogger()}
+	if _, started, err := r.Start(ctx, time.Minute, false); err != nil || !started {
+		t.Fatalf("Start = started %v, %v; want the release started", started, err)
+	}
+	select {
+	case <-release.finished:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the release did not finish")
+	}
+	if !mark.held() {
+		t.Fatal("the release's finish cleared the mark, which holds every start until the process ends")
+	}
+	if round := r.AskRound(); round != "" {
+		t.Fatalf("the finished release takes answers under %q, want no round", round)
+	}
+
+	publisher := &outboxPublisher{}
+	logs := &syncBuffer{}
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion",
+		log: jsonLogger(logs), now: time.Now, release: mark}
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.UpdateAsk{Role: claim.RoleImplementer, Round: projectReleaseRound(1),
+		Pod: "uid-208", Text: "Push your work and answer the release."}, time.Now()))
+	if ran := runDue(t, runner, time.Now().UTC()); ran != 1 {
+		t.Fatalf("rows run after the release finished = %d, want the ask", ran)
+	}
+	if published := publisher.publishes(); len(published) != 0 {
+		t.Fatalf("the ask of the finished release was published as %#v, want no publish", published)
+	}
+	if _, lastError, present := outboxRowState(t, pool, "LEGION-208"); present {
+		t.Fatalf("the ask of the finished release still waits in the outbox (%q), want it finished", lastError)
+	}
+	if lines := loggedLines(t, logs.String(), `"msg":"`+askLeftLine+`"`); len(lines) != 1 || lines[0]["round"] != projectReleaseRound(1) {
+		t.Fatalf("lines %q = %v in\n%s\nwant one naming the release's round", askLeftLine, lines, logs.String())
 	}
 }

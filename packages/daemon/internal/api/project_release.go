@@ -76,8 +76,10 @@ type ProjectReleaseResponse struct {
 }
 
 // ProjectReleaseResult is what the release did, or on a dry run what it would do now: one line per
-// Sandbox of the project, in name order, and one per claim of its stop set, in token order. Both
-// are never null. Failure is what stopped the release short of its acts, absent while nothing did.
+// Sandbox of the project, in name order, followed in name order by any Sandbox the release found
+// only when it listed the project again from the API server, and one per claim of its stop set, in
+// token order. Both are never null. Failure is what stopped the release short of its acts, absent
+// while nothing did.
 type ProjectReleaseResult struct {
 	Sandboxes []ReleasedSandbox `json:"sandboxes"`
 	Claims    []ReleasedClaim   `json:"claims"`
@@ -85,18 +87,20 @@ type ProjectReleaseResult struct {
 }
 
 // The outcomes of a Sandbox's line (ReleasedSandbox.Outcome). An issue pod ends as one of the
-// first five, and every other Sandbox as deleted or left; a line not yet ended is waiting.
+// four deleted_* outcomes or as left, and every other Sandbox as deleted or left; a line not yet
+// ended is waiting.
 const (
 	// ReleaseWaiting: the release has not ended this Sandbox yet.
 	ReleaseWaiting = "waiting"
 	// ReleaseDeletedClean: deleted, its last read finding nothing unpushed.
 	ReleaseDeletedClean = "deleted_clean"
-	// ReleaseDeletedUnread: deleted with no read, since no role process ran in it.
+	// ReleaseDeletedUnread: deleted with no read, since no role process ran in it at any read.
 	ReleaseDeletedUnread = "deleted_unread"
 	// ReleaseDeletedLost: deleted with the work its last read found unpushed.
 	ReleaseDeletedLost = "deleted_lost"
-	// ReleaseDeletedReadRefused: deleted with its workspace unread, its shim having refused the
-	// last read.
+	// ReleaseDeletedReadRefused: deleted with its workspace unread at the end: its shim refused
+	// the last read, or no role process ran at the last read while an earlier read reached one.
+	// The line then keeps that earlier read's count or refusal, and its reason says so.
 	ReleaseDeletedReadRefused = "deleted_read_refused"
 	// ReleaseDeleted: a controller's, a cache's or a probe's Sandbox deleted.
 	ReleaseDeleted = "deleted"
@@ -110,9 +114,13 @@ var releaseDeletedOutcomes = []string{ReleaseDeletedClean, ReleaseDeletedUnread,
 // ReleasedSandbox is one Sandbox's line of a release: its name, its kind (issue, controller, cache,
 // probe or unknown), its issue for an issue pod, and its outcome. A line of work lost carries the
 // count of unpushed commits and whether the working copy held a change at the last read; one of a
-// workspace unread, the shim's refusal. A left line gives its reason. OtherImage marks an issue pod
-// whose pod runs an image other than the daemon's own. Asked is each role the release asked, or on
-// a dry run would ask, with when it answered or whether the bound passed first.
+// workspace unread, the shim's refusal. A deleted_read_refused line whose last read found no role
+// process keeps the count, the flag or the refusal of the latest read that reached one instead. A
+// left line gives its reason, and an issue pod's line can give more reasons whatever its outcome:
+// that its ask could not be written, so no role of it was asked, and that no role process ran at
+// its last read; several reasons are joined by "; ". OtherImage marks an issue pod whose pod runs
+// an image other than the daemon's own. Asked is each role the release asked, or on a dry run
+// would ask, with when it answered or whether the bound passed first.
 type ReleasedSandbox struct {
 	Name               string                     `json:"name"`
 	Kind               runtime.ProjectSandboxKind `json:"kind"`

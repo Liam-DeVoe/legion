@@ -9,6 +9,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -18,7 +19,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -466,6 +469,155 @@ func TestProjectReleaseTakesALeftPodsClaimsOutOfTheirUpdateRound(t *testing.T) {
 		if c.State != string(supervise.StateSuspended) || c.SuspendedBy != string(supervise.SuspendedByOperator) {
 			t.Errorf("the left pod's claim %s is stored %s by %q, want suspended by an operator", token, c.State, c.SuspendedBy)
 		}
+	}
+}
+
+// putSandbox puts into the cluster a Sandbox the running daemon has not listed, labelled with
+// labels: one whose create the daemon sent just before a project release's mark, and that landed
+// after the release listed the project. It is Suspended, as the runtime creates every Sandbox
+// before it patches it Running, so it has no pod, and every watcher hears of it.
+func (a *issueSandboxAPI) putSandbox(name string, labels map[string]string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.uids++
+	a.putLocked("sandboxes", name, map[string]any{
+		"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
+		"metadata": map[string]any{"name": name, "namespace": sandboxNamespace, "labels": labels,
+			"uid": fmt.Sprintf("%suid-sandboxes-%d", a.prefix, a.uids), "generation": float64(1),
+			"creationTimestamp": time.Now().UTC().Format(time.RFC3339)},
+		"spec": map[string]any{"operatingMode": "Suspended"},
+	})
+}
+
+// dispatch://INFRA-3583 R6, "exit 0 means no Sandbox of the project was left": a create the
+// daemon sent just before the release's mark can land after the release listed the project. Once
+// its issue pods ended, the release lists the project again from the API server, gives each
+// Sandbox its first list did not hold a line, and takes it: an issue's pod in which no role
+// process runs is deleted unread, a repository cache is deleted, and a Sandbox of a kind the
+// release does not know is left, so the command does not exit 0 while it stands.
+func TestProjectReleaseTakesTheSandboxesItsFirstListDidNotHold(t *testing.T) {
+	rig := newIdleWakeRig(t, "waiting")
+	waiting := rig.issue("waiting")
+	// A role that does not answer holds its pod to the bound, so the release lists the project
+	// again only after the Sandboxes below landed.
+	rig.agents.setPlan(waiting.key, string(waiting.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}})
+	rig.launchAll()
+	project := rig.kube.label(waiting.pod, "legion.dev/project")
+	lateIssue := rig.cfg.Project + "-99"
+	lateToken, err := claim.NewToken(rig.project, lateIssue, claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	late, cache, stray := sandbox.SandboxName(lateToken), "legion-"+project+"-cache-late", "legion-"+project+"-stray"
+
+	rig.startRelease("20s")
+	idleRigEventually(t, idleRigRecordWait, "the release's first list of the project", func() bool {
+		release, _ := rig.readRelease()
+		_, listed := releaseLineNow(release, waiting.pod)
+		return listed
+	})
+	rig.kube.putSandbox(late, map[string]string{"legion.dev/project": project, "legion.dev/issue": lateIssue, "legion.dev/tree": lateIssue})
+	rig.kube.putSandbox(cache, map[string]string{"legion.dev/project": project, "legion.dev/cache": "true"})
+	rig.kube.putSandbox(stray, map[string]string{"legion.dev/project": project})
+	if release, _ := rig.readRelease(); release.FinishedAt != nil {
+		t.Fatalf("the release finished before the Sandboxes landed, with the lines %+v: this case reads no second list", release.Result.Sandboxes)
+	}
+
+	release, _ := rig.awaitReleaseFinished()
+	if line := releaseLine(t, release, waiting.pod); line.Outcome != api.ReleaseDeletedLost {
+		t.Errorf("the first list's pod's line is %+v, want deleted_lost", line)
+	}
+	if line := releaseLine(t, release, late); line.Kind != runtime.ProjectSandboxIssue || line.Issue != lateIssue || line.Outcome != api.ReleaseDeletedUnread {
+		t.Errorf("the late issue pod's line is %+v, want %s's pod deleted_unread", line, lateIssue)
+	}
+	if line := releaseLine(t, release, cache); line.Kind != runtime.ProjectSandboxCache || line.Outcome != api.ReleaseDeleted {
+		t.Errorf("the late cache's line is %+v, want a cache deleted", line)
+	}
+	if line := releaseLine(t, release, stray); line.Kind != runtime.ProjectSandboxUnknown || line.Outcome != api.ReleaseLeft || line.Reason != releaseUnknownKind {
+		t.Errorf("the late Sandbox of no known kind has the line %+v, want it left: %s", line, releaseUnknownKind)
+	}
+	for name, stays := range map[string]bool{late: false, cache: false, stray: true} {
+		if standing := rig.kube.sandbox(name) != nil; standing != stays {
+			t.Errorf("the late Sandbox %s stands %t after the release, want %t", name, standing, stays)
+		}
+	}
+}
+
+// dispatch://INFRA-3583 R6, "name each workspace it read with lost work": a pod whose first read
+// counted unpushed commits, and whose asked role's process ended before the last read, has no role
+// process to read it at the end. Its line keeps the first read's count and flag and says that no
+// role process ran at the last read, as deleted_read_refused: deleted_unread is a pod no read
+// ever reached.
+func TestProjectReleaseKeepsTheCountOfAPodWhoseRoleEndedBeforeItsLastRead(t *testing.T) {
+	rig := newIdleWakeRig(t, "ended")
+	ended := rig.issue("ended")
+	rig.agents.setPlan(ended.key, string(ended.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 2, WorkingCopyChanged: true}})
+	rig.launchAll()
+
+	rig.startRelease("15s")
+	idleRigEventually(t, idleRigRecordWait, "the release's ask to the pod's role", func() bool {
+		return len(rig.releaseAsks(ended.key, ended.role)) == 1
+	})
+	rig.stopRole(ended)
+	release, _ := rig.awaitReleaseFinished()
+	line := releaseLine(t, release, ended.pod)
+	if line.Outcome != api.ReleaseDeletedReadRefused || line.Commits == nil || *line.Commits != 2 ||
+		line.WorkingCopyChanged == nil || !*line.WorkingCopyChanged || line.Reason != releaseNoRoleAtLastRead {
+		t.Fatalf("the pod's line is %s, want deleted_read_refused with the first read's 2 commits and changed working copy, and the reason %q",
+			lineJSON(line), releaseNoRoleAtLastRead)
+	}
+	if len(line.Asked) != 1 || line.Asked[0].Role != ended.role || !line.Asked[0].Bound {
+		t.Errorf("the pod's asked roles are %+v, want its implementer, which did not answer by the bound", line.Asked)
+	}
+	if rig.kube.sandbox(ended.pod) != nil {
+		t.Error("the pod's Sandbox is still there")
+	}
+}
+
+// refuseAsks has the store refuse every update round's ask written to the outbox
+// (record.UpdateAsk), the project release's among them, for the rest of the test.
+func (r *idleWakeRig) refuseAsks() {
+	r.t.Helper()
+	for _, statement := range []string{
+		`create function idle_rig_refuse_ask() returns trigger language plpgsql as $$
+			begin raise exception 'the store refused the ask'; end $$`,
+		`create trigger idle_rig_refuse_ask before insert on outbox for each row
+			when (new.kind = '` + string(record.OutboxKindUpdateAsk) + `') execute function idle_rig_refuse_ask()`,
+	} {
+		if _, err := r.pool.Exec(context.Background(), statement); err != nil {
+			r.t.Fatalf("make the store refuse the outbox's asks: %v", err)
+		}
+	}
+}
+
+// dispatch://INFRA-3583 R6: an ask the release could not write reached no role, so the release
+// reports no role asked and waits for no answer. The pod's line says the ask could not be written
+// and why, names no asked role and no bound passed, and the pod goes straight to its last read and
+// its delete, well before the bound.
+func TestProjectReleaseReportsAnAskItCouldNotWrite(t *testing.T) {
+	rig := newIdleWakeRig(t, "unasked")
+	unasked := rig.issue("unasked")
+	rig.agents.setPlan(unasked.key, string(unasked.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}})
+	rig.launchAll()
+	rig.refuseAsks()
+
+	rig.startRelease("90s")
+	release, _ := rig.awaitReleaseFinished()
+	line := releaseLine(t, release, unasked.pod)
+	if !strings.HasPrefix(line.Reason, releaseAskUnwritten+": ") || !strings.Contains(line.Reason, "the store refused the ask") {
+		t.Errorf("the pod's line gives the reason %q, want that its ask could not be written, with the store's refusal", line.Reason)
+	}
+	if len(line.Asked) != 0 {
+		t.Errorf("the pod's line names the asked roles %+v, want none: no ask was written", line.Asked)
+	}
+	if line.Outcome != api.ReleaseDeletedLost || line.Commits == nil || *line.Commits != 1 {
+		t.Errorf("the pod's line is %s, want deleted_lost with its 1 commit", lineJSON(line))
+	}
+	if release.FinishedAt.After(release.BoundAt) {
+		t.Errorf("the release finished at %s, after the bound %s: the pod waited for answers nobody was asked for", release.FinishedAt, release.BoundAt)
+	}
+	if asks := rig.releaseAsks(unasked.key, unasked.role); len(asks) != 0 {
+		t.Errorf("the pod's role was given %d asks, want none", len(asks))
 	}
 }
 

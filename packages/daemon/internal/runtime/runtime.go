@@ -234,11 +234,11 @@ type WorkspaceBundler interface {
 }
 
 // ProjectPods is what a project release needs of a runtime that runs the project's pods
-// (dispatch://INFRA-3583 R6): every Sandbox of the project as the runtime watches it, a read of
-// an issue workspace's unpushed work through one role's shim, and the deletes of the Sandboxes
-// that are no issue's. The issue pods themselves go through IssueSuspender. A runtime that runs no
-// pod implements none of it, so the daemon on it refuses a release, and the assertion is made where
-// the release is built, as IssueSuspender's is.
+// (dispatch://INFRA-3583 R6): every Sandbox of the project as the runtime watches it and as the
+// API server lists it now, a read of an issue workspace's unpushed work through one role's shim,
+// and the deletes of the Sandboxes that are no issue's. The issue pods themselves go through
+// IssueSuspender. A runtime that runs no pod implements none of it, so the daemon on it refuses a
+// release, and the assertion is made where the release is built, as IssueSuspender's is.
 //
 // Both deletes here refuse a Sandbox written since the delete was decided, where the runtime's own
 // deletes keep it for the next orphan sweep: the release holds that sweep, and the sweep takes no
@@ -248,6 +248,9 @@ type ProjectPods interface {
 	// ProjectSandboxes is every Sandbox of the project the runtime's store holds, in name order,
 	// not counting one already being deleted.
 	ProjectSandboxes(ctx context.Context) ([]ProjectSandbox, error)
+	// ProjectSandboxesFromAPI is ProjectSandboxes as the API server lists them now rather than
+	// as the runtime's store holds them, so a Sandbox the store has not heard of yet is in it.
+	ProjectSandboxesFromAPI(ctx context.Context) ([]ProjectSandbox, error)
 	// ReadUnpushed has role's shim read the unpushed work of the issue's workspace
 	// (Conn.ReadUnpushed), under WorkspaceBundleTimeout.
 	ReadUnpushed(ctx context.Context, issue string, role claim.Role) (UnpushedWork, error)

@@ -334,9 +334,10 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 }
 
 // releaseHolds is whether the daemon's project release holds row: while the mark is held, every
-// row that would start or prompt a role waits (record.HeldByProjectRelease), and the release's own
-// asks, the one update round it runs, go. A row whose payload does not decode is left to execute,
-// which refuses it with its own error.
+// row that would start or prompt a role waits (record.HeldByProjectRelease), and the asks of this
+// process's release go, running or finished (projectRelease.ownRound): once it finished, such an
+// ask meets the claim-round read and finishes without a publish (updateAsk). A row whose payload
+// does not decode is left to execute, which refuses it with its own error.
 func (r *outbox) releaseHolds(row record.OutboxRow) bool {
 	if !r.release.held() {
 		return false
@@ -345,7 +346,7 @@ func (r *outbox) releaseHolds(row record.OutboxRow) bool {
 	if err != nil {
 		return false
 	}
-	return record.HeldByProjectRelease(payload, r.release.askRound())
+	return record.HeldByProjectRelease(payload, r.release.ownRound())
 }
 
 // leaseRenewal keeps a running row's lease live (renewLease): the tick armed next, whether the run

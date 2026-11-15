@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 
@@ -292,5 +293,45 @@ func TestAProjectReleaseDeleteRefusesASandboxWrittenSinceItWasRead(t *testing.T)
 				t.Fatalf("the Sandbox %s, unwritten since the second delete read it, is still there", s.Name)
 			}
 		})
+	}
+}
+
+// dispatch://INFRA-3583 R6: a project release lists the project's Sandboxes once more before it
+// takes the controller and the caches, from the API server (ProjectSandboxesFromAPI), since a
+// create the runtime sent just before the release's mark can land after the release's first list,
+// which reads the informer's store. That list holds a Sandbox the store has not heard of yet, told
+// by its labels as the store's list tells it, and leaves out one already being deleted and one of
+// another project.
+func TestProjectSandboxesFromAPIListsASandboxTheStoreHasNotHeardOf(t *testing.T) {
+	g := newRig(t, nil, withoutController(), withLaggingSandboxInformer(time.Minute))
+	late := sandboxObject(t, "legion-legion-legion-300", "uid-late", modeSuspended,
+		map[string]string{labelProject: testProject, labelTree: "LEGION-300", labelIssue: "LEGION-300"})
+	cache := sandboxObject(t, "legion-legion-cache-late", "uid-cache", modeSuspended,
+		map[string]string{labelProject: testProject, labelCache: cacheMarker})
+	going := sandboxObject(t, "legion-legion-legion-301", "uid-going", modeSuspended,
+		map[string]string{labelProject: testProject, labelTree: "LEGION-301", labelIssue: "LEGION-301"})
+	going.SetDeletionTimestamp(&metav1.Time{Time: rigNow})
+	other := sandboxObject(t, "legion-widgets-widgets-1", "uid-other", modeSuspended,
+		map[string]string{labelProject: "widgets", labelTree: "WIDGETS-1", labelIssue: "WIDGETS-1"})
+	for _, object := range []*unstructured.Unstructured{late, cache, going, other} {
+		if err := g.dyn.Tracker().Create(sandboxGVR, object, testNamespace); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stored, err := g.r.ProjectSandboxes(g.ctx)
+	if err != nil || len(stored) != 0 {
+		t.Fatalf("the store's list = %+v, %v; want none of the Sandboxes it has not heard of yet", stored, err)
+	}
+	listed, err := g.r.ProjectSandboxesFromAPI(g.ctx)
+	if err != nil {
+		t.Fatalf("the API server's list: %v", err)
+	}
+	want := []runtime.ProjectSandbox{
+		{Name: "legion-legion-cache-late", Kind: runtime.ProjectSandboxCache},
+		{Name: "legion-legion-legion-300", Kind: runtime.ProjectSandboxIssue, Issue: "LEGION-300", Tree: "LEGION-300"},
+	}
+	if !slices.Equal(listed, want) {
+		t.Fatalf("the API server's list = %+v, want the project's Sandboxes not being deleted, in name order: %+v", listed, want)
 	}
 }

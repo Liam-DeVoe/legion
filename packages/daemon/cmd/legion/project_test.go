@@ -256,6 +256,34 @@ func TestProjectReleaseExitsZeroWithWorkLostAndNamesTheWorkspace(t *testing.T) {
 	}
 }
 
+// A pod deleted after no role process ran at its last read keeps the count an earlier read took,
+// and its line says the count is that earlier read's and gives the reason as it is, not as why a
+// pod was left; so does the line of a pod whose ask could not be written, which names no asked
+// role.
+func TestProjectReleaseNamesTheReadAPodsCountIsFrom(t *testing.T) {
+	commits, unchanged := 3, false
+	kept := api.ReleasedSandbox{Name: "legion-legion-legion-209", Kind: "issue", Issue: "LEGION-209", Outcome: api.ReleaseDeletedReadRefused,
+		Commits: &commits, WorkingCopyChanged: &unchanged, Reason: "no role process ran at the last read",
+		Asked: []api.ReleasedAsk{{Role: legionclaim.RoleImplementer, Bound: true}}}
+	unasked := api.ReleasedSandbox{Name: "legion-legion-legion-210", Kind: "issue", Issue: "LEGION-210", Outcome: api.ReleaseDeletedLost,
+		Commits: &commits, WorkingCopyChanged: &unchanged, Reason: "the ask to its running roles could not be written: the outbox refused the row"}
+	d := releaseDaemon(t, finishingRelease([]api.ReleasedSandbox{kept, unasked}, []api.ReleasedClaim{releasedArchitect}))
+	code, out, errb := d.projectRelease(d.reach()...)
+	if code != 0 {
+		t.Fatalf("legion project release = %d, stderr %q; want 0", code, errb)
+	}
+	for _, want := range []string{
+		"sandbox legion-legion-legion-209 issue LEGION-209 deleted_read_refused: the workspace of LEGION-209 held 3 unpushed commit(s) and its working copy no change at an earlier read; " +
+			"no role process ran at the last read; asked implementer did not answer by the bound",
+		"sandbox legion-legion-legion-210 issue LEGION-210 deleted_lost: the workspace of LEGION-210 held 3 unpushed commit(s) and its working copy no change at the last read; " +
+			"the ask to its running roles could not be written: the outbox refused the row",
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Fatalf("legion project release printed %q, want the line %q", out, want)
+		}
+	}
+}
+
 // When --wait ends before the release finishes, the command prints the release as it stands,
 // exits 1 and says the release goes on.
 func TestProjectReleaseExitsOneWhenTheWaitEndsFirst(t *testing.T) {
