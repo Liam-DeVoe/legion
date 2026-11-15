@@ -605,6 +605,22 @@ type PhaseRow struct {
 	// re-entered without one, so a fence on the count would refuse the case the route exists to
 	// take.
 	EntryMovedBack bool
+	// EntryFrom is the phase the start that raised that entry moved the issue from, written beside
+	// the four fields above in the same transaction (workflow's start and enter): the phase a
+	// transition left, and awaiting_children for the return from a wait on the children. It is
+	// "" where no move raised the entry: the promotion's start of a mid-phase worker a re-admitted
+	// tree brings back, which hands the role the phase it already stands in, and every row a
+	// daemon upgraded in place found. Like the entry it is never reset: ClearGeneration leaves it
+	// with the number it belongs to.
+	//
+	// The admission pass and the release of a hold read it (workflow's acceptedEntry, through
+	// StopForChildren and retryPhase): an entry raised by a move out of retro or merging — a head
+	// that conflicts with its base, after the daemon accepted the issue — is no start the rule on a
+	// parent's open children holds, since that rule holds only the starts each from a phase before
+	// retro (dispatch://INFRA-3320 R9), so the pass leaves a parent standing on such an entry where
+	// it stands, and a retry restarts the held phase on it. The role's next entry, raised by a
+	// move from a phase before retro, ends that.
+	EntryFrom phase.Phase
 }
 
 // Completed says whether the role completed its current phase: its completion reported a commit

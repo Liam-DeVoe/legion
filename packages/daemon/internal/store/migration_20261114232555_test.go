@@ -15,7 +15,9 @@ const awaitingChildrenVersion = 20261114232555
 // shape check that ties the held start to the phase as 0057 ties the awaiting_* columns, and two
 // columns that outlive the phase. Before the migration the phase check refuses the new value; after
 // it the value is accepted with a full held start, the old values still pass, and the shape check
-// refuses a held start without the phase and the phase without a held start.
+// refuses a held start without the phase and the phase without a held start. It adds
+// phases.entry_from beside the phase entry as well, null on every row the upgrade finds, since no
+// row before it says which phase the move that raised its entry left, and never empty.
 func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -28,6 +30,8 @@ func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
 	}
 	exec(`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 		values ('LEGION-208', 'LEGION-208', 'LEGION', 'parent', 'implementing', 1, 'in_progress', 'A', 1)`)
+	exec(`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, entry, entry_task, entry_raised_at)
+		values ('LEGION-208', 'implementer', 'legion-LEGION-208-implementer', '', 0, '', 2, 'Merge main forward.', now())`)
 
 	// Before the migration the phase check refuses the new value: a daemon of an earlier release
 	// cannot write a parent into the wait.
@@ -38,6 +42,21 @@ func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
 
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through awaiting_children: %v", err)
+	}
+
+	// The phases row the upgrade found names no phase its entry was raised from.
+	var from *string
+	if err := store.Pool().QueryRow(ctx, `select entry_from from phases where issue = 'LEGION-208' and role = 'implementer'`).
+		Scan(&from); err != nil {
+		t.Fatalf("read the implementer's phases row after the migration: %v", err)
+	}
+	if from != nil {
+		t.Fatalf("the phases row the upgrade found reads entry_from %q, want null: no row before the column said which move raised its entry", *from)
+	}
+	exec(`update phases set entry_from = 'retro' where issue = 'LEGION-208' and role = 'implementer'`)
+	if _, err := store.Pool().Exec(ctx, `update phases set entry_from = '' where issue = 'LEGION-208' and role = 'implementer'`); err == nil ||
+		!strings.Contains(err.Error(), "constraint") {
+		t.Fatalf("an empty entry_from = %v, want a constraint to refuse it: an entry no move raised reads null", err)
 	}
 
 	// The new value is accepted with a full held start, and the two outliving columns stand beside

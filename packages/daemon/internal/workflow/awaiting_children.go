@@ -294,6 +294,15 @@ func forwardMergeText(issue record.Issue) string {
 // leaves alone so that a second pass sends nothing again. So is a parent whose pull request has
 // merged, whose worker R9 leaves unmessaged.
 //
+// So is a parent whose phase's role stands on an entry a move out of retro or merging raised
+// (record.PhaseRow.EntryFrom, acceptedEntry): the move a head that conflicts with its base makes
+// back to implementing after the daemon accepted the issue. R9 holds only the starts each from a
+// phase before retro, and the transition's guard leaves that move's start alone
+// (childrenHolding), so the pass leaves it too, whether that start is still written and not
+// delivered or its worker is in the middle of the phase it gave. The exemption is that entry's
+// alone: the parent's next start, out of implementing, is a start from a phase before retro, and
+// the transition's guard holds it while a child is open.
+//
 // The worker the move stops has the task its claim holds for the stopped phase retired, in this
 // transaction (a `retire_task` row, record.SuperviseRequest, which the outbox runs through
 // supervise.Machine.RetireStoppedTask), bounded by the run and by the entry the phase stood on,
@@ -311,6 +320,10 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		return false, err
 	}
 	role := RoleFor(issue.Phase)
+	entry, err := e.phaseRow(ctx, tx, issue.Key, role)
+	if err != nil || acceptedEntry(entry) {
+		return false, err
+	}
 	hold := ChildrenHold{Start: issue.Phase, Open: open}
 	switch due, owes := undeliveredStart(issue, owed); {
 	case issue.Phase == phase.Accepting:
@@ -325,14 +338,10 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		}
 		hold.Cause = fmt.Sprintf("its start of %s was written and had not reached the %s", issue.Phase, role)
 	default:
-		row, err := e.phaseRow(ctx, tx, issue.Key, role)
-		if err != nil {
-			return false, err
-		}
-		hold.Task = cmp.Or(row.EntryTask, ResumePhaseTask(issue))
+		hold.Task = cmp.Or(entry.EntryTask, ResumePhaseTask(issue))
 		hold.Cause, hold.Ended = fmt.Sprintf("the admission pass stopped the %s's %s phase", role, issue.Phase), role
 		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "retire_task", Tree: issue.Tree, Role: role,
-			Generation: issue.Generation, Phase: issue.Phase, Entry: row.Entry}); err != nil {
+			Generation: issue.Generation, Phase: issue.Phase, Entry: entry.Entry}); err != nil {
 			return false, err
 		}
 	}
@@ -354,6 +363,15 @@ func undeliveredStart(issue record.Issue, owed []record.OwedStart) (record.OwedS
 		}
 	}
 	return record.OwedStart{}, false
+}
+
+// acceptedEntry says whether row's entry was raised by a move out of retro or merging, the phases
+// past the daemon's acceptance of the issue (record.PhaseRow.EntryFrom): the move a head that
+// conflicts with its base makes back to implementing, whose start R9 does not hold. It is the one
+// statement of that exemption, read by the admission pass (StopForChildren) and by the release of a
+// hold, which restarts the held phase on that same entry (retryPhase).
+func acceptedEntry(row record.PhaseRow) bool {
+	return row.EntryFrom == phase.Retro || row.EntryFrom == phase.Merging
 }
 
 // queuedTask is the task the start row due carries for issue, read from its role's queued
@@ -403,7 +421,8 @@ func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 //     move that took it there, which the wait's own notice replaced, so the return tells it once,
 //     under the wait's kind (AwaitingChildrenNoticeKind), that the issue waits on its sign_off.
 //   - The start raises a new phase entry (enter, through start), not a resend of the entry the
-//     wait stopped (restart), and marks it as a move back's (record.PhaseRow.EntryMovedBack): the
+//     wait stopped (restart), and marks it as a move back's out of awaiting_children
+//     (record.PhaseRow.EntryMovedBack, record.PhaseRow.EntryFrom): the
 //     return asks for the phase's work to be done again on a head that is to carry the children's
 //     merges, so a completion of an entry from before the wait is refused whatever head it names,
 //     as leftItsPhase refuses one of a phase the issue has left. The starting role's handoff is
@@ -467,7 +486,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 		return err
 	}
 	if role != "" && role != claim.RoleArchitect {
-		return e.start(ctx, tx, back, role, work, true)
+		return e.start(ctx, tx, back, role, work, phase.AwaitingChildren, true)
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: AwaitingChildrenNoticeKind, Role: claim.RoleArchitect, Phase: phase.AwaitingChildren,
 		Reason: fmt.Sprintf("%s left awaiting_children: no Dispatch child of it is open now, and its pull request merged during the wait, so it is back in %s with no forward merge. It waits on your sign_off, as an issue in %s does.",

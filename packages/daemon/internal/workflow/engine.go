@@ -1139,6 +1139,10 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // the held reviewing goes back as implementing, whatever that round came to. A retry of
 // implementing whose task asks for the forward merge the parent owes clears that debt in the
 // write that puts the issue back in its phase, as a transition's does (forwardMergeRequest).
+// The release restarts the held phase on the entry it was raised on (restart raises none), so a
+// phase whose role stands on an entry a conflicting head raised out of retro or merging is
+// restarted whatever its children are, as the admission pass leaves it (acceptedEntry,
+// StopForChildren): R9 holds only the starts each from a phase before retro.
 //
 // Its callers have established that the tree does not linger, which is what holds every member
 // where it stood.
@@ -1162,10 +1166,16 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return "", err
 	}
 	if len(open) > 0 {
-		held := issue
-		held.ForwardMergeOwed = false
-		return phase.AwaitingChildren, e.AwaitChildren(ctx, tx, issue, ChildrenHold{Start: from,
-			Task: task(held, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
+		entry, err := e.phaseRow(ctx, tx, issue.Key, phase.RoleFor(from))
+		if err != nil {
+			return "", err
+		}
+		if !acceptedEntry(entry) {
+			held := issue
+			held.ForwardMergeOwed = false
+			return phase.AwaitingChildren, e.AwaitChildren(ctx, tx, issue, ChildrenHold{Start: from,
+				Task: task(held, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
+		}
 	}
 	// The issue as the restarted worker's task reads it: the write below clears a forward merge
 	// that task asks for.
@@ -1569,7 +1579,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// architect got at the merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, work, movedBack); err != nil {
+		if err := e.start(ctx, tx, issue, starting, work, from, movedBack); err != nil {
 			return err
 		}
 	}

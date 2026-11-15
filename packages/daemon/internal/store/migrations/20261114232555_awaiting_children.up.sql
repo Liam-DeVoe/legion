@@ -22,6 +22,18 @@
 -- are read and written outside the shape check, since they are facts about the parent's run and not
 -- about the phase it stands in now.
 --
+-- phases.entry_from is the phase the start that raised a role's entry moved the issue from
+-- (record.PhaseRow.EntryFrom), written beside phases.entry, entry_task, entry_raised_at and
+-- entry_moved_back in the transaction that raises the entry (workflow's start and enter), and
+-- null where no move raised it: the promotion's start of a mid-phase worker, and every row this
+-- migration finds. The admission pass leaves a parent standing on an entry raised from retro or
+-- merging where it stands, and a retry of its hold restarts the phase on it, since the start a
+-- conflicting head writes out of an accepted phase is none R9 holds (workflow's acceptedEntry,
+-- StopForChildren, retryPhase). An earlier release names the column in no
+-- statement: its inserts leave it null, and its upserts leave it as it is, so an entry that
+-- release raises keeps the phase of the entry before it; the rollback section of
+-- docs/kubernetes.md named below clears the column for that reason.
+--
 -- A daemon of an earlier release cannot run on this schema while a parent is in awaiting_children:
 -- it does not know the phase, and a write of such a row that leaves the phase without clearing the
 -- held-start columns fails the shape check below. It names forward_merge_owed and children_waited_at
@@ -53,3 +65,5 @@ alter table issues add constraint issues_children_wait_shape check (
 
 alter table issues add column forward_merge_owed boolean not null default false;
 alter table issues add column children_waited_at timestamptz;
+
+alter table phases add column entry_from text check (entry_from <> '');

@@ -451,16 +451,16 @@ const testerVerdictLabel = "Tester's verdict"
 // with the entry it raises for that role (enter), whose task is word for word the task the
 // worker is sent. Its start carries no mark (startMarks), a fresh session among them: the
 // operator's `legion claims retry --fresh-session` reaches a retry of a held phase (restart) and
-// never a transition's start. movedBack is whether the move into that phase was a move back to an
-// earlier one, which is written on the row beside the entry and is the transition's to read, not
-// this function's: the issue record already names the phase it moved into by the time a start
-// is made. A phase with no worker, and accepting, whose architect admission started with the
-// tree, start nobody.
-func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) error {
+// never a transition's start. from is the phase the move into that phase left, and movedBack
+// whether that move was a move back to an earlier one; both are written on the row beside the
+// entry and are the transition's to read, not this function's: the issue record already names
+// the phase it moved into by the time a start is made. A phase with no worker, and accepting,
+// whose architect admission started with the tree, start nobody.
+func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, from phase.Phase, movedBack bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
-	entry, err := e.enter(ctx, tx, issue, role, task, movedBack)
+	entry, err := e.enter(ctx, tx, issue, role, task, from, movedBack)
 	if err != nil {
 		return err
 	}
@@ -560,7 +560,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // hands the role the phase it already stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	task := ResumePhaseTask(issue)
-	entry, err := e.enter(ctx, tx, issue, role, task, false)
+	entry, err := e.enter(ctx, tx, issue, role, task, "", false)
 	if err != nil {
 		return err
 	}
@@ -852,13 +852,18 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // the entry standing now was raised by a move back, since such an entry asks for the phase's
 // work to be done again (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here
 // rather than counted anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) (int64, error) {
+//
+// from is written with them too: the phase the move that raises this entry left, "" where no
+// move raises it (StartPromotedWorker). The admission pass reads it to leave a parent whose entry
+// a conflicting head raised out of retro or merging where it stands (record.PhaseRow.EntryFrom,
+// StopForChildren).
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, from phase.Phase, movedBack bool) (int64, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, err
 	}
 	row.Entry++
-	row.EntryTask, row.EntryRaisedAt, row.EntryMovedBack = task, e.now(), movedBack
+	row.EntryTask, row.EntryRaisedAt, row.EntryMovedBack, row.EntryFrom = task, e.now(), movedBack, from
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, err
 	}

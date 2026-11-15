@@ -1648,8 +1648,10 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 // queued root is left alone (record.QueuedRoot), and a root handed over in awaiting_children
 // comes back once its promotion has opened its tree. A key a hold still names (held, the pass's
 // own predicate) is read on the first pass after the hold ends, as the promotion reads it. The
-// engine leaves alone a parent held, in retro or in merging, or whose pull request has merged,
-// and a second pass finds a moved parent in awaiting_children already, so it sends nothing again.
+// engine leaves alone a parent held, in retro or in merging, whose pull request has merged, or
+// whose phase's role stands on an entry a conflicting head raised out of retro or merging
+// (record.PhaseRow.EntryFrom), and a second pass finds a moved parent in awaiting_children
+// already, so it sends nothing again.
 //
 // It runs before the releases (promoteHolds), so the slot a stopped parent held is freed on this
 // very pass by the one rule for a phase that keeps none (releaseSlots, record.NeedsSlot), and the

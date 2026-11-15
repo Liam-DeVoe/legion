@@ -1995,6 +1995,7 @@ Upgrade, and roll back, every daemon of one database in the same change.
 
 This release adds a phase, `awaiting_children`, in which an issue whose phases have started waits while a Dispatch child of it is open, holding no slot, and keeps the start it held until no child of it is open (dispatch://INFRA-3320 R9 to R13).
 Its migration `20261114232555_awaiting_children` adds the phase to `issues_phase_check` and adds six columns to `issues`: the held start, `children_wait_start`, `children_wait_task`, `children_wait_reason` and `children_wait_since`, which the check `issues_children_wait_shape` ties to the phase, and `forward_merge_owed` and `children_waited_at`, which outlive it.
+It adds one column to `phases` beside the phase entry, `entry_from`: the phase the move that raised a role's entry left, null where no move raised it (`record.PhaseRow.EntryFrom`), which the admission pass and the release of a hold read to leave a parent standing on an entry a conflicting head raised out of `retro` or `merging` where it stands, and to restart such a held phase on it.
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261114064235_outbox_kinds_with_the_basis_seeds`).
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
 
@@ -2002,6 +2003,9 @@ An earlier daemon reads this much of it:
 
 - **An issue in `awaiting_children`.**
   An earlier daemon knows no such phase, and a write of such a row that leaves the phase without clearing the held start fails `issues_children_wait_shape` (the comment of `20261114232555_awaiting_children.up.sql`).
+
+- **`phases.entry_from`.**
+  An earlier daemon names it in no statement: its inserts leave it null and its upserts leave it as it is, so an entry that release raises keeps the phase of the entry before it, which this release, rolled forward, would read as the move that raised the new entry.
 
 - **The new notice kinds and the new supervise operation.**
   An earlier release refuses a notice of any of the four kinds (`unknown notice kind`, `validNoticeKind` in its `record/outbox.go`) and a supervise row whose op is `retire_task` (`unknown supervise operation`, `validSuperviseOp`).
@@ -2028,7 +2032,7 @@ Read it with:
 select count(*) from public.issues where phase = 'awaiting_children';
 ```
 
-Once it reads 0, nothing below the outbox statements is needed.
+Once it reads 0, nothing below the outbox statements and the clear of `phases.entry_from` is needed.
 
 **Delete the rows an earlier release refuses, with every daemon of the database stopped, before the earlier image is pinned.**
 
@@ -2051,6 +2055,14 @@ update public.outbox
 ```
 
 What each costs: an architect is not told of one move into the wait, one end of a basis wait, one changes request on an ancestor or one root resting on its ancestor; a root's pending basis is read again by nobody, which the earlier release reads as a step registered and not approved; a re-parented root and its new parent's architect are not told of the move; a stopped worker keeps the task its claim held for the stopped phase; and a catch-up tells its architect a step's state without the basis it rests on.
+
+**Clear `phases.entry_from` with the same daemons stopped, whichever path the rollback takes.**
+
+```sql
+update public.phases set entry_from = null where entry_from is not null;
+```
+
+What it costs: once this release is rolled forward, a parent whose phase's role stood on an entry a conflicting head raised out of `retro` or `merging` before the rollback reads as standing on an entry no move raised, so the first admission pass that finds an open child of it, or a retry of its hold, moves it into `awaiting_children`, as it moves any parent of a phase before `retro`.
 
 **Where the rollback cannot wait, move each issue out of `awaiting_children` before the earlier image is pinned, with every daemon of the database stopped.**
 The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren`): a held start of `planning` or `implementing` goes back to that phase, and a held start of `testing`, `reviewing` or `accepting` goes to `implementing`, since a test or a review of a head without the children's merges proves nothing.
