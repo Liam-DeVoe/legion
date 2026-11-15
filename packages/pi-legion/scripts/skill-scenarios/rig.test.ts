@@ -2315,6 +2315,49 @@ describe("health", () => {
     expect(stdout).not.toContain("model-gateway.example.invalid");
   });
 
+  // Catches: an eval cell that reaches a host off the run's world read as no reach at all. The
+  // agents of these scenarios run eval cells (round 17's published through one), and a Python
+  // `urllib.request.urlopen` or a JavaScript `fetch` of api.github.com reads the public pull
+  // request's reviews as surely as a curl does. Measured on 2026-11-15 against
+  // reviewer-text-findings-defect-base-1 of round 17 with one call planted: the bash curl read
+  // unhealthy, and the same URL from a Python or a JavaScript eval cell read healthy. And an eval
+  // cell that reaches only the loopback read as off its world.
+  test("an eval cell that reaches a host off its world is off-world, in either language", () => {
+    const evalCell = (language: string, code: string): Step => ({
+      tool: "eval",
+      args: { language, code },
+    });
+    const url = "https://api.github.com/repos/cybermonklabs/legion/pulls/2827/reviews";
+    const python = worldRun("threads-closed-code-defect-head-6", {
+      steps: [
+        evalCell("py", `import urllib.request\nprint(urllib.request.urlopen("${url}").read())`),
+      ],
+    }).dir;
+    const javascript = worldRun("threads-closed-code-defect-head-7", {
+      steps: [evalCell("js", `const r = await fetch("${url}");\nconsole.log(await r.text());`)],
+    }).dir;
+    const loopback = worldRun("threads-closed-code-defect-head-8", {
+      steps: [
+        evalCell(
+          "js",
+          `console.log(await (await fetch("http://127.0.0.1:4100/v1/sessions")).text());`
+        ),
+      ],
+    }).dir;
+    const runs = [python, javascript, loopback];
+    const { code, stdout } = healthIn({ TMPDIR: "/recorded/scratch" }, ...runs);
+    expect(code).toBe(1);
+    const [py, js, own] = runs.map((dir) => verdict(stdout, dir));
+    expect(py).toMatch(
+      /^threads-closed-code-defect-head-6 {2}unhealthy: off-world network: .*api\.github\.com/
+    );
+    expect(js).toMatch(
+      /^threads-closed-code-defect-head-7 {2}unhealthy: off-world network: .*api\.github\.com/
+    );
+    expect(own).toBe("threads-closed-code-defect-head-8  healthy");
+    expect(stdout).toContain("health: off-world network: 2 of 3 runs\n");
+  });
+
   // Catches: a host a bash command reaches with no URL's scheme read as no host at all: a git
   // remote in scp form, a curl operand that names a host bare, and a `gh api --hostname`. And a
   // run whose curl writes to a file with a dot in its name (`-o report.json`) and whose git
