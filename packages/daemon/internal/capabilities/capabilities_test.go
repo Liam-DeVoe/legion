@@ -402,6 +402,39 @@ func TestRedactedLineMasksAUserinfoAfterALabelWhoseValueGluesTextToItsScheme(t *
 	}
 }
 
+// The value after an API-key or bearer label is a token, so a URL there whose word holds no `@`
+// shows nothing after its `host:` either: what stands there is the token's text, not a port,
+// whether the word ends there, a path, a query or whitespace follows, or a later `@` stands past
+// that whitespace. The userinfo rule needs an `@` in the same word and the label rules leave the
+// scheme for it, so such a value is masked by neither. Measured in a gVisor issue pod on
+// 2026-11-15 at 63bf5151 by the implementer (its handoff, version 8): `Bearer http://u:SECRETPASS`
+// gave `Bearer ***://u:SECRETPASS`, as on main. A numeric port (`Bearer http://h:8080/x`) may
+// stay visible; the row for it holds only that the label stays.
+func TestRedactedLineMasksATokenThatIsAURLWithNoAtSignAfterALabel(t *testing.T) {
+	for _, label := range []string{"Bearer ", "api-key: ", "x-subscription-token: "} {
+		for _, value := range []string{
+			"http://u:SECRETPASS",
+			"https://u:SECRETPASS/x",
+			"http://u:SECRETPASS?q=1",
+			"_http://u:SECRETPASS",
+			// The `@` is joined on, so no line of the source holds a URL's userinfo shape.
+			"http://u:SECRETPASS" + "\t" + "@h",
+			"http://u:SECRETPASS" + " " + "@h",
+		} {
+			text := "curl -H " + label + value
+			for name, redact := range map[string]func(string) string{"RedactedLine": RedactedLine, "RedactedCutLine": RedactedCutLine, "cleanDetail": cleanDetail} {
+				if got := redact(text); strings.Contains(got, "SECRETPASS") {
+					t.Errorf("%s(%q) = %q, which shows the token", name, text, got)
+				}
+			}
+		}
+		port := "curl -H " + label + "http://h:8080/x"
+		if got := RedactedLine(port); !strings.Contains(got, strings.TrimSpace(label)) {
+			t.Errorf("RedactedLine(%q) = %q, which lost the label", port, got)
+		}
+	}
+}
+
 // cutBoundaryPads are the lengths of the run of letters a case whose cleaned text is `cleaned`
 // bytes long is pushed by, so that the MaxReportDetail cut lands at each boundary of that text in
 // turn. A sweep of every length between them cleans each case ten thousand times over and reads
