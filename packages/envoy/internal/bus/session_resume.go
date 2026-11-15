@@ -72,9 +72,7 @@ type SessionResumeRecord struct {
 // recorded as the sequence before the stream's first (firstStart minus one, the stream's first
 // sequence minus one: 0 for a stream that has stored nothing or whose first sequence is still 1,
 // and the stream's last sequence for a stream that age or a purge has emptied, whose first sequence
-// is then its last plus one). It is not capped at the stream's last sequence, as it was while
-// create reset a start past the end to the sequence after the stream's last; the two agree only for
-// a stream that age or a purge has emptied. Such a floor is the ack floor of a consumer the
+// is then its last plus one). Such a floor is the ack floor of a consumer the
 // stream's sequences went back under (ackFloor reads no lower than the floor the server reports,
 // and at least the sequence before the start of a consumer that has acked nothing): one an earlier
 // build created past the end, before create reset every start past the end, or one a one-copy

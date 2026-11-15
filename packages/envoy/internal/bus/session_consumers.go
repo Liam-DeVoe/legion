@@ -575,9 +575,7 @@ func (state sessionStreamState) firstStart() uint64 {
 // as the sequence before the stream's first instead (recordResumeFloorAt), which is the stream's
 // first sequence minus one: 0 for a stream that has stored nothing or whose first sequence is still
 // 1, and the stream's last sequence for a stream that age or a purge has emptied, whose first
-// sequence is then its last plus one. It is not capped at the stream's last sequence, as it was
-// while create reset a start past the end to the sequence after the stream's last; the two agree
-// only for a stream that age or a purge has emptied. The messages the stream holds at the sequences
+// sequence is then its last plus one. The messages the stream holds at the sequences
 // up to its last were stored after that consumer's start was fixed and were never handed to it, so
 // the next create of the session starts at the stream's first sequence, as create's reset of a
 // start past the end and the relay's restart do, and skips none of them. The session is then handed
