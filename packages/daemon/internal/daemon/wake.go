@@ -82,9 +82,11 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 
 // wakePass is one tick of the wakes (tickWakes): the backstops due at now fired, and the stuck
 // resumes warned about. While the project release holds every start it does nothing: a backstop
-// that comes due waits in its table, unfired, until the first pass of the daemon's next boot,
-// which reads every row due by then (fireDueBackstops); and a resume the release's hold keeps
-// from its first turn is no stuck pod to warn about.
+// that comes due waits in its table, unfired, until the first pass after the mark is cleared —
+// the first pass of the daemon's next boot, which reads every row due by then
+// (fireDueBackstops), or the next pass of this process when the release's record did not commit
+// and unmark cleared the mark — and a resume the release's hold keeps from its first turn is no
+// stuck pod to warn about.
 func (w *workflowRuntime) wakePass(ctx context.Context, now time.Time) {
 	if w.release.held() {
 		return

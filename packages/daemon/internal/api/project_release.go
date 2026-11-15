@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -43,7 +45,8 @@ type ProjectRelease interface {
 	// Answer records the answer of token's claim to the running release's ask: the claim's
 	// session and generation must be the ones the claim holds now (claim.SameAgentRefusal,
 	// claim.StaleGeneration), and the claim must be one the release asked. It records the
-	// answer's time on the release and asks the machine nothing.
+	// answer's time on the release and asks the machine nothing. An answer that comes once the
+	// bound of the claim's pod has passed is accepted and not recorded (ReleasedAsk).
 	Answer(ctx context.Context, token claim.Token, session string, generation uint64, head string) error
 }
 
@@ -101,6 +104,9 @@ const (
 	ReleaseLeft = "left"
 )
 
+// releaseDeletedOutcomes is every outcome of a Sandbox the release deleted (ReleasedSandbox.Deleted).
+var releaseDeletedOutcomes = []string{ReleaseDeletedClean, ReleaseDeletedUnread, ReleaseDeletedLost, ReleaseDeletedReadRefused, ReleaseDeleted}
+
 // ReleasedSandbox is one Sandbox's line of a release: its name, its kind (issue, controller, cache,
 // probe or unknown), its issue for an issue pod, and its outcome. A line of work lost carries the
 // count of unpushed commits and whether the working copy held a change at the last read; one of a
@@ -108,31 +114,42 @@ const (
 // whose pod runs an image other than the daemon's own. Asked is each role the release asked, or on
 // a dry run would ask, with when it answered or whether the bound passed first.
 type ReleasedSandbox struct {
-	Name               string        `json:"name"`
-	Kind               string        `json:"kind"`
-	Issue              string        `json:"issue,omitempty"`
-	Outcome            string        `json:"outcome"`
-	Reason             string        `json:"reason,omitempty"`
-	Commits            *int          `json:"commits,omitempty"`
-	WorkingCopyChanged *bool         `json:"workingCopyChanged,omitempty"`
-	Refusal            string        `json:"refusal,omitempty"`
-	OtherImage         bool          `json:"otherImage,omitempty"`
-	Asked              []ReleasedAsk `json:"asked,omitempty"`
+	Name               string                     `json:"name"`
+	Kind               runtime.ProjectSandboxKind `json:"kind"`
+	Issue              string                     `json:"issue,omitempty"`
+	Outcome            string                     `json:"outcome"`
+	Reason             string                     `json:"reason,omitempty"`
+	Commits            *int                       `json:"commits,omitempty"`
+	WorkingCopyChanged *bool                      `json:"workingCopyChanged,omitempty"`
+	Refusal            string                     `json:"refusal,omitempty"`
+	OtherImage         bool                       `json:"otherImage,omitempty"`
+	Asked              []ReleasedAsk              `json:"asked,omitempty"`
 }
 
+// Deleted is whether the release deleted the line's Sandbox: an issue pod by any of its four
+// deleted outcomes, any other Sandbox as ReleaseDeleted. A line left, or still waiting, is not.
+func (s ReleasedSandbox) Deleted() bool { return slices.Contains(releaseDeletedOutcomes, s.Outcome) }
+
 // ReleasedAsk is one asked role of a pod: when it answered, or Bound once the bound passed with no
-// answer; neither while it may still answer, and neither on a dry run.
+// answer; neither while it may still answer, and neither on a dry run. An answer that comes once
+// Bound is set is not recorded, so the two are never both set.
 type ReleasedAsk struct {
 	Role       claim.Role `json:"role"`
 	AnsweredAt *time.Time `json:"answeredAt,omitempty"`
 	Bound      bool       `json:"bound,omitempty"`
 }
 
+// ReleasedClaimUnrecorded is how a claim of the stop set ended when the store holds no record of
+// it at the release's end (ReleasedClaim.Ended): the next boot starts no claim it holds no record of.
+const ReleasedClaimUnrecorded = "unrecorded"
+
 // ReleasedClaim is one claim of the release's stop set: its token, issue, role and session, and how
 // it ended as its own record holds it at the end — `project_release` for a claim the daemon's next
 // boot starts (BootStarts), or the source or state of a claim it does not, such as `operator`,
-// `daemon`, `exit`, `failed` or `retired`; absent while the release has not ended it. Detail is why a
-// claim the release asked to be held was not stored suspended in time.
+// `daemon`, `exit`, `failed` or `retired`, or ReleasedClaimUnrecorded for a claim the store holds
+// no record of; absent while the release has not ended it, and when the release could not read
+// the claims at its end. Detail is why a claim the release stopped, or held for an operator, was
+// not stored suspended in time, or that its record could not be read at the end.
 type ReleasedClaim struct {
 	Token      claim.Token `json:"token"`
 	Issue      string      `json:"issue,omitempty"`
@@ -182,8 +199,8 @@ func (r ProjectReleaseResult) Listed() ProjectReleaseResult {
 
 // startProjectRelease is `POST /legion/v1/operator/project/release`: 202 with the release's record
 // once it is recorded, 200 with the report of a dry run, and 200 with this process's release, which
-// starts nothing, once one ran here (decision 14 of dispatch://INFRA-3583's plan). A bound that is
-// no positive Go duration is refused 400 before anything starts.
+// starts nothing, once one ran here. A bound that is no positive Go duration is refused 400 before
+// anything starts.
 func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 	if s.projectRelease == nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody("the project release is not served by this daemon"))

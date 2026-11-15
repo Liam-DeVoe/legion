@@ -192,11 +192,15 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 
 // suspendedAgain is a suspension of a claim already suspended, and the one place a suspension's
 // source changes under it (Claim.SuspendedBy). A source takes the claim over only when it
-// outranks the one that holds it (suspensionRank): an operator's suspend of a claim the daemon
-// suspended, so the rule resumes it no more until the operator does, and a daemon's or an
-// operator's suspend of a claim whose idle pod was released, so the linger, park, close or
-// hand-over that asked for it owns the claim and no later wake acts on it. Anything else changes
-// nothing, and an operator's suspension is never taken over.
+// outranks the one that holds it (suspensionRank, which says why each stands where it does): an
+// operator's suspend of a claim the daemon suspended, so the rule resumes it no more until the
+// operator does; the project release's suspend of a claim whose idle pod was released, so the
+// boot starts it rather than a wake; a daemon's or an operator's suspend of a claim whose idle pod
+// was released, so the linger, park, close or hand-over that asked for it owns the claim and no
+// later wake acts on it; and a daemon's or an operator's suspend of a claim the project release
+// stopped, so the boot does not start it. A take-over by the project release leaves the claim's
+// update round in the same write (persistSuspension). Anything else changes nothing, and an
+// operator's suspension is never taken over.
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -215,7 +219,7 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 // update round in that same write (leaveRoundForRelease), and every other suspension leaves the
 // round exactly as it is.
 func (m *Machine) persistSuspension(ctx context.Context) error {
-	if m.claim.SuspendedBy == SuspendedByProjectRelease && m.claim.UpdateRound != "" {
+	if m.claim.ProjectReleased() && m.claim.UpdateRound != "" {
 		return m.leaveRoundForRelease(ctx)
 	}
 	return m.persist(ctx)
@@ -227,20 +231,12 @@ func (m *Machine) persistSuspension(ctx context.Context) error {
 // is in a new pod no round names (dispatch://INFRA-3583 R6: the release leaves no round open on
 // any claim). The ask an older daemon queued as a task and no turn confirmed goes with the round
 // (dropsUpdateTask), in that same write; a task a turn confirmed stays, for the boot's start to
-// send again.
+// send again. A suspended claim is asked nothing after the drop (answerAskFirstAfterDrop).
 func (m *Machine) leaveRoundForRelease(ctx context.Context) error {
 	drops := m.dropsUpdateTask()
 	m.log.Info("supervise: the project release stops the claim and takes it out of its update round",
 		"round", m.claim.UpdateRound, "dropsAsk", drops)
-	m.clearUpdate()
-	if drops {
-		if err := m.retirePending(ctx); err != nil {
-			return err
-		}
-	} else if err := m.persist(ctx); err != nil {
-		return err
-	}
-	return m.answerAskFirstAfterDrop(ctx)
+	return m.writeLeavingRound(ctx, drops)
 }
 
 // suspensionRank orders the sources a suspended claim can be held by, weakest first: a released

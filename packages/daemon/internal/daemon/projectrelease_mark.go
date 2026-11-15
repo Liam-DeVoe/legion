@@ -13,8 +13,8 @@ import (
 // could make a pod or start or prompt a role reads it:
 //
 //   - the launch check every machine launch makes, the controller's included (launchGatedStore);
-//   - the Sandbox runtime itself (sandbox.Options.Held), which creates no Sandbox, patches none to
-//     Running, makes no repository cache or probe and replaces no pod;
+//   - the Sandbox runtime itself (sandbox.Options.ProjectReleaseHolds), which creates no Sandbox,
+//     patches none to Running, makes no repository cache or probe and replaces no pod;
 //   - the machines, which hand no claim its task (supervise.Deps.ProjectReleaseHolds);
 //   - the daemon's periodic work: the orphan sweep and its cache sweep, the pod update sweep, the
 //     stale-plugin refresh and the unfinished-launch relaunch (supervision.sweepOnce,
@@ -86,8 +86,7 @@ func (r *projectRelease) askRound() string {
 }
 
 // projectReleaseRound is the round a project release's ask rides (record.UpdateAsk.Round), named
-// by the release's record id so it is never the round of a pod update (decision 6 of
-// dispatch://INFRA-3583's plan).
+// by the release's record id so it is never the round of a pod update.
 func projectReleaseRound(id int64) string {
 	return "release:" + strconv.FormatInt(id, 10)
 }
@@ -97,15 +96,6 @@ func projectReleaseRound(id int64) string {
 // would start or prompt a role. It is a wait (wait.ErrWaiting), since the start is due again once
 // the daemon's next boot has ended the release: a machine whose relaunch it refuses keeps the
 // claim waiting uncharged (supervise's relaunchRefused), and a row it holds runs again on its
-// backoff. The wait is routine (routineWait): the operator who released the project knows what it
-// holds, so a row held for the whole bound stays at debug after its first line.
-var errProjectReleased error = projectReleaseWait{err: wait.New(api.ProjectReleaseHolds)}
-
-// projectReleaseWait is errProjectReleased's type: a wait the outbox logs as routine.
-type projectReleaseWait struct{ err error }
-
-func (w projectReleaseWait) Error() string { return w.err.Error() }
-
-func (w projectReleaseWait) Unwrap() error { return w.err }
-
-func (projectReleaseWait) Routine() bool { return true }
+// backoff. The wait is routine (routineWaitError): the operator who released the project knows
+// what it holds, so a row held for the whole bound stays at debug after its first line.
+var errProjectReleased error = routineWaitError{err: wait.New(api.ProjectReleaseHeldSentence)}

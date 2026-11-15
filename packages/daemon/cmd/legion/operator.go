@@ -37,6 +37,10 @@ type operatorCall struct {
 	// in a loop is bounded by its --wait and not by --wait per request.
 	wait  *time.Duration
 	until time.Time
+	// waitEnded is what a request the call's bound ended says after the command's name, given the
+	// request's method and URL: nil for the --wait bound's own sentence (request), and a command
+	// that bounds its call otherwise says what goes on in the daemon in its own words.
+	waitEnded func(method, url string) string
 }
 
 // withWait gives the command a --wait flag bounding its whole call, which every `legion claims`
@@ -147,6 +151,10 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 	status, answer, err := op.do(bounded, method, path, body)
 	if err != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
+			if c.waitEnded != nil {
+				fmt.Fprintf(c.stderr, "%s: %s\n", c.name, c.waitEnded(method, op.base+path))
+				return 0, nil, false
+			}
 			fmt.Fprintf(c.stderr, "%s: %s %s was not answered within the --wait bound of %s; the daemon goes on with it under its own deadlines. Read `legion claims list` to see where the claim stood, and ask again\n",
 				c.name, method, op.base+path, *c.wait)
 			return 0, nil, false

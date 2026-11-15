@@ -1,10 +1,10 @@
 package daemon
 
-// The project release (dispatch://INFRA-3583 R6, task 9 of its plan) run on the idle rig: the
-// whole daemon on the Sandbox runtime over the rig's Kubernetes API, real Postgres and NATS, a
-// real Envoy listener, and a scripted role process in each pod, which answers the release's read
-// of its workspace and its ask as the rig's plan says (idleRigPlan). The move between two clusters
-// is task 13's test, in this same rig.
+// The project release (dispatch://INFRA-3583 R6) run on the idle rig: the whole daemon on the
+// Sandbox runtime over the rig's Kubernetes API, real Postgres and NATS, a real Envoy listener, and
+// a scripted role process in each pod, which answers the release's read of its workspace and its
+// ask as the rig's plan says (idleRigPlan). The move between two clusters is
+// project_move_test.go's, in this same rig.
 
 import (
 	"encoding/json"
@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -78,22 +80,23 @@ func (r *idleWakeRig) stateRelease() any {
 	return state["projectRelease"]
 }
 
-// releaseLine is the line of the release's result for the pod of issue.
-func releaseLine(t *testing.T, release api.ProjectReleaseResponse, issue idleRigIssue) api.ReleasedSandbox {
+// releaseLine is the release's line of the Sandbox name.
+func releaseLine(t *testing.T, release api.ProjectReleaseResponse, name string) api.ReleasedSandbox {
 	t.Helper()
 	for _, line := range release.Result.Sandboxes {
-		if line.Name == issue.pod {
+		if line.Name == name {
 			return line
 		}
 	}
-	t.Fatalf("the release %+v has no line for %s's pod %s", release, issue.key, issue.pod)
+	t.Fatalf("the release names no Sandbox %s; it names %+v", name, release.Result.Sandboxes)
 	return api.ReleasedSandbox{}
 }
 
-// releaseAsks is every message role of issue was given that names a project release's round.
-func (r *idleWakeRig) releaseAsks(issue idleRigIssue) []idleRigMessage {
+// releaseAsks is every message one role of an issue, or the controller (key idleRigControllerPod),
+// was given that names a project release's round.
+func (r *idleWakeRig) releaseAsks(key string, role claim.Role) []idleRigMessage {
 	var asks []idleRigMessage
-	for _, message := range r.agents.role(issue.key, string(issue.role)).Messages {
+	for _, message := range r.agents.role(key, string(role)).Messages {
 		if idleRigReleaseAsk.MatchString(message.Text) {
 			asks = append(asks, message)
 		}
@@ -101,13 +104,13 @@ func (r *idleWakeRig) releaseAsks(issue idleRigIssue) []idleRigMessage {
 	return asks
 }
 
-// R6: the release takes each pod of the project by what its claims and its workspace say. A pod
-// whose workspace holds nothing unpushed is read, asked nothing and deleted with nothing unpushed.
-// A pod whose workspace holds an unpushed commit is asked once, and deleted after its role
-// answered, with the work lost and its answer's time named. A pod no role process runs in is
-// deleted with no read. A pod a claim of which an operator suspended is left, with its disk. Each
-// claim the release stopped is stored suspended by `project_release`, for the next boot to start,
-// and the record names each pod and each such claim with its session.
+// dispatch://INFRA-3583 R6: the release takes each pod of the project by what its claims and its
+// workspace say. A pod whose workspace holds nothing unpushed is read, asked nothing and deleted
+// with nothing unpushed. A pod whose workspace holds an unpushed commit is asked once, and deleted
+// after its role answered, with the work lost and its answer's time named. A pod no role process
+// runs in is deleted with no read. A pod a claim of which an operator suspended is left, with its
+// disk. Each claim the release stopped is stored suspended by `project_release`, for the next boot
+// to start, and the record names each pod and each such claim with its session.
 func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 	rig := newIdleWakeRig(t, "clean", "unpushed", "unread", "held")
 	clean, unpushed, unread, held := rig.issue("clean"), rig.issue("unpushed"), rig.issue("unread"), rig.issue("held")
@@ -134,22 +137,22 @@ func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 	}
 
 	t.Run("the clean pod is deleted with nothing unpushed and asked nothing", func(t *testing.T) {
-		line := releaseLine(t, release, clean)
+		line := releaseLine(t, release, clean.pod)
 		if line.Outcome != api.ReleaseDeletedClean || line.Commits == nil || *line.Commits != 0 || len(line.Asked) != 0 {
 			t.Fatalf("the clean pod's line is %+v, want deleted_clean, no commit and no ask", line)
 		}
-		if asks := rig.releaseAsks(clean); len(asks) != 0 {
+		if asks := rig.releaseAsks(clean.key, clean.role); len(asks) != 0 {
 			t.Fatalf("the clean pod's role was asked %d times, want never", len(asks))
 		}
 	})
 
 	t.Run("the pod with unpushed work is asked once and deleted after its answer with the work lost", func(t *testing.T) {
-		line := releaseLine(t, release, unpushed)
+		line := releaseLine(t, release, unpushed.pod)
 		if line.Outcome != api.ReleaseDeletedLost || line.Commits == nil || *line.Commits != 1 ||
 			line.WorkingCopyChanged == nil || !*line.WorkingCopyChanged {
 			t.Fatalf("the unpushed pod's line is %+v, want deleted_lost with 1 commit and a changed working copy", line)
 		}
-		asks := rig.releaseAsks(unpushed)
+		asks := rig.releaseAsks(unpushed.key, unpushed.role)
 		if len(asks) != 1 {
 			t.Fatalf("the unpushed pod's role was asked %d times, want once; its messages: %+v", len(asks),
 				rig.agents.role(unpushed.key, string(unpushed.role)).Messages)
@@ -169,19 +172,19 @@ func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 	})
 
 	t.Run("the pod no role process runs in is deleted with no read", func(t *testing.T) {
-		if line := releaseLine(t, release, unread); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil || line.Refusal != "" {
+		if line := releaseLine(t, release, unread.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil || line.Refusal != "" {
 			t.Fatalf("the unread pod's line is %+v, want deleted_unread with no read", line)
 		}
 	})
 
 	t.Run("the pod an operator suspended a claim of is left with its disk", func(t *testing.T) {
-		if line := releaseLine(t, release, held); line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "operator") {
+		if line := releaseLine(t, release, held.pod); line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "operator") {
 			t.Fatalf("the held pod's line is %+v, want left for the operator's suspension", line)
 		}
 		if rig.kube.sandbox(held.pod) == nil {
 			t.Fatal("the left pod's Sandbox is gone")
 		}
-		if asks := rig.releaseAsks(held); len(asks) != 0 {
+		if asks := rig.releaseAsks(held.key, held.role); len(asks) != 0 {
 			t.Fatalf("the left pod's role was asked %d times, want never", len(asks))
 		}
 	})
@@ -223,7 +226,7 @@ func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 	})
 }
 
-// E12's second test, and R7's "legion state --json shows the release and its result": the state
+// dispatch://INFRA-3583 R7, "legion state --json shows the release and its result": the state
 // body carries the release while it runs, with no finish, and once it ended carries the release
 // with its result, the same result its own GET answers. A later GET, after the daemon's restart
 // on the same database, says a boot ended it, and so does the state.
@@ -262,7 +265,7 @@ func TestProjectReleaseShowsInTheStateWithItsResult(t *testing.T) {
 		if !reflect.DeepEqual(served, read) {
 			t.Fatalf("the state carries the release\n%v\nwant the release its GET answers\n%v", served, read)
 		}
-		line := releaseLine(t, release, waiting)
+		line := releaseLine(t, release, waiting.pod)
 		if line.Outcome != api.ReleaseDeletedLost || line.Commits == nil || *line.Commits != 2 || len(line.Asked) != 1 || !line.Asked[0].Bound {
 			t.Fatalf("the release's line is %+v, want deleted_lost with 2 commits, its role asked and the bound passed", line)
 		}
@@ -271,11 +274,11 @@ func TestProjectReleaseShowsInTheStateWithItsResult(t *testing.T) {
 	rig.restart()
 	t.Run("a later GET after a restart says a boot ended it", func(t *testing.T) {
 		ended, _ := rig.readRelease()
-		if ended.ID != release.ID || ended.EndedBy != "boot" || ended.EndedAt == nil || ended.FinishedAt == nil {
+		if ended.ID != release.ID || ended.EndedBy != store.ProjectReleaseEndedByBoot || ended.EndedAt == nil || ended.FinishedAt == nil {
 			t.Fatalf("the release after the restart reads %+v, want release %d ended by a boot", ended, release.ID)
 		}
 		served, ok := rig.stateRelease().(map[string]any)
-		if !ok || served["endedBy"] != "boot" {
+		if !ok || served["endedBy"] != store.ProjectReleaseEndedByBoot {
 			t.Fatalf("the state after the restart carries %v, want the release ended by a boot", served)
 		}
 	})

@@ -1047,8 +1047,11 @@ const legionReleasedSandbox = z.object({
 
 /** `api.ReleasedClaim` — one claim a project release stopped: how it `ended` as its own record
  * holds it at the end (`project_release` for a claim the daemon's next boot starts, which
- * `bootStarts` says, or the source or state of one it does not), absent while the release has not
- * ended it, and `detail`, why a claim the release held for an operator was not stored in time. */
+ * `bootStarts` says, the source or state of one it does not, or `unrecorded`,
+ * `api.ReleasedClaimUnrecorded`, for a claim the store holds no record of), absent while the
+ * release has not ended it and when the release could not read the claims at its end, and
+ * `detail`, why a claim the release stopped or held for an operator was not stored suspended in
+ * time, or that its record could not be read. */
 const legionReleasedClaim = z.object({
   token: nonEmptyString,
   issue: issueKey.optional(),

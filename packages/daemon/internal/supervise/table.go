@@ -47,7 +47,9 @@ type StreamTurnEnd struct{ Claim claim.Token }
 // an issue work one jj workspace, so a phase task this claim is holding rather than adopt that
 // working copy under an open turn (sendPending) may go now. It carries no fact of its own — the
 // send asks again which claims are in a turn — so one posted for a turn another role began
-// meanwhile simply holds again.
+// meanwhile simply holds again. That is why the daemon also posts it, to every claim and with no
+// turn ended, once the project release's mark is cleared because the release's record did not
+// commit (internal/daemon's sendHeldTasks): its one act is the send the mark held back.
 type IssueTurnEnded struct{ Claim claim.Token }
 
 // StreamToolStep is one tool call of the agent's turn beginning or ending, as the stream read
@@ -915,7 +917,7 @@ func fillTable(t *builder) {
 	t.ignore(onTurnEnd, "the agent is not ready, so no turn of a delivery is in flight", unready...)
 	t.ignore(onTurnEnd, noProcess, gone...)
 
-	t.row(onIssueTurnEnd, "a turn ended elsewhere on the issue: send the task that was waiting for the working copy they share",
+	t.row(onIssueTurnEnd, "a turn ended elsewhere on the issue, or the project release's mark was cleared: send the task the claim holds",
 		issueTurnEnded, []ClaimState{StateWorking}, prompted...)
 	t.ignore(onIssueTurnEnd, "the claim is in a turn of its own; what it holds goes when that turn ends", StateWorking)
 	t.ignore(onIssueTurnEnd, noSend, unready...)
@@ -2049,11 +2051,12 @@ func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 	return m.sendPending(ctx)
 }
 
-// issueTurnEnded is a turn ending on another claim of this claim's issue. It carries nothing the
-// claim records: the send it may unblock asks for itself which claims of the issue are in a turn
-// (sendPending), so a wake that arrives while another role has started one holds the task again,
-// and a wake that never arrives — a turn whose process died instead of ending it — costs nothing,
-// because the sweep's next observation asks the same question.
+// issueTurnEnded is a turn ending on another claim of this claim's issue, or the project release's
+// mark cleared in this process (IssueTurnEnded). It carries nothing the claim records: the send it
+// may unblock asks for itself which claims of the issue are in a turn (sendPending), so a wake that
+// arrives while another role has started one holds the task again, and a wake that never arrives
+// — a turn whose process died instead of ending it — costs nothing, because the sweep's next
+// observation asks the same question.
 func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.sendPending(ctx) }
 
 // promptResulted is Oh My Pi's answer to the one question the turn frames cannot settle: which

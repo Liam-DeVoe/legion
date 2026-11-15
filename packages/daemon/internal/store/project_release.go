@@ -18,11 +18,11 @@ import (
 // this database ended the release (EndProjectReleasesAtBoot). Nothing else ends one.
 const ProjectReleaseEndedByBoot = "boot"
 
-// ErrProjectReleaseRunning is an idle release, or the release of a pod no claim owns, refused
+// errProjectReleaseRunning is an idle release, or the release of a pod no claim owns, refused
 // because the project has a project release no boot has ended (ReleaseIdleIssue): that release
 // holds every pod of the project until the daemon's next boot, and an idle release started beside
 // it would stop roles and save work the project release has already taken over.
-var ErrProjectReleaseRunning = errors.New("a project release no boot has ended holds every pod of the project")
+var errProjectReleaseRunning = errors.New("a project release no boot has ended holds every pod of the project")
 
 // projectReleaseRunning is whether project has a release no boot has ended (ended_at null),
 // finished or not, read in the caller's transaction. Its callers hold the shared serializer, as
@@ -54,17 +54,14 @@ type ProjectRelease struct {
 }
 
 // TakenOverIdleRelease is one idle release the project release took over as it started
-// (StartProjectRelease): the issue whose pod it was releasing, the generation its mark named,
-// whether it was the release of a pod no role can use (issue_releases.kind `unowned`, which
-// suspends no role and arms no backstop) rather than of a quiet one (`idle`), and the roles whose
-// claims its own stops had already suspended as `released` (issue_releases.suspended), in the
-// order they were recorded. Those claims stay `released`, and the caller arms the backstop the
-// release's teardown would have armed for them, once the take-over has committed.
+// (StartProjectRelease): the issue whose pod it was releasing, and the roles whose claims its own
+// stops had already suspended as `released` (issue_releases.suspended), in the order they were
+// recorded. Those claims stay `released`, and the caller arms the backstop the release's teardown
+// would have armed for them, once the take-over has committed. The release of a pod no role can
+// use (issue_releases.kind `unowned`) suspends no role, so it names none and arms nothing.
 type TakenOverIdleRelease struct {
-	Issue          string
-	Generation     uint64
-	SuspendsNoRole bool
-	Suspended      []claim.Role
+	Issue     string
+	Suspended []claim.Role
 }
 
 // ProjectReleaseClaim is one claim of a project release's stop set: a claim of the project
@@ -84,17 +81,17 @@ type ProjectReleaseClaim struct {
 // StartProjectRelease records a project release of project, started at startedAt and bound at
 // boundAt, in one transaction with the two things the release must read from that same moment.
 //
-// It takes over every idle release of the project still in flight (decision 10 of
-// dispatch://INFRA-3583's plan): each issue_releases mark of the project is deleted, and the
-// outbox rows of that release still queued — its save (issue_bundle), its role stops (`release`
-// supervise rows) and its teardown (issue_release), every one of them inside the mark's own range
-// (releaseMark.holds) — are finished without acting, which for an outbox row is its delete. No
-// bundle is saved, no role stopped and no pod torn down by them after this, and nothing of what
-// the idle release already did is undone: a bundle it stored stays, and a claim its stops
-// suspended stays `released`. A row of that release a lane is running now finds no mark when it
-// next asks (IssueReleaseStop, IssueRelease), which is the release being over, so it acts on
-// nothing more either. It answers each release it took over, so the caller can arm the backstops
-// that release's teardown would have armed for the claims it had stopped.
+// It takes over every idle release of the project still in flight: each issue_releases mark of
+// the project is deleted, and the outbox rows of that release still queued — its save
+// (issue_bundle), its role stops (`release` supervise rows) and its teardown (issue_release),
+// every one of them inside the mark's own range (releaseMark.holds) — are finished without
+// acting, which for an outbox row is its delete. No bundle is saved, no role stopped and no pod
+// torn down by them after this, and nothing of what the idle release already did is undone: a
+// bundle it stored stays, and a claim its stops suspended stays `released`. A row of that release
+// a lane is running now finds no mark when it next asks (IssueReleaseStop, IssueRelease), which is
+// the release being over, so it acts on nothing more either. It answers each release it took
+// over, so the caller can arm the backstops that release's teardown would have armed for the
+// claims it had stopped.
 //
 // It answers the stop set as well: every claim of the project stored running or starting, in
 // token order, read as the last statement of the transaction. That set is the one the release
@@ -145,20 +142,19 @@ func (s *Store) StartProjectRelease(ctx context.Context, project string, started
 // over in issue order.
 func takeOverIdleReleases(ctx context.Context, tx pgx.Tx, project string) ([]TakenOverIdleRelease, error) {
 	rows, err := tx.Query(ctx, `with taken as (delete from issue_releases where project = $1
-		returning issue, generation, first_row, last_row, suspended, kind)
-		select issue, generation, first_row, last_row, suspended, kind from taken order by issue`, project)
+		returning issue, first_row, last_row, suspended, kind)
+		select issue, first_row, last_row, suspended, kind from taken order by issue`, project)
 	if err != nil {
 		return nil, fmt.Errorf("take over the idle releases of %s: %w", project, err)
 	}
 	type takenMark struct {
 		issue string
 		mark  releaseMark
-		gen   int64
 	}
 	var marks []takenMark
 	for rows.Next() {
 		var taken takenMark
-		if err := rows.Scan(&taken.issue, &taken.gen, &taken.mark.first, &taken.mark.last, &taken.mark.suspended, &taken.mark.kind); err != nil {
+		if err := rows.Scan(&taken.issue, &taken.mark.first, &taken.mark.last, &taken.mark.suspended, &taken.mark.kind); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("take over the idle releases of %s: %w", project, err)
 		}
@@ -178,23 +174,24 @@ func takeOverIdleReleases(ctx context.Context, tx pgx.Tx, project string) ([]Tak
 			taken.issue, taken.mark.first, taken.mark.last); err != nil {
 			return nil, fmt.Errorf("finish the rows of the idle release of %s: %w", taken.issue, err)
 		}
-		takenOver = append(takenOver, TakenOverIdleRelease{Issue: taken.issue, Generation: uint64(taken.gen),
-			SuspendsNoRole: taken.mark.suspendsNoRole(), Suspended: taken.mark.roles()})
+		takenOver = append(takenOver, TakenOverIdleRelease{Issue: taken.issue, Suspended: taken.mark.roles()})
 	}
 	return takenOver, nil
 }
 
+// ProjectReleaseStopSet is the stop set a project release of project would read now
+// (projectReleaseStopSet), read through the pool: a dry run's, which records nothing and so reads
+// in no transaction of its own.
+func (s *Store) ProjectReleaseStopSet(ctx context.Context, project string) ([]ProjectReleaseClaim, error) {
+	return projectReleaseStopSet(ctx, s.pool, project)
+}
+
 // projectReleaseStopSet is every claim of project stored in a state whose process is up or coming
 // up (supervise.LiveStates), in token order: a project release's stop set (StartProjectRelease).
-// The states are supervise's, bound as text, so the store names none of them itself.
-func projectReleaseStopSet(ctx context.Context, tx pgx.Tx, project string) ([]ProjectReleaseClaim, error) {
-	live := supervise.LiveStates()
-	states := make([]string, len(live))
-	for i, state := range live {
-		states[i] = string(state)
-	}
-	rows, err := tx.Query(ctx, `select token, tree, issue, role, session, state from claims
-		where project = $1 and state = any($2) order by token`, project, states)
+// The states are supervise's, bound as text (stateNames), so the store names none of them itself.
+func projectReleaseStopSet(ctx context.Context, q rowsQuerier, project string) ([]ProjectReleaseClaim, error) {
+	rows, err := q.Query(ctx, `select token, tree, issue, role, session, state from claims
+		where project = $1 and state = any($2) order by token`, project, stateNames(supervise.LiveStates()))
 	if err != nil {
 		return nil, fmt.Errorf("read the claims the project release of %s stops: %w", project, err)
 	}

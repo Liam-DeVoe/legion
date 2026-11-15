@@ -1772,13 +1772,12 @@ package api
 // running release's round to the release, which records it on its own record and none of the
 // claim's round columns. While a release holds every start, the operator's spawn, retry, resume
 // and deliver, and either door's fresh session and compaction, answer 409 with the code
-// `PROJECT_RELEASED` and the sentence api.ProjectReleaseHolds. The number is the census an
+// `PROJECT_RELEASED` and the sentence api.ProjectReleaseHeldSentence. The number is the census an
 // implementer of dispatch://INFRA-3583 read on 2026-11-15, at the forward merge of main fecceeb6,
 // of `const DaemonAPIVersion` at the head of every one of the 154 open pull requests of this
 // repository: main declares 137 (INFRA-3621's entry above) and no open head declares above it, so
-// 138 is the lowest number above the base's that no other open head declares. This change first
-// declared 134, which #4017 and #4021 declared too and the base passed. Read the base's own number
-// and every open head again at the next merge rather than from this entry, as
+// 138 is the lowest number above the base's that no other open head declares. Read the base's own
+// number and every open head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 const DaemonAPIVersion = 138

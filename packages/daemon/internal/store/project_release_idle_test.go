@@ -66,8 +66,8 @@ func TestAnIdleReleaseIsRefusedWhileAProjectReleaseNoBootEndedRuns(t *testing.T)
 				asked = true
 				return rule.rows(view), nil
 			})
-			if !errors.Is(err, ErrProjectReleaseRunning) || marked {
-				t.Fatalf("ReleaseIdleIssue under a running project release = %t, %v; want it refused with ErrProjectReleaseRunning", marked, err)
+			if !errors.Is(err, errProjectReleaseRunning) || marked {
+				t.Fatalf("ReleaseIdleIssue under a running project release = %t, %v; want it refused with errProjectReleaseRunning", marked, err)
 			}
 			if asked {
 				t.Fatal("the refused release asked its rule to decide")

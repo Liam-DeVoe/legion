@@ -149,7 +149,7 @@ type Options struct {
 	// ProjectReleaseHolds is whether the daemon's project release holds every start of the
 	// project now (internal/daemon's projectRelease, dispatch://INFRA-3583 R7). While it answers
 	// true an operator's spawn, retry, resume and deliver, and either door's fresh session and
-	// compaction, which start or prompt a role, are refused 409 with ProjectReleaseHolds
+	// compaction, which start or prompt a role, are refused 409 with ProjectReleaseHeldSentence
 	// (releaseRefused), and nothing of the claim is asked. A role's own calls still record their
 	// facts: the starts those queue wait in the outbox for the boot. Nil holds nothing.
 	ProjectReleaseHolds func() bool
@@ -686,11 +686,11 @@ func (s *server) stopRefusal(request string) string {
 	return request + " refused: the daemon is stopping; ask again once it is back"
 }
 
-// ProjectReleaseHolds is the sentence every start the daemon's project release refuses is
+// ProjectReleaseHeldSentence is the sentence every start the daemon's project release refuses is
 // answered with: the routes' 409 (releaseRefused), and the daemon's launch check and outbox wait
 // (internal/daemon's errProjectReleased), so an operator reads the same words wherever a start
 // was held.
-const ProjectReleaseHolds = "the project release holds every start until the daemon's next boot"
+const ProjectReleaseHeldSentence = "the project release holds every start until the daemon's next boot"
 
 // projectReleased is the code of that refusal (Failure.Code): a controller's door reads its
 // refusals by code, and an operator's command prints the sentence beside it.
@@ -699,14 +699,14 @@ const projectReleased = "PROJECT_RELEASED"
 // releaseRefused answers 409 and reports true while the daemon's project release holds every
 // start (Options.ProjectReleaseHolds), for a request that would start or prompt a role: an
 // operator's spawn, retry, resume and deliver, and either door's fresh session and compaction
-// (dispatch://INFRA-3583, decision 9 of its plan). Each such route asks it before it asks the
-// claim anything, so the refused request changes nothing.
+// (dispatch://INFRA-3583 R7, which holds every start of a role until the next boot). Each such
+// route asks it before it asks the claim anything, so the refused request changes nothing.
 func (s *server) releaseRefused(w http.ResponseWriter, request string) bool {
 	if s.releaseHolds == nil || !s.releaseHolds() {
 		return false
 	}
 	s.log.Info("api: refused a request that would start or prompt a role: the project release holds every start", "request", request)
-	writeFailure(w, http.StatusConflict, projectReleased, request+" refused: "+ProjectReleaseHolds)
+	writeFailure(w, http.StatusConflict, projectReleased, request+" refused: "+ProjectReleaseHeldSentence)
 	return true
 }
 

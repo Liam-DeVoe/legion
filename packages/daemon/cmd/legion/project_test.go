@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,11 +20,14 @@ import (
 
 // scriptedRelease is the daemon's project release as `legion project release` reaches it: the
 // start answers the first of views, and each read after it the next one, the last for ever, so a
-// test scripts a release that runs and then finishes. A dry run answers dry. The real release is
-// internal/daemon's, whose own tests run it; this is what the command prints and how it exits.
+// test scripts a release that runs and then finishes. A dry run answers dry, unless ran says a
+// release already ran in this process, which every start then answers, as the daemon's does. The
+// real release is internal/daemon's, whose own tests run it; this is what the command prints and
+// how it exits.
 type scriptedRelease struct {
 	mu     sync.Mutex
 	noPod  bool
+	ran    bool
 	views  []api.ProjectReleaseResponse
 	dry    api.ProjectReleaseResponse
 	reads  int
@@ -38,10 +42,12 @@ func (r *scriptedRelease) Start(_ context.Context, bound time.Duration, dryRun b
 		request.Bound = bound.String()
 	}
 	r.starts = append(r.starts, request)
-	if r.noPod {
+	switch {
+	case r.noPod:
 		return api.ProjectReleaseResponse{}, false, api.ErrProjectReleaseRunsNoPod
-	}
-	if dryRun {
+	case r.ran:
+		return r.views[0], false, nil
+	case dryRun:
 		return r.dry, false, nil
 	}
 	return r.views[0], true, nil
@@ -116,7 +122,7 @@ func finishingRelease(done []api.ReleasedSandbox, claims []api.ReleasedClaim) *s
 	return &scriptedRelease{views: []api.ProjectReleaseResponse{running, running, finishedView(running, done, claims)}}
 }
 
-// E10 of dispatch://INFRA-3583: the command refuses to run without --operator-token-file, with the
+// dispatch://INFRA-3583 R6: the command refuses to run without --operator-token-file, with the
 // usage error's exit 2, and reaches no daemon.
 func TestProjectReleaseRefusesToRunWithoutTheOperatorTokenFile(t *testing.T) {
 	d := releaseDaemon(t, finishingRelease([]api.ReleasedSandbox{releasedCleanPod}, []api.ReleasedClaim{releasedArchitect}))
@@ -304,6 +310,40 @@ func TestProjectReleaseExitsOneWhenTheDaemonRefuses(t *testing.T) {
 	}
 }
 
+// A daemon that already ran a release in this process answers --dry-run with that release
+// (projectReleaser.Start), and the command reads and prints it as the release it is: it polls
+// the release while it runs, prints none of a dry run's words, says on stderr that the dry run
+// was answered with that release, and exits 1 for a pod the release left.
+func TestProjectReleaseDryRunAnsweredWithAReleaseReadsThatRelease(t *testing.T) {
+	left := api.ReleasedSandbox{Name: "legion-legion-legion-209", Kind: "issue", Issue: "LEGION-209", Outcome: api.ReleaseLeft,
+		Reason: "an operator suspended its implementer"}
+	release := finishingRelease([]api.ReleasedSandbox{left, releasedCleanPod}, []api.ReleasedClaim{releasedArchitect})
+	release.ran = true
+	d := releaseDaemon(t, release)
+	code, out, errb := d.projectRelease(append(d.reach(), "--dry-run")...)
+	if code != 1 {
+		t.Fatalf("legion project release --dry-run answered with a release that left a pod = %d, want 1; stdout %q, stderr %q", code, out, errb)
+	}
+	release.mu.Lock()
+	starts, reads := slices.Clone(release.starts), release.reads
+	release.mu.Unlock()
+	if len(starts) != 1 || !starts[0].DryRun {
+		t.Fatalf("the command sent %+v, want one dry run's request", starts)
+	}
+	if reads < 2 {
+		t.Fatalf("the command read the release %d times, want it read until the release finished", reads)
+	}
+	if strings.Contains(out, "would") {
+		t.Fatalf("the command printed %q, a dry run's words for a release that ran", out)
+	}
+	if !strings.Contains(out, "claim legion-legion-legion-208-architect LEGION-208 architect ses_architect project_release (the next boot starts it)\n") {
+		t.Fatalf("the command printed %q, want the release's claim line", out)
+	}
+	if !strings.Contains(errb, "answered the dry run with that release") || !strings.Contains(errb, "left 1 Sandbox(es) of the project: legion-legion-legion-209") {
+		t.Fatalf("stderr %q does not say the dry run was answered with the release, or does not name the left pod", errb)
+	}
+}
+
 // A released daemon refuses an operator's spawn, retry, resume and deliver 409 with the sentence
 // that names the release, and each `legion claims` command exits 1 printing it. The routes' own
 // case is internal/api's TestProjectReleaseRefusesEveryStartAndPromptOfARole.
@@ -322,7 +362,7 @@ func TestProjectReleaseRefusesTheOperatorsStartsThroughTheCommands(t *testing.T)
 	} {
 		t.Run(name, func(t *testing.T) {
 			code, _, errb := d.claims(append([]string{name}, args...)...)
-			if code != 1 || !strings.Contains(errb, "409") || !strings.Contains(errb, name+" refused: "+api.ProjectReleaseHolds) {
+			if code != 1 || !strings.Contains(errb, "409") || !strings.Contains(errb, name+" refused: "+api.ProjectReleaseHeldSentence) {
 				t.Fatalf("legion claims %s while released = %d, stderr %q; want 1 with the release's 409", name, code, errb)
 			}
 		})

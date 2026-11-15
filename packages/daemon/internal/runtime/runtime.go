@@ -233,9 +233,13 @@ type WorkspaceBundler interface {
 // ProjectPods is what a project release needs of a runtime that runs the project's pods
 // (dispatch://INFRA-3583 R6): every Sandbox of the project as the runtime watches it, a read of
 // an issue workspace's unpushed work through one role's shim, and the deletes of the Sandboxes
-// that are no issue's. The issue pods themselves go through IssueSuspender, and the controller's
-// through Release. A runtime that runs no pod implements none of it, so the daemon on it refuses
-// a release, and the assertion is made where the release is built, as IssueSuspender's is.
+// that are no issue's. The issue pods themselves go through IssueSuspender. A runtime that runs no
+// pod implements none of it, so the daemon on it refuses a release, and the assertion is made where
+// the release is built, as IssueSuspender's is.
+//
+// Both deletes here refuse a Sandbox written since the delete was decided, where the runtime's own
+// deletes keep it for the next orphan sweep: the release holds that sweep, and the sweep takes no
+// cache or probe, so a Sandbox kept so would stand while the release reported it deleted.
 type ProjectPods interface {
 	IssueSuspender
 	// ProjectSandboxes is every Sandbox of the project the runtime's store holds, in name order,
@@ -246,9 +250,14 @@ type ProjectPods interface {
 	ReadUnpushed(ctx context.Context, issue string, role claim.Role) (UnpushedWork, error)
 	// DeleteProjectSandbox deletes the repository cache's or the image probe's Sandbox name, as
 	// the runtime's own deletes of those do: under the pod's launch turn, fenced to the Sandbox
-	// its store holds, behind the session-volume guard, whose refusal is the error. A Sandbox
-	// already gone is deleted. A Sandbox of any other kind is refused.
+	// as the API holds it when the delete reads it, behind the session-volume guard, whose refusal
+	// is the error. A Sandbox already gone is deleted. A Sandbox of any other kind is refused, and
+	// so is one written between the read and the delete.
 	DeleteProjectSandbox(ctx context.Context, name string) error
+	// ReleaseProjectController is Runtime.Release of the controller's claim token, which deletes
+	// the controller's Sandbox behind that delete's own volume guard, except that a Sandbox
+	// written since the delete was decided is refused rather than kept.
+	ReleaseProjectController(ctx context.Context, token claim.Token) error
 }
 
 // ProjectSandboxKind is what one Sandbox of a project is for (ProjectSandbox.Kind).

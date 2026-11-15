@@ -115,7 +115,7 @@ func projectReleaseRouteHarness(t *testing.T, release *fakeProjectRelease) *harn
 	return h
 }
 
-// The release's two routes, decision 14 of dispatch://INFRA-3583's plan: the first POST starts
+// The release's two routes (dispatch://INFRA-3583 R6): the first POST starts
 // the release with the bound it names and answers its record 202; a second POST, and a dry run
 // after it, answer that same release 200 and start nothing; GET answers the release's progress,
 // then its result once it finished.
@@ -244,7 +244,7 @@ func TestProjectReleaseRouteRefusesABoundThatIsNoPositiveDuration(t *testing.T) 
 	}
 }
 
-// Decision 6 of the plan: a role's ready_for_update naming the running release's round is handed
+// dispatch://INFRA-3583 R6: a role's ready_for_update naming the running release's round is handed
 // to the release, with the claim's session, generation and head, and the claim's machine records
 // nothing of it; the release's refusal is the route's answer. A round no release runs reaches the
 // machine, which refuses a round its claim is not in.

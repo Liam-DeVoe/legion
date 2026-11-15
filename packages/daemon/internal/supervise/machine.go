@@ -857,7 +857,9 @@ type Deps struct {
 	// true no claim is handed a task (sendPending): a role whose turn ends while the release waits
 	// on its pod — the turn that answered the release's ask among them — keeps its pending task,
 	// which is sent once the daemon's next boot has started the claim again, rather than starting
-	// work it would hold its pod open for. Nil holds nothing.
+	// work it would hold its pod open for. A release whose record did not commit clears the mark
+	// in this process, and the daemon then has each machine send the task it held
+	// (IssueTurnEnded, internal/daemon's sendHeldTasks). Nil holds nothing.
 	ProjectReleaseHolds func() bool
 	// TaskConfirmed is told of each claim whose pending delivery a turn has just confirmed: the
 	// agent took the work the daemon gave it. The workflow decides what a root still owes its
@@ -2887,17 +2889,24 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 		m.log.Info("supervise: the claim retires holding its round's ask, which nothing of it will answer; the ask goes with the round",
 			"round", m.claim.UpdateRound, "delivery", m.claim.Pending.ID)
 	}
-	m.clearUpdate()
-	if drops {
-		if err := m.retirePending(ctx); err != nil {
-			return err
-		}
-	} else if err := m.persist(ctx); err != nil {
+	if err := m.writeLeavingRound(ctx, drops); err != nil {
 		return err
 	}
 	// Every drop of a delivery answers the question a restart armed for it; a retired claim is
 	// answered nothing there (answerAskFirstAfterDrop).
 	return m.answerAskFirstAfterDrop(ctx)
+}
+
+// writeLeavingRound takes the claim out of its update round and writes it, with the round's ask
+// in that same write when drops says the ask goes with the round (dropsUpdateTask): the tail of a
+// retirement (retire) and of the project release's stop (leaveRoundForRelease), each of which
+// says on its own line why the claim leaves the round.
+func (m *Machine) writeLeavingRound(ctx context.Context, drops bool) error {
+	m.clearUpdate()
+	if drops {
+		return m.retirePending(ctx)
+	}
+	return m.persist(ctx)
 }
 
 // letGo ends what the machine had with the claim's process: no timer watches it — the ladder's

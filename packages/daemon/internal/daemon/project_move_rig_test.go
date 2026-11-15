@@ -9,8 +9,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -114,40 +116,16 @@ func (r *idleWakeRig) claimsByToken() map[claim.Token]api.OperatorClaim {
 	return listed
 }
 
-// podUIDOf is the uid of the pod the claim's process runs in, "" while it records none.
-func podUIDOf(c api.OperatorClaim) string {
-	if c.Locator == nil || c.Locator.Sandbox == nil {
-		return ""
-	}
-	return c.Locator.Sandbox.PodUID
-}
-
-// wakesWaiting is the state's `wakesWaiting`: every wake the daemon's pacing holds.
-func (r *idleWakeRig) wakesWaiting() []api.WakeWaiting {
-	r.t.Helper()
-	status, body := r.api.request(http.MethodGet, "/legion/v1/state", nil, false)
-	if status != http.StatusOK {
-		r.t.Fatalf("GET /legion/v1/state = %d; body %s", status, body)
-	}
-	var state struct {
-		WakesWaiting []api.WakeWaiting `json:"wakesWaiting"`
-	}
-	if err := json.Unmarshal(body, &state); err != nil {
-		r.t.Fatalf("decode the state's wakesWaiting: %v", err)
-	}
-	return state.WakesWaiting
-}
-
-// bundleRows is every row of workspace_bundles, one line each in a stable order, or nil with
-// held false where the migrated database holds no such table: cybermonklabs/legion#3831 replaces
-// it, and the move test reads it where it still stands.
-func (r *idleWakeRig) bundleRows() (rows []string, held bool) {
+// bundleRows is every row of workspace_bundles, one line each in a stable order, and whether the
+// table stands at all (bundlesTable false, with no rows, where it does not):
+// cybermonklabs/legion#3831 replaces it, and the move test reads it where it still stands.
+func (r *idleWakeRig) bundleRows() (rows []string, bundlesTable bool) {
 	r.t.Helper()
 	ctx := context.Background()
-	if err := r.pool.QueryRow(ctx, `select to_regclass('workspace_bundles') is not null`).Scan(&held); err != nil {
+	if err := r.pool.QueryRow(ctx, `select to_regclass('workspace_bundles') is not null`).Scan(&bundlesTable); err != nil {
 		r.t.Fatalf("read whether workspace_bundles stands: %v", err)
 	}
-	if !held {
+	if !bundlesTable {
 		return nil, false
 	}
 	listed, err := r.pool.Query(ctx, `select row_to_json(b)::text from workspace_bundles b`)
@@ -170,9 +148,9 @@ func (r *idleWakeRig) bundleRows() (rows []string, held bool) {
 }
 
 // holdsRunningCopies is whether the migrated database holds cybermonklabs/legion#3831's table of
-// each issue pod's running copy, which decides how the move test reads a deletion's lost work (the
-// "Answered by the tree's architect" section of the plan): whichever of the two lands second then
-// changes no test.
+// each issue pod's running copy, which decides how the move test reads a deletion's lost work and
+// the bundle requests the role processes get, so whichever of that change and this one lands
+// second changes no test.
 func (r *idleWakeRig) holdsRunningCopies() bool {
 	r.t.Helper()
 	var held bool
@@ -180,6 +158,42 @@ func (r *idleWakeRig) holdsRunningCopies() bool {
 		r.t.Fatalf("read whether workspace_running_copies stands: %v", err)
 	}
 	return held
+}
+
+// runningCopyAt is when the running copy cybermonklabs/legion#3831 keeps of issue's workspace was
+// taken (workspace_running_copies.at, the store's clock as the copy began), and whether one is
+// kept. A copy holds the workspace as it stood then, so the work a pod restored from it misses is
+// the work left after that moment. Only a database that holds the table (holdsRunningCopies) is
+// asked.
+func (r *idleWakeRig) runningCopyAt(issue string) (time.Time, bool) {
+	r.t.Helper()
+	var at time.Time
+	err := r.pool.QueryRow(context.Background(), `select at from workspace_running_copies where issue = $1`, issue).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false
+	}
+	if err != nil {
+		r.t.Fatalf("read the running copy of %s: %v", issue, err)
+	}
+	return at, true
+}
+
+// runningCopyLines is how many lines cybermonklabs/legion#3831's copy of a running workspace has
+// logged, each beginning "running copy:" (its workspace_copies.go). That copy asks a shim over the
+// same bundle request the idle release sends (shimwire.BundleWorkspace), which names no caller,
+// and every copy that asks ends on one such line whatever its end, so a bundle request beyond
+// those lines was sent by another caller of the daemon.
+func (r *idleWakeRig) runningCopyLines() int {
+	count := 0
+	for _, line := range strings.Split(r.logs.String(), "\n") {
+		var entry struct {
+			Msg string `json:"msg"`
+		}
+		if json.Unmarshal([]byte(line), &entry) == nil && strings.HasPrefix(entry.Msg, "running copy:") {
+			count++
+		}
+	}
+	return count
 }
 
 // idleRigStart is one `start` row of the outbox as a watcher saw it: its id, the issue it is
@@ -278,7 +292,7 @@ func (w *startWatcher) seen() (map[string][]idleRigStart, error) {
 	defer w.mu.Unlock()
 	byRole := map[string][]idleRigStart{}
 	for _, start := range w.starts {
-		key := start.issue + "/" + string(start.request.Role)
+		key := idleRigKey(start.issue, string(start.request.Role))
 		byRole[key] = append(byRole[key], start)
 	}
 	for _, starts := range byRole {

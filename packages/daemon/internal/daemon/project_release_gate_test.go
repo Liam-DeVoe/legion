@@ -1,15 +1,15 @@
 package daemon
 
-// The released daemon starts nothing (dispatch://INFRA-3583 R7, task 8 of its plan). Each gate the
-// project release's mark is read by is driven here twice, the mark held and the mark clear, over
-// the same act: the launch check every machine launch makes, the runtime refusal a launch that
-// raced the mark meets, the task a turn's end would hand, the periodic work, and the outbox. The
-// mark is set directly: the release that sets it is task 9's.
+// The released daemon starts nothing (dispatch://INFRA-3583 R7). Each gate the project release's
+// mark is read by is driven here twice, the mark held and the mark clear, over the same act: the
+// launch check every machine launch makes, the runtime refusal a launch that raced the mark meets,
+// the task a turn's end would hand, the periodic work, and the outbox. The mark is set directly:
+// the release that sets it is projectrelease.go's, which project_release_rig_test.go runs.
 //
 // The delivery, the notice and the backstop that come due during the release are held here at the
 // unit level: each waits in the database while the mark holds and acts in a daemon whose mark is
 // clear, which is the next process. That the next boot's starts come before them is the rig's to
-// show, with a whole boot (task 13's move test).
+// show, with a whole boot (project_move_test.go).
 
 import (
 	"context"
@@ -47,7 +47,7 @@ func releasedMark(t *testing.T) *projectRelease {
 // isReleaseRefusal is whether err is the project release's refusal of a start: a wait, in the
 // sentence the routes give.
 func isReleaseRefusal(err error) bool {
-	return errors.Is(err, wait.ErrWaiting) && err != nil && strings.Contains(err.Error(), api.ProjectReleaseHolds)
+	return errors.Is(err, wait.ErrWaiting) && strings.Contains(err.Error(), api.ProjectReleaseHeldSentence)
 }
 
 // The launch check every launch makes, and the admission of every claim started again, refuse
@@ -425,8 +425,9 @@ func runDue(t *testing.T, runner *outbox, now time.Time) int {
 	return len(rows)
 }
 
-// R7: a delivery, a notice and a backstop that come due during the release wait in the database
-// while it holds, and reach their claims in the next process, whose mark is clear.
+// dispatch://INFRA-3583 R7: a delivery, a notice and a backstop that come due during the release
+// wait in the database while it holds, and reach their claims in the next process, whose mark is
+// clear.
 func TestProjectReleaseHoldsADeliveryANoticeAndABackstopUntilTheNextBoot(t *testing.T) {
 	t.Run("a delivery", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
@@ -457,7 +458,7 @@ func TestProjectReleaseHoldsADeliveryANoticeAndABackstopUntilTheNextBoot(t *test
 			t.Fatalf("while released the tester is %s with %d resumes, holding %+v; want it suspended, unresumed, given nothing",
 				got.State, len(rt.CallsOf("Resume")), got.Pending)
 		}
-		if attempts, lastError, present := outboxRowState(t, pool, root.Key); !present || attempts != 1 || !strings.Contains(lastError, api.ProjectReleaseHolds) {
+		if attempts, lastError, present := outboxRowState(t, pool, root.Key); !present || attempts != 1 || !strings.Contains(lastError, api.ProjectReleaseHeldSentence) {
 			t.Fatalf("the start row is present=%t after %d attempts with %q, want it waiting in the outbox on the release", present, attempts, lastError)
 		}
 
@@ -493,7 +494,7 @@ func TestProjectReleaseHoldsADeliveryANoticeAndABackstopUntilTheNextBoot(t *test
 		if topics := publisher.topics(); len(topics) != 0 {
 			t.Fatalf("the notice was published to %v while released, want nowhere", topics)
 		}
-		if _, lastError, present := outboxRowState(t, pool, "LEGION-2"); !present || !strings.Contains(lastError, api.ProjectReleaseHolds) {
+		if _, lastError, present := outboxRowState(t, pool, "LEGION-2"); !present || !strings.Contains(lastError, api.ProjectReleaseHeldSentence) {
 			t.Fatalf("the notice row is present=%t with %q, want it waiting in the outbox on the release", present, lastError)
 		}
 

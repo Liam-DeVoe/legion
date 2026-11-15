@@ -1,7 +1,7 @@
 package daemon
 
-// The move of a project's pods between two clusters (dispatch://INFRA-3583 R9, E11 and E12's third
-// test), run on the idle rig with each of the abilities the move needs: two stand-ins for two
+// The move of a project's pods between two clusters (dispatch://INFRA-3583 R9), run on the idle
+// rig with each of the abilities the move needs: two stand-ins for two
 // clusters, each with a namespace of the same name; a daemon whose runtime reaches the cluster its
 // kubeconfig names; restarts on one database that keep the worker stream's and the API's ports,
 // so a pod a restart did not end is adopted; the wall clock, so a turn the bound cuts is cut;
@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -26,6 +27,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -43,15 +46,15 @@ const moveOlderImage = "ghcr.io/example/worker@sha256:" + "bbbbbbbbbbbbbbbbbbbbb
 const moveRefusal = "Unknown command: read-unpushed"
 
 // moveDeliveryText is the reason of the notice that arrives for a tree's architect during the
-// first release: the delivery R9 names, a notice the outbox holds while the release holds every
-// start and routes to the claim once the boot has started it (notice_routing.go's holdsRole). A
-// role message would not do: the outbox ends one undelivered when its role has no live holder, as
-// the moment it reports has passed (outbox.go's roleMessage), and no stopped claim holds its role
-// until its start.
+// first release: the delivery dispatch://INFRA-3583 R9 names, a notice the outbox holds while the
+// release holds every start and routes to the claim once the boot has started it
+// (notice_routing.go's holdsRole). A role message would not do: the outbox ends one undelivered
+// when its role has no live holder, as the moment it reports has passed (outbox.go's
+// roleMessage), and no stopped claim holds its role until its start.
 const moveDeliveryText = "the move test's delivery, which arrived during the release"
 
 // projectMove is one project the move tests move, on the idle rig: its issues, one for each case
-// of R9, and the `legion` the operator runs.
+// of dispatch://INFRA-3583 R9, and the `legion` the operator runs.
 type projectMove struct {
 	rig    *idleWakeRig
 	legion string
@@ -71,6 +74,9 @@ type projectMove struct {
 	push, answer, silent, clean, turn, unstarted, held, old idleRigIssue
 	// recovered is the release of the operator's recovery, which the next step's restart ends.
 	recovered *moveRelease
+	// workLeft is when each move's work was left in its workspaces (leaveWork), by move: the work
+	// a running copy taken after it holds (cybermonklabs/legion#3831, runningCopyAt).
+	workLeft map[string]time.Time
 }
 
 // newProjectMove readies the project on the first cluster: each case's pod running, its workspace
@@ -135,6 +141,10 @@ func (m *projectMove) leaveWork(t *testing.T, move string) {
 	work.work(t, m.push.pod, []string{"push-one-" + move + ".txt", "push-two-" + move + ".txt"}, "push-change-"+move+".txt")
 	work.work(t, m.answer.pod, []string{"answer-" + move + ".txt"}, "")
 	work.work(t, m.silent.pod, []string{"silent-" + move + ".txt"}, "")
+	if m.workLeft == nil {
+		m.workLeft = map[string]time.Time{}
+	}
+	m.workLeft[move] = time.Now()
 }
 
 // operator has the operator act on one role's claim over its route: stop or suspend.
@@ -164,27 +174,15 @@ func (m *projectMove) issues() []idleRigIssue {
 	return []idleRigIssue{m.push, m.answer, m.silent, m.clean, m.turn, m.unstarted, m.held, m.old}
 }
 
-// roleAsks is every message one role of an issue, or the controller (key idleRigControllerPod),
-// was given that names a project release's round.
-func (m *projectMove) roleAsks(key string, role claim.Role) []idleRigMessage {
-	var asks []idleRigMessage
-	for _, message := range m.rig.agents.role(key, string(role)).Messages {
-		if idleRigReleaseAsk.MatchString(message.Text) {
-			asks = append(asks, message)
-		}
-	}
-	return asks
-}
-
 // askCounts is how many release asks each role of the move was given so far, by issue and role.
 func (m *projectMove) askCounts() map[string]int {
 	counts := map[string]int{}
 	for _, issue := range m.issues() {
 		for _, role := range issue.roles {
-			counts[issue.key+"/"+string(role)] = len(m.roleAsks(issue.key, role))
+			counts[idleRigKey(issue.key, string(role))] = len(m.rig.releaseAsks(issue.key, role))
 		}
 	}
-	counts[idleRigControllerPod] = len(m.roleAsks(idleRigControllerPod, claim.RoleController))
+	counts[idleRigControllerPod] = len(m.rig.releaseAsks(idleRigControllerPod, claim.RoleController))
 	return counts
 }
 
@@ -195,7 +193,7 @@ func (m *projectMove) bundleRequests() []string {
 	for _, issue := range m.issues() {
 		for _, role := range issue.roles {
 			for _, bundle := range m.rig.agents.role(issue.key, string(role)).Bundles {
-				sent = append(sent, issue.key+"/"+string(role)+": "+bundle.ID)
+				sent = append(sent, idleRigKey(issue.key, string(role))+": "+bundle.ID)
 			}
 		}
 	}
@@ -222,7 +220,7 @@ func (m *projectMove) claimsNow() map[claim.Token]moveClaim {
 		if c.Pending != nil {
 			pending, pendingTask = c.Pending.ID, c.Pending.Task
 		}
-		now[token] = moveClaim{issue: c.Issue, state: c.State, suspendedBy: c.SuspendedBy, session: c.Session, pod: podUIDOf(c),
+		now[token] = moveClaim{issue: c.Issue, state: c.State, suspendedBy: c.SuspendedBy, session: c.Session, pod: podOf(c.Locator),
 			pending: pending, pendingTask: pendingTask, launchFailures: c.Budgets.LaunchFailures, deaths: c.Budgets.Deaths,
 			registered: role.Registered, prompts: len(role.Prompts), registeredAt: role.RegisteredAt}
 	}
@@ -236,18 +234,6 @@ func agentKey(c api.OperatorClaim) string {
 		return idleRigControllerPod
 	}
 	return c.Issue
-}
-
-// moveLine is the release's line of the Sandbox name.
-func moveLine(t *testing.T, release api.ProjectReleaseResponse, name string) api.ReleasedSandbox {
-	t.Helper()
-	for _, line := range release.Result.Sandboxes {
-		if line.Name == name {
-			return line
-		}
-	}
-	t.Fatalf("the release names no Sandbox %s; it names %+v", name, release.Result.Sandboxes)
-	return api.ReleasedSandbox{}
 }
 
 // askedRoles is the roles a line names as asked, in its order.
@@ -321,12 +307,16 @@ type moveRelease struct {
 	stopped    []claim.Token
 	asksBefore map[string]int
 	asksAfter  map[string]int
-	bundles    []string
-	held       bool
-	bundleReqs int
-	created    int
-	starts     *startWatcher
-	restarted  time.Time
+	// bundles is workspace_bundles' rows before the release, and bundlesTable whether the table
+	// stands (bundleRows); bundleReqs is the bundle requests the role processes had been sent, and
+	// copyLines the running copies cybermonklabs/legion#3831 had logged (runningCopyLines).
+	bundles      []string
+	bundlesTable bool
+	bundleReqs   int
+	copyLines    int
+	created      int
+	starts       *startWatcher
+	restarted    time.Time
 	// entryTask is the work of the entry raised during the release, "" when none was.
 	entryTask string
 	// heldRows is the start rows the outbox held when the daemon stopped, by issue and role.
@@ -338,8 +328,8 @@ func (m *projectMove) beginRelease(t *testing.T, name string) *moveRelease {
 	t.Helper()
 	r := m.rig
 	rd := &moveRelease{name: name, before: m.claimsNow(), running: map[string][]claim.Role{}, asksBefore: m.askCounts(),
-		bundleReqs: len(m.bundleRequests()), created: len(r.aimed().createdNames()), starts: r.watchStarts()}
-	rd.bundles, rd.held = r.bundleRows()
+		bundleReqs: len(m.bundleRequests()), copyLines: r.runningCopyLines(), created: len(r.aimed().createdNames()), starts: r.watchStarts()}
+	rd.bundles, rd.bundlesTable = r.bundleRows()
 	for _, issue := range m.issues() {
 		rd.running[issue.key] = m.runningRoles(issue)
 	}
@@ -423,7 +413,7 @@ func (m *projectMove) awaitLine(t *testing.T, name, outcome string) {
 	})
 }
 
-// checkMove holds a release that moves the project to what E11 reads of the first move: each
+// checkMove holds a release that moves the project to what the move reads of it: each
 // case's pod's line, the asks and their answers, each stopped claim's line and its stored
 // suspension, the remote's branch of the role that pushed, the exit and the Sandboxes left in the
 // cluster, and no bundle, no charge and no pod the released daemon made. left names the pods the
@@ -459,7 +449,7 @@ func (m *projectMove) checkMove(t *testing.T, rd *moveRelease, left []idleRigIss
 	}
 	work := func(issue idleRigIssue, outcome string, commits int, changed bool) api.ReleasedSandbox {
 		t.Helper()
-		line := moveLine(t, release, issue.pod)
+		line := releaseLine(t, release, issue.pod)
 		if line.Outcome != outcome || line.Commits == nil || *line.Commits != commits ||
 			line.WorkingCopyChanged == nil || *line.WorkingCopyChanged != changed || line.Issue != issue.key {
 			t.Errorf("the %s release's line of %s is %s, want %s naming %s with %d commits, changed=%v",
@@ -472,24 +462,24 @@ func (m *projectMove) checkMove(t *testing.T, rd *moveRelease, left []idleRigIss
 	asked(m.push, work(m.push, api.ReleaseDeletedClean, 0, false), true)
 	asked(m.answer, work(m.answer, api.ReleaseDeletedLost, 1, false), true)
 	asked(m.silent, work(m.silent, api.ReleaseDeletedLost, 1, false), false)
-	turn := moveLine(t, release, m.turn.pod)
+	turn := releaseLine(t, release, m.turn.pod)
 	if turn.Outcome != api.ReleaseDeletedClean {
 		t.Errorf("the line of the pod in a turn is %s, want it deleted with nothing unpushed", lineJSON(turn))
 	}
 	asked(m.turn, turn, false)
-	old := moveLine(t, release, m.old.pod)
+	old := releaseLine(t, release, m.old.pod)
 	if old.Outcome != api.ReleaseDeletedReadRefused || !strings.Contains(old.Refusal, moveRefusal) || old.Commits != nil || old.OtherImage != refusedImage {
 		t.Errorf("the line of the pod whose shim refuses the read is %s, want deleted_read_refused with the refusal %q, unread, another image=%v",
 			lineJSON(old), moveRefusal, refusedImage)
 	}
 	asked(m.old, old, true)
-	if line := moveLine(t, release, m.clean.pod); line.Outcome != api.ReleaseDeletedClean || len(line.Asked) != 0 ||
+	if line := releaseLine(t, release, m.clean.pod); line.Outcome != api.ReleaseDeletedClean || len(line.Asked) != 0 ||
 		line.Commits == nil || *line.Commits != 0 || line.WorkingCopyChanged == nil || *line.WorkingCopyChanged {
 		t.Errorf("the line of the clean pod is %+v, want deleted_clean with nothing unpushed and nobody asked", line)
 	}
 	controllers := 0
 	for _, line := range release.Result.Sandboxes {
-		if line.Kind == "controller" {
+		if line.Kind == runtime.ProjectSandboxController {
 			controllers++
 			if line.Outcome != api.ReleaseDeleted {
 				t.Errorf("the controller's line is %+v, want deleted", line)
@@ -502,7 +492,7 @@ func (m *projectMove) checkMove(t *testing.T, rd *moveRelease, left []idleRigIss
 	var wantLeft []string
 	for _, issue := range left {
 		wantLeft = append(wantLeft, issue.pod)
-		if line := moveLine(t, release, issue.pod); line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "operator") {
+		if line := releaseLine(t, release, issue.pod); line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "operator") {
 			t.Errorf("the line of %s is %+v, want left for the operator's suspension", issue.name, line)
 		}
 		if !strings.Contains(rd.command.stderr, issue.pod) {
@@ -561,7 +551,7 @@ func (m *projectMove) checkMove(t *testing.T, rd *moveRelease, left []idleRigIss
 	m.checkNoBundle(t, rd)
 }
 
-// checkAsks holds the release's asks to E11: each running role of the five pods with work, a
+// checkAsks holds the release's asks: each running role of the five pods with work, a
 // refused read or a turn got one ask, and no other role got one; the ask gives the bound's time
 // and the ask's id, names legion/<KEY>, and says that work not pushed by then is lost with the
 // pod.
@@ -570,7 +560,7 @@ func (m *projectMove) checkAsks(t *testing.T, rd *moveRelease) {
 	asked := map[string]bool{}
 	for _, issue := range []idleRigIssue{m.push, m.answer, m.silent, m.turn, m.old} {
 		for _, role := range rd.running[issue.key] {
-			asked[issue.key+"/"+string(role)] = true
+			asked[idleRigKey(issue.key, string(role))] = true
 		}
 	}
 	for key, after := range rd.asksAfter {
@@ -582,10 +572,10 @@ func (m *projectMove) checkAsks(t *testing.T, rd *moveRelease) {
 			t.Errorf("%s was given %d release asks by the end of the %s release, want %d", key, after, rd.name, want)
 		}
 	}
-	round := fmt.Sprintf("release:%d", rd.release.ID)
+	round := projectReleaseRound(rd.release.ID)
 	for _, issue := range []idleRigIssue{m.push, m.answer, m.silent, m.turn, m.old} {
 		for _, role := range rd.running[issue.key] {
-			asks := m.roleAsks(issue.key, role)
+			asks := m.rig.releaseAsks(issue.key, role)
 			if len(asks) == 0 {
 				continue
 			}
@@ -615,15 +605,26 @@ func (m *projectMove) checkNoCharge(t *testing.T, before map[claim.Token]moveCla
 }
 
 // checkNoBundle holds the release to saving nothing: workspace_bundles, where it stands, has the
-// rows it had, and no role process was sent a bundle request.
+// rows it had, and no role process was sent a bundle request by the release.
+//
+// With cybermonklabs/legion#3831 the daemon copies each running workspace over the same bundle
+// request (shimwire.BundleWorkspace), which names no caller, so a request is told by the daemon's
+// caller instead: each copy that asks writes one line of its own (runningCopyLines), and only the
+// requests beyond those lines are another caller's, which here is the release.
 func (m *projectMove) checkNoBundle(t *testing.T, rd *moveRelease) {
 	t.Helper()
-	rows, held := m.rig.bundleRows()
-	if held != rd.held || !slices.Equal(rows, rd.bundles) {
+	rows, bundlesTable := m.rig.bundleRows()
+	if bundlesTable != rd.bundlesTable || !slices.Equal(rows, rd.bundles) {
 		t.Errorf("workspace_bundles holds %v after the %s release, want the %v it held before", rows, rd.name, rd.bundles)
 	}
-	if sent := m.bundleRequests(); len(sent) != rd.bundleReqs {
-		t.Errorf("the role processes were sent the bundle requests %v by the end of the %s release, want none beyond the first %d", sent, rd.name, rd.bundleReqs)
+	sent := m.bundleRequests()
+	beyond := len(sent) - rd.bundleReqs
+	if m.rig.holdsRunningCopies() {
+		beyond -= m.rig.runningCopyLines() - rd.copyLines
+	}
+	if beyond > 0 {
+		t.Errorf("the role processes were sent the bundle requests %v by the end of the %s release, %d of them beyond the first %d and the running copies' own",
+			sent, rd.name, beyond, rd.bundleReqs)
 	}
 }
 
@@ -644,7 +645,7 @@ func (m *projectMove) restartOn(t *testing.T, cluster *issueSandboxAPI, rd *move
 	rd.restarted = time.Now()
 	r.restart()
 	idleRigEventually(t, idleRigReleaseWait, "each claim the "+rd.name+" release stopped running again in the cluster "+cluster.prefix, func() bool {
-		if waiting := len(r.wakesWaiting()); waiting > wakesHeld {
+		if waiting := len(r.api.state().WakesWaiting); waiting > wakesHeld {
 			wakesHeld = waiting
 		}
 		now := m.claimsNow()
@@ -659,12 +660,13 @@ func (m *projectMove) restartOn(t *testing.T, cluster *issueSandboxAPI, rd *move
 	return wakesHeld
 }
 
-// checkStarts holds the boot after a release to R8 as E11 reads it: each stopped claim runs again
-// on its session in a pod of cluster, with no charge; each got one start, every start the boot
-// wrote carries the ruleResume mark, and they went through the wake pace; no wake from outside
-// the daemon started any; the claim whose turn the release cut is sent that turn's task again, no
-// claim is sent the ask again, and no claim holds an open update round; and each new pod's
-// workspace holds the issue's pushed branch and nothing that was not pushed.
+// checkStarts holds the boot after a release to dispatch://INFRA-3583 R8: each stopped claim runs
+// again on its session in a pod of cluster, with no charge; each got one start, every start the
+// boot wrote carries the ruleResume mark, and they went through the wake pace; no wake from
+// outside the daemon started any; the claim whose turn the release cut is sent that turn's task
+// again, no claim is sent the ask again, and no claim holds an open update round; and each new
+// pod's workspace holds the issue's pushed branch and nothing that was not pushed, or, with
+// cybermonklabs/legion#3831, nothing left after the issue's running copy was taken.
 func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *moveRelease, wakesHeld int) {
 	t.Helper()
 	r := m.rig
@@ -696,7 +698,7 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 			continue
 		}
 		role, _ := token.Role()
-		key := c.issue + "/" + string(role)
+		key := idleRigKey(c.issue, string(role))
 		rows := starts[key]
 		if len(rows) != 1 {
 			t.Errorf("%s was given %d starts from the %s release to the boot's, want one: %+v", key, len(rows), rd.name, rows)
@@ -706,7 +708,7 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 		if start.seen.After(rd.restarted) && !start.request.RuleResume {
 			t.Errorf("the boot's start of %s is %+v, which carries no ruleResume mark", key, start.request)
 		}
-		behind := key == m.silent.key+"/"+string(m.silent.role) && rd.entryTask != ""
+		behind := key == idleRigKey(m.silent.key, string(m.silent.role)) && rd.entryTask != ""
 		if behind && start.request.Task != rd.entryTask {
 			t.Errorf("the one start of the claim behind its entry carries the task %q, want the entry's work %q", start.request.Task, rd.entryTask)
 		}
@@ -741,7 +743,7 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 			return idleRigCount(r.agents.prompts(m.turn.key, string(m.turn.role))[turn.prompts:], turn.pendingTask) > 0
 		})
 	}
-	if asks := m.askCounts(); !mapsEqual(asks, rd.asksAfter) {
+	if asks := m.askCounts(); !maps.Equal(asks, rd.asksAfter) {
 		t.Errorf("the release asks after the restart are %v, want the %v the release sent: no claim is sent the ask again", asks, rd.asksAfter)
 	}
 	for token, c := range r.claimsByToken() {
@@ -752,51 +754,44 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 
 	// Each new pod's workspace holds the issue's pushed branch: the role that pushed finds its
 	// work there, working-copy change and all, and the two whose work was lost find none of it.
-	if r.holdsRunningCopies() {
-		t.Fatal("the database holds workspace_running_copies (cybermonklabs/legion#3831): this test reads lost work as a head without #3831 loses it, and its reading with #3831's copy is still to be written")
-	}
 	for _, issue := range []idleRigIssue{m.push, m.answer, m.silent, m.clean, m.turn, m.old} {
 		live, ok := r.work.running(issue.pod)
 		if !ok || live.cluster != cluster.prefix {
 			t.Errorf("the pod of %s runs the workspace %+v, want one in the cluster %s", issue.name, live, cluster.prefix)
 			continue
 		}
-		if !r.work.holds(issue.pod, idleRigBranchFile(issue.key)) {
+		if !r.work.holds(t, issue.pod, idleRigBranchFile(issue.key)) {
 			t.Errorf("the new workspace of %s lacks %s, which its pushed branch holds", issue.name, idleRigBranchFile(issue.key))
 		}
 	}
 	for _, file := range []string{"push-one-" + rd.name + ".txt", "push-two-" + rd.name + ".txt", "push-change-" + rd.name + ".txt"} {
-		if !r.work.holds(m.push.pod, file) {
+		if !r.work.holds(t, m.push.pod, file) {
 			t.Errorf("the new workspace of the role that pushed lacks %s", file)
 		}
 	}
 	if !strings.Contains(r.work.jj(t, m.push.pod, "log", "--no-graph", "-r", "legion/"+m.push.key, "-T", "description"), "pushed when the project release asked") {
 		t.Errorf("the new workspace's legion/%s is not the commit its role pushed", m.push.key)
 	}
+	// With cybermonklabs/legion#3831 a new pod restores the issue's running copy, so the work is
+	// lost only where no copy was taken after it was left: the new workspace may hold work a copy
+	// taken later carried.
+	copies := r.holdsRunningCopies()
 	for _, lost := range []struct {
 		issue idleRigIssue
 		file  string
 	}{{m.answer, "answer-" + rd.name + ".txt"}, {m.silent, "silent-" + rd.name + ".txt"}} {
-		if r.work.holds(lost.issue.pod, lost.file) {
+		if copies {
+			if at, ok := r.runningCopyAt(lost.issue.key); ok && at.After(m.workLeft[rd.name]) {
+				continue
+			}
+		}
+		if r.work.holds(t, lost.issue.pod, lost.file) {
 			t.Errorf("the new workspace of %s holds %s, which its role never pushed", lost.issue.name, lost.file)
 		}
 	}
 }
 
-// mapsEqual is whether two counts hold the same keys and values.
-func mapsEqual(a, b map[string]int) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for key, value := range a {
-		if other, ok := b[key]; !ok || other != value {
-			return false
-		}
-	}
-	return true
-}
-
-// checkLeft holds the pod the release left in cluster to E11: it keeps its disk, and its claims
+// checkLeft holds the pod the release left in cluster: it keeps its disk, and its claims
 // stay held as an operator's suspension.
 func (m *projectMove) checkLeft(t *testing.T, cluster *issueSandboxAPI) {
 	t.Helper()
@@ -808,10 +803,11 @@ func (m *projectMove) checkLeft(t *testing.T, cluster *issueSandboxAPI) {
 	}
 }
 
-// TestAProjectMovesToAnotherClusterAndBack is E11: the move of a project's pods to another
-// cluster with `legion project release` and a restart, and back, on one database, each case of R9
-// a pod of its own (projectMove). Each step is a named subtest, in the order the plan's task 13
-// gives, and each later step reads what the earlier ones left, so a failed step stops the run.
+// TestAProjectMovesToAnotherClusterAndBack is the move of a project's pods to another cluster with
+// `legion project release` and a restart, and back, on one database, each case of
+// dispatch://INFRA-3583 R9 a pod of its own (projectMove). Each step is a named subtest, in the
+// order the move happens, and each later step reads what the earlier ones left, so a failed step
+// stops the run.
 //
 // The controls a tester makes of scratch copies of the release, each of which must fail this test:
 //   - a release that saves each workspace's bundle as the idle release saves it
@@ -823,8 +819,8 @@ func (m *projectMove) checkLeft(t *testing.T, cluster *issueSandboxAPI) {
 //   - a release that sends no ask fails on the same pod.
 //
 // A boot that gives the claim behind its phase entry two starts fails on that claim's starts
-// (checkStarts). The fourth control of E11, the hand deletion with no release, is the last step of
-// this test, and it expects the charge it must see.
+// (checkStarts). The fourth control, the hand deletion with no release, is the last step of this
+// test, and it expects the charge it must see.
 func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
 	began := time.Now()
 	m := newProjectMove(t)
@@ -872,9 +868,9 @@ func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
 			if rd == nil {
 				t.Fatal("the recovery's step made no release for this restart to end")
 			}
-			wakes := m.restartOn(t, first, rd)
+			m.restartOn(t, first, rd)
 			ended, _ := r.readRelease()
-			if ended.ID != rd.release.ID || ended.EndedBy != "boot" {
+			if ended.ID != rd.release.ID || ended.EndedBy != store.ProjectReleaseEndedByBoot {
 				t.Errorf("the recovery's release reads %+v after the restart, want it ended by a boot", ended)
 			}
 			m.checkNoCharge(t, rd.before, "the restart after the recovery")
@@ -884,7 +880,6 @@ func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
 					t.Errorf("the claim %s runs on session %q, want %q", token, now[token].session, rd.before[token].session)
 				}
 			}
-			_ = wakes
 		}},
 		{"a release in the first cluster and a restart on the same configuration give the move's outcomes with each claim again there", func(t *testing.T) {
 			m.leaveWork(t, "again")
@@ -909,7 +904,7 @@ func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
 // then writes no second (StartFor), and every start the boot writes is its own.
 func (m *projectMove) awaitHeldStart(t *testing.T, rd *moveRelease) {
 	t.Helper()
-	key := m.silent.key + "/" + string(m.silent.role)
+	key := idleRigKey(m.silent.key, string(m.silent.role))
 	idleRigEventually(t, idleRigRecordWait, "the outbox holding the start the claim behind its entry is owed", func() bool {
 		starts, _ := rd.starts.seen()
 		return len(starts[key]) > 0
@@ -931,8 +926,8 @@ func (m *projectMove) deliverNotice(t *testing.T) {
 	}
 }
 
-// checkDelivery holds the delivery that arrived during the release to R8: it reached its claim
-// after the boot's start, on the process that start ran, once.
+// checkDelivery holds the delivery that arrived during the release to dispatch://INFRA-3583 R8: it
+// reached its claim after the boot's start, on the process that start ran, once.
 func (m *projectMove) checkDelivery(t *testing.T, rd *moveRelease) {
 	t.Helper()
 	r := m.rig
@@ -974,7 +969,7 @@ func (m *projectMove) dryRun(t *testing.T) {
 
 	unpushed := func(issue idleRigIssue, commits int, changed bool) {
 		t.Helper()
-		line := moveLine(t, dry, issue.pod)
+		line := releaseLine(t, dry, issue.pod)
 		if line.Outcome != api.ReleaseDeletedLost || line.Commits == nil || *line.Commits != commits ||
 			line.WorkingCopyChanged == nil || *line.WorkingCopyChanged != changed || !sameRoles(askedRoles(line), m.runningRoles(issue)) {
 			t.Errorf("the dry run's line of %s is %s, want deleted_lost with %d commits, changed=%v, asking %v",
@@ -986,22 +981,22 @@ func (m *projectMove) dryRun(t *testing.T) {
 	unpushed(m.push, 3, true)
 	unpushed(m.answer, 1, false)
 	unpushed(m.silent, 1, false)
-	if line := moveLine(t, dry, m.old.pod); line.Outcome != api.ReleaseDeletedReadRefused || !strings.Contains(line.Refusal, moveRefusal) ||
+	if line := releaseLine(t, dry, m.old.pod); line.Outcome != api.ReleaseDeletedReadRefused || !strings.Contains(line.Refusal, moveRefusal) ||
 		!line.OtherImage || !sameRoles(askedRoles(line), m.runningRoles(m.old)) {
 		t.Errorf("the dry run's line of the older daemon's pod is %+v, want deleted_read_refused with the shim's refusal %q, marked as another image, asking its roles",
 			line, moveRefusal)
 	}
-	if line := moveLine(t, dry, m.turn.pod); line.Commits == nil || *line.Commits != 0 || !sameRoles(askedRoles(line), m.runningRoles(m.turn)) {
+	if line := releaseLine(t, dry, m.turn.pod); line.Commits == nil || *line.Commits != 0 || !sameRoles(askedRoles(line), m.runningRoles(m.turn)) {
 		t.Errorf("the dry run's line of the pod in a turn is %+v, want nothing unpushed and its roles asked", line)
 	}
-	if line := moveLine(t, dry, m.clean.pod); line.Outcome != api.ReleaseDeletedClean || line.Commits == nil || *line.Commits != 0 ||
+	if line := releaseLine(t, dry, m.clean.pod); line.Outcome != api.ReleaseDeletedClean || line.Commits == nil || *line.Commits != 0 ||
 		line.WorkingCopyChanged == nil || *line.WorkingCopyChanged || len(line.Asked) != 0 {
 		t.Errorf("the dry run's line of the clean pod is %+v, want deleted_clean with nothing unpushed and nobody asked", line)
 	}
-	if line := moveLine(t, dry, m.unstarted.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil {
+	if line := releaseLine(t, dry, m.unstarted.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil {
 		t.Errorf("the dry run's line of the pod no role runs in is %+v, want deleted_unread with no read", line)
 	}
-	if line := moveLine(t, dry, m.held.pod); line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "operator") {
+	if line := releaseLine(t, dry, m.held.pod); line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "operator") {
 		t.Errorf("the dry run's line of the operator's pod is %+v, want left for the operator's suspension", line)
 	}
 	for _, line := range dry.Result.Sandboxes {
@@ -1009,7 +1004,7 @@ func (m *projectMove) dryRun(t *testing.T) {
 			t.Errorf("the dry run marks %s as running another image: %+v", line.Name, line)
 		}
 	}
-	if got := m.askCounts(); !mapsEqual(got, asks) {
+	if got := m.askCounts(); !maps.Equal(got, asks) {
 		t.Errorf("the roles' asks are %v after the dry run, want %v: a dry run asks nothing", got, asks)
 	}
 	if got := r.kube.sandboxNames(); !slices.Equal(got, sandboxes) {
@@ -1044,7 +1039,7 @@ func (m *projectMove) recover(t *testing.T) {
 	if rd.command.code != 0 || rd.release.FinishedAt == nil {
 		t.Fatalf("the recovery's release exited %d with %+v, want 0 and finished", rd.command.code, rd.release)
 	}
-	line := moveLine(t, rd.release, m.held.pod)
+	line := releaseLine(t, rd.release, m.held.pod)
 	if line.Outcome != api.ReleaseDeletedClean || len(line.Asked) != 1 || line.Asked[0].AnsweredAt == nil {
 		t.Errorf("the recovery's line of the once-left pod is %+v, want its role asked, answered, and the pod deleted with nothing unpushed", line)
 	}
@@ -1105,7 +1100,7 @@ func (m *projectMove) restartDuringRelease(t *testing.T) {
 	<-done
 	r.restart()
 	ended, _ := r.readRelease()
-	if ended.ID != running.ID || ended.EndedBy != "boot" || ended.FinishedAt != nil {
+	if ended.ID != running.ID || ended.EndedBy != store.ProjectReleaseEndedByBoot || ended.FinishedAt != nil {
 		t.Errorf("the unfinished release reads %+v after the restart, want release %d ended by a boot before it finished", ended, running.ID)
 	}
 	defer func() {
@@ -1149,52 +1144,61 @@ func (m *projectMove) restartDuringRelease(t *testing.T) {
 	rd.starts.end()
 }
 
-// handDeletion is E11's control: the daemon stopped, every Sandbox of the first cluster deleted by
-// hand with no release, and the daemon restarted on the second cluster's configuration. A move made
-// so is charged a launch failure or a death, and loses the unpushed commit the release would have
-// asked its role to push.
+// handDeletion is the move's control: the daemon stopped, every Sandbox of the first cluster
+// deleted by hand with no release, and the daemon restarted on the second cluster's configuration.
+// A move made so is charged a launch failure or a death, and loses the unpushed commit the release
+// would have asked its role to push.
+//
+// With cybermonklabs/legion#3831 the daemon keeps a copy of each running workspace and continues a
+// pod the cluster ended uncharged, so the control reads, in place of a charge, the loss of the work
+// newer than that copy: work left once the daemon has stopped, which no copy follows.
 func (m *projectMove) handDeletion(t *testing.T) {
 	r := m.rig
-	if r.holdsRunningCopies() {
-		t.Fatal("the database holds workspace_running_copies (cybermonklabs/legion#3831): with #3831 this control reads lost work newer than its copy in place of a charge, which is still to be written")
+	copies := r.holdsRunningCopies()
+	if !copies {
+		m.leaveWork(t, "hand")
 	}
-	m.leaveWork(t, "hand")
 	before := m.claimsNow()
 	r.stopDaemon()
+	if copies {
+		m.leaveWork(t, "hand")
+	}
 	if deleted := r.kube.deleteEverySandbox(); len(deleted) == 0 {
 		t.Fatal("the first cluster held no Sandbox to delete by hand")
 	}
 	r.aimAt(r.second)
 	r.restart()
-	charged := ""
-	idleRigEventually(t, idleRigReleaseWait, "a launch failure or a death charged for a pod deleted by hand", func() bool {
-		for token, now := range m.claimsNow() {
-			if was, ok := before[token]; ok && (now.launchFailures > was.launchFailures || now.deaths > was.deaths) {
-				charged = fmt.Sprintf("%s: launch failures %d → %d, deaths %d → %d", token, was.launchFailures, now.launchFailures, was.deaths, now.deaths)
-				return true
+	if !copies {
+		charged := ""
+		idleRigEventually(t, idleRigReleaseWait, "a launch failure or a death charged for a pod deleted by hand", func() bool {
+			for token, now := range m.claimsNow() {
+				if was, ok := before[token]; ok && (now.launchFailures > was.launchFailures || now.deaths > was.deaths) {
+					charged = fmt.Sprintf("%s: launch failures %d → %d, deaths %d → %d", token, was.launchFailures, now.launchFailures, was.deaths, now.deaths)
+					return true
+				}
 			}
-		}
-		return false
-	})
-	t.Logf("the hand deletion was charged: %s", charged)
+			return false
+		})
+		t.Logf("the hand deletion was charged: %s", charged)
+	}
 	token := r.token(m.silent)
 	idleRigEventually(t, idleRigReleaseWait, "the claim of the pod with an unpushed commit running again in the second cluster", func() bool {
 		live, ok := r.work.running(m.silent.pod)
 		c := m.claimsNow()[token]
 		return ok && live.cluster == r.second.prefix && idleRigWorking(c.state) && strings.HasPrefix(c.pod, r.second.prefix)
 	})
-	if r.work.holds(m.silent.pod, "silent-hand.txt") {
+	if r.work.holds(t, m.silent.pod, "silent-hand.txt") {
 		t.Errorf("the workspace of %s holds its unpushed commit after the hand deletion, which no move made so keeps", m.silent.name)
 	}
 }
 
-// TestAProjectMovesBackToTheFirstCluster is E12's third test: a daemon whose runtime is aimed at
-// the stand-in for the second cluster, with issue pods there and the controller's pod, runs
-// `legion project release --operator-token-file <file> --json` and keeps the claims it prints; it
-// is stopped, and booted again on the same database and state directory aimed at the stand-in for
-// the first cluster. The release exits 0 and leaves no Sandbox of the project in the second
-// cluster, and each printed claim starts in the first at the boot, on the session the release
-// printed, with no death and no launch failure.
+// TestAProjectMovesBackToTheFirstCluster is the move back to the cluster a project left: a daemon
+// whose runtime is aimed at the stand-in for the second cluster, with issue pods there and the
+// controller's pod, runs `legion project release --operator-token-file <file> --json` and keeps the
+// claims it prints; it is stopped, and booted again on the same database and state directory aimed
+// at the stand-in for the first cluster. The release exits 0 and leaves no Sandbox of the project
+// in the second cluster, and each printed claim starts in the first at the boot, on the session the
+// release printed, with no death and no launch failure.
 //
 // Its two controls are a tester's scratch copies, each of which must fail it: a copy that restarts
 // the daemon still aimed at the second cluster, where a claim then starts in the cluster the

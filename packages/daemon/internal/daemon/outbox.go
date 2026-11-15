@@ -618,9 +618,10 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 	}
 }
 
-// routineWait is a wait nobody has to act on for Legion, which ends on its own: a Dispatch claim
-// release waiting on the claim's holder or on a contended answer (claimWait), which the hour
-// claimReleaseWait caps rather than an operator.
+// routineWait is a wait nobody has to act on for Legion, which ends on its own (routineWaitError):
+// a Dispatch claim release waiting on the claim's holder or on a contended answer, which the hour
+// claimReleaseWait caps rather than an operator, and a row the project release holds until the
+// daemon's next boot, which the operator who released the project asked for.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
@@ -1585,7 +1586,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 //
 // The project release's ask rides this row too, under the release's own round ("release:<id>",
 // projectReleaseRound), which no claim records: the release keeps its asks on its own record and
-// writes no round column of a claim (decision 6 of dispatch://INFRA-3583's plan). So an ask whose
+// writes no round column of a claim, so no pod update round reads it as its own. So an ask whose
 // round is the release's of this process (projectRelease.askRound) is published without that read.
 // One this process did not ask, a row an earlier process left, meets the claim-round read like
 // any other once the boot that ended its release lets it run, and since no claim records that

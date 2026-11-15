@@ -19,7 +19,8 @@ import (
 // unpushedRevset is the commits of a workspace's unpushed work: every visible commit no remote
 // branch or tag holds, on any head, less each workspace's working copy with no change and less the
 // root commit. It starts from the set the bundle builder keeps (bundleKeptRevset) and is written
-// out here rather than built from it, because the read stays when the idle release stops bundling.
+// out here rather than built from it, because dispatch://INFRA-3271's R4 removes the bundle code,
+// and this read stays.
 //
 // Every empty working copy is subtracted, not only this workspace's own. A pod's shared clone has
 // a workspace of its own, `default`, whose working copy is an empty commit on the default branch

@@ -509,7 +509,7 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
 		// The project release's mark, which the runtime reads at every act that would make a pod
 		// of the project, so no path that skips the launch check makes one while it holds.
-		opts.Held = held
+		opts.ProjectReleaseHolds = held
 		// The two halves of the release's saved work: an idle release puts the issue's unpushed
 		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
 		// replaces the released one before any role of that pod starts. The confirmation deletes

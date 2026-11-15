@@ -43,17 +43,17 @@ func wantReleaseRefusal(t *testing.T, recorder *httptest.ResponseRecorder, reque
 	}
 	var failure Failure
 	decodeInto(t, recorder, &failure)
-	if failure.Code != projectReleased || failure.Error != request+" refused: "+ProjectReleaseHolds {
+	if failure.Code != projectReleased || failure.Error != request+" refused: "+ProjectReleaseHeldSentence {
 		t.Fatalf("%s while the project is released answered %+v, want code %s and %q", request, failure, projectReleased,
-			request+" refused: "+ProjectReleaseHolds)
+			request+" refused: "+ProjectReleaseHeldSentence)
 	}
 }
 
-// R7 and decision 9 of dispatch://INFRA-3583's plan: while the daemon's project release holds every
-// start, the operator's spawn, retry, resume and deliver, and either door's fresh session and
-// compaction, are refused 409 with a sentence naming the release, and the claim is asked nothing:
-// no runtime call, no task, no state change. The same request on the same claim with the mark clear
-// goes through, so the refusal is the mark's and nothing else's.
+// dispatch://INFRA-3583 R7: while the daemon's project release holds every start, the operator's
+// spawn, retry, resume and deliver, and either door's fresh session and compaction, are refused
+// 409 with a sentence naming the release, and the claim is asked nothing: no runtime call, no
+// task, no state change. The same request on the same claim with the mark clear goes through, so
+// the refusal is the mark's and nothing else's.
 func TestProjectReleaseRefusesEveryStartAndPromptOfARole(t *testing.T) {
 	t.Run("spawn", func(t *testing.T) {
 		h, released := projectReleaseHarness(t)
@@ -196,13 +196,26 @@ func TestProjectReleaseRefusesEveryStartAndPromptOfARole(t *testing.T) {
 // The routes the project release does not hold still answer while it holds: an operator's suspend
 // and stop end processes and start none, which is what a release needs of a left pod's claims.
 func TestProjectReleaseLeavesTheSuspendOfAClaimToTheOperator(t *testing.T) {
-	h, released := projectReleaseHarness(t)
-	token := readyImplementer(t, h)
-	released.Store(true)
-	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusOK {
-		t.Fatalf("suspend while the project is released = %d, want 200; body %s", recorder.Code, recorder.Body)
-	}
-	if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByOperator {
-		t.Fatalf("after the suspend the claim is %s by %q, want suspended by the operator", got.State, got.SuspendedBy)
-	}
+	t.Run("suspend", func(t *testing.T) {
+		h, released := projectReleaseHarness(t)
+		token := readyImplementer(t, h)
+		released.Store(true)
+		if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusOK {
+			t.Fatalf("suspend while the project is released = %d, want 200; body %s", recorder.Code, recorder.Body)
+		}
+		if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByOperator {
+			t.Fatalf("after the suspend the claim is %s by %q, want suspended by the operator", got.State, got.SuspendedBy)
+		}
+	})
+	t.Run("stop", func(t *testing.T) {
+		h, released := projectReleaseHarness(t)
+		token := readyImplementer(t, h)
+		released.Store(true)
+		if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/stop", nil); recorder.Code != http.StatusOK {
+			t.Fatalf("stop while the project is released = %d, want 200; body %s", recorder.Code, recorder.Body)
+		}
+		if state := h.stored(token).State; state != supervise.StateRetired {
+			t.Fatalf("after the stop the claim is %s, want it retired", state)
+		}
+	})
 }

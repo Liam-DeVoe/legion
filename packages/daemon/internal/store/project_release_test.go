@@ -95,7 +95,7 @@ func outboxIDs(t *testing.T, st *Store) []int64 {
 // The record: the release's id, its project, its start and its bound, unfinished and unended,
 // with the empty result.
 //
-// The take-over of every idle release of the project in flight (decision 10 of the plan): each
+// The take-over of every idle release of the project in flight: each
 // mark goes, and the rows of that release still queued — the save, the role stops and the
 // teardown — are finished without acting, while a delivery the issue holds inside the mark's range
 // and a start queued after it stand, and a claim the idle release had already suspended stays
@@ -176,17 +176,16 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 	})
 
 	t.Run("the take-over of the idle releases in flight", func(t *testing.T) {
+		// The release of the pod no role can use (LEGION-210) suspended no role, so it names none.
 		wantTaken := []TakenOverIdleRelease{
-			{Issue: "LEGION-209", Generation: 3, Suspended: []claim.Role{claim.RoleReviewer}},
-			{Issue: "LEGION-210", Generation: 3, SuspendsNoRole: true},
+			{Issue: "LEGION-209", Suspended: []claim.Role{claim.RoleReviewer}},
+			{Issue: "LEGION-210"},
 		}
 		if len(takenOver) != len(wantTaken) {
 			t.Fatalf("taken over %+v, want %+v", takenOver, wantTaken)
 		}
 		for i := range wantTaken {
-			got, want := takenOver[i], wantTaken[i]
-			if got.Issue != want.Issue || got.Generation != want.Generation || got.SuspendsNoRole != want.SuspendsNoRole ||
-				!slices.Equal(got.Suspended, want.Suspended) {
+			if got, want := takenOver[i], wantTaken[i]; got.Issue != want.Issue || !slices.Equal(got.Suspended, want.Suspended) {
 				t.Fatalf("taken over %+v, want %+v", takenOver, wantTaken)
 			}
 		}

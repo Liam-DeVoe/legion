@@ -204,12 +204,12 @@ type overrides struct {
 	// that default, which a kubernetes-runtime test without a real cluster has no other way to
 	// drive, since such a test configures no runtime.kubernetes.plugins and links no plugin pair.
 	pluginRelaunchable *bool
-	// checkLaunch stands in for the store's own CheckLaunch (supervise.Store), wrapping the real
-	// store so every launch's recheck refuses first when this does, then asks the real store
-	// (launchGatedStore, internal/daemon/launchgate.go): a test's way to refuse a relaunch the way
+	// checkLaunch stands in for the store's own CheckLaunch (supervise.Store): every launch's
+	// recheck asks it after the project release's mark and before the real store
+	// (launchGatedStore, internal/daemon/launchgate.go), a test's way to refuse a relaunch the way
 	// a reserved tree cleanup or a transient store error would, without a lifecycle this pod has
-	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
-	// own check.
+	// none of to reserve. nil, in production, adds nothing: a launch the mark lets through reaches
+	// the real store's own check.
 	checkLaunch func(context.Context, supervise.Claim) error
 }
 
@@ -824,7 +824,8 @@ type plan struct {
 // resolved against, one repository at a time (appauth.GitHubCredential), which the Sandbox
 // runtime's repository caches follow too. held is whether the daemon's project release holds
 // every pod now (projectRelease.held), which the Sandbox runtime reads at every act that would
-// make one (sandbox.Options.Held); a runtime that runs no pod takes it and reads nothing of it.
+// make one (sandbox.Options.ProjectReleaseHolds); a runtime that runs no pod takes it and reads
+// nothing of it.
 // openSupervision hands it the plan the workflow completed, so no factory reads a field the
 // workflow sets after prepare.
 type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
@@ -1530,9 +1531,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// A release whose record did not commit clears the mark, and every task the machines held
 	// back while it stood is sent then rather than at each claim's next event. Set here, at boot,
 	// before anything can set the mark.
-	if p.release != nil {
-		p.release.unmarked = sup.sendHeldTasks
-	}
+	p.release.unmarked = sup.sendHeldTasks
 	return supervisionOf, nil
 }
 
@@ -2769,8 +2768,9 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		state.Repositories = s.repositories.view(caches)
 	}
 	// The project's newest release, read in the same snapshot as every other durable fact here,
-	// so the body shows the release as its own GET answers it at that moment (R7: a released
-	// daemon still serves its API, and the state shows the release and its result).
+	// so the body shows the release as its own GET answers it at that moment
+	// (dispatch://INFRA-3583 R7: a released daemon still serves its API, and the state shows the
+	// release and its result).
 	release, found, err := s.store.ReadProjectReleaseTx(ctx, tx, s.projectToken)
 	if err != nil {
 		return api.State{}, nil, err

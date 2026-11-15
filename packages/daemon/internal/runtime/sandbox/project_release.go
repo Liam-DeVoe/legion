@@ -75,14 +75,16 @@ func projectSandboxKind(labels map[string]string) runtime.ProjectSandboxKind {
 }
 
 // DeleteProjectSandbox deletes the repository cache's or the image probe's Sandbox name for a
-// project release, through the delete the cache sweep retires a cache with (deleteFenced): under
-// the pod's launch turn, fenced to the Sandbox as the API holds it now, so its foreground delete
-// takes the cache's volume and Secret with it, and behind the session-volume guard, whose refusal
-// is answered. The Sandbox is read from the API rather than the informer's store, because the
-// fence is the object's resourceVersion and a store a write behind would make the delete a
-// conflict, which the orphan sweep would judge again at a sweep the release holds. A Sandbox
-// already gone is deleted; one of another kind is refused, since an issue's pod and the
-// controller's go through their own deletes.
+// project release, through the fenced delete the cache sweep retires a cache with: under the pod's
+// launch turn, fenced to the Sandbox as the API holds it now, so its foreground delete takes the
+// cache's volume and Secret with it, and behind the session-volume guard, whose refusal is
+// answered. The Sandbox is read from the API rather than the informer's store, because the fence
+// is the object's resourceVersion and a store a write behind would make the delete a conflict. A
+// Sandbox written between the read and the delete is refused (deleteFencedOrRefuse) rather than
+// kept in silence as the sweep's own delete keeps it: the release holds the sweep, and the sweep
+// takes no cache or probe anyway, so the release reports the Sandbox left. A Sandbox already gone
+// is deleted; one of another kind is refused, since an issue's pod and the controller's go
+// through their own deletes.
 func (r *Runtime) DeleteProjectSandbox(ctx context.Context, name string) error {
 	release, err := r.lockPod(ctx, name)
 	if err != nil {
@@ -111,5 +113,5 @@ func (r *Runtime) DeleteProjectSandbox(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	return r.deleteFenced(ctx, s, "sandbox runtime: the project release deleted a Sandbox", "kind", string(kind))
+	return r.deleteFencedOrRefuse(ctx, s, "sandbox runtime: the project release deleted a Sandbox", "kind", string(kind))
 }

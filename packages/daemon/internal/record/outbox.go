@@ -780,8 +780,9 @@ type SuperviseRequest struct {
 	// ReconcileAwaiting), the roles admission brings back beside a re-admitted member's phase
 	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), the
 	// boot's one-time start of a merger the `awaiting_merge` cutover left released (workflow's
-	// cutoverMergerRepair), the boot's task-less start of a claim the project release stopped
-	// (workflow's startReleaseStopped), the phase's resume task a ready worker level with the
+	// cutoverMergerRepair), the boot's start of a claim the project release stopped that is not
+	// behind its entry, with no task or a phase owner's resume task (workflow's
+	// startReleaseStopped), the phase's resume task a ready worker level with the
 	// entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
 	// resume task to a silent worker level with that entry (workflow's workerSilent), a
 	// production check's look (workflow's startLook, and the boot's start of the open look
@@ -1174,12 +1175,16 @@ func (p HookPrompt) Message(issue string) string {
 		p.Hook, issue, p.From, p.To, p.Prompt, p.Count, counts, pull)
 }
 
-// UpdateAsk is an update round's ask to one role of the issue, on that role's own Envoy topic:
-// the daemon opened Round over Pod and will replace that pod, and Text is the whole ask, as the
-// sweep built it with supervise.UpdateTask from the round's recorded reasons and its recorded
-// opening. Role is the recipient: a phase worker or the issue's architect, since every role whose
-// process runs in the pod loses that process at the replacement. Pod is the pod the round was
-// opened over: the sweep asks only a round whose claims record one.
+// UpdateAsk is an ask to one role of the issue, on that role's own Envoy topic: an update round's,
+// or the project release's. Text is the whole ask. Role is the recipient: a phase worker or the
+// issue's architect, since every role whose process runs in the pod loses that process when the
+// pod goes. Pod is the pod the ask is about: the pod an update round was opened over (the sweep
+// asks only a round whose claims record one), or the pod the release deletes at its bound.
+//
+// An update round's ask: the daemon opened Round over Pod and will replace that pod, and Text is
+// what the sweep built with supervise.UpdateTask from the round's recorded reasons and its
+// recorded opening. The project release's ask (supervise.ReleaseTask): Round is the running
+// release's own round, "release:<id>", which no claim's round columns record.
 //
 // The row carries the finished text rather than the facts to build it from, for two reasons.
 // record does not import supervise, which owns the words. And the round's terms are fixed when
@@ -1187,8 +1192,10 @@ func (p HookPrompt) Message(issue string) string {
 // opened for.
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
-// row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records finishes without a publish (the daemon's updateAsk).
+// row whose role no live session holds finishes undelivered, and a row of an update round the
+// claim no longer records finishes without a publish (the daemon's updateAsk). A release's ask is
+// checked against the running release's round instead of the claim's, and one of a release that
+// no longer runs finishes without a publish.
 type UpdateAsk struct {
 	Role  claim.Role `json:"role"`
 	Round string     `json:"round"`

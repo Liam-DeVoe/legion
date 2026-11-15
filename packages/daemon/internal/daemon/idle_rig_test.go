@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -755,34 +754,11 @@ func (r *idleWakeRig) restart() {
 	r.t.Helper()
 	r.stopDaemon()
 	if r.options.holdStream {
-		holdPortAgain(r.owner(), r.cfg.Port)
+		holdPort(r.t, r.owner(), "127.0.0.1", r.cfg.Port)
 	} else {
 		rebindHeldPorts(r.t, &r.cfg)
 	}
 	r.boot()
-}
-
-// holdPortAgain holds the loopback port a stopped daemon served for the next daemon's listen
-// (heldListen), as holdPortOn holds a fresh one. The stopped daemon closed its listener, so the
-// port binds again at once.
-func holdPortAgain(t *testing.T, port int) {
-	t.Helper()
-	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	listener, err := net.Listen("tcp", address)
-	if err != nil {
-		t.Fatalf("hold the daemon's port %d again: %v", port, err)
-	}
-	heldPorts.Lock()
-	heldPorts.byAddress[address] = listener
-	heldPorts.Unlock()
-	t.Cleanup(func() {
-		heldPorts.Lock()
-		if heldPorts.byAddress[address] == listener {
-			delete(heldPorts.byAddress, address)
-		}
-		heldPorts.Unlock()
-		_ = listener.Close()
-	})
 }
 
 // newRuntime is the runtime factory the daemon boots with: the real Sandbox runtime
@@ -802,7 +778,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
 	tools := r.toolsDir()
-	opts.Conns, opts.StreamURL, opts.Store, opts.Held = listener, address, st, held
+	opts.Conns, opts.StreamURL, opts.Store, opts.ProjectReleaseHolds = listener, address, st, held
 	// The two halves of a release's saved work, as the daemon's own factory hands them to the
 	// runtime it builds (sandboxRuntime): what the launcher of the pod that replaces a released
 	// one is sent before any role of that pod starts, and what the launcher's confirmation

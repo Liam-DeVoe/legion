@@ -182,7 +182,7 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 // second rule's kind is a release nobody can carry out.
 //
 // Neither rule's release starts while the project has a project release no boot has ended
-// (project_releases.ended_at null): the transaction refuses with ErrProjectReleaseRunning before
+// (project_releases.ended_at null): the transaction refuses with errProjectReleaseRunning before
 // it reads the view or decides anything, since that release holds every pod of the project until
 // the daemon's next boot (dispatch://INFRA-3583 R7).
 func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
@@ -204,7 +204,7 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			return err
 		}
 		if running {
-			return ErrProjectReleaseRunning
+			return errProjectReleaseRunning
 		}
 		view, err := readIdleView(ctx, tx, project, issue)
 		if err != nil {

@@ -3,21 +3,24 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// heldRig is a rig whose runtime reads held as the daemon's project release mark (Options.Held).
+// heldRig is a rig whose runtime reads held as the daemon's project release mark
+// (Options.ProjectReleaseHolds).
 func heldRig(t *testing.T) (*rig, *atomic.Bool) {
 	t.Helper()
 	held := &atomic.Bool{}
-	g := newRig(t, nil, withOptions(func(o *Options) { o.Held = held.Load }))
+	g := newRig(t, nil, withOptions(func(o *Options) { o.ProjectReleaseHolds = held.Load }))
 	return g, held
 }
 
@@ -48,11 +51,11 @@ func wantReleased(t *testing.T, g *rig, what string, err error) {
 	}
 }
 
-// R7: while the daemon's project release holds every pod, the Sandbox runtime makes none, whatever
-// path asks — a launch into an issue with no Sandbox, a relaunch into a Suspended one, a repository
-// cache made or its pod made again, an image probe, a pod update round's replacement — and each
-// refuses with runtime.ErrProjectReleased before it writes. With the mark clear the same act goes
-// through.
+// dispatch://INFRA-3583 R7: while the daemon's project release holds every pod, the Sandbox
+// runtime makes none, whatever path asks — a launch into an issue with no Sandbox, a relaunch into
+// a Suspended one, a repository cache made or its pod made again, an image probe, a pod update
+// round's replacement — and each refuses with runtime.ErrProjectReleased before it writes. With
+// the mark clear the same act goes through.
 func TestProjectReleaseHoldsEverySandboxTheRuntimeWouldMake(t *testing.T) {
 	t.Run("a launch into an issue with no sandbox", func(t *testing.T) {
 		g, held := heldRig(t)
@@ -179,4 +182,81 @@ func TestProjectReleaseHoldsEverySandboxTheRuntimeWouldMake(t *testing.T) {
 			t.Fatalf("the replacement with the mark clear left the Sandbox %s, want it suspended", mode)
 		}
 	})
+}
+
+// A project release's delete of the controller's Sandbox, or of a repository cache's, refuses a
+// Sandbox written since its delete was decided, where the runtime's own deletes keep it for the
+// next orphan sweep and answer nil: the release holds that sweep until the daemon's next boot, and
+// the sweep takes no cache at all, so a Sandbox kept so would stand while the release recorded it
+// deleted. The refusal names the Sandbox kept, and the Sandbox stays; the same delete of a Sandbox
+// unwritten since goes through.
+func TestAProjectReleaseDeleteRefusesASandboxWrittenSinceItWasRead(t *testing.T) {
+	cache := CacheSandboxName(testProject, cacheRepo)
+	for name, tc := range map[string]struct {
+		sandbox  string
+		objects  func(t *testing.T) []k8sruntime.Object
+		start    func(t *testing.T, g *rig)
+		deleteIt func(g *rig) error
+	}{
+		"the controller's": {
+			sandbox: SandboxName(controllerToken),
+			objects: func(*testing.T) []k8sruntime.Object { return nil },
+			// The controller's delete is fenced to the store's copy, so the test waits for the store
+			// to hold the Sandbox as the API does before the delete is asked.
+			start: func(t *testing.T, g *rig) {
+				g.spawn(controllerSpec(t))
+				setResourceVersion(g, SandboxName(controllerToken), "rv-read")
+				g.eventually("the store to hold the Sandbox as read", func() bool { return storedVersion(g, SandboxName(controllerToken)) == "rv-read" })
+			},
+			deleteIt: func(g *rig) error { return g.r.ReleaseProjectController(g.ctx, controllerToken) },
+		},
+		"a repository cache's": {
+			sandbox: cache,
+			objects: func(t *testing.T) []k8sruntime.Object {
+				return []k8sruntime.Object{cacheObject(t, cacheRepo, "uid-cache", modeRunning, "")}
+			},
+			start:    func(*testing.T, *rig) {},
+			deleteIt: func(g *rig) error { return g.r.DeleteProjectSandbox(g.ctx, cache) },
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var written atomic.Bool
+			var g *rig
+			hooks := &sandboxHooks{
+				beforeDelete: func(name string) {
+					if name == tc.sandbox && written.CompareAndSwap(true, false) {
+						setResourceVersion(g, name, "rv-written")
+					}
+				},
+				afterGet: func(string) {},
+			}
+			g = newRig(t, tc.objects(t), withSandboxHooks(hooks))
+			g.dyn.PrependReactor("delete", "sandboxes", fenceSandboxDeletes(g))
+			tc.start(t, g)
+
+			written.Store(true)
+			if err := tc.deleteIt(g); !errors.Is(err, errWrittenSinceRead) || !strings.Contains(err.Error(), tc.sandbox) {
+				var stands string
+				if s := g.sandbox(tc.sandbox); s != nil {
+					stands = fmt.Sprintf("rv %q, deletion %v, labels %v", s.ResourceVersion, s.DeletionTimestamp, s.Labels)
+				}
+				t.Fatalf("the release's delete of a Sandbox written since it was read = %v, want the refusal naming %s (delete asked: %t; the Sandbox: %s; writes %v)",
+					err, tc.sandbox, !written.Load(), stands, g.writes())
+			}
+			if written.Load() {
+				t.Fatal("the Sandbox was never asked to be deleted")
+			}
+			if g.sandbox(tc.sandbox) == nil {
+				t.Fatal("a Sandbox written since the release's delete was decided was deleted")
+			}
+
+			g.eventually("the store to hold the Sandbox as written", func() bool { return storedVersion(g, tc.sandbox) == "rv-written" })
+			if err := tc.deleteIt(g); err != nil {
+				t.Fatalf("the release's delete of a Sandbox unwritten since it was read: %v", err)
+			}
+			if s := g.sandbox(tc.sandbox); s != nil {
+				t.Fatalf("the Sandbox %s, unwritten since the second delete read it, is still there", s.Name)
+			}
+		})
+	}
 }

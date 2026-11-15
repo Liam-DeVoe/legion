@@ -218,11 +218,11 @@ func claimRuns(state supervise.ClaimState) bool {
 // a sub-architect whose session is being stopped; it goes on up the tree, as it will once the stop
 // returns.
 //
-// A released claim is the one suspended claim that keeps its role. Its pod was released while it
-// was idle and its session, its phase and its task are all as it left them: the notice is still
-// its owner's, and the wake is what brings the owner back for it (outbox.wakeForDelivery). Were
-// it to lose its role here, a notice for a released sub-architect would walk up to the architect
-// above it, which owns neither the issue nor the answer.
+// A released claim is a suspended claim that keeps its role. Its pod was released while it was
+// idle and its session, its phase and its task are all as it left them: the notice is still its
+// owner's, and the wake is what brings the owner back for it (outbox.wakeForDelivery). Were it to
+// lose its role here, a notice for a released sub-architect would walk up to the architect above
+// it, which owns neither the issue nor the answer.
 //
 // A claim the project release stopped keeps its role for the same reason: its session, its phase
 // and its task are as the release left them, and the daemon's next boot starts it again

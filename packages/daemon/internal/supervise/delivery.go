@@ -559,7 +559,9 @@ func (c Claim) openRoundHoldsTask() bool {
 // A daemon whose project release holds every start hands no claim anything at all
 // (Deps.ProjectReleaseHolds): the release deletes the pod at its bound, so a task a role took up
 // when its turn ended would be work held open to that bound and lost with the pod. The task stays
-// pending, and the ready of the process the next boot starts sends it.
+// pending, and the ready of the process the next boot starts sends it, or, when the release's
+// record did not commit and the mark was cleared in this process, the IssueTurnEnded the daemon
+// posts to every machine then (internal/daemon's sendHeldTasks).
 //
 // This daemon queues no ask of an update round as a task: it publishes the ask to the role's
 // Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
@@ -594,8 +596,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	if state := m.claim.State; (state != StateReady && state != StateIdle) || m.held != nil || m.launchWaits() {
 		return nil
 	}
-	// Nor is any claim while the daemon's project release holds every start: the task stays
-	// pending, and the ready of the process the next boot starts sends it (Deps.ProjectReleaseHolds).
+	// Nor is any claim while the daemon's project release holds every start (the doc above).
 	if m.deps.ProjectReleaseHolds != nil && m.deps.ProjectReleaseHolds() {
 		return nil
 	}

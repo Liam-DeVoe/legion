@@ -37,7 +37,6 @@ import (
 // environment names a stand-in of the shared check that clears every write, as the shim's own
 // workspace tests name one (leakguardtest).
 type idleRigWorkspaces struct {
-	t    *testing.T
 	root string
 	// remote is the bare repository standing for GitHub; repo is the repository the rig's issues
 	// are on (liveRepo), whose GitHub URL each clone's origin names.
@@ -54,10 +53,10 @@ type idleRigWorkspaces struct {
 	live map[string]idleRigWorkspace
 }
 
-// idleRigWorkspace is one running pod's workspace: the cluster that holds the pod, the disk the
-// workspace is on, and its directory.
+// idleRigWorkspace is one running pod's workspace: the cluster that holds the pod, and its
+// directory.
 type idleRigWorkspace struct {
-	cluster, disk, dir string
+	cluster, dir string
 }
 
 func newIdleRigWorkspaces(t *testing.T, keys []string) *idleRigWorkspaces {
@@ -75,7 +74,7 @@ func newIdleRigWorkspaces(t *testing.T, keys []string) *idleRigWorkspaces {
 		tools[tool] = path
 	}
 	root := t.TempDir()
-	w := &idleRigWorkspaces{t: t, root: root, remote: filepath.Join(root, "remote.git"), repo: repo,
+	w := &idleRigWorkspaces{root: root, remote: filepath.Join(root, "remote.git"), repo: repo,
 		home: filepath.Join(root, "home"), leakCheck: leakguardtest.Write(t, root, leakguardtest.Passes), tools: tools,
 		live: map[string]idleRigWorkspace{}}
 	for _, dir := range []string{w.home, filepath.Join(root, "disks")} {
@@ -94,7 +93,7 @@ func newIdleRigWorkspaces(t *testing.T, keys []string) *idleRigWorkspaces {
 	git := fixturegit.Runner{TB: t, Env: w.env()}
 	git.Run(root, fixturegit.InitBare(w.remote, "main")...)
 	git.Run(seed, fixturegit.InitWorkTree(seed, "main")...)
-	w.writeFile(filepath.Join(seed, "README.md"), "The project the rig's issues are on.\n")
+	writeRigFile(t, filepath.Join(seed, "README.md"), "The project the rig's issues are on.\n")
 	git.Run(seed, "git", "add", "-A")
 	git.Run(seed, "git", "commit", "--quiet", "-m", "The project's main")
 	git.Run(seed, "git", "remote", "add", "origin", w.remote)
@@ -103,7 +102,7 @@ func newIdleRigWorkspaces(t *testing.T, keys []string) *idleRigWorkspaces {
 	// from one on main or on another issue's branch.
 	for _, key := range keys {
 		git.Run(seed, "git", "checkout", "--quiet", "-b", "legion/"+key, "main")
-		w.writeFile(filepath.Join(seed, idleRigBranchFile(key)), "The branch of "+key+".\n")
+		writeRigFile(t, filepath.Join(seed, idleRigBranchFile(key)), "The branch of "+key+".\n")
 		git.Run(seed, "git", "add", "-A")
 		git.Run(seed, "git", "commit", "--quiet", "-m", "The branch of "+key)
 		git.Run(seed, "git", "push", "--quiet", "origin", "legion/"+key)
@@ -121,10 +120,12 @@ func (w *idleRigWorkspaces) env() []string {
 	return append(fixtureenv.Isolated(w.home), "PATH="+os.Getenv("PATH"), "PUBLIC_LEAK_CHECK="+w.leakCheck)
 }
 
-func (w *idleRigWorkspaces) writeFile(path, content string) {
-	w.t.Helper()
+// writeRigFile writes content to path, failing t when it cannot: the caller's own test, so a step
+// that fails here fails as that step.
+func writeRigFile(t *testing.T, path, content string) {
+	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		w.t.Fatal(err)
+		t.Fatal(err)
 	}
 }
 
@@ -159,7 +160,7 @@ func (w *idleRigWorkspaces) provision(ctx context.Context, cluster, disk, pod, k
 		return fmt.Errorf("provision %s's workspace on disk %s: %w", key, disk, err)
 	}
 	w.mu.Lock()
-	w.live[pod] = idleRigWorkspace{cluster: cluster, disk: disk, dir: provisioned.Dir}
+	w.live[pod] = idleRigWorkspace{cluster: cluster, dir: provisioned.Dir}
 	w.mu.Unlock()
 	return nil
 }
@@ -194,12 +195,12 @@ func (w *idleRigWorkspaces) running(pod string) (idleRigWorkspace, bool) {
 	return live, ok
 }
 
-// dir is the workspace of the running pod, failing the test when the pod runs none.
-func (w *idleRigWorkspaces) dir(pod string) string {
-	w.t.Helper()
+// dir is the workspace of the running pod, failing t when the pod runs none.
+func (w *idleRigWorkspaces) dir(t *testing.T, pod string) string {
+	t.Helper()
 	live, ok := w.running(pod)
 	if !ok {
-		w.t.Fatalf("the pod %s runs no workspace", pod)
+		t.Fatalf("the pod %s runs no workspace", pod)
 	}
 	return live.dir
 }
@@ -208,7 +209,7 @@ func (w *idleRigWorkspaces) dir(pod string) string {
 // output.
 func (w *idleRigWorkspaces) jj(t *testing.T, pod string, args ...string) string {
 	t.Helper()
-	dir := w.dir(pod)
+	dir := w.dir(t, pod)
 	return fixturegit.Runner{TB: t, Env: w.env()}.Run(dir, append([]string{"jj", "-R", dir}, args...)...)
 }
 
@@ -216,26 +217,21 @@ func (w *idleRigWorkspaces) jj(t *testing.T, pod string, args ...string) string 
 // file, described by its name, and then a change of the working copy when change names a file.
 func (w *idleRigWorkspaces) work(t *testing.T, pod string, commits []string, change string) {
 	t.Helper()
-	dir := w.dir(pod)
+	dir := w.dir(t, pod)
 	for _, name := range commits {
-		w.writeFile(filepath.Join(dir, name), "The work "+name+" holds.\n")
+		writeRigFile(t, filepath.Join(dir, name), "The work "+name+" holds.\n")
 		w.jj(t, pod, "commit", "-m", name)
 	}
 	if change != "" {
-		w.writeFile(filepath.Join(dir, change), "The working copy's change "+change+".\n")
+		writeRigFile(t, filepath.Join(dir, change), "The working copy's change "+change+".\n")
 	}
 }
 
 // holds is whether the pod's workspace holds the file in its working copy.
-func (w *idleRigWorkspaces) holds(pod, file string) bool {
-	_, err := os.Stat(filepath.Join(w.dir(pod), file))
-	return err == nil
-}
-
-// remoteHead is the commit the remote's branch of issue key points at.
-func (w *idleRigWorkspaces) remoteHead(t *testing.T, key string) string {
+func (w *idleRigWorkspaces) holds(t *testing.T, pod, file string) bool {
 	t.Helper()
-	return fixturegit.Runner{TB: t, Env: w.env()}.Run(w.root, "git", "--git-dir="+w.remote, "rev-parse", "refs/heads/legion/"+key)
+	_, err := os.Stat(filepath.Join(w.dir(t, pod), file))
+	return err == nil
 }
 
 // remoteHolds is whether the remote's branch of issue key holds the file.

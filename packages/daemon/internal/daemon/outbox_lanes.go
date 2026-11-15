@@ -304,7 +304,8 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	}
 	if r.releaseHolds(row) {
 		// The row waits in the database, unrun, and runs on its backoff once the daemon's next
-		// boot has ended the release (R7); the settle records the wait as every wait is recorded.
+		// boot has ended the release (dispatch://INFRA-3583 R7); the settle records the wait as
+		// every wait is recorded.
 		r.settle(ctx, row, fmt.Errorf("outbox row %d: %w", row.ID, errProjectReleased))
 		return nil
 	}

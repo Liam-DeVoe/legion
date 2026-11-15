@@ -35,12 +35,6 @@ type Bundling struct {
 	Timeout time.Duration
 }
 
-// UnpushedRead is one read of its workspace's unpushed work the daemon asked the agent's side for.
-type UnpushedRead struct {
-	Issue   string
-	Timeout time.Duration
-}
-
 // Compaction is one compaction the daemon asked Oh My Pi for.
 type Compaction struct {
 	CustomInstructions string
@@ -60,8 +54,6 @@ type Conn struct {
 	// compactsHeld is how many Compact calls wait at compactGate now (CompactsHeld).
 	compactsHeld int
 	bundle       *runtime.WorkspaceBundle
-	unpushed     *runtime.UnpushedWork
-	unpushedRead []UnpushedRead
 	enrollments  []string
 	podToken     string
 	tokenReads   int
@@ -248,39 +240,12 @@ func (c *Conn) Bundlings() []Bundling {
 // FailBundleWorkspace makes every later BundleWorkspace return err; nil clears it.
 func (c *Conn) FailBundleWorkspace(err error) { c.fail("BundleWorkspace", err) }
 
-// ReadUnpushed answers the daemon asking the agent's side whether its workspace holds unpushed
-// work: the read SetUnpushedWork gave it, recorded with the issue asked about. With none given it
-// fails, so a test that never expected a release to read sees the request go unanswered rather
-// than a workspace with nothing unpushed.
-func (c *Conn) ReadUnpushed(_ context.Context, issue string, timeout time.Duration) (runtime.UnpushedWork, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.unpushedRead = append(c.unpushedRead, UnpushedRead{Issue: issue, Timeout: timeout})
-	if err := c.failures["ReadUnpushed"]; err != nil {
-		return runtime.UnpushedWork{}, err
-	}
-	if c.unpushed == nil {
-		return runtime.UnpushedWork{}, errors.New("fake: the shim was asked to read its workspace's unpushed work, and the test set none (SetUnpushedWork)")
-	}
-	return *c.unpushed, nil
+// ReadUnpushed refuses the daemon's read of the agent's workspace: no test of this double reads
+// one (the release's own reads run on the idle rig's role processes), so a release that asked
+// sees the request refused rather than a workspace with nothing unpushed.
+func (*Conn) ReadUnpushed(context.Context, string, time.Duration) (runtime.UnpushedWork, error) {
+	return runtime.UnpushedWork{}, errors.New("fake: the agent's side reads no workspace for unpushed work")
 }
-
-// SetUnpushedWork is what the agent's side reads of its workspace's unpushed work from now on.
-func (c *Conn) SetUnpushedWork(w runtime.UnpushedWork) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.unpushed = &w
-}
-
-// UnpushedReads is every read of unpushed work asked over this connection, in order.
-func (c *Conn) UnpushedReads() []UnpushedRead {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return slices.Clone(c.unpushedRead)
-}
-
-// FailReadUnpushed makes every later ReadUnpushed return err; nil clears it.
-func (c *Conn) FailReadUnpushed(err error) { c.fail("ReadUnpushed", err) }
 
 // AgentSecretsEnrollment records the enrollment id the daemon asked the agent's shim to keep.
 func (c *Conn) AgentSecretsEnrollment(_ context.Context, enrollmentID string) error {

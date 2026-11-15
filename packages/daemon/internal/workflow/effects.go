@@ -594,7 +594,8 @@ type startMarks struct {
 	// one-time repair of a merger the idle release suspended (cutoverMergerRepair), whose starts
 	// one builder makes (startSuspendedOwner), and its start of each claim the project release
 	// stopped (startReleaseStopped), which sends a claim behind its entry that entry's work here
-	// and writes its task-less starts with the mark itself. The mark names the door the start
+	// and writes its other starts — its phase's resume task to a phase owner level with its entry,
+	// no task to any other role — with the mark itself. The mark names the door the start
 	// comes through — the boot's resume of a claim the daemon suspended, where the outbox finishes
 	// the row rather than retrying a claim that is spending its launch budget — and not the task's
 	// text. So each of them carries it on the work of the entry its role's phases row names as
@@ -625,9 +626,12 @@ type startMarks struct {
 // resume that hands the role no new work, which is the boot's resume, the cutover's repair and
 // the silence repair of a claim level with the entry its phases row names (startSuspendedOwner,
 // which booted and cutoverMergerRepair share, and repairSilence) — and each of which names its
-// own marks. It is the one place a start of a phase worker is built, so a reader
-// asking what such a row carries reads this request and no other, and a field added here
-// reaches every one of those starts. It goes through startOrOwe, so the worker comes back on
+// own marks. It is where a start of a phase worker is built, so a reader asking what such a row
+// carries reads this request, and a field added here reaches every one of those starts. The one
+// start of a phase worker built elsewhere is the boot's start of a phase owner level with its
+// entry that the project release stopped (resume.go's startStoppedClaim), which writes its own row
+// with its phase's resume task and no slot mark, since it puts no worker to work on a phase it
+// was not already at (the list below). started goes through startOrOwe, so the worker comes back on
 // the one row that carries its new task, and that row waits for the issue's admission slot where
 // the phase it starts holds one: a transition's start into a phase up to the review puts a
 // worker to work on the change, which is exactly what the cap counts. The issue carries the
@@ -753,8 +757,9 @@ const (
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row
 // the cap counts is its root's, the production check's look (check.go), the pod wake (wake.go),
 // the resume of a cancelled idle release (the daemon's outbox), the roles admission brings back
-// beside a member's phase worker (admit's startMidPhaseMembers), the boot's task-less start of a
-// claim the project release stopped (resume.go's startReleaseStopped) and the phase's resume
+// beside a member's phase worker (admit's startMidPhaseMembers), the boot's start of a claim the
+// project release stopped that is not behind its entry, with no task or a phase owner's resume
+// task (resume.go's startStoppedClaim), and the phase's resume
 // task a ready worker level with the entry its phases row names is given (catch_up.go's
 // readyWorkerTask) are enqueued directly and stay claimable at once. None of the first six puts
 // a worker to work on a phase it was not already at, so none of them is the cap's to hold, and a
