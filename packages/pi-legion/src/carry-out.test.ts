@@ -146,6 +146,15 @@ function expectRefused(outcome: Outcome, why: string): void {
   expect(lines[0]).toContain(why);
 }
 
+/** A fresh clone of GitHub's side with the bundle's branch fetched as `rescue/<key>`, as step 3
+ * fetches it. */
+function rescued(bundle: string): string {
+  const verify = join(caseDirectory(), "verify");
+  run(["git", "clone", "-q", join(root, "origin"), verify]);
+  run(["git", "-C", verify, "fetch", "-q", bundle, `rescue-${key}:refs/remotes/rescue/${key}`]);
+  return verify;
+}
+
 describe.skipIf(skipped)("carry-out.sh", () => {
   beforeAll(() => {
     root = realpathSync(mkdtempSync(join(tmpdir(), "carry-out-")));
@@ -207,17 +216,7 @@ describe.skipIf(skipped)("carry-out.sh", () => {
     expect(outcome.exitCode).toBe(0);
     expect(outcome.stdout).toContain("unpushed commits of other branches, not in the bundle:");
 
-    const verify = join(caseDirectory(), "verify");
-    run(["git", "clone", "-q", join(root, "origin"), verify]);
-    run([
-      "git",
-      "-C",
-      verify,
-      "fetch",
-      "-q",
-      outcome.bundle,
-      `rescue-${key}:refs/remotes/rescue/${key}`,
-    ]);
+    const verify = rescued(outcome.bundle);
     const added = run(["git", "-C", verify, "log", "--format=%s", `origin/main..rescue/${key}`]);
     expect(added.split("\n").filter((line) => line !== "")).toEqual([
       `Edits left in ${key}'s workspace`,
@@ -250,17 +249,7 @@ describe.skipIf(skipped)("carry-out.sh", () => {
     const outcome = carryOut(goodGit, appended(goodTree, directory, "tools"));
     expect(outcome.stderr).not.toContain("refused:");
     expect(outcome.exitCode).toBe(0);
-    const verify = join(caseDirectory(), "verify");
-    run(["git", "clone", "-q", join(root, "origin"), verify]);
-    run([
-      "git",
-      "-C",
-      verify,
-      "fetch",
-      "-q",
-      outcome.bundle,
-      `rescue-${key}:refs/remotes/rescue/${key}`,
-    ]);
+    const verify = rescued(outcome.bundle);
     expect(run(["git", "-C", verify, "ls-tree", `rescue/${key}`, "tools/python"])).toStartWith(
       "120000 "
     );
@@ -303,11 +292,8 @@ describe.skipIf(skipped)("carry-out.sh", () => {
     const directory = caseDirectory();
     mkdirSync(join(directory, ".venv/bin/python"), { recursive: true });
     writeFileSync(join(directory, ".venv/bin/python/x"), "through the link\n");
-    const treeTar = join(caseDirectory(), "tree.tar");
-    copyFileSync(goodTree, treeTar);
-    run(["tar", "-rf", treeTar, "-C", directory, ".venv/bin/python/x"]);
     expectRefused(
-      carryOut(goodGit, treeTar),
+      carryOut(goodGit, appended(goodTree, directory, ".venv/bin/python/x")),
       "holds an entry through a symlink of the tree: .venv/bin/python/x under .venv/bin/python"
     );
   }, 60_000);

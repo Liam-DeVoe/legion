@@ -616,12 +616,12 @@ func (c Claim) HeldAgainst(by SuspendSource) error {
 }
 
 // ResumeRefusal is the refusal of a resume of this claim asked by by — the operator when by is
-// empty, the controller, or an architect — and nil when that resume may lift what the claim is
-// suspended by. A suspension outranking the asker refuses it as it refuses every request of that
-// asker (HeldAgainst). An architect's resume lifts only a suspension an architect placed
-// (ErrNotTheArchitectsSuspension): one the daemon placed — the workflow's, a released pod's, a
-// root's exit, or one recorded before sources existed — is lifted by the daemon's own rules, the
-// controller or the operator, and no architect's resume undoes it.
+// empty or SuspendedByOperator, the controller, or an architect — and nil when that resume may
+// lift what the claim is suspended by. A suspension outranking the asker refuses it as it refuses
+// every request of that asker (HeldAgainst). An architect's resume lifts only a suspension an
+// architect placed (ErrNotTheArchitectsSuspension): one the daemon placed — the workflow's, a
+// released pod's, a root's exit, or one recorded before sources existed — is lifted by the
+// daemon's own rules, the controller or the operator, and no architect's resume undoes it.
 func (c Claim) ResumeRefusal(by SuspendSource) error {
 	if err := c.HeldAgainst(by); err != nil {
 		return err
@@ -1434,13 +1434,12 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 //
 // The controller's or an architect's suspension that its row refuses — a suspension outranking it
 // holds the claim, the operator's for either and the controller's for an architect's, or the
-// daemon's own holds it under an architect's (suspendRequest, Claim.StopOrSuspendRefusal) — cancels
-// nothing, and a refusal changes nothing of the claim, the start in
-// flight included. The hold is read off the published view (View), since the lock is the very
-// thing a start in flight holds. A view a decision then moves past is harmless either way: a
-// resume published after it leaves a claim this suspension is held over until ready rather than
-// one whose start it cut short, and a suspension published after it stops that start itself, at
-// its own arrival.
+// daemon's own holds it under an architect's (suspendRequest, Claim.StopOrSuspendRefusal) —
+// cancels nothing, and a refusal changes nothing of the claim, the start in flight included. The
+// hold is read off the published view (View), since the lock is the very thing a start in flight
+// holds. A view a decision then moves past is harmless either way: a resume published after it
+// leaves a claim this suspension is held over until ready rather than one whose start it cut
+// short, and a suspension published after it stops that start itself, at its own arrival.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	if request, suspending := ev.(RequestSuspend); suspending && m.View().StopOrSuspendRefusal(request.By) == nil {
 		m.stopStart("a suspension of the claim is waiting for its start")

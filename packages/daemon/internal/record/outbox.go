@@ -268,9 +268,9 @@ type Notice struct {
 	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
 	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
 	// in and the worker-died that names the death (workflow's claimFailed). It is absent where
-	// the daemon recorded no cause for the failure,
-	// and absent from the two held notices that report no failure at all: the escalation's
-	// (workflow's retryOrEscalate) and the re-admission's (workflow's HeldNotice).
+	// the daemon recorded no cause for the failure, and absent from the two held notices that
+	// report no failure at all: the escalation's (workflow's retryOrEscalate) and the
+	// re-admission's (workflow's HeldNotice).
 	//
 	// One nested record rather than seven fields beside Reason, because a count means nothing
 	// apart from the limit it ran out against and the four counts do not have four limits:
@@ -633,15 +633,14 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // bottom refusing deterministically costs one request every ten minutes. It is the one kind of
 // these that the issue's architect is told as well, in a notice row of its own, unless the run is
 // an architect's own (validNoticeKinds, the daemon's providerErrorRunReached). A tree-stalled
-// notice names a root of the daemon's own
-// whose tree has stopped: nothing of the tree has moved for longer than
-// `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by design (admit's
-// tellStalledTrees says which trees are told). Its issue is that root, and its Reason names the
-// tree's quiet hours, each issue the workflow still runs with its phase, the role whose turn it
-// is and the state of its pull request, and what the controller is to decide. It is told once
-// for each stall: the daemon marks the root with the movement the notice was told for, and tells
-// again only once the tree moves past that mark. When admission sends each is its rule
-// (admit.Admission.wakeController and its callers, admit.Admission.TellController).
+// notice names a root of the daemon's own whose tree has stopped: nothing of the tree has moved
+// for longer than `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by
+// design (admit's tellStalledTrees says which trees are told). Its issue is that root, and its
+// Reason names the tree's quiet hours, each issue the workflow still runs with its phase, the
+// role whose turn it is and the state of its pull request, and what the controller is to decide.
+// It is told once for each stall: the daemon marks the root with the movement the notice was told
+// for, and tells again only once the tree moves past that mark. When admission sends each is its
+// rule (admit.Admission.wakeController and its callers, admit.Admission.TellController).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the

@@ -125,10 +125,8 @@ func noticesOfKind(t *testing.T, pool *pgxpool.Pool, issue string, kind record.N
 	return notices
 }
 
-// controllerNoticesOn is the kind of every controller notice the outbox holds for issue. A root
-// that enters the wait on a person is told to no controller (dispatch://INFRA-2709, R21): the
-// controller's skill does nothing for the wait, and the state names it (`phase:
-// awaiting_person`, `waitingOn`).
+// controllerNoticesOn is the kind of every controller notice the outbox holds for issue, in the
+// order the outbox wrote them.
 func controllerNoticesOn(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	t.Helper()
 	return outboxStrings(t, pool, `select payload->>'kind' from outbox where kind = 'controller_notice' and issue = $1 order by id`, issue)

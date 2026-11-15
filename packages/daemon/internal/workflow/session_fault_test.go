@@ -22,12 +22,6 @@ func seedTestingIssue(t *testing.T, pool *pgxpool.Pool, key string) {
 		Tree: key, Project: "LEGION", Title: key, Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
 }
 
-// controllerNoticeKinds is the kind of every notice the outbox holds for the project's controller.
-func controllerNoticeKinds(t *testing.T, pool *pgxpool.Pool) []string {
-	t.Helper()
-	return outboxStrings(t, pool, "select payload->>'kind' from outbox where kind = 'controller_notice' and issue = $1 order by id", "LEGION-209")
-}
-
 // A lost session is posted on the issue and told to its architect, and the controller is told
 // nothing: the worker is running, so nothing is held, and the architect is the one who acts on the
 // report. A copy to the controller would only tell it what the architect already hears
@@ -50,7 +44,7 @@ func TestALostSessionIsToldOnTheIssueAndToItsArchitectAlone(t *testing.T) {
 	if reason, told := noticeKindReasons(t, pool, "LEGION-209")["session-lost"]; !told || !strings.Contains(reason, "fresh agent") {
 		t.Fatalf("the architect was told %q, want a session-lost notice saying a fresh agent runs", reason)
 	}
-	if got := controllerNoticeKinds(t, pool); len(got) != 0 {
+	if got := controllerNoticesOn(t, pool, "LEGION-209"); len(got) != 0 {
 		t.Fatalf("the controller was told %v, want nothing: the lost session is its architect's", got)
 	}
 }
@@ -72,7 +66,7 @@ func TestASessionStoreFaultIsToldOnTheIssueAndToTheController(t *testing.T) {
 	if len(posted) != 1 || !strings.Contains(posted[0], "connection refused") || !strings.Contains(posted[0], "every minute") {
 		t.Fatalf("the issue was told %v, want one message naming the fault and the retry", posted)
 	}
-	if got := controllerNoticeKinds(t, pool); len(got) != 1 || got[0] != "session-store-fault" {
+	if got := controllerNoticesOn(t, pool, "LEGION-209"); len(got) != 1 || got[0] != "session-store-fault" {
 		t.Fatalf("the controller was told %v, want the store fault", got)
 	}
 	var got phase.Phase

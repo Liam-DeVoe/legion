@@ -335,10 +335,10 @@ this wake only while the root's `phase` is not `done`: a root at `done` is parke
 closed, and its failed architect needs nothing from you. Check that
 `issues.<KEY>.architect.state` is `failed`. When the root's `phase` reads `done` by the time you
 read it, the tree is already parked: do nothing (a failed architect reads `failed` until the tree
-closes). Otherwise look for the cause. `issues.<KEY>.architect.failure` holds the record the `held`
-wake above describes. Read
-after it an open `capabilities` row whose `detail` names the architect's session, or the
-architect's last message on the root issue. When you find none, or it is gone, restart the tree
+closes). Otherwise look for the cause. `issues.<KEY>.architect.failure` holds the record the
+`held` wake above describes. Read after it an open `capabilities` row whose `detail` names the
+architect's session, or the architect's last message on the root issue. When you find none, or it
+is gone, restart the tree
 (`set_status` the root to `backlog`, then, in the same turn, to `todo`: a new generation whose
 architect starts with fresh budgets). That pair is a restart and not a park: the daemon re-admits
 only a root whose tree lingers or is done, so the `backlog` write is how a restart reaches `todo`.

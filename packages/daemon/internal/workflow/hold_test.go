@@ -140,9 +140,9 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // A phase worker's claim failing holds the issue, and the two notices that say so — the hold and
 // the worker-died beside it, both the architect's alone — are all an agent has to decide between
 // retrying the phase and escalating it. So each names the failure the fact carries: the one word
-// for what failed the claim, the sentence written beside that word, and
-// each of the four counts the failure left against the limit it ran out at, deaths against the
-// launch failure limit, which is the limit the supervisor measures them by (record.NoticeFailure).
+// for what failed the claim, the sentence written beside that word, and each of the four counts
+// the failure left against the limit it ran out at, deaths against the launch failure limit,
+// which is the limit the supervisor measures them by (record.NoticeFailure).
 // The record also carries the two causes the claim recorded, its last death and its last failed
 // start, which an agent deciding between a retry and an escalation has no other way to read
 // (R6); `reason` keeps its one value, `escalated`, which both agents' texts read as the

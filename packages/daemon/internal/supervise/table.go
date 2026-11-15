@@ -406,7 +406,8 @@ type RequestSuspend struct {
 }
 
 // RequestResume relaunches a suspended claim's session. By is who asks: empty for the operator,
-// whose resume lifts every suspension, whoever placed it; SuspendedByController for the project's
+// or SuspendedByOperator where the operator's fresh session resumes (api's freshSession), whose
+// resume lifts every suspension, whoever placed it; SuspendedByController for the project's
 // controller, through its own `legion` tool (api's claimResume), whose resume lifts every
 // suspension but the operator's own; and SuspendedByArchitect for an architect of the claim's
 // tree, through the same tool, whose resume lifts an architect's suspension alone. Each is

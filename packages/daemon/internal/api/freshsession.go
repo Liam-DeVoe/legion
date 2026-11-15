@@ -174,8 +174,9 @@ const ownClaim = "OWN_CLAIM"
 // own claim is refused (OWN_CLAIM), and so is a claim a suspension outranking an architect's
 // holds, held or landed — the operator's (SUSPENDED_BY_OPERATOR) and the controller's
 // (SUSPENDED_BY_CONTROLLER) — whatever the operation (supervise.Claim.HeldAgainst, refuseHold).
-// The controller's own requests are refused the operator's hold by each operation, as contract
-// 136 first wrote them, and its compaction is not.
+// The controller's own requests are refused the operator's hold by each operation itself
+// (claimRetry, the machine's refusal under claimEventOperation, freshSession), not here, and its
+// compaction is not refused it.
 //
 // The controller is refused its own claim here and nowhere else: the token is built from the
 // issue and the role, and no issue's role spells the controller's token (claim.ControllerToken),

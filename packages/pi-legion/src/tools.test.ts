@@ -288,10 +288,10 @@ const EVERY_SESSION: readonly LegionToolSession[] = [
   { kind: "controller", sessionID: "ses_controller" },
 ];
 
-const toolFor = (active: LegionToolSession) =>
+const toolFor = (active: LegionToolSession, daemon = recordingDaemon({}).daemon) =>
   createLegionTool({
     pi,
-    daemon: recordingDaemon({}).daemon,
+    daemon,
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
@@ -1997,17 +1997,7 @@ test("an architect acts on a claim of its own tree with its own grant", async ()
   };
   const { calls, daemon } = recordingDaemon({ answers });
   const architect = claimSession("architect");
-  const tool = createLegionTool({
-    pi,
-    daemon,
-    controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
-    onUpdateAnswered: () => undefined,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    resolveDocument: noDocumentLookup,
-    session: () => architect,
-  });
+  const tool = toolFor(architect, daemon);
   const run = (parameters: Record<string, unknown>) =>
     tool.execute("", parameters, undefined, undefined, context());
 
@@ -2069,17 +2059,13 @@ test("an architect acts on a claim of its own tree with its own grant", async ()
         ),
       },
     });
-    const refused = await createLegionTool({
-      pi,
-      daemon: refusing.daemon,
-      controllerGrant: noControllerGrant,
-      onPhaseCompleted: () => undefined,
-      onUpdateAnswered: () => undefined,
-      handoffReport: noHandoffReport,
-      branchHead: noBranchHead,
-      resolveDocument: noDocumentLookup,
-      session: () => architect,
-    }).execute("", { op, issue: "LEGION-209", role: "tester" }, undefined, undefined, context());
+    const refused = await toolFor(architect, refusing.daemon).execute(
+      "",
+      { op, issue: "LEGION-209", role: "tester" },
+      undefined,
+      undefined,
+      context()
+    );
     expect(refused.isError).toBe(true);
     expect(refused.content).toEqual([{ type: "text", text: expect.stringContaining(code) }]);
   }

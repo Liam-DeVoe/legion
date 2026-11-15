@@ -1929,13 +1929,14 @@ test("no session-facing response carries suspendedBy", () => {
   expect([...schemaKeys(LegionClaimOperationResponse)]).toContain("suspendedBy");
 
   // And no body the daemon writes carries it outside the operator's own and the four routes'.
-  for (const name of readdirSync(fixtureDir).filter((entry) => entry.endsWith(".json"))) {
+  const fixtures = readdirSync(fixtureDir);
+  for (const name of fixtures.filter((entry) => entry.endsWith(".json"))) {
     if (name.startsWith("operator-") || claimOperationFixtures[name] === true) continue;
     expect(readFileSync(path.join(fixtureDir, name), "utf8"), name).not.toContain("suspendedBy");
   }
   // The exception is the four routes' and no wider: each of their fixtures exists.
   for (const name of Object.keys(claimOperationFixtures)) {
-    expect(readdirSync(fixtureDir), name).toContain(name);
+    expect(fixtures, name).toContain(name);
   }
 });
 

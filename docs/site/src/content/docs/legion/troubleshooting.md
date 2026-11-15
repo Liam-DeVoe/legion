@@ -500,8 +500,8 @@ failure under the cause word `provider_error`, with the same sentence as its `de
 and the project's controller are each told once, as `provider-errors on <KEY>`, with the run,
 the model and the cause
 (`supervise: a run of turns that ended in a provider error; the controller is told`). A run of an
-architect's own claim is told to the controller alone. Nothing is
-held and nothing is stopped by that count: the task is still kept and still sent again. The run
+architect's own claim is told to the controller alone. Nothing is held and nothing is stopped by
+that count: the task is still kept and still sent again. The run
 goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
 compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's

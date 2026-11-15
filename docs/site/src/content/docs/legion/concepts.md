@@ -83,13 +83,11 @@ is, as a Dispatch comment that mentions that architect's role, only when its fix
 that tree's open pull request or its token does not reach the repository. Only when no tree owns
 that code does the controller file the issue with the `legion` label, so Legion works it without
 asking you; the controller passes no message from one agent to another. A problem that needs a
-decision of
-yours goes into a Dispatch ask on
-Legion's daily report issue instead, naming the issue it came from and where the fix belongs (the
-repository or layer, and saying so when it is not Legion), with its evidence and a recommendation,
-and you decide whether it needs an issue. The controller files that issue, with the `legion` label
-only when your answer asks Legion to work it. An architect also files the children of its own
-tree.
+decision of yours goes into a Dispatch ask on Legion's daily report issue instead, naming the
+issue it came from and where the fix belongs (the repository or layer, and saying so when it is
+not Legion), with its evidence and a recommendation, and you decide whether it needs an issue.
+The controller files that issue, with the `legion` label only when your answer asks Legion to work
+it. An architect also files the children of its own tree.
 
 The only statuses the controller sets are `todo`, `backlog` and `icebox` (`triage` is set by
 whoever files an issue). It reads pull requests as the review App, and never touches a tree's work.

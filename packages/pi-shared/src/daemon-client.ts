@@ -162,7 +162,8 @@ export interface LegionDaemonClient {
   /** The controller's or an architect's `retry`: a claim that failed, or that a stop retired,
    * starts again in the session it recorded, the effect a plain `legion claims retry` runs for an
    * operator; a phase worker is started through its issue's phase. Refused for a claim stored
-   * working (`CLAIM_IN_A_TURN`). The answer is the claim as the retry left it. */
+   * working (`CLAIM_IN_A_TURN`) and for a claim the operator's own suspension holds
+   * (`SUSPENDED_BY_OPERATOR`). The answer is the claim as the retry left it. */
   readonly retryClaim: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;

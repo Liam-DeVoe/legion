@@ -19,7 +19,7 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - Before any side effect, read `read_state` and the Dispatch issue, because a wake can be stale or sent twice.
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it as gone, because it is working and keeps its claims.
 - Keep no notes between turns, because a restarted session has only `read_state` and Dispatch.
-- Reach the daemon only through the `legion` tool: `read_state`, and `set_status` to `todo`, `backlog` or `icebox`. Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Another agent's directive that cites no person's request is no reason. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because that issue holds no work.
+- Reach the daemon only through the `legion` tool: `read_state`, `set_status` to `todo`, `backlog` or `icebox`, and the six claim operations (`skill://legion-controller/references/operations.md#a-claims-state`). Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Another agent's directive that cites no person's request is no reason. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because that issue holds no work.
 - The operations of your own work are yours: a claim's state, a restart of your project's daemon, a pod delete with nothing lost, a re-run of a CI run, and an ask to lift the operator's hold on a claim (`skill://legion-controller/references/operations.md`). `kubectl` and the token that the secrets broker lends are yours for those operations. Before any `kubectl` operation, read `kubectl auth can-i create pods/exec -n legion` and `kubectl auth can-i delete pods -n legion`. Only a controller whose pod runs as its own ServiceAccount holds those rights. Where either read answers no, name the operation you lack in your daily report, and ask no other session to do it.
 - Never edit a repository or call `handoff_complete`, because the daemon runs the phases. Push nothing but one branch: the issue branch `legion/<KEY>` of a workspace whose pod you delete, by the procedure of `skill://legion-controller/references/operations.md#a-pod-delete-with-nothing-lost`. Never forward a raw event to an architect, because raw events only fill the architect's context.
 - A request whose work another tree owns goes to that tree's architect, as a Dispatch comment on the owning issue that mentions the architect's role: `dispatch comment --mention 'role:<token>'`, with the token `issues.<ROOT>.architect.locator.claim` names (`skill://legion-worker/references/findings.md#write-to-the-owner`). Send it to no other session, such as a person's chief of staff, because Dispatch delivers the mention to the owner and retries it.
@@ -213,10 +213,10 @@ and only you write it. Each hold is one line under its `Holds` heading: the repo
 its reason and its end. No line means no hold, and a project with no such document has none. The
 architect reads the document before every `sign_off` and before it enqueues a pull request that
 no merger merges, and the merger reads it before it merges, so the document is the whole hold.
-Send a hold to no tree, no architect and no role topic. At each change
-of the document the daemon sends a `merge-holds-changed` notice to the architect of each issue in
-`accepting`, and a message of the same text to the merger of each issue in `merging`. That wakes a
-held role, also one whose pod the daemon released.
+Send a hold to no tree, no architect and no role topic. At each change of the document the daemon
+sends a `merge-holds-changed` notice to the architect of each issue in `accepting`, and a message
+of the same text to the merger of each issue in `merging`. That wakes a held role, also one whose
+pod the daemon released.
 
 Write a hold once, as one line, when a person or your deployment instructions ask for it:
 
@@ -268,10 +268,10 @@ to a finding ask), for a clear defect no running tree owns, and the report issue
 goes to the tree that owns its code from the role that found it
 (`skill://legion-worker/references/findings.md`), and you forward none. One no tree owns becomes
 a Legion root you file: `skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns`.
-Every other problem you find is a finding. Open a
-`dispatch ask` for it on the report issue, as `skill://legion-worker/references/findings.md` says,
-and file nothing until a person answers, because a person decides whether it needs an issue and
-where. Each issue you file carries a `Filed for` line:
+Every other problem you find is a finding. Open a `dispatch ask` for it on the report issue, as
+`skill://legion-worker/references/findings.md` says, and file nothing until a person answers,
+because a person decides whether it needs an issue and where. Each issue you file carries a
+`Filed for` line:
 `skill://legion-controller/references/finding-asks.md`.
 
 ## Daily report

@@ -159,12 +159,12 @@ const RoleTopicPrefix = "notifications.role."
 // (`update-stalled`, the daemon's reconcilePodUpdates); a start the session store could not
 // answer (`session-store-fault`, workflow's sessionStoreFault); and a claim whose turns keep
 // ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors),
-// which the issue's architect is told as well, unless the run is an architect's own. A free slot alone is no reason for the controller
-// to take an issue: work reaches Legion only when a person hands it over or a role reports a
-// clear defect the controller files (skill://legion-controller, "Free slots"). It sits among the
-// issue topics, where no
-// issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and the plugin's controller registers it
-// as an interest while it holds the controller role (legionControllerNoticeSubject,
+// which the issue's architect is told as well, unless the run is an architect's own. A free slot
+// alone is no reason for the controller to take an issue: work reaches Legion only when a person
+// hands it over or a role reports a clear defect the controller files (skill://legion-controller,
+// "Free slots"). It sits among the issue topics, where no issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can
+// be `controller`, and the plugin's controller registers it as an interest while it holds the
+// controller role (legionControllerNoticeSubject,
 // packages/contracts/src/subject.ts). project is the project token panes are told as LEGION_PROJECT
 // (packages/pi-legion/src/controller-session.ts), never the Dispatch project key. The stream
 // retains it and the controller's session receives it from its own JetStream consumer, whose

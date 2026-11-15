@@ -1015,7 +1015,7 @@ A root reopened inside its linger instead keeps its children.
 Taking the label off a waiting root drops it from the waiting line, as a status that leaves `todo` does;
 taking it off a root already admitted does not stop its tree.
 A waiting root moved to a status only a running tree has (`in_progress`, `testing`, `needs_review`, `retro`), by a person or by a session outside its tree, leaves the workflow as a parked root does, since no slot would ever reach it:
-the daemon records it `done`, starts nothing for it, and tells the controller (`unslotted`), and `todo` with the label queues it again.
+the daemon records it `done`, starts nothing for it and tells nobody, since the controller reads such a root from the state, and `todo` with the label queues it again.
 Each admission pass (a live event, the boot read, a tick) releases such a root, one an earlier release left behind included.
 Outside the two exemptions below, Legion admits no root and starts no child while Dispatch shows it blocked by an issue that is not `done`:
 a blocker in `backlog` or `icebox` has stopped rather than finished, and one the daemon has never seen counts as unfinished too.
@@ -1063,7 +1063,7 @@ Every time the daemon gives the architect work
 — admission, re-admission, a resume (`handout_seq`, the highest sequence the record then holds), or a `design-changes-requested` notice (`handout_seq` up to that review's sequence, so a hand-back after the review still stands)
 — what it handed back before is taken in, and a hand-back event at or below that point, delivered late, declares nothing;
 a registration declares at the sequence its read began at whatever the handout, since it is a live call from the architect's turn.
-The controller receives `awaiting-person`, which, like `slot-free`, is no reason to label or admit anything:
+No wake tells the controller of the wait, which, like `slot-free`, is no reason to label or admit anything:
 a labelled root in `todo` takes the freed slot through the waiting line.
 `legion state` shows `waitingOn` (`kind` `ask` with the `ask`, or `gate` with the `gateVersion` and `artifactId`, and `since`, Dispatch's time of the hand-back the wait began at, then `answeredAt` with `answeredBy`), and its plain output a `roots waiting on a person:` line.
 A daemon that was down catches each root at `admitted` or `awaiting_person` up at boot before it decides it:
@@ -1102,7 +1102,7 @@ the root's own first phase then stands among the issues whose work came back, ol
 an approval that answered it is told by that task, with no `design-approved` notice beside it.
 Its tree stays live while it waits, so its children do not become orphans;
 no child of it starts while it waits, even once its design gate is open, and they start with its resume, each once.
-Taking the `legion` label off a waiting root, or a person or a session outside the tree claiming it, takes it out of the workflow with an `unslotted` notice;
+Taking the `legion` label off a waiting root, or a person or a session outside the tree claiming it, takes it out of the workflow and tells nobody;
 it is never resumed under another owner.
 A session outside the tree writing a lifecycle status on a waiting root is set back, as on a root holding its slot, and its live architect is told.
 A root whose Dispatch claim a person or outside session already holds stays at `admitted` while its architect asks that holder to release it, and so does an admitted root whose label was taken off, since only a labelled root is resumed; each keeps its slot unless a wait under **Admission** takes it back.

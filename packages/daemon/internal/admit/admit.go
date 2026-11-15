@@ -2705,11 +2705,12 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 		// of a released claim is the boot's one-time repair of a merger the `awaiting_merge`
 		// cutover left stopped (workflow's cutoverMergerRepair), which no wake would start.
 
-		// A claim an operator or the project's controller suspended is passed over whatever
-		// entry it stands on: `legion claims suspend`, or the controller's own suspend, stopped
-		// that worker and only a resume starts it again (supervise's RuleHolds, which no start
-		// the daemon queues gets past). A claim the daemon itself suspended is repaired, which is
-		// what the idle rule's release and the daemon's own suspend both leave behind.
+		// A claim an operator, the project's controller or an architect suspended is passed
+		// over whatever entry it stands on: `legion claims suspend`, or the controller's or an
+		// architect's own suspend, stopped that worker and only a resume starts it again
+		// (supervise's RuleHolds, which no start the daemon queues gets past). A claim the daemon
+		// itself suspended is repaired, which is what the idle rule's release and the daemon's
+		// own suspend both leave behind.
 		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy.Holds() {
 			continue
 		}

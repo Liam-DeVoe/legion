@@ -74,8 +74,7 @@ var thisBranchsMigrations = []int{
 // 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
 // and 20261113110610, dispatch://INFRA-3146's 20261113090512, dispatch://INFRA-3274's
 // 20261114031356 and dispatch://INFRA-2709's 20261115060739, 20261115083448, 20261115103123 and
-// 20261115121838,
-// which is why the loop below holds the list rather than counting it, so that a
+// 20261115121838, which is why the loop below holds the list rather than counting it, so that a
 // version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 

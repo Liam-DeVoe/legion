@@ -1019,10 +1019,9 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 // launch failure limit, as the supervisor measures them (supervise.Limits).
 //
 // The hold and the worker-died are built from this one value, so the two cannot name the same
-// failure differently. It is nil for a fact carrying no
-// cause — a failure recorded before the daemon kept one, replayed at a boot — and such a notice
-// carries no failure record at all rather than a record of zeroes, which would read as a claim
-// that failed with every budget untouched.
+// failure differently. It is nil for a fact carrying no cause — a failure recorded before the
+// daemon kept one, replayed at a boot — and such a notice carries no failure record at all rather
+// than a record of zeroes, which would read as a claim that failed with every budget untouched.
 func noticeFailure(fact intake.ClaimFailed) *record.NoticeFailure {
 	if fact.Cause == "" {
 		return nil
