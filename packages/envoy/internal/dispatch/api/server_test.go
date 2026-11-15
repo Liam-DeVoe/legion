@@ -49,7 +49,9 @@ import (
 //
 // What bounds the number is the database's connections rather than the runner's cores. A test
 // holds a handful of the sixteen its store's pool allows (storetest's testPoolSize), beside the
-// harness's one admin connection and the clone and drop each test's own database costs. At
+// harness's admin pool, eight connections for the whole binary
+// (pgtemplate.openAdmin, pgtemplate.go:211), which the clone and the drop of each test's own
+// database run on. At
 // PostgreSQL's default max_connections of 100,
 // sixteen reached that limit - a test opening a database of its own was refused "sorry, too many
 // clients already" - and twelve did not. Every CI job that runs this package starts its server
