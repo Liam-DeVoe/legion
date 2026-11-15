@@ -227,13 +227,14 @@ export function ArtifactHeader({
                 {issueKey === null || !removalIsOffered(artifact) ? null : (
                   <RemoveDocument
                     artifact={artifact}
-                    onRemoved={() =>
+                    onRemoved={(removed) =>
                       // The route stays on the document the issue no longer holds, so the
                       // artifacts panel's own branch says it is gone rather than failing to
                       // load. A version route is normalised away first: the version the person
-                      // was reading went with the document.
+                      // was reading went with the document. It is the removed document's route,
+                      // whichever document the header shows by the time the removal lands.
                       navigate(
-                        buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug })
+                        buildIssuePath({ key: issueKey, kind: "artifact", slug: removed.slug })
                       )
                     }
                     refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}

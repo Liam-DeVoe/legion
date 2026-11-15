@@ -658,9 +658,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       signIns.signedOut(login);
     },
     // A `POST`, though `/auth/logout` sits outside Dispatch's keyed layer and sends no key
-    // (`api.logout`). Nothing words a Retry of it from what the store reads of that: the sign-out
-    // shows its own refusal (`inline`), and a reload never takes it up again, since no request of
-    // it goes through `api.send` to be kept.
+    // (`api.logout`): the store reads that from `endsWithSession`, so the write says it goes under
+    // none (`Write.keyed`), and a reload never takes it up again, since no request of it goes
+    // through `api.send` to be kept.
     method: "POST",
     // Dispatch's own 401 (`NO_IDENTITY`) says the session the sign-out would end is already gone
     // - an earlier attempt ended it and its answer was lost, or a sign-out in another browser

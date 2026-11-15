@@ -6,7 +6,7 @@ import { advancesIssuesParams } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { plainWrite, useWrites } from "../writes/write-store";
 import { type IssueListing, listingName } from "./issues-table-data";
 import {
@@ -153,21 +153,21 @@ export function useIssueTableActions({
         refused[0] === undefined
           ? ""
           : ` Changes not saved: ${refusedKeys}. ${String(refused[0].error)}`;
-      const stoppedKeys = stopped.map(({ key }) => key).join(", ");
-      const what =
-        stopped.length === 1
-          ? `the change to ${stoppedKeys}`
-          : `the change to each of ${stoppedKeys}`;
-      const note =
-        stopped[0] === undefined
-          ? undefined
-          : // The batch runs through `writes.run` with no hook, so no `KeyedWriteResult` is in hand
-            // to read the method from; each issues-table change is this `PATCH`.
-            stoppedWriteNote(what, "saved", {
-              method: "PATCH",
-              stopped: stopped[0].error,
-            });
-      const unconfirmed = note === undefined ? "" : ` ${note}`;
+      // A change whose key Dispatch still holds is asked again under it, and one whose key ran out
+      // (`SendExpiredError`) is a new write, so each group is said with its own Retry's promise.
+      const notes = [
+        stopped.filter(({ error }) => retriesUnderItsKey(error)),
+        stopped.filter(({ error }) => !retriesUnderItsKey(error)),
+      ].flatMap((group) => {
+        const first = group[0];
+        if (first === undefined) return [];
+        const keys = group.map(({ key }) => key).join(", ");
+        const what = group.length === 1 ? `the change to ${keys}` : `the change to each of ${keys}`;
+        // The batch runs through `writes.run` with no hook, so no `KeyedWriteResult` is in hand
+        // to read the method from; each issues-table change is this `PATCH`.
+        return [` ${stoppedWriteNote(what, "saved", { method: "PATCH", stopped: first.error })}`];
+      });
+      const unconfirmed = notes.join("");
       const saved = `${operations.length - failed.length} of ${operations.length} changes saved.`;
       throw new Error(
         `${saved}${unsaved}${unconfirmed} Retry each failed change in Pending changes.`,

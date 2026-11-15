@@ -67,26 +67,25 @@ export function press<T>(
   });
 }
 
-/** Dispatch's own refusal where it gave one, and `whenSilent` for whatever else stopped the
- *  write: a reader told only "could not" has nothing to act on. */
-export function refusalText(error: unknown, whenSilent: string): string {
-  return error instanceof Error && error.message !== "" ? error.message : whenSilent;
-}
-
-/** Where an offer's press of `words` stands once its write threw: stopped by the person before
- *  Dispatch confirmed it, when it may have landed and there is no refusal to report, or refused,
- *  with Dispatch's reason (`refusalText`, `whenSilent` where it gave none). */
+/** Where an offer's press of `words` stands once a write of it threw - the create or the send, or
+ *  a write onto the issue the create made (`RefusedWrite`): stopped by the person before Dispatch
+ *  confirmed it, when it may have landed and there is no refusal to report, or refused, with
+ *  Dispatch's reason (`whenSilent` where it gave none). */
 export type UnconfirmedPress =
   | { readonly kind: "refused"; readonly refusal: string; readonly words: string }
   | { readonly kind: "stopped"; readonly words: string };
 
-/** The state an offer's press of `words` is left in by `error`, its write's (`UnconfirmedPress`). */
+/** The state an offer's press of `words` is left in by `error`, the write's (`UnconfirmedPress`). */
 export function unconfirmedPress(
   error: unknown,
   words: string,
   whenSilent: string
 ): UnconfirmedPress {
-  return error instanceof SendStoppedError
-    ? { kind: "stopped", words }
-    : { kind: "refused", refusal: refusalText(error, whenSilent), words };
+  if (error instanceof SendStoppedError) {
+    return { kind: "stopped", words };
+  }
+  // Dispatch's own refusal where it gave one, and `whenSilent` for whatever else ended the write:
+  // a reader told only "could not" has nothing to act on.
+  const refusal = error instanceof Error && error.message !== "" ? error.message : whenSilent;
+  return { kind: "refused", refusal, words };
 }

@@ -9,7 +9,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -42,6 +42,7 @@ import {
   mockAskReads,
   withWaitingOnPerson,
 } from "./inbox-fixture";
+import { SnoozeControl } from "./SnoozeControl";
 
 const mocks = installInboxApiMocks();
 
@@ -2272,6 +2273,48 @@ test("a snooze the reader stopped says what Retry does, not a message's words", 
     unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// A press carries every value its Retry sends, the ask it is of among them: a Retry of a snooze
+// the reader stopped is of that press's ask under that press's key, whichever ask the control is
+// drawn for by then. The case draws one control for one ask and then for another, which is where
+// the two differ.
+test("a snooze's Retry is of the ask its press was of, whichever ask the control draws by then", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new NetworkError("/api/v1/me/asks/ask-a/snooze", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const onLive = () => {};
+  const drawn = (askId: string) => (
+    <QueryClientProvider client={queryClient}>
+      <SnoozeControl askId={askId} label={askId} onLive={onLive} snoozedUntil={null} />
+    </QueryClientProvider>
+  );
+  const view = render(drawn("ask-a"));
+  try {
+    await user.selectOptions(screen.getByLabelText("Snooze ask-a"), "tomorrow");
+    await stopTheLateWrite(queryClient);
+    const stoppedKey = snoozeAsk.mock.calls[0]?.[2]?.key;
+    const stopped = snoozeAsk.mock.calls.length;
+
+    view.rerender(drawn("ask-b"));
+    snoozeAsk.mockImplementation(async (_id, { snoozed_until }) => ({ snoozed_until }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await tick(1_000);
+
+    expect(snoozeAsk).toHaveBeenCalledTimes(stopped + 1);
+    const again = snoozeAsk.mock.calls.at(-1);
+    expect(again?.[0]).toBe("ask-a");
+    expect(again?.[2]?.key).toBe(stoppedKey);
+  } finally {
+    realClock();
+    view.unmount();
     snoozeAsk.mockRestore();
   }
 });
@@ -4697,6 +4740,93 @@ test("a snooze the column's head writes keeps that column on its row, in flight 
       within(screen.getByTestId("inbox-pane")).getByRole("button", { name: "Retry" })
     ).toBeTruthy();
     expect(selectedIds()).toEqual(["ask-a"]);
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The column's head is its question's own: the head's Snooze holds the write it made, so the
+// question the reader moves to is drawn under a head of its own, never under one still saying
+// `Snoozing…` of the question before.
+test("the question the reader moves to shows no snooze still saving on the one before", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const landing = Promise.withResolvers<never>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(() => landing.promise);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?group=waiting-on");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await user.selectOptions(
+      within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
+    await waitFor(() =>
+      expect(within(screen.getByTestId("inbox-pane")).getByText("Snoozing…")).toBeTruthy()
+    );
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    const head = within(screen.getByTestId("inbox-pane"));
+    expect(head.getByLabelText("Snooze CORE-2: Which format?")).toBeTruthy();
+    expect(head.queryByText("Snoozing…")).toBeNull();
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The same of a snooze Dispatch refused: its reason and its Retry are the question's it was
+// pressed on, so the question the reader moves to is drawn without them.
+test("the question the reader moves to shows no refusal of a snooze on the one before", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until must be in the future" })
+  );
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?group=waiting-on");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await user.selectOptions(
+      within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
+    await waitFor(() =>
+      expect(within(screen.getByTestId("inbox-pane")).getByRole("alert")).toHaveTextContent(
+        "snoozed_until must be in the future"
+      )
+    );
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    const head = within(screen.getByTestId("inbox-pane"));
+    expect(head.getByLabelText("Snooze CORE-2: Which format?")).toBeTruthy();
+    expect(head.queryByRole("alert")).toBeNull();
+    expect(head.queryByRole("button", { name: "Retry" })).toBeNull();
   } finally {
     unmount();
     narrow();

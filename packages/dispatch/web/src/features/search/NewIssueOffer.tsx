@@ -178,11 +178,11 @@ function NewIssueSaid({ state }: { readonly state: OfferState | undefined }): Re
     // line sends them to the issue, which the row opens.
     return (
       <p className={barNoteClassName} data-testid="search-new-issue-said" role="alert">
-        {refused.stopped
+        {refused.kind === "stopped"
           ? `${filed.issue.key} is made. ${stoppedWriteNote(refused.what, "made", {
               anew: `Nothing here makes it again: open ${filed.issue.key} to see whether it was.`,
             })}`
-          : `${filed.issue.key} is made; ${refused.what} was refused: ${refused.why}`}
+          : `${filed.issue.key} is made; ${refused.what} was refused: ${refused.refusal}`}
       </p>
     );
   }

@@ -59,7 +59,7 @@ function refreshArtifact(queryClient: QueryClient, artifact: Artifact): void {
  *  and the heading is read again from Dispatch (`refreshArtifact`), so it shows which title holds.
  *  Save is a press of its own, under a key of its own (`useKeyedWrite`), and sends nothing where
  *  the field holds the title the page shows (`CorrectTitle`). */
-export function stoppedCorrection(title: string): string {
+function stoppedCorrection(title: string): string {
   return stoppedWriteNote(`the title “${title}”`, "saved", {
     anew: "The heading reads the title again from Dispatch: where it does not show this one, Save sends it again as a new correction.",
   });
@@ -188,7 +188,8 @@ export function correctionIsOffered(artifact: Artifact): boolean {
  * nothing names, and refuses every other one with a sentence that names the test it failed, which
  * is shown here, where the person pressed.
  *
- * `onRemoved` is the host's own way back from the page of a document that has gone.
+ * `onRemoved` is the host's own way back from the page of a document that has gone, handed the
+ * document the removal was of, which by then may not be the one the host shows.
  */
 export function RemoveDocument({
   artifact,
@@ -196,7 +197,7 @@ export function RemoveDocument({
   refusal = null,
 }: {
   readonly artifact: Artifact;
-  readonly onRemoved?: () => void;
+  readonly onRemoved?: (removed: Artifact) => void;
   readonly refusal?: string | null;
 }): ReactNode {
   const queryClient = useQueryClient();
@@ -215,7 +216,7 @@ export function RemoveDocument({
     onSettled: () => submitGuard.release(),
     onSuccess: (_result, removed) => {
       refreshArtifact(queryClient, removed);
-      onRemoved?.();
+      onRemoved?.(removed);
     },
   });
   // A removal the reader stopped may have been made, and Remove is its Retry (`onPress`).

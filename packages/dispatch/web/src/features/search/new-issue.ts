@@ -1,8 +1,7 @@
 import { api, type WriteMethod } from "../../api/client";
 import type { Issue, NewIssueSettings } from "../../api/types";
-import { SendStoppedError } from "../writes/keyed-write";
 import type { Attempt, Writes } from "../writes/write-store";
-import { press, refusalText } from "./offer";
+import { press, type UnconfirmedPress, unconfirmedPress } from "./offer";
 
 /**
  * The whole content of the Verification document a new issue from the bar gets: the words the
@@ -27,12 +26,10 @@ export interface NewIssueWrite {
 }
 
 /** A write onto an issue the create has already made that Dispatch did not confirm: which write
- *  it was, in the words the bar reports it in, and either the reason Dispatch gave for refusing
- *  it (`why`), or that the person stopped it (`stopped`), when it may have landed and there is no
- *  refusal to report. */
-export type RefusedWrite =
-  | { readonly stopped: false; readonly what: string; readonly why: string }
-  | { readonly stopped: true; readonly what: string };
+ *  it was, in the words the bar reports it in (`what`), and where the press stands for it -
+ *  refused, with the reason Dispatch gave, or stopped by the person, when it may have landed and
+ *  there is no refusal to report (`UnconfirmedPress`). */
+export type RefusedWrite = UnconfirmedPress & { readonly what: string };
 
 /** What one acceptance made. */
 export interface FiledIssue {
@@ -54,6 +51,7 @@ export interface FiledIssue {
  */
 async function writeOnto<T>(
   writes: Writes,
+  words: string,
   what: string,
   label: string,
   method: WriteMethod,
@@ -63,9 +61,7 @@ async function writeOnto<T>(
     await press(writes, label, method, write);
     return undefined;
   } catch (error) {
-    return error instanceof SendStoppedError
-      ? { stopped: true, what }
-      : { stopped: false, what, why: refusalText(error, "the write did not reach Dispatch.") };
+    return { ...unconfirmedPress(error, words, "the write did not reach Dispatch."), what };
   }
 }
 
@@ -104,6 +100,7 @@ export async function fileNewIssue(
   });
   const criterion = await writeOnto(
     writes,
+    words,
     "its first criterion",
     `The first criterion of ${issue.key}`,
     "POST",
@@ -120,6 +117,7 @@ export async function fileNewIssue(
   const target = `session:${settings.session}`;
   const route = await writeOnto(
     writes,
+    words,
     `its route to the session ${settings.session}`,
     `${issue.key} to ${settings.session}`,
     "PATCH",
@@ -131,6 +129,7 @@ export async function fileNewIssue(
   return filed(
     await writeOnto(
       writes,
+      words,
       "its first message",
       `The first message on ${issue.key}`,
       "POST",

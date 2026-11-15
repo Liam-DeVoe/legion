@@ -78,7 +78,7 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
 // either: the key each call is handed is the page's own, a key of its own for each press, and
 // what it shows here is which press the Retry made again - the newer save, the one the refusal
 // on screen is about, and never the older one.
-test("Retry after two stopped saves of the same default assignee goes under the newer save's key", async () => {
+test("Retry after two stopped saves of the same default assignee makes the newer save again", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
@@ -109,12 +109,14 @@ test("Retry after two stopped saves of the same default assignee goes under the 
 
     await user.selectOptions(control, "alice@example.com");
     await stopTheLateWrite(queryClient);
-    const firstKey = putDefault.mock.calls[0]?.[2]?.key;
+    // A `PUT` carries no `Idempotency-Key`: the key a call is handed in its bounds is the page's
+    // own name for the press the call is of, and what these lines compare is which press it is.
+    const firstPress = putDefault.mock.calls[0]?.[2]?.key;
 
     await user.selectOptions(control, "alice@example.com");
     await tick(0);
-    const secondKey = putDefault.mock.calls.at(-1)?.[2]?.key;
-    expect(secondKey).not.toBe(firstKey);
+    const secondPress = putDefault.mock.calls.at(-1)?.[2]?.key;
+    expect(secondPress).not.toBe(firstPress);
     await stopTheLateWrite(queryClient);
 
     // The Retry is a write of its own: the last call is otherwise the stopped save's own attempt,
@@ -124,7 +126,7 @@ test("Retry after two stopped saves of the same default assignee goes under the 
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await tick(0);
     expect(putDefault).toHaveBeenCalledTimes(sentBeforeRetry + 1);
-    expect(putDefault.mock.calls.at(-1)?.[2]?.key).toBe(secondKey);
+    expect(putDefault.mock.calls.at(-1)?.[2]?.key).toBe(secondPress);
   } finally {
     realClock();
     cleanup();

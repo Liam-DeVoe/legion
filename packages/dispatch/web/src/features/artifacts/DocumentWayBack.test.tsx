@@ -15,7 +15,6 @@ import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath } from "../refs/routes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ArtifactHeader } from "./ArtifactHeader";
-import { stoppedCorrection } from "./DocumentWayBack";
 
 function document(overrides: Partial<Artifact> = {}): Artifact {
   return {
@@ -219,46 +218,6 @@ test("correcting the title back to one a stopped correction carried goes under i
   }
 });
 
-// A correction the reader stopped may have reached Dispatch, and here it had: the title is the new
-// one. The form is the only place the reader learns what became of it (the write is `inline`), so
-// it must not say the correction failed, which is a claim the page cannot know to be true; it says
-// what the stopped write is, as `CreateDocument` does for a stopped create (`stoppedCreate`).
-test("a stopped correction that reached Dispatch is not reported as a failed one", async () => {
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  let stored = document();
-  const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
-    Promise.resolve([stored])
-  );
-  const renameArtifact = spyOn(api, "renameArtifact").mockImplementation((_id, input) => {
-    stored = { ...stored, name: input.name };
-    return Promise.reject(
-      new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
-    );
-  });
-  const view = renderPage(documentPath);
-  view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-
-  try {
-    await screen.findByRole("heading", { name: "Lauch notes" });
-    await user.click(screen.getByRole("button", { name: "Correct title" }));
-    await saveTitle(user, "Launch notes");
-    await stopTheLateWrite(view.queryClient);
-
-    expect(stored.name).toBe("Launch notes");
-    const said = screen
-      .getByRole("form", { name: "Correct title" })
-      .querySelector('[role="alert"]');
-    expect(said?.textContent ?? "").not.toBe("");
-    expect(said?.textContent).not.toBe("Could not correct the title.");
-  } finally {
-    view.unmount();
-    listArtifacts.mockRestore();
-    renameArtifact.mockRestore();
-    realClock();
-  }
-});
-
 // The heading of a page whose correction the reader stopped still shows the title the page read
 // before the press, which may no longer be the title: here the correction had reached Dispatch.
 // So the page reads the document again, and the heading shows the title Dispatch holds, which is
@@ -285,11 +244,16 @@ test("a stopped correction reads the document again, so the heading shows the ti
     await saveTitle(user, "Launch notes");
     await stopTheLateWrite(view.queryClient);
 
+    expect(stored.name).toBe("Launch notes");
     expect(screen.getByRole("heading", { name: "Launch notes" })).not.toBeNull();
     const said = screen
       .getByRole("form", { name: "Correct title" })
       .querySelector('[role="alert"]');
-    expect(said?.textContent).toBe(stoppedCorrection("Launch notes"));
+    expect(said?.textContent).toBe(
+      "Dispatch has not confirmed the title “Launch notes”: it may have been saved. The heading " +
+        "reads the title again from Dispatch: where it does not show this one, Save sends it " +
+        "again as a new correction."
+    );
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
@@ -498,6 +462,53 @@ test("Remove after a stopped removal removes that press's document, whichever th
         stopped: new SendStoppedError(),
       })
     );
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    deleteArtifact.mockRestore();
+    realClock();
+  }
+});
+
+// The way back a removal takes is the removed document's own address, as the plain removal's is
+// (above): the header may draw another document by the time a stopped removal's Retry lands, and
+// that document is still there.
+test("a stopped removal that lands after the header moved on goes to the removed document's address", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  let stored: Artifact[] = [document()];
+  const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
+    Promise.resolve(stored)
+  );
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
+  );
+  const view = renderPage(`${documentPath}?v=1`);
+  view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await stopTheLateWrite(view.queryClient);
+
+    const release = document({
+      id: "artifact-2",
+      name: "Release notes",
+      ref_key: "CORE-1/release-notes",
+      slug: "release-notes",
+    });
+    stored = [release, document()];
+    await act(() => view.queryClient.invalidateQueries({ queryKey: ["artifacts", "CORE-1"] }));
+    await screen.findByRole("heading", { name: "Release notes" });
+
+    deleteArtifact.mockImplementation(() => {
+      stored = [release];
+      return Promise.resolve();
+    });
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await tick(1_000);
+
+    expect(screen.getByTestId("location").textContent).toBe(documentPath);
   } finally {
     view.unmount();
     listArtifacts.mockRestore();

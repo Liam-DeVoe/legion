@@ -10,7 +10,7 @@ import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { SendExpiredError, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import type { IssueListing } from "./issues-table-data";
@@ -827,6 +827,48 @@ test("a merge with a stopped move says the move may have been made and the sourc
   );
   expect((await screen.findByRole("alert")).textContent).toContain(
     `The source epic CORE-1 remains open. 1 of 2 changes saved. ${stoppedStep("CORE-3")} Retry each failed change in Pending changes.`
+  );
+});
+
+// A batch whose stopped changes promise different Retries: one key Dispatch still holds, so its
+// Retry asks again under it, and one that ran out, so its Retry is a new write. Each is said with
+// its own promise, never both with the first one's.
+test("a merge with a stopped move and one whose key ran out says each move's own Retry", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockImplementation(async (request) => {
+    throw request.path.endsWith("CORE-3") ? new SendStoppedError() : new SendExpiredError();
+  });
+  restores.push(() => send.mockRestore());
+  table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Source" }),
+      issue("CORE-2", { labels: ["epic"], title: "Target" }),
+      issue("CORE-3", { parent: "CORE-1" }),
+      issue("CORE-4", { parent: "CORE-1" }),
+    ],
+    "?group=epic"
+  );
+  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
+  if (!source) throw new Error("The source epic has no heading row");
+  await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "Merge into another epic" }),
+    "CORE-2"
+  );
+  await user.click(screen.getByRole("button", { name: "Merge…" }));
+  await user.click(
+    within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {
+      name: /^Merge$/,
+    })
+  );
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "The source epic CORE-1 remains open. 0 of 2 changes saved. Dispatch has not confirmed the " +
+      "change to CORE-3: it may have been saved. Retry asks again under the same key, so it is " +
+      "saved at most once if you retry within 24 hours of the first try. After that Dispatch no " +
+      "longer knows the key: a Retry is a new write and may be saved twice. Dispatch has not " +
+      "confirmed the change to CORE-4: it may have been saved. Its key is 24 hours old or more, " +
+      "so Dispatch no longer holds it: a Retry is a new write, which can be saved a second time " +
+      "if the first one was. Retry each failed change in Pending changes."
   );
 });
 

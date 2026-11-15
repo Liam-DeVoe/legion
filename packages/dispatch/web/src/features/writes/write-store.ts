@@ -57,9 +57,10 @@ export interface WriteBase<D = unknown> {
   readonly login: string | undefined;
   /** Whether the request it makes goes under its key (`goesUnderKey`): a `POST` or a `PATCH`,
    *  whose Retry after it ended without Dispatch's verdict asks again under that key, and not a
-   *  `PUT` or a `DELETE`, which sends none. Read from the method its spec names at the press
-   *  (`WriteSpec`), never from what goes out later, since a write can end stopped before any
-   *  attempt of it sends a request; kept with it (`KeptWrite.keyed`), so a reload reads it back. */
+   *  `PUT` or a `DELETE`, which sends none, nor the sign-out (`WriteSpec.endsWithSession`), a
+   *  `POST` that sends none either. Read from what its spec names at the press (`WriteSpec`),
+   *  never from what goes out later, since a write can end stopped before any attempt of it sends
+   *  a request; kept with it (`KeptWrite.keyed`), so a reload reads it back. */
   readonly keyed: boolean;
   readonly label: string;
   readonly presentation: Presentation;
@@ -211,7 +212,8 @@ export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
          *  and every attempt must make that one (`OneRequestPerWriteError`). */
         readonly write: Attempt<T>;
         /** The method of the request every attempt of `write` makes, which no attempt says
-         *  until it goes out: what tells whether the write goes under its key (`Write.keyed`). */
+         *  until it goes out: what tells whether the write goes under its key (`Write.keyed`),
+         *  but for a sign-out (`endsWithSession`). */
         readonly method: WriteMethod;
       }
   );
@@ -234,7 +236,8 @@ interface WriteSpecBase<D, K> {
   readonly file?: File;
   /** Whether the write ends the person's session - a sign-out - so a lapse of that session has
    *  done what it was for: the write lands, with no answer, rather than being held for the next
-   *  sign-in. */
+   *  sign-in. It goes under no key (`Write.keyed`): the sign-out is `POST /auth/logout`, which
+   *  sits outside Dispatch's keyed layer (`api.logout`). */
   readonly endsWithSession?: boolean;
 }
 
@@ -444,7 +447,11 @@ export class Writes {
         inline: spec.inline ?? false,
         joined: this.#nextJoin(),
         key,
-        keyed: goesUnderKey(request === undefined ? spec.method : request.method),
+        // A sign-out is `POST /auth/logout`, which sits outside Dispatch's keyed layer and sends
+        // no key (`api.logout`), so it goes under none whatever its method (`endsWithSession`).
+        keyed:
+          spec.endsWithSession !== true &&
+          goesUnderKey(request === undefined ? spec.method : request.method),
         kind: spec.kind.name,
         label: spec.label,
         login,

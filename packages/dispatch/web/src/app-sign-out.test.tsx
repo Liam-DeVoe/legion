@@ -270,6 +270,29 @@ test("a sign-out the reader stopped does not say the person is still signed in",
   }
 });
 
+// `/auth/logout` sits outside Dispatch's keyed layer: the sign-out is a `POST` that sends no key,
+// and its write says so (`Write.keyed`), as a `PUT`'s or a `DELETE`'s does.
+test("a sign-out's write says it goes under no key, since /auth/logout sends none", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const app = renderApp({
+    logout: () => Promise.withResolvers<{ ok: true }>().promise,
+    whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
+  });
+  try {
+    await screen.findByText("Signed in as alice");
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(app.logout).toHaveBeenCalledTimes(1));
+    const signOut = writesOf(app.queryClient)
+      .rows()
+      .find((row) => row.label === "Sign out");
+    expect(signOut?.keyed).toBe(false);
+  } finally {
+    realClock();
+    app.teardown();
+  }
+});
+
 // W50, W60. A sign-out Dispatch answers `401 NO_IDENTITY` has landed: the session it would end is
 // already gone - its answer was lost and the retry found the session ended, or a sign-out in
 // another browser revoked it. The changes the person chose to discard go, here and in every other

@@ -38,9 +38,9 @@ interface AskSnoozePress {
  * refuses, and the list refetches once the save settles - the same shape as the issue field
  * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
  *
- * Each press carries the ask it is of. The reading column's head keeps its control as the reader
- * moves to another ask, so a Retry of a press the reader stopped is of that press's ask, not of
- * the one the control is drawn for by then.
+ * Each press carries the ask it is of, as a press carries every value its Retry sends: a Retry of
+ * a press the reader stopped is of that press's ask, whichever ask the control is drawn for by
+ * then, since a host may draw one control for one ask after another.
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
