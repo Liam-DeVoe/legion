@@ -85,14 +85,16 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 # Sami's jj fork: what the dogfood daemon runs on the devbox; same 0.45 line as the jj-lib inside OMP.
 ARG JJ_TOOL=github:sjawhar/jj@0.45.1-sami.20260910-043938
 ARG GH_TOOL=gh@2.98.0
-# The shared public leak check a pod installs before any role's agent starts: the tag of the
-# private repository whose leak-check directory holds it, which `legion worker-shim` fetches with
-# the role's own gh and unpacks under the issue's scratch
-# (packages/daemon/internal/leakguard's Install). R5 of dispatch://INFRA-1527 requires the newest
+# The pin of the shared public leak check: the tag of the private repository whose leak-check
+# directory holds it. The image carries the pin alone. The pod's launcher names this tag to the
+# daemon, which reads the check at it and pushes it to the launcher, and the launcher installs it
+# under the issue's scratch before any role's agent starts (packages/daemon/internal/leakguard's
+# Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
 # newest, read with `gh api repos/theorem-labs/agent-infra/git/refs/tags` at 2026-11-09T23:45:49Z,
 # and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
-# is where the shim reads it, so the version has this one home and no copy of it lives in Go.
+# is where the launcher and each role's shim read it, so the version has this one home and no
+# copy of it lives in Go.
 ARG LEAK_CHECK_TAG=leak-check-v15
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
@@ -1090,12 +1092,13 @@ COPY --from=go /out/agent-secrets /opt/legion/bin/agent-secrets
 # packages/daemon/docker/gh, the same script a tmux pane's launcher directory holds
 # (packages/daemon/internal/runtime/workerbin).
 COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
-# git in a pod is Legion's wrapper, first on the image PATH, which runs the real git at
-# /usr/bin/git with the arguments it was given — except for a push, which it runs with
-# `-c core.hooksPath=/opt/legion/githooks` in front and the push's `--no-verify` taken out, so
-# git's own pre-push hook runs the leak guard over the update lines git computed and a role can
-# neither edit that hook nor skip it. The `-c` outranks the runtime's core.hooksPath=/dev/null
-# pin, which still holds for every other command (mainEnvironment,
+# git in a pod is Legion's wrapper, first on the image PATH. It changes a commit and a push and runs
+# every other command unchanged with the real git at /usr/bin/git. A commit goes to `legion git`,
+# which adds the commit's Omp-Session and Legion-Role trailers and then runs the real git. A push
+# runs with `-c core.hooksPath=/opt/legion/githooks` in front and the push's `--no-verify` taken
+# out, so git's own pre-push hook runs the leak guard over the update lines git computed and a
+# role can neither edit that hook nor skip it. The `-c` outranks the runtime's
+# core.hooksPath=/dev/null pin, which still holds for every other command (mainEnvironment,
 # packages/daemon/internal/runtime/sandbox/manifest.go): packages/daemon/docker/git.
 COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 # jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the
@@ -1111,13 +1114,14 @@ COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 COPY --chmod=0755 packages/daemon/docker/githooks/pre-push /opt/legion/githooks/pre-push
 # The pin of the shared public leak check, re-declared here so the runtime stage can read the
 # global ARG above, and exported as a variable of the image: every process the image runs finds
-# it, which is how `legion worker-shim` reads the pin from its own environment before it starts
-# a role's agent (packages/daemon/internal/leakguard's TagVariable and Install). The image is its
+# it. The pod's launcher reads the pin from its own environment and names it to the daemon, and
+# each role's `legion worker-shim` reads it from its own before it starts a role's agent
+# (packages/daemon/internal/leakguard's TagVariable and Installed). The image is its
 # only setter, so a deployment's `runtime.kubernetes.pod.env` may not move it
 # (sandbox/operatorpod.go imageEnv). It goes in after the toolchain and the probe layer, with the
 # wrappers above, so a tag bump reruns only these last few layers. The check itself is not in the
-# image: it publishes often and is fetched per pod at this tag, and the image build has no
-# credential for the private repository that publishes it.
+# image: it publishes often, and the image build has no credential for the private repository
+# that publishes it. The daemon reads it at this tag and pushes it to each pod's launcher.
 ARG LEAK_CHECK_TAG
 ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # The final step: /opt/legion, /opt/legion/bin and /opt/legion/githooks are root's with mode 0755,
@@ -1137,7 +1141,11 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # and prints its version: /usr/bin/git, /usr/local/bin/jj and /usr/local/bin/gh. So the three
 # absolute paths stay as fixed as they were when git and jj were reached by their own names, and
 # a pod environment can name all three; what has moved is that a push now passes through the git
-# wrapper's hook. The pre-push hook itself is root's, executable, and in the root-owned
+# wrapper's hook and a commit through `legion git`. One commit through the PATH's git, in a scratch
+# repository under /tmp with a probe identity, LEGION_ROLE=tester and the Oh My Pi session
+# image-probe, must carry the lines `Omp-Session: image-probe` and `Legion-Role: tester`. That
+# runs the image's own git wrapper with the image's own `legion`, which no pod runs before the
+# image rolls out. The pre-push hook itself is root's, executable, and in the root-owned
 # directory checked above, so no role can edit it or put another in its place. flock is pinned
 # the same way, and for a reason the other gates do not
 # cover: the installs Legion renders call it as /usr/bin/flock — the plugin pair's for an
@@ -1233,6 +1241,15 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     flock="$(command -v flock)"; echo "flock: $flock"; test "$flock" = /usr/bin/flock; \
     nc="$(command -v nc)"; echo "nc: $nc"; test "$nc" = /usr/bin/nc; \
     legion="$(command -v legion)"; echo "legion: $legion"; test "$legion" = /opt/legion/bin/legion; \
+    probe="$(mktemp -d)"; git init -q "$probe"; \
+    GIT_AUTHOR_NAME='Image probe' GIT_AUTHOR_EMAIL=image-probe@example.invalid \
+      GIT_COMMITTER_NAME='Image probe' GIT_COMMITTER_EMAIL=image-probe@example.invalid \
+      LEGION_ROLE=tester DISPATCH_HOST=omp DISPATCH_SESSION_ID=image-probe \
+      git -C "$probe" commit --allow-empty -q -m probe; \
+    message="$(git -C "$probe" log -1 --format=%B)"; printf 'probe commit:\n%s\n' "$message"; \
+    printf '%s\n' "$message" | grep -qx 'Omp-Session: image-probe'; \
+    printf '%s\n' "$message" | grep -qx 'Legion-Role: tester'; \
+    rm -rf "$probe"; \
     gh="$(command -v gh)"; echo "gh: $gh"; test "$gh" = /opt/legion/bin/gh; /usr/local/bin/gh --version; \
     npm="$(command -v npm)"; echo "npm: $npm"; test "$npm" = /usr/local/bin/npm; \
     DISPATCH_HOST=omp DISPATCH_SESSION_ID=image-check HOME=/tmp \

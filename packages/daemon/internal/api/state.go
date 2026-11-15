@@ -306,7 +306,8 @@ type AgentSecretsLoginView struct {
 // or slice is `null`, which the plugin's reader refuses. The exceptions are the two keys a
 // contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
 // carries no key of that name at all, and is marshaled through a value whose own field of that
-// name shadows the embedded one, which is how Admission.MarshalJSON leaves off `trees`.
+// name shadows the embedded one. Admission.MarshalJSON hides `trees` and `held`, the two keys of
+// its own block a downgrade hides, with `omitzero` on those fields instead.
 //
 // One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
 // nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
@@ -399,20 +400,27 @@ type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue keeps its slot from the moment the daemon starts it until it is done or leaves the
-	// workflow (record.KeepsSlot). So one tree with three started children holds three of these,
-	// and an issue waiting on a person, one in accepting, one held, a merger at work in merging,
-	// one in merging whose start a closed design gate holds (the outbox's
-	// mergerWaitsForTheDesignGate) and a merged root standing in merging while the rest of its
-	// tree runs are each here, while an issue whose phase has left the workflow — done, or a
-	// status Dispatch took it out of the workflow with — is in neither list.
+	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
+	// past its review — accepting, retro and merging hold none — or until it is done or
+	// Dispatch takes it out of the workflow, except while it waits on another issue before that
+	// point (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
+	// three of these, and an issue at work, one held and one waiting on a person are each here,
+	// while one past its review — a merger at work in merging, one in merging whose start a
+	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
+	// standing in merging while the rest of its tree runs — and one whose phase has left the
+	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
+	// An issue the daemon has started that waits on another issue before its review is missing
+	// from here too, other than the three roots that keep their slot through such a wait
+	// (blockers.waitsOf): it holds no slot while it waits (record.Issue.ReleasedForWaitAt,
+	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
+	// tells it from an issue a person parked, which stands in none of the three.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
 	// rank. It carries children as well as roots, for the same reason `active` does. An owed
-	// start in it holds no row and waits for one; an issue in it that holds a row already (the
-	// kinds record.LineEntry.Holds names) stands in both lists until the pass that promotes it,
-	// which takes no second row.
+	// start in it holds no row and waits for one, as does an issue released for what it waits
+	// on; an issue in it that holds a row already (the kinds record.LineEntry.Holds names)
+	// stands in both lists until the pass that promotes it, which takes no second row.
 	Waiting []string `json:"waiting"`
 	// Trees is the root of every live tree the daemon judges (record.TreeLive), sorted by key: a
 	// tree whose lifecycle stands open under the workflow and does not linger, one whose root
@@ -420,17 +428,34 @@ type Admission struct {
 	// so a live tree can hold no slot at all — a root still waiting in the line for its tree to
 	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
 	// a reader such as the controller which trees run. Never null; empty when no tree is live.
-	Trees []string `json:"trees"`
-	// Blocked is every issue Legion is waiting to start that waits on a Dispatch issue nobody has
-	// finished (INFRA-225), by issue key: a waiting root admission skips and a child the workflow
-	// holds at `admitted`, together in one list, each with what it still waits on. A blocked issue
-	// the line carries is in Waiting too. Never null; empty when nothing waits on a link.
+	Trees []string `json:"trees,omitzero"`
+	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for
+	// (INFRA-225), by issue key: a waiting root admission skips, a child the workflow holds at
+	// `admitted`, and an issue the daemon has started that gave its slot back for the wait,
+	// together in one list, each with what it still waits on. A blocked issue the line carries
+	// is in Waiting too. Never null; empty when nothing waits on a link.
 	Blocked []BlockedIssue `json:"blocked"`
+	// Held is every issue the daemon's record holds in the workflow that stands in neither
+	// `active` nor `waiting`: the work the daemon runs nothing of and queues nowhere, each row
+	// carrying the one word for why (record.HeldReason) and the issues that hold it, sorted by
+	// issue key. It is the other half of the three lists above — a reader that has `active`,
+	// `waiting` and this one has every issue of the workflow and what each is doing — so the
+	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
+	// the one that waits: a root whose Legion label is off, an issue none of the other words
+	// is true of, or an issue past its review under `at_work`, which no other issue holds
+	// (record.HeldAtWork says which issues read it). Never null; empty when every issue of the
+	// workflow runs or waits in the line.
+	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that
 	// reader knows no `trees` and refuses the key as surely when it is empty as when it names a
 	// tree, so MarshalJSON leaves the key off that one body rather than writing it empty.
 	treesHidden bool
+	// heldHidden is the same for Held: it is set on the copy served a caller whose plugin is
+	// older than the contract that added the list (api's withoutHeld, below server.go's
+	// heldContract), whose reader refuses `held` emptied as surely as filled, so MarshalJSON
+	// leaves that key off too.
+	heldHidden bool
 }
 
 // BlockedIssue is one issue of Blocked and the issues it waits on that are not done. It is
@@ -438,11 +463,24 @@ type Admission struct {
 // read two ways, and the row is declared once, under both.
 type BlockedIssue = record.BlockedIssue
 
-// MarshalJSON keeps `active`, `waiting`, `trees` and `blocked` arrays on the wire, empty rather
-// than `null` — except on an admission whose trees are hidden, which carries no `trees` key at
-// all. That body is marshaled through a value whose own nil `trees` field, being `omitempty`,
-// shadows the embedded one and so is written by nothing; every other key of the block, including
-// one a later contract adds above, is still written from the one place that writes it.
+// HeldIssue is one issue of Held: the issue, the one word for why nothing of it runs, and the
+// issues that hold it where there are any. It is record.HeldIssue, as BlockedIssue is
+// record.BlockedIssue: the state's `admission.held` and the controller tick's notice are the
+// same list read two ways, and the row is declared once, under both.
+type HeldIssue = record.HeldIssue
+
+// MarshalJSON keeps `active`, `waiting`, `trees`, `blocked` and `held` arrays on the wire, empty
+// rather than `null` — except on an admission whose trees are hidden, which carries no `trees`
+// key at all, and one whose held list is hidden, which carries no `held`. Those two keys are
+// tagged `omitzero`, so a nil slice writes no key and an empty one writes `[]`: a hidden list
+// is left nil here and every other list is filled, which is the whole of the rule. The keys
+// keep their place in the object, because they are written from the fields they are declared
+// on and from nowhere else.
+//
+// A caller below treeContract is below heldContract too and is served both strips at once; a
+// caller served the held strip alone is the reader of a contract between the two. Every golden
+// body of this repository is compared byte for byte, so a key written anywhere but on its own
+// field would rewrite them all.
 func (a Admission) MarshalJSON() ([]byte, error) {
 	type wire Admission
 	out := wire(a)
@@ -457,13 +495,13 @@ func (a Admission) MarshalJSON() ([]byte, error) {
 	}
 	if a.treesHidden {
 		out.Trees = nil
-		return json.Marshal(struct {
-			wire
-			Trees []string `json:"trees,omitempty"`
-		}{wire: out})
-	}
-	if out.Trees == nil {
+	} else if out.Trees == nil {
 		out.Trees = []string{}
+	}
+	if a.heldHidden {
+		out.Held = nil
+	} else if out.Held == nil {
+		out.Held = []HeldIssue{}
 	}
 	return json.Marshal(out)
 }
@@ -547,6 +585,10 @@ type Issue struct {
 	// Check is the issue's open production check, the work after its close (record.ProductionCheck):
 	// present only while the check is open, and absent once it closed or while none was opened.
 	Check *CheckView `json:"check,omitempty"`
+	// MergeWait is what the issue's review round waits on from GitHub, present only while it
+	// waits on GitHub's merge state for the pull request's head and absent for every other
+	// round (MergeWaitView).
+	MergeWait *MergeWaitView `json:"mergeWait,omitempty"`
 	// MemoryGroup is the memory group of the issue's tree (memorygroup.Group): `memory` for a
 	// tree whose roles run with the project's memory overlays and instructions, `none` for one
 	// that runs without them, and absent while nothing has drawn for the tree — a tree first
@@ -558,6 +600,41 @@ type Issue struct {
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
+	// PhaseEntry is the number of the phase entry the role of the issue's current phase stands on
+	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase), and GivenEntry the
+	// entry of the last task that role's claim was queued (supervise.Claim.GivenEntry). The daemon
+	// sends the entry's own work to a role whose given number is below the entry its row names, on
+	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
+	// resumeSlottedWorkers), so a reader tells a role holding the work its row names from one the
+	// daemon has still to reach, and `legion state` names the difference (its entrySummary).
+	//
+	// Both are absent together for an issue whose current phase names no phase worker role: a root
+	// at admitted whose design gate has never opened is at work (record.AtWork) and phase.RoleFor
+	// names no role for that phase, so the sweep passes it over and nothing would ever close a
+	// difference written for it. GivenEntry alone is absent where it is 0, which is a role the
+	// daemon holds no claim row of — the start is what creates the claim — and one whose claim has
+	// been queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
+	// transition has raised an entry for. They are keys of the issue and not of PhaseView because a
+	// phases row exists for a role whose claim row does not, where PhaseView.Claim is a required
+	// value no reader parses empty.
+	PhaseEntry int64 `json:"phaseEntry,omitempty"`
+	GivenEntry int64 `json:"givenEntry,omitempty"`
+	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
+	// is how long that tree has been still at this read, in hours (contract 111). The two are one
+	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every
+	// issue of one tree carries the same pair: an issue past its review, which holds no slot, and
+	// a done child recorded under a live tree each answer their tree's quiet time, because what
+	// has stopped is the tree and not the issue a reader happens to hold. Both are absent
+	// together for an issue whose tree is not live — one whose tree has left the workflow, and
+	// one the workflow does not record — since there is no tree of the deployment's to measure,
+	// and both are absent from the body the route serves a caller below quietTimeContract (api's
+	// stateFor, withoutQuietTime). A tree the record shows no movement for at all is measured
+	// from the zero time, as the measure defines it, and a Go duration saturates there, so such
+	// a tree reads as quiet for 2562047.788 hours — the largest span a duration holds, 292
+	// years. That is the pair saying the tree has never moved, not a fault: the alternative,
+	// leaving the keys off, would read as a tree nobody measures at all.
+	TreeMovedAt *time.Time `json:"treeMovedAt,omitempty"`
+	QuietHours  *float64   `json:"quietHours,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -672,6 +749,14 @@ type ClaimView struct {
 	// escalation reads while that relaunch is still going on and `failure` is empty.
 	Failure      *ClaimFailureView      `json:"failure,omitempty"`
 	PendingCause supervise.FailureCause `json:"pendingCause,omitempty"`
+	// LeakCheckCause is the sentence the claim's latest launch try was refused with because the
+	// shared public leak check could not be installed in the role's pod
+	// (supervise.Claim.LeakCheckCause), and is absent when that try started its process or failed
+	// for another reason. It sits beside `failure` rather than in it: a claim that runs out of
+	// launches on it fails with `failure.detail` `launch failures ran out: <the error>` and the
+	// cause word the launch chooses, and this key says which check refused it, from the first
+	// refused try on.
+	LeakCheckCause string `json:"leakCheckCause,omitempty"`
 }
 
 // ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
@@ -783,8 +868,9 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		// operator retired after it failed carries the record still, since nothing but the launch
 		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
 		// than on the claim's state for exactly that reason.
-		Failure:      FailureViewOf(c),
-		PendingCause: c.PendingCause,
+		Failure:        FailureViewOf(c),
+		PendingCause:   c.PendingCause,
+		LeakCheckCause: c.LeakCheckCause,
 	}
 }
 
@@ -1010,6 +1096,10 @@ type SlotView struct {
 // looks for the field rather than repeating the string.
 const WaitingLineField = "waitingLine"
 
+// MergeWaitField is the name `mergeWait` carries on the wire, read from here by the tests that
+// look for the field rather than repeating the string.
+const MergeWaitField = "mergeWait"
+
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
 // and the length of that list at this read, beside the waiting line's own fields for a program
 // that acts on the line rather than reading the sentence Reason renders: which part the issue
@@ -1076,6 +1166,15 @@ const (
 	WhyUnlisted     WhyState = "unlisted"
 )
 
+// TreeMovedAtField and QuietHoursField are the names `treeMovedAt` and `quietHours` carry on the
+// wire, read from here by the tests that look for the fields rather than repeating the strings.
+// The two are named together because they are served and stripped together: a reader that holds
+// one without the other holds half a measure.
+const (
+	TreeMovedAtField = "treeMovedAt"
+	QuietHoursField  = "quietHours"
+)
+
 // CheckView is an issue's open production check as the state shows it: the repository, pull
 // request and merge commit the check looks for in production (MergeCommit is empty for a pull
 // request merged before the daemon recorded merge commits), when it opened, the role that works
@@ -1112,6 +1211,57 @@ type CheckWakeView struct {
 	Kind   string    `json:"kind"`
 	Detail string    `json:"detail"`
 	At     time.Time `json:"at"`
+}
+
+// MergeWaitView is what an issue's review round waits on from GitHub. It is present only while
+// the round waits on GitHub's merge state for the pull request's head, which is one rule the
+// daemon reads everywhere (classify.RoundWaitsOnMergeState, over the issue, its reviewer's row
+// and its open pull request): a reviewer's approval stands on the head the pull request is at,
+// and the merge state the record holds for that head is not one the issue may advance on. The
+// engine reads that same rule to decide whether to read GitHub for the round, so the object is
+// on the view exactly for the rounds the daemon is reading for.
+//
+// It stands for the round waiting for a first answer and for the stuck round alike — both wait on
+// GitHub's next answer about the same head — and ToldHead with ToldState say what the architect and
+// the reviewer were last told of for it. The reading it is here for is the approval that stands for
+// days while GitHub holds the head on a state the issue may not advance on: the merge state alone
+// is on the pull request's view, but not when it was read, nor what the round's own wait is.
+type MergeWaitView struct {
+	// WaitsOn is the head the round waits on, the pull request's current head: the head the
+	// approval stands on, and the head GitHub's answer is about.
+	WaitsOn string `json:"waitsOn"`
+	// MergeState is the merge state the record holds for that head
+	// (record.PullRequest.MergeState), in GitHub's own spelling — `blocked`, `behind`, `draft`,
+	// `dirty`, `unknown`. It is absent while the record holds no state for this head: beside no
+	// StateReadAt the record holds no read of this head, and beside a StateReadAt it holds a read
+	// whose answer carried no state (record.PullRequest.StateReadAt says when each is the case).
+	MergeState string `json:"mergeState,omitempty"`
+	// StateReadAt is record.PullRequest.StateReadAt, the moment GitHub's last answer about this
+	// head was in hand, a confirming answer included; that field's doc says who stamps it, what
+	// clears it and what its zero means. It is absent rather than zero when the record holds none,
+	// so a reader never takes a read at the zero instant for a time; absent beside a recorded
+	// MergeState, the record holds a state with no read time.
+	StateReadAt *time.Time `json:"stateReadAt,omitempty"`
+	// HeadUpdatedAt is the record's HeadUpdatedAt, the newest `updated_at` GitHub gave among the
+	// pull request's lifecycle observations: a reopen at the same head moves it, and a push whose
+	// event carried no clock does not raise it. Absent when it is zero.
+	HeadUpdatedAt *time.Time `json:"headUpdatedAt,omitempty"`
+	// CheckRuns counts the fence's runs stamped with the current head
+	// (record.PullRequest.CheckRuns, record.AttemptRun.Head): the runs a CI settlement has applied
+	// for this head. The listener settles a head only once every check it has seen there is
+	// terminal, so the count is 0 until CI on the head has settled, and 0 is no evidence of what
+	// GitHub holds: a head whose CI is still running, a head GitHub ran no check on, and a head
+	// whose runs all concluded with their settlement not yet arrived all read 0, so a reader reads
+	// the head's runs and their status on GitHub before acting on it. It is written whatever its
+	// value, so 0 is that reading and not a gap.
+	CheckRuns int `json:"checkRuns"`
+	// ToldHead and ToldState are the reviewer's record.ReviewDecision.ToldStuckHead and
+	// ToldStuckState, the marks workflow's tellStuckMergeState leaves once the architect and the
+	// reviewer have been told of this round. They name the head and state the reviewer's decision
+	// last records as told, whatever the record holds of the merge state and the read time now,
+	// and a later answer may have moved past them; they are empty when that decision records none.
+	ToldHead  string `json:"toldHead,omitempty"`
+	ToldState string `json:"toldState,omitempty"`
 }
 
 // PendingStatusWrite is a Dispatch-status effect the outbox has not finished, due now or backing off

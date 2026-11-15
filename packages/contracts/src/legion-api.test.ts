@@ -62,7 +62,7 @@ const schemas: Record<string, z.ZodType> = {
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).
   "ready.json": LegionReadyRequest,
-  // `claim.ReadyForUpdateRequest`: the worker's answer to its pod's update task, saying it has
+  // `claim.ReadyForUpdateRequest`: the worker's answer to its pod's update message, saying it has
   // pushed everything it wants kept and its process may be replaced.
   "ready-for-update.json": LegionReadyForUpdateRequest,
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
@@ -118,6 +118,15 @@ const schemas: Record<string, z.ZodType> = {
   // cause set is the daemon's, word for word" below. A word the enum does not name fails the
   // parse of this fixture, which is what the gate above reports.
   "failure-causes.json": z.strictObject({ causes: z.array(z.enum(LEGION_FAILURE_CAUSES)) }),
+  // Nor this one: the code of a completion refused for its phase entry and the words that
+  // refusal tells the worker to act on (`staleEntryCode` and `staleEntryInstruction` in
+  // `internal/api/handoff.go`), written by `internal/api`'s TestStaleEntryInstructionGolden so
+  // that `packages/pi-shared/src/legion-phase-ops.test.ts` can hold the `legion` tool's
+  // description for that code to the daemon's own text, word for word.
+  "stale-entry.json": z.strictObject({
+    code: z.literal("HANDOFF_STALE_ENTRY"),
+    instruction: z.string().min(1),
+  }),
 };
 
 function fixture(name: string): unknown {
@@ -501,7 +510,7 @@ test("a backward move rejects future read-only phases", () => {
   ).toBeFalse();
 });
 
-// Contract 40: `awaiting_person`, a root that gave its slot up while its architect waits on a
+// Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
 // before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
@@ -679,6 +688,59 @@ test("the state golden carries a done issue's open production check", () => {
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 
   closed.check = { ...unwoken, role: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
+// The state golden carries two reviewing issues whose rounds wait on GitHub's merge state for
+// their heads: LEGION-218, waiting for a first answer — the head it waits on, when GitHub last
+// moved that head and no settled check run on it yet, with no state read and no told marks — and
+// LEGION-219, stuck, carrying the state read and both marks the telling left. A round waiting on
+// nothing from GitHub has no `mergeWait` at all, and a merge state no GitHub answer spells, or a
+// state read that is no time, is refused.
+test("the state golden carries the rounds waiting on GitHub's merge state", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { phase: string; mergeWait?: Record<string, unknown> }>;
+  };
+  const first = state.issues["LEGION-218"];
+  const stuck = state.issues["LEGION-219"];
+  if (first?.mergeWait === undefined || stuck?.mergeWait === undefined) {
+    throw new Error("state fixture lacks LEGION-218 or LEGION-219 or their merge waits");
+  }
+  expect(first.phase).toBe("reviewing");
+  expect(stuck.phase).toBe("reviewing");
+
+  // LEGION-218's fixture: no merge state, no read time, and neither told mark.
+  expect(first.mergeWait).toEqual({
+    waitsOn: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+    headUpdatedAt: "2026-09-22T08:58:40Z",
+    checkRuns: 0,
+  });
+  // Stuck: GitHub holds the head on a check or a review the repository requires, the architect
+  // and the reviewer have been told, and the marks name the head and state told of.
+  expect(stuck.mergeWait).toEqual({
+    waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    mergeState: "blocked",
+    stateReadAt: "2026-09-22T09:16:12Z",
+    headUpdatedAt: "2026-09-20T14:05:33Z",
+    checkRuns: 2,
+    toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    toldState: "blocked",
+  });
+
+  const told = stuck.mergeWait;
+  // A round that waits on nothing from GitHub, and the body the route serves a caller below the
+  // contract that added the merge wait (api's mergeWaitContract).
+  first.mergeWait = undefined;
+  stuck.mergeWait = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+
+  stuck.mergeWait = { ...told, mergeState: "stuck", toldState: "stuck" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+
+  stuck.mergeWait = { ...told, stateReadAt: "the morning" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+
+  stuck.mergeWait = { ...told, waitsOn: "" };
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
@@ -1018,6 +1080,55 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
   root.ancestry = undefined;
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
+// Contract 87: a claim whose launch the runtime refused because the shared public leak check
+// could not be installed in the role's pod carries that sentence under a key of its own, on both
+// shapes the daemon serves a claim in — the state's claim views, which every worker and architect
+// reads, and the operator claim, which is where the controller's own is read. The schema must
+// name the key on both, since a key it does not name is stripped and the seat never sees it: the
+// goldens carry it, and this reads it before the parse and after. A daemon narrows it away for a
+// caller below 87 (`api.withoutLeakCheckCause`), so a body without it parses, and an empty
+// sentence — which the daemon never writes, leaving the key off instead — is refused.
+test("a claim carries the leak check's cause beside its failure", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { workers: Record<string, { claim: { leakCheckCause?: string } }> }>;
+  };
+  const refused = state.issues["LEGION-210"]?.workers.implementer?.claim;
+  if (refused === undefined) {
+    throw new Error("state fixture lacks LEGION-210's implementer");
+  }
+  const sentence =
+    "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found";
+  expect(refused.leakCheckCause).toBe(sentence);
+  expect(
+    LegionStateResponse.parse(state).issues["LEGION-210"]?.workers.implementer?.claim.leakCheckCause
+  ).toBe(sentence);
+
+  refused.leakCheckCause = "";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  refused.leakCheckCause = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+
+  const listing = fixture("operator-claims.json") as {
+    claims: { token: string; leakCheckCause?: string }[];
+  };
+  const launching = listing.claims.find(
+    (claim) => claim.token === "legion-legion-legion-211-tester"
+  );
+  if (launching === undefined) {
+    throw new Error("operator-claims fixture lacks legion-legion-legion-211-tester");
+  }
+  const pending =
+    "the shared public leak check could not be installed: the pod's launcher did not answer the install of leak-check-v3 within 2m0s";
+  expect(launching.leakCheckCause).toBe(pending);
+  expect(
+    LegionOperatorClaimsResponse.parse(listing).claims.find(
+      (claim) => claim.token === "legion-legion-legion-211-tester"
+    )?.leakCheckCause
+  ).toBe(pending);
+  launching.leakCheckCause = "";
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
