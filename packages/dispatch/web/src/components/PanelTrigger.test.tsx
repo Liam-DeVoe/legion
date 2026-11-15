@@ -193,6 +193,50 @@ test("a control that takes itself out of an open panel hands the focus to the ne
   }
 });
 
+/** A panel whose last control's press takes it and the control before it away in one commit,
+ *  as a block of a panel's controls goes together. */
+function BlockPanel() {
+  const [open, setOpen] = useState(false);
+  const [left, setLeft] = useState(["Project", "Status", "Author", "Owner"]);
+  return (
+    <PanelTrigger label="Filter" onOpenChange={setOpen} open={open}>
+      {() =>
+        left.map((name) => (
+          <button
+            key={name}
+            onClick={() =>
+              setLeft((all) =>
+                name === "Owner" ? all.slice(0, -2) : all.filter((o) => o !== name)
+              )
+            }
+            type="button"
+          >
+            {name}
+          </button>
+        ))
+      }
+    </PanelTrigger>
+  );
+}
+
+// The tree's architect's ruling of 2026-11-15 (the nearest earlier control wins) holds in the
+// panel's own hand-off too, not only in the app shell's rescue: a block of two taken away at the
+// panel's end lands the focus on the control before the block, not on the panel itself.
+test("a block of controls taken out of an open panel hands the focus to the control before the block", async () => {
+  const user = userEvent.setup();
+  const view = render(<BlockPanel />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    act(() => within(panel).getByRole("button", { name: "Owner" }).focus());
+    await user.keyboard("{Enter}");
+    expect(within(panel).queryByRole("button", { name: "Author" })).toBeNull();
+    expect(within(panel).getByRole("button", { name: "Status" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
 /** A panel holding a menu of its own, as the Delivery page's facets each are, ahead of one
  *  more control: picking the menu's one value takes the whole menu away, its trigger and the
  *  list holding the focus with it. */
