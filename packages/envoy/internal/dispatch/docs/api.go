@@ -79,6 +79,9 @@ type VersionResult struct {
 // hold before, in document order (addedAskBlocks). Settlement opens an ask for each, except a
 // block written back under the id of an ask the document already holds and settlement leaves
 // closed: answered, or resolved by a person.
+// Written is what the batch wrote, read back off the tree it wrote
+// (editBatch.readBack), so a caller sees the markdown it left rather than only how many
+// operations landed.
 type EditOutcome struct {
 	Applied        int
 	Changed        bool
@@ -86,6 +89,7 @@ type EditOutcome struct {
 	Token          string
 	PreviousToken  string
 	AddedAskBlocks []AddedAskBlock
+	Written        string
 }
 
 // AddedAskBlock is one ask block an edit added: its block id and its question as settlement reads

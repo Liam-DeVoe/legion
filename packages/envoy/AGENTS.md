@@ -1126,9 +1126,6 @@ The edit route's refusal of the same shape advises moving the code out of the ty
 A line of colons in code inside a typed block is kept:
 the browser editor's parser ends a typed block at a line of at least its fence's colons, with spaces and tabs around them, starting less than four columns past where the typed block's own lines start on the written line, even inside fenced code - counting the width of the list markers and `> ` around the code, advancing a tab to the next multiple of four from the column it stands at, and finding nothing closing in a blockquote inside the typed block - so the renderer writes the typed block's fence longer than every such line (below).
 The engine's reading of each shape is `pmdoc/testdata/typed-fence-lines.json`, which the fixture generator writes for a callout at the top and inside a blockquote, list items, a footnote definition and another callout.
-Text a `replace` writes that would read as block syntax at a line start is written escaped, so it reads back as the characters:
-`---`, `***`, `~~~` or `::::` over a paragraph is stored `\---` and so on (the renderer's line-start escapes).
-Beside an emptied paragraph it is written the same way, since an empty paragraph is not written.
 Accepting a suggestion (`POST /api/v1/comments/{id}/accept`, `docs/marks.go` `applySuggestion`, its checks in `docs/accept.go`) writes blocks, so it stores what reads back as the live document, and refuses what cannot, naming `replace_with`.
 A table the splice cut is padded to its width as the browser editor's table plugin pads it (`padCutTables`, `pmdoc.PadTables`), where the browser's accept writes the replacement where `Splice` does (`padsLikeTheBrowser`):
 inline text, code's literal text, an empty replacement (which deletes the matched text, by this accept's own rule, where the browser's accept of an empty suggestion only clears its mark), or block content over exactly the two textblocks the browser's accept replaces whole (`pmdoc.MultiblockRange`, which reads each textblock one position short of its end as the editor does), the first of them a document-level block.
@@ -1164,23 +1161,42 @@ the document stays as it was and the suggestion stays open.
 The person accepting cannot change the text, so the refusal (`acceptRefusal`) says what the text writes where it lands - for a same-id rewrite of a typed block, in the block that typed block stands in - and names what they can do (reject the suggestion, or reply asking for text the block can hold), never an edit-route operation;
 it says the text empties a paragraph only when the text renders no content, and then offers deleting the paragraph only where the rest of its block stands without it, and the whole block only where the paragraph is all it holds.
 A reject is not checked, since it gives back the text the insert started from.
-Everywhere else `replace` is inline: `with` parses through `pmdoc.ParseInline` (paragraph-only block grammar), so a multi-paragraph `with` is `INVALID_OP`, so is any non-empty `with` that renders to no inline content (a line indented four spaces or a tab, which markdown reads as a code block, or whitespace alone
-— an empty `with` deletes the match on purpose, and a container left holding only the emptied paragraph reads back holding it;
-refusing the rest is LEGION-280, since splicing nothing over the match silently deleted the caller's text), and a leading marker of a *different* kind from the matched block's own is literal escaped text.
+Everywhere else `with` is markdown written into the document, read by the parse an insert's markdown is read by (`pmdoc.ParseFragment`, where front matter opens the document's start alone, `opensDocument`), and what that parse gives decides how it is written.
+A `with` of one paragraph, and the empty document an empty `with` gives, go to the inline path (`inlineReplacement`), which parses the text again through `pmdoc.ParseInline` (paragraph-only block grammar) and continues the textblock the match sits in.
+That path carries the refusal of a non-empty `with` that renders to no inline content, the hard breaks, the whitespace at the text's edges and the anchor marks it strips, so the paragraph the first parse made is not reused.
+Whitespace alone is the whole of that refusal now, since a line indented four spaces or a tab is a code block, which the block path writes.
+An empty `with` deletes the match on purpose, and a container left holding only the emptied paragraph reads back holding it;
+refusing the rest is LEGION-280, since splicing nothing over the match silently deleted the caller's text.
+HTML the parser reads as a block goes to the inline path as well (`pmdoc.ErrBlockHTML`):
+the Proof schema holds no block of HTML, so that text names no block, and where it lands it is inline text, which the read-back refusals judge - refused where it opens a block there, kept in a heading, in a table cell and inside a line.
+Every other refusal of the parse is the caller's to read, as an insert's markdown is, and is `INVALID_MARKDOWN` on `with`.
+A `with` that gives blocks writes them over the match (`blockReplacement`), fitted by `pmdoc.ValidDocument.Splice` as the editor a person reads the document in fits them:
+blocks that enter a list become its items, and blocks a typed block can hold go inside it.
+Three places hold no block of their own, and a match in one is refused with the document unchanged:
+a heading, which holds one line of text;
+any cell of a table, where the fit lifts the blocks out of the table and leaves it a cell short or splits it in two, so every cell is refused and not the refusing cells alone;
+and a typed block whose content rule cannot hold the blocks, which would then stand outside it, unless the `with` rewrites that block under its own id (`pmdoc.RewritesBlock`, `holdsWrittenBlocks`), which is that climb out on purpose.
+The anchor marks covering the match go on one block of what is written (`markBlockReplacement`):
+the first paragraph or heading holding a run of text (`anchoredBlock`, which passes over a block in a table, whose mark would quote one cell), and a `with` holding none of either under an open comment or ask is refused, since the anchor would have no words left to quote.
+What the block path wrote then runs the guards every other path that writes blocks runs (`refuseWrittenBlocks`: `pmdoc.RepeatedBlockID` and `pmdoc.RefuseMisreadWrite`), and is settled with the block ids of the textblock it split carried (`settleBlockReplacement`).
+A leading marker of a *different* kind from the matched block's own names the block its markdown names, as it does in an insert, and a backslash before it keeps prose that merely looks like a marker as text.
 A `with` opening with a marker of the *same* kind as that block's own would render it twice and is `INVALID_OP` on `with` (`replacementMarkdown`), naming the marker the block renders and, in backticks the caller can paste back, their own text with the marker's significant character escaped;
 the exceptions are a heading rename whose `find` carried a heading marker, where the repeated marker is dropped, and `with` may change the level only when `find` named the block's actual level
 — `# ` is the level-blind selector, so a generic `find` renames the text and keeps the level —
 and a list item the `find`'s own list marker selected, having matched no text as written (`resolveEditQuote`'s `byMarker`), where the repeated marker is dropped and the item keeps its number, and a `with` that is the marker alone, which would empty the item, is `INVALID_OP`.
 A hard line break inside `with` — two trailing spaces or a backslash before the newline
-— puts what follows it at a true line start, where a heading, bullet, `1.`/`1)` ordered or `>` blockquote marker is `INVALID_OP` on `with` as well (`blockMarkerAfterHardBreak`), since replace is inline and that marker can only be written as escaped literal text continuing the matched block, never as the block it names.
-A hard break is itself `INVALID_OP` when the matched textblock is a heading or a table cell (`pmdoc.TextblockAt.OneLine`), which are written on one line, so the break would end the block;
+— is `INVALID_OP` when the matched textblock is a heading or a table cell (`pmdoc.TextblockAt.OneLine`), which are written on one line, so the break would end the block;
 a line break inside a code span or inline HTML there ends it too, and the replace is refused because the block would read back as blocks of another shape (`refuseReshapedReplacement`).
-A bare newline is a soft break, which renders as a space and reaches no line start;
-an ordered marker interrupts a paragraph only numbered a lone `1`, as the browser editor's parser reads it, so `1.` and `1)` are refused, while `01.`, `001)`, `02.` and `10.` are not;
-and marked text opens with its mark's delimiter, not the marker — none of the three is refused.
+A line start inside `with` is the markdown's own:
+a bullet, a heading or a `>` opens its block after a bare newline as after a hard break, and a soft break joins the two lines where the line after it opens none;
+an ordered marker interrupts a paragraph only numbered a lone `1`, as the browser editor's parser reads it, so `1.` and `1)` write the list their markdown names, while `01.`, `001)`, `02.` and `10.` stay the paragraph's text;
+and marked text opens with its mark's delimiter, not the marker, so it stays text as well.
 A batch that leaves the document's semantic identity unchanged
 — `nodeToken` over the whole tree, inline marks included
 — mints no version, named or not, and the response carries `changed: false` with `unchanged_ops` naming each operation that changed nothing (`docs.EditOutcome`).
+Every edit answers with `written` too, the markdown the batch wrote, read back off the tree it wrote (`docs.EditOutcome.Written`, `editBatch.readBack`):
+each of the document's own blocks the write added, changed or moved, in document order, and a line for each one it removed or emptied, within 2000 bytes (`editReadBackBound`, `boundedReadBack`, which cuts at a rune boundary and ends with a line naming what it left out).
+A batch that left the document as it was writes none, and the command prints what there is under its `Applied` line.
 Every refusal names its operation index and its anchor:
 `docs` dresses quote, heading-anchor and cross-block misses (`ErrQuoteNotFound`, `ErrAnchorAmbiguous`, `ErrQuoteSpansBlocks`), and `isEditRefusal` keeps the service's internal prose off them.
 `delete` takes `find` or `block`; a `find` covering a textblock's whole text removes that block (`pmdoc.ValidDocument.DeleteTextblock`:
@@ -1223,7 +1239,7 @@ Since `BlocksGainingText` reads the same span, a replacement whose old and new c
 A splice cuts a text node only where a range's edge falls between characters:
 `slice16` answers an edge inside a pair with an error of the package's own (a `500`, never the `ErrSchema` verdict on the write), and a quote's ambiguity context rounds outward to whole characters (`context16`).
 
-Accepting a suggestion (`POST /api/v1/comments/{id}/accept`, `docs/marks.go` `applySuggestion`) splices its `replace_with`, which unlike an edit's `with` may be blocks, with ProseMirror's range fitting (`pmdoc.ValidDocument.Splice`).
+Accepting a suggestion (`POST /api/v1/comments/{id}/accept`, `docs/marks.go` `applySuggestion`) splices its `replace_with`, which may be blocks as a `replace`'s `with` may, with ProseMirror's range fitting (`pmdoc.ValidDocument.Splice`).
 A non-empty replacement fitted into a typed block stays inside it, and a fit never replaces the typed block it lands in:
 a callout takes what its content rule allows, a code block included (the engine oracle's `callout-paragraph-and-code` case), and an ask takes any block at this step, since `Validate` lets an ask hold other blocks, which concurrent browser edits can leave there.
 The one exception is a replacement holding exactly one block of the typed block's own type under its id, at any depth, which is that block rewritten:
@@ -1303,7 +1319,8 @@ Table `references` from `GET /api/v1/artifacts/{id}/blocks` aggregate anchors pi
 A row or column deletion that would remove an open ask or unresolved comment anchor is `INVALID_OP` on `index`, naming the axis and anchor ids;
 answered asks and resolved comments remain historical and do not block it.
 Block ids stay with moved, retyped, and table-edited nodes, so the ask reconciliation keeps a moved ask;
-a removed block retracts its ask only while the ask is open (an answered or resolved ask is already closed, and `asks_answer_state_check` forbids a resolved row that still carries an answer).
+a batch whose result drops a block an open ask points at is refused `INVALID_ASK_BLOCK`, naming the block and saying to answer or resolve its ask, or to remove the block in the document editor, before the write (`droppedAskBlocks`, which answers which ask blocks this batch dropped and reads the asks table only when one is gone, and `refuseBatchDroppedAskBlocks`, which refuses on those blocks alone, so an open ask row whose block went some other way is not this batch's to answer for; the upload path's repair and a rebuild take the whole-document reading instead, `refuseDroppedAskBlocks`);
+the editor's own removal is what retracts an ask, and it retracts it only while the ask is open (an answered or resolved ask is already closed, and `asks_answer_state_check` forbids a resolved row that still carries an answer).
 Within one atomic batch, an operation that names a block cascaded away by an earlier `delete {block}` fails as `INVALID_OP`, naming the earlier operation and the parent block rather than treating it as an unknown id.
 `ApplyOps` stamps `EnsureBlockIDs` on the live tree before resolving operations so every block is addressable.
 
@@ -2659,6 +2676,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A `replace` through the edit route, and the text an accepted suggestion writes inline or into code, takes every comment, suggestion and ask mark that covers all of the text it replaces (`pmdoc.AnchorMarksCovering`, the accepted suggestion's own mark excepted):
   replacing a word, the first or last word, or the whole quote leaves the anchor over the new text, and the refreshed quote is its whole current extent.
   A replace that runs past an anchor's edge rewrote text outside it too, so that anchor keeps only the text the replace left alone, and one covering the whole anchor and more orphans it.
+  A `replace` that writes blocks marks one block of what it writes (`markBlockReplacement`, `anchoredBlock`: the first paragraph or heading holding a run of text, a block in a table passed over, since a mark there would quote one cell), and is refused where what it writes holds no such block, since the anchor would have no words left to quote.
   A block replacement from an accepted suggestion takes no mark, since it can land a code block an ask's mark cannot cover.
 
 - A refresh finds every open row's mark in one walk of the tree (`pmdoc.FindMarks`, which reads for each identity exactly what `FindMark` and `pmdoc.MarkAttrs` read), then updates and announces the rows in their order (`openAnchoredMarks`:
@@ -5962,6 +5980,70 @@ it cannot refuse a register before the restart, so `install` never restarts it w
 it prints its `sessions`, then `not restarted: the running
 agent-secrets-helper predates drain, …`, and exits 0.
 `agent-secrets` reads that unit file as "the helper is installed" (`helperInstalled`).
+
+`login`, `enroll-session-key` and `unenroll-session-key` are the helper's broker-call ops (`brokerCallOps`, `server.go`): each answers with the outcome of a broker call that the helper makes while the client waits.
+`unregister` also calls the broker, but its answer is local, and no other op calls the broker before it answers.
+The helper gives a connection 5 s to read its request and to write its answer (`Server.handle`), and a `register` with `wait_seconds` its wait plus 5 s.
+A broker-call op runs under a bound instead (`Server.brokerCall`).
+Its context ends at the bound, `Server.BrokerCallBound`, which is `helper.DefaultBrokerCallBound` (20 s) when it is zero, as `cmd/agent-secrets-helper` leaves it.
+The helper answers by the bound plus 1 s (21 s), whatever the op is doing.
+It sets the connection's deadline to the bound plus 5 s (25 s), so the connection stays open after the latest answer.
+A client waits `helper.BrokerCallWait` (30 s, the dial included) for the answer of a broker-call op:
+`agent-secrets enroll --helper` on each of its `DRAINING` tries, `agent-secrets unenroll --helper`, and the `login` call of `agent-secrets machine login`.
+`login-status` reads the helper's own state and calls no broker, so each `login-status` call still waits 10 s.
+`DefaultBrokerCallBound` is `BrokerCallWait` less 10 s, so the answer reaches every client inside its 30 s: a dial of up to 2 s (`helper.Call`), the 20 s bound and the 5 s to write the answer come to 27 s.
+Every released `agent-secrets` that has `enroll --helper` and `unenroll --helper` (`legion-envoy-v3.12.0` to `legion-envoy-v30.20.0`, read on 2026-11-15) also waits 30 s for them.
+Those from `legion-envoy-v10.0.0` on ask the helper's `enroll-session-key` and `unenroll-session-key`, so they get the answer too; an older one asks `enroll-box` and `unenroll-box`, which this helper answers `unknown op`.
+
+Each broker-call answer says whether the broker's outcome is known, by one rule (`requestReach.settle`, `broker.go`), which reads a trace on the op's request (`traceReach`).
+A 4xx is known, because the broker decides each refusal before it writes anything.
+A request that the transport never sent in full is known: a refused dial, a context that ended before the transport held a connection, a failed write.
+A failure before any request is known too: signing a proof, reading the operator file, a sign-in's trade.
+After the transport wrote the whole request, or the broker began to answer, these are unknown:
+a transport error, a 5xx (a front door's 502 or 504 can come after the broker wrote), and a 2xx that the helper cannot read (a body that does not decode, an enrollment with no `enrollment_id`, a device authorization with no `device_code` or `user_code`).
+A request whose context ended while the transport held a connection for it is unknown, even when the trace did not see the write end:
+HTTP/2 returns at once on an ended context, and its write of the request can still be running.
+The retries inside an op (`400 INVALID_KIND` and `401 LAUNCHER_INVALID` on an enroll, `403` on a revoke) follow only a 4xx, so an unknown outcome always ends the op.
+A known failure answers `ENROLL_FAILED`, `UNENROLL_FAILED` or `LOGIN_FAILED`, with the failure as it came: the broker refused, or the helper never asked it, so this request made or revoked nothing.
+An unknown outcome answers `ENROLL_OUTCOME_UNKNOWN` (`helper.CodeEnrollUnknown`) or `UNENROLL_OUTCOME_UNKNOWN` (`helper.CodeUnenrollUnknown`).
+A login whose outcome is unknown answers `LOGIN_FAILED`, with an error that starts `the outcome is unknown:` (`loginUnknown`).
+It has no code of its own, because no caller can act on one: nobody saw a confirmation code, so nobody can approve a device authorization that the broker may hold, and that authorization expires by itself.
+Each unknown answer's error says that the outcome is unknown and what to do next, so an `agent-secrets` from before these codes, which prints `<CODE>: <error>` as it comes, says it too.
+The error of an outcome that `settle` marked unknown gives its cause as `the request may have reached the broker, but the helper did not get its result (<error>)` (`mayHaveReachedCause`).
+It says only "may have", because `settle` also marks unknown a request whose context ended while the transport held a connection for it, and that request may not have been written in full.
+The timer's answer gives `the operation did not end in <bound>, so the helper does not know if the broker got the request` instead.
+The same enroll again answers the enrollment that the broker made, if it made one, because the broker gives the same key under the same launcher credential and runtime id its live enrollment back (`enroll.Service.Create`).
+An unenroll is safe to run again, because the helper counts the broker's 204 and 404 as done, and a login is safe to run again too.
+An op can wait past the bound plus 1 s only on a lock that the helper holds across an HTTP request and that does not watch the op's context (a sign-in's trade, a login in progress, a refresh that `clearOnInvalid` waits for).
+The timer answers such an op unknown, and the helper logs the WARN `a broker call did not end within its bound; its outcome is answered as unknown` with the op and the bound.
+When the op ends after that, the helper logs its result (`a broker call answered as unknown has ended`, with its code and any `enrollment_id`), so an operator can see what the broker did.
+
+`helper.Call` marks each error that comes after it wrote the whole request with `helper.ErrNoReply`: no reply line within its timeout, or a reply that is not one JSON object.
+The error keeps its own text, and a failed dial, marshal or write does not match `ErrNoReply`, because the helper did not get the whole request.
+On `ErrNoReply`, `agent-secrets enroll --helper` exits 1 with `the helper gave no answer (<error>). So it is not known if the broker made the enrollment.`, and tells the caller to run the same command again.
+`agent-secrets unenroll --helper` says the same of the revoke, and that the same command is safe to run again.
+`enroll --helper` makes `AGENT_SECRETS_KEY_DIR` before it asks the helper, so only the write of `enrollment` can fail after the broker made the enrollment.
+That failure exits 1, and its error names the enrollment and the failed write: `the broker made enrollment <id>, but this command could not write its id to <path>: <error>`.
+
+`Server.Serve` returns only after every broker-call op that it accepted has written its answer.
+So a helper that stops on a signal never closes a client's connection with no answer while a broker call runs.
+That includes `install`'s restart, which `drain` does not hold back when an `enroll-session-key` is already in flight.
+The stop ends each op's context, so the wait is at most the bound plus 1 s.
+When `Serve` has connections to wait for, it logs the WARN `the helper is stopping; it waits for the connections that may still owe a broker call's answer` with their count (`connections`) and the bound.
+Every other op gives back its place in that wait once its request is read, so a connection whose request is still being read holds the stop for at most its 5 s.
+`unregister` answers at once with the session retired: `retire` fires the bounded revoke of an unnamed session's enrollments on goroutines of their own, as every sibling path fires it, and the revoke logs its own failure.
+
+This leaves three limits.
+A helper from before these answers gives itself 5 s to write a broker-call op's answer but waits up to 30 s for each request it sends the broker (its HTTP client's timeout, `leasetime.RenewClientTimeout`), until it restarts on a release that has them (the operator's dotfiles pinned `legion-envoy-v30.18.1` on 2026-11-15, which does not).
+When the broker answers after those 5 s, that helper cannot write the answer and closes the connection without one, and when the broker takes longer than the client's own wait, the client times out first.
+Against such a helper, a new `enroll --helper` or `unenroll --helper` prints its `ErrNoReply` message, so it says that the outcome is unknown.
+But that helper can still answer `ENROLL_FAILED` for a failure after the broker wrote, for example a 502 from a front door.
+A `machine login` from before `BrokerCallWait` waits 10 s for the `login` answer, the dial included, so against a broker slower than about 8 s it can close before the helper answers.
+If the broker answers within the bound, the helper records the login as pending, and the next `machine login` shows its code.
+Against a helper with these answers, an `enroll --helper` attempt ends by about 23 s (a dial of up to 2 s and the answer at 21 s); against a helper from before them it lasts as long as the broker takes, up to the client's 30 s.
+A broker slower than the 20 s bound still leaves a launcher with no enrollment id, and a launcher's close revokes only an id that it recorded.
+So such an enrollment ends with its lease, unless the launcher runs the same enroll again.
+The same enroll answers the first enrollment only under the same launcher credential: under another (a person's sign-in revoked between two attempts) it makes a second enrollment, and the first one ends with its lease.
 
 `agent-secrets renew --pod-token-file FILE` is the pod renewer:
 it re-reads and trims the projected token before every broker request, and sends it as `pod_token`.

@@ -19674,6 +19674,9 @@
                 "type": "null"
               }
             ]
+          },
+          "written": {
+            "type": "string"
           }
         },
         "required": [
@@ -19683,7 +19686,8 @@
           "token",
           "previous_token",
           "unchanged_ops",
-          "version"
+          "version",
+          "written"
         ],
         "type": "object"
       },
