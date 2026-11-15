@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  The controller's skill gets `references/operations.md`, the operations of its own work, each
+  with when to use it, the exact command and what to read to know it worked: the six claim
+  operations of the `legion` tool, a restart of the project's daemon, a pod delete with nothing
+  lost, a re-run of a CI run's failed jobs for an infrastructure failure with the implement App
+  token the secrets broker lends, and a `dispatch ask` to lift the operator's suspension of a
+  claim. The pod delete copies the clone and the workspace out with `tar` alone, rebuilds them
+  into a bundle with `scripts/carry-out.sh`, which runs only in a user, network, mount and PID
+  namespace of its own under an empty environment, pushes the issue branch, and only then deletes
+  the pod. `kubectl` and the lent token are the controller's for these operations. Before any
+  `kubectl` operation it reads `kubectl auth can-i` for pod exec and pod delete, and it names an
+  operation it lacks in its daily report rather than ask another session. It pushes one branch
+  alone, the issue branch of a workspace whose pod it deletes, and it sends a request another
+  tree owns to that tree's architect by a mention.

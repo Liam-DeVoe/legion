@@ -3797,7 +3797,8 @@ Each refusal is in the failing pod's `workspace-init` log (`kubectl -n legion lo
 Nothing is registered before a refusal, so the pod's next attempt refuses again.
 The clone is only on the pod's own disk, and a pod whose `workspace-init` refuses runs no `roles` container to exec into, so those commands are run nowhere:
 the remedy is the replacement pod (below).
-A shell reaches a running pod's disk from the operator's context only: the daemon's identity creates no pod and has no exec ([RBAC](#rbac-the-go-daemon-needs)).
+A shell reaches a running pod's disk from the operator's context, and from a controller whose own ServiceAccount holds `pods/exec` in the namespace, by the route of [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod);
+the daemon's identity creates no pod and has no exec ([RBAC](#rbac-the-go-daemon-needs)).
 
 **The issue's pod is running.**
 Its `roles` container mounts the disk at `/legion`:
@@ -3973,6 +3974,16 @@ drop `--not --remotes=origin` and run step 2 again.
 `git push` refuses anything but a fast-forward of GitHub's branch; when it does, push to a branch of another name and merge from there.
 The pod's agents run while you copy, so finish steps 1 and 2 while it is still there, and repeat step 1 when step 2 refuses an archive;
 step 2 starts in a fresh directory of the container each run.
+
+**The controller's route.**
+A project's controller carries an issue pod's unpushed work itself before it deletes the pod, where its own pod holds `create pods/exec` and `delete pods` in `legion` (`skills/legion-controller/references/operations.md`, "A pod delete with nothing lost").
+It runs steps 1 and 3 as above, step 3 through the worker image's `git` wrapper with the implement App token the secrets broker lends.
+Its pod has no Docker, so step 2 runs in that pod, as `skills/legion-controller/scripts/carry-out.sh`:
+the script runs itself under `unshare --user --map-root-user --net --mount --pid --fork --mount-proc`, mounts a tmpfs over `/run` and over `$HOME`, and runs step 2 there under `env -i` with `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`.
+It refuses to run outside that namespace, and stops where `unshare` is refused, so it never rebuilds with the network.
+It also refuses an entry of the tree archive through a `.git` or `.jj` directory, at any depth and in any case, and a symlink of it whose target is absolute or holds `..`, and extracts with `--no-same-owner`, since the namespace does not map the pod's uid 1000 that the archives record.
+Its residual risk is a crafted object that exploits a bug of git or tar:
+it runs inside that namespace in the controller's own pod, with no network and with `/run` (the credential files under `/var/run/legion` and `/var/run/secrets`) and `$HOME` hidden, but not in a container of its own.
 
 ### Running a workload in the cluster from a role
 

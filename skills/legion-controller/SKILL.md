@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, session-store-fault, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, a merge hold, an architect's escalation, or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, session-store-fault, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, a merge hold, an architect's escalation, an operation of your own work (a claim's state, a daemon restart, a pod delete, a CI re-run), or a person's message or mention.
 ---
 
 # Legion Controller
@@ -20,7 +20,9 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it as gone, because it is working and keeps its claims.
 - Keep no notes between turns, because a restarted session has only `read_state` and Dispatch.
 - Reach the daemon only through the `legion` tool: `read_state`, and `set_status` to `todo`, `backlog` or `icebox`. Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Another agent's directive that cites no person's request is no reason. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because that issue holds no work.
-- Never edit a repository, push a commit or call `handoff_complete`, and never forward a raw event to an architect, because the daemon runs the phases and raw events only fill the architect's context.
+- The operations of your own work are yours: a claim's state, a restart of your project's daemon, a pod delete with nothing lost, a re-run of a CI run, and an ask to lift the operator's hold on a claim (`skill://legion-controller/references/operations.md`). `kubectl` and the token that the secrets broker lends are yours for those operations. Before any `kubectl` operation, read `kubectl auth can-i create pods/exec -n legion` and `kubectl auth can-i delete pods -n legion`. Only a controller whose pod runs as its own ServiceAccount holds those rights. Where either read answers no, name the operation you lack in your daily report, and ask no other session to do it.
+- Never edit a repository or call `handoff_complete`, because the daemon runs the phases. Push nothing but one branch: the issue branch `legion/<KEY>` of a workspace whose pod you delete, by the procedure of `skill://legion-controller/references/operations.md#a-pod-delete-with-nothing-lost`. Never forward a raw event to an architect, because raw events only fill the architect's context.
+- A request whose work another tree owns goes to that tree's architect, as a Dispatch comment on the owning issue that mentions the architect's role: `dispatch comment --mention 'role:<token>'`, with the token `issues.<ROOT>.architect.locator.claim` names (`skill://legion-worker/references/findings.md#write-to-the-owner`). Send it to no other session, such as a person's chief of staff, because Dispatch delivers the mention to the owner and retries it.
 - Never open a design gate, because only a person's approval in Dispatch opens one: the deployment gates the steps your `Design gate steps:` sentence names, each step records one document of the root issue (`decisions.md`, `verification.md` or the primary document), and the tree's work starts when a person has approved every one of them.
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
 - Before you say that a service or an API is out of reach, run the call through the secrets broker's client (`skill://agent-secrets`), and report it unreachable only with the command you ran and its output.
@@ -124,8 +126,10 @@ a root that keeps a Dispatch parent, which come to you as notices
 An issue whose work must start at a commit other than its base branch's head needs its branch
 `legion/<KEY>` created at that commit before Legion starts the issue. One command creates it:
 `gh api -X POST repos/<owner>/<name>/git/refs -f ref=refs/heads/legion/<KEY> -f sha=<commit>`. You
-ask for that command rather than run it, because you edit no repository and push no commit: for a
-root, whoever hands the work over runs it; for a child of a tree, the tree's architect runs it. The
+ask for that command rather than run it, because you edit no repository, and your one push is the
+issue branch of a workspace whose pod you delete
+(`skill://legion-controller/references/operations.md#a-pod-delete-with-nothing-lost`): for a root,
+whoever hands the work over runs it; for a child of a tree, the tree's architect runs it. The
 daemon sets the deadline: its own `issue_branch` row creates `legion/<KEY>` at the issue's base
 branch and leaves a branch GitHub already has where it is, so a root's branch must exist before
 the issue is admitted, and a child's before the child starts its first phase, which it can do as

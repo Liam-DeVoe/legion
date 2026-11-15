@@ -3,5 +3,7 @@ body: |-
   The controller's `legion` tool gets four claim operations beside `compact` and `fresh_session`:
   `stop`, `retry`, `suspend` and `resume`, each naming the claim by `issue` and `role`. Each
   answers the claim's state and who holds a suspension over it. While the operator's own
-  suspension holds a claim, each of the six is refused with `SUSPENDED_BY_OPERATOR`, which names
-  the `legion claims resume` command the operator runs.
+  suspension holds a claim, five of the six (`stop`, `retry`, `suspend`, `resume` and
+  `fresh_session`) are refused with `SUSPENDED_BY_OPERATOR`, which names the `legion claims resume`
+  command the operator runs. `compact` is refused there as for any claim that runs no agent or
+  that a suspension is held over: `CLAIM_NOT_RUNNING`, `CLAIM_IN_A_TURN` or `CLAIM_UNSETTLED`.

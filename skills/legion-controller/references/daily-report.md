@@ -112,6 +112,10 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   name, its `detail`, and a deployment row's `configLine`. Say who acts on it, as
   `skill://legion-controller/references/wakes.md` says for `tick`. With none open, say nothing of
   them.
+- **Operations you lack.** Each operation of
+  `skill://legion-controller/references/operations.md` that you did not run because a
+  `kubectl auth can-i` read answered `no`: the operation, the work it was for, and the read with its
+  answer. You ask no other session to do it. With none, say nothing of them.
 - **The week** (on the report of your first turn of each UTC week only, from
   `skill://legion-controller/references/weekly-audit.md`): the window's two times; the forced
   creates by filer with the no-answer creates apart; the tree sizes in the five buckets with the
