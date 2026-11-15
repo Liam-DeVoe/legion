@@ -17,12 +17,14 @@ import (
 )
 
 // limitedRead is a mapped repository whose default-branch read GitHub refused for its rate limit
-// (nameAccepted): GitHub's answer, which names how long it asks the caller to wait, and the
-// read's error, which wraps it.
+// (nameAccepted): GitHub's answer, the read's error, which wraps it, and until, when the wait
+// GitHub asked for (the answer's RetryAfter) ends, counted from when the answer came, so a caller
+// that does other work first, such as reading the records, waits no longer for it.
 type limitedRead struct {
 	mapped mappedRepository
 	answer *githubrest.Answer
 	err    error
+	until  time.Time
 }
 
 // rateLimited is GitHub's answer in err when it is GitHub's rate limit (githubrest.Answer's
@@ -71,10 +73,10 @@ func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead
 			unheld = append(unheld, read)
 			continue
 		}
-		until := w.defaultBranches.hold(read.mapped.Repo, branch, read.answer.RetryAfter)
-		time.AfterFunc(read.answer.RetryAfter, func() { w.requestMappingRead() })
+		w.defaultBranches.hold(read.mapped.Repo, branch, read.until)
+		time.AfterFunc(time.Until(read.until), func() { w.requestMappingRead() })
 		w.log.Warn("workflow: GitHub's rate limit refused the read of a repository's default branch, so the daemon serves it on the default branch it holds and reads it again after the limit's reset",
-			append([]any{"repo", name, "defaultBranch", branch.DefaultBranch, "readAgainAt", until.UTC().Format(time.RFC3339)}, limitAttributes(read)...)...)
+			append([]any{"repo", name, "defaultBranch", branch.DefaultBranch, "readAgainAt", read.until.UTC().Format(time.RFC3339)}, limitAttributes(read)...)...)
 		held = append(held, mappedRepository{Repo: branch.Name, Default: read.mapped.Default})
 	}
 	return held, unheld, nil
@@ -137,13 +139,12 @@ func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRea
 	for index, read := range unheld {
 		group.Go(func() error {
 			name := read.mapped.Repo.String()
-			wait := read.answer.RetryAfter
 			w.log.Warn("workflow: GitHub's rate limit refused the read of a repository's default branch and the daemon holds none for it, so the boot waits as long as GitHub asks and reads it once more",
-				append([]any{"repo", name, "waitUntil", time.Now().Add(wait).UTC().Format(time.RFC3339), "wait", wait.String()}, limitAttributes(read)...)...)
+				append([]any{"repo", name, "waitUntil", read.until.UTC().Format(time.RFC3339), "wait", read.answer.RetryAfter.String()}, limitAttributes(read)...)...)
 			select {
 			case <-waiting.Done():
 				return waiting.Err()
-			case <-time.After(wait):
+			case <-time.After(time.Until(read.until)):
 			}
 			attempt, cancel := context.WithTimeout(waiting, appMintAttempt)
 			repository, err := w.defaultBranches.Named(attempt, read.mapped.Repo)

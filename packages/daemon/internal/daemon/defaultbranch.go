@@ -117,18 +117,16 @@ func (d *defaultBranches) Kept(repo string) (ghbranch.Repository, bool) {
 	return kept.repository, ok
 }
 
-// hold keeps answer as the read of repo for wait, how long GitHub asked the read it refused for its
-// rate limit to wait, and is the time it stands until: answer is a default branch the daemon held
-// already (holdLimited), served in place of the read GitHub refused. Until then Named answers it
-// and asks GitHub nothing, so no read of repo is sent inside the limit; after it, Named reads
-// GitHub again, and Kept answers it either way. A read Named keeps stands for ttl from when it was
-// made, so the held one is kept as made ttl before the time it stands until.
-func (d *defaultBranches) hold(repo ghrepo.Repository, answer ghbranch.Repository, wait time.Duration) time.Time {
-	until := d.now().Add(wait)
+// hold keeps answer as the read of repo until until, when the wait GitHub asked for, in refusing
+// the read of repo for its rate limit, ends: answer is a default branch the daemon held already
+// (holdLimited), served in place of the read GitHub refused. Until then Named answers it and asks
+// GitHub nothing, so no read of repo is sent inside the limit; after it, Named reads GitHub again,
+// and Kept answers it either way. A read Named keeps stands for ttl from when it was made, so the
+// held one is kept as made ttl before until.
+func (d *defaultBranches) hold(repo ghrepo.Repository, answer ghbranch.Repository, until time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.read[strings.ToLower(repo.String())] = defaultBranchRead{repository: answer, at: until.Add(-d.ttl)}
-	return until
 }
 
 // fetch asks GitHub about the repository it holds repo under now (repositories.serving), on the
