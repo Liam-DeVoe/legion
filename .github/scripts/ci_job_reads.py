@@ -692,8 +692,8 @@ class RaceJob(NamedTuple):
 # call's slowest package takes at most half of it: internal/bus 463.2 s -> 16m (run
 # 43733795306, job 132871904364), internal/dispatch/api 955.794 s -> 32m (run 43657875798, job
 # 132640445932), and internal/dispatch/docs 1746.1 s -> 59m (run 43737129665,
-# job 132882140098), where every earlier reading was less, 1695.219 s at most (run 43640601453,
-# job 132587189297). Each figure is read from that job's own `go test -json` artifact, the
+# job 132882140098), where every earlier reading was less, 1740.3 s at most (run 43720554541,
+# job 132831440633). Each figure is read from that job's own `go test -json` artifact, the
 # largest of every workflow_dispatch run of ci.yaml on this branch (dispatch://INFRA-1075, check
 # 6224bb0e).
 ENVOY_RACE_LANE = (
@@ -792,7 +792,7 @@ EVENTS_DSN = service_dsn(5436)
 # alone. The names are import paths because that is what `go list ./...` prints, and the lines of
 # the workflow's own block carry its indentation, which YAML strips before the shell sees them.
 UNIT_TEST_LEAD = ["internal/dispatch/pmdoc", "cmd/dispatch-seed", "internal/dispatch/outbox",
-                  "cmd/dispatch", "cmd/broker"]
+                  "cmd/dispatch", "cmd/agent-secrets"]
 UNIT_TEST_LEAD_TEXT = "\n".join(f"github.com/sjawhar/envoy/{p}" for p in UNIT_TEST_LEAD)
 
 
@@ -995,7 +995,7 @@ RACE_IMPOSSIBLE_CALL = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 # aside, and check-ci-filters.sh fails when the two differ.
 UNIT_TEST_SCRIPT = f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
-# The four long calls first, longest first; the short calls after them, in any order.
+# The three long calls first, longest first; the short calls after them, in any order.
 # The nine calls share this runner's four cores, so the step is over
 # when its longest call is, and a call that starts late ends as late as it started.
 # Measured on run 42716398877, job 129499072292, every stream on one clock whose zero
@@ -1073,18 +1073,20 @@ impossible=$!
 # DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the three
 # calls below name 5433, 5436 and 5434. The package list above leaves the package out.
 #
-# -timeout 11m, from the call's own measured times rather than from its CPU. The
+# -timeout 13m, from the call's own measured times rather than from its CPU. The
 # first arithmetic took the half rule on 120 s - 63.8 s of CPU at about half a core -
 # and 4m was too small: the call measured 159.7 s and 183.2 s on two runs and then
 # ran past 240 s on a slower one, where go killed it mid-test ("panic: test timed out
 # after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
 # 42856652273). A call's limit is the smallest whole minute at which its slowest
 # package takes at most half of it, and this package's largest reading and the run it
-# came from are in the table on this job: 11m. No floor stands
+# came from are in the table on this job: 13m, from the 386.1 s this package read
+# in run 42779139068, where it ran inside the package list rather than in a call of
+# its own. No floor stands
 # above that rule here: no test of internal/pgmigrate reads the test binary's
 # deadline, so it declares no margin of its own the way the documents package's
 # roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s) are theirs.
-DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 11m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 13m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
 pgmigrate=$!
 # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
 # 5433 on this call and nowhere else, so the only transactions its horizon waits on are

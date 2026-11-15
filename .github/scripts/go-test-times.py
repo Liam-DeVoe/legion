@@ -23,8 +23,10 @@ artifact's .zip, and prints:
   alone holds is another change's, which the comparison attributes rather than counting against
   this one, unless it skips.
 
-It reports and nothing in CI runs it: a gate on test times is the next rung of STRATEGY.md's
-enforcement ladder, and nothing has measured an instruction failing here yet.
+It reports and gates nothing: a gate on test times is the next rung of STRATEGY.md's
+enforcement ladder, and nothing has measured an instruction failing here yet. CI runs its own
+test, `.github/scripts/go-test-times.test.sh`, in ci.yaml's test job, which runs this script over
+fixtures; no job of the lane runs it over a lane artifact.
 
   .github/scripts/go-test-times.py artifact.zip
   .github/scripts/go-test-times.py --bars "$RUNNER_TEMP/go-test-json"

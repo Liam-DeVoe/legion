@@ -5147,13 +5147,13 @@ jobs:
     #   call              slowest package       limit  fills    read in
     #   the package list  cmd/dispatch 525.9 s   18m   48.7 %   run 43691345741
     #   race-impossible   docs 310.3 s           11m   47.0 %   run 43733795306
-    #   pgmigrate         pgmigrate 317.7 s      11m   48.1 %   run 43691345741
+    #   pgmigrate         pgmigrate 386.1 s      13m   49.5 %   run 42779139068
     #   shutdown          cmd/dispatch 76.1 s     3m   42.3 %   run 43723760337
     #   routes            routes 54.5 s           2m   45.4 %   run 43519308059
-    #   events            events 158.2 s          6m   43.9 %   run 43519308059
+    #   events            events 161.2 s          6m   44.8 %   run 43138709383
     #   natslive (rig)    testnats 9.1 s          1m   15.1 %   run 42863916685
     #   natslive (cap)    bus 14.2 s              1m   23.7 %   run 43733795306
-    #   integration       integration 9.7 s       1m   16.1 %   run 42893130638
+    #   integration       integration 10.1 s      1m   16.9 %   run 43716631673
     #
     # Each row is its package's time divided by 30 and rounded up, which is the smallest whole
     # minute that time is at most half of, and this table is where the reading that sizes each
@@ -5450,10 +5450,11 @@ jobs:
       # The step below runs the module's packages in the background and, beside them, eight other
       # calls: the plain run of what the race build cannot make, internal/pgmigrate, the routes
       # package, internal/dispatch/events, the shutdown feed test, the container-backed NATS
-      # matrix, the integration suite and the agentloop vet. The package list runs 111 test
-      # binaries. In the pair at bdffd7d2 (runs 43687973145 and 43691345741, jobs 132732382594
-      # and 132742525106) it took 519.0 s and 594.0 s from the first event of its stream to the
-      # last, and every other call of this step had ended before it did. All nine calls are
+      # matrix, the integration suite and the agentloop vet. The package list runs 114 test
+      # binaries, beside 39 packages with no test files (both runs of the pair at cf069e0d, read
+      # from the call's own -json). In the pair at bdffd7d2 (runs 43687973145 and 43691345741,
+      # jobs 132732382594 and 132742525106) it took 519.0 s and 594.0 s from the first event of
+      # its stream to the last, and every other call of this step had ended before it did. All nine calls are
       # started in the background at the step's head, the long ones longest first, so the step
       # costs the longest of them rather than their sum. The short calls follow the long ones,
       # and their order among themselves decides nothing: in run 2 the last of them ended at
@@ -5522,15 +5523,18 @@ jobs:
       # measured in run 42469495554, pmdoc started about 95 s into the step and ended it 91 s
       # after any other package finished, while every other long package was done 90 s earlier.
       # Leading with the five longest overlaps the longest one with the rest, which is what
-      # longest-first scheduling buys. Their order among themselves is not a ranking: the pair at
-      # bdffd7d2 ranks them differently in its two runs (run 1 pmdoc 485.9 s then cmd/dispatch
-      # 445.9 s then cmd/dispatch-seed 377.4 s; run 2 cmd/dispatch 525.9 s then dispatch-seed
-      # 515.0 s then pmdoc 468.3 s), so what the list leads with is the five, read back from the
-      # call's own -json (dispatch://INFRA-1075).
+      # longest-first scheduling buys. The five are internal/dispatch/pmdoc, cmd/dispatch,
+      # cmd/agent-secrets, cmd/dispatch-seed and internal/dispatch/outbox, which are the five
+      # longest in both runs of the pair at cf069e0d (runs 43733795306 and 43737129665: pmdoc
+      # 525.2 s and 487.2 s, cmd/dispatch 521.0 s and 495.6 s, cmd/agent-secrets 411.2 s and
+      # 398.4 s, cmd/dispatch-seed 396.6 s and 388.1 s, outbox 391.1 s and 386.4 s), ahead of
+      # cmd/broker at 215.7 s and 211.3 s. Their order among themselves is not a ranking: the two
+      # runs rank the first two the other way round, so what the list leads with is the five,
+      # read back from the call's own -json (dispatch://INFRA-1075).
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
-          # The four long calls first, longest first; the short calls after them, in any order.
+          # The three long calls first, longest first; the short calls after them, in any order.
           # The nine calls share this runner's four cores, so the step is over
           # when its longest call is, and a call that starts late ends as late as it started.
           # Measured on run 42716398877, job 129499072292, every stream on one clock whose zero
@@ -5562,7 +5566,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/dispatch-seed
           github.com/sjawhar/envoy/internal/dispatch/outbox
           github.com/sjawhar/envoy/cmd/dispatch
-          github.com/sjawhar/envoy/cmd/broker"
+          github.com/sjawhar/envoy/cmd/agent-secrets"
           rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
           printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
@@ -5612,18 +5616,20 @@ jobs:
           # DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the three
           # calls below name 5433, 5436 and 5434. The package list above leaves the package out.
           #
-          # -timeout 11m, from the call's own measured times rather than from its CPU. The
+          # -timeout 13m, from the call's own measured times rather than from its CPU. The
           # first arithmetic took the half rule on 120 s - 63.8 s of CPU at about half a core -
           # and 4m was too small: the call measured 159.7 s and 183.2 s on two runs and then
           # ran past 240 s on a slower one, where go killed it mid-test ("panic: test timed out
           # after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
           # 42856652273). A call's limit is the smallest whole minute at which its slowest
           # package takes at most half of it, and this package's largest reading and the run it
-          # came from are in the table on this job: 11m. No floor stands
+          # came from are in the table on this job: 13m, from the 386.1 s this package read
+          # in run 42779139068, where it ran inside the package list rather than in a call of
+          # its own. No floor stands
           # above that rule here: no test of internal/pgmigrate reads the test binary's
           # deadline, so it declares no margin of its own the way the documents package's
           # roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s) are theirs.
-          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5435/postgres?sslmode=disable go test -json -count=1 -timeout 11m ./internal/pgmigrate/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5435/postgres?sslmode=disable go test -json -count=1 -timeout 13m ./internal/pgmigrate/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
           pgmigrate=$!
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
@@ -5904,17 +5910,19 @@ jobs:
     # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
     # package takes at most half of it: internal/bus, 463.2 s (run 43733795306, job
-    # 132871904364), 463.2 / 30 = 15.44, so 16m, which it fills to 48.3 per cent (15m, the
-    # limit it ran under, it would fill to 50.3). The job's own bound follows its largest
-    # measured time of a green run, 634 s in run 43675841985 (job 132695730267), 10.57 minutes,
-    # plus that largest -timeout plus 6: 10.57 + 16 + 6 = 32.57, so 33. The red one of run
-    # 43640601453, 633 s (job 132587189318), asks the same 33. A job of this lane varies
+    # 132871904364), 463.2 / 30 = 15.44, so 16m, which it fills to 48.3 per cent (15m, the whole
+    # minute below it, it would fill to 51.5; the reading itself ran under 16m). The job's own
+    # bound follows its
+    # largest measured time of a green run, 705 s in run 43737129665 (job 132882140167), 11.75
+    # minutes, plus that largest -timeout plus 6: 11.75 + 16 + 6 = 33.75, so 34. The readings
+    # before it ask less: 694 s in run 43733795306 (job 132871904364) and 634 s in run
+    # 43675841985 (job 132695730267). A job of this lane varies
     # between two runs of one commit, by a minute here and by much more in the race lane's
     # longer jobs (at bdffd7d2 envoy-go-race-api read 865 s and 1,125 s, and envoy-go-race-docs
     # 1,665 s and 1,241 s), so a bound follows the largest reading
     # rather than the newest. The limit must fire before the runner cancels the job, so a hung
     # test prints the dump that names it.
-    timeout-minutes: 33
+    timeout-minutes: 34
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5991,11 +5999,13 @@ jobs:
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
     # package takes at most half of it: internal/dispatch/api, this job's one package, 955.794 s
     # (run 43657875798, job 132640445932), 955.794 / 30 = 31.86, so 32m, which it fills to 49.8
-    # per cent (28m, the limit it ran under, it would fill to 56.9). The job's own bound follows
-    # its largest measured time of a green run, 1,136 s in that same job, 18.93 minutes, plus
-    # that -timeout plus 6: 18.93 + 32 + 6 = 56.93, so 57. The limit must fire before the runner
-    # cancels the job, so a hung test prints the dump that names it.
-    timeout-minutes: 57
+    # per cent (28m, the limit the reading itself ran under, it would fill to 56.9). The job's own
+    # bound follows its largest measured time of a green run, 1,146 s in run 43733795306 (job
+    # 132871904484), 19.1 minutes, plus
+    # that -timeout plus 6: 19.1 + 32 + 6 = 57.1, so 58; the reading before it, 1,136 s in job
+    # 132640445932, asked 57. The limit must fire before the runner cancels the job, so a hung
+    # test prints the dump that names it.
+    timeout-minutes: 58
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -6084,13 +6094,16 @@ jobs:
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
     # package takes at most half of it: internal/dispatch/docs, this job's one package,
     # 1746.1 s (run 43737129665, job 132882140098, its envoy-go-race-docs-test-json artifact),
-    # 1746.1 / 30 = 58.21, so 59m, which it fills to 49.3 per cent (57m, the limit it ran
-    # under, it would fill to 50.9, which is what moved this number). The readings before it:
-    # 1695.219 s (run 43640601453, job 132587189297), and 1523.812 s and 1675.755 s in the pair
+    # 1746.1 / 30 = 58.21, so 59m, which it fills to 49.3 per cent (57m, the whole minute below
+    # it, it would fill to 51.1; the reading itself ran under 59m, which 1746.1 s is what moved
+    # this number to). The readings before it: 1740.3 s (run 43720554541, job 132831440633),
+    # 1736.6 s in this pair's other run (run 43733795306, job 132871904345), 1695.219 s (run
+    # 43640601453, job 132587189297), and 1523.812 s and 1675.755 s in the pair
     # at fae4eab5 (runs 43654965125 and 43657875798). The job's own
-    # bound follows its largest measured time, 1842 s in run 43720554541, which is
-    # 30.7 minutes, plus that largest -timeout plus 6: 30.7 + 59 + 6 = 95.7, so 96; this pair's
-    # second run took 1227 s. The limit must fire before the runner cancels the job, so a
+    # bound follows its largest measured time, 1849 s in run 43737129665 (job 132882140098),
+    # which is 30.82 minutes, plus that largest -timeout plus 6: 30.82 + 59 + 6 = 95.82, so 96;
+    # the readings before it ask the same or less: 1842 s in run 43720554541 and 1836 s in run
+    # 43733795306. The limit must fire before the runner cancels the job, so a
     # hung test prints the dump that names it.
     timeout-minutes: 96
     services:
