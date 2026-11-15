@@ -279,8 +279,10 @@ func (r *copyRig) awaitLine(t *testing.T, msg string) map[string]any {
 // A turn that ends stores a copy of the issue's workspace. The claim's idle is reported through
 // the daemon's one durable-state callback (supervise's turnEnded, claimDurableState), the daemon
 // asks the first live role of the issue with a process for the bundle of its unpushed work, and
-// stores it as the issue's running copy. The line it writes carries the issue, the bytes and how
-// long the bundler took, which is what a deployment reads the cadence by.
+// stores it as the issue's running copy. The line it writes carries the issue, the bytes, when
+// the copy's take began by the store's clock, which is the copy's own time and what the cadence's
+// period is read from, and how long the bundler took, which is what a deployment reads the cadence
+// by.
 func TestATurnThatEndsBundlesACopyOfTheIssueWorkspace(t *testing.T) {
 	rig := newCopyRig(t)
 	rig.sup.OnDurableState(rig.w.claimDurableState)
@@ -307,6 +309,12 @@ func TestATurnThatEndsBundlesACopyOfTheIssueWorkspace(t *testing.T) {
 	}
 	if got, ok := line["took"].(string); !ok || got == "" {
 		t.Fatalf("the line reads took %v, want how long the bundler took", line["took"])
+	}
+	stamp, _ := line["taken"].(string)
+	taken, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil || !taken.Equal(facts.At) {
+		t.Fatalf("the line reads taken %v (%v), want the stored copy's own time %s, when its take began",
+			line["taken"], err, facts.At)
 	}
 }
 

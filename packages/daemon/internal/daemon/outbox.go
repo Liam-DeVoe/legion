@@ -2324,6 +2324,10 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		return fmt.Errorf("release save of %s: %w", row.Issue, err)
 	}
 	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
+	// No shim answers a whole body over the bound: the shim refuses it on its size before it reads
+	// it (internal/shim's runBundle, MaxBytes), and the stream answers that refusal as
+	// runtime.WorkspaceBundleTooLargeError. This guard is the second line for a bundler that
+	// broke that rule, and it cannot run against any shim today, so no test drives it.
 	if size := bundle.Size(); err == nil && size > runtime.MaxWorkspaceBundleBytes {
 		err = &runtime.WorkspaceBundleTooLargeError{Bytes: size, Max: runtime.MaxWorkspaceBundleBytes}
 	}

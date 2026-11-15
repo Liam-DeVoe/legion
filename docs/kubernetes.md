@@ -5014,6 +5014,8 @@ the daemon hands each copy to a goroutine of its own, and the turn's end, the ne
 The copy is asked of the first live role of the issue that has a running process, through the same `BundleWorkspace` call an idle release's save makes and under the same 40 MiB bound ([Idle release](#idle-release)).
 Only a shim can build it, in the workspace its own role already works in.
 The daemon stores it in its own database, in the `workspace_running_copies` table, one row per issue, and never in the `workspace_bundles` row an idle release writes.
+A stored copy is logged at Info as `running copy: stored a copy of an issue workspace's unpushed work`, with the issue, the role, `bytes`, `taken` and `took`.
+`taken` is when the copy's take began, by the database's clock, which is the copy's own time and the one the 5 minutes are measured on; the line's own timestamp is when the copy ended, so read the cadence from `taken` and not from the line's time.
 A workspace that holds nothing unpushed drops the issue's running copy instead, so no pod restores work that has since been pushed, unless that copy's own take began after the drop's, when the row holds work the drop never read and stands.
 A copy that is not taken or not stored holds nothing back:
 the daemon logs `running copy: no copy of the issue workspace was stored` with the reason by name
