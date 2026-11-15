@@ -170,16 +170,20 @@ const projectCopiesLock = `select pg_advisory_xact_lock($1, hashtext($2))`
 // locks (store.LockOwner, "OWNR"), duty's leases (duty.leaseNamespace, "LOOP"), a conditional
 // edit's admission (conditionalEditQueueLockNamespace) and the test hooks (the api package's
 // testHookLockNamespace, "HOOK", taken only under DISPATCH_TEST_HOOKS), and with the hashtext of
-// a name by the issue-dependency, repository-mapping and delivery session-group locks; no two of
-// those first keys are equal.
+// a name by the issue-dependency locks (api's lockProjectIssueDependencies and the deployment's
+// own, lockDeploymentIssueDependencies), the repository-mapping locks (one mapping's write, api's
+// lockRepoProjectWrite, and the rename graph's own, api's refuseRepoRenameChain) and the delivery
+// session-group locks; no two of those first keys are equal.
 const copiedAsksLockNamespace int32 = 0x434F5059
 
 // lockProjectCopies serialises, for a project document, its project's copy bookkeeping: a
 // settlement's copy-source read (copiedAskSources), and the owed copies a settlement's retraction
 // or restoration, a source's answer or resolution, or the boot's restoration marks (owedCopiesOf).
-// A caller holding several projects' documents takes their locks in the projects' sorted order,
-// all through owedCopiesOf, as the boot's restoration does (RestoreDecidedWordings). Without it
-// two copies of one retracted ask settling at once would each find no source and each open an ask.
+// A caller holding several projects' documents takes their locks in ascending lock id order and
+// then by key (ProjectsInLockOrder), all through owedCopiesOf, as the boot's restoration does
+// (RestoreDecidedWordings): Postgres waits on the id, and key order breaks under a hash collision,
+// where two project sets can take the same two ids in opposite orders. Without the lock two copies
+// of one retracted ask settling at once would each find no source and each open an ask.
 // An issue's documents need no lock of their own, since every one of those transactions already
 // holds their issue's owner lock (lockArtifactOwner, requireOpenOwner); a project document's owner
 // is the document itself, which no sibling's settlement takes. The lock is a transaction advisory
@@ -195,20 +199,24 @@ const copiedAsksLockNamespace int32 = 0x434F5059
 // background loop holds the lease that keeps one process at a time running its periodic pass, the
 // test hooks' (the api package's testHookLockNamespace, under DISPATCH_TEST_HOOKS alone), under
 // which each process marks itself as one a hook call must reach, a conditional edit's admission's
-// (conditionalEditQueueLockNamespace) and the issue dependencies' (api's
-// lockProjectIssueDependencies, hashtext('dispatch-issue-dependencies')), so a copy lock cannot
-// collide with any of those. hashtext is 32 bits wide, so two projects can still share the second
-// key. They then take turns on their copy bookkeeping and on nothing else, and cannot deadlock: a
-// holder takes the copy lock before any doc_settlements_pending row and before any event append
-// (TestCopyLockComesBeforeEveryPendingRowAndEvent), and an append takes only its event owner's
-// lock and row, which for the holder's appends are the owner lock it took before the copy lock and
-// that owner's row, which no writer takes without that lock, so the transaction waiting on it
-// holds nothing the holder goes on to take. A settlement takes it right after its owner lock and
-// room lock, an answer or a resolution after its owner lock and its read of the ask row. The
-// copy-source read is the next statement, so under READ COMMITTED its snapshot holds every ask a
-// sibling's settlement committed while this one waited, and the ask createAskBlock opens commits
-// in this transaction, which holds the lock until then. A settlement whose blocks all have asks
-// of their own and that retracts none takes none.
+// (conditionalEditQueueLockNamespace), the issue dependencies' (api's
+// lockProjectIssueDependencies, hashtext('dispatch-issue-dependencies')), the one dependency lock
+// that is no project's, which every dependency write takes last (api's
+// lockDeploymentIssueDependencies, hashtext('dispatch-issue-dependencies-deployment')), one
+// repository mapping's write (api's lockRepoProjectWrite, hashtext('dispatch-repo-project')) and
+// the rename graph's own (api's refuseRepoRenameChain, hashtext('dispatch-repo-rename')), so a
+// copy lock cannot collide with any of those. hashtext is 32 bits wide, so two projects can still
+// share the second key. They then take turns on their copy bookkeeping and on nothing else, and
+// cannot deadlock: a holder takes the copy lock before any doc_settlements_pending row and before
+// any event append (TestCopyLockComesBeforeEveryPendingRowAndEvent), and an append takes only its
+// event owner's lock and row, which for the holder's appends are the owner lock it took before the
+// copy lock and that owner's row, which no writer takes without that lock, so the transaction
+// waiting on it holds nothing the holder goes on to take. A settlement takes it right after its
+// owner lock and room lock, an answer or a resolution after its owner lock and its read of the ask
+// row. The copy-source read is the next statement, so under READ COMMITTED its snapshot holds
+// every ask a sibling's settlement committed while this one waited, and the ask createAskBlock
+// opens commits in this transaction, which holds the lock until then. A settlement whose blocks
+// all have asks of their own and that retracts none takes none.
 func lockProjectCopies(ctx context.Context, tx pgx.Tx, owner artifactOwner) error {
 	if owner.IssueKey != nil || owner.Project == "" {
 		return nil
@@ -307,10 +315,13 @@ func owedCopiesOf(ctx context.Context, tx pgx.Tx, documents ...documentAsks) ([]
 }
 
 // lockedCopiesOf takes the copy lock of every project among documents' owners (lockProjectCopies),
-// first and in the projects' order, so two holders of several never wait on each other in a
-// cycle, and returns, sorted and once each, every other document of each document's owner whose
-// latest version holds the block of one of that document's asks with no ask of its own under that
-// block's id (copiesOf). A document's latest version is read for the block's opener
+// first and in ProjectsInLockOrder's order - ascending hashtext of the key, the id the lock
+// waits on, then the key - so two holders of several never wait on each other in a cycle, even
+// when keys collide in hashtext (key order would then take the same two ids in opposite orders;
+// colliding keys take the same id twice in a row, harmless because an advisory lock is re-entrant
+// within one session), and returns, sorted and once each, every other document of each document's
+// owner whose latest version holds the block of one of that document's asks with no ask of its own
+// under that block's id (copiesOf). A document's latest version is read for the block's opener
 // (`:::ask{<id> …}`, the id as pmdoc.TypedBlockIDAttribute writes it), so one that quotes the
 // opener elsewhere, in code, is settled for nothing.
 // The caller has taken no pending row and appended no event. A copy's settlement waits on the row
@@ -323,8 +334,11 @@ func lockedCopiesOf(ctx context.Context, tx pgx.Tx, documents ...documentAsks) (
 			projects = append(projects, document.owner.Project)
 		}
 	}
-	slices.Sort(projects)
-	for _, project := range slices.Compact(projects) {
+	ordered, err := ProjectsInLockOrder(ctx, tx, projects)
+	if err != nil {
+		return nil, err
+	}
+	for _, project := range ordered {
 		if err := lockProjectCopies(ctx, tx, artifactOwner{Project: project}); err != nil {
 			return nil, err
 		}
@@ -339,6 +353,27 @@ func lockedCopiesOf(ctx context.Context, tx pgx.Tx, documents ...documentAsks) (
 	}
 	slices.Sort(copies)
 	return slices.Compact(copies), nil
+}
+
+// ProjectsInLockOrder returns each of projects once, ordered by hashtext of the key and then by
+// key. It is the one order every caller holding several projects' locks takes them in: the copy
+// lock (lockProjectCopies, whose second key is that hashtext) and the API's dependency lock
+// (lockProjectIssueDependencies in package api, whose id is the same hashtext). Postgres computes
+// the order so it is hashtext's own; ties break by key so two colliding keys sit next to each
+// other.
+func ProjectsInLockOrder(ctx context.Context, tx pgx.Tx, projects []string) ([]string, error) {
+	if len(projects) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `select p from unnest($1::text[]) as p group by p order by hashtext(p), p`, projects)
+	if err != nil {
+		return nil, fmt.Errorf("read project lock order: %w", err)
+	}
+	ordered, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read project lock order: %w", err)
+	}
+	return ordered, nil
 }
 
 // copiesOf reads the other documents of document's owner holding the block of one of its asks with

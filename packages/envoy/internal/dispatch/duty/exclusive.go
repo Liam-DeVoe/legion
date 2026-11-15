@@ -29,9 +29,12 @@ type Leases interface {
 // (docs.copiedAsksLockNamespace, "COPY"), the owner locks' (store.OwnerLockNamespace, "OWNR"),
 // the test hooks' (the api package's testHookLockNamespace, "HOOK", taken only under
 // DISPATCH_TEST_HOOKS), a conditional edit's admission's
-// (docs.conditionalEditQueueLockNamespace) and the issue dependencies' (api's
-// lockProjectIssueDependencies), each a first key of its own, so a lease's second key, its name's
-// hashtext, separates the leases from each other and from nothing else.
+// (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
+// lockProjectIssueDependencies), the deployment's own issue dependencies' (api's
+// lockDeploymentIssueDependencies), one repository mapping's write (api's lockRepoProjectWrite)
+// and the rename graph's own (api's refuseRepoRenameChain), each a first key of its own, so a
+// lease's second key, its name's hashtext, separates the leases from each other and from nothing
+// else.
 const leaseNamespace int32 = 0x4C4F4F50
 
 // takeLease tries for a lease without queueing behind its holder, and freeLease gives it back. Both
