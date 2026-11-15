@@ -209,8 +209,9 @@ else
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
   # ghcr.io/cybermonklabs/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
   # version CI's service and Cloud SQL run
+  pg_password=legion # the scratch container's own login, which nothing outside this run reaches
   docker run -d --name "$container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-    -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion \
+    -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$pg_password" \
     -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
   # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
   # socket while nothing listens on 5432 yet, and a daemon that connects then is reset.

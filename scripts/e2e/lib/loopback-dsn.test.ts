@@ -14,6 +14,10 @@ const variable = "LOOPBACK_DSN_TEST";
 const what = "this run creates and drops databases there";
 /** A password no refusal may print. It is in the userinfo of each refused DSN that carries one. */
 const password = "hunter2";
+/** A password that needs percent-encoding, encoded as a client writes it: `a b'c@d`. */
+const spacedPassword = encodeURIComponent("a b'c@d").replaceAll("'", "%27");
+/** A password that holds a newline, percent-encoded: `p`, U+000A, `q`. */
+const newlinePassword = encodeURIComponent("p\nq").toLowerCase();
 
 /** What the helper answered: its exit status, the host it printed, and its refusal line. */
 function guard(dsn: string): { code: number; host: string; refusal: string } {

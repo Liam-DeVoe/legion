@@ -40,6 +40,10 @@ const (
 	testDigestHex    = "1d10089a0000000000000000000000000000000000000000000000000000beef"
 )
 
+// anthropicKeyVariable is the provider-key environment variable the providers-Secret rows mount:
+// its value is the key's name in the Secret, which the probe's refusal names.
+const anthropicKeyVariable = "ANTHROPIC_API_KEY"
+
 var sandboxesResource = schema.GroupResource{Group: "agents.x-k8s.io", Resource: "sandboxes"}
 
 // probeRig is a rig whose controller stand-in leaves the pods it creates Pending, with a stand-in
