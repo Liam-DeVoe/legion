@@ -228,9 +228,9 @@ func TestTheControllersRetryAndResumeRefuseAClaimInATurn(t *testing.T) {
 
 // The operator's own suspension is the operator's decision, and only the operator undoes it: the
 // controller's resume would lift it, its suspend would take it over, its stop would retire the
-// claim for its retry to relaunch, and its fresh session would resume it. Each is refused
-// SUSPENDED_BY_OPERATOR with nothing of the claim changed, and the operator's own resume then
-// lifts the suspension as before.
+// claim for its retry to relaunch, its retry would start it, and its fresh session would resume
+// it. Each of the five is refused SUSPENDED_BY_OPERATOR with nothing of the claim changed, and the
+// operator's own resume then lifts the suspension as before.
 func TestTheControllerCannotGetPastTheOperatorsSuspension(t *testing.T) {
 	for _, op := range []struct {
 		name  string
@@ -240,6 +240,7 @@ func TestTheControllerCannotGetPastTheOperatorsSuspension(t *testing.T) {
 		{"resume", "/legion/v1/claims/resume", resumeOp},
 		{"suspend", "/legion/v1/claims/suspend", suspendOp},
 		{"stop", "/legion/v1/claims/stop", stopOp},
+		{"retry", "/legion/v1/claims/retry", retryOp},
 		{"fresh_session", "/legion/v1/claims/fresh-session", freshSessionOp},
 	} {
 		t.Run(op.name, func(t *testing.T) {

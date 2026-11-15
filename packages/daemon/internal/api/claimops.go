@@ -112,15 +112,23 @@ func (s *server) claimResume(w http.ResponseWriter, r *http.Request) {
 // again in the session it recorded — a phase worker through its issue's phase, which hands it
 // that phase's task, and an architect by its own machine. The store records no one as having
 // retired a claim (supervise.Machine.retire writes the state alone), so a claim the operator
-// stopped is retried here as one the controller stopped is. A claim stored working is refused as
-// a claim in a turn before anything is asked (refuseClaimInATurn); every other refusal is the
-// effect's own, in the words the operator's door gives it.
+// stopped is retried here as one the controller stopped is. A claim the operator's own
+// suspension holds, landed or held for its turn, is refused before anything is asked
+// (SUSPENDED_BY_OPERATOR), as the controller's other operations refuse it: only the operator
+// undoes the operator's decision. A claim stored working is refused as a claim in a turn
+// (refuseClaimInATurn); every other refusal is the effect's own, in the words the operator's
+// door gives it.
 func (s *server) claimRetry(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.controllerClaim(w, r, retryOp)
 	if !ok {
 		return
 	}
-	if target.machine.View().State == supervise.StateWorking {
+	view := target.machine.View()
+	if view.OperatorHolds() {
+		refuseOperatorHold(w, target.token, retryOp)
+		return
+	}
+	if view.State == supervise.StateWorking {
 		refuseClaimInATurn(w, target.token, retryOp)
 		return
 	}
