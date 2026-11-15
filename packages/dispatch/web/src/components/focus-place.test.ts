@@ -501,10 +501,14 @@ test("the Inbox drawer, losing its last rows, keeps the focus inside it", async 
   });
 });
 
-// (v) The main content with no control left at the place or before it hands the focus to its
-// search box, else its filter trigger, else its own first control, else to itself - and never to
-// a control outside it, the sidebar's here.
-test("the main content with nothing left at the place goes to its search box, its trigger, its first control, then itself", async () => {
+// (v) The main content, losing a block of controls at its end, hands the focus to the nearest
+// control before the block, however many went together - here its filter trigger, then its search
+// box, then its first control as each is taken in turn - and to itself once it draws none, never
+// to a control outside it, the sidebar's here. Changed by the tree's architect in round 9
+// (2026-11-15T08:03Z): this case once expected the search box first, which only Chromium's path
+// gave; the nearest earlier control is the one landing every engine agrees on, and the one a
+// keyboard reader expects, where the block was rather than at the top of the page.
+test("the main content losing a block at its end goes to the nearest control before it, then itself", async () => {
   const aside = document.createElement("aside");
   const sidebar = buttonIn(aside, "Sidebar");
   document.body.prepend(aside);
@@ -525,11 +529,11 @@ test("the main content with nothing left at the place goes to its search box, it
         await settled();
       };
       await loseThree();
-      expect(search).toHaveFocus();
-      search.remove();
-      await loseThree();
       expect(trigger).toHaveFocus();
       trigger.remove();
+      await loseThree();
+      expect(search).toHaveFocus();
+      search.remove();
       await loseThree();
       expect(first).toHaveFocus();
       first?.remove();

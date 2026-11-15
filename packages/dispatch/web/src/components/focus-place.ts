@@ -2,7 +2,6 @@ import { type FocusEvent, type RefObject, useEffect, useLayoutEffect, useRef } f
 
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
-import { CONTROL, controlIn } from "./control-names";
 
 /** What the keyboard focus can reach: a link, a form control that is not `disabled`, or anything
  *  given a Tab stop of its own. A control refused with `aria-disabled` is one, since it keeps its
@@ -25,10 +24,15 @@ export function focusableIn(container: Element): HTMLElement[] {
   );
 }
 
-/** Where a hand-off sends the focus a control took away with it: the control now at `index` in
- *  `controls`, else the one before it. */
-function controlAt(controls: readonly HTMLElement[], index: number): HTMLElement | undefined {
-  return controls[index] ?? controls[index - 1];
+/** Where a hand-off sends the focus a control took away with it, nearest first: the control now
+ *  at `index` in `controls`, then each control before that place, walking back. However many
+ *  controls went together, the focus lands where they were, and by the same walk in every engine
+ *  whether the loss was counted while they were still in the page (Chromium's `focusout`) or
+ *  after they went (the removal Firefox and WebKit report alone). */
+function placesFrom(controls: readonly HTMLElement[], index: number): HTMLElement[] {
+  const before = controls.slice(0, Math.min(index, controls.length)).reverse();
+  const at = controls[index];
+  return at === undefined ? before : [at, ...before];
 }
 
 /** `element`'s place among the controls the focus can reach in `container` (`focusableIn`'s
@@ -58,8 +62,8 @@ interface Place {
  * Keeps the keyboard focus off the page's body when a press takes away the element holding it
  * while the component around it stays - a page control that removes itself, a menu's trigger
  * that goes once its value is picked. The focus goes to the control now at that element's place
- * in its container, else to the one before it, else to what `fallback` names for that container
- * (a table row's fallback is the row itself, and a row that has left the page names none).
+ * in its container, else to the nearest one before it, else to what `fallback` names for that
+ * container (a table row's fallback is the row itself, and a row that has left the page names none).
  *
  * The component puts the handler this returns on its root as `onFocus`, which every focus inside
  * it bubbles to, from a portal too, since React bubbles through its own tree. `containerOf` names
@@ -93,7 +97,7 @@ export function useFocusPlace(
     place.current = null;
     if (held.element.isConnected || !focusOnDocument()) return;
     const placed = held.container.isConnected
-      ? controlAt(focusableIn(held.container), held.index)
+      ? placesFrom(focusableIn(held.container), held.index)[0]
       : undefined;
     (placed ?? fallback(held.container))?.focus();
   });
@@ -271,33 +275,27 @@ function placeOfRemoval(region: Element, record: MutationRecord, main: HTMLEleme
 
 /** Hands on the focus `loss`'s element took with it when it went, inside the region it was lost
  *  in while that region is still in the page and drawn (`present`): to the control the region now
- *  draws at its place, else the one before it, else - in the main content alone - the page's
- *  search box, then its filter trigger, else the region's first control, else the region itself,
- *  which is every region but the document (the body holding the focus is the loss itself). A
- *  dialog that has no Tab stop of its own is given `tabindex="-1"` only when the focus is landed
- *  on it, so that it can take it. The page behind a modal dialog is never reached. From a region
- *  that has gone - a dialog that closed, or one hidden while it stays mounted - only back to the
- *  place the dialog was opened from (its `opener`, or that dialog's own opener where it has gone
- *  too): that element, the control that opened it, if it can still take the focus, else the
- *  control now at its place, else the one before it. A dialog opened from the body hands the
- *  focus nowhere: the body is where the reader was. */
+ *  draws at its place, else the nearest one before it however many went together
+ *  (`placesFrom`), else the region itself, which is every region but the document (the body
+ *  holding the focus is the loss itself). The main content's search box and filter trigger are
+ *  among the controls it draws, so the walk reaches them in their turn. A dialog that has no Tab
+ *  stop of its own is given `tabindex="-1"` only when the focus is landed on it, so that it can
+ *  take it. The page behind a modal dialog is never reached. From a region that has gone - a
+ *  dialog that closed, or one hidden while it stays mounted - only back to the place the dialog
+ *  was opened from (its `opener`, or that dialog's own opener where it has gone too): that
+ *  element, the control that opened it, if it can still take the focus, else the control now at
+ *  its place, else the nearest one before it. A dialog opened from the body hands the focus
+ *  nowhere: the body is where the reader was. */
 function handOn(loss: Loss, main: HTMLElement | null): void {
   const { region } = loss;
   let candidates: (HTMLElement | null | undefined)[] = [];
   if (present(region)) {
-    const own = drawnIn(region, main);
-    candidates = [
-      controlAt(own, loss.index),
-      ...(region === main
-        ? [controlIn(region, CONTROL.searchBox), controlIn(region, CONTROL.panelTrigger)]
-        : []),
-      own[0],
-    ];
+    candidates = placesFrom(drawnIn(region, main), loss.index);
   } else {
     let opener = loss.opener;
     while (opener !== null && !present(opener.region)) opener = opener.opener;
     if (opener !== null && opener.path === loss.path) {
-      candidates = [opener.element, controlAt(drawnIn(opener.region, main), opener.index)];
+      candidates = [opener.element, ...placesFrom(drawnIn(opener.region, main), opener.index)];
     }
   }
   for (const candidate of candidates) {
@@ -344,9 +342,9 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  *
  * An element that went - taken away, hidden, no longer drawn, or replaced under a new key - hands
  * the focus on (`handOn`) inside the region it was lost in: to the control the region now draws at
- * its place, else the one before it, else - in the main content alone - the page's search box or
- * filter trigger, else the region's first control, else the region itself, so the page behind a
- * modal dialog is never reached. Only a region that has gone hands the focus out of it: from a
+ * its place, else the nearest one before it however many went together, else the region itself,
+ * so the page behind a modal dialog is never reached. Only a region that has gone hands the focus
+ * out of it: from a
  * dialog that closed it goes only back to the place the dialog was opened from; a
  * dialog opened from the body - a single-key shortcut with nothing focused - leaves the focus on
  * the body, where the reader was, and never puts it in a text box whose next key would be typed.
