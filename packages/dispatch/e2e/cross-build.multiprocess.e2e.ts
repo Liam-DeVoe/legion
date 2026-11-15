@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +25,7 @@ import {
   pinnedTo,
   webDistOf,
 } from "./harness-processes";
+import { sql } from "./psql";
 import type { ProxiedRequest, ProxiedSocket } from "./round-robin-proxy";
 import { type Browser, type BrowserContext, expect, type Page, test, type WebSocket } from "./test";
 import { signIn } from "./users";
@@ -65,8 +66,17 @@ const seedAgent = { kind: "session", id: "e2e-cross-build" } as const;
 const envoyDir = fileURLToPath(new URL("../../envoy", import.meta.url));
 const buildB = binaryB === undefined ? undefined : dirname(binaryB);
 
-/** The schema manifest version a build's server reads and admits a page by. */
-function manifestVersion(process: DispatchProcess): number {
+/** A build's schema manifest (`pmdoc/schema/blocks.json`): the version its server reads, and
+ *  whether it names its nodes. A build names them from the one that admits a page over the fleet
+ *  on (#2461, `legion-envoy-v30.21.0`), and a build before that names none (the two-build Go
+ *  harness's `admittedScope`, packages/envoy/cmd/dispatch/twobuild_documents_test.go, tells the
+ *  two apart the same way). */
+interface BuildManifest {
+  readonly namesNodes: boolean;
+  readonly version: number;
+}
+
+function manifestOf(process: DispatchProcess): BuildManifest {
   const path =
     process === "b" && buildB !== undefined
       ? resolve(buildB, "pmdoc", "schema", "blocks.json")
@@ -80,52 +90,107 @@ function manifestVersion(process: DispatchProcess): number {
   ) {
     throw new Error(`${path} declares no schema version`);
   }
-  return manifest.version;
+  const namesNodes =
+    "nodes" in manifest && Array.isArray(manifest.nodes) && manifest.nodes.length > 0;
+  return { namesNodes, version: manifest.version };
 }
 
-/** Whether a build's page carries the manifest it was built with, which it presents as
- *  `schema_version` and `schema_creatable` (web/src/features/doc/schema.ts). A page of a build
- *  before that reads the schema from the server it talks to and sends `schema_version` alone. */
-function pageCarriesManifest(process: DispatchProcess): boolean {
-  if (process !== "b" || buildB === undefined) {
-    return true;
+/** The schema a page presented on a document socket: the `schema_version` and `schema_creatable`
+ *  its provider puts in the socket's query (web/src/features/doc/connection.ts). A page of a
+ *  build before `schema_creatable` sends `schema_version` alone, which is the version of the
+ *  server it talks to when its page carries no manifest of its own, and creates up to 1: every
+ *  element of a manifest before it has since 1. */
+interface PresentedSchema {
+  readonly creatable: number;
+  readonly version: number;
+}
+
+/** The address of each document socket the page opens, in the order the page opens them. */
+function watchDocumentSockets(page: Page): URL[] {
+  const opened: URL[] = [];
+  page.on("websocket", (socket: WebSocket) => {
+    const url = new URL(socket.url());
+    if (url.pathname.startsWith("/ws/doc/")) opened.push(url);
+  });
+  return opened;
+}
+
+/** The schema a document socket's address presents. */
+function presentedBy(socket: URL): PresentedSchema {
+  const version = Number(socket.searchParams.get("schema_version") ?? Number.NaN);
+  const creatable = Number(socket.searchParams.get("schema_creatable") ?? 1);
+  if (!Number.isInteger(version) || !Number.isInteger(creatable)) {
+    throw new Error(`the page opened a document socket presenting no schema numbers: ${socket}`);
   }
-  const assets = resolve(buildB, "web", "assets");
-  return readdirSync(assets).some(
-    (file) =>
-      file.endsWith(".js") &&
-      readFileSync(resolve(assets, file), "utf8").includes("schema_creatable")
+  return { creatable, version };
+}
+
+/** What the document socket's admission reads off the registry (`docs.readSchemaFleet`): the
+ *  lowest `schema_version` and the highest `schema_creatable` among the live rows of
+ *  `server_processes`, those whose heartbeat is inside the registry's live window (15 seconds,
+ *  `processes.LiveWindow`). A process of a build before those columns registers neither, and the
+ *  zeros its row holds are what it counts as. */
+interface FleetNumbers {
+  readonly maxCreatable: number;
+  readonly minVersion: number;
+}
+
+async function liveFleet(): Promise<FleetNumbers> {
+  const read = await sql(
+    `SELECT count(*) || ' ' || coalesce(min(schema_version), 0) || ' ' || coalesce(max(schema_creatable), 0)
+       FROM server_processes WHERE heartbeat_at > now() - interval '15 seconds'`
   );
+  const [live, minVersion, maxCreatable] = read.split(" ").map(Number);
+  if (live === undefined || minVersion === undefined || maxCreatable === undefined) {
+    throw new Error(`the registry's live rows read as ${JSON.stringify(read)}`);
+  }
+  // Both servers of this run register when they start, so an empty registry is a broken run, and
+  // numbers read off it would hold every page read-only for a reason no build has.
+  if (live === 0) throw new Error("the registry holds no live server process");
+  return { maxCreatable, minVersion };
 }
 
 /**
- * Whether a page of `pageProcess` may write a document on the server of `server`.
+ * Whether `server` admits a page that presented `presented` writable, and the numbers that say
+ * so. The rule is stated here, from the numbers the registry and the page hold, and not read
+ * from either server, so this spec cannot inherit a fault in the rule it checks.
  *
- * Dispatch B is the previous build when `DISPATCH_E2E_BINARY_B` names one. That build writes no
- * schema numbers into its `server_processes` row, so this tree's admission counts it as a
- * process that reads version 0, which no page's `schema_creatable` is at or under: while it is
- * live, a server of this tree admits every page read-only, its own and B's alike
- * (`docs.readSchemaFleet`, and `packages/envoy/cmd/dispatch/README.md`, "Two builds at once").
+ * A server of a build that admits over the fleet (its manifest names its nodes: this tree's, and
+ * every release from #2461 on) admits the page writable when the page creates no more than every
+ * live process reads and no more than the highest any of them creates, and reads at least what
+ * they create and what the document holds: a heading and a paragraph, since 1 in every manifest.
+ * While a process of a build before the fleet columns is live, the lowest version is 0, which no
+ * page creates at or under, so such a server admits every page read-only; a previous build that
+ * registers numbers the page is inside leaves it writable.
  *
- * B's own server knows no fleet: it compares the page's `schema_version` with its own manifest
- * version exactly (`schemaReadOnly` in that build), so it admits a page of its own version, and
- * holds a page of any other version read-only. A page that carries no manifest of its own takes
- * its `schema_version` from the schema route of the server it talks to, so against B's server it
- * presents B's own version.
+ * A server of a build before that knows no fleet: it compares the page's `schema_version` with its
+ * own manifest version exactly (`schemaReadOnly` in that build), so it admits a page of its own
+ * version, and holds a page of any other version read-only.
  *
  * With no previous build - both processes run this tree - the fleet is two processes of one
  * build, and a page of that build is writable on either.
  */
-function pageWritable(pageProcess: DispatchProcess, server: DispatchProcess): boolean {
-  if (binaryB === undefined) {
-    return true;
+async function pageWritable(
+  server: DispatchProcess,
+  presented: PresentedSchema
+): Promise<{ readonly why: string; readonly writable: boolean }> {
+  const page = `schema_version ${presented.version}, schema_creatable ${presented.creatable}`;
+  const manifest = manifestOf(server);
+  if (!manifest.namesNodes) {
+    const writable = presented.version === manifest.version;
+    return {
+      why: `${builds[server]} knows no fleet and reads schema version ${manifest.version}, so it admits the page (${page}) ${writable ? "writable" : "read-only"}`,
+      writable,
+    };
   }
-  if (server === "b") {
-    return (
-      !pageCarriesManifest(pageProcess) || manifestVersion(pageProcess) === manifestVersion("b")
-    );
-  }
-  return false;
+  const fleet = await liveFleet();
+  const writable =
+    presented.creatable <= Math.min(fleet.minVersion, fleet.maxCreatable) &&
+    presented.version >= Math.max(fleet.maxCreatable, 1);
+  return {
+    why: `the registry's live rows read lowest schema_version ${fleet.minVersion} and highest schema_creatable ${fleet.maxCreatable}, so ${builds[server]} admits the page (${page}) ${writable ? "writable" : "read-only"}`,
+    writable,
+  };
 }
 
 /** The day `seedDeliveryFixture` writes its timeline on. */
@@ -194,6 +259,7 @@ for (const pageProcess of dispatchProcesses) {
     try {
       const page = await context.newPage();
       const live = watchLiveSocket(page);
+      const documentSockets = watchDocumentSockets(page);
 
       // The project's issue list, and the issue from it. Each build's list renders exactly one
       // link carrying `data-issue-link` per issue, and that is what this names: a list row of a
@@ -235,32 +301,37 @@ for (const pageProcess of dispatchProcesses) {
         .toBe(1);
 
       // The issue's document. Where the other build's server admits this page writable
-      // (pageWritable), an edit typed here is saved by that server, then read from the store by
-      // this page's own server, and shown below in a context of the other build's page. Where it
-      // admits the page read-only - a page whose version its own rule does not match, or any
-      // page at all on a server of this tree while a process of the previous build is live -
-      // the page says so, takes no edit, and the stored document is untouched.
+      // (pageWritable, from the numbers the page presented and the registry holds), an edit typed
+      // here is saved by that server, then read from the store by this page's own server, and
+      // shown below in a context of the other build's page. Where it admits the page read-only -
+      // a page whose version a server that knows no fleet does not read as its own, or a page
+      // outside the numbers the live processes register, as every page is on a server of this
+      // tree while a process of a build before the fleet columns is live - the page says so,
+      // takes no edit, and the stored document is untouched.
       await page.goto(`/issues/${issue.key}/spec`);
       await expect(documentEditor(page)).toContainText("Written before the edit.");
       await expect(connectedDot(page)).toHaveText("connected");
+      const documentSocket = documentSockets.at(-1);
+      if (documentSocket === undefined) throw new Error("the page opened no document socket");
+      const { why, writable } = await pageWritable(server, presentedBy(documentSocket));
+      console.log(`CROSS-BUILD ${builds[pageProcess]}'s page: ${why}`);
       const edit = `Typed on ${builds[pageProcess]}'s page.`;
-      const writable = pageWritable(pageProcess, server);
       if (writable) {
         await typeAtEnd(page, edit);
       } else {
-        await expect(page.locator('.dispatch-doc[data-read-only="true"]')).toBeVisible();
+        await expect(page.locator('.dispatch-doc[data-read-only="true"]'), why).toBeVisible();
       }
       for (const reader of [server, pageProcess]) {
         await expect
           .poll(
             async () =>
               (await getIssueArtifactText(issue.key, "spec", { process: reader })).markdown,
-            { timeout: 30_000 }
+            { message: why, timeout: 30_000 }
           )
           .toContain(writable ? edit : "Written before the edit.");
         if (!writable) {
           const { markdown } = await getIssueArtifactText(issue.key, "spec", { process: reader });
-          expect(markdown).not.toContain(edit);
+          expect(markdown, why).not.toContain(edit);
         }
       }
 
