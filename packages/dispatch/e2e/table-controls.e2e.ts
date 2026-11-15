@@ -3183,3 +3183,43 @@ test("the Delivery page reaches every facet from its row, in both views, and its
     })
     .toBeGreaterThan(0);
 });
+
+// INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6zU): Blocked on you counts the whole
+// inbox, and its press kept a field narrowing and the search text on, so the list under it held
+// fewer asks than the number it showed. The press takes both off, as it takes the assignee off,
+// and keeps the sort and the grouping.
+test("with a field narrowing and a search on, a press of Blocked on you lists exactly the number it shows", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  // Three asks waiting on Alice. Only the first is P0, and only its question holds the word the
+  // address searches for.
+  const mine: string[] = [];
+  for (const title of ["Ledger rollout", "Mirror retries", "Clock drift"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    if (mine.length === 0) await patchIssue(issue.key, { priority: 0 });
+    const ask = await createAsk(issue.key, { question: `${title}?` }, SURFACE_SESSION);
+    mine.push(ask.id);
+  }
+
+  await page.goto("/?priority=P0&q=ledger&sort=urgency&group=waiting-on");
+  const rows = page.locator("[data-inbox-row]");
+  await expect(rows).toHaveCount(1);
+  const blocked = page.locator("[data-inbox-needs-you]");
+  await expect(blocked).toHaveText("Blocked on you · 3");
+
+  await blocked.click();
+  await expect(page).toHaveURL(/[?&]section=needs-you(&|$)/);
+  await expect(page, "the press left a field narrowing or the search on").not.toHaveURL(
+    /[?&](priority|q)=/
+  );
+  await expect(page).toHaveURL(/[?&]sort=urgency(&|$)/);
+  await expect(page).toHaveURL(/[?&]group=waiting-on(&|$)/);
+  await expect(page.getByRole("searchbox", { name: "Search asks" })).toHaveValue("");
+  await expect(
+    rows,
+    "the list holds a different number of asks than the control shows"
+  ).toHaveCount(3);
+  expect([...(await drawnIds(page))].sort()).toEqual([...mine].sort());
+});
