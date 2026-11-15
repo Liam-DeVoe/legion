@@ -27,6 +27,16 @@
 # port range (EPHEMERAL_RANGE_FILE), which an outbound connection may hold when the stack comes
 # to bind it. stack.sh setup runs it over the ports it records.
 #
+# CPU pinning (README.md, Environment): LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS are two
+# CPU lists as `taskset -c` reads them, empty by default, and then nothing is pinned. When set,
+# stack.sh starts each server-side process (Postgres, the latency proxies, NATS, the listener and
+# Dispatch) under `taskset -c LOADTEST_SERVER_CPUS` and every loadgen under `taskset -c
+# LOADTEST_GENERATOR_CPUS` (pin_words). check_cpu_lists refuses a list taskset refuses and two
+# lists that share a CPU, naming both; check_cpu_affinity refuses a runtime that does not enforce
+# the pin (gVisor sets the mask and ignores it), timing two busy loops pinned to one CPU against
+# the same two unpinned (affinity_verdict decides from the two times). run-step.sh and
+# run-series.sh run both before anything starts.
+#
 # lock_root ROOT: one run at a time per root (README.md, "One run at a time"). It takes an
 # exclusive, non-blocking flock on ROOT/.run.lock and keeps it on file descriptor 9. The lock lasts
 # until every process that holds that descriptor has exited: the holder and the children that
@@ -179,6 +189,130 @@ check_ephemeral_ports() {
   done <<<"$1"
   [ -z "$inside" ] ||
     die "these stack ports lie inside this machine's ephemeral port range $low-$high ($EPHEMERAL_RANGE_FILE): $inside. The kernel gives ports in that range to outbound connections, so one of them is taken while the stack runs and the next start fails with 'bind: address already in use'. Set each port's LOADTEST_*_PORT variable to a free port below $low and rerun stack.sh setup with them set"
+}
+
+# ---- CPU pinning ---------------------------------------------------------------------------------
+
+# AFFINITY_MIN_SLOWDOWN is how much slower two busy loops pinned to one CPU must run than the same
+# two unpinned for the pin to count as binding. On a box with two free CPUs a binding pin halves
+# the CPU the pair gets, so it runs about 2x slower; a runtime that ignores the mask runs it as
+# fast as unpinned (gVisor on a Legion pod: 9.0 s pinned against 8.5 s unpinned, 1.06x). 1.6 sits
+# between the two with room for a box that is not idle. AFFINITY_LOOP_ITERATIONS is each loop's
+# length: about 2 s of one CPU on a Legion pod.
+AFFINITY_MIN_SLOWDOWN=1.6
+AFFINITY_LOOP_ITERATIONS=1000000
+
+# PROC_VERSION_FILE is where the kernel's name is read from (affinity_runtime). A test points
+# LOADTEST_PROC_VERSION_FILE at a file of its own.
+PROC_VERSION_FILE=${LOADTEST_PROC_VERSION_FILE:-/proc/version}
+
+# cpu_list_cpus LIST: each CPU of LIST, one a line, from its comma-separated N, N-M and N-M:S
+# items as taskset -c reads them; status 1 for an item of another form.
+cpu_list_cpus() {
+  local item n lo hi step
+  local -a items
+  IFS=, read -ra items <<<"$1"
+  for item in "${items[@]}"; do
+    if [[ $item =~ ^([0-9]+)$ ]]; then
+      printf '%s\n' "$((10#${BASH_REMATCH[1]}))"
+    elif [[ $item =~ ^([0-9]+)-([0-9]+)(:([1-9][0-9]*))?$ ]]; then
+      lo=$((10#${BASH_REMATCH[1]})) hi=$((10#${BASH_REMATCH[2]})) step=$((10#${BASH_REMATCH[4]:-1}))
+      for ((n = lo; n <= hi; n += step)); do printf '%s\n' "$n"; done
+    else
+      return 1
+    fi
+  done
+}
+
+# check_cpu_lists: die when LOADTEST_SERVER_CPUS or LOADTEST_GENERATOR_CPUS is a list taskset
+# refuses (a CPU this box lacks, or no list at all), naming the variable, the list and taskset's
+# own words, and when the two lists share a CPU, naming both lists and the CPUs they share: the
+# generator is pinned so it runs on CPU the server side does not.
+check_cpu_lists() {
+  local var list err
+  for var in LOADTEST_SERVER_CPUS LOADTEST_GENERATOR_CPUS; do
+    list=${!var:-}
+    [ -n "$list" ] || continue
+    command -v taskset >/dev/null || die "$var='$list' is set, and taskset (util-linux) is required to pin to it"
+    err=$(taskset -c "$list" true 2>&1) || die "$var='$list' is a CPU list taskset refuses: ${err:-taskset exited non-zero}"
+    cpu_list_cpus "$list" >/dev/null ||
+      die "$var='$list' is a list taskset takes but this script cannot read; write it as N, N-M or N-M:S items separated by commas"
+  done
+  [ -n "${LOADTEST_SERVER_CPUS:-}" ] && [ -n "${LOADTEST_GENERATOR_CPUS:-}" ] || return 0
+  local shared
+  shared=$(comm -12 <(cpu_list_cpus "$LOADTEST_SERVER_CPUS" | sort -u) <(cpu_list_cpus "$LOADTEST_GENERATOR_CPUS" | sort -u) |
+    sort -n | paste -sd, -)
+  [ -z "$shared" ] ||
+    die "LOADTEST_SERVER_CPUS='$LOADTEST_SERVER_CPUS' and LOADTEST_GENERATOR_CPUS='$LOADTEST_GENERATOR_CPUS' overlap on CPU $shared: the generator must have CPUs of its own, apart from the server side's"
+}
+
+# pin_words LIST: the words that start a process pinned to LIST (`taskset -c LIST`), one a line;
+# nothing for an empty LIST, which pins nothing.
+pin_words() { [ -z "$1" ] || printf '%s\n' taskset -c "$1"; }
+
+# busy_pair_seconds [PREFIX...]: the wall-clock seconds two busy loops of AFFINITY_LOOP_ITERATIONS
+# take when they run side by side, each started under PREFIX (none: unpinned).
+busy_pair_seconds() {
+  local start end a b loop="i=0; while ((i < $AFFINITY_LOOP_ITERATIONS)); do ((i++)); done"
+  start=$EPOCHREALTIME
+  "$@" bash -c "$loop" &
+  a=$!
+  "$@" bash -c "$loop" &
+  b=$!
+  wait "$a" "$b"
+  end=$EPOCHREALTIME
+  awk -v s="$start" -v e="$end" 'BEGIN { printf "%.2f\n", e - s }'
+}
+
+# affinity_verdict UNPINNED PINNED: the pinned pair's time over the unpinned pair's, two
+# decimals, and status 0 when it is at least AFFINITY_MIN_SLOWDOWN: the pin binds.
+affinity_verdict() {
+  awk -v u="$1" -v p="$2" -v m="$AFFINITY_MIN_SLOWDOWN" \
+    'BEGIN { r = (u > 0) ? p / u : 0; printf "%.2f\n", r; exit !(u > 0 && r >= m) }'
+}
+
+# affinity_runtime: "gVisor (<what shows it>)" when PROC_VERSION_FILE or dmesg names a gVisor
+# kernel, nothing otherwise.
+affinity_runtime() {
+  local v
+  v=$(cat -- "$PROC_VERSION_FILE" 2>/dev/null || true)
+  if grep -qi gvisor <<<"$v"; then
+    printf 'gVisor (%s: %s)\n' "$PROC_VERSION_FILE" "$v"
+    return 0
+  fi
+  v=$({ dmesg 2>/dev/null || true; } | grep -i -m1 gvisor || true)
+  [ -z "$v" ] || printf 'gVisor (dmesg: %s)\n' "$v"
+}
+
+# affinity_refusal CPU UNPINNED PINNED RATIO: why a step is refused when the pin did not bind: the
+# measurement, and the runtime when affinity_runtime names it.
+affinity_refusal() {
+  local runtime msg
+  runtime=$(affinity_runtime)
+  msg="this runtime ignores CPU affinity: two busy loops pinned to CPU $1 with taskset took $3 s against $2 s for the same two unpinned (${4}x), where a pin that binds holds both on one CPU and makes them at least ${AFFINITY_MIN_SLOWDOWN}x slower"
+  [ -z "$runtime" ] || msg+="; this is $runtime, which records the mask and does not enforce it"
+  printf '%s. LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS would pin nothing here: unset them, or run where the pin binds (runc)\n' "$msg"
+}
+
+# check_cpu_affinity: when either list is set, die unless a pin to the first CPU of the server
+# list (else the generator's) slows two busy loops by AFFINITY_MIN_SLOWDOWN (affinity_refusal says
+# why), and note the measurement when it does.
+check_cpu_affinity() {
+  local list=${LOADTEST_SERVER_CPUS:-${LOADTEST_GENERATOR_CPUS:-}}
+  [ -n "$list" ] || return 0
+  local -a cpus
+  mapfile -t cpus < <(cpu_list_cpus "$list")
+  local unpinned pinned ratio
+  unpinned=$(busy_pair_seconds)
+  pinned=$(busy_pair_seconds taskset -c "${cpus[0]}")
+  ratio=$(affinity_verdict "$unpinned" "$pinned") || die "$(affinity_refusal "${cpus[0]}" "$unpinned" "$pinned" "$ratio")"
+  note "CPU affinity binds: two busy loops pinned to CPU ${cpus[0]} took $pinned s against $unpinned s unpinned (${ratio}x)"
+}
+
+# check_cpu_pinning: check_cpu_lists, then check_cpu_affinity.
+check_cpu_pinning() {
+  check_cpu_lists
+  check_cpu_affinity
 }
 
 # stack_ports ROOT: ROOT's ports, "KEY PORT" a line in PORT_KEYS' order: the block's default port,

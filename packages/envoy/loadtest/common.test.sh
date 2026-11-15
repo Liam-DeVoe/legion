@@ -28,7 +28,11 @@
 # refuses), every port of every block lies in 1024-65535 and no two ports of two blocks meet, and a
 # LOADTEST_*_PORT overrides its own port alone; (j) a port inside the machine's ephemeral port
 # range is refused, naming the range, the port and the LOADTEST_*_PORT that moves it, while a
-# range file that cannot be read or parsed refuses nothing.
+# range file that cannot be read or parsed refuses nothing; (k) a CPU list taskset refuses, and
+# two CPU lists that share a CPU, are refused naming them, and one list alone passes; (l) a CPU pin
+# is taken to bind only when it slows two busy loops 1.6x (affinity_verdict over two given
+# durations, no loop timed), and the refusal gives the measurement and names gVisor when
+# /proc/version or dmesg shows it.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -541,6 +545,78 @@ case_ephemeral_ports() {
   printf 'PASS: a port inside the machine ephemeral range is refused, naming the range, the port and its variable\n'
 }
 
+# in_common [NAME=VALUE...] -- CMD...: CMD in a shell that sourced common.sh, without the two CPU
+# lists but the ones given. Sets out to what it printed and rc to its status.
+in_common() {
+  local envs=()
+  while [ "$1" != -- ]; do
+    envs+=("$1")
+    shift
+  done
+  shift
+  rc=0
+  out=$(env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS "${envs[@]}" \
+    bash -c 'source "$1"; shift; "$@"' common "$helper" "$@" 2>&1) || rc=$?
+}
+
+# case_cpu_lists: the CPU lists are read as taskset reads them; a list taskset refuses is refused
+# naming its variable and taskset's words, and two lists that share a CPU are refused naming both
+# and the CPU, before anything starts. One list alone, or none, passes.
+case_cpu_lists() {
+  in_common -- cpu_list_cpus 0-4:2,7,09
+  [ "$(tr '\n' ' ' <<<"$out")" = "0 2 4 7 9 " ] || { fail "(k) cpu_list_cpus 0-4:2,7,09 read as '$out', want 0 2 4 7 9"; return; }
+  in_common -- check_cpu_lists
+  ((rc == 0)) || { fail "(k) no CPU list was refused"; return; }
+  in_common LOADTEST_SERVER_CPUS=0 -- check_cpu_lists
+  ((rc == 0)) || { fail "(k) LOADTEST_SERVER_CPUS=0 alone was refused"; return; }
+  in_common LOADTEST_SERVER_CPUS=x -- check_cpu_lists
+  ((rc != 0)) && [[ $out == *"LOADTEST_SERVER_CPUS='x' is a CPU list taskset refuses: taskset: "* ]] ||
+    { fail "(k) the list 'x' was not refused naming LOADTEST_SERVER_CPUS and taskset's words"; return; }
+  in_common LOADTEST_GENERATOR_CPUS=4095 -- check_cpu_lists
+  ((rc != 0)) && [[ $out == *"LOADTEST_GENERATOR_CPUS='4095' is a CPU list taskset refuses"* ]] ||
+    { fail "(k) a CPU this box lacks (4095) was not refused"; return; }
+  in_common LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=0 -- check_cpu_lists
+  ((rc != 0)) && [[ $out == *"LOADTEST_SERVER_CPUS='0' and LOADTEST_GENERATOR_CPUS='0' overlap on CPU 0"* ]] ||
+    { fail "(k) two lists sharing CPU 0 were not refused naming both"; return; }
+  out=""
+  printf 'PASS: a CPU list taskset refuses, and two lists that overlap, are refused naming them\n'
+}
+
+# case_cpu_affinity: the decision of whether a pin binds is affinity_verdict over two durations, so
+# it is driven here without timing a loop: a pinned pair about twice as slow binds, one as fast as
+# unpinned (gVisor's 9.0 s against 8.5 s) does not. The refusal gives the measurement, and names
+# gVisor when /proc/version (LOADTEST_PROC_VERSION_FILE) or dmesg shows it, and not otherwise.
+case_cpu_affinity() {
+  in_common -- affinity_verdict 4.00 8.10
+  ((rc == 0)) && [ "$out" = 2.02 ] || { fail "(l) a pinned pair 2.02x slower did not bind (rc $rc)"; return; }
+  in_common -- affinity_verdict 8.5 9.0
+  ((rc != 0)) && [ "$out" = 1.06 ] || { fail "(l) a pinned pair 1.06x slower was taken to bind (rc $rc)"; return; }
+  in_common -- affinity_verdict 4.00 6.00
+  ((rc != 0)) || { fail "(l) a pinned pair 1.5x slower, under the 1.6x bar, was taken to bind"; return; }
+
+  local quiet="${temporary_dir}/quiet-bin" loud="${temporary_dir}/loud-bin" linux="${temporary_dir}/version-linux"
+  local gvisor="${temporary_dir}/version-gvisor"
+  mkdir -p "$quiet" "$loud"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$quiet/dmesg"
+  printf '#!/usr/bin/env bash\necho "[    0.000000] Starting gVisor..."\n' >"$loud/dmesg"
+  chmod +x "$quiet/dmesg" "$loud/dmesg"
+  printf 'Linux version 6.1.0-28-cloud-amd64 (debian-kernel@lists.debian.org)\n' >"$linux"
+  printf 'Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016\n' >"$gvisor"
+
+  in_common LOADTEST_PROC_VERSION_FILE="$gvisor" PATH="$quiet:$PATH" -- affinity_refusal 0 8.50 9.00 1.06
+  [[ $out == *"this runtime ignores CPU affinity: two busy loops pinned to CPU 0 with taskset took 9.00 s against 8.50 s for the same two unpinned (1.06x)"* &&
+    $out == *"this is gVisor (${gvisor}: Linux version 4.19.0-gvisor"* ]] ||
+    { fail "(l) the refusal on a gVisor kernel does not give the measurement and name gVisor"; return; }
+  in_common LOADTEST_PROC_VERSION_FILE="$linux" PATH="$loud:$PATH" -- affinity_refusal 0 8.50 9.00 1.06
+  [[ $out == *"this is gVisor (dmesg: [    0.000000] Starting gVisor...)"* ]] ||
+    { fail "(l) the refusal does not name gVisor when dmesg shows it"; return; }
+  in_common LOADTEST_PROC_VERSION_FILE="$linux" PATH="$quiet:$PATH" -- affinity_refusal 0 8.50 9.00 1.06
+  [[ $out == *"(1.06x)"* && $out != *gVisor* ]] ||
+    { fail "(l) the refusal names gVisor where nothing shows it, or lacks the measurement"; return; }
+  out=""
+  printf 'PASS: a pin that does not slow two busy loops 1.6x is refused, with the measurement and gVisor when it shows\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -553,7 +629,9 @@ case_prepare_stack_built_migration || failed=$((failed + 1))
 case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
 case_ephemeral_ports || failed=$((failed + 1))
+case_cpu_lists || failed=$((failed + 1))
+case_cpu_affinity || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 10 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 13 cases failed\n' "$failed" >&2
   exit 1
 fi

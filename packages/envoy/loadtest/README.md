@@ -29,6 +29,8 @@ same step before and after its change, and compares the two rows.
 | `run.go` | One step: its phases (the dashboard probe, the window, the dashboard streams, the event and request generators on one open-loop schedule, the probes) and `summary.json` |
 | `schedule.go` | The `-schedule` parser and the rate plan that the open-loop schedule follows |
 | `recovery.go` | The recovery after the schedule's last drop, in 10 s windows |
+| `pacing.go` | What the generators sent against their schedule, per second (`arrivals.json`), and the set-aside rule over it (`summary.json` `pacing`, `set_aside`): its threshold `overScheduleLimit` and its smallest judged schedule `minJudgedSchedule` (The set-aside rule, below) |
+| `accept.go` | The 1 s sampler of the API listener's accept backlog (`/proc/net/tcp` and `tcp6`) and the box's TCP opens (`/proc/net/snmp`): `accept-backlog.json` and `summary.json` `accept` (The set-aside rule, below) |
 | `plandocs.go` | `loadgen plan-docs`: the documents a step's in-window edits and uploads plan the most versions for, from `seed.json` and the step's own flags, without a stack (The load, below) |
 | `pgclock.go` | `meta.json`'s `pg_clock`: Postgres's clock against `loadgen`'s, from 10 timed reads at the step's start and after its window |
 | `copymeta.go` | `loadgen run -copy-meta`: the cluster copy's description, which `meta.json` records under `copy` |
@@ -97,10 +99,10 @@ same step before and after its change, and compares the two rows.
 | `run-step.sh` | The one command for a named step |
 | `run-series.sh` | The series of six steps, 0.25x to 10x |
 | `restart-step.sh` | One step whose listener is killed in the middle of the window, and its report (The listener restart, below) |
-| `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT`, `LOADTEST_SRC` and `LOADTEST_DISPATCH_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. Also the replay's download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get` and `cluster/cluster.sh replay-prepare` both call |
+| `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT`, `LOADTEST_SRC` and `LOADTEST_DISPATCH_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. The CPU lists' checks (`check_cpu_lists`, `check_cpu_affinity`; Environment, below). Also the replay's download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get` and `cluster/cluster.sh replay-prepare` both call |
 | `*_test.go` | Unit tests. They need no Postgres and no NATS: `cd packages/envoy && go test ./loadtest/` |
-| `run-step.test.sh` | The test of the run lock. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
-| `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
+| `run-step.test.sh` | The test of the run lock, and of the refusals a step makes before its build: a `--replay` step's flags, and CPU lists that overlap or that `taskset` refuses. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
+| `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. Also of the ports, the CPU lists' checks and the decision whether a CPU pin binds (`affinity_verdict`, driven with given times). It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
 | `cluster/cluster.sh` | The load test on a full-size copy in a Kubernetes namespace (Running on a cluster copy, below) |
 | `cluster/manifests/` | The copy's templates: `postgres.yaml`, `dispatch.yaml`, `listener.yaml`, `runner.yaml`, `secrets.yaml.tmpl`, and `nats.yaml`, the committed render of chart `nats/nats` 2.15.1 |
 | `cluster/render-nats.sh`, `cluster/nats-values.yaml` | The render of `manifests/nats.yaml` from the chart and its values, with every image pinned by digest |
@@ -129,7 +131,8 @@ same step before and after its change, and compares the two rows.
   `loadgen tables` uses `go tool pprof`.
 - `uv`. `stack.sh setup` installs Python 3.12 and the `pgserver` wheel (0.1.4) with it. The wheel
   holds Postgres 16.2 and pgvector. The harness uses no Docker.
-- `jq`, `curl` and `flock` (util-linux).
+- `jq`, `curl` and `flock` (util-linux), and `taskset` (util-linux) when a CPU list is set
+  (Environment, below).
 - `git` is optional. Without it, `meta.json` and `seed.meta.json` record the build commit as
   `unknown`.
 - Disk space under `LOADTEST_ROOT`. In the measured runs, each step directory held 20-25 MB, most
@@ -162,6 +165,8 @@ same step before and after its change, and compares the two rows.
 | `LOADTEST_REPLAY_ISSUE` | unset | The issue the replay's bundle and seed parts are file artifacts of. `stack.sh replay-get` and a `run-step.sh --replay` step require it and refuse before they start without it; the manifest names no issue. To find it, search Dispatch for the bundle parts' name before `.tar.zst` (the manifest's `bundle.parts[].file`; for this manifest, `dispatch search --query 'linux-replay-2026-10-26'`): among the hits is that issue's comment naming the parts. A search for the manifest's file name does not find it. |
 | `DISPATCH_URL`, `DISPATCH_TOKEN_FILE` | unset | Read by `stack.sh replay-get` alone, in its own shell, to download the replay's parts. |
 | `LOADTEST_NO_RESUME` | unset | `1`, under consumer delivery, leaves the resume point out of every registration's `delivery`, as a plugin sends that never wrote a frame. `stack.sh loadgen` passes it to `loadgen run`. |
+| `LOADTEST_SERVER_CPUS` | unset | A CPU list as `taskset -c` reads it (`0`, `0-3`, `0,2`): `stack.sh` starts Postgres, the latency proxy, NATS, the listener, `envoy_proxy` and Dispatch under `taskset -c` this list, on every start, restart and reset, and `restart-step.sh` restarts its listener on it. Unset pins nothing. `summary.json` records it as `config.server_cpus`. |
+| `LOADTEST_GENERATOR_CPUS` | unset | A CPU list for the generator: every `stack.sh loadgen`, `loadgen run` and its samplers among them, runs under `taskset -c` this list. Unset pins nothing. `summary.json` records it as `config.generator_cpus`. |
 
 Every process listens on `127.0.0.1`. The default ports follow `LOADTEST_ROOT`: the root's block
 `k` is the first 8 hex digits of the sha256 of its physical path, modulo 200, and each port is
@@ -199,6 +204,28 @@ Every stack process starts under `env -i` with an explicit environment. The `DIS
 `loadgen`. The stack's `HOME` is `$LOADTEST_ROOT/home`. Dispatch keeps its signing key there, so
 the key stays the same across steps. `stack.sh` stops each process by the pid in its pidfile
 (`$LOADTEST_ROOT/run/<name>.pid`), never by name.
+
+**CPU pinning.** On one box the generator and the server side share the CPUs, so a box that stalls
+one stalls the other, and a generator that runs late then sends a burst (The set-aside rule,
+below). `LOADTEST_SERVER_CPUS` and `LOADTEST_GENERATOR_CPUS` hold the two sides to CPUs of their
+own. Both are empty by default, and then nothing is pinned and nothing changes. When either is set,
+`run-step.sh` and `run-series.sh` refuse, before anything starts:
+
+- a list `taskset` refuses (a CPU the box lacks, or no list at all), naming the variable, the list
+  and `taskset`'s own words; every `stack.sh` command but `stop`, `status` and `build-info` refuses
+  it too;
+- two lists that share a CPU, naming both lists and the CPUs they share;
+- a runtime that records the pin and does not enforce it. Two busy loops pinned to the first CPU of
+  the server list (else the generator's) are timed against the same two unpinned; a pin that binds
+  holds both on one CPU and makes them about twice as slow, so a pinned pair less than 1.6 times as
+  slow is refused (`AFFINITY_MIN_SLOWDOWN`), with the two times and, when `/proc/version` or `dmesg`
+  shows it, the runtime: gVisor, the sandbox of a Legion pod, sets the mask and ignores it (9.0 s
+  pinned against 8.5 s unpinned). The pinned reading is for a runtime that binds, such as runc.
+
+The server side runs on one list: `stack.sh` records it in `stack.json` (`server_cpus`) as its
+processes start, and refuses to start one on another list while any of them still runs, since a
+reset restarts Dispatch, NATS and the listener but leaves Postgres and the proxy running. `stack.sh
+stop`, then a start on the new list, moves it.
 
 ## Run one step
 
@@ -316,6 +343,10 @@ within the gone horizon (one hour): a step runs for minutes, so every session it
 inside the horizon when it ends. A read that failed leaves its count `null`, with `start_error`
 or `end_error` saying why, and refuses no step: the rule holds no difference then.
 
+**A step whose generator broke its schedule is set aside.** It is neither a pass nor a failure
+(The set-aside rule, below): `loadgen run` and `run-step.sh` exit 0 for it, as for a step that ran,
+and say so first; `TABLES.md` says so before its first table.
+
 To run a step name again, remove its step directory first.
 
 `loadgen run` also takes `-nats-conns` (default 50), the NATS connections that the sessions share.
@@ -408,6 +439,73 @@ calls of a run, and the `stack.sh restart-dispatch` that `loadgen run -restart-a
 refused, and a series step, with the `loadgen run` that it starts, keeps the root when
 `run-series.sh` is killed. A caller with the token but without the descriptor is refused. No stack
 process holds the lock: `stack.sh` starts each one with descriptor 9 closed.
+
+### The set-aside rule
+
+The generators are open loops (`run.go` `openLoop`): each arrival is sent at its scheduled time,
+and an arrival whose time has passed is sent at once (`util.go` `sleepUntil`). So a generator the
+box stalls sends nothing while it is stalled and then every arrival it owes in one burst. In the
+failing 10x step of INFRA-592 the generator shared a 2-vCPU sandbox with the server and was stalled
+for seconds at a time, and `/proc/net/snmp` counted 700 to 3,540 new connections a second against a
+schedule of 640: the step did not deliver the load it claimed, and its connection failures measured
+the test bed. So every step records what its generators sent, beside what they were to send:
+
+- **Per second** (`arrivals.json`), of the window and of the warm-up apart: the requests and the
+  event writes the schedule put in that second (scheduled, from the schedule's own times), and
+  those the generator let go in it (sent, when it actually issued them). Every population's
+  generators are summed, and a replay's actions count as requests. A request that the in-flight cap
+  drops counts as sent when the generator reached it. An arrival sent after the window's end is
+  counted apart (`*_sent_after_window`).
+- **The rule.** A step is **set aside** when, in any second of its measured window, the requests or
+  the event writes sent exceed that second's schedule by **more than a tenth** (`pacing.go`
+  `overScheduleLimit`, 0.1). A generator on time is off by the few arrivals sent a moment late
+  across a second's edge; a stalled one sends the seconds it missed in one, many times a second's
+  schedule. The warm-up is recorded and not judged.
+- **Small seconds.** Below ten arrivals one arrival across a second's edge is more than a tenth (a
+  second scheduled 4 that sends 5 is 25% over), so a second whose schedule holds fewer than ten is
+  judged as if it held ten (`minJudgedSchedule`): its edge effects never set a step aside, while a
+  burst into it (more than 11 sent) still does. A second scheduled 0 or 1 is thus not judged by its
+  own ratio. `sent / max(scheduled, 10)` is the ratio every reading below gives.
+- **`summary.json`**: `pacing` holds the rule's two constants (`over_schedule_limit`,
+  `min_judged_schedule`) and, for `requests` and for `events`, the window's `scheduled`, `sent` and
+  `sent_after_window`, the window's second furthest over its schedule (`max_over`, the ratio, and
+  `max_over_second`) and the warm-up's (`warmup_max_over`, `warmup_max_over_second`), `null` for a
+  span with nothing scheduled or sent. `set_aside` is there only for a set-aside step: `why`, and
+  `seconds`, every second of the window that broke the rule, each with `second`, `kind`
+  (`requests` or `events`), `scheduled`, `sent` and `over`.
+- **A set-aside step** is marked `(set aside)` after its name in every table, and `TABLES.md` opens
+  with it, before its first table, with why. `run.log` has a `SET ASIDE` line and `run-step.sh`
+  says so before its last line. Whatever reads a step's pass rule reads it as set aside, neither a
+  pass nor a failure: `loadgen curves` writes `set aside` in its Pass table and in `curves.csv`'s
+  `passes`, lists it under the Pass table and in `KNEES.md`, and takes no knee and no bracket's end
+  from it, under every `-series`; `loadgen step-check` gives its set-aside clause the verdict
+  `set aside`, opens its verdict line with `SET ASIDE` and exits 1 (Running on a cluster copy and
+  The step directory, below). Run it again where the generator keeps its schedule (CPU pinning,
+  Environment, above).
+
+Beside it, so that a step's connection failures can be read against the queue that gave them, a
+sampler reads once a second from the step's start to the window's end (`accept.go`,
+`accept-backlog.json`):
+
+- **The accept backlog**: the line of Dispatch's API listener in `/proc/net/tcp` and
+  `/proc/net/tcp6`, the LISTEN socket (state `0A`) whose local port is Dispatch's. Its `rx_queue`
+  is the connections that completed their handshake and wait for `accept`. Its `tx_queue` is kept as
+  read, but it is not the queue's limit: for a LISTEN socket the kernel prints the bytes not yet
+  acknowledged there, 0 for a socket that sends nothing (the limit is what `ss` shows as Send-Q).
+  The limit is `/proc/sys/net/core/somaxconn`: Go listens with that backlog, and the kernel caps
+  every listen at it.
+- **The box's TCP opens**: `/proc/net/snmp`'s `Tcp: ActiveOpens` (connections this box opened) and
+  `PassiveOpens` (connections it accepted), and their rise per second since the reading before.
+  The failing step showed its burst there.
+- **`summary.json` `accept`**, over the window's readings: `port`, `readings`, `backlog_max`,
+  `backlog_limit`, `seconds_above_half` (the readings whose `rx_queue` was above half the limit),
+  `active_opens_max_per_s` and `passive_opens_max_per_s`. A value no reading gave is `null`, never
+  0, and `backlog_error`, `limit_error` or `opens_error` says why: a Dispatch URL with no port, a
+  port with no LISTEN socket on this box (a foreign run's Dispatch on another machine), a file that
+  cannot be read, or a gVisor kernel. gVisor's `/proc/net/tcp` reads every LISTEN socket's queue as
+  0 and lists no connection before its `accept`, so on a gVisor kernel (`/proc/version`) the queue
+  is not read at all and the opens are; the backlog is read where the kernel publishes it, such
+  as runc.
 
 ## The listener restart
 
@@ -2105,11 +2203,13 @@ Every percentile in the harness is the lower nearest rank: the value at index
 
 | File | What it holds |
 | --- | --- |
-| `summary.json` | The step's results. Every table cell comes from it (The tables, below). `config.marker_nonce` is the run's marker nonce (Event kinds, above). `config.schedule` is the `--schedule`, absent without one. `config.dashboard` is the dashboard stream the build under test served, `live` or `sse` (The dashboard stream, above), and `config.live` their count. `sessions.stream_consumers` is `ENVOY_NOTIFICATIONS`'s own `consumer_count` at the step's `start` and `end`, beside `sessions.registered`; a count `null`, with `start_error` or `end_error`, is a read that failed. `metrics` is the Pools and admission table's source. `recovery` is there only with a schedule of two segments or more (Load schedule and recovery, above). `stack_exits` is there only when a stack process exited during the step: each entry's `name`, `pid` and `first_seen_gone`. Such a step failed. `events.commits_error` is there only when the run's commit rows could not be read (Delivery latency, above). Such a step failed too, and so did a step whose `sessions.stream_consumers.end` is above twice `sessions.registered` (Run one step, above). `live_reconnects`, `restart` and `comment_mentions` are `null` without `--live-resume`, `--restart-at` and `--mention-frac`. |
+| `summary.json` | The step's results. Every table cell comes from it (The tables, below). `config.marker_nonce` is the run's marker nonce (Event kinds, above). `config.schedule` is the `--schedule`, absent without one. `config.dashboard` is the dashboard stream the build under test served, `live` or `sse` (The dashboard stream, above), and `config.live` their count. `config.server_cpus` and `config.generator_cpus` are `LOADTEST_SERVER_CPUS` and `LOADTEST_GENERATOR_CPUS`, the CPU lists the stack and `loadgen` were pinned to, `""` when not pinned (Environment, above). `sessions.stream_consumers` is `ENVOY_NOTIFICATIONS`'s own `consumer_count` at the step's `start` and `end`, beside `sessions.registered`; a count `null`, with `start_error` or `end_error`, is a read that failed. `metrics` is the Pools and admission table's source. `pacing` is what the generators sent against their schedule, `set_aside` is there only when that sets the step aside, and `accept` is the API listener's accept backlog and the box's TCP opens (The set-aside rule, above). `recovery` is there only with a schedule of two segments or more (Load schedule and recovery, above). `stack_exits` is there only when a stack process exited during the step: each entry's `name`, `pid` and `first_seen_gone`. Such a step failed. `events.commits_error` is there only when the run's commit rows could not be read (Delivery latency, above). Such a step failed too, and so did a step whose `sessions.stream_consumers.end` is above twice `sessions.registered` (Run one step, above). `live_reconnects`, `restart` and `comment_mentions` are `null` without `--live-resume`, `--restart-at` and `--mention-frac`. |
 | `TABLES.md` | The tables of this step. `loadgen tables` writes it. |
 | `meta.json` | Mode 600 (owner only). The step name and arguments (`args`: the normalized flag list, each flag given to `loadgen run` once as `-name=value` in name order, with the values of `-token` and `-listener-token` replaced by `<redacted>`, the URL of each of `-url`, `-listener`, `-nats-mon`, `-pprof` and `-metrics` read whole by Go's `net/url` and written without its userinfo and its `password` parameter, and `-nats` split at commas as nats.go splits it, each server without its own userinfo; the user name goes too, since nats.go takes a user name with no password as the NATS token. `-pg` is written from pgx's own parse of it (`pgconn.ParseConfig`, the parser `pgx.Connect` uses), never from the text given: `postgres://`, each host and port pgx would try, comma-separated (a port the URL leaves out as pgx fills it in, such as 5432), then `/` and the database, such as `postgres://127.0.0.1:15432/dispatch`; never its user, password, `sslpassword` or any other parameter, and `<redacted>` when pgx does not read it as a URL. A credential given as a file (`-token-file`, `-listener-token-file`, `-pg-file`: The guard, above) is recorded as the path it names, which is no credential. No file of the step, and no line that `loadgen run` prints, holds a token, a URL password or a NATS token), `start`, `window_start`, `window_end`, `end`, `nproc`, CPU model, kernel, `box_busy_before` and `box_busy_before_window_s` (5), `GOMAXPROCS` of Dispatch (`unset` by default), the Postgres version (`postgres_version`: empty when it could not be read, and then `postgres_version_error` says why), `build_commit` and `build_dirty` (the Dispatch checkout `stack.sh` built from), `dispatch_commit`, `dispatch_binary_sha256` and `dispatch_build` (the whole of `$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch binary this step ran, which `--dispatch-commit`/`LOADTEST_DISPATCH_COMMIT` makes another commit than `build_commit`; empty, and `run.log` says so, when that file is absent), the seed meta, the `stack.json` path, `pg_direct` (always `false` under `-allow-foreign`, which takes nothing about the target from `stack.json`), `envoy_rtt` (`--envoy-rtt`; `""` without it, and always under `-allow-foreign`), `allow_foreign`, the pids at the start and `marker_nonce`. `box_busy_before` is the share of the box's CPU time, all CPUs, that was not idle or I/O wait over 5 s just before the step, from two `/proc/stat` reads: `run-step.sh` reads it with `loadgen box-busy` before its reset and passes it as `-box-busy-before`; a `loadgen run` without that flag reads it itself (Requirements, above). `null` when `/proc/stat` gave no ticks. |
-| `run.log` | `loadgen run`'s log: the configuration with the schedule and the marker nonce, the guard, the dashboard choice (the stream count, `live` or `sse`, and the URL), a warning when `box_busy_before` is above 10%, the sampler's metrics endpoint and pids, the NATS subscriptions, the registrations, the stream's consumer count at the step's start and at its end (or why that read failed), the window, the refetch routes under `--live-resume`, the restart's `restart:` lines, failed writes, the first three failed reads of each Postgres probe and of the 5 s sampler's Postgres, pprof, metrics and NATS reads (and each one's total, past three), a failed read of the commit rows, of the transaction ids or of the Postgres version, the result line, and the failure line when a stack process exited, the commit rows were not read or the stream gained more consumers over the step than its sessions allow. An endpoint that a line names is written without its URL password. |
+| `run.log` | `loadgen run`'s log: the configuration with the schedule and the marker nonce, the guard, the dashboard choice (the stream count, `live` or `sse`, and the URL), a warning when `box_busy_before` is above 10%, the sampler's metrics endpoint and pids, the NATS subscriptions, the registrations, the stream's consumer count at the step's start and at its end (or why that read failed), the window, the refetch routes under `--live-resume`, the restart's `restart:` lines, failed writes, the first three failed reads of each Postgres probe and of the 5 s sampler's Postgres, pprof, metrics and NATS reads (and each one's total, past three), the first three failed readings of the accept backlog (and their total, past three) or why it is not read at all, a failed read of the commit rows, of the transaction ids or of the Postgres version, the result line, the `pacing:` and `accept:` lines, the `SET ASIDE` line of a set-aside step, and the failure line when a stack process exited, the commit rows were not read or the stream gained more consumers over the step than its sessions allow. An endpoint that a line names is written without its URL password. |
 | `samples.json` | The 5 s samples: CPU ticks (each process's ticks across its pids) and RSS per process, `/proc/stat` ticks, Postgres connections by state, goroutines, pool waiters, the heap (every 15 s, under `-heap-samples` alone), Dispatch's `/metrics` (`metrics`: every `dispatch_*` series, keyed `name{label="value",...}` with the labels sorted by name), NATS `/varz`. With `--restart-at`, one more sample at the restart's start. The heap is `heap_live_bytes` and `heap_live_objects`: the sums of `inuse_space` and `inuse_objects` in Dispatch's binary heap profile (`/debug/pprof/heap`), which the runtime scales from its sampled records to estimates of the live heap as of its last GC. It is not runtime.MemStats `HeapInuse`, and the sampler never reads `?debug=1`: that text formats every heap record, grew past 500 MB, and its reads took 29% of Dispatch's CPU in the r16 replay. Without `-heap-samples`, which is the default, no sample holds a heap read at all and the harness asks Dispatch for no heap profile inside the window (Resources, below). An older run's `samples.json` holds `heap_inuse` (with `heap_alloc` and `heap_sys`, read in each sample, with no `heap_at`), runtime.MemStats from `?debug=1`; `loadgen curves` still reads it, under its own name. `failed_reads` names a sample's reads that failed (`postgres`, `goroutines`, `heap`, `metrics`, `nats`); their values in that sample are 0 (`metrics` absent, `nats` empty) and enter no statistic. A read that failed once the run had ended is neither named nor counted. Dispatch's pprof reads fail while `--restart-at` restarts it. The heap read runs on its own, one at a time with up to 2 minutes each, so a slow read of a large heap delays no sample: each read lands in the first sample after it ends, with its end in `heap_at`, and enters the window (`heap_in_window`, `resources.heap_live_mib`, `pprof_read_errors`) by that time. |
+| `arrivals.json` | The generators' arrivals per second (The set-aside rule, above): `warmup` and `window`, one entry per second of each counted from its own start (`second`), with `requests_scheduled`, `requests_sent`, `events_scheduled` and `events_sent`, every population and the replay's actions summed; then `requests_sent_after_window` and `events_sent_after_window`. Scheduled is the second the schedule put an arrival in, sent the second the generator let it go. |
+| `accept-backlog.json` | The API listener's accept backlog and the box's TCP opens, one reading a second from the step's start to the window's end (The set-aside rule, above): `port`, `limit` (`/proc/sys/net/core/somaxconn`, `limit_source`), `backlog_error` when the queue was not read at all, and `readings`, each with `at`, `in_window`, `rx_queue`, `tx_queue`, `active_opens`, `passive_opens`, `active_opens_per_s`, `passive_opens_per_s` and an `error` when part of it was not read. A value not read is `null`, never 0. |
 | `reconnects.json` | Under `--live-resume`: every reconnect of every live socket, in and out of the window (The restart scenario, above). |
 | `cpu.pprof` | Dispatch's CPU profile over the whole window; with `--restart-at`, from the restarted Dispatch's `/healthz` to the window's end. |
 | `heap.pprof` | Dispatch's heap profile at the end of the window. |
@@ -2182,6 +2282,12 @@ straight into the check's result. The clauses are:
   time, and its void rule. A criterion with no verdict for want of a file the step should hold —
   no `cgroup.json` for (d), no `cloudsql-cpu.json` for (h) — fails this check even though the
   curves draw the step without it: A3 asks that the step's own file say pass or fail.
+- **the set-aside rule** (The set-aside rule, above): `ok` with the furthest second of the
+  requests and of the event writes; `set aside`, with why, for a step whose generator sent more
+  than a tenth over a second's schedule, which no clause counts as failed and which opens the
+  verdict line with `SET ASIDE, neither a pass nor a failure` and still exits 1, since the step's
+  own file then says neither pass nor fail; `FAIL` for a `summary.json` with no `pacing`, since
+  then nothing says the generator kept its schedule.
 
 ### The step's Postgres readings
 
@@ -2229,20 +2335,22 @@ of 0, which would read as a step that began with an empty database.
 
 ## The tables
 
-`TABLES.md` has seventeen tables, and an eighteenth, Replay, when a step replayed. Each has one row
+`TABLES.md` has eighteen tables, and a nineteenth, Replay, when a step replayed. Each has one row
 per step, but Live reconnects (one row per step and resume kind), Requests by route (one row per
 route) and Recovery windows (one row per window). The
 window is the measured window (`--duration`). "Cores" means CPU-seconds per second. A cell is `-`
 when it has no value, and also when the read that it comes from failed; a failed read also marks
 the step name with `(commit rows not read)`, `(1 failed read)` or `(<n> failed reads)` (below), so
 no cell shows a failed read as a measured 0. A JSON path below is a field of the step's
-`summary.json`.
+`summary.json`. When a step is set aside (The set-aside rule, above), `TABLES.md` opens with
+`**SET ASIDE: no pass and no failure.**`, each set-aside step and why, before its first table,
+and the step's name carries the mark `(set aside)` in every table.
 
 ### Events, delivery and requests
 
 | Column | Unit | What it shows | Source |
 | --- | --- | --- | --- |
-| `step` | name | The step name, with the mark `(<process> exited)` when a stack process exited during the step, and `(commit rows not read)` when the run's commit rows could not be read (below). | `config.step`, `stack_exits`, `events.commits_error` |
+| `step` | name | The step name, with the mark `(set aside)` when the step is set aside (The set-aside rule, above), `(<process> exited)` when a stack process exited during the step, and `(commit rows not read)` when the run's commit rows could not be read (below). | `config.step`, `set_aside`, `stack_exits`, `events.commits_error` |
 | `start (UTC)` | date and time | The start of the window. | `meta.json` `window_start` |
 | `sessions` | count | The simulated sessions. | `config.sessions` |
 | `events/s target / offered / committed` | writes per second | The target rate, then the offered writes and the committed writes, each divided by the window. `0` when the target is 0. The target is `--events` times the schedule's time-weighted mean factor (1 without `--schedule`). Committed is `-` when the commit rows were not read. | `config.events_per_s`, `config.schedule`, `events.offered_per_s`, `events.committed_per_s` |
@@ -2316,7 +2424,28 @@ another process) did not connect either, while about 3,200 connections to Dispat
 in `SYN_SENT` (`/proc/net/tcp`). It connected again when the generators stopped. Thus new
 connections to Dispatch's port were not accepted on the box, and the cause is not the
 generator's own client. `run.log` lists each failed write with its error, and the
-`connect timeout` columns count these failures.
+`connect timeout` columns count these failures. INFRA-592 found the generator itself stalled in
+those steps and then sending its overdue arrivals at once; the Generator pacing and accept backlog
+table (below) now shows both, and sets such a step aside.
+
+### Generator pacing and accept backlog
+
+What the generators sent against their schedule, and the API listener's accept backlog and the
+box's TCP opens over the window (The set-aside rule, above). A `summary.json` from before these
+readings shows `-` in their cells. Under the table, `Not measured` names each step whose backlog,
+limit or opens were not read, with why (`accept.backlog_error`, `limit_error`, `opens_error`).
+
+| Column | Unit | What it shows | Source |
+| --- | --- | --- | --- |
+| `step` | name | The step name, with its marks. | `config.step` |
+| `requests sent / scheduled` | count | The requests the generators let go in the window, then those the schedule put in it. | `pacing.requests.sent`, `pacing.requests.scheduled` |
+| `requests most over schedule` | ratio, then second | The window's second furthest over its schedule, `sent / max(scheduled, 10)`, and that second, counted from the window's start: `1.04x (s 17)`. `-` with nothing scheduled or sent. | `pacing.requests.max_over`, `pacing.requests.max_over_second` |
+| `events sent / scheduled` | count | The same for the event writes. | `pacing.events.sent`, `pacing.events.scheduled` |
+| `events most over schedule` | ratio, then second | The same for the event writes. | `pacing.events.max_over`, `pacing.events.max_over_second` |
+| `set aside` | yes or no | `yes: <n> seconds` when the step is set aside, with the seconds of the window that broke the rule; `no` otherwise. | `set_aside.seconds` |
+| `accept backlog max / limit` | connections | The window's highest `rx_queue` of the API listener's LISTEN socket, then the queue's limit (`somaxconn`). | `accept.backlog_max`, `accept.backlog_limit` |
+| `seconds above half the limit` | count | The window's readings, one a second, whose `rx_queue` was above half the limit. | `accept.seconds_above_half` |
+| `opens max/s active / passive` | per second | The most `Tcp: ActiveOpens`, then `PassiveOpens`, that `/proc/net/snmp` gained in one second of the window. | `accept.active_opens_max_per_s`, `accept.passive_opens_max_per_s` |
 
 ### Write latency by kind
 
@@ -3487,6 +3616,11 @@ its cores and working set from `cgroup.json`. It also holds:
   own, so only the run that sent the load knows which machine sent it, and a series whose steps
   ran on different generators still reads right. A step naming a role its `cgroup.json` holds no
   series for is an error, not a step that can silently never be void.
+- **The set-aside rule** (every series; The set-aside rule, above): a step whose `summary.json`
+  carries `set_aside` — its generator sent more than a tenth over a second's schedule — is **set
+  aside**: neither a pass nor a failure. The Pass table and `curves.csv`'s `passes` read
+  `set aside`, `CURVES.md` and `KNEES.md` list it with why, and it is no knee and ends no bracket.
+  A step from before the rule carries no `set_aside` and reads as it always has.
 - A step's factor is `loadgen run -loop-factor`, which `summary.json` records as
   `config.loop_factor`: the factor of its series' grid that the step stands at, which is where
   `curves` draws it. Without it the factor is the step's own rates over the cluster series'

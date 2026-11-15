@@ -16,7 +16,8 @@
 # run-series.sh is refused while a run-step.sh holds it; (c) a run-step.sh is refused while a
 # run-series.sh holds it; (d) once the first run has exited, a new run on the root is not refused;
 # (e) a --replay step refuses --events, a --dispatch-commit that names no commit, and a missing
-# LOADTEST_REPLAY_ISSUE, before its build.
+# LOADTEST_REPLAY_ISSUE, before its build; (f) a step and a series refuse two CPU lists that
+# overlap, and a step a CPU list taskset refuses, before their build.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -166,3 +167,9 @@ expect_refused_before_build "a --replay step with --dispatch-commit deadbeef" "-
   bash "$run_step" replay-step --replay --dispatch-commit deadbeef
 expect_refused_before_build "a --replay step without LOADTEST_REPLAY_ISSUE" "LOADTEST_REPLAY_ISSUE is required" \
   env -u LOADTEST_REPLAY_ISSUE bash "$run_step" replay-step --replay
+expect_refused_before_build "a step with overlapping CPU lists" "LOADTEST_SERVER_CPUS='0' and LOADTEST_GENERATOR_CPUS='0' overlap on CPU 0" \
+  env LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=0 bash "$run_step" cpu-step "${step_args[@]}"
+expect_refused_before_build "a step with a CPU list taskset refuses" "LOADTEST_GENERATOR_CPUS='4095' is a CPU list taskset refuses" \
+  env LOADTEST_GENERATOR_CPUS=4095 bash "$run_step" cpu-step "${step_args[@]}"
+expect_refused_before_build "a series with overlapping CPU lists" "overlap on CPU 0" \
+  env LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=0 bash "$run_series"

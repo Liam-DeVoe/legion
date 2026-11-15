@@ -100,7 +100,12 @@
 # LOADTEST_ENVOY_RTT=<duration> starts Dispatch with ENVOY_URL through a latency proxy
 # (envoy_proxy) in front of the listener;
 # LOADTEST_DISPATCH_COMMIT (setup, above); LOADTEST_GOMAXPROCS, Dispatch's GOMAXPROCS (default: nproc);
-# LOADTEST_REPLAY_ISSUE, the issue the replay's parts are file artifacts of (replay-get, above).
+# LOADTEST_REPLAY_ISSUE, the issue the replay's parts are file artifacts of (replay-get, above);
+# LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS, two CPU lists (common.sh, CPU pinning), empty
+# by default: every stack process starts under `taskset -c LOADTEST_SERVER_CPUS` (spawn), which
+# refuses a list other than the one the processes still running started on, and every loadgen
+# runs under `taskset -c LOADTEST_GENERATOR_CPUS`; every command but stop, status and build-info
+# refuses a list taskset refuses and two lists that overlap.
 #
 # Every stack process starts under `env -i` with an explicit environment, so this shell's
 # DISPATCH_URL, ENVOY_URL, ENVOY_NATS_URL, AWS_*, HOME and XDG_* never reach it, and every process is
@@ -158,7 +163,8 @@ base_env=(
 
 # loadgen_env adds what loadgen needs: the root, the go toolchain for `loadgen tables`
 # (`go tool pprof`), this script's path and the run's lock token, for `loadgen run -restart-at`'s
-# `stack.sh restart-dispatch`, and LOADTEST_NO_RESUME when it is set.
+# `stack.sh restart-dispatch`, LOADTEST_NO_RESUME when it is set, and the two CPU lists, which
+# `loadgen run` records and its restart-dispatch pins Dispatch to.
 loadgen_env() {
   local gobin
   gobin=$(command -v go || true)
@@ -167,13 +173,17 @@ loadgen_env() {
   printf '%s\n' "${base_env[@]:1}" "PATH=$path" "LOADTEST_ROOT=$ROOT" "LOADTEST_STACK_SH=$here/stack.sh"
   [ -z "${LOADTEST_LOCK_TOKEN:-}" ] || printf '%s\n' "LOADTEST_LOCK_TOKEN=$LOADTEST_LOCK_TOKEN"
   [ -z "${LOADTEST_NO_RESUME:-}" ] || printf '%s\n' "LOADTEST_NO_RESUME=$LOADTEST_NO_RESUME"
+  [ -z "${LOADTEST_SERVER_CPUS:-}" ] || printf '%s\n' "LOADTEST_SERVER_CPUS=$LOADTEST_SERVER_CPUS"
+  [ -z "${LOADTEST_GENERATOR_CPUS:-}" ] || printf '%s\n' "LOADTEST_GENERATOR_CPUS=$LOADTEST_GENERATOR_CPUS"
 }
 
-# loadgen runs the stack's loadgen binary under the stack's environment, from the root.
+# loadgen runs the stack's loadgen binary under the stack's environment, from the root, pinned to
+# LOADTEST_GENERATOR_CPUS when it is set.
 loadgen() {
-  local envs
+  local envs pin
   mapfile -t envs < <(loadgen_env)
-  (cd -- "$ROOT" && env -i "${envs[@]}" "$BIN/loadgen" "$@")
+  mapfile -t pin < <(pin_words "${LOADTEST_GENERATOR_CPUS:-}")
+  (cd -- "$ROOT" && env -i "${envs[@]}" "${pin[@]}" "$BIN/loadgen" "$@")
 }
 
 # psql_db DB ARGS...: a psql client on the stack's Postgres, no ~/.psqlrc, no PG* from this shell.
@@ -301,7 +311,8 @@ port_open() { (: <"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
 # spawn [--append] NAME LOG ENV_ARRAY CMD...: start CMD in its own session under `env -i` with the
 # named environment, its output to LOG (appended with --append, else LOG is truncated), and record
-# its pid in NAME's pidfile.
+# its pid in NAME's pidfile. CMD runs under `taskset -c LOADTEST_SERVER_CPUS` when that list is
+# set (server_cpus_check).
 spawn() {
   local append=false
   if [ "$1" = --append ]; then
@@ -311,16 +322,19 @@ spawn() {
   local name=$1 log=$2
   local -n spawn_env=$3
   shift 3
-  local f
+  server_cpus_check "$name"
+  local f pin
+  mapfile -t pin < <(pin_words "${LOADTEST_SERVER_CPUS:-}")
   f=$(pidfile "$name")
   mkdir -p -- "$RUN" "$(dirname -- "$log")" "$ROOT/tmp"
   rm -f -- "$f"
   $append || : >"$log"
-  # The shell writes its own pid and execs CMD, so the pidfile names CMD's process. Descriptor 9,
-  # the run lock (common.sh), is closed, so a stack process never holds the lock.
+  # The shell writes its own pid and execs CMD (through taskset, which execs it in turn), so the
+  # pidfile names CMD's process. Descriptor 9, the run lock (common.sh), is closed, so a stack
+  # process never holds the lock.
   # shellcheck disable=SC2016
   setsid -f env -i "${spawn_env[@]}" /bin/sh -c 'echo "$$" >"$0.tmp" && mv -f -- "$0.tmp" "$0" && exec "$@"' \
-    "$f" "$@" >>"$log" 2>&1 </dev/null 9>&-
+    "$f" "${pin[@]}" "$@" >>"$log" 2>&1 </dev/null 9>&-
   # Wait until the pidfile names a process running NAME's binary (the shell has exec'd).
   local i
   for ((i = 0; i < 100; i++)); do
@@ -329,6 +343,24 @@ spawn() {
   done
   tail -n 40 -- "$log" >&2 || true
   die "$name did not start; see $log"
+}
+
+# server_cpus_check NAME: every server process of the stack runs on one CPU list. stack.json's
+# server_cpus is the list the running processes started on; NAME (a process about to start, or
+# "stack.sh <command>" for a whole command, before it stops anything) is refused when another
+# stack process still runs and that list is not LOADTEST_SERVER_CPUS, since a reset restarts
+# Dispatch, NATS and the listener but leaves Postgres and the proxy running on the list they
+# started with. Otherwise LOADTEST_SERVER_CPUS becomes the stack's list.
+server_cpus_check() {
+  local name=$1 p others="" recorded want=${LOADTEST_SERVER_CPUS:-}
+  for p in "${PROCESSES[@]}"; do
+    if [ "$p" != "$name" ] && running "$p"; then others+="${others:+, }$p"; fi
+  done
+  recorded=$(jq -r '.server_cpus // ""' "$STACK")
+  if [ -n "$others" ] && [ "$recorded" != "$want" ]; then
+    die "$name would start on LOADTEST_SERVER_CPUS='$want', and the stack's running processes ($others) started on '$recorded' ('' is unpinned): the server side runs on one CPU list. Run stack.sh stop, then start the stack again with the list you want"
+  fi
+  [ "$recorded" = "$want" ] || stack_set '.server_cpus = $c' --arg c "$want"
 }
 
 # wait_for WHAT SECONDS NAME LOG CMD...: poll CMD every 0.5 s until it succeeds; fail with LOG's tail
@@ -1018,6 +1050,17 @@ cmd_status() {
 
 case ${1:-} in
   setup | start | seed | reset | restart-dispatch | stop | replay-seed-patch-check | replay-seed | replay-get | replay-prepare) lock_root "$ROOT" ;;
+esac
+case ${1:-} in
+  stop | status | build-info | '') ;;
+  *) check_cpu_lists ;;
+esac
+# A command that starts stack processes is refused on another server list than the running
+# processes' before it stops any of them (a reset stops NATS, the listener and Dispatch first).
+case ${1:-} in
+  start | seed | reset | restart-dispatch | replay-seed | replay-get | replay-prepare)
+    [ ! -f "$STACK" ] || server_cpus_check "stack.sh $1"
+    ;;
 esac
 case ${1:-} in
   setup) cmd_setup ;;

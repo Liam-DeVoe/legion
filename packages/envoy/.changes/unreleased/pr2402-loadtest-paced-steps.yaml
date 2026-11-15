@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  The load harness records, for every second of a step, the arrivals its schedule held and the
+  arrivals it sent (`arrivals.json`), and sets aside a step whose requests or event writes run
+  more than a tenth over schedule in any second of its window: a generator that stalls fires
+  every overdue arrival at once when it runs again, so such a step did not deliver the load it
+  names. A set-aside step is neither a pass nor a fail, and `summary.json`, `TABLES.md`,
+  `run-step.sh`'s closing lines, `loadgen curves` and `loadgen step-check` say so first. Each step
+  also records the server's accept backlog once a second (`accept-backlog.json`: the Dispatch
+  listener's `rx_queue` against `net.core.somaxconn`, with TCP active and passive opens; unmeasured,
+  with the reason, under gVisor, which reports no backlog), and `LOADTEST_SERVER_CPUS` and
+  `LOADTEST_GENERATOR_CPUS` pin the server side and the generator to CPU lists of their own,
+  refusing overlapping lists and a runtime that ignores the pin.

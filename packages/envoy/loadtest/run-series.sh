@@ -27,7 +27,12 @@
 # and dirty flag to every step in LOADTEST_SERIES_BUILD; its steps skip setup, so every step of a
 # series runs one build, even when the checkout changes during the series. A failed step stops the
 # series: the series TABLES.md covers the steps that ran, the failed one included when it wrote
-# summary.json, and the script exits 1 naming the step.
+# summary.json, and the script exits 1 naming the step. A set-aside step (README.md, "The
+# set-aside rule") does not stop it: it is neither a pass nor a failure, and the series TABLES.md
+# names it before its first table.
+#
+# LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS (common.sh, CPU pinning) are checked before the
+# stack is prepared, and again by each step.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -43,6 +48,7 @@ for arg in "$@"; do
   esac
 done
 
+check_cpu_pinning
 lock_root "$ROOT"
 
 # Setup and seed once, before the series directory exists, so a failed setup leaves no empty series.

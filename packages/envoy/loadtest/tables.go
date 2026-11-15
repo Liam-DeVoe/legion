@@ -153,10 +153,14 @@ func p50(s stat) float64  { return s.P50 }
 func p99(s stat) float64  { return s.P99 }
 func smax(s stat) float64 { return s.Max }
 
-// label is the step's name in a table row, marked "(<names> exited)" when a stack process exited
-// during the step, and failedMark when its directory holds step-failed.json.
+// label is the step's name in a table row, marked setAsideMark when its generator broke its
+// schedule (summary.json set_aside), "(<names> exited)" when a stack process exited during the
+// step, and failedMark when its directory holds step-failed.json.
 func (s stepData) label() string {
 	label := s.name
+	if s.sum.SetAside != nil {
+		label += " " + setAsideMark
+	}
 	if len(s.sum.StackExits) > 0 {
 		names := make([]string, len(s.sum.StackExits))
 		for i, x := range s.sum.StackExits {
@@ -240,8 +244,10 @@ func (m *markdown) emptyRow(label string, columns int) {
 func renderTables(steps []stepData) string {
 	var md markdown
 	md.line("# Load test tables\n")
+	setAsideNote(&md, steps)
 	md.line("One row per step. Latencies are ms over the measured window; cores are CPU-seconds per second.\n")
 	eventsTable(&md, steps)
+	pacingTable(&md, steps)
 	populationsTable(&md, steps)
 	kindsTable(&md, steps)
 	resourcesTable(&md, steps)
@@ -335,6 +341,47 @@ func eventsTable(md *markdown, steps []stepData) {
 	}
 	failedNote(md, slices.ContainsFunc(steps, func(s stepData) bool { return s.failed }))
 	commitsUnreadNote(md, unread, "the committed events/s, the delivery latencies from arrival and from commit, and the issue-topic receipts", "show")
+}
+
+// pacingTable is one row per step: what its generators sent against their schedule in the
+// window, whether that set it aside (pacing.go), and the API listener's accept backlog and the
+// box's TCP opens per second (accept.go). A summary.json from before these readings has none,
+// and its cells are `-`.
+func pacingTable(md *markdown, steps []stepData) {
+	md.line("\n## Generator pacing and accept backlog\n")
+	md.line("Sent is when the generator let an arrival go, scheduled when its schedule put it; a second is judged against at least %d scheduled arrivals, and a step whose generator sent more than %s over a second's schedule in the window is set aside.\n",
+		minJudgedSchedule, percent(overScheduleLimit))
+	md.header("step", "requests sent / scheduled", "requests most over schedule", "events sent / scheduled", "events most over schedule",
+		"set aside", "accept backlog max / limit", "seconds above half the limit", "opens max/s active / passive")
+	var unmeasured []string
+	for _, s := range steps {
+		cells := []string{s.label()}
+		if p := s.sum.Pacing; p != nil {
+			aside := "no"
+			if a := s.sum.SetAside; a != nil {
+				aside = "yes: " + plural(len(a.Seconds), "second")
+			}
+			cells = append(cells, p.Requests.sentCell(), overCell(p.Requests.MaxOver, p.Requests.MaxOverSecond),
+				p.Events.sentCell(), overCell(p.Events.MaxOver, p.Events.MaxOverSecond), aside)
+		} else {
+			cells = append(cells, "-", "-", "-", "-", "-")
+		}
+		a := s.sum.Accept
+		cells = append(cells, a.backlogCell(), a.aboveHalfCell(), a.opensCell())
+		md.row(cells...)
+		if a == nil {
+			continue
+		}
+		for _, why := range []string{a.BacklogError, a.LimitError, a.OpensError} {
+			if why != "" {
+				unmeasured = append(unmeasured, fmt.Sprintf("- %s: %s.", s.name, mdEscape(why)))
+			}
+		}
+	}
+	if len(unmeasured) > 0 {
+		md.line("\nNot measured (summary.json `accept`), so the cells read `-` and not 0:\n")
+		md.line("%s", strings.Join(unmeasured, "\n"))
+	}
 }
 
 // populationsTable is one row per population of each step that drove two (summary.json

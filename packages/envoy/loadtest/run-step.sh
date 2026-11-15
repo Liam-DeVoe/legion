@@ -58,6 +58,15 @@
 # or whose commit rows (public.loadtest_event_commits) could not be read, fails: loadgen run exits
 # non-zero naming why, and so does this script; it still renders TABLES.md, where the row carries
 # the mark.
+#
+# A step whose generator sent more than a tenth over its schedule in a second of the window is set
+# aside (README.md, "The set-aside rule"): neither a pass nor a failure. This script says so first
+# in its closing lines, and TABLES.md says so before its first table; it exits 0 for it, as for a
+# step that ran, so a series goes on to its next step.
+#
+# LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS (common.sh, CPU pinning) pin the stack and
+# loadgen to two CPU lists. Before anything starts, a list taskset refuses, two lists that overlap
+# and a runtime that does not enforce the pin (gVisor) are refused.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -173,6 +182,7 @@ if $replay; then
   [ -n "${LOADTEST_REPLAY_ISSUE:-}" ] ||
     die "LOADTEST_REPLAY_ISSUE is required for a --replay step: set it to the issue the replay's parts are file artifacts of"
 fi
+check_cpu_pinning
 
 lock_root "$ROOT"
 
@@ -224,12 +234,22 @@ trap - EXIT
 cp -- "$ROOT/logs/listener.out" "$out/listener.log"
 cp -- "$ROOT/logs/nats.out" "$out/nats.log"
 [ -z "$LOADTEST_ENVOY_RTT" ] || cp -- "$ROOT/logs/envoy-proxy.out" "$out/envoy-proxy.log"
+
+# set_aside_note: when summary.json sets the step aside, say so before any other closing line.
+set_aside_note() {
+  local why
+  why=$(jq -er '.set_aside.why // empty' "$out/summary.json" 2>/dev/null) || return 0
+  note "STEP $name IS SET ASIDE, neither a pass nor a failure: $why. Its rows describe the test bed, not Dispatch (summary.json set_aside, $out/arrivals.json); run it again where the generator keeps its schedule"
+}
+
 if ((rc != 0)); then
   # loadgen run printed why above (a stack process that exited during the step, commit rows it
   # could not read, or its error).
   [ -f "$out/summary.json" ] || die "step $name failed: loadgen run exited $rc before it wrote summary.json (its message above says why); see $out/run.log"
   "$stack" loadgen tables "$out" || true
+  set_aside_note
   die "step $name failed: loadgen run exited $rc (its message above says why); $out/TABLES.md holds the step's row for diagnosis; see $out/run.log"
 fi
 "$stack" loadgen tables "$out"
+set_aside_note
 note "step $name done in $((SECONDS - started)) s: $out"

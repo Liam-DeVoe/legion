@@ -104,13 +104,15 @@ sleep_until() {
 }
 
 # kill_and_restart: SIGKILL the stack's listener, keep it down, start it again with the same
-# binary, arguments and environment, and write restart.json.
+# binary, arguments and environment, on LOADTEST_SERVER_CPUS as stack.sh starts it, and write
+# restart.json.
 kill_and_restart() {
-  local pidf=$RUN/listener.pid pid port token envs cmd
+  local pidf=$RUN/listener.pid pid port token envs cmd pin
   pid=$(cat -- "$pidf")
   [ -r "/proc/$pid/environ" ] || die "the stack's listener (pid $pid) is not running; nothing to restart"
   mapfile -d '' envs <"/proc/$pid/environ"
   mapfile -d '' cmd <"/proc/$pid/cmdline"
+  mapfile -t pin < <(pin_words "${LOADTEST_SERVER_CPUS:-}")
   port=$(jq -er .ports.listener "$ROOT/stack.json")
   token=$(jq -er .listener_token "$ROOT/stack.json")
   local kill_ns first_ns restart_ns ready_ns attempts=0 new up
@@ -128,7 +130,7 @@ kill_and_restart() {
     # not inherited.
     # shellcheck disable=SC2016
     setsid -f env -i "${envs[@]}" /bin/sh -c 'echo "$$" >"$0.tmp" && mv -f -- "$0.tmp" "$0" && exec "$@"' \
-      "$pidf" "${cmd[@]}" >>"$LOGS/listener.out" 2>&1 </dev/null 9>&-
+      "$pidf" "${pin[@]}" "${cmd[@]}" >>"$LOGS/listener.out" 2>&1 </dev/null 9>&-
     until [ -s "$pidf" ]; do sleep 0.02; done
     new=$(cat -- "$pidf")
     up=false

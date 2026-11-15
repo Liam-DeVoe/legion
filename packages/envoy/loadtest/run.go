@@ -106,6 +106,9 @@ type runConfig struct {
 	heapSamples bool
 	buildCommit string
 	buildDirty  bool
+	// serverCPUs and generatorCPUs are LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS, the CPU
+	// lists stack.sh pinned the stack and this loadgen to, recorded in summary.json; "" unpinned.
+	serverCPUs, generatorCPUs string
 	// boxBusyBefore is the box's busy fraction read before Dispatch started (run-step.sh reads it
 	// with `loadgen box-busy` before its reset); negative means collectMeta reads it itself.
 	boxBusyBefore float64
@@ -424,6 +427,7 @@ func runLoad(args []string) error {
 		heapSamples: *heapSamples, unitStarts: *unitStarts, unitLife: *unitLife,
 		loopListeners: loopEndpoints, driverTopics: *driverTopics, receiptDeadline: *receiptDeadline,
 		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore,
+		serverCPUs: os.Getenv("LOADTEST_SERVER_CPUS"), generatorCPUs: os.Getenv("LOADTEST_GENERATOR_CPUS"),
 		// Fewer editors than documents edit only as many documents as there are editors.
 		editors:  editorConfig{editors: *editors, rate: *editorRate, docs: min(*editorDocs, max(*editors, 1))},
 		args:     recordedArgs(fs),
@@ -608,6 +612,12 @@ type summaryConfig struct {
 	MarkerNonce string `json:"marker_nonce"`
 	// Source is the request source: requests or replay.
 	Source string `json:"source,omitempty"`
+	// ServerCPUs and GeneratorCPUs are the CPU lists the step ran under (LOADTEST_SERVER_CPUS,
+	// LOADTEST_GENERATOR_CPUS): stack.sh started Dispatch, Postgres, NATS, the listener and the
+	// latency proxies under taskset -c ServerCPUs, and loadgen under taskset -c GeneratorCPUs.
+	// Empty when the list was not set, and then nothing was pinned.
+	ServerCPUs    string `json:"server_cpus"`
+	GeneratorCPUs string `json:"generator_cpus"`
 }
 
 type sessionsSummary struct {
@@ -661,6 +671,14 @@ type summary struct {
 	// StackExits are the stack processes that exited during the step; such a step fails and its
 	// row does not measure the load.
 	StackExits []stackExit `json:"stack_exits,omitempty"`
+	// Pacing is what the generators sent each second against their schedule (pacing.go), and
+	// SetAside, present only when a second of the window broke the set-aside rule, why the step
+	// is set aside: neither a pass nor a failure. Accept is the API listener's accept backlog and
+	// the box's TCP opens over the window (accept.go). All three are nil in a summary.json from
+	// before them.
+	Pacing   *pacingSummary   `json:"pacing"`
+	SetAside *setAsideSummary `json:"set_aside,omitempty"`
+	Accept   *acceptSummary   `json:"accept"`
 	// Replay is the replay's record under -source replay (replay_record.go), and Loop what the
 	// loop's writes sent under -loop-seed (events.go loopRun): the requests of each class, which
 	// are not the writes, since a status change sends a reply and a resolve.
@@ -885,6 +903,11 @@ func execute(cfg runConfig, sf seedFile) error {
 	}
 	lg.Printf("step %s done: events offered %d %s, requests sent %d (%.1f/s of %g), editor updates sent %d",
 		cfg.name, sum.Events.Offered, committed, sum.Requests.Sent, sum.Requests.SentPerS, cfg.requests, editorsSent)
+	lg.Printf("pacing: requests %s; events %s", sum.Pacing.Requests.text(), sum.Pacing.Events.text())
+	lg.Printf("accept: %s", sum.Accept.text())
+	if sum.SetAside != nil {
+		lg.Printf("step %s SET ASIDE, neither a pass nor a failure: %s (summary.json set_aside, arrivals.json)", cfg.name, sum.SetAside.Why)
+	}
 	if err := stepFailure(sum); err != nil {
 		lg.Print(err)
 		return err
@@ -962,11 +985,13 @@ type population struct {
 	active                     int       // the issues in use: min(sessions, this seed's issues)
 	sessions                   []session // by session index
 	watchers                   [][]int   // by issue, the sessions that watch it
-	// wr sends this population's writes, writes records each one, and reqs what its request
-	// generator sent; all three are set when the step starts it (execute).
-	wr     *writer
-	writes *collector[writeRec]
-	reqs   *requestLoad
+	// wr sends this population's writes, writes records each one, eventPace counts when its event
+	// generator sent each write against the schedule, and reqs is what its request generator
+	// sent; all four are set when the step starts it (execute).
+	wr        *writer
+	writes    *collector[writeRec]
+	eventPace *pacer
+	reqs      *requestLoad
 	// ws and rs are those two records as the summary reads them, snapshotted once when the
 	// step's own counts are taken (step.sent), so no record is copied twice.
 	ws []writeRec
@@ -1184,12 +1209,14 @@ func openLoop(ctx context.Context, rngSeed, stream uint64, plan []rateSegment, w
 // its markers come from the step's one counter, which every population's writes share.
 func (st *step) runEvents(ctx context.Context, p *population) (done <-chan struct{}) {
 	p.writes = newCollector[writeRec](1 << 14)
+	p.eventPace = newPacer(st.start, st.winStart, st.winEnd)
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
 		var wg sync.WaitGroup
 		defer wg.Wait()
 		openLoop(ctx, st.cfg.rngSeed, p.eventStream, st.ratePlan(p.events), st.winStart, st.winEnd, func(r *rand.Rand, at time.Time, in bool) {
+			p.eventPace.record(at, time.Now())
 			plan := planEvent(r, p, st.cfg, st.marker.Add(1))
 			wg.Go(func() {
 				rec := p.wr.do(ctx, plan)
@@ -1215,24 +1242,27 @@ func (st *step) planWrites(p *population, fn func(plan eventPlan, in bool)) {
 	})
 }
 
-// requestLoad is what the request generator sent in the window, and what the in-flight cap
-// dropped.
+// requestLoad is what the request generator sent in the window, what the in-flight cap dropped,
+// and when the generator sent each arrival against its schedule (pace).
 type requestLoad struct {
 	recs    *collector[reqRec]
 	dropped atomic.Int64
+	pace    *pacer
 }
 
 // runRequests starts one population's request generator at its own route mix, open-loop on its
 // own stream; done closes once every request it sent has returned. The in-flight cap is the
-// step's, over both populations: it bounds the requests one loadgen holds open at once.
+// step's, over both populations: it bounds the requests one loadgen holds open at once. An
+// arrival the cap drops is paced as sent when the generator reached it, as every other is.
 func (st *step) runRequests(ctx context.Context, a *api, p *population) (load *requestLoad, done <-chan struct{}) {
-	load = &requestLoad{recs: newCollector[reqRec](1 << 16)}
+	load = &requestLoad{recs: newCollector[reqRec](1 << 16), pace: newPacer(st.start, st.winStart, st.winEnd)}
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
 		var wg sync.WaitGroup
 		defer wg.Wait()
-		openLoop(ctx, st.cfg.rngSeed, p.requestStream, st.ratePlan(p.requests), st.winStart, st.winEnd, func(r *rand.Rand, _ time.Time, in bool) {
+		openLoop(ctx, st.cfg.rngSeed, p.requestStream, st.ratePlan(p.requests), st.winStart, st.winEnd, func(r *rand.Rand, at time.Time, in bool) {
+			load.pace.record(at, time.Now())
 			rt, path := st.requestPath(p, r)
 			id := who{}
 			if rt.Person {
@@ -1274,13 +1304,14 @@ func (st *step) requestPath(p *population, r *rand.Rand) (*route, string) {
 }
 
 // probes are the 5 s sampler, the lock probe (1 s), the ungranted-lock sampler (1 s), the
-// transaction-id probe, the profiles, the rooms' window readings and, in a step with editors, the
-// room sampler (100 ms).
+// accept-backlog sampler (1 s), the transaction-id probe, the profiles, the rooms' window readings
+// and, in a step with editors, the room sampler (100 ms).
 type probes struct {
 	smp      *sampler
 	smpDone  chan struct{} // closed when the sampler, which runs until ctx ends, has returned
 	lp       *lockProbe
 	ls       *lockSampler
+	acc      *acceptSampler
 	xidsPerS *float64
 	xidErr   error // why xidsPerS is nil
 	// roomsStart and roomsEnd are the rooms' counters at the window's start and end (readWindow);
@@ -1291,12 +1322,15 @@ type probes struct {
 }
 
 // startProbes starts the probes. The two lock samplers run from 20 s into the window to its end,
-// the room sampler from the window's start to its end. The sampler reads pulls' counts at each
-// sample, when pulls is not nil, and Dispatch's heap every 15 s under -heap-samples.
+// the accept-backlog sampler from the step's start to the window's end, the room sampler from the
+// window's start to its end. The sampler reads pulls' counts at each sample, when pulls is not
+// nil, and Dispatch's heap every 15 s under -heap-samples.
 func (st *step) startProbes(ctx context.Context, pulls *pullSpy) *probes {
-	p := &probes{smp: newSampler(st.cfg.ep), smpDone: make(chan struct{}), lp: &lockProbe{}, ls: &lockSampler{}}
+	p := &probes{smp: newSampler(st.cfg.ep), smpDone: make(chan struct{}), lp: &lockProbe{}, ls: &lockSampler{},
+		acc: newAcceptSampler(st.cfg.ep.dispatch)}
 	p.smp.pulls = pulls
 	p.smp.heapSamples = st.cfg.heapSamples
+	p.wg.Go(func() { p.acc.loop(ctx, st.start, st.winStart, st.winEnd, st.lg) })
 	go func() {
 		defer close(p.smpDone)
 		p.smp.loop(ctx, st.winStart, st.winEnd, st.lg)
@@ -1376,8 +1410,9 @@ func (st *step) profile(ctx context.Context) {
 	fetchTo(pprof+"/debug/pprof/heap?debug=1", filepath.Join(out, "heap.txt"), 10*time.Minute, st.lg)
 }
 
-// buildSummary joins what the phases recorded into summary.json, and writes samples.json and,
-// for a step a loop session lost a notification in, lost-pairs.json (delivery.go). It
+// buildSummary joins what the phases recorded into summary.json, and writes samples.json,
+// arrivals.json, accept-backlog.json and, for a step a loop session lost a notification in,
+// lost-pairs.json (delivery.go). It
 // reads the run's commit rows and names the ungranted locks' relations, so it runs after the
 // load, and it reads the loop sessions' windows, so it runs after they have all stopped
 // (loopSessions.stop). lp is nil for a step that ran the flat population alone, and ed is nil in
@@ -1429,6 +1464,7 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 			MentionFrac: cfg.mentionFrac, Mentions: cfg.mentions,
 			Editors: cfg.editors.editors, EditorRate: cfg.editors.rate, EditorDocs: cfg.editors.docs,
 			MarkerNonce: formatNonce(st.nonce), Source: cfg.sourceName(),
+			ServerCPUs: cfg.serverCPUs, GeneratorCPUs: cfg.generatorCPUs,
 		},
 		Events:   events,
 		Requests: summarizeRequests(reqs, dropped, cfg.requests*cfg.schedule.meanFactor(), durS),
@@ -1480,6 +1516,13 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 	sum.Rooms = summarizeRooms(pr.roomsStart, pr.roomsEnd, pr.rs, editorsSent)
 	ss := pr.smp.all()
 	writeJSONFile(filepath.Join(cfg.out, "samples.json"), ss, 0o644, st.lg)
+	arrivals := st.arrivals()
+	writeJSONFile(filepath.Join(cfg.out, "arrivals.json"), arrivals, 0o644, st.lg)
+	pacing, aside := judgePacing(arrivals)
+	sum.Pacing, sum.SetAside = &pacing, aside
+	writeJSONFile(filepath.Join(cfg.out, "accept-backlog.json"), pr.acc.file(), 0o644, st.lg)
+	accept := pr.acc.summary()
+	sum.Accept = &accept
 	sum.Resources = summarizeResources(ss, sum.Events.Committed+sum.Requests.Sent, durS)
 	if sum.Resources != nil {
 		sum.Resources.XIDsPerS = pr.xidsPerS
@@ -1504,6 +1547,17 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 		sum.Replay = st.replay.record(ss, durS)
 	}
 	return sum
+}
+
+// arrivals sums every generator's pacer, the requests' and the event writes' of each population,
+// into arrivals.json. It runs once the generators have returned, so no pacer is still written.
+func (st *step) arrivals() arrivalsFile {
+	var requests, events []*pacer
+	for _, p := range st.pops {
+		requests = append(requests, p.reqs.pace)
+		events = append(events, p.eventPace)
+	}
+	return arrivalsOf(requests, events)
 }
 
 // sent snapshots what each population sent, into that population's own ws and rs, and answers
