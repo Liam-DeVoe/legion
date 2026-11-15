@@ -240,6 +240,35 @@ func pin(ctx context.Context, db execer, local bool) error {
 	return nil
 }
 
+// ResetSession returns conn's session to the state a new pooled connection has, so a connection a
+// migration ran on goes back to the pool with nothing the migration's own text left on its
+// session. A migration's text can run a SET without LOCAL, and stored code can call
+// set_config(name, value, false). Either one leaves a run-time parameter, a SET ROLE, a temporary
+// table or a prepared statement on the session, which the next caller of that pooled connection
+// would then meet. DISCARD ALL gives all of that back at once. RESET ALL does not, so DISCARD ALL
+// is the one run here: it also drops temporary tables and deallocates prepared statements that
+// stored code left.
+//
+// DISCARD ALL runs outside a transaction block, so conn holds no open transaction when this runs.
+// DISCARD ALL also releases the session's advisory locks, so a caller that holds an advisory lock
+// on conn gives that lock back before this runs, never after.
+//
+// DeallocateAll follows because the pool runs its connections in cache-statement mode. DISCARD ALL
+// deallocates the server's prepared statements while pgx still names them in its own cache, so the
+// next cached query would fail with SQLSTATE 26000 ("prepared statement ... does not exist").
+// DeallocateAll clears pgx's statement and description caches, so the next query prepares again.
+// The pool's AfterConnect (scanTimestampsInUTC in internal/dispatch/store) registers type codecs
+// on the connection and sets nothing on the server, so this reset takes nothing the pool set up.
+func ResetSession(ctx context.Context, conn *pgx.Conn) error {
+	if _, err := conn.Exec(ctx, "discard all"); err != nil {
+		return fmt.Errorf("discard the session's state: %w", err)
+	}
+	if err := conn.DeallocateAll(ctx); err != nil {
+		return fmt.Errorf("clear pgx's prepared-statement cache: %w", err)
+	}
+	return nil
+}
+
 // Exec is how a runner applies one migration's statements in tx. It first pins tx (Pin):
 // session_authorization, role and search_path at the values that RESET gives them
 // (resetSettings), so the migration resolves its names as the census resolved them, then tx's

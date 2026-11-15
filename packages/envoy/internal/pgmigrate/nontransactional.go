@@ -98,10 +98,10 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 	for _, s := range pinSettings {
 		names = append(names, s.name)
 	}
-	// The reset settings come last, so the restore below gives session_authorization its value
-	// back before role, as resetSettings orders them. The restore is deferred before the session
-	// is pinned, so a pin that fails after one of its statements has run leaves the session as it
-	// found it too.
+	// The reset settings come last so the restore below can give session_authorization and role
+	// back first, each as its own statement and in that order. The restore is deferred before the
+	// session is pinned, so a pin that fails after one of its statements has run leaves the session
+	// as it found it too.
 	previous, err := currentSettings(ctx, conn, append(names, resetSettings...))
 	if err != nil {
 		return fmt.Errorf("migration %s: read session settings: %w", migration.Name, err)
@@ -109,7 +109,23 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), diagnosisCleanupTimeout)
 		defer cancel()
-		restore, args := setConfig(false, previous)
+		// session_authorization and role go back first, each as its own statement and in the order
+		// resetSettings lists them: setting session_authorization ends a SET ROLE, and a single
+		// select does not promise the order its set_config calls run in, so giving role back inside
+		// one select beside session_authorization could leave the wrong current_user. pin() sets
+		// them as ordered separate statements for the same reason. The rest go back in one select.
+		var rest []setting
+		for _, s := range previous {
+			if s.name != "session_authorization" && s.name != "role" {
+				rest = append(rest, s)
+				continue
+			}
+			one, args := setConfig(false, []setting{s})
+			if _, restoreErr := conn.Exec(cleanup, one, args...); restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("migration %s: restore %s: %w", migration.Name, s.name, restoreErr))
+			}
+		}
+		restore, args := setConfig(false, rest)
 		if _, restoreErr := conn.Exec(cleanup, restore, args...); restoreErr != nil {
 			err = errors.Join(err, fmt.Errorf("migration %s: restore session settings: %w", migration.Name, restoreErr))
 		}

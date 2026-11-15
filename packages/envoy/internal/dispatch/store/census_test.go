@@ -339,9 +339,11 @@ create table sp_domdefed (id int, sp sp_domdef);
 // rewrite things. Without that reset, mood names the domain, and Postgres rewrites things under
 // ACCESS EXCLUSIVE for a migration that the census exempted. The runner's pool holds one
 // connection, so 0003 runs on the connection that 0002 changed. The control applies 0002 alone to
-// a second database of the same fixture, on a pool of one connection too, and reads on that
-// connection the setting that the code changes: so each row shows that the code changes the
-// session.
+// a second database of the same fixture, on a pool of one connection too. Its 0002 captures the
+// setting the code changes into a table of its own, inside the migration's transaction after the
+// write: so each row shows that the code changes the session. The capture reads the table, not the
+// session through the pool, because the runner's reset clears the session before the connection
+// goes back to the pool.
 func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *testing.T) {
 	ctx := context.Background()
 	// sessionUser is the role that the sixth row's default gives session_authorization. It is a
@@ -349,7 +351,7 @@ func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *
 	// the failure, not a refused privilege. Its name is random, since a role spans the cluster that
 	// every test shares.
 	sessionUser := "sa_" + randomDatabaseSuffix(t)
-	const searchPathRead, searchPathChanged = "select current_setting('search_path')", "sp_1792, public"
+	const searchPathRead, searchPathChanged = "current_setting('search_path')", "sp_1792, public"
 	for _, row := range []struct {
 		name string
 		// role, where it is not "", is a role the row creates before its databases and drops after.
@@ -358,21 +360,21 @@ func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *
 		fixture string
 		// write is 0002, which runs the stored code.
 		write string
-		// show reads, on the runner's connection, the setting that the stored code changes, and
-		// changed is its value after 0002.
-		show, changed string
+		// read is the scalar expression that reads the setting the stored code changes, and changed
+		// is its value after 0002. The control captures read inside its own 0002, after the write.
+		read, changed string
 	}{
-		{name: "an insert that runs a column default", write: "insert into sp_default (id) values (1)", show: searchPathRead, changed: searchPathChanged},
-		{name: "an update that sets a column to its default", write: "update sp_default set sp = default", show: searchPathRead, changed: searchPathChanged},
-		{name: "an insert that runs a check constraint", write: "insert into sp_check values (1)", show: searchPathRead, changed: searchPathChanged},
-		{name: "an insert that runs a domain check", write: "insert into sp_domained values (1)", show: searchPathRead, changed: searchPathChanged},
-		{name: "an insert that runs a domain default", write: "insert into sp_domdefed (id) values (1)", show: searchPathRead, changed: searchPathChanged},
+		{name: "an insert that runs a column default", write: "insert into sp_default (id) values (1)", read: searchPathRead, changed: searchPathChanged},
+		{name: "an update that sets a column to its default", write: "update sp_default set sp = default", read: searchPathRead, changed: searchPathChanged},
+		{name: "an insert that runs a check constraint", write: "insert into sp_check values (1)", read: searchPathRead, changed: searchPathChanged},
+		{name: "an insert that runs a domain check", write: "insert into sp_domained values (1)", read: searchPathRead, changed: searchPathChanged},
+		{name: "an insert that runs a domain default", write: "insert into sp_domdefed (id) values (1)", read: searchPathRead, changed: searchPathChanged},
 		{
 			name: "an insert that runs a column default that sets session_authorization",
 			role: sessionUser,
 			fixture: "create schema " + sessionUser + "; create domain " + sessionUser + ".mood as text check (value <> 'x'); " +
 				"create table sp_session (id int, sp text default set_config('session_authorization', '" + sessionUser + "', false));",
-			write: "insert into sp_session (id) values (1)", show: "select session_user::text", changed: sessionUser,
+			write: "insert into sp_session (id) values (1)", read: "session_user::text", changed: sessionUser,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -462,17 +464,27 @@ func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *
 				t.Errorf("the relfilenode of things went from %d to %d: Postgres rewrote the table for a migration the census exempted", before, after)
 			}
 
+			// The control applies 0002 alone to a second database of the same fixture, on a pool of
+			// one connection too. It cannot read the setting through the pool after migrate: the reset
+			// the runner adds clears the connection's session before it goes back to the pool. So the
+			// control's own 0002 captures the setting after the write, inside the transaction where
+			// the stored code has already run, into a table of an explicit schema, and the control
+			// reads that table after migrate. It still fails when the stored code changes nothing: the
+			// capture would then read the pinned reset value, not changed.
 			_, controlURL := database()
 			control := runner(controlURL)
-			if err := control.migrate(ctx, fstest.MapFS{"migrations/0001_things.up.sql": base, "migrations/0002_stored_code.up.sql": write}); err != nil {
+			controlWrite := &fstest.MapFile{Data: []byte(
+				"create table public.sp_capture (value text); " + row.write +
+					"; insert into public.sp_capture (value) select " + row.read)}
+			if err := control.migrate(ctx, fstest.MapFS{"migrations/0001_things.up.sql": base, "migrations/0002_stored_code.up.sql": controlWrite}); err != nil {
 				t.Fatalf("control: migrate 0002 alone: %v", err)
 			}
 			var value string
-			if err := control.Pool.QueryRow(ctx, row.show).Scan(&value); err != nil {
-				t.Fatalf("control: %s: %v", row.show, err)
+			if err := control.Pool.QueryRow(ctx, "select value from public.sp_capture").Scan(&value); err != nil {
+				t.Fatalf("control: read the captured setting: %v", err)
 			}
 			if value != row.changed {
-				t.Errorf("control: after 0002 alone the runner's connection reads %q, want %q: the stored code did not change the session, so the row proves nothing", value, row.changed)
+				t.Errorf("control: 0002 captured %q, want %q: the stored code did not change the session, so the row proves nothing", value, row.changed)
 			}
 		})
 	}

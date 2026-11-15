@@ -160,6 +160,51 @@ func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 	}
 }
 
+// ExecNonTransactional gives session_authorization and role back in that order, each as its own
+// statement, so a caller that signed in as one login and then took a role of its own keeps both its
+// session_user and its current_user. Setting session_authorization ends a SET ROLE, and a single
+// select does not promise the order its set_config calls run in, so giving role back inside one
+// select beside session_authorization could leave current_user at the login. Each role takes the
+// name of the test's own database, which is random, since a role spans the cluster that every test
+// shares, and the roles are dropped after.
+//
+// Control: swap the restore to give role back before session_authorization (two separate statements
+// with role first, or one select with role first) and this row fails: session_user stays the login,
+// but current_user falls back to it.
+func TestExecNonTransactionalRestoresSessionAuthorizationBeforeRole(t *testing.T) {
+	ctx := context.Background()
+	url := testpg.URL(t)
+	config, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("parse the test database's URL: %v", err)
+	}
+	admin := connect(t, ctx, url)
+	login, grp := config.Database+"_login", config.Database+"_grp"
+	if _, err := admin.Exec(ctx, "create role "+login+" login; create role "+grp+"; grant "+grp+" to "+login); err != nil {
+		t.Fatal(err)
+	}
+	// Registered before conn connects, so conn closes first.
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), "drop role "+login+", "+grp); err != nil {
+			t.Errorf("drop the test's roles: %v", err)
+		}
+	})
+	conn := connect(t, ctx, url)
+	if _, err := conn.Exec(ctx, "create table things (kind text); set session authorization "+login+"; set role "+grp); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+		t.Fatal(err)
+	}
+	var currentUser, sessionUser string
+	if err := conn.QueryRow(ctx, "select current_user::text, session_user::text").Scan(&currentUser, &sessionUser); err != nil {
+		t.Fatal(err)
+	}
+	if sessionUser != login || currentUser != grp {
+		t.Errorf("current_user %q and session_user %q; want %q and %q: the restore did not give session_authorization back before role", currentUser, sessionUser, grp, login)
+	}
+}
+
 // relation is one relation of pg_class as indexState read it: its oid, whether it is an index,
 // whether that index is valid and the table it is on. The zero relation is no relation of that
 // name at all, since pg_class never gives a relation oid 0.
