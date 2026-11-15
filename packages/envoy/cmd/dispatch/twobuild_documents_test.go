@@ -277,6 +277,12 @@ func (b *twoBuilds) fleet(t *testing.T) fleetNumbers {
 	return numbers
 }
 
+// readsBelow reports whether a live process reads a lower schema version than page creates up to,
+// which the page admission refuses a writable socket for (docs.schemaFleet.admits: the page
+// creates no more than every live process reads), whichever build that process serves and whether
+// it registers its numbers or counts as reading version 0.
+func (f fleetNumbers) readsBelow(page pageParameters) bool { return f.minVersion < page.creatable }
+
 // admittedScope is the scope reader admits a socket with writer's page parameters in, by the rule
 // the page admission states (docs.schemaFleet.admits): the page creates no more than every live
 // process reads and no more than the highest any of them creates, and it reads at least what they

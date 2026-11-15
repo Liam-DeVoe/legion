@@ -25,6 +25,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -119,6 +120,95 @@ func newTwoBuilds(t *testing.T) *twoBuilds {
 	t.Helper()
 	build := openPreviousBuild(t)
 	return &twoBuilds{dispatchPair: newPair(t), build: build, binary: cmdtest.Build(t, "envoy-dispatch")}
+}
+
+// newTwoBuildsRaisingTheSchema is newTwoBuilds with this tree's envoy-dispatch built from a block
+// manifest one version above this tree's, as a release that raises the document schema is
+// (buildRaisingTheSchema), and returns the page that build presents on a document socket.
+func newTwoBuildsRaisingTheSchema(t *testing.T) (*twoBuilds, pageParameters) {
+	t.Helper()
+	build := openPreviousBuild(t)
+	binary, manifest := buildRaisingTheSchema(t)
+	// That release's page sends schema_creatable, as this tree's does
+	// (packages/dispatch/web/src/features/doc/connection.ts).
+	page := readManifest(t, manifest).page(true)
+	return &twoBuilds{dispatchPair: newPair(t), build: build, binary: binary}, page
+}
+
+// raisedBlock is the typed block the raised manifest adds (raiseManifest).
+const raisedBlock = "raised"
+
+// buildRaisingTheSchema builds this tree's envoy-dispatch with raiseManifest's manifest embedded in
+// place of its own (pmdoc's blockSchemaJSON), through go build -overlay, so its process reads,
+// creates and registers the raised numbers. It returns the binary and that manifest's path.
+//
+// go build reads the last -overlay it is given, so the overlay passed here also carries every
+// replacement of the one ENVOY_TEST_GO_OVERLAY names (cmdtest.BuildCommand), and raises the
+// manifest that one puts in place of this tree's where it puts one.
+func buildRaisingTheSchema(t *testing.T) (binary, manifest string) {
+	t.Helper()
+	embedded, err := filepath.Abs(filepath.Join("..", "..", "internal", "dispatch", "pmdoc", "schema", "blocks.json"))
+	if err != nil {
+		t.Fatalf("locate this tree's block manifest: %v", err)
+	}
+	overlay := struct{ Replace map[string]string }{Replace: map[string]string{}}
+	if probe := os.Getenv("ENVOY_TEST_GO_OVERLAY"); probe != "" {
+		raw, err := os.ReadFile(probe)
+		if err != nil {
+			t.Fatalf("read ENVOY_TEST_GO_OVERLAY: %v", err)
+		}
+		if err := json.Unmarshal(raw, &overlay); err != nil {
+			t.Fatalf("decode ENVOY_TEST_GO_OVERLAY %s: %v", probe, err)
+		}
+	}
+	dir := t.TempDir()
+	manifest = filepath.Join(dir, "blocks.json")
+	writeJSON(t, manifest, raiseManifest(t, cmp.Or(overlay.Replace[embedded], embedded)))
+	overlay.Replace[embedded] = manifest
+	overlayPath := filepath.Join(dir, "overlay.json")
+	writeJSON(t, overlayPath, overlay)
+	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-dispatch", Flags: []string{"-overlay", overlayPath}}), manifest
+}
+
+// raiseManifest is the block manifest at path as the release that introduces an element
+// creatable at once declares it (pmdoc.UseStagedBlockForTest, creatable): its version raised by
+// one, and one more typed block, raisedBlock, read and created from the raised version. So a build
+// of it reads and creates up to the raised version, and its page creates what a build of path
+// does not read.
+func raiseManifest(t *testing.T, path string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the block manifest to raise: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("decode the block manifest %s: %v", path, err)
+	}
+	version, versioned := manifest["version"].(float64)
+	types, typed := manifest["types"].([]any)
+	if !versioned || !typed {
+		t.Fatalf("the block manifest %s declares no version or no types array", path)
+	}
+	raised := int(version) + 1
+	manifest["version"] = raised
+	manifest["types"] = append(types, map[string]any{
+		"name": raisedBlock, "content": "block+", "render": "host", "attributes": map[string]any{},
+		"since": raised, "creatable_since": raised,
+	})
+	return manifest
+}
+
+// writeJSON writes value to path as JSON.
+func writeJSON(t *testing.T, path string, value any) {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("encode %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, encoded, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
 
 // options is what both builds' processes start with: the pair's NATS, the one signing key, and env.

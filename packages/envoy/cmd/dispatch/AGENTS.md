@@ -929,9 +929,14 @@ messages and the page admission's transition) start one Dispatch server of an ea
 and one of this tree on one Postgres and one NATS, as a rolling release runs them: each build's CLI
 against the other's server, each build's corpus documents read, edited, approved and opened on the
 other's document socket, outbox events, GitHub messages and the stream and consumer settings
-across a stop and restart of each build, and a page of this tree held read-only while the earlier
-build's process is live and admitted writable on its next socket once that process has left the
-registry. They build only under the `twobuild` tag and run in their
+across a stop and restart of each build, and a page of this tree built one schema version above the
+earlier build's held read-only while that build's process is live and admitted writable on its next
+socket once that process has left the registry.
+Since every release from #2461 on registers its schema numbers, the earlier build reads what this
+tree's own page creates, so the row raises this tree's block manifest by one version in a build of
+its own: that is the only way a live process reads below the page, which is what holds it
+read-only.
+They build only under the `twobuild` tag and run in their
 own CI job, `dispatch-two-builds` in `.github/workflows/ci.yaml`, which builds the previous
 release and caches that build by its commit. The earlier build is a directory
 `packages/envoy/scripts/build-dispatch-build.sh`

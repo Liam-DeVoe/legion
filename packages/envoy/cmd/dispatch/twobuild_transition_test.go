@@ -72,20 +72,21 @@ func openPageEditor(t *testing.T, server *dispatchProcess, artifactID string, pa
 	return editor
 }
 
-// waitForThePreviousBuildToLeaveTheFleet reads the registry until no live row reads schema
-// version 0, which is the row of the previous build's process (it registers no schema numbers),
-// and returns how long that took. It polls rather than sleeps, and gives up at
-// fleetDepartureBound.
-func waitForThePreviousBuildToLeaveTheFleet(t *testing.T, builds *twoBuilds) time.Duration {
+// waitForThePreviousBuildToLeaveTheFleet reads the registry until no live process reads below what
+// page creates (fleetNumbers.readsBelow): this build's process reads all of it, so that is the
+// previous build's process gone. It returns how long that took, polls rather than sleeps, and
+// gives up at fleetDepartureBound.
+func waitForThePreviousBuildToLeaveTheFleet(t *testing.T, builds *twoBuilds, page pageParameters) time.Duration {
 	t.Helper()
 	started := time.Now()
 	for deadline := started.Add(fleetDepartureBound()); ; time.Sleep(fleetPollInterval) {
-		if fleet := builds.fleet(t); fleet.minVersion > 0 {
+		fleet := builds.fleet(t)
+		if !fleet.readsBelow(page) {
 			return time.Since(started)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the %s still counts as live %s after it stopped: the fleet's lowest schema version is still 0, past a live window (%s), a heartbeat (%s) and %s of slack",
-				builds.previousName(), time.Since(started), processes.LiveWindow, processes.HeartbeatInterval, fleetDepartureSlack)
+			t.Fatalf("the %s still counts as live %s after it stopped: the fleet's lowest schema version is still %d, below the %d the page (%s) creates up to, past a live window (%s), a heartbeat (%s) and %s of slack",
+				builds.previousName(), time.Since(started), fleet.minVersion, page.creatable, page, processes.LiveWindow, processes.HeartbeatInterval, fleetDepartureSlack)
 		}
 	}
 }
@@ -101,29 +102,34 @@ func requireDocumentUnchanged(t *testing.T, builds *twoBuilds, artifactID, want,
 	}
 }
 
-// This tree's page admission is the whole fleet's, so a process of the previous build holds this
-// tree's own pages read-only while it lives: it registers no schema numbers, its row's zeros
-// count as a process that reads version 0, and no page creates at or under that
-// (docs.readSchemaFleet). This row drives the transition a rolling release makes: with both
-// builds live, a document socket of this tree's page on this tree's server is admitted read-only
-// and an edit sent through it lands nowhere; once the previous build's process has stopped and
-// its row has left the registry, the socket a reload opens - the same page, the same numbers -
-// is admitted writable, and an edit through it lands on this build's server.
+// This tree's page admission is the whole fleet's: no socket of a page is admitted writable while a
+// live process reads a lower schema version than the page creates up to (docs.readSchemaFleet,
+// docs.schemaFleet.admits). That process may register its numbers, as every build from the fleet
+// columns on does, or count as reading version 0, as a build before them does. A release that
+// leaves the schema where a registering previous build has it holds none of its pages read-only
+// beside that build, so this row drives the transition of a release that raises the schema: this
+// tree built as that release (newTwoBuildsRaisingTheSchema), whose page creates up to a version
+// the previous build's process does not read. With both builds live, a document socket of that
+// page on this build's server is admitted read-only and an edit sent through it lands nowhere;
+// once the previous build's process has stopped and its row has left the registry, the socket a
+// reload opens - the same page, the same numbers - is admitted writable, and an edit through it
+// lands on this build's server.
 //
 // The wait for the row to leave is bounded by the registry's own numbers (fleetDepartureBound)
 // and polled: a process stopped as a deploy stops it deletes its row at the end of its HTTP
 // drain, so it leaves at once, and only a process killed without deregistering spends the window.
 func TestThisBuildsPageTurnsWritableOnceThePreviousBuildsProcessLeavesTheFleet(t *testing.T) {
-	builds := newTwoBuilds(t)
+	builds, page := newTwoBuildsRaisingTheSchema(t)
 	builds.startPrevious(t, nil)
 	current := builds.startCurrent(t, nil)
-	sides := builds.documentSides(t)
-	page := sides[1].page
 
-	if fleet := builds.fleet(t); fleet.minVersion != 0 {
-		t.Fatalf("the fleet's lowest schema version is %d with the %s live; this row needs a previous build that registers no schema numbers, whose row reads 0",
-			fleet.minVersion, builds.previousName())
+	fleet := builds.fleet(t)
+	if !fleet.readsBelow(page) {
+		t.Fatalf("with the %s live, the fleet's lowest schema version is %d, which reads everything this build's page (%s) creates, up to %d: no live process reads below the page, so the fleet cannot hold it read-only",
+			builds.previousName(), fleet.minVersion, page, page.creatable)
 	}
+	t.Logf("with the %s live, the fleet's lowest schema version is %d and its highest creatable %d; this build's page (%s) creates up to %d",
+		builds.previousName(), fleet.minVersion, fleet.maxCreatable, page, page.creatable)
 
 	project := uniqueProjectKey(t, "XBT")
 	current.createProject(t, project, "Two builds, one leaving")
@@ -131,8 +137,8 @@ func TestThisBuildsPageTurnsWritableOnceThePreviousBuildsProcessLeavesTheFleet(t
 
 	socket := openDocumentSocket(t, current, artifactID, page)
 	if socket.scope != readOnlyScope {
-		t.Fatalf("with the %s live, the current build admits a socket of its own page (%s) as %q, want %q: that process registers no schema numbers, so the fleet reads version 0",
-			builds.previousName(), page, socket.scope, readOnlyScope)
+		t.Fatalf("with the %s live, the current build admits a socket of its own page (%s) as %q, want %q: the fleet's lowest schema version is %d, below the %d the page creates up to",
+			builds.previousName(), page, socket.scope, readOnlyScope, fleet.minVersion, page.creatable)
 	}
 
 	editor := openPageEditor(t, current, artifactID, page, transitionRender)
@@ -146,7 +152,7 @@ func TestThisBuildsPageTurnsWritableOnceThePreviousBuildsProcessLeavesTheFleet(t
 	editor.Close()
 
 	stop(t, builds.previous())
-	waited := waitForThePreviousBuildToLeaveTheFleet(t, builds)
+	waited := waitForThePreviousBuildToLeaveTheFleet(t, builds, page)
 	t.Logf("the %s left the fleet %s after its stop, inside the bound of %s (a live window, a heartbeat and %s of slack)",
 		builds.previousName(), waited.Round(time.Millisecond), fleetDepartureBound(), fleetDepartureSlack)
 
