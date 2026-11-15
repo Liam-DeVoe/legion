@@ -32,9 +32,17 @@ type scriptedRelease struct {
 	dry    api.ProjectReleaseResponse
 	reads  int
 	starts []api.ProjectReleaseRequest
+	// dryTakes is how long a dry run's start takes before it answers.
+	dryTakes time.Duration
 }
 
-func (r *scriptedRelease) Start(_ context.Context, bound time.Duration, dryRun bool) (api.ProjectReleaseResponse, bool, error) {
+func (r *scriptedRelease) Start(ctx context.Context, bound time.Duration, dryRun bool) (api.ProjectReleaseResponse, bool, error) {
+	if dryRun && r.dryTakes > 0 {
+		select {
+		case <-ctx.Done():
+		case <-time.After(r.dryTakes):
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	request := api.ProjectReleaseRequest{DryRun: dryRun}
@@ -264,6 +272,16 @@ func TestProjectReleaseExitsOneWhenTheWaitEndsFirst(t *testing.T) {
 	}
 	if !strings.Contains(out, "sandbox legion-legion-legion-208 issue LEGION-208 waiting") {
 		t.Fatalf("legion project release printed %q, want the release as it stands", out)
+	}
+}
+
+// A dry run whose request is not answered within --wait exits 1 saying that a dry run records and
+// starts nothing, not that a release goes on in the daemon: nothing was started.
+func TestProjectReleaseDryRunTheWaitEndsSaysNothingStarted(t *testing.T) {
+	d := releaseDaemon(t, &scriptedRelease{dryTakes: 3 * time.Second})
+	code, _, errb := d.projectRelease(append(d.reach(), "--dry-run", "--wait", "300ms")...)
+	if code != 1 || !strings.Contains(errb, "a dry run records and starts nothing") || strings.Contains(errb, "goes on in the daemon") {
+		t.Fatalf("legion project release --dry-run --wait 300ms = %d, stderr %q; want 1 saying the dry run started nothing", code, errb)
 	}
 }
 

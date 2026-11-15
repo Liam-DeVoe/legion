@@ -69,6 +69,10 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 	// answers that release when it is run again.
 	c.until = waitUntil(began, *wait, *bound)
 	c.waitEnded = func(method, url string) string {
+		if *dryRun {
+			return fmt.Sprintf("%s %s was not answered before the command's wait of %s ended; a dry run records and starts nothing",
+				method, url, time.Since(began).Round(time.Second))
+		}
 		return fmt.Sprintf("%s %s was not answered before the command's wait of %s ended; the release goes on in the daemon. Run this command again to read it",
 			method, url, time.Since(began).Round(time.Second))
 	}
@@ -91,8 +95,7 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 			c.name, release.ID)
 	}
 	if *wait == 0 {
-		named, _ := time.ParseDuration(release.Bound)
-		c.until = waitUntil(began, 0, named)
+		c.until = waitUntil(began, 0, release.BoundAt.Sub(release.StartedAt))
 	}
 	for release.FinishedAt == nil && release.EndedAt == nil {
 		left := time.Until(c.until)
