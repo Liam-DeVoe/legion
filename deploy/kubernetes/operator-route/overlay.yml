@@ -37,8 +37,9 @@ disabledProviders:
 # "Changing a role's model"). On 2026-11-15 that gateway answered claude-opus-5-5 and
 # claude-sonnet-5-5, so the opus and sonnet roles moved to them, and answered claude-fable-5-2,
 # which the pinned build catalogues, with 404, so the fable roles stay on claude-fable-5-1 until it
-# serves it. The older models stay in enabledModels and both models files: a resumed session
-# restores its own model.
+# serves it. The older models stay in enabledModels and both models files, for a session resumed
+# without --model, which restores the model its file records; a Legion launch names
+# --model @default and restores none.
 modelRoles:
   default: anthropic/claude-fable-5-1:xhigh
   plan: anthropic/claude-fable-5-1:max

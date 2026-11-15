@@ -13,7 +13,7 @@ later phase keeps it current rather than replacing it:
 ## For the reviewer
 
 **Outcome:** <one sentence a user of this repository would recognise: what someone can now do, or what stops going wrong>
-**Why:** <the problem, one or two sentences, ending with the Dispatch key in parentheses — the key only, never a URL>
+**Why:** <the problem, one or two sentences, ending with the Dispatch key in parentheses — the key only, never a URL, and no other issue's key before it>
 **Change:**
 - <two to five bullets, each one behaviour a user or operator meets, never a file name>
 **Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line)
