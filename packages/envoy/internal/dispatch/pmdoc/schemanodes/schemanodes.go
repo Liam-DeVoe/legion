@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -103,10 +105,38 @@ type attributeAttributes struct {
 // It refuses a store holding no block type, since installing that would leave the server
 // unable to read a single typed block, and a node it cannot decode. Everything else it cannot
 // address it skips.
-func Read(ctx context.Context, q graphstore.Queryer) (pmdoc.BlockSchema, error) {
+//
+// Its reads - the attribute nodes, the supertag nodes and each supertag's tuples - run in one
+// read-only transaction at repeatable read, as docs.PgVersioned's compaction read does, so they
+// all read one snapshot: a migration that commits between two of them is read whole by the next
+// Read and not at all by this one, never half.
+func Read(ctx context.Context, db Beginner) (pmdoc.BlockSchema, error) {
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return pmdoc.BlockSchema{}, fmt.Errorf("begin the block schema read: %w", err)
+	}
+	// The transaction reads only, so its end is a rollback whatever happened.
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	return read(ctx, tx)
+}
+
+// Beginner is what Read opens its transaction on: the store's pool, or a test's stand-in.
+type Beginner interface {
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+}
+
+// afterAttributeNodesRead runs, when a test sets it, between read's first read and its second:
+// where a migration that commits would give a read outside one snapshot a mixed value.
+var afterAttributeNodesRead func()
+
+// read is Read inside its transaction, q.
+func read(ctx context.Context, q graphstore.Queryer) (pmdoc.BlockSchema, error) {
 	attributes, err := readAttributeNodes(ctx, q)
 	if err != nil {
 		return pmdoc.BlockSchema{}, err
+	}
+	if afterAttributeNodesRead != nil {
+		afterAttributeNodesRead()
 	}
 	supertags, err := graphstore.NodesOfKind(ctx, q, KindSupertag)
 	if err != nil {

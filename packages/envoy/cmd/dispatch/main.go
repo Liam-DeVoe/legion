@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -796,15 +797,24 @@ func main() {
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
 	// The block schema the store holds, read again each time a supertag write announces itself.
-	// A read that fails leaves the installed schema in place and is made again; a store schema
-	// above this build's installs nothing and makes /healthz answer 503 with that version as
-	// its reason. A read that moved the schema this process serves closes its document sockets,
-	// so each editor connects again and its admission decides against the schema installed now,
-	// rather than writing against types this process no longer holds.
+	// A read that fails, and a value the install refuses, leaves the installed schema in place
+	// and is read again; a store a newer build migrated is installed at this build's own
+	// version (pmdoc.Install). A read that moved the schema this process serves first writes the
+	// numbers it serves now into its registry row, which every process's socket admission reads,
+	// and then closes its document sockets, so each editor connects again and its admission
+	// decides against the schema installed now, rather than writing against types this process
+	// no longer holds. The registration is made further down, once this process holds its
+	// listener, so the installer reaches it through registered.
+	var registered atomic.Pointer[processes.Registration]
 	go (&schemanodes.Installer{
-		Store:    database.Pool,
-		Wake:     schemaWake,
-		OnSwitch: func() { documentService.CloseDocumentSockets() },
+		Store: database.Pool,
+		Wake:  schemaWake,
+		OnSwitch: func() {
+			if registration := registered.Load(); registration != nil {
+				refreshRegistrySchema(ctx, registration)
+			}
+			documentService.CloseDocumentSockets()
+		},
 	}).Run(ctx)
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
 	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
@@ -1066,6 +1076,11 @@ func main() {
 		slog.Error("dispatch: register this server process", "error", err)
 		exitAfterIntakes()
 	}
+	// From here a reinstall that moves the schema refreshes this row before it closes the
+	// document sockets; the refresh after it covers a reinstall that came after the registration
+	// read the numbers and before the installer could reach the registration.
+	registered.Store(registration)
+	refreshRegistrySchema(ctx, registration)
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
@@ -1869,12 +1884,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	})
 }
 
-// healthzHandler answers the readiness probe: 200 while this process can serve requests, and 503
-// while it cannot; `ok` says the same. Two things decide it. Postgres answering on the health
-// pool's own connection is one. The other is the store's block schema being one this build can
-// address: a process that reads a schema version above the one it was built for installs nothing
-// and answers 503 with `not_ready` naming both versions, which is how the deployment learns to
-// replace it (pmdoc.NotReadyReason; the field is left out while the process is ready). Nothing
+// healthzHandler answers the readiness probe: 200 while this process can serve requests, which is
+// while Postgres answers on the health pool's own connection, and 503 while it does not; `ok` says
+// the same. The store's block schema never decides it: a store a newer build migrated is installed
+// at this build's own version (pmdoc.Install), and the process keeps serving, so a release that
+// ships a type migration takes no process of the previous build out of service. Nothing
 // here waits on the shared pool, and each probe bounds its own wait
 // (store.healthProbeTimeout, files.healthTimeout), which records why a probe that answers late is
 // as bad as one that never answers. The database and file-store probes run side by side: each
@@ -1974,16 +1988,7 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			serviceTokensOK = &discovered
 		}
 		<-filesProbed
-		// The other reason this process cannot serve: the store's block schema is above the
-		// version this build was made for, so it can address neither the types a document
-		// holds nor the writes against them. It is reported as the reason, since a 503 with
-		// no reason leaves an operator to guess which of the two outages this is, and the
-		// deployment replaces this pod with one carrying the binary that handles the version.
-		var notReady *string
-		if reason := pmdoc.NotReadyReason(); reason != "" {
-			notReady = &reason
-		}
-		ok := databaseOK && notReady == nil
+		ok := databaseOK
 		status := http.StatusOK
 		if !ok {
 			status = http.StatusServiceUnavailable
@@ -2002,11 +2007,10 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			SchemaVersion   *int    `json:"schema_version"`
 			OutboxPublisher bool    `json:"outbox_publisher"`
 			IdempotencyKeys bool    `json:"idempotency_keys"`
-			NotReady        *string `json:"not_ready,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
-			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, NotReady: notReady,
+			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
 		})
 	}
 }

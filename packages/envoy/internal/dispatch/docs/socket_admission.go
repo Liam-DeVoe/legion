@@ -105,16 +105,6 @@ func refuseNewerContent(w http.ResponseWriter, r *http.Request, room string, cau
 	closeRefusedSocket(w, r, documentNewerContentCloseCode, contracts.DocumentNewerContentCloseReason)
 }
 
-// refuseOutsideInstalledSchema closes a socket this process cannot admit because the schema it
-// serves is not the store's: the store holds a version above the one this build was made for, so
-// nothing is installed and the process is not ready (pmdoc.NotReadyReason). It is the same close
-// the switch gives the sockets it already holds (CloseDocumentSockets), so a browser reads it the
-// one way it reads that code - admit the document again - and a deployment replaces the process.
-func refuseOutsideInstalledSchema(w http.ResponseWriter, r *http.Request, room, reason string) {
-	slog.Warn("dispatch: refuse a document socket; this process serves no schema", "room", room, "reason", reason)
-	closeRefusedSocket(w, r, documentSchemaCloseCode, contracts.DocumentSchemaCloseReason)
-}
-
 // closeRefusedSocket completes the upgrade only to close it with code and reason. The zero
 // upgrader keeps the same-origin rule ygo's own upgrade applies with no AllowedOrigins
 // configured.
@@ -161,26 +151,35 @@ func (s *Service) holdDocumentSocket(close context.CancelCauseFunc) (release fun
 	return func() { s.documentSockets.Delete(held) }
 }
 
+// refuseSwitchedAdmission closes a socket whose admission a schema switch overtook: the switch
+// came after its admission read the document against the installed schema and before the socket
+// was held where the switch closes it (ServeHTTP), so the switch's own close missed it. It is the
+// close the switch gives the sockets it holds, so the browser reads it the one way it reads that
+// code: it admits the document again, against the schema installed now.
+func refuseSwitchedAdmission(w http.ResponseWriter, r *http.Request, room string) {
+	slog.Info("dispatch: close a document socket whose admission a schema switch overtook; the provider reconnects", "room", room)
+	closeRefusedSocket(w, r, documentSchemaCloseCode, contracts.DocumentSchemaCloseReason)
+}
+
 // CloseDocumentSockets closes every document socket this process holds, with the close code the
 // browser reads as "the schema moved" (documentSchemaCloseCode), and answers how many it closed.
-// The server runs it after an install that moved the schema it serves, including the install that
-// left it serving none (pmdoc.NotReadyReason): a socket was admitted on the schema version its
-// browser presented, against the schema this process served as it connected, and the fleet's
-// re-check (RunSchemaAdmission) closes only a writable socket the live processes no longer admit,
-// a live window later, so a socket kept open across a switch would be writing against types this
-// process no longer holds. The browser reads the close, reads the document's text again and
-// connects again presenting the schema it was built with, and that connection's admission
-// (schemaFleet.admits) decides against the schema this process now serves; a process serving no
-// schema admits none of those reconnects (refuseOutsideInstalledSchema) until it is replaced.
+// The server runs it after an install that moved the schema it serves: a socket was admitted on
+// the schema version its browser presented, against the schema this process served as it
+// connected, and the fleet's re-check (RunSchemaAdmission) closes only a writable socket the live
+// processes no longer admit, a live window later, so a socket kept open across a switch would be
+// writing against types this process no longer holds. The browser reads the close, reads the
+// document's text again and connects again presenting the schema it was built with, and that
+// connection's admission (schemaFleet.admits) decides against the schema this process now serves.
 //
-// It runs on the installer's own goroutine and closes each socket by cancelling the socket's
-// context, the one a re-check cancels too, which is the one way a close reaches a peer with a
-// code of its own; the socket's own goroutine tears it down and forgets it.
+// It counts the switch (schemaSwitches) before it closes anything, so a socket whose admission
+// ran before the switch and which is held only after this has passed it sees the count move and
+// is closed by its own ServeHTTP instead (refuseSwitchedAdmission). It runs on the installer's
+// own goroutine and closes each socket by cancelling the socket's context, the one a re-check
+// cancels too, which is the one way a close reaches a peer with a code of its own; the socket's
+// own goroutine tears it down and forgets it.
 func (s *Service) CloseDocumentSockets() int {
-	reason := pmdoc.NotReadyReason()
-	if reason == "" {
-		reason = fmt.Sprintf("the installed block schema is version %d", pmdoc.SchemaVersion())
-	}
+	s.schemaSwitches.Add(1)
+	reason := fmt.Sprintf("the installed block schema is version %d", pmdoc.SchemaVersion())
 	closed := 0
 	s.documentSockets.Range(func(_, value any) bool {
 		// holdDocumentSocket is the one writer of this map and stores a
@@ -223,9 +222,10 @@ func socketRoom(r *http.Request) string {
 // load failed or panicked - gives it back. The room's place the socket gives back however it ends,
 // and a room ygo loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
 //
-// A process whose store schema is above the one this build was made for installs nothing and
-// serves no schema (pmdoc.NotReadyReason, which also answers /healthz 503): it admits no socket
-// at all, and closes the ones it holds (CloseDocumentSockets), until the deployment replaces it.
+// A schema switch closes every socket this process holds (CloseDocumentSockets), and one that
+// comes after a socket's admission read its document and before the socket is held is caught as
+// the socket is held: the admission reads the count of switches first and again once the socket
+// is held, and a count that moved closes it the same way (refuseSwitchedAdmission).
 //
 // The room's name has to be the document's id as Dispatch writes it, lower case and hyphenated,
 // and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free run of hex,
@@ -257,10 +257,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(room)
 	if err != nil {
 		http.Error(w, "document not found", http.StatusNotFound)
-		return
-	}
-	if reason := pmdoc.NotReadyReason(); reason != "" {
-		refuseOutsideInstalledSchema(w, r, room, reason)
 		return
 	}
 	if id.String() != room {
@@ -306,6 +302,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.afterSocketIssueRead != nil {
 		s.afterSocketIssueRead(room)
 	}
+	switches := s.schemaSwitches.Load()
 	withdraw, documentSince, err := s.admitDocument(ctx, room)
 	if errors.Is(err, ErrDocNewerContent) {
 		refuseNewerContent(w, r, room, err)
@@ -322,11 +319,21 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer withdraw()
 	connection.admission.documentSince = documentSince
 	ctx = context.WithValue(ctx, connectionContextKey{}, connection)
+	if s.afterSocketAdmitted != nil {
+		s.afterSocketAdmitted(room)
+	}
 	// The schema switch ends every socket this process holds on a schema it no longer serves
 	// through the same context a re-check closes it by, with a cause of its own
 	// (CloseDocumentSockets). ygo closes the peer when this context ends, with the close code
 	// the cause names.
 	defer s.holdDocumentSocket(cancel)()
+	// A switch counted since the admission read the document was decided against a schema this
+	// process may no longer serve, and its close ran before this socket was held, or ran while
+	// it was being held: either way this socket is closed here, before ygo sends any of it.
+	if s.schemaSwitches.Load() != switches {
+		refuseSwitchedAdmission(w, r, room)
+		return
+	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
 	// frames (awareness_limit.go).
 	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))

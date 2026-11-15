@@ -5,8 +5,9 @@
  *
  * Only the two-process lane runs this (`bun run e2e:multiprocess`): a second browser connection is
  * not a second process, so every read below is pinned to a process of its own
- * (`e2e/harness-processes.ts`). The migration itself, and why a browser run moves the version up
- * to the binary's own rather than past it, is `e2e/block-schema.ts`.
+ * (`e2e/harness-processes.ts`). The migration itself - the release after this build's, which a
+ * process of this build installs at its own version, taking the type every build reads - is
+ * `e2e/block-schema.ts`.
  *
  * Which of the two is held back is discovered, not assumed. A process names its listener
  * connection in `pg_stat_activity` by its own id (`docs.ListenerApplicationPrefix`), and no answer
@@ -33,10 +34,11 @@ import {
   documentWithAddedType,
   installedVersion,
   listeners,
-  priorSchemaVersion,
+  NEWER_TYPE,
   processStartTimes,
   restoreStoreSchema,
-  storeSchemaBeforeTheChange,
+  servesAddedType,
+  servesType,
 } from "./block-schema";
 import { connectedDot, documentEditor, typeAtEnd } from "./editor";
 import {
@@ -58,7 +60,7 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   await restoreStoreSchema();
   for (const target of dispatchProcesses) {
-    await expect.poll(() => installedVersion(target), { timeout: 30_000 }).toBe(builtSchemaVersion);
+    await expect.poll(() => servesAddedType(target), { timeout: 30_000 }).toBe(false);
   }
 });
 
@@ -146,9 +148,11 @@ test("two processes agree on the installed schema", async ({ browser }) => {
     `:::${ADDED_TYPE}`
   );
 
-  await storeSchemaBeforeTheChange();
+  // The store before the change is the one it ships with: both processes serve this build's
+  // version, and neither the type the migration adds.
   for (const target of dispatchProcesses) {
-    await expect.poll(() => installedVersion(target), { timeout: 30_000 }).toBe(priorSchemaVersion);
+    await expect.poll(() => installedVersion(target), { timeout: 30_000 }).toBe(builtSchemaVersion);
+    expect(await servesAddedType(target), `process ${target} before the change`).toBe(false);
   }
   const startedBefore = await processStartTimes();
   expect(startedBefore.split("\n")).toHaveLength(2);
@@ -175,50 +179,52 @@ test("two processes agree on the installed schema", async ({ browser }) => {
     await applySupertagMigration({ stopListenerOf: names[1] });
 
     // Which process is behind, read rather than assumed. The process that is listening installs
-    // the new schema within milliseconds of the commit, and the one whose listener was stopped
-    // holds the old version until its hub redials, which `pglisten` does not do for a second or
-    // more: the two are read until they differ, well inside that second, rather than once, which
-    // would race the install of the process that did hear the notification. That read is a poll
-    // - both versions every 25 ms until they differ - so nothing here spends a guessed number
-    // of milliseconds, and `held` carries the pair the reads settled on into the assertion
-    // below, which is what names the two versions when they never do differ.
-    let held: Record<DispatchProcess, number> = { a: priorSchemaVersion, b: priorSchemaVersion };
+    // the new schema within milliseconds of the commit - at its own version, with the added type
+    // - and the one whose listener was stopped holds the schema it had until its hub redials,
+    // which `pglisten` does not do for a second or more: the two are read until they differ, well
+    // inside that second, rather than once, which would race the install of the process that did
+    // hear the notification. That read is a poll - both every 25 ms until they differ - so
+    // nothing here spends a guessed number of milliseconds, and `held` carries what the reads
+    // settled on into the assertion below, which is what names the two when they never differ.
+    let held: Record<DispatchProcess, boolean> = { a: false, b: false };
     await expect
       .poll(
         async () => {
-          const [versionA, versionB] = await Promise.all([
-            installedVersion("a"),
-            installedVersion("b"),
+          const [servesA, servesB] = await Promise.all([
+            servesAddedType("a"),
+            servesAddedType("b"),
           ]);
-          held = { a: versionA, b: versionB };
-          return new Set([versionA, versionB]).size;
+          held = { a: servesA, b: servesB };
+          return servesA !== servesB;
         },
         {
           intervals: [25],
           message:
-            "the two processes hold two different installed schema versions: the one whose " +
-            "listener the migration stopped still holds the version it had, and the one that " +
-            "heard the notification has installed the new one",
+            "the two processes serve two different schemas: the one whose listener the " +
+            `migration stopped still serves no ${ADDED_TYPE}, and the one that heard the ` +
+            "notification has installed it",
           timeout: 600,
         }
       )
-      .toBe(2);
-    const behind = dispatchProcesses.filter((target) => held[target] === priorSchemaVersion);
-    const ahead = dispatchProcesses.filter((target) => held[target] === builtSchemaVersion);
+      .toBe(true);
+    const behind = dispatchProcesses.filter((target) => !held[target]);
+    const ahead = dispatchProcesses.filter((target) => held[target]);
     expect(
       { ahead: ahead.length, behind: behind.length },
-      `after the migration process a held ${held.a} and b held ${held.b}, want one of each`
+      `after the migration process a served ${ADDED_TYPE} ${held.a} and b ${held.b}, want one of each`
     ).toEqual({ ahead: 1, behind: 1 });
     const second = behind[0] as DispatchProcess;
+    const describe = (target: DispatchProcess) =>
+      held[target] ? `the schema holding ${ADDED_TYPE}` : `the schema before the migration`;
 
-    // The transition: the second process still holds the old version, so a document holding a
-    // block of the new type written through it is refused rather than stored under that version.
+    // The transition: the second process still holds the old schema, so a document holding a
+    // block of the new type written through it is refused rather than stored under that schema.
     const lost = "A claim the second process has not learned.";
     const refused = await uploadThrough(second, issue.key, "notes.md", documentWithAddedType(lost));
     // Every assertion from here names the process, the version it held at the transition and the
     // write it took, so a failure says which process took what.
     const took = (target: DispatchProcess, write: { body: string; status: number }) =>
-      `process ${target}, holding schema version ${held[target]}, answered the write ` +
+      `process ${target}, holding ${describe(target)}, answered the write ` +
       `${write.status} ${write.body}`;
     // The stored versions are read before the answer is judged: a stale process that took the
     // write and dropped the block it cannot hold has stored a version without it, and the
@@ -248,15 +254,26 @@ test("two processes agree on the installed schema", async ({ browser }) => {
     expect(transition.newest, took(second, refused)).not.toContain(`:::${ADDED_TYPE}`);
 
     // The second process handles its notification once its listener is back: `pglisten.Hub`
-    // redials, every wake is signalled after that LISTEN, and the installer reads the store. The
-    // installed version then reads equal on both.
+    // redials, every wake is signalled after that LISTEN, and the installer reads the store. Both
+    // then serve the added type, at one installed version, this build's own: the store is at the
+    // version past it, whose own type neither installs.
     for (const target of dispatchProcesses) {
       await expect
-        .poll(() => installedVersion(target), {
-          message: `${took(target, refused)}; it never installed version ${builtSchemaVersion}`,
+        .poll(() => servesAddedType(target), {
+          message: `${took(target, refused)}; it never installed ${ADDED_TYPE}`,
           timeout: 30_000,
         })
-        .toBe(builtSchemaVersion);
+        .toBe(true);
+    }
+    const [versionA, versionB] = await Promise.all([installedVersion("a"), installedVersion("b")]);
+    expect(
+      { a: versionA, b: versionB },
+      `${took(second, refused)}; the installed versions once both read the store`
+    ).toEqual({ a: builtSchemaVersion, b: builtSchemaVersion });
+    for (const target of dispatchProcesses) {
+      expect(await servesType(NEWER_TYPE, target), `process ${target} serves ${NEWER_TYPE}`).toBe(
+        false
+      );
     }
 
     // The same document written again through the second process stores the new block, in a
@@ -278,7 +295,8 @@ test("two processes agree on the installed schema", async ({ browser }) => {
     expect(await processStartTimes(), took(second, taken)).toBe(startedBefore);
 
     // The editor socket opened before the change writes again, with no reload: the tab lost its
-    // socket to the switch, read the installed schema and connected with it.
+    // socket to the switch and connected again with the schema its build compiled, which the
+    // second process's admission takes as writable.
     const page = pages[second] as Page;
     await expect(connectedDot(page), took(second, taken)).toHaveText("connected");
     await typeAndStore(page, artifact, `Typed on process ${second} after the switch.`);

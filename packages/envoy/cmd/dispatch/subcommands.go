@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -190,9 +191,11 @@ func committedOpenAPIPath() (string, error) {
 	}
 }
 
-// openMigrated opens the database a DB subcommand works on and brings it to the current
-// schema, reporting each failure on out under the subcommand's label. The caller closes the
-// returned store's pool.
+// openMigrated opens the database a DB subcommand works on, brings it to the current schema and
+// installs the block schema the store's type nodes build (schemanodes.InstallFromStore), as the
+// server's boot does beside its own migration run, so a subcommand that parses, renders or writes
+// a document holds it to the store's types rather than to the file this binary embeds. It reports
+// each failure on out under the subcommand's label. The caller closes the returned store's pool.
 func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(out, label+": DATABASE_URL is required")
@@ -205,6 +208,11 @@ func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer)
 	}
 	if err := database.Migrate(ctx); err != nil {
 		fmt.Fprintf(out, "%s: migrate database: %v\n", label, err)
+		database.Pool.Close()
+		return nil, false
+	}
+	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
 		database.Pool.Close()
 		return nil, false
 	}

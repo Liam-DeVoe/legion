@@ -26,11 +26,12 @@ import {
   documentWithAddedType,
   installedVersion,
   listeners,
-  priorSchemaVersion,
+  NEWER_TYPE,
+  newerSchemaVersion,
   processStartTimes,
   restoreStoreSchema,
   servesAddedType,
-  storeSchemaBeforeTheChange,
+  servesType,
 } from "./block-schema";
 import { connectedDot, documentEditor, typeAtEnd } from "./editor";
 import { sql } from "./psql";
@@ -55,7 +56,7 @@ test.afterEach(async () => {
   await restoreStoreSchema();
   // The server serves the schema it installed, so the next spec reads the shipped one only once
   // this process has read the restore's announcement.
-  await expect.poll(() => installedVersion()).toBe(builtSchemaVersion);
+  await expect.poll(() => servesAddedType()).toBe(false);
 });
 
 /** The document this run types in: an issue's spec, opened at `/issues/<key>/spec`. */
@@ -103,37 +104,53 @@ async function newestStoredMarkdown(artifact: string): Promise<string> {
   return (await getArtifactVersion(artifact, newest.number)).markdown;
 }
 
-/** The schema version each document socket the page opens for `artifact` presented, in the order
- *  the page opened them. The tab names the block schema it read in the socket's own URL
- *  (`schema_version`, which `web/src/features/doc/connection.ts` hands the provider), and the
- *  server admits a socket writable only where that is the version it installed, so the URL says
- *  which schema each connection was made with. The list's length is the sockets opened. */
-function presentedSchemaVersions(page: Page, artifact: string): string[] {
+/** The schema each document socket the page opens for `artifact` presented, in the order the page
+ *  opened them: the version and the highest version that reads what the page creates, which the
+ *  tab names in the socket's own URL (`schema_version` and `schema_creatable`, which
+ *  `web/src/features/doc/connection.ts` hands the provider). A page presents what its own build
+ *  compiled (`features/doc/schema.ts`), never what a server answers, and the server's admission
+ *  decides on it. The list's length is the sockets opened. */
+function presentedSchemas(page: Page, artifact: string): string[] {
   const presented: string[] = [];
   page.on("websocket", (socket) => {
     const url = new URL(socket.url());
     if (url.pathname === `/ws/doc/${artifact}`) {
-      presented.push(url.searchParams.get("schema_version") ?? "none");
+      presented.push(
+        `${url.searchParams.get("schema_version") ?? "none"}/${url.searchParams.get("schema_creatable") ?? "none"}`
+      );
     }
   });
   return presented;
+}
+
+/** Every request the page makes for the block schema, which a page of this build never makes: it
+ *  builds its editors from the manifest it was built with and presents that one's numbers. */
+function schemaReads(page: Page): string[] {
+  const reads: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/v1/schema/blocks") {
+      reads.push(request.url());
+    }
+  });
+  return reads;
 }
 
 // SLOW(>=2s): one live editor across a supertag migration - the store moved under the running
 // server, the socket closed and opened again, and a settled version read back.
 test("a supertag change leaves an open editor writing", async ({ browser }, testInfo) => {
   const { artifact, key } = await issueWithASpec("A supertag change");
-  // The store before the change: the version below this build's, with the added type absent. The
-  // page's own schema read then presents that version to the socket it opens.
-  await storeSchemaBeforeTheChange();
-  await expect.poll(() => installedVersion()).toBe(priorSchemaVersion);
+  // The store before the change is the one it ships with: this build's version, and no block of
+  // the type the migration adds.
+  await expect.poll(() => installedVersion()).toBe(builtSchemaVersion);
+  expect(await servesAddedType()).toBe(false);
   const startedBefore = await processStartTimes();
   expect(startedBefore).not.toBe("");
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    const presented = presentedSchemaVersions(page, artifact);
+    const presented = presentedSchemas(page, artifact);
+    const reads = schemaReads(page);
     await page.goto(`/issues/${key}/spec`);
     await expect(documentEditor(page)).toContainText("The first line.");
     await expect(connectedDot(page)).toHaveText("connected");
@@ -143,10 +160,18 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
     await expect
       .poll(async () => (await getArtifactText(artifact)).markdown)
       .toContain("Typed before the switch.");
+    expect(presented, "the tab has opened one document socket before the change").toHaveLength(1);
+    const compiled = presented[0] ?? "";
+    expect(
+      compiled.startsWith(`${builtSchemaVersion}/`),
+      `the tab's first socket presented ${compiled}, want the version its build compiled, ${builtSchemaVersion}`
+    ).toBe(true);
 
-    // The migration, with this process's listener stopped in the same psql session right before
-    // the commit: the notification reaches nobody, so the process holds the schema it has until
-    // its hub redials, and the test can read that it is still behind.
+    // The migration, of the release after this build: it raises the store to the version past
+    // this build's, adds a type every build reads and one only that newer version reads. This
+    // process's listener is stopped in the same psql session right before the commit: the
+    // notification reaches nobody, so the process holds the schema it has until its hub redials,
+    // and the test can read that it is still behind.
     const [listener] = await listeners();
     expect(listener, "the server process names its listener connection").toBeDefined();
     await applySupertagMigration({ stopListenerOf: listener });
@@ -155,19 +180,17 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
     // still on the old schema, so a document holding a block of the new type is refused rather
     // than stored under it. The write goes through the tab, whose socket is still the one it
     // opened before the change: the tab reads connected, and it has opened one document socket,
-    // presenting the old version, because a process that has not installed the new schema has
-    // closed nothing. That is what puts the write inside the window between the migration's
-    // commit and the socket's return.
-    expect(await installedVersion()).toBe(priorSchemaVersion);
+    // because a process that has not installed the new schema has closed nothing. That is what
+    // puts the write inside the window between the migration's commit and the socket's return.
+    expect(await servesAddedType()).toBe(false);
     await expect(
       connectedDot(page),
       "the tab stays connected while the migration commits"
     ).toHaveText("connected");
     expect(
       presented,
-      "the tab has opened one document socket, presenting the old schema, so the switch has not " +
-        "yet closed it and opened another"
-    ).toEqual([String(priorSchemaVersion)]);
+      "the tab has opened one document socket, so the switch has not yet closed it and opened another"
+    ).toHaveLength(1);
     const refused = await writeThroughTheTab(
       page,
       key,
@@ -182,12 +205,17 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
 
     // The process reinstalls after its next LISTEN rather than staying behind for ever: its hub
     // redials within a second or two of the terminated connection, every wake is signalled after
-    // that LISTEN, and the installer reads the store.
-    await expect.poll(() => installedVersion(), { timeout: 15_000 }).toBe(builtSchemaVersion);
-    expect(await servesAddedType()).toBe(true);
+    // that LISTEN, and the installer reads the store. It installs the store at its own version,
+    // with the type every build reads and without the one the newer version introduces.
+    await expect.poll(() => servesAddedType(), { timeout: 15_000 }).toBe(true);
+    expect(
+      await installedVersion(),
+      `the process over a store at version ${newerSchemaVersion} serves its own version`
+    ).toBe(builtSchemaVersion);
+    expect(await servesType(NEWER_TYPE)).toBe(false);
 
-    // The tab loses its socket to that switch, reads the installed schema and connects again
-    // with it. The second socket is the one that proves the reconnect.
+    // The tab loses its socket to that switch and connects again. The second socket is the one
+    // that proves the reconnect.
     await expect
       .poll(() => presented.length, {
         message:
@@ -199,23 +227,28 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
       })
       .toBeGreaterThanOrEqual(2);
     await expect(connectedDot(page)).toHaveText("connected");
-    // The socket it opened again presents the version the server installed: the tab re-read the
-    // block schema before it connected, rather than reconnecting with the one it held.
+    // The socket it opened again presents what its build compiled, as the first did: the page
+    // read no schema from the server, and the server's admission decided on those numbers.
     expect(
       presented[1],
-      `the second document socket presented schema version ${presented[1]}, want the installed ` +
-        `${builtSchemaVersion}; every socket presented ${presented.join(", ")}`
-    ).toBe(String(builtSchemaVersion));
+      `the second document socket presented ${presented[1]}, want what the tab's build compiled, ` +
+        `${compiled}; every socket presented ${presented.join(", ")}`
+    ).toBe(compiled);
+    expect(reads, "the page read the block schema from the server").toEqual([]);
 
-    // The person types again in the same tab, and the text is stored.
+    // The person types again in the same tab, and the text is stored: the admission was a
+    // writable one.
+    await expect(page.getByRole("article", { exact: true, name: "Document" })).toHaveAttribute(
+      "data-read-only",
+      "false"
+    );
     await typeAtEnd(page, "Typed after the switch.");
     await expect(documentEditor(page)).toContainText("Typed after the switch.");
     await expect
       .poll(async () => (await getArtifactText(artifact)).markdown, { timeout: 30_000 })
       .toContain("Typed after the switch.");
 
-    // No line asks the person to reload while the issue is open: the admission the new socket
-    // got is a writable one, because it presented the version the server installed.
+    // No line asks the person to reload while the issue is open.
     await expect(page.getByText("Reload to edit.")).toHaveCount(0);
     await page.screenshot({
       fullPage: true,
@@ -248,6 +281,7 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
       documentWithAddedType("Written once the process had the new schema.")
     );
     expect(taken.status, taken.body).toBe(201);
+    expect(reads, "the page read the block schema from the server").toEqual([]);
   } finally {
     await alice.close();
   }

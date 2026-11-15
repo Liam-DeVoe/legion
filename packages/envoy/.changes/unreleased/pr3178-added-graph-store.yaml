@@ -7,7 +7,9 @@ body: |-
 
   A person, a role, a session and a role's page are nodes of that store, and a person's own page
   lists what they wrote and what reached them. A block type is data in the database rather than a
-  file compiled into the binary, and changing one leaves an open editor writing.
+  file compiled into the binary, and changing one leaves an open editor writing. A server of the
+  previous release keeps serving over a database the next release's type migration moved: it reads
+  the types its own version reads, and its health check stays green.
 
   `envoy-dispatch census --store` reads what the store and the projections disagree about,
   holding each row to the tuples that answer it, `census --store --sizing` prints how large the

@@ -95,10 +95,6 @@ var active atomic.Pointer[compiledManifest]
 // store's manifest is installed with (Install).
 var embedded *compiledManifest
 
-// schemaAhead holds the store schema version that is above the embedded one, or 0 while the
-// installed manifest is one this build handles. It is what makes the process not ready.
-var schemaAhead atomic.Int64
-
 func init() {
 	compiled, err := compileManifest(blockSchemaJSON)
 	if err != nil {
@@ -116,16 +112,15 @@ func (m *compiledManifest) install() {
 // Install makes value, read from the node store, the installed manifest. The store holds the
 // typed blocks alone: the nodes and marks of the Proof schema are this build's own, the ones its
 // parser and renderer know, so value is installed with the embedded manifest's. A value whose
-// version is above the embedded one installs nothing and makes the process not ready
-// (NotReadyReason): the build cannot address the types that version declares, and the
-// deployment replaces the process with one that can. A value compileManifest refuses installs
-// nothing either, and leaves the process ready on the manifest it has.
+// version is above the embedded one is a store a newer build migrated: it is installed at this
+// build's own version, with the elements whose since is at or below that version and nothing
+// else (asOfVersion), and the process keeps serving, as every build does while two builds serve
+// one database: a document holding an element it does not know answers DOC_NEWER_CONTENT, and a
+// write never adds an element it may not create. A value compileManifest refuses installs
+// nothing, and the process keeps the manifest it has.
 func Install(value BlockSchema) error {
-	built := embedded.schema.Version
-	if value.Version > built {
-		schemaAhead.Store(int64(value.Version))
-		return fmt.Errorf("block schema version %d is above the highest version this build was made for (%d)",
-			value.Version, built)
+	if built := embedded.schema.Version; value.Version > built {
+		value = asOfVersion(value, built)
 	}
 	value.Nodes, value.Marks = embeddedElements()
 	// The value is compiled from its encoding, which is also what SchemaJSON serves, so the
@@ -139,8 +134,62 @@ func Install(value BlockSchema) error {
 		return fmt.Errorf("block schema: %w", err)
 	}
 	compiled.install()
-	schemaAhead.Store(0)
 	return nil
+}
+
+// asOfVersion is value as a build of version reads it: at that version, holding each typed
+// block, attribute and enum choice whose since is at or below it, and no target of a `block[]`
+// attribute that names a typed block it leaves out. A since the store leaves out is 1, as
+// normalizeVersions reads it. An element it keeps keeps its creatable_since, so one this build
+// reads but may not create yet stays one it does not create. It writes nothing of value's own:
+// every slice and map it changes is a new one.
+func asOfVersion(value BlockSchema, version int) BlockSchema {
+	reads := func(since int) bool { return max(since, 1) <= version }
+	dropped := make(map[string]bool)
+	types := make([]BlockTypeSchema, 0, len(value.Types))
+	for _, typ := range value.Types {
+		if !reads(typ.Since) {
+			dropped[typ.Name] = true
+			continue
+		}
+		types = append(types, typ)
+	}
+	for index := range types {
+		typ := &types[index]
+		attributes := make(BlockAttributes, 0, len(typ.Attributes))
+		for _, attribute := range typ.Attributes {
+			attr := attribute.BlockAttributeSchema
+			if !reads(attr.Since) {
+				continue
+			}
+			if len(attr.Choices) > 0 {
+				choices := make([]string, 0, len(attr.Choices))
+				var versions map[string]BlockElementVersions
+				for _, choice := range attr.Choices {
+					held, given := attr.ChoiceVersions[choice]
+					if !reads(held.Since) {
+						continue
+					}
+					choices = append(choices, choice)
+					if given {
+						if versions == nil {
+							versions = make(map[string]BlockElementVersions, len(attr.ChoiceVersions))
+						}
+						versions[choice] = held
+					}
+				}
+				attr.Choices, attr.ChoiceVersions = choices, versions
+			}
+			if len(attr.Targets) > 0 {
+				attr.Targets = slices.DeleteFunc(slices.Clone(attr.Targets), func(target string) bool { return dropped[target] })
+			}
+			attributes = append(attributes, BlockAttribute{Name: attribute.Name, BlockAttributeSchema: attr})
+		}
+		typ.Attributes = attributes
+	}
+	value.Types = types
+	value.Version = version
+	return value
 }
 
 // embeddedElements is the nodes and marks the embedded manifest declares, as blocks.json writes
@@ -155,21 +204,9 @@ func embeddedElements() (nodes, marks []BlockSchemaElement) {
 }
 
 // BuiltSchemaVersion is the highest schema version this binary handles: the version of the file
-// it embeds.
+// it embeds, and the version it installs a newer store at (Install).
 func BuiltSchemaVersion() int {
 	return embedded.schema.Version
-}
-
-// NotReadyReason is why this process cannot serve, or "" while it can: the one reason is a store
-// schema above the version this build handles. GET /healthz answers 503 with it, and the switch
-// that closes the open document sockets reads the same reason.
-func NotReadyReason() string {
-	ahead := schemaAhead.Load()
-	if ahead == 0 {
-		return ""
-	}
-	return fmt.Sprintf("the store's block schema version %d is above the highest version this build was made for (%d)",
-		ahead, embedded.schema.Version)
 }
 
 // compileManifest compiles raw, a manifest in blocks.json's format, which it also keeps as the

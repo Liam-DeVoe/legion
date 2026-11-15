@@ -355,6 +355,11 @@ type Service struct {
 	// loads the document's tree (loadTree). Nil outside tests; tests use it to close the issue
 	// while the socket loads.
 	afterSocketIssueRead func(room string)
+	// afterSocketAdmitted runs in a document socket's admission (ServeHTTP) once its admission has
+	// read the document and decided it, and before the socket is held where the schema switch
+	// closes it (holdDocumentSocket). Nil outside tests; tests run a switch there, the gap the
+	// count of switches covers (schemaSwitches).
+	afterSocketAdmitted func(room string)
 	// afterSocketPreload runs in a cold document socket's admission (ServeHTTP) once it has offered
 	// the durable state it loaded to the room's load (offerPreload), and before it hands the socket
 	// to ygo. Nil outside tests; tests use it to hold two cold sockets of one room until both have
@@ -458,6 +463,11 @@ type Service struct {
 	// the record the socket holds (holdDocumentSocket): the schema switch closes them all
 	// (CloseDocumentSockets), and each socket forgets its own as it ends.
 	documentSockets sync.Map
+	// schemaSwitches counts the schema switches this process has run (CloseDocumentSockets). A
+	// socket's admission reads it before it reads the document and again once the socket is
+	// held, so a switch between the two, whose close found nothing to close, closes the socket
+	// all the same (ServeHTTP).
+	schemaSwitches atomic.Uint64
 	// residentBytes is the encoded bytes the loads ygo holds took, each load's own history and
 	// every update the room it left behind has committed since (residentLoad), for the room
 	// figures: loaded state only. The bytes a commit parks after the load - structs and deletions

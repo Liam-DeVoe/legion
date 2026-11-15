@@ -9,7 +9,6 @@ import (
 	"go/token"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -32,9 +31,10 @@ const serverMain = "../../../../cmd/dispatch/main.go"
 // TestTheInstalledSchemaIsOneAtomicValue proves the installed schema is one immutable value
 // behind one pointer: it is reinstalled from the store while many goroutines read it, every
 // reader sees a whole value, the reinstall runs on a goroutine of its own rather than in a
-// notification handler, a read that fails leaves the installed value and is made again, and a
-// value this build cannot install - one that fails validation, one above its own version -
-// leaves the process on the schema it has.
+// notification handler, a read that fails leaves the installed value and is made again, a value
+// that fails validation leaves the process on the schema it has and is read again after the retry
+// interval, and a store above this build's version is installed at this build's own version, with
+// the elements it reads and nothing else.
 func TestTheInstalledSchemaIsOneAtomicValue(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -53,8 +53,8 @@ func TestTheInstalledSchemaIsOneAtomicValue(t *testing.T) {
 	addTheClaimType(t, ctx, pool)
 	requireReadersSeeWholeValues(t, ctx, pool, built)
 	requireAFailedReadKeepsTheValueAndIsMadeAgain(t, ctx)
-	requireARefusedValueKeepsTheValue(t, ctx, pool, built)
-	requireASchemaAboveThisBuildIsNotInstalled(t, ctx, pool, built)
+	requireARefusedValueKeepsTheValueAndIsReadAgain(t, ctx, pool, built)
+	requireAStoreAboveThisBuildIsInstalledAtItsOwnVersion(t, ctx, pool, built)
 }
 
 // requireTheRegistrationIsAWake reads the registration the server makes. A reinstall reads the
@@ -238,7 +238,9 @@ func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store
 		installer.Run(installing)
 	}()
 	for round := range 40 {
+		version := built - 1
 		if round%2 == 0 {
+			version = built
 			flip(built, "live")
 		} else {
 			flip(built-1, "gone")
@@ -249,7 +251,16 @@ func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store
 		case wake <- struct{}{}:
 		default:
 		}
-		time.Sleep(time.Millisecond)
+		// Each flip is installed before the next is written, so the readers read through a
+		// reinstall every round however long one read of the store takes on a loaded machine;
+		// a fixed pause between flips let the installer read only one of them there.
+		deadline := time.Now().Add(10 * time.Second)
+		for pmdoc.SchemaVersion() != version {
+			if time.Now().After(deadline) {
+				t.Fatalf("round %d: the installer never installed version %d within 10s of the flip that wrote it", round, version)
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}
 	stopInstalling()
 	reinstalls.Wait()
@@ -263,6 +274,12 @@ func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store
 	})
 	if len(seen) < 2 {
 		t.Errorf("the readers saw the versions %v; the test proves nothing unless the schema was reinstalled under them", seen)
+	}
+	// The store as the cases after this one start from: this build's version, every element of
+	// it live, and the claim type retired.
+	flip(built, "gone")
+	if err := InstallFromStore(ctx, pool); err != nil {
+		t.Fatalf("install the store's schema at this build's version: %v", err)
 	}
 }
 
@@ -282,42 +299,31 @@ func requireAFailedReadKeepsTheValueAndIsMadeAgain(t *testing.T, ctx context.Con
 	running, stop := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer stop()
 	installer.Run(running)
-	reads := unreachable.reads
-	if len(reads) < 2 {
-		t.Errorf("a store that cannot be read was read %d times in 300ms at a %v retry, want it read again", len(reads), retry)
-	}
-	for index := 1; index < len(reads); index++ {
-		if gap := reads[index].Sub(reads[index-1]); gap < retry {
-			t.Errorf("read %d of a store that cannot be read came %v after the read before it, want at least the retry interval %v (%d reads in 300ms): a retry that does not wait reads a store that is down as fast as it fails",
-				index+1, gap, retry, len(reads))
-			break
-		}
-	}
+	requireReadAgainAfter(t, "a store that cannot be read", unreachable.reads, retry)
 	if string(pmdoc.SchemaJSON()) != string(before) {
 		t.Errorf("a read that failed changed the installed schema")
 	}
-	if reason := pmdoc.NotReadyReason(); reason != "" {
-		t.Errorf("a read that failed made the process not ready (%q); only a schema above this build's does", reason)
-	}
 }
 
-// requireARefusedValueKeepsTheValue holds a store schema that fails validation to installing
-// nothing, with the process still serving the schema it had and still ready, and so to running
-// no switch: the document sockets the server holds were admitted on the schema it still serves.
-func requireARefusedValueKeepsTheValue(t *testing.T, ctx context.Context, pool *store.Pool, built int) {
+// requireARefusedValueKeepsTheValueAndIsReadAgain holds a store schema that fails validation to
+// installing nothing, with the process still serving the schema it had, and so to running no
+// switch: the document sockets the server holds were admitted on the schema it still serves. The
+// installer reads such a store again after its retry interval, as it reads one that failed, and
+// not before: the next read can find the store a migration has corrected.
+func requireARefusedValueKeepsTheValueAndIsReadAgain(t *testing.T, ctx context.Context, pool *store.Pool, built int) {
 	t.Helper()
 	before := pmdoc.SchemaJSON()
 	setStoreVersion(t, ctx, pool, 0)
 	switches := 0
-	installer := &Installer{Store: pool, OnSwitch: func() { switches++ }}
-	if !installer.reload(ctx) {
-		t.Errorf("a schema the install refused was reported as a read that failed; it is an answer, and no retry is owed")
-	}
+	const retry = 20 * time.Millisecond
+	counted := &countedStore{pool: pool}
+	installer := &Installer{Store: counted, Retry: retry, OnSwitch: func() { switches++ }}
+	running, stop := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer stop()
+	installer.Run(running)
+	requireReadAgainAfter(t, "a store whose schema fails validation", counted.reads, retry)
 	if string(pmdoc.SchemaJSON()) != string(before) {
 		t.Errorf("a schema that fails validation was installed")
-	}
-	if reason := pmdoc.NotReadyReason(); reason != "" {
-		t.Errorf("a schema that fails validation made the process not ready (%q)", reason)
 	}
 	if switches != 0 {
 		t.Errorf("a schema that fails validation ran OnSwitch %d times, want none: the process serves the schema it served, so no document socket is owed a close", switches)
@@ -325,43 +331,114 @@ func requireARefusedValueKeepsTheValue(t *testing.T, ctx context.Context, pool *
 	setStoreVersion(t, ctx, pool, built)
 }
 
-// requireASchemaAboveThisBuildIsNotInstalled holds a store schema above the version this build
-// was made for to installing nothing and to making the process report itself not ready, naming
-// the version. A store back at a version it can install makes it ready again. Each of those two
-// reads moves what the process serves, so each runs OnSwitch once, the hook the server closes
-// its document sockets on; a second read of the same store moves nothing and runs it not at all.
-func requireASchemaAboveThisBuildIsNotInstalled(t *testing.T, ctx context.Context, pool *store.Pool, built int) {
+// requireReadAgainAfter holds reads, the moments an installer read a store it could not install
+// from, to a second read and more, each at least retry after the one before.
+func requireReadAgainAfter(t *testing.T, what string, reads []time.Time, retry time.Duration) {
+	t.Helper()
+	if len(reads) < 2 {
+		t.Errorf("%s was read %d times in 300ms at a %v retry, want it read again", what, len(reads), retry)
+	}
+	for index := 1; index < len(reads); index++ {
+		if gap := reads[index].Sub(reads[index-1]); gap < retry {
+			t.Errorf("read %d of %s came %v after the read before it, want at least the retry interval %v (%d reads in 300ms): a retry that does not wait reads that store as fast as it fails",
+				index+1, what, gap, retry, len(reads))
+			break
+		}
+	}
+}
+
+// requireAStoreAboveThisBuildIsInstalledAtItsOwnVersion moves the store above this build: one
+// migration, in one statement each, raises every block type's version to one past this build's,
+// adds a typed block and an attribute of callout that version introduces, and brings back the
+// claim type, which declares no since and so is read from version 1. The install keeps this
+// build's version and the elements it reads - the claim type among them - and leaves out the two
+// the newer version introduces; the process is ready throughout, since nothing it serves is
+// refused. The read that brought the claim type in moved what the process serves, so it runs
+// OnSwitch once, the hook the server closes its document sockets on; a second read of the same
+// store moves nothing and runs it not at all, and the store put back as it was runs it once more.
+func requireAStoreAboveThisBuildIsInstalledAtItsOwnVersion(t *testing.T, ctx context.Context, pool *store.Pool, built int) {
 	t.Helper()
 	before := pmdoc.SchemaJSON()
-	setStoreVersion(t, ctx, pool, built+1)
+	const writer = `{"kind": "system", "id": "schemanodes-test-newer"}`
+	newer := built + 1
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{`insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+		values
+			('supertag', 'future', 'supertag', 'project', 'live',
+				jsonb_build_object('block_type', true, 'content', 'paragraph+', 'render', 'host',
+					'version', $2::int, 'position', 98, 'since', $2::int, 'creatable_since', $2::int),
+				now(), $1::jsonb, 0),
+			('attribute', 'callout/tone', 'attribute', 'project', 'live',
+				jsonb_build_object('name', 'tone', 'store_name', 'tone', 'position', 2, 'kind', 'string',
+					'since', $2::int, 'creatable_since', $2::int),
+				now(), $1::jsonb, 0)`, []any{writer, newer}},
+		{`insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+		values ('attribute', 'callout/tone', 'attribute_of', 'supertag', 'callout', now(), $1::jsonb, 0, null, true)`, []any{writer}},
+		{`update graph_nodes
+		set attributes = jsonb_set(attributes, '{version}', to_jsonb($1::int)),
+			state = case when id = 'claim' then 'live' else state end
+		where kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false)`, []any{newer}},
+	} {
+		if _, err := pool.Exec(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatalf("move the store to version %d: %v", newer, err)
+		}
+	}
 	switches := 0
 	installer := &Installer{Store: pool, OnSwitch: func() { switches++ }}
-	installer.reload(ctx)
-	if string(pmdoc.SchemaJSON()) != string(before) {
-		t.Errorf("a schema above this build's version was installed")
+	if !installer.reload(ctx) {
+		t.Fatalf("the read of a store at version %d, one above this build, was reported as a read to make again: this build installs it at its own version", newer)
 	}
-	reason := pmdoc.NotReadyReason()
-	if !strings.Contains(reason, strconv.Itoa(built+1)) || !strings.Contains(reason, strconv.Itoa(built)) {
-		t.Errorf("the process is not ready because %q, want a reason naming the store's version %d and this build's %d", reason, built+1, built)
+	installed := decodeSchema(t, pmdoc.SchemaJSON())
+	if installed.Version != built || pmdoc.SchemaVersion() != built {
+		t.Errorf("a store at version %d installed version %d (SchemaVersion %d), want this build's own %d", newer, installed.Version, pmdoc.SchemaVersion(), built)
+	}
+	if pmdoc.IsTypedBlock("future") {
+		t.Errorf("a store at version %d installed the typed block future, which that version introduces: this build reads only what its own version reads", newer)
+	}
+	if !pmdoc.IsTypedBlock("claim") {
+		t.Errorf("a store at version %d did not install the claim type, which declares no since and so is read from version 1", newer)
+	}
+	for _, typ := range installed.Types {
+		if typ.Name == "callout" && typ.Attributes.Get("tone").Kind != "" {
+			t.Errorf("a store at version %d installed callout's tone, which that version introduces", newer)
+		}
 	}
 	if switches != 1 {
-		t.Errorf("the read of a schema above this build's version ran OnSwitch %d times, want once: the process serves no schema now, and the server closes its document sockets there", switches)
+		t.Errorf("the read that installed the claim type ran OnSwitch %d times, want once: what the process serves moved, and the server closes its document sockets there", switches)
+	}
+	if _, err := pmdoc.ParseForWrite(":::future{#f1}\nBody.\n:::\n", nil); err == nil {
+		t.Errorf("a write of the typed block future was accepted by a build that installed a store above its own version without it")
 	}
 	away := switches
 	installer.reload(ctx)
 	if switches != away {
-		t.Errorf("a second read of the same schema above this build's version ran OnSwitch %d more times, want none: nothing moved, so no document socket is owed a close", switches-away)
+		t.Errorf("a second read of the same store ran OnSwitch %d more times, want none: nothing moved, so no document socket is owed a close", switches-away)
 	}
-	setStoreVersion(t, ctx, pool, built)
+
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{`delete from graph_tuples where from_kind = 'attribute' and from_id = 'callout/tone'`, nil},
+		{`delete from graph_nodes where (kind, id) in (('supertag', 'future'), ('attribute', 'callout/tone'))`, nil},
+		{`update graph_nodes
+		set attributes = jsonb_set(attributes, '{version}', to_jsonb($1::int)),
+			state = case when id = 'claim' then 'gone' else state end
+		where kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false)`, []any{built}},
+	} {
+		if _, err := pool.Exec(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatalf("put the store back at version %d: %v", built, err)
+		}
+	}
 	installer.reload(ctx)
-	if reason := pmdoc.NotReadyReason(); reason != "" {
-		t.Errorf("the process is still not ready (%q) after the store came back to a version it can install", reason)
-	}
-	if pmdoc.SchemaVersion() != built {
-		t.Errorf("the installed schema is version %d, want the store's %d", pmdoc.SchemaVersion(), built)
+	if string(pmdoc.SchemaJSON()) != string(before) {
+		t.Errorf("the store put back at version %d installed\n%s\nwant the schema served before it moved\n%s", built, pmdoc.SchemaJSON(), before)
 	}
 	if switches != 2 {
-		t.Errorf("the store's return to version %d left OnSwitch run %d times in all, want twice: once for the read that left the process serving no schema, once for the read that installed one again", built, switches)
+		t.Errorf("the store put back at version %d left OnSwitch run %d times in all, want twice: once for the claim type coming, once for it going", built, switches)
 	}
 }
 
@@ -420,16 +497,19 @@ type unreachableStore struct{ reads []time.Time }
 
 var errUnreachable = errors.New("the store is unreachable")
 
-func (s *unreachableStore) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (s *unreachableStore) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error) {
 	s.reads = append(s.reads, time.Now())
 	return nil, errUnreachable
 }
 
-func (s *unreachableStore) QueryRow(context.Context, string, ...any) pgx.Row {
-	s.reads = append(s.reads, time.Now())
-	return unreachableRow{}
+// countedStore is the store's pool, which records when each read of it began. Run reads it on the
+// test's own goroutine, so the record needs no lock.
+type countedStore struct {
+	pool  *store.Pool
+	reads []time.Time
 }
 
-type unreachableRow struct{}
-
-func (unreachableRow) Scan(...any) error { return errUnreachable }
+func (s *countedStore) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	s.reads = append(s.reads, time.Now())
+	return s.pool.BeginTx(ctx, options)
+}

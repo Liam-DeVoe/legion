@@ -1,18 +1,18 @@
 package schemanodes
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
 
-// RetryInterval is how soon an Installer reads the store again after a read that failed. Only a
-// failure arms it: an installer whose last read succeeded reads again on its wake alone. It is
-// delivery.SettingsCache's interval, the pattern this loop follows.
+// RetryInterval is how soon an Installer reads the store again after a read that failed or a
+// value the install refused. Only those arm it: an installer whose last read it installed reads
+// again on its wake alone. It is delivery.SettingsCache's interval, the pattern this loop follows.
 const RetryInterval = 30 * time.Second
 
 // Installer reinstalls the block schema from the store: at Run's first pass, and again each
@@ -25,22 +25,24 @@ const RetryInterval = 30 * time.Second
 // Run's goroutine and must not block, and reading the store blocks. RegisterWake is the whole of
 // what the server registers on the hub.
 type Installer struct {
-	// Store is read for the schema's nodes.
-	Store graphstore.Queryer
+	// Store is read for the schema's nodes, in one transaction of its own (Read).
+	Store Beginner
 	// Wake is signalled when a supertag write announces itself. An installer with no wake
 	// reads the store once.
 	Wake <-chan struct{}
-	// Retry is how soon a failed read is made again; zero is RetryInterval.
+	// Retry is how soon a failed read, or a value the install refused, is read again; zero is
+	// RetryInterval.
 	Retry time.Duration
 	// OnSwitch runs after a read that moved the schema this process serves: the installed
-	// version changed, or the store went above this build and left the process serving none
-	// (pmdoc.NotReadyReason). The server closes its document sockets there
+	// value changed, its version or any element of it. The server refreshes its row of the
+	// server process registry there and closes its document sockets
 	// (docs.Service.CloseDocumentSockets), because a socket's admission was decided against the
 	// schema the process served as it connected, and the browser connects again on that close,
 	// where admission decides against the schema installed now. It runs on this loop's
-	// goroutine, so a hook that blocks delays the next read; a
-	// reload that installed the same schema runs it not at all, which is what leaves an
-	// ordinary reinstall's editors connected. A nil hook is nothing.
+	// goroutine, so a hook that blocks delays the next read; a reload that installed the same
+	// schema runs it not at all, which is what leaves an ordinary reinstall's editors connected,
+	// and so does a store a newer build moved on that this build installs the same as before
+	// (pmdoc.Install). A nil hook is nothing.
 	OnSwitch func()
 }
 
@@ -53,10 +55,13 @@ func RegisterWake(hub *pglisten.Hub) <-chan struct{} {
 }
 
 // InstallFromStore reads the schema from the store and installs it. The server calls it at boot,
-// beside the migration run, and a failure there fails the boot: a process serving on a schema
-// that is not the store's would validate writes against types the deployment has moved on from.
-func InstallFromStore(ctx context.Context, q graphstore.Queryer) error {
-	value, err := Read(ctx, q)
+// beside the migration run, and so does every subcommand that reads or writes documents after
+// its own migration run; a failure there fails the boot or the command: a process serving on a
+// schema that is not the store's would validate writes against types the deployment has moved
+// on from. A store a newer build migrated is no failure: this build installs it at its own
+// version (pmdoc.Install).
+func InstallFromStore(ctx context.Context, db Beginner) error {
+	value, err := Read(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -64,7 +69,8 @@ func InstallFromStore(ctx context.Context, q graphstore.Queryer) error {
 }
 
 // Run installs the store's schema at once, then each time the wake is signalled, until ctx ends.
-// A read that fails is made again after the retry interval unless a wake comes first.
+// A read that fails, and a value the install refuses, is read again after the retry interval
+// unless a wake comes first.
 func (i *Installer) Run(ctx context.Context) {
 	for {
 		var retry <-chan time.Time
@@ -87,28 +93,26 @@ func (i *Installer) Run(ctx context.Context) {
 	}
 }
 
-// reload reads the store and installs what it read. It reports false only for a read that
-// failed, which Run makes again: a value the install refuses is an answer, not a failure to
-// read, and the process keeps serving the schema it has until the store holds one it can
-// install - a schema above this build's version among them, which also makes the process report
-// itself not ready (pmdoc.NotReadyReason).
+// reload reads the store and installs what it read. It reports false for a read that failed and
+// for a value the install refused, each of which Run reads again after the retry interval: the
+// process keeps serving the schema it has meanwhile.
 //
 // What the process serves is read before the install and again after it, and OnSwitch runs when
-// the two differ: the version, and whether the process serves a schema at all. Both are read
-// here and not inside pmdoc, so the hook runs once per reload and the install stays what it is -
-// one pointer stored.
+// the two differ. Both are read here and not inside pmdoc, so the hook runs once per reload and
+// the install stays what it is - one pointer stored.
 func (i *Installer) reload(ctx context.Context) bool {
 	value, err := Read(ctx, i.Store)
 	if err != nil {
 		slog.Warn("dispatch: read the block schema from the store", "error", err)
 		return false
 	}
-	version, reason := pmdoc.SchemaVersion(), pmdoc.NotReadyReason()
+	before := pmdoc.SchemaJSON()
 	if err := pmdoc.Install(value); err != nil {
-		slog.Error("dispatch: the store's block schema was not installed; this process keeps the schema it has",
-			"error", err, "store_version", value.Version, "built_version", pmdoc.BuiltSchemaVersion())
+		slog.Error("dispatch: the store's block schema was not installed; this process keeps the schema it has and reads the store again",
+			"error", err, "store_version", value.Version, "built_version", pmdoc.BuiltSchemaVersion(), "retry_in", i.retryInterval())
+		return false
 	}
-	if i.OnSwitch != nil && (pmdoc.SchemaVersion() != version || pmdoc.NotReadyReason() != reason) {
+	if i.OnSwitch != nil && !bytes.Equal(pmdoc.SchemaJSON(), before) {
 		i.OnSwitch()
 	}
 	return true

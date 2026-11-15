@@ -141,6 +141,11 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 		return nil, err
 	}
 	defer conn.Close(context.Background())
+	// The documents the erase reads, redacts and renders are held to the block schema the
+	// store's type nodes build, as the server holds them, not to the file this binary embeds.
+	if err := schemanodes.InstallFromStore(ctx, conn); err != nil {
+		return nil, fmt.Errorf("install the block schema from the store: %w", err)
+	}
 	var tx pgx.Tx
 	var erasure *Erasure
 	var read erasedRead
