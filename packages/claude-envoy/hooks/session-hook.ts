@@ -179,8 +179,9 @@ const DISPATCH_HOST_LINE = "export DISPATCH_HOST=claude"
 const JJ_CONFIG_EXPORT = "export JJ_CONFIG="
 // `JJ_BASE_CHAIN_TIMEOUT_MS`, the bound on resolving jj's own user config chain for the overlay,
 // and `OPEN_ASKS_TIMEOUT_MS`, the bound on the Dispatch read, are both in
-// `./session-hook-budgets`, where a test can read them: their sum has to stay inside the timeout
-// `hooks.json` gives this hook, and that constraint is asserted rather than only written down.
+// `./session-hook-budgets`, where a test can read them. With envoy-client's `COMMAND_TIMEOUT_MS`
+// for the token command `sessionDispatchSettings` runs between them, their sum has to stay inside
+// the timeout `hooks.json` gives this hook, and tests/hooks-timeout.test.ts asserts it.
 
 /** `value` as a single-quoted shell word: Claude Code sources this file before every bash command
  *  of the session, so a path or a config chain holding a space, a quote or a `$` must reach the
