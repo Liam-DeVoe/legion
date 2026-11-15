@@ -1,10 +1,11 @@
 // Package metrics provides minimal Prometheus-compatible metrics without
 // third-party dependencies. It supports counters (with labels), histograms
-// (with labels and configurable buckets), gauges, and gauge functions
-// evaluated at scrape time, and families whose series are all read at scrape
-// time from counts kept elsewhere: labelled gauges and counters, and
-// histograms given as cumulative buckets, one of them a histogram the
-// runtime/metrics package reads (RuntimeHistogram).
+// (with labels and configurable buckets), gauges, gauge functions evaluated at
+// scrape time, labelled gauge sets whose series a function computes at scrape
+// time, and families whose series are all read at scrape time from counts kept
+// elsewhere: labelled gauges and counters, and histograms given as cumulative
+// buckets, one of them a histogram the runtime/metrics package reads
+// (RuntimeHistogram).
 package metrics
 
 import (
@@ -42,6 +43,7 @@ type Registry struct {
 	histograms     []*Histogram
 	gauges         []*Gauge
 	gaugeFuncs     []*GaugeFunc
+	gaugeSets      []*gaugeSet
 	sampleFuncs    []*sampleFunc
 	histogramFuncs []*histogramFunc
 }
@@ -332,6 +334,36 @@ func RuntimeHistogram(h *runtimemetrics.Float64Histogram, bounds []float64, labe
 }
 
 // ---------------------------------------------------------------------------
+// Gauge set
+// ---------------------------------------------------------------------------
+
+// GaugeSample is one series of a gauge set: the labels that name it, as Counter.Inc takes them,
+// and the value it reads.
+type GaugeSample struct {
+	Labels [][2]string
+	Value  int64
+}
+
+// gaugeSet is a labelled gauge whose series fn computes on each scrape.
+type gaugeSet struct {
+	name string
+	help string
+	fn   func() []GaugeSample
+}
+
+// NewGaugeSetFunc registers a labelled gauge whose series are computed by fn on each scrape: one
+// sample for each GaugeSample fn answers, written in the order of their label text so two scrapes
+// of one set read alike, and none for a series fn no longer answers. So a series leaves the scrape
+// the moment what it counts is gone, with no call anywhere to remove it, and a set that is empty
+// writes the gauge's HELP and TYPE lines and no sample. fn answers each label set at most once,
+// since the text format holds one sample per series.
+func (r *Registry) NewGaugeSetFunc(name, help string, fn func() []GaugeSample) {
+	r.mu.Lock()
+	r.gaugeSets = append(r.gaugeSets, &gaugeSet{name: name, help: help, fn: fn})
+	r.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
 // Timer
 // ---------------------------------------------------------------------------
 
@@ -400,6 +432,19 @@ func (r *Registry) Handler() http.Handler {
 			writeType(w, gf.name, gf.help, "gauge")
 			if value, ok := gf.fn(); ok {
 				fmt.Fprintf(w, "%s %d\n", gf.name, value)
+			}
+		}
+
+		for _, gs := range r.gaugeSets {
+			writeType(w, gs.name, gs.help, "gauge")
+			samples := gs.fn()
+			lines := make([]string, len(samples))
+			for i, s := range samples {
+				lines[i] = fmt.Sprintf("%s%s %d\n", gs.name, labelFormat(s.Labels), s.Value)
+			}
+			sort.Strings(lines)
+			for _, line := range lines {
+				fmt.Fprint(w, line)
 			}
 		}
 
@@ -500,6 +545,13 @@ func labelKey(labels [][2]string) string {
 	return b.String()
 }
 
+// labelValueEscaper writes a label value as the Prometheus text format requires: a backslash, a
+// double quote and a line feed each as a backslash escape. A value a caller takes from text it
+// does not choose - a secret's store id, an owner tag - can hold any of the three, and unescaped
+// one would end the value, or the whole sample line, early. A value holding none of them is
+// written as it is, byte for byte.
+var labelValueEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
+
 func labelFormat(labels [][2]string) string {
 	if len(labels) == 0 {
 		return ""
@@ -512,7 +564,7 @@ func labelFormat(labels [][2]string) string {
 		}
 		b.WriteString(kv[0])
 		b.WriteString(`="`)
-		b.WriteString(kv[1])
+		b.WriteString(labelValueEscaper.Replace(kv[1]))
 		b.WriteByte('"')
 	}
 	b.WriteByte('}')

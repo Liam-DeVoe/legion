@@ -312,6 +312,35 @@ export class DispatchNoRouteError extends DispatchServiceError {
   }
 }
 
+/**
+ * What `reviewArtifact` throws once the Dispatch at `baseUrl` answered no route for `route` (the
+ * method and path it sent the review to) each time it was sent. The code and status are that
+ * answer's, so a caller reads it as the refusal it is. The words are not
+ * `DispatchNoRouteError`'s: a build without the versioned review route may simply be older than
+ * that route rather than half of a release in progress, and no other review route is asked, so
+ * the message says why. Dispatch's no-route answer carries only a code, an error and a hint
+ * (`staticHandler`, packages/envoy/internal/dispatch/routes/router.go) and names no build, so it
+ * points at `/healthz`, whose `commit` member names the commit of the build that answers it when
+ * that build was stamped with one and is null otherwise (`buildCommit` and `healthzHandler`,
+ * packages/envoy/cmd/dispatch/main.go), rather than guessing.
+ */
+function reviewNoRouteRefusal(
+  baseUrl: string,
+  route: string,
+  version: number
+): DispatchServiceError {
+  return new DispatchServiceError(
+    "NOT_FOUND",
+    404,
+    `Dispatch at ${baseUrl} answered no route for ${route} each time the review was sent, and an ` +
+      "answer of no route records no review. This build is older than that route. No other review " +
+      "route was asked: the review route an older build serves takes no version, and it " +
+      `would record the review at a version that build chooses, which may not be version ${version}. ` +
+      `The no-route answer does not name the build; GET ${baseUrl}/healthz names the commit of the ` +
+      "build that answers it, when that build was stamped with one."
+  );
+}
+
 export interface ListIssuesOptions {
   readonly project?: string;
   readonly status?: string;
@@ -412,10 +441,11 @@ function refusalError(
  * may repeat it. A `503 DATABASE_BUSY` (a bound of the server's own ended a call before the
  * database answered it, and nothing of that call committed) or `503 REQUEST_TIMEOUT` (the read
  * deadline) can still come after an earlier statement of a write committed, so only a read (GET,
- * HEAD) repeats it; a POST's or PATCH's retry is left to its idempotency key (`#sendOnce`), and a
- * PUT's or DELETE's, which has none, to its caller. A `500 COMMIT_OUTCOME_UNKNOWN` is never
- * waited out and carries no `Retry-After`: the write may have landed, so the caller reads what it
- * would have written before sending it again. Every other answer is the caller's at once.
+ * HEAD) repeats it; a POST's or PATCH's retry is left to its idempotency key
+ * (`#sendPresenting`), and a PUT's or DELETE's, which has none, to its caller. A
+ * `500 COMMIT_OUTCOME_UNKNOWN` is never waited out and carries no `Retry-After`: the write may
+ * have landed, so the caller reads what it would have written before sending it again. Every
+ * other answer is the caller's at once.
  */
 function waitsOut(method: string, status: number, code: string | undefined): boolean {
   if (status === 429) return code === "OVERLOADED" || code === "EDIT_QUEUE_FULL";
@@ -708,6 +738,26 @@ async function writeAnswer(response: Response, key: string, method: string): Pro
 }
 
 /**
+ * Dispatch's refusal of a broker token the secrets broker does not hold as live: unknown to it,
+ * lapsed, or ended by a revoke before it lapsed (`brokerTokenActor`,
+ * packages/envoy/internal/dispatch/api/broker_token.go).
+ */
+const BROKER_TOKEN_NOT_ACTIVE = "BROKER_TOKEN_NOT_ACTIVE";
+
+/**
+ * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`. Its JSON is read from a clone,
+ * so the body stays whole for whoever reads the answer.
+ */
+async function tokenNotLive(response: Response): Promise<boolean> {
+  if (response.status !== 401 || !isJson(response)) return false;
+  const body: unknown = await response
+    .clone()
+    .json()
+    .catch(() => undefined);
+  return asErrorShape(body).code === BROKER_TOKEN_NOT_ACTIVE;
+}
+
+/**
  * Why `answer` is not the page `listIssuePage` asked for, and whether asking again can change
  * that; undefined when it is one. A JSON answer that is not a page is Dispatch's own and comes back
  * the same; text (`#response` returns a body it could not read as JSON as its text) looks like a
@@ -882,12 +932,14 @@ function excerpt(text: string, token: string): string {
  * aborts first). An answer Dispatch asks the client to wait out (`waitsOut`) is asked again after
  * its `Retry-After`, waited on `writeRetry`'s timer and clock, while that deadline allows the
  * wait. Each write (POST or PATCH) also carries an `Idempotency-Key` of its own and asks again
- * under it, as `writeRetry` paces it, while its attempts get no definitive answer.
+ * under it, as `writeRetry` paces it, while its attempts get no definitive answer. A broker token
+ * Dispatch says is no longer live is traded afresh and the request sent once more.
  *
  * `credential` is what every request presents: a bearer (`bearerCredential`, src/bearer.ts), or
- * what this machine trades its own identity for at the secrets broker, presented under the
- * `DPoP` scheme with a fresh proof of this process's key on every request. A resolved Dispatch
- * holds exactly one of them (`ActiveDispatchConfig.credential`), so no caller chooses.
+ * what the secrets broker trades this machine's identity for, or the identity of a person signed
+ * in on it, presented under the `DPoP` scheme with a fresh proof of the token's key on every
+ * request. A resolved Dispatch holds exactly one of them (`ActiveDispatchConfig.credential`), so
+ * no caller chooses.
  */
 export class DispatchClient {
   readonly #baseUrl: string;
@@ -1404,6 +1456,47 @@ export class DispatchClient {
     input: { actor: Actor; version: number }
   ): Promise<ArtifactReview> {
     return this.#json("POST", ["api", "v1", "artifacts", artifactID, "plan-reviews"], input);
+  }
+
+  /**
+   * Records the review of the person the credential names on one version of a document:
+   * `approved`, or `changes_requested` with its `reason`. It sends
+   * `POST /api/v1/artifacts/{id}/versions/{number}/reviews` with `{state, reason?}` and nothing
+   * else (`createArtifactVersionReview` in packages/envoy/internal/dispatch/api/reviews.go); the
+   * body names no actor, since the route records the person the credential names. `version` is
+   * the version the caller read, sent as the path's `{number}` rather than as a member of the
+   * body: a Dispatch route ignores a member it does not declare (`decodeJSON`;
+   * packages/envoy/cmd/dispatch/README.md, "Two builds at once"), so a build without this route
+   * answers that it has no route for it rather than recording the review at a version it picks
+   * itself.
+   *
+   * Dispatch refuses a credential that names no person holding `approve` (403
+   * `OAUTH_SCOPE_REQUIRED` or `SIGN_IN_REQUIRED`), and a `version` other than the one the review
+   * would record (409 `REVIEW_VERSION_MOVED`); those refusals are thrown as Dispatch wrote them.
+   * With an approval request open the review answers it and records the verdict on every
+   * document the request named, but the answer is this document's review alone; its `ask_id`
+   * names the request it answered.
+   *
+   * A build without the route answers no route each time the review is sent (`#noRoute`), and
+   * this then throws `reviewNoRouteRefusal`'s refusal. No other review route is asked, since the
+   * review route such a build serves takes no version.
+   */
+  async reviewArtifact(
+    artifactID: string,
+    version: number,
+    input: { readonly state: "approved" | "changes_requested"; readonly reason?: string }
+  ): Promise<ArtifactReview> {
+    const path = ["api", "v1", "artifacts", artifactID, "versions", String(version), "reviews"];
+    // Built from the two members the route takes, so nothing else a caller's object carries can
+    // reach the wire; JSON leaves out a reason that is undefined.
+    const body = { state: input.state, reason: input.reason };
+    try {
+      return await this.#json("POST", path, body);
+    } catch (error) {
+      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
+      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
+      throw reviewNoRouteRefusal(this.#baseUrl, route, version);
+    }
   }
 
   /**
@@ -1939,24 +2032,39 @@ export class DispatchClient {
   }
 
   /**
-   * The one request function: every call the client makes goes through here. It sends `method` to
-   * `url` once (`#sendOnce`, which is where a write's own retries under its key happen), and asks
-   * again while Dispatch's answer is one it says to wait out (`waitsOut`): after its `Retry-After`
-   * (`retryAfterMs`, whole seconds or an HTTP date, with `DEFAULT_RETRY_AFTER_SECONDS` standing in
-   * for a header that is missing, unreadable, or asks for no wait at all — `0`, or a date already
-   * past) plus up to `RETRY_JITTER_MS`, at most `RETRIES` times, and only when that wait ends
-   * before the client's deadline, so no retry starts past it. Giving up throws that refusal with
-   * advice naming the attempts and the wait; any other answer comes back as it is. `signal` aborts
-   * the call beside the client's own signal, a send and a wait between two sends alike.
+   * The one request function: every call the client makes goes through here. It presents the
+   * credential and sends `method` to `url` (`#sendPresenting`, which is where a write's own
+   * retries under its key happen), and asks again while Dispatch's answer is one it says to wait
+   * out (`waitsOut`): after its `Retry-After` (`retryAfterMs`, whole seconds or an HTTP date, with
+   * `DEFAULT_RETRY_AFTER_SECONDS` standing in for a header that is missing, unreadable, or asks for
+   * no wait at all — `0`, or a date already past) plus up to `RETRY_JITTER_MS`, at most `RETRIES`
+   * times, and only when that wait ends before the client's deadline, so no retry starts past it.
+   * Giving up throws that refusal with advice naming the attempts and the wait; any other answer
+   * comes back as it is. `signal` aborts the call beside the client's own signal, a send and a wait
+   * between two sends alike.
+   *
+   * It also sends the request once more where Dispatch answers that the token presented is not
+   * live (`tokenNotLive`, its `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so
+   * (`RequestCredential.stale`): the broker ended that token before it lapsed, as a person's
+   * revoke of their sign-in does. The credential is told, presents afresh, which trades at the
+   * broker again, and the request goes again. Dispatch authenticates a request before any handler
+   * runs (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go), so that 401
+   * says it did nothing and the request is safe to send again. It is sent again once per `#send`,
+   * whichever of its sends drew that answer, and a second such answer is returned as any other
+   * refusal is; each no-route retry (`#noRoute`) runs `#send` afresh, so it may send its request
+   * again once after such an answer of its own. A trade the broker refuses throws out of the next
+   * presentation, so the call fails in the broker's own words, which name `agent-secrets login`
+   * after a revoke.
    *
    * A write (POST or PATCH) carries one `Idempotency-Key` for the whole call: the caller's own
    * `callerKey`, where it has one intent across calls and processes, else one minted here for this
-   * call alone. Every send of it, the repeats after a waited-out answer included, carries that
-   * key, so Dispatch runs the write once however many sends ask for it: a `429` or `503` it says
-   * to wait out is answered before its keyed layer claims the key, so none of them leaves an
-   * answer behind to replay, while an earlier attempt that is still running under the key answers
-   * the repeat `409 KEY_IN_FLIGHT`, which `#sendOnce` collects as the in-flight asks do. A fresh
-   * key for the repeat could run the write twice.
+   * call alone. Every send of it, the repeats after a waited-out answer and the one after a token
+   * that is not live included, carries that key, so Dispatch runs the write once however many
+   * sends ask for it: a `429` or `503` it says to wait out is answered before its keyed layer
+   * claims the key, so none of them leaves an answer behind to replay, while an earlier attempt
+   * that is still running under the key answers the repeat `409 KEY_IN_FLIGHT`, which
+   * `#sendPresenting` collects as the in-flight asks do. A fresh key for the repeat could run the
+   * write twice.
    */
   async #send(
     method: string,
@@ -1968,8 +2076,14 @@ export class DispatchClient {
   ): Promise<Response> {
     const key =
       method === "POST" || method === "PATCH" ? (callerKey ?? crypto.randomUUID()) : undefined;
+    let traded = false;
     for (let attempt = 1; ; attempt++) {
-      const response = await this.#sendOnce(method, url, body, accept, signal, key);
+      let response = await this.#sendPresenting(method, url, body, accept, signal, key);
+      if (!traded && this.#credential.stale !== undefined && (await tokenNotLive(response))) {
+        traded = true;
+        this.#credential.stale();
+        response = await this.#sendPresenting(method, url, body, accept, signal, key);
+      }
       if (response.status !== 429 && response.status !== 503) return response;
       // The body is read, so the answer goes on as a Response that still holds it.
       const { payload, response: answer } = await readAnswer(response);
@@ -2007,17 +2121,18 @@ export class DispatchClient {
   }
 
   /**
-   * One send of `#send`'s: a request with no `key` — a read, a PUT or a DELETE, which `#send`
-   * mints none for — goes once, and `signal` aborts it beside the client's own signal. A write
-   * (POST or PATCH) carries `key`, the one `#send` holds for the whole call, as its
-   * `Idempotency-Key`, so every attempt here and every send of that call are the one intent to
-   * Dispatch, which runs it once and answers a repeat with the answer it stored. Each attempt
-   * sends the same encoded body. While an attempt gets no definitive answer (`writeAnswer`, a
-   * transport failure, or `writeRetry.silenceMs` without progress, `#attempt`) the write asks
-   * again under its key, paced by `writeRetry`, and the first definitive answer is the send's: a
-   * 2xx, a replay of one included, or a refusal. The call's deadline and its caller's
-   * cancellation end the attempts at once, whether a fetch or a pause is under way (`#ended`). An
-   * answer `#send` waits out is definitive here, so one wait-out path handles it for every method.
+   * One send of `#send`'s, presenting the credential for it: a request with no `key` — a read, a
+   * PUT or a DELETE, which `#send` mints none for — goes once, and `signal` aborts it beside the
+   * client's own signal. A write (POST or PATCH) carries `key`, the one `#send` holds for the
+   * whole call, as its `Idempotency-Key`, so every attempt here and every send of that call are
+   * the one intent to Dispatch, which runs it once and answers a repeat with the answer it stored,
+   * while two calls are two writes. Each attempt sends the same encoded body. While an attempt
+   * gets no definitive answer (`writeAnswer`, a transport failure, or `writeRetry.silenceMs`
+   * without progress, `#attempt`) the write asks again under its key, paced by `writeRetry`, and
+   * the first definitive answer is the send's: a 2xx, a replay of one included, or a refusal. The
+   * call's deadline and its caller's cancellation end the attempts at once, whether a fetch or a
+   * pause is under way (`#ended`). An answer `#send` waits out is definitive here, so one wait-out
+   * path handles it for every method.
    *
    * It asks again only against a Dispatch this process has lately seen run the keyed layer: a
    * Dispatch without the layer would run a repeat as a second write, so its 5xx — which can come
@@ -2029,13 +2144,13 @@ export class DispatchClient {
    * say nothing, so they rely on what an answer or `/healthz` showed within
    * `KEYED_LAYER_MEMORY_MS`, and ask `/healthz` when nothing did (`#runsKeyedLayer`).
    */
-  async #sendOnce(
+  async #sendPresenting(
     method: string,
     url: string,
-    body?: EncodedBody,
-    accept = "application/json",
-    signal?: AbortSignal,
-    key?: string
+    body: EncodedBody | undefined,
+    accept: string,
+    signal: AbortSignal | undefined,
+    key: string | undefined
   ): Promise<Response> {
     // The credential is presented once here, and again for each attempt the write loop makes
     // below: a key-bound scheme signs one proof per request, so one presentation is one proof
