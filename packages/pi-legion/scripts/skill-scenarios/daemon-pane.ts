@@ -1,11 +1,12 @@
 /**
  * The rig's reading of the Legion daemon: `daemon-pane.go`, run with `go run -overlay` as a main
- * inside a checkout's daemon module, which is how it reaches the daemon's internal packages. The
- * rig asks it rather than restating the daemon: a change to the daemon reaches the rig by
- * construction. The one exception is `daemon-pane.go`'s own table of the handoff words, which the
- * program carries because one program runs against both checkouts of a comparison and the daemon's
- * table has not always had the same name; its comment says so. `workerPane` builds a phase
- * worker's whole pane environment over it.
+ * inside a checkout's daemon module, which is how it reaches the daemon's internal packages, and
+ * `daemon-routes.go`, run with `go run` outside every module, since reading the routes needs only
+ * the daemon's files. The rig asks them rather than restating the daemon: a change to the daemon
+ * reaches the rig by construction. The one exception is `daemon-pane.go`'s own table of the
+ * handoff words, which the program carries because one program runs against both checkouts of a
+ * comparison and the daemon's table has not always had the same name; its comment says so.
+ * `workerPane` builds a phase worker's whole pane environment over it.
  */
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -28,6 +29,29 @@ import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/se
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
 
 const PROGRAM = path.join(import.meta.dir, "daemon-pane.go");
+const ROUTES_PROGRAM = path.join(import.meta.dir, "daemon-routes.go");
+
+/** Runs `go run` with `args` in `cwd` under the caller's environment and `env` over it, `input`
+ * on its stdin (the caller's own stdin when there is none), and returns its stdout. Throws naming
+ * `what`, with go's own stderr, when the run exits other than 0. */
+function goRun(
+  what: string,
+  cwd: string,
+  args: readonly string[],
+  env: Record<string, string>,
+  input?: string
+): string {
+  const result = Bun.spawnSync(["go", "run", ...args], {
+    cwd,
+    env: { ...process.env, ...env },
+    stdin: input === undefined ? "inherit" : new TextEncoder().encode(input),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0)
+    throw new Error(`${what} exited ${result.exitCode}: ${result.stderr.toString().trim()}`);
+  return result.stdout.toString();
+}
 
 /** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when
  * there is none), and returns its stdout. */
@@ -37,21 +61,27 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
     const overlay = path.join(scratch, "overlay.json");
     const main = path.join(module, "cmd", "daemon-pane", "main.go");
     writeFileSync(overlay, JSON.stringify({ Replace: { [main]: PROGRAM } }));
-    const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {
-      cwd: module,
-      stdin: input === undefined ? "inherit" : new TextEncoder().encode(input),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (result.exitCode !== 0) {
-      throw new Error(
-        `daemon-pane ${args.join(" ")} in ${module} exited ${result.exitCode}: ${result.stderr.toString().trim()}`
-      );
-    }
-    return result.stdout.toString();
+    return goRun(
+      `daemon-pane ${args.join(" ")} in ${module}`,
+      module,
+      ["-overlay", overlay, "./cmd/daemon-pane", ...args],
+      {},
+      input
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+/** daemon-routes.go's printout of the routes the API package at `api` registers. The program
+ * imports the standard library alone and runs from its own directory with go.work off, where no
+ * go.mod above it makes it part of a module: building it compiles a few standard packages and
+ * downloads nothing, so a Go cache that holds nothing yet costs seconds rather than the daemon
+ * module's whole build. `api` is resolved against the caller's directory first, as `goSources`
+ * reads it, since the program runs in another. */
+function runRoutes(api: string): string {
+  const dir = path.resolve(api);
+  return goRun(`daemon-routes ${dir}`, import.meta.dir, [ROUTES_PROGRAM, dir], { GOWORK: "off" });
 }
 
 /** The daemon's refusal of a completion of a phase the completing role does not run: its code
@@ -98,28 +128,28 @@ function factsCache(): string | undefined {
   return undefined;
 }
 
-/** daemon-pane.go's answer to `args`, run in `module`, kept in the facts cache under a key of
- * exactly what decides it: the program's own source, `keyArgs` (the command with no path in it),
+/** The answer `run` prints, kept in the facts cache under a key of exactly what decides it: the
+ * source of `program`, the Go program `run` runs, `keyArgs` (the command with no path in it),
  * and every source file the read parses, each by its path under `root` and its bytes. A boot
  * whose key is kept reads the answer from the file, with no `go run`; any other runs the program
  * and writes the answer whole (a temporary file renamed into place), so a reader never sees half
  * of one. A read that fails writes nothing, and throws as the program refused. The key names no
  * absolute path, so a second checkout of the same sources is the same answer. */
 function cachedRead(
-  module: string,
-  args: readonly string[],
+  program: string,
+  run: () => string,
   keyArgs: readonly string[],
   root: string,
   sources: readonly string[]
 ): string {
   const dir = factsCache();
-  if (dir === undefined) return runDaemonPane(module, args);
-  const hash = createHash("sha256").update(readFileSync(PROGRAM)).update(JSON.stringify(keyArgs));
+  if (dir === undefined) return run();
+  const hash = createHash("sha256").update(readFileSync(program)).update(JSON.stringify(keyArgs));
   for (const source of sources)
     hash.update(`\0${path.relative(root, source)}\0`).update(readFileSync(source));
   const file = path.join(dir, `${hash.digest("hex")}.out`);
   if (existsSync(file)) return readFileSync(file, "utf8");
-  const answer = runDaemonPane(module, args);
+  const answer = run();
   mkdirSync(dir, { recursive: true });
   const written = `${file}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(written, answer);
@@ -143,10 +173,13 @@ export function notCurrentPhase(
   const intake = path.join(daemon, "internal", "intake");
   const command = ["refusal", "not-current-phase", role, phase, issue];
   return refusalIn(
-    cachedRead(DAEMON_MODULE, [...command, engine, intake], command, daemon, [
-      engine,
-      ...goSources(intake),
-    ])
+    cachedRead(
+      PROGRAM,
+      () => runDaemonPane(DAEMON_MODULE, [...command, engine, intake]),
+      command,
+      daemon,
+      [engine, ...goSources(intake)]
+    )
   );
 }
 
@@ -158,11 +191,17 @@ export function notCurrentPhase(
 export function labelPhase(checkout: string, role: string): { phase: string; word: string } {
   const daemon = daemonOf(checkout);
   const internal = path.join(daemon, "internal");
-  const [phase = "", word = ""] = cachedRead(daemon, ["phase", role], ["phase", role], daemon, [
-    ...goSources(path.join(internal, "phase")),
-    ...goSources(path.join(internal, "workflow")),
-    ...goSources(path.join(internal, "claim")),
-  ]).split("\n");
+  const [phase = "", word = ""] = cachedRead(
+    PROGRAM,
+    () => runDaemonPane(daemon, ["phase", role]),
+    ["phase", role],
+    daemon,
+    [
+      ...goSources(path.join(internal, "phase")),
+      ...goSources(path.join(internal, "workflow")),
+      ...goSources(path.join(internal, "claim")),
+    ]
+  ).split("\n");
   return { phase, word };
 }
 
@@ -186,13 +225,14 @@ export function labelCheckout(runDir: string): string {
 }
 
 /** Every route the daemon of `checkout` registers, `<METHOD> <path>` each, read out of that
- * checkout's API source by daemon-pane.go's `routes`, which this checkout's daemon module runs:
- * the reading parses the other checkout's files and compiles nothing of them, so a substitute
- * checkout holding the source alone is read the same way. Throws what the reading refused. */
+ * checkout's API source by daemon-routes.go (`runRoutes`), which parses the checkout's files and
+ * compiles nothing of them or of any daemon module, so a substitute checkout holding the source
+ * alone is read the same way. The stand-in answers by this set and health holds every 404 to it,
+ * so both read one set by one reading. Throws what the reading refused. */
 export function labelRoutes(checkout: string): readonly string[] {
   const daemon = daemonOf(checkout);
   const api = path.join(daemon, "internal", "api");
-  return cachedRead(DAEMON_MODULE, ["routes", api], ["routes"], daemon, goSources(api))
+  return cachedRead(ROUTES_PROGRAM, () => runRoutes(api), ["routes"], daemon, goSources(api))
     .split("\n")
     .filter((line) => line !== "");
 }
@@ -228,7 +268,13 @@ export function countDefault(checkout: string, key: string): number {
   const daemon = daemonOf(checkout);
   const config = path.join(daemon, "internal", "config", "config.go");
   const command = ["count-default", key];
-  const printed = cachedRead(DAEMON_MODULE, [...command, config], command, daemon, [config]).trim();
+  const printed = cachedRead(
+    PROGRAM,
+    () => runDaemonPane(DAEMON_MODULE, [...command, config]),
+    command,
+    daemon,
+    [config]
+  ).trim();
   const value = Number(printed);
   if (!Number.isSafeInteger(value))
     throw new Error(`daemon-pane count-default ${key} printed ${JSON.stringify(printed)}`);
@@ -244,8 +290,8 @@ export function claimRefusal(checkout: string, name: string): { status: number; 
   const claim = path.join(daemon, "internal", "claim");
   const command = ["claim-refusal", name];
   const [status = "", message = ""] = cachedRead(
-    DAEMON_MODULE,
-    [...command, claim],
+    PROGRAM,
+    () => runDaemonPane(DAEMON_MODULE, [...command, claim]),
     command,
     daemon,
     goSources(claim)

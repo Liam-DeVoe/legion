@@ -2,7 +2,10 @@
 // phase-worker pane, computed by the daemon's own functions, for worker-pane.ts and
 // daemon-standin.ts to run Oh My Pi and the stand-in daemon under. It belongs to no module:
 // daemon-pane.ts runs it with `go run -overlay` as a main inside a checkout's packages/daemon, the
-// one place the daemon's internal packages can be imported from.
+// one place the daemon's internal packages can be imported from. The daemon's routes are read by
+// daemon-routes.go instead, a program of the standard library alone, since that reading needs
+// nothing of the daemon but its files and building this one first builds the daemon module's
+// whole dependency graph (daemon-routes.go says what that cost).
 //
 //	phase <role>             prints the phase the role's worker runs in, then on a second line the
 //	                         word of the handoff record that phase ends with (handoffWords), empty
@@ -12,9 +15,6 @@
 //	                         prints the code of the daemon's refusal of a completion of a phase
 //	                         the role does not run, then on a second line the daemon's own
 //	                         message for it, read out of the daemon's source (notCurrentPhase)
-//	routes [<api package dir>]
-//	                         prints each route the daemon's API registers, `<METHOD> <path>` one
-//	                         to a line in byte order, read out of the daemon's source (routes)
 //	count-default <key> [<config source>]
 //	                         prints the default of the count setting `key` (legion.yaml), read
 //	                         out of the daemon's source (countDefault)
@@ -38,7 +38,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,7 +57,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]] | routes [<api package dir>] | count-default <key> [<config source>] | claim-refusal <name> [<claim package dir>] | pane < request.json"
+const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]] | count-default <key> [<config source>] | claim-refusal <name> [<claim package dir>] | pane < request.json"
 
 func main() {
 	args := os.Args[1:]
@@ -83,14 +82,6 @@ func main() {
 			intakeDir = args[6]
 		}
 		err = printNotCurrentPhase(args[2], args[3], args[4], engine, intakeDir)
-	case (len(args) == 1 || len(args) == 2) && args[0] == "routes":
-		// The package the routes are read out of: the daemon's own, and the one a caller names
-		// otherwise, for the reason the refusal's sources are named (above).
-		dir := defaultAPIDir
-		if len(args) == 2 {
-			dir = args[1]
-		}
-		err = printRoutes(dir)
 	case (len(args) == 2 || len(args) == 3) && args[0] == "count-default":
 		file := defaultConfigFile
 		if len(args) == 3 {
@@ -136,82 +127,6 @@ func printPhase(role claim.Role) error {
 		return nil
 	}
 	return fmt.Errorf("%q works no phase", role)
-}
-
-// defaultAPIDir is the package the daemon registers its HTTP routes in, read relative to the
-// module this program is run inside, and taken as an argument as defaultEngineFile is.
-const defaultAPIDir = "internal/api"
-
-// printRoutes prints the routes the daemon's API registers (routes), one to a line.
-func printRoutes(dir string) error {
-	registered, err := routes(dir)
-	if err != nil {
-		return err
-	}
-	for _, route := range registered {
-		fmt.Println(route)
-	}
-	return nil
-}
-
-// routes is every route the API package at `dir` registers, each as the pattern its registration
-// names (`<METHOD> <path>`), in byte order and once each: the string literal a
-// `<mux>.HandleFunc(…)` or `<mux>.Handle(…)` call of the package's own files names first. It is
-// read out of the source rather than listed in the rig, so the stand-in of each label answers the
-// routes that label's daemon serves (daemon-standin.ts), and a route the daemon adds is one the
-// rig reads with no edit. The pattern `/` names no route: it is the mux's remainder, every request
-// no other pattern matches, which the daemon's catch-all answers 404 ("no route"), as the stand-in
-// answers a route its label does not serve. Any other pattern naming no method is an error, since
-// what it serves is every method of a path and the rig reads a route as one method and one path;
-// so is a package registering none, never an empty set: the stand-in would answer every route 404
-// and health would call that the daemon's own answer.
-func routes(dir string) ([]string, error) {
-	sources, err := filepath.Glob(filepath.Join(dir, "*.go"))
-	if err != nil {
-		return nil, fmt.Errorf("list the daemon's %s: %w", dir, err)
-	}
-	seen := map[string]bool{}
-	var methodless []string
-	for _, source := range sources {
-		if strings.HasSuffix(source, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
-		if err != nil {
-			return nil, fmt.Errorf("read the daemon's %s: %w", source, err)
-		}
-		ast.Inspect(file, func(node ast.Node) bool {
-			call, isCall := node.(*ast.CallExpr)
-			if !isCall || len(call.Args) != 2 {
-				return true
-			}
-			selector, isSelector := call.Fun.(*ast.SelectorExpr)
-			if !isSelector || (selector.Sel.Name != "HandleFunc" && selector.Sel.Name != "Handle") {
-				return true
-			}
-			pattern, isText := stringLiteral(call.Args[0])
-			switch {
-			case !isText || pattern == "/":
-			case strings.Contains(pattern, " "):
-				seen[pattern] = true
-			default:
-				methodless = append(methodless, pattern)
-			}
-			return true
-		})
-	}
-	if len(methodless) > 0 {
-		return nil, fmt.Errorf("%s registers %q with no method, a route this reading cannot name as one method and one path", dir, methodless)
-	}
-	if len(seen) == 0 {
-		return nil, fmt.Errorf("%s registers no route with a HandleFunc or Handle call naming its pattern: the daemon registers its routes some other way now", dir)
-	}
-	registered := make([]string, 0, len(seen))
-	for pattern := range seen {
-		registered = append(registered, pattern)
-	}
-	slices.Sort(registered)
-	return registered, nil
 }
 
 // defaultConfigFile is where the daemon reads legion.yaml and keeps each setting's default, read

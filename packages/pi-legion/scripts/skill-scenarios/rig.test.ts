@@ -24,7 +24,7 @@ setDefaultTimeout(60_000);
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
 // one warning names docker for the whole file.
 const withoutDocker = skipWithout("docker");
-// The routes rule reads a label's daemon's routes with daemon-pane.go, which `go run` compiles.
+// The routes rule reads a label's daemon's routes with daemon-routes.go, which `go run` compiles.
 const withoutGo = skipWithout("go");
 /** This checkout, the one the head label is built from. */
 const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
@@ -1490,17 +1490,32 @@ describe("health", () => {
     );
     return dir;
   }
+  /** The caller's go settings that decide where a `go run` builds and what it fetches, as `go env`
+   * resolves them rather than as the environment names them: GOCACHE and GOMODCACHE default to
+   * places under HOME (or XDG_CACHE_HOME), which childEnv replaces with a HOME of its own, so a
+   * runner that sets neither variable (setup-go exports no GOCACHE; CI's pi-legion job restores
+   * its caches into the defaults, ~/.cache/go-build and ~/go/pkg/mod) handed the routes rule an
+   * empty cache under that HOME. On CI run 43612603343 that rule then built daemon-pane.go,
+   * the daemon module's whole graph fetched and compiled, and the 404 row timed out at 60 s.
+   * Read once, on the first call; empty on a host without go, whose rows that need it skip. */
+  let callerGo: Record<string, string> | undefined;
+  function goSettings(): Record<string, string> {
+    if (callerGo !== undefined) return callerGo;
+    const names = ["GOCACHE", "GOMODCACHE", "GOPATH", "GOFLAGS", "GOTOOLCHAIN"];
+    const printed = withoutGo
+      ? undefined
+      : Bun.spawnSync(["go", "env", "-json", ...names], { stdout: "pipe", stderr: "pipe" });
+    const resolved: Record<string, string> =
+      printed?.exitCode === 0 ? JSON.parse(printed.stdout.toString()) : {};
+    callerGo = Object.fromEntries(Object.entries(resolved).filter(([, value]) => value !== ""));
+    return callerGo;
+  }
   /** `rig.sh health` of `dirs`, under childEnv with the caller's go caches and `vars` over it (a
    * TMPDIR, whose root a run's world hides, say). */
   function healthIn(vars: Record<string, string>, ...dirs: string[]) {
     // The go caches of the caller's, which the routes rule's `go run` compiles with: a HOME of
-    // its own would have go fetch and build the daemon module from nothing.
-    const go = Object.fromEntries(
-      ["GOCACHE", "GOMODCACHE", "GOPATH", "GOFLAGS", "GOTOOLCHAIN"].flatMap((name) => {
-        const value = process.env[name];
-        return value === undefined ? [] : [[name, value]];
-      })
-    );
+    // its own would have go build from an empty cache (goSettings).
+    const go = goSettings();
     const result = Bun.spawnSync(
       ["bash", path.join(import.meta.dir, "rig.sh"), "health", ...dirs],
       { env: { ...childEnv, ...go, SKILL_SCENARIOS_WORK: freshDir("health-work"), ...vars } }
@@ -1720,6 +1735,51 @@ describe("health", () => {
       );
       expect(stdout).toContain("health: routes: 3 of 5 runs\n");
       expect(stdout).toEndWith("health: 3 of 5 runs unhealthy\n");
+    }
+  );
+
+  // Catches: the routes rule's `go run` handed the go cache of health's own HOME rather than the
+  // caller's. Where the caller names no GOCACHE (CI's runner, whose restored cache is the default
+  // under the runner's HOME), the variables alone carry nothing, and every row whose run has a
+  // 404 built from an empty cache: on CI run 43612603343 the row above timed out at 60 s so. Each
+  // `go` health starts is a wrapper that records the GOCACHE it was given and runs the real go.
+  test.skipIf(withoutGo)(
+    "the routes rule's go runs build in the caller's own go cache, not one under health's HOME",
+    () => {
+      const bin = freshDir("go-wrapper");
+      const seen = path.join(bin, "seen");
+      writeFileSync(
+        path.join(bin, "go"),
+        `#!/bin/sh\nprintf '%s\\n' "$GOCACHE" >>'${seen}'\nexec '${Bun.which("go")}' "$@"\n`,
+        { mode: 0o755 }
+      );
+      const checkout = path.join(freshDir("health"), "routes-daemon");
+      const api = path.join(checkout, "packages", "daemon", "internal", "api");
+      mkdirSync(api, { recursive: true });
+      writeFileSync(
+        path.join(api, "server.go"),
+        'package api\n\nfunc routes() {\n\tmux.HandleFunc("GET /legion/v1/state", s.state)\n}\n'
+      );
+      const dir = run(
+        "threads-closed-code-defect-head-13",
+        [
+          [
+            {
+              at: "2026-11-13T18:00:00.000Z",
+              method: "POST",
+              path: "/nowhere",
+              status: 404,
+              role: "reviewer",
+            },
+          ],
+        ],
+        { checkout }
+      );
+      const { stdout } = healthIn({ PATH: `${bin}:${childEnv.PATH}` }, dir);
+      expect(verdict(stdout, dir)).toBe("threads-closed-code-defect-head-13  healthy");
+      const cache = goSettings().GOCACHE ?? "";
+      expect(cache).not.toBe("");
+      expect(readFileSync(seen, "utf8")).toBe(`${cache}\n`);
     }
   );
 
