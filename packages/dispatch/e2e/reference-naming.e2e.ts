@@ -1,4 +1,4 @@
-import { plannerSession, setLiveSessions } from "./agents";
+import { plannerSession, reviewerSession, setLiveSessions } from "./agents";
 import {
   baseUrl,
   createAgentMessage,
@@ -422,8 +422,9 @@ test("a session renamed after it was picked reads as its new name in the pill an
 });
 
 // R5 and R8: a bare person reads as their login, with no link, where Dispatch knows the login,
-// and a login it does not know is the words written; a bare role reads as its token, linked to
-// its page. The comment and the document editor read the one answer, so they agree.
+// and a login it does not know is the words written; a bare role a live session holds reads as
+// its token, linked to its page. The comment and the document editor read the one answer, so
+// they agree.
 // SLOW(>=2s): two page loads, each waiting for the role's title before it reads the rest.
 test("a bare known person reads as their login with no link, an unknown one as written, and a bare role as its token, linked", async ({
   browser,
@@ -433,6 +434,8 @@ test("a bare known person reads as their login with no link, an unknown one as w
   const host = await createIssue({ project: "CORE", title: "Reference host" });
   // Dana signs in once, which is what makes her a person Dispatch knows.
   await userHeaders(PERSON_LOGIN);
+  // A role is named while a session the registry lists holds it.
+  await setLiveSessions([{ ...reviewerSession, roles: [ROLE_TOKEN] }]);
   const person = `dispatch://person/${PERSON_LOGIN}`;
   const body = `Ask ${person}, ${UNKNOWN_PERSON_REFERENCE} and dispatch://role/${ROLE_TOKEN}.`;
   await editArtifact(

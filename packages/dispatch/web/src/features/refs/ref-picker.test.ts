@@ -106,15 +106,33 @@ test("a space typed after a trigger closes it, which leaves a heading a heading"
 });
 
 // A mention's words start with `@` right after a `[`, which is a word boundary: the picker must
-// not open again over the mention it has just written, nor over one already in the text.
-test("a picked mention opens no trigger, though its words start with one", () => {
+// open neither over the mention it has just written nor where the caret moves into a written
+// link's words or address, since a pick there would write a link inside a link.
+test("no trigger opens over a written link, though a mention's words start with one", () => {
+  const mention = "[@Planner](dispatch://agent/planner-session)";
   expect(readTrigger("[@reviewer](dispatch://role/reviewer)")).toBeUndefined();
-  expect(readTrigger("see [@Planner](dispatch://agent/planner-session) and")).toBeUndefined();
+  expect(readTrigger(`see ${mention} and`)).toBeUndefined();
+  // The caret in the mention's words, at their end, and in its address.
+  expect(readTrigger(mention, "[@Plan".length)).toBeUndefined();
+  expect(readTrigger(mention, "[@Planner".length)).toBeUndefined();
+  expect(readTrigger(mention, "[@Planner](dispatch://agent/plan".length)).toBeUndefined();
+  // Words that hold an escaped bracket, as `partyLink` writes a title holding one.
+  expect(readTrigger("[@A\\[b\\]](dispatch://agent/a)", "[@A\\[b".length)).toBeUndefined();
+  // A `#` right after the `](` that opens an address is that address, not a door.
+  expect(readTrigger("[the plan](#plan)", "[the plan](#pl".length)).toBeUndefined();
+  // A `[` the reader typed is still a word boundary while no link closes after the caret, and a
+  // link later in the text does not close the words the reader is typing now.
   expect(readTrigger("[@reviewer")).toEqual({
     chars: "@",
     door: "parties",
     query: "reviewer",
     start: 1,
+  });
+  expect(readTrigger(`ask @pl then ${mention}`, "ask @pl".length)).toEqual({
+    chars: "@",
+    door: "parties",
+    query: "pl",
+    start: 4,
   });
 });
 

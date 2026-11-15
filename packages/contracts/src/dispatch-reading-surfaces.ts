@@ -36,6 +36,7 @@ export type DispatchReadingSurface =
   | "answers-answer"
   | "answers-reply"
   | "component-prose"
+  | "not-architectural-reason"
   | "conversation-reply"
   | "conversation-message"
   | "conversation-targeted-message"
@@ -54,6 +55,7 @@ export type DispatchReadingSurface =
   | "my-reply-subject"
   | "inbox-thread-title"
   | "issue-decision"
+  | "issue-components-reason"
   | "margin-decision-passage"
   | "margin-pinned-conversation"
   | "margin-suggestion-diff"
@@ -113,6 +115,12 @@ const NO_MARKUP_REASON =
  *  reason `DISPATCH_WRITING_BOXES` gives their three boxes. */
 const SETTINGS_REASON =
   "One setting per line rather than prose: a job name, a login or an owner/repo, which is stored and shown as the characters it is.";
+
+/** Why an issue's reason for touching no component is no record, which is what the two surfaces
+ *  that draw it say: the Architecture page's Not architectural list and the issue header's
+ *  Components line. */
+const NOT_ARCHITECTURAL_REASON =
+  "An issue's reason for touching no component is no record of the reference graph: it is none of the four kinds a `TextSource` names (an artifact, an ask, a comment, a message), and the components write stores it as an attribute of the issue's attachment and indexes nothing from it - so a `#id` in it declares nothing and names nothing.";
 
 export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // An issue's Activity tab: one event's body, which is an ask's question, its answer, its
@@ -223,6 +231,16 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: true,
     surface: "component-prose",
+  },
+  // An issue's reason for touching no component, on its row of the Not architectural list. The
+  // issue header's Components line draws the same reason (`issue-components-reason`).
+  {
+    files: ["packages/dispatch/web/src/features/architecture/AttachmentLists.tsx"],
+    reach: "/projects/<PROJECT>/architecture?view=none, a Not architectural row's reason",
+    reason: NOT_ARCHITECTURAL_REASON,
+    record: false,
+    rendered: true,
+    surface: "not-architectural-reason",
   },
   // An issue's Conversation tab: a reply, a message turn and a targeted message turn.
   {
@@ -355,6 +373,15 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: true,
     surface: "issue-decision",
+  },
+  // The issue header's Components line, which shows the reason an issue touches no component.
+  {
+    files: ["packages/dispatch/web/src/features/issue/IssueComponentsLine.tsx"],
+    reach: "/issues/<ISSUE>, the header's Components line",
+    reason: NOT_ARCHITECTURAL_REASON,
+    record: false,
+    rendered: true,
+    surface: "issue-components-reason",
   },
   // A document's margin: the decision card and the pinned conversations, which an issue's page
   // shows beside its spec, a suggestion's two sides and a thread's comments.

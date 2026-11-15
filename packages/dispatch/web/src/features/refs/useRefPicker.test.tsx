@@ -21,6 +21,7 @@ import { RefPickerList } from "./RefPickerList";
 import {
   applyInsertion,
   REF_PICKER_INSTRUCTION,
+  REF_PICKER_NO_PARTS_WORDS,
   REF_PICKER_WORDS,
   type RefPickerInsertion,
 } from "./ref-picker";
@@ -523,6 +524,35 @@ test("ArrowRight on an agent's row lists its documents, and Enter takes one", as
   await waitFor(() =>
     expect(comment.value).toBe("dispatch://agent/planner-session/artifact/shot-png")
   );
+});
+
+// An agent's row offers its documents before any read says whether it holds one, so an opened
+// row that lists none says so, rather than reading as a control that did nothing. ArrowLeft
+// closes the opened row, and the note with it.
+test("an agent whose conversation holds no file says so when its documents are opened", async () => {
+  const user = userEvent.setup();
+  const page = renderHost();
+  page.listAgentArtifacts.mockResolvedValue([]);
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@plann");
+  await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+
+  await user.keyboard("{ArrowRight}");
+
+  await waitFor(() => expect(page.listAgentArtifacts).toHaveBeenCalledWith("planner-session"));
+  await waitFor(() =>
+    expect(screen.getByTestId("ref-picker-no-parts").textContent).toBe(
+      REF_PICKER_NO_PARTS_WORDS.documents
+    )
+  );
+  expect(REF_PICKER_NO_PARTS_WORDS.documents).toBe("No documents.");
+  expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]);
+
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(screen.queryByTestId("ref-picker-no-parts")).not.toBeInTheDocument());
+  expect(comment.value).toBe("@plann");
 });
 
 test("a box with no issue offers everyone who has signed in", async () => {

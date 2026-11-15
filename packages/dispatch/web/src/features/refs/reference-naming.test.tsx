@@ -133,11 +133,22 @@ const renamed: Agent = {
   title: "Planner now",
 };
 
-/** A query client holding the registry's answer for the renamed session, and the people Dispatch
- *  knows, of whom dana is one and nobody is not. */
+/** The session holding the reviewer role, as the registry lists it: a role reference is named
+ *  while a session it lists holds the role. */
+const reviewing: Agent = {
+  ...renamed,
+  dir: "/workspaces/reviewer",
+  roles: ["reviewer"],
+  session_id: "01a1058e-f14f-7684-87eb-3dc885955552",
+  title: "Reviewer",
+};
+
+/** A query client holding the registry's answer - the renamed session, and the session that
+ *  holds the reviewer role - and the people Dispatch knows, of whom dana is one and nobody is
+ *  not. */
 function clientWithParties(): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(["agents"], [renamed]);
+  client.setQueryData(["agents"], [renamed, reviewing]);
   client.setQueryData(["users"], [{ login: "dana@example.test" }]);
   return client;
 }
@@ -176,8 +187,8 @@ test("a party's mention reads as its current name, its other links keep their wo
 
 // R5 and R8: a bare person reads as their login, with no link, where Dispatch knows the login;
 // a login it does not know is the words written. A person's mention reads as the sign and the
-// login. A bare role reads as its token, linked to its page.
-test("a known person reads as their login with no link, an unknown one as written, and a role as its token, linked", async () => {
+// login. A bare role a session in the registry holds reads as its token, linked to its page.
+test("a known person reads as their login with no link, an unknown one as written, and a held role as its token, linked", async () => {
   const view = draw(
     <MarkdownBody markdown="Ask dispatch://person/dana@example.test, [@Dana](dispatch://person/dana@example.test), dispatch://person/nobody@example.test and dispatch://role/reviewer." />,
     clientWithParties()
@@ -189,6 +200,28 @@ test("a known person reads as their login with no link, an unknown one as writte
       expect(words(view.container)).toBe(
         "Ask dana@example.test, @dana@example.test, dispatch://person/nobody@example.test and reviewer."
       )
+    );
+    expect(within(view.container).getAllByRole("link")).toEqual([role]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R5 and R8: a role no session in the registry holds names nobody the picker would offer, so it
+// reads as the words its writer wrote, with no link - bare or as a mention - as an unknown
+// person does.
+test("a role no session holds reads as the words written, with no link", async () => {
+  const view = draw(
+    <MarkdownBody markdown="Ask dispatch://role/release-captain, [@captain](dispatch://role/release-captain) and dispatch://role/reviewer." />,
+    clientWithParties()
+  );
+  try {
+    const role = await within(view.container).findByRole("link", { name: "reviewer" });
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-dispatch-missing]")).toHaveLength(2)
+    );
+    expect(words(view.container)).toBe(
+      "Ask dispatch://role/release-captain, @captain and reviewer."
     );
     expect(within(view.container).getAllByRole("link")).toEqual([role]);
   } finally {
@@ -217,6 +250,32 @@ test("the plain-text projection names a mention, a role and a person as the pain
     );
   } finally {
     view.unmount();
+  }
+});
+
+// A mention's `@` is words its writer wrote, never code: a party's link whose words are all code
+// is a worded link like any other, and keeps its words in the painted line and in the
+// plain-text projection alike, rather than reading as the party's name in one and as code in
+// the other.
+test("a party's link whose words are code keeps them, painted and projected alike", async () => {
+  const markdown = `Ask [\`@x\`](dispatch://agent/${SESSION}) now.`;
+  const painted = draw(<MarkdownBody markdown={markdown} />, clientWithParties());
+  const projected = draw(
+    <PlainText markdown={markdown}>
+      {(text) => <span data-testid="code-line">{text ?? ""}</span>}
+    </PlainText>,
+    clientWithParties()
+  );
+  try {
+    // The session's title is in the cache, so the name is drawn by the time the link is.
+    await waitFor(() =>
+      expect(painted.container.querySelector(`a[href="/agents/${SESSION}/live"]`)).not.toBeNull()
+    );
+    expect(words(painted.container)).toBe("Ask @x now.");
+    await waitFor(() => expect(projected.getByTestId("code-line").textContent).toBe("Ask @x now."));
+  } finally {
+    painted.unmount();
+    projected.unmount();
   }
 });
 

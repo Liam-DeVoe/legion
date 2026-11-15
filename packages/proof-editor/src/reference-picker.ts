@@ -74,9 +74,11 @@ export interface ReferenceInsertion {
    *  them, and writing over that text is what this refuses. */
   readonly trigger: string;
   /** Where the written words link to, for a pick that is a link rather than plain text: a
-   *  party's mention, whose words are its name. The write carries the schema's link mark over
-   *  `text`, so the document stores the link - `[words](href)` in its Markdown - rather than
-   *  the escaped characters plain text holding the same Markdown would be stored as. */
+   *  party's mention, whose words are the mention sign and the party's name (`@Planner`) and
+   *  whose address names the party; the server reads only that address. The write carries the
+   *  schema's link mark over `text`, so the document stores the link - `[@Name](href)` in its
+   *  Markdown - rather than the escaped characters plain text holding the same Markdown would be
+   *  stored as. */
   readonly href?: string;
 }
 

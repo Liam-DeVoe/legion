@@ -18,10 +18,10 @@ name: Dispatch browser suite
 # answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
 # run pay for the rest, each of which has the wall time for them. `references` runs the
 # `chromium` project over every row of the eleven spec files dispatch://INFRA-1702's
-# Verification document names and the nine of the reading list's walk, on the four shard machines and the merge job alone, so a pull
-# request that changes the reference framework gets those rows from CI at its head rather than
-# from a run by hand. It gates nothing: ci.yaml's head comment on the dispatch-references job
-# says why.
+# Verification document names and the nine of the reading list's walk, on the four shard
+# machines and the merge job alone, so a pull request that changes the reference framework
+# gets those rows from CI at its head rather than from a run by hand. It gates nothing:
+# ci.yaml's head comment on the dispatch-references job says why.
 #
 # Two lanes can run in one workflow run - the references lane beside the pull-request lane, on
 # a pull request that selects both callers - and an artifact name is unique within a run, so

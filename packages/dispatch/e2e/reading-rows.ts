@@ -1,4 +1,3 @@
-import { DISPATCH_READING_SURFACES, type DispatchReadingSurface } from "@legion/contracts";
 import { expect, type Locator } from "@playwright/test";
 
 import type { Issue } from "../web/src/api/types";
@@ -10,16 +9,17 @@ import { sessionIds } from "./session-ids";
  * The reading list's walk (INFRA-1702's R9): each rendered row of `DISPATCH_READING_SURFACES`
  * has a driver, a row of a `reading-*.e2e.ts` spec titled with the row's own id followed by a
  * colon, that reaches the surface the way the row says and reads there a stored text holding a
- * bare issue key, a `dispatch://` address and a picked party (`READING_TEXT`). Each of the
- * three must draw through the one renderer: the key and the address as their issue's current
- * name, the party as `@` and its current name, and no address left as raw text (R6, R8).
+ * bare issue key, a `dispatch://` address and a picked party (`readingText`). Each of the three
+ * must draw through the one renderer: the key and the address as their issue's current name,
+ * the party as `@` and its current name, and no address left as raw text (R6, R8).
  *
- * `e2e/__tests__/reading-walk.test.ts` is the gate: it reads the reading specs and fails on a
- * rendered row with no driver, a driver for a row the list does not hold or does not render, and
- * two drivers for one row. A row the list excludes carries its reason, which the dashboard's
- * own source test holds (`features/refs/surface-lists.test.ts`).
+ * `e2e/__tests__/reading-walk.test.ts` is the gate: it reads Playwright's own listing of the
+ * reading specs and fails on a rendered row with no driver, two drivers for one row, a driver
+ * for a row the list does not hold or does not render, and a driver Playwright would skip. A row
+ * the list excludes carries its reason, which the dashboard's own source test holds
+ * (`features/refs/surface-lists.test.ts`).
  *
- * Each world spec seeds this world in its own rows (`seedReadingWorld`), writes `READING_TEXT`
+ * Each world spec seeds this world in its own rows (`seedReadingWorld`), writes `readingText`
  * into the record its surfaces show, and reads it with `expectReadsReferences`.
  */
 
@@ -27,6 +27,12 @@ import { sessionIds } from "./session-ids";
 export const READING_SESSION_ID = sessionIds.tester;
 export const READING_SESSION_TITLE = "Reading tester";
 export const READING_SESSION_REFERENCE = `dispatch://agent/${READING_SESSION_ID}`;
+
+/** The words the text writes for the party: the name the picker wrote when the party was picked,
+ *  which the session no longer holds. A surface that drew a mention as its author's words would
+ *  show these, so a surface that shows `READING_SESSION_TITLE` instead has read the party's
+ *  current name (R8). */
+const READING_SESSION_PICKED_NAME = "Old reading name";
 
 const readingSession: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
@@ -69,10 +75,11 @@ export async function seedReadingWorld(): Promise<ReadingWorld> {
 }
 
 /** The text every driver stores: a bare key, an address and a party picked as the picker writes
- *  one, `[@<name>](<address>)`. One line, so a surface that shows a line of a record shows it
+ *  one, `[@<name>](<address>)`, under the name it held when it was picked
+ *  (`READING_SESSION_PICKED_NAME`). One line, so a surface that shows a line of a record shows it
  *  whole. */
 export function readingText(world: ReadingWorld): string {
-  return `Read ${world.keyed.key}, then dispatch://${world.addressed.key}, and ask [@${READING_SESSION_TITLE}](${READING_SESSION_REFERENCE}).`;
+  return `Read ${world.keyed.key}, then dispatch://${world.addressed.key}, and ask [@${READING_SESSION_PICKED_NAME}](${READING_SESSION_REFERENCE}).`;
 }
 
 /**
@@ -85,8 +92,9 @@ export type ReadingShape = "link" | "inert" | "written";
 /**
  * Holds `scope` to what R6 and R8 say a surface of `shape` shows for `readingText(world)`.
  * `link` and `inert`: the key and the address read as their issue's key and current title, the
- * party as `@` and the session's title, and no `dispatch://` is left as text; `link` makes each
- * of the three a link, `inert` none. `written`: the text as stored.
+ * party as `@` and the session's current title rather than the name the text wrote for it, and
+ * no `dispatch://` is left as text; `link` makes each of the three a link, `inert` none.
+ * `written`: the text as stored.
  */
 export async function expectReadsReferences(
   scope: Locator,
@@ -104,6 +112,7 @@ export async function expectReadsReferences(
   await expect(keyed.first()).toHaveText(`${world.keyed.key} ${world.keyed.title}`);
   await expect(addressed.first()).toHaveText(`${world.addressed.key} ${world.addressed.title}`);
   await expect(party.first()).toHaveText(`@${READING_SESSION_TITLE}`);
+  await expect(scope).not.toContainText(READING_SESSION_PICKED_NAME);
   await expect(scope).not.toContainText("dispatch://");
   const links = scope.locator("a[href][data-dispatch-ref]");
   if (shape === "link") {
@@ -113,9 +122,4 @@ export async function expectReadsReferences(
   } else {
     await expect(links).toHaveCount(0);
   }
-}
-
-/** The rows of the reading list the walk must drive: every row that renders. */
-export function renderedReadingRows(): DispatchReadingSurface[] {
-  return DISPATCH_READING_SURFACES.filter((row) => row.rendered).map((row) => row.surface);
 }

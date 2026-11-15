@@ -25,6 +25,7 @@ import {
 import { MentionField } from "../conversation/MentionField";
 import { type IssueComponentsWrite, useIssueComponents } from "../issue/useIssueComponents";
 import { statusText } from "../project/board-model";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { ComponentPicker } from "./ComponentPicker";
@@ -358,7 +359,11 @@ function NotArchitecturalRow({
           </button>
         )}
       </div>
-      <p className={`text-sm ${textSecondaryOnSurface}`}>{issue.reason}</p>
+      <p className={`text-sm ${textSecondaryOnSurface}`}>
+        {/* No `source`: why the reason is no record is the reading list's
+            `not-architectural-reason` (`DISPATCH_READING_SURFACES`). */}
+        <MarkdownBody markdown={issue.reason} variant="inline" />
+      </p>
       <RowError error={write.error} />
     </div>
   );

@@ -200,7 +200,8 @@ export function coveredBoxes(): DispatchWritingBox[] {
 /** The doors line every hint opens with. */
 const HINT_DOORS = "Type @ for an agent, a role or a person, # for an issue, [[ for anything else.";
 
-/** What a box whose write tells nobody it names says of a pick, before it says what does tell. */
+/** What a box whose write tells nobody it names says of a pick, before it says what does tell:
+ *  every such write but a suggestion's, whose replacement shows no link (`hintWords`). */
 const HINT_QUIET =
   "A picked agent or role gets a link, and a picked person shows as a name without one. Nobody you pick is told.";
 
@@ -218,7 +219,6 @@ const HINT_TOLD: Partial<Record<DispatchWriting, string>> = {
   "issue-spec": "A comment on the new issue tells a picked agent or role.",
   "message-reply": "Your reply goes to whoever the thread is with.",
   "priority-description": "Nothing on a priority tells anyone.",
-  suggestion: "A pick in the Reason box tells an agent or a role.",
 };
 
 /**
@@ -228,7 +228,10 @@ const HINT_TOLD: Partial<Record<DispatchWriting, string>> = {
  * and R5): a box that delivers says a picked agent or role is told, and a picked person is not
  * told and gets no link; a box that does not says a pick links and tells nobody, and says what
  * does tell, in words of its write's own; and the ask card, whose one box makes both writes,
- * says both. Which kind a row is comes from its `delivers`, which `expectDeliveryClaim` drives.
+ * says both. A suggestion's replacement promises no link: until someone accepts the suggestion,
+ * its card shows the replacement as the characters written (the reading list's
+ * `margin-suggestion-diff`), and only the Reason box beside it tells anyone. Which kind a row is
+ * comes from its `delivers`, which `expectDeliveryClaim` drives.
  */
 function hintWords(box: DispatchWritingBox, write: DispatchWriting): string {
   if (box === "ask-answer") {
@@ -236,6 +239,9 @@ function hintWords(box: DispatchWritingBox, write: DispatchWriting): string {
   }
   if (dispatchWritingBox(box, write).delivers) {
     return `${HINT_DOORS} A picked agent or role is told. A picked person shows as a name without a link and is not told.`;
+  }
+  if (write === "suggestion") {
+    return `${HINT_DOORS} Until someone accepts the suggestion, the replacement shows the characters you write. Nobody you pick is told. A pick in the Reason box tells an agent or a role.`;
   }
   const told = HINT_TOLD[write];
   if (told === undefined) {

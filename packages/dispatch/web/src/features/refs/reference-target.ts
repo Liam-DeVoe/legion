@@ -305,15 +305,20 @@ export interface ReferenceData {
    *  people who have signed in, the people the reference picker lists where no issue is in hand
    *  (`useRefPicker.ts`). False while that list loads and for any other reference. */
   readonly personKnown: boolean;
+  /** Whether a session the registry lists holds the role a role reference names: the registry
+   *  the picker's role rows come from (`party-options.ts`). False while that list loads and for
+   *  any other reference. */
+  readonly roleKnown: boolean;
   /** Whether Dispatch answered that the target does not exist: the read of the record behind the
    *  reference answered 404 (a project with no architecture among them), or the read that lists
    *  it came back without it - an issue's artifacts with neither the slug nor, for a document, the
    *  name an artifact reference writes (`artifactAtAddress`), a project's architecture without the
    *  component, Dispatch's record of sessions without the session (one the registry lists, and
-   *  one that ended, are both known). False while loading and for any other failure, so a
-   *  reference that names a real target never loses its link to a slow or dropped read. The
-   *  document editor reads the same answer (`document-references.tsx`, through
-   *  `useReferenceTarget`), so a comment and the editor cannot disagree. */
+   *  one that ended, are both known), the registry without a session that holds the role. False
+   *  while loading and for any other failure, so a reference that names a real target never
+   *  loses its link to a slow or dropped read. The document editor reads the same answer
+   *  (`document-references.tsx`, through `useReferenceTarget`), so a comment and the editor
+   *  cannot disagree. */
   readonly missing: boolean;
 }
 
@@ -560,12 +565,16 @@ export function useReferenceData(
   // read of the page's unlisted sessions. An ended session keeps its conversation, so it stays a
   // link; an id no agent ever held does not (R8). While a session reference is drawn it keeps the
   // shell's one registry poll running, so a session renamed since the page loaded reads as it is
-  // called now (R4) - in a draft's pill as in the record.
+  // called now (R4) - in a draft's pill as in the record. A role reference reads the same
+  // registry, which is where the picker's role rows come from (`party-options.ts`), and keeps the
+  // same poll running, so a role a session takes up while the page is open comes to be named.
   const sessionRoute = route?.kind === "agent-session" ? route : undefined;
-  useRegistryPolling(sessionRoute !== undefined);
+  const roleRoute = route?.kind === "role" ? route : undefined;
+  const readsRegistry = sessionRoute !== undefined || roleRoute !== undefined;
+  useRegistryPolling(readsRegistry);
   const registry = useQuery({
     ...agentsQuery(),
-    enabled: sessionRoute !== undefined,
+    enabled: readsRegistry,
     refetchOnMount: false,
   });
   const listed =
@@ -580,6 +589,12 @@ export function useReferenceData(
   });
   const listedTitle =
     sessionRoute === undefined ? undefined : registeredTitle(registry.data, sessionRoute.session);
+  // A role is known while a session the registry lists holds it. One the latest read answered
+  // with no holder is no target: it reads as the words its writer wrote, with no link.
+  const roleKnown =
+    roleRoute !== undefined &&
+    (registry.data ?? []).some((agent) => agent.roles?.includes(roleRoute.role) === true);
+  const roleUnheld = roleRoute !== undefined && registry.isSuccess && !roleKnown;
   // A person is named by their login, which their address holds, once Dispatch knows the login:
   // the one read of everyone who has signed in, shared with every other person reference and
   // with the pickers that list them, and made only for a person reference.
@@ -601,8 +616,10 @@ export function useReferenceData(
     sessionTitle: listedTitle ?? recorded.data?.title,
     sessionKnown: listed !== undefined || recorded.data?.known === true,
     personKnown,
+    roleKnown,
     missing:
       (unlisted && recorded.data?.known === false) ||
+      roleUnheld ||
       [
         issue,
         messageQueryResult,
@@ -692,10 +709,10 @@ export function blockTextTree(node: GraphReferences["node"]): DisplayTree | unde
  * it loads or after. A block of a document resolves to the headline of its own text, as an ask or
  * comment does: the text the pinned version held for a pinned reference, its current text
  * otherwise. A component resolves to its own title from its project's architecture, the one
- * record behind that kind. A session resolves to its title, a role to its token, and a person
- * to their login once Dispatch knows it (R5). A reference to an image artifact, of an issue, a
- * project or an agent's conversation, also answers its picture: the bytes route of the version
- * it pins, else of the latest.
+ * record behind that kind. A session resolves to its title, a role to its token while a session
+ * the registry lists holds it, and a person to their login once Dispatch knows it (R5). A
+ * reference to an image artifact, of an issue, a project or an agent's conversation, also
+ * answers its picture: the bytes route of the version it pins, else of the latest.
  */
 export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
@@ -713,6 +730,7 @@ export function useReferenceTarget(
     message,
     missing,
     personKnown,
+    roleKnown,
     sessionKnown,
     sessionTitle,
   } = useReferenceData(route, options);
@@ -781,10 +799,11 @@ export function useReferenceTarget(
       picture: undefined,
     };
   } else if (route?.kind === "role") {
-    // A role is named by its token, which its address holds, so it costs no read: the page it
-    // opens lists whoever holds it now.
+    // A role is named by its token, which its address holds, while a session the registry lists
+    // holds it (R5): the page it opens lists that session. A role nobody holds has no name, and
+    // reads as the words its writer wrote.
     shown = {
-      title: route.role,
+      title: roleKnown ? route.role : undefined,
       description: undefined,
       descriptionTree: undefined,
       picture: undefined,

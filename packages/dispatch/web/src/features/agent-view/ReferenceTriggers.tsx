@@ -47,9 +47,9 @@ import { type RefPicker, useRefPicker } from "../refs/useRefPicker";
  * assistant-ui owns the detection, the highlight and the keyboard, so Enter takes the highlighted
  * row while a list is open and sends the message while none is, and a pick replaces the trigger
  * the reader typed with the row's text. A row that holds parts - a node's blocks, an agent's
- * documents - carries the control every other box draws for them (`RefPartsControl`), and
- * ArrowRight opens the highlighted row's, which assistant-ui leaves to the input: the composer
- * hands that key here first (`ReferenceKeys`).
+ * documents - carries the control every other box draws for them (`RefPartsControl`);
+ * ArrowRight opens the highlighted row's and ArrowLeft closes them again, two keys assistant-ui
+ * leaves to the input: the composer hands them here first (`ReferenceKeys`).
  *
  * The `/` list stays its own (`AgentThread.tsx`'s `SlashCommands`): a slash command is the
  * characters a terminal reads, not a reference, and it is serialized as the person would type
@@ -70,12 +70,13 @@ function doorChars(door: RefPickerDoor): string {
 /**
  * Where this door stands open, by the picker's own rule (`readTrigger`), so the three doors
  * cannot be open at once and a door opens here exactly where it opens in every other box: at a
- * word boundary, with no space typed since. The replaced stretch runs from the trigger's first
- * character to the caret, which is what a pick writes over.
+ * word boundary, with no space typed since, and never in a written link's words or address. The
+ * rule reads the text on both sides of the caret, so the whole message goes to it. The replaced
+ * stretch runs from the trigger's first character to the caret, which is what a pick writes over.
  */
 function doorMatcher(door: RefPickerDoor): Unstable_TriggerMatcher {
   return (text, _trigger, cursor) => {
-    const found = readTrigger(text.slice(0, cursor));
+    const found = readTrigger(text, cursor);
     if (found === undefined || found.door !== door) return null;
     return { endOffset: cursor, offset: found.start, query: found.query };
   };
@@ -269,10 +270,11 @@ export function ReferenceTriggers({ keys }: { keys: RefObject<ReferenceKeys | nu
     [rows]
   );
 
-  // ArrowRight opens the highlighted row's parts, as it does in every other box
-  // (`useRefPicker`'s `pressKey`). assistant-ui reads no such key, so the input would move its
-  // caret instead; the composer hands it here first, and it is stopped only where there are
-  // parts to open. The handler reads the newest picker and rows when the key comes.
+  // ArrowRight opens the highlighted row's parts and ArrowLeft closes them, as they do in every
+  // other box (`useRefPicker`'s `pressKey`). assistant-ui reads neither key, so the input would
+  // move its caret instead; the composer hands them here first, and each is stopped only where
+  // there are parts to open or to close. The handler reads the newest picker and rows when the
+  // key comes.
   const highlighted = useRef<string | undefined>(undefined);
   const pickerNow = useRef(picker);
   pickerNow.current = picker;
@@ -280,6 +282,10 @@ export function ReferenceTriggers({ keys }: { keys: RefObject<ReferenceKeys | nu
   rowsNow.current = rows;
   useEffect(() => {
     keys.current = (event) => {
+      if (event.key === "ArrowLeft") {
+        if (pickerNow.current.pressKey("ArrowLeft").action !== "ignored") event.preventDefault();
+        return;
+      }
       const id = highlighted.current;
       if (event.key !== "ArrowRight" || id === undefined) return;
       if (rowsNow.current.get(id)?.parts === undefined) return;

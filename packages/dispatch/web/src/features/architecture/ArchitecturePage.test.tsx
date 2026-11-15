@@ -719,7 +719,9 @@ test("Not architectural lists each reason, names the ancestor of an inherited ro
   const pane = renderPane(fixture(), "?view=none");
   try {
     const list = await screen.findByTestId("not-architectural-list");
-    expect(within(list).getAllByText("hiring, not code")).toHaveLength(2);
+    // Each reason draws through the one renderer, whose engine loads on the first body of the
+    // page, so the words may arrive a commit after the list.
+    expect(await within(list).findAllByText("hiring, not code")).toHaveLength(2);
     const inherited = within(list).getByTestId("attachment-CORE-9");
     expect(within(inherited).getByRole("link", { name: "CORE-8" })).toHaveAttribute(
       "href",

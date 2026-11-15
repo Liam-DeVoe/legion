@@ -31,6 +31,7 @@ import type { AgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedRoleOptions } from "../refs/party-options";
+import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
@@ -370,6 +371,30 @@ test("a picture in the draft gets no pill", async () => {
     // CORE-1's summary lists, so a pill for it would read as its words with no link.
     expect(pills.querySelectorAll("a")).toHaveLength(1);
   } finally {
+    view.unmount();
+  }
+});
+
+// The pills read the draft once the typing rests: a key typed a letter at a time passes through
+// `CORE-1` and `CORE-12` on its way to `CORE-123`, and only the key the reader stopped at is read.
+// The clock is the test's, so no keystroke can fall behind the rest by chance.
+test("a key typed letter by letter reads only the summary of the key the typing rested on", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.keyboard("See CORE-123");
+    await jump(SEARCH_DEBOUNCE_MS);
+    await tick(20);
+    expect(summaryRead.mock.calls.map(([key]) => key)).toEqual(["CORE-123"]);
+    expect(pillsDrawn(screen.getByRole("region", { name: "References" }))).toEqual([
+      { href: "/issues/CORE-123", name: "CORE-123 Warm the cache" },
+    ]);
+  } finally {
+    realClock();
     view.unmount();
   }
 });

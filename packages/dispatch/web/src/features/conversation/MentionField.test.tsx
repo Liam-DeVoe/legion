@@ -160,6 +160,32 @@ test("a pick replaces the trigger and leaves the text after the caret", async ()
   }
 });
 
+// A door never opens in a written link's words or address: a pick there would write a link
+// inside a link. The caret moved back into a mention's words opens no list, and Enter keeps its
+// ordinary meaning: the host is handed it, and the box types its line break.
+test("the caret inside a written mention opens no list, and Enter is the host's", async () => {
+  const user = userEvent.setup();
+  const { keys, restore } = renderField();
+  const mention = "[@Planner](dispatch://agent/planner-session)";
+
+  try {
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(field);
+    await user.paste(mention);
+    // Back through the address and into the words: `[@Plan|ner](…)`.
+    await user.keyboard("{ArrowLeft}".repeat(mention.length - "[@Plan".length));
+    expect(field.selectionStart).toBe("[@Plan".length);
+    expect(screen.queryByTestId("ref-picker")).not.toBeInTheDocument();
+
+    keys.fromField.length = 0;
+    await user.keyboard("{Enter}");
+    expect(keys.fromField).toEqual(["Enter"]);
+    await waitFor(() => expect(field.value).toBe("[@Plan\nner](dispatch://agent/planner-session)"));
+  } finally {
+    restore();
+  }
+});
+
 // R9: the words under a box are its row's, so the list and the box cannot drift apart.
 test("the box shows the hint of the row it was mounted with", async () => {
   for (const row of DISPATCH_WRITING_BOXES.filter((one) => one.covered)) {

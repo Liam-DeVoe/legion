@@ -302,9 +302,9 @@ export function MentionField({
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          // Every caret move, not only an edit: the picker reads the door from the text before
+          // Every caret move, not only an edit: the picker reads the door from the text around
           // the caret, so a reader who clicks or arrows back into a `[[` they typed earlier
-          // opens it there.
+          // opens it there, and one who moves into a written link's words opens nothing.
           onSelect={(event: SyntheticEvent<HTMLTextAreaElement>) =>
             setCaret(event.currentTarget.selectionStart)
           }

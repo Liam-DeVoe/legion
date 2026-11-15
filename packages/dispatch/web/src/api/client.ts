@@ -1513,7 +1513,7 @@ export class DispatchApiClient {
     });
   }
 
-  /** `GET /api/v1/agents/{session_id}/artifacts`: every file and image of an agent's
+  /** `GET /api/v1/agents/{session_id}/artifacts`: the newest 100 files and images of an agent's
    *  conversation, newest first, each with its versions. It needs the `person` scope, as the
    *  conversation it belongs to does. */
   listAgentArtifacts(sessionId: string) {

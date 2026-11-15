@@ -111,7 +111,8 @@ func checkMentionRoute(target string) error {
 // naming its party, which is how every renderer of the record draws it, so the party is not
 // delivered to, not listed and not counted toward the cap. It is still a reference the graph
 // indexes. The same party the body also names outside code is named by that occurrence, and a
-// worded link's address (`[Planner](dispatch://agent/...)`) is no code context at all.
+// mention's address is no code context at all: the mention is `[@Name](address)`
+// (`[@Planner](dispatch://agent/...)`), and only its address is read here, never its words.
 func commentPartiesOf(input commentInput, body []text.Located) (commentParties, error) {
 	parties := commentParties{targets: make([]string, 0, len(input.Mentions)+len(body))}
 	seen := make(map[string]struct{}, len(input.Mentions)+len(body))

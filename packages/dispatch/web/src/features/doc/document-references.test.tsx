@@ -282,14 +282,25 @@ const renamed: Agent = {
   title: "Planner now",
 };
 
+/** The session holding the reviewer role, as the registry lists it: a role reference is named
+ *  while a session it lists holds the role. */
+const reviewing: Agent = {
+  ...renamed,
+  dir: "/workspaces/reviewer",
+  roles: ["reviewer"],
+  session_id: "01a1058e-f14f-7684-87eb-3dc885955552",
+  title: "Reviewer",
+};
+
 // R4 and R5 in the editor, as a rendered body reads them: a party's mention - the editor offers
 // it as the mention sign and its address - is drawn as `@` and the current name, a link with `@`
 // words to anything but a party is left as its words, a known person is drawn as their login and
-// no link, and a role as its token, linked. A session's live page is no reference in the shared
-// grammar, so a link to it is never offered at all, and keeps its words as a rendered body does.
+// no link, and a role a session holds as its token, linked. A session's live page is no
+// reference in the shared grammar, so a link to it is never offered at all, and keeps its words
+// as a rendered body does.
 test("the live editor draws a mention as @ and the party's current name, a person as their login and a role as its token", async () => {
   const queryClient = seededQueryClient();
-  queryClient.setQueryData(["agents"], [renamed]);
+  queryClient.setQueryData(["agents"], [renamed, reviewing]);
   queryClient.setQueryData(["users"], [{ login: "dana@example.test" }]);
   const { editors, sync, view } = renderProofDocument({ queryClient });
   const address = `@dispatch://agent/${SESSION}`;

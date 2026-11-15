@@ -80,6 +80,7 @@ import { type ReferenceReading, RefLink } from "../refs/RefLink";
 import { issueSummaryQuery, summarySpec } from "../refs/reference-target";
 import { type DispatchReferenceRoute, referenceHref } from "../refs/routes";
 import { readTextReferences, type TextSource, textSourceOf } from "../refs/text-references";
+import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
 import { useTextReferences } from "../refs/useTextReferences";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
@@ -159,21 +160,19 @@ function DraftReferencePill({ pill }: { pill: ReferencePill }): ReactNode {
 
 /**
  * The record a `#id` in the draft resolves against once the draft is written, as the server will
- * read it (`refs.ScopeOf`, through `GET /api/v1/references/questions`): an edit is the stored
- * comment itself; a comment or an ask on a document is that document; a reply to a comment is
- * in its parent's scope; a comment or an ask anchored to a document's text is that document; and
- * anything else written on an issue - a comment, an ask, a reply to a message - is its issue's
- * spec, `spec` once the issue's summary names it. A message to one session belongs to no
- * document and resolves no `#id`, as the stored message does not.
+ * read it (`refs.ScopeOf`, through `GET /api/v1/references/questions`): a comment or an ask on a
+ * document is that document; a reply to a comment is in its parent's scope; a comment or an ask
+ * anchored to a document's text is that document; and anything else written on an issue - a
+ * comment, an ask, a reply to a message - is its issue's spec, `spec` once the issue's summary
+ * names it. A message to one session belongs to no document and resolves no `#id`, as the stored
+ * message does not. An edit reads none: it is a compact box, which shows no pills.
  */
 function draftSource(
   owner: ComposerOwner,
-  edit: { readonly id: string } | undefined,
   replyTo: ReplyTarget | null,
   anchor: ComposerAnchor | undefined,
   spec: string | undefined
 ): TextSource | undefined {
-  if (edit !== undefined) return { id: edit.id, kind: "comment" };
   if (owner.kind === "session") return undefined;
   if (owner.kind === "artifact") return { id: owner.artifactId, kind: "artifact" };
   if (replyTo?.parentKind === "comment") return { id: replyTo.id, kind: "comment" };
@@ -501,13 +500,22 @@ export function MentionComposer({
   // write will have (`draftSource`), so a bare key whose issue exists and a `#id` its document
   // declares get the pill the stored record's link is, and one that names nothing gets none. A
   // compact box - an inline reply, an edit - shows no pills and asks nothing for them.
-  const pillText = compact ? "" : body;
+  const pillDraft = compact ? "" : body;
+  // They read the draft once the typing rests, as the picker's search does: a key typed a letter
+  // at a time (`CORE-1`, `CORE-12`, `CORE-123`) is one read of the key the reader stopped at, not
+  // one for every key it passes through. A draft emptied - sent, discarded - takes its pills
+  // with it at once.
+  const [pillText, setPillText] = useState(pillDraft);
+  if (pillDraft === "" && pillText !== "") setPillText("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setPillText(pillDraft), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [pillDraft]);
   // Only a draft that writes a `#id` on an issue's own spec reads which document that is.
   const writesQuestion = useMemo(() => readTextReferences(pillText).needs.questions, [pillText]);
   const specKey =
     writesQuestion &&
     owner.kind === "issue" &&
-    edit === undefined &&
     replyTo?.parentKind !== "comment" &&
     (replyTo !== null || anchor === undefined)
       ? owner.issueKey
@@ -515,7 +523,7 @@ export function MentionComposer({
   const issueSummary = useQuery({ ...issueSummaryQuery(specKey), enabled: specKey !== undefined });
   const { reading } = useTextReferences(
     pillText,
-    draftSource(owner, edit, replyTo, anchor, summarySpec(issueSummary.data)?.id)
+    draftSource(owner, replyTo, anchor, summarySpec(issueSummary.data)?.id)
   );
   // One pill per reference the renderer would link - none in code, where no renderer links one,
   // and none for a picture, which the record draws as the picture - at its first appearance,

@@ -39,10 +39,13 @@ export function useInPlaceDraft(
   latest.current = { draft, value, onSave };
   const seen = useRef(value);
   // The text this field last wrote, until `value` moves. A write is a round trip: `value` is
-  // the old text until the answer lands and the row is read again, so a leave inside that trip
-  // would compare the draft against the old text and write the same text a second time. Once
-  // `value` moves the text is the server's again, and a draft that differs from it is written
-  // even when it matches what was written before: another writer may have changed it since.
+  // the old text until the answer lands and the row is read again, so while it is out the text
+  // the server will hold is this one, and a draft is written only where it differs from it. A
+  // leave inside that trip then sends no second write of the same text, and a reader who types
+  // back to the old text before the answer lands has that text written, since the server is about
+  // to hold the other one. Once `value` moves the text is the server's again, and a draft that
+  // differs from it is written even when it matches what was written before: another writer may
+  // have changed it since.
   const written = useRef<string | undefined>(undefined);
 
   // The server's text wins when it changes under a reader who is not holding the field:
@@ -64,7 +67,7 @@ export function useInPlaceDraft(
   const save = () => {
     stop();
     const { draft: typed, value: saved, onSave: write } = latest.current;
-    if (typed === saved || typed === written.current) return;
+    if (typed === (written.current ?? saved)) return;
     written.current = typed;
     write(typed);
   };

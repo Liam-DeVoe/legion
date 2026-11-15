@@ -16,7 +16,7 @@ import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
 import type { ArtifactWithTrees, GraphReferences, SearchResult } from "../../api/types";
 import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
-import { REF_PICKER_INSTRUCTION } from "../refs/ref-picker";
+import { REF_PICKER_INSTRUCTION, REF_PICKER_NO_PARTS_WORDS } from "../refs/ref-picker";
 import { AgentThread } from "./AgentThread";
 
 /**
@@ -328,6 +328,44 @@ test("an agent's row opens its conversation's documents, and a pick is the docum
   );
 });
 
+// ArrowLeft closes what ArrowRight opened, as it does in every other box: the key is the list's
+// while a row's parts are open, so the caret stays where the reader left it.
+test("ArrowLeft closes the parts ArrowRight opened, and leaves the caret where it was", async () => {
+  const user = userEvent.setup();
+  const input = renderThread();
+
+  await type(user, input, "@plan");
+  await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+  await user.keyboard("{ArrowRight}");
+  await waitFor(() =>
+    expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner", "Documents: shot.png"])
+  );
+
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+  expect(input.selectionStart).toBe("@plan".length);
+});
+
+// An agent's row offers its documents before any read says whether it holds one, so an opened
+// row that lists none says so here as in every other box.
+test("an agent whose conversation holds no file says so when its documents are opened", async () => {
+  const user = userEvent.setup();
+  const input = renderThread();
+  pane?.listAgentArtifacts.mockResolvedValue([]);
+
+  await type(user, input, "@plan");
+  await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+  await user.click(screen.getByRole("button", { name: "Documents" }));
+
+  await waitFor(() => expect(pane?.listAgentArtifacts).toHaveBeenCalledWith("planner-session"));
+  await waitFor(() =>
+    expect(screen.getByTestId("ref-picker-no-parts").textContent).toBe(
+      REF_PICKER_NO_PARTS_WORDS.documents
+    )
+  );
+  expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]);
+});
+
 test("the `/` door still lists the session's own commands", async () => {
   const user = userEvent.setup();
   const input = renderThread(COMMANDS);
@@ -389,4 +427,22 @@ test("a picked agent is written as the mention that names it, and the hint says 
   await user.keyboard("{Backspace}");
   await waitFor(() => expect(input.value).toBe("[@Planner](dispatch://agent/planner-session)"));
   expect(screen.queryByRole("listbox", { name: "References" })).not.toBeInTheDocument();
+});
+
+// A door never opens in a written link's words or address: a pick there would write a link
+// inside a link. The caret moved back into a mention's words opens no list, and Enter keeps its
+// ordinary meaning here, which is Send.
+test("the caret inside a written mention opens no list, and Enter sends the message", async () => {
+  const user = userEvent.setup();
+  const input = renderThread();
+  const mention = "[@Planner](dispatch://agent/planner-session)";
+
+  await type(user, input, mention);
+  // Back through the address and into the words: `[@Plan|ner](…)`.
+  await user.keyboard("{ArrowLeft}".repeat(mention.length - "[@Plan".length));
+  expect(input.selectionStart).toBe("[@Plan".length);
+  expect(screen.queryByRole("listbox", { name: "References" })).not.toBeInTheDocument();
+
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(pane?.sent).toEqual([mention]));
 });

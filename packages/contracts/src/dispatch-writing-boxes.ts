@@ -137,8 +137,9 @@ const DOORS = "Type @ for an agent, a role or a person, # for an issue, [[ for a
  *  person has a page (R5). */
 export const DISPATCH_WRITING_HINT_DELIVERED = `${DOORS} A picked agent or role is told. A picked person shows as a name without a link and is not told.`;
 
-/** What a box whose write tells nobody it names says of a pick, before it says what does tell.
- *  It says nothing of a person's link, since a person's reference has none. */
+/** What a box whose write tells nobody it names says of a pick, before it says what does tell:
+ *  every such write but a suggestion's, whose replacement shows no link (below). It says nothing
+ *  of a person's link, since a person's reference has none. */
 const PICKED_QUIET =
   "A picked agent or role gets a link, and a picked person shows as a name without one. Nobody you pick is told.";
 
@@ -147,7 +148,11 @@ const PICKED_QUIET =
  * tells nobody, and then what does tell, which is the write's own doing. Only the comment route
  * reads the parties of a body and delivers to them (`createCommentFor` in the Go API's
  * comment_create.go), so each sentence says where the write itself goes, or, for a write that
- * goes nowhere, which comment would tell a picked agent or role, or that nothing would:
+ * goes nowhere, which comment would tell a picked agent or role, or that nothing would. A
+ * suggestion's replacement box does not say that a pick links. Until someone accepts the
+ * suggestion, its card shows the replacement as the characters written, with no link and no
+ * name drawn over a reference (the reading list's `margin-suggestion-diff`), so the box says
+ * that instead.
  *
  * - a message reply goes to the target of its thread, and to whoever wrote the message it
  *   answers (`createStoredMessage`, and the outbox's `addAuthorRoutes`);
@@ -177,7 +182,7 @@ export const DISPATCH_WRITING_HINT_QUIET = {
   "issue-spec": `${DOORS} ${PICKED_QUIET} A comment on the new issue tells a picked agent or role.`,
   "message-reply": `${DOORS} ${PICKED_QUIET} Your reply goes to whoever the thread is with.`,
   "priority-description": `${DOORS} ${PICKED_QUIET} Nothing on a priority tells anyone.`,
-  suggestion: `${DOORS} ${PICKED_QUIET} A pick in the Reason box tells an agent or a role.`,
+  suggestion: `${DOORS} Until someone accepts the suggestion, the replacement shows the characters you write. Nobody you pick is told. A pick in the Reason box tells an agent or a role.`,
 } as const satisfies Partial<Record<DispatchWriting, string>>;
 
 /** What the ask card's one box says, since the reader chooses there which write it makes: an
@@ -382,11 +387,13 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     write: "agent-message",
   },
   // The replacement text of a suggestion, beside the reason for it: both go in the one comment.
-  // A party picked here is a reference like any other and is drawn by name, and nobody is told
-  // of it: the delivery a comment makes is read from its body alone, by the browser
-  // (`draftParties`) and by the server (`commentPartiesOf` over `text.ExtractAt(input.Body)`),
-  // and neither reads `suggestion.replace_with`. So this box says so rather than promising a
-  // delivery no reader of the write would ever make.
+  // A party picked here is written as a reference like any other, but until someone accepts the
+  // suggestion its card shows the replacement as the characters written, with no name drawn
+  // over it (`margin-suggestion-diff`). Nobody is told of it: the delivery a comment makes is
+  // read from its body alone, by the browser (`draftParties`) and by the server
+  // (`commentPartiesOf` over `text.ExtractAt(input.Body)`), and neither reads
+  // `suggestion.replace_with`. So this box says both rather than promising a link or a delivery
+  // no reader of the write would ever see.
   {
     box: "suggestion-replacement",
     covered: true,

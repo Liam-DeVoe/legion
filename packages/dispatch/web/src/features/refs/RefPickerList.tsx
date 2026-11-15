@@ -45,9 +45,10 @@ export function RefPickerParties({ picker }: { picker: RefPicker }): ReactNode {
 /**
  * What the picker says below its rows, in both the hosts that draw its chrome: what the next
  * two letters will add while the reader has typed too little for the search (the instruction),
- * where the agent and role rows' own source stands (`RefPickerParties`), and the words of
- * whichever listing state holds where there are no rows. One component, so the shared field's
- * list and the live composer's popover cannot say it two ways.
+ * that the row the reader opened holds no parts, where the agent and role rows' own source
+ * stands (`RefPickerParties`), and the words of whichever listing state holds where there are no
+ * rows. One component, so the shared field's list and the live composer's popover cannot say it
+ * two ways.
  */
 export function RefPickerNotes({ picker }: { picker: RefPicker }): ReactNode {
   return (
@@ -58,6 +59,11 @@ export function RefPickerNotes({ picker }: { picker: RefPicker }): ReactNode {
           data-testid="ref-picker-instruction"
         >
           {picker.instruction}
+        </p>
+      )}
+      {picker.partsNote === undefined ? null : (
+        <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`} data-testid="ref-picker-no-parts">
+          {picker.partsNote}
         </p>
       )}
       <RefPickerParties picker={picker} />

@@ -152,6 +152,29 @@ test("after the write lands, the next text typed is written once", async () => {
   }
 });
 
+// While the write is out the text the server will hold is the one the rest wrote, not `value`:
+// a reader who deletes back to the old text before the answer lands and leaves is changing the
+// text again, and that text is written.
+test("typing back to the old text while the write is out writes the old text", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const saves: string[] = [];
+  const view = render(<Field saves={saves} />);
+  const field = within(view.container).getByRole("textbox", { name: "Title" });
+  try {
+    await user.type(field, " new");
+    await jump(SAVE_AFTER_MS + 1);
+    expect(saves).toEqual(["Old name new"]);
+    await user.keyboard("{Backspace}".repeat(" new".length));
+    expect((field as HTMLInputElement).value).toBe("Old name");
+    await user.tab();
+    expect(saves).toEqual(["Old name new", "Old name"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
 // What the field last wrote stops counting once `value` moves: another writer may have changed
 // the text since, and a reader who writes their text back is changing it again.
 test("a text written before the value moved is written again when the reader writes it back", async () => {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -106,6 +107,36 @@ func TestAnAgentsConversationListsItsFilesNewestFirst(t *testing.T) {
 	if invalid.Code != http.StatusBadRequest || decodeBody[refusalAnswer](t, invalid).Code != "INVALID_SESSION_ID" {
 		t.Fatalf("a session id holding a space: status=%d body=%s, want 400 INVALID_SESSION_ID",
 			invalid.Code, invalid.Body.String())
+	}
+}
+
+// A conversation's list answers its newest agentArtifactsListMax files and no more: one file
+// past the cap leaves the oldest out of the answer, and the rest come newest first. The files
+// are written straight to the table one second apart, so the newest is the one written last.
+func TestAnAgentsConversationListsOnlyItsNewestFiles(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	const session = "s-many-files"
+	held := agentArtifactsListMax + 1
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into artifacts (session_id, slug, name, kind, created_by, created_at)
+		select $1, 'file-' || n, 'file-' || n || '.png', 'image', '{"kind":"user","id":"alice"}',
+			now() - make_interval(secs => $2::int - n)
+		from generate_series(1, $2::int) as n
+	`, session, held); err != nil {
+		t.Fatalf("write the conversation's %d files: %v", held, err)
+	}
+	response := dispatchRequest(t, handler, http.MethodGet, listedFilesPath(session), nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("list %s: status=%d body=%s", session, response.Code, response.Body.String())
+	}
+	got := decodeBody[[]model.Artifact](t, response)
+	if len(got) != agentArtifactsListMax {
+		t.Fatalf("a conversation holding %d files lists %d, want the newest %d", held, len(got), agentArtifactsListMax)
+	}
+	for index, artifact := range got {
+		if want := fmt.Sprintf("file-%d", held-index); artifact.Slug != want {
+			t.Fatalf("file %d of the list is %s, want %s: the list is the newest files, newest first", index, artifact.Slug, want)
+		}
 	}
 }
 

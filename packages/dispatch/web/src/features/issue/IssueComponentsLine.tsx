@@ -15,6 +15,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath } from "../refs/routes";
 import { useIssueComponents } from "./useIssueComponents";
 
@@ -66,7 +67,12 @@ export function IssueComponentsLine({
       {components.mode === "inherit" ? (
         <span className={textMutedOnSurface}>Not attached</span>
       ) : components.mode === "none" ? (
-        <span className={textMutedOnSurface}>None — {components.reason}</span>
+        <span className={textMutedOnSurface}>
+          None —{" "}
+          {/* No `source`: why the reason is no record is the reading list's
+              `issue-components-reason` (`DISPATCH_READING_SURFACES`). */}
+          <MarkdownBody markdown={components.reason ?? ""} variant="inline" />
+        </span>
       ) : (
         <>
           {(components.ids ?? []).map((id) => (

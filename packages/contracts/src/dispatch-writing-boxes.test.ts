@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import { DISPATCH_WRITING_BOXES, DISPATCH_WRITING_HINT_DELIVERED } from "./dispatch-writing-boxes";
 
-// R4: a box whose write tells nobody it names says that a pick links and tells nobody, and
-// says what does tell. What does is the write's own doing - a reply goes to its thread, an ask
-// to the assignee's Inbox, and for an edit only a new comment tells anyone - so each such write
-// has words of its own, the same in every box that makes it, and none of them is the line of a
-// box that delivers. One sentence shared by every such write says nothing of what does tell.
+// R4: a box whose write tells nobody it names says what a pick shows as - a link, or, in a
+// suggestion's replacement, the characters written until someone accepts it - and that it tells
+// nobody, and says what does tell. What does is the write's own doing - a reply goes to its
+// thread, an ask to the assignee's Inbox, and for an edit only a new comment tells anyone - so
+// each such write has words of its own, the same in every box that makes it, and none of them is
+// the line of a box that delivers. One sentence shared by every such write says nothing of what
+// does tell.
 test("each write that tells nobody it names has words of its own, the same in every box", () => {
   const quiet = DISPATCH_WRITING_BOXES.filter((row) => row.covered && !row.delivers);
   const hintsOf = new Map<string, Set<string>>();

@@ -17,6 +17,7 @@ import {
   matchesQuery,
   orderedRows,
   REF_PICKER_INSTRUCTION,
+  REF_PICKER_NO_PARTS_WORDS,
   REF_PICKER_QUERY_MIN,
   REF_PICKER_SEARCH_LIMIT,
   REF_PICKER_SEARCHED_KINDS,
@@ -42,7 +43,8 @@ import {
 } from "./routes";
 
 /** How long after the last keystroke the search goes out, here and in the search palette
- *  (`features/search/SearchPalette.tsx`), so the two surfaces put the same load on the route. */
+ *  (`features/search/SearchPalette.tsx`), so the two surfaces put the same load on the route;
+ *  and how long a draft's pills wait before they read it (`MentionComposer.tsx`). */
 export const SEARCH_DEBOUNCE_MS = 150;
 
 /** How much of a snippet or of a block's text a row shows: enough to tell two rows apart, short
@@ -85,6 +87,9 @@ export interface RefPicker {
   /** The address whose parts are listed - a node's blocks, or an agent's documents - while the
    *  reader has a row open for them. */
   readonly openedParts: string | undefined;
+  /** What the list says under the opened row once its parts are read and hold none
+   *  (`REF_PICKER_NO_PARTS_WORDS`); undefined otherwise. */
+  readonly partsNote: string | undefined;
   /** What the picker did with a key the host handed it, and the insertion when it took a row. */
   readonly pressKey: (key: string) => RefPickerKeyResult;
   /** Takes the row the reader clicked. */
@@ -260,7 +265,7 @@ export function useRefPicker({
   project,
   text,
 }: RefPickerOptions): RefPicker {
-  const trigger = enabled ? readTrigger(text.slice(0, caret)) : undefined;
+  const trigger = enabled ? readTrigger(text, caret) : undefined;
   // The trigger the reader dismissed with Escape stays shut while they type on after it: Escape
   // leaves the character they typed, and the picker must not open again on the next letter.
   const [dismissed, setDismissed] = useState<RefPickerTrigger | undefined>(undefined);
@@ -378,24 +383,36 @@ export function useRefPicker({
     users.data,
   ]);
 
-  const rows = useMemo(() => {
-    if (!open) return [];
+  const { partsNote, rows } = useMemo((): {
+    readonly partsNote: string | undefined;
+    readonly rows: readonly RefPickerRow[];
+  } => {
+    if (!open) return { partsNote: undefined, rows: [] };
     // The parties, the people and the components are listed whole and filtered here; the hits
     // the server ranked for this query are not filtered again (`matchesQuery`).
     const drawn = [
       ...listed.filter((row) => matchesQuery(row, query)),
       ...searchRows(search.data?.results ?? []),
     ];
-    // An opened row's parts are listed while that row is: they are its, and reached by it.
+    // An opened row's parts are listed while that row is: they are its, and reached by it. Once
+    // their read answers none, the list says so under them.
     const opened =
       openedParts === undefined ? undefined : drawn.find((row) => row.parts === openedParts);
-    if (opened === undefined || openedParts === undefined) return drawn;
-    if (opened.kind === "agent") {
-      return documents.data === undefined ? drawn : [...drawn, ...documentRows(documents.data)];
-    }
-    return parts.data === undefined
-      ? drawn
-      : [...drawn, ...blockRows(openedParts, opened.kind, parts.data)];
+    if (opened === undefined || openedParts === undefined)
+      return { partsNote: undefined, rows: drawn };
+    const agent = opened.kind === "agent";
+    const held = agent
+      ? documents.data === undefined
+        ? undefined
+        : documentRows(documents.data)
+      : parts.data === undefined
+        ? undefined
+        : blockRows(openedParts, opened.kind, parts.data);
+    return {
+      partsNote:
+        held?.length === 0 ? REF_PICKER_NO_PARTS_WORDS[agent ? "documents" : "blocks"] : undefined,
+      rows: held === undefined ? drawn : [...drawn, ...held],
+    };
   }, [documents.data, listed, open, openedParts, parts.data, query, search.data]);
 
   const groups = useMemo(
@@ -480,6 +497,7 @@ export function useRefPicker({
       if (row?.parts !== undefined) setOpenedParts(row.parts);
     },
     parties,
+    partsNote,
     pressKey,
     state,
     take: (id: string) => insertion(ordered.find((row) => row.id === id)),

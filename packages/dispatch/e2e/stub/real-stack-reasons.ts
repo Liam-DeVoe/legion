@@ -252,7 +252,7 @@ export const realStackReasons: Record<string, string> = {
   "reading-inbox-threads.e2e.ts":
     "each row writes a record through the API and reads it back in the Inbox: the server lists the Reply rows, builds the approval's question around the summary, and answers each reference's title and the session's name as they are now",
   "reading-pages.e2e.ts":
-    "each row reads a text the server stored and resolves - a component's prose that the source sync read from the fake GitHub, and a priority's description written through the API - and the server decides what each bare key, address and party in it reads as, which a recording would freeze at the state it was recorded in",
+    "each row reads a text the server stored and resolves - a component's prose that the source sync read from the fake GitHub, and a priority's description and an issue's reason for touching no component written through the API - and the server decides what each bare key, address and party in it reads as, which a recording would freeze at the state it was recorded in",
   "reading-references.e2e.ts":
     "each row writes a record through the API and reads it on another record's surface: a card and the hover card read their target as the server stores it, and the palette's hits are the server's ranking and its ts_headline snippet",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",

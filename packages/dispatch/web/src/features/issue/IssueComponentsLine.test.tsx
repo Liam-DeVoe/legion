@@ -189,15 +189,20 @@ test("IssueComponentsLine lists an explicit set as chips, marks retired ids, and
   }
 });
 
-test("IssueComponentsLine shows a none attachment with its reason", () => {
+test("IssueComponentsLine shows a none attachment with its reason, drawn as the markdown it is", async () => {
   const view = renderLine(
-    { mode: "none", ids: [], unknown: [], reason: "hiring, not code", inherited_from: null },
+    { mode: "none", ids: [], unknown: [], reason: "hiring, **not** code", inherited_from: null },
     undefined
   );
   try {
-    expect(view.q.getByTestId("issue-components").textContent).toBe(
-      "Components:None — hiring, not code"
+    // The reason draws through the one renderer, which loads its engine on the first body of the
+    // page, so the words arrive a commit after the line.
+    await waitFor(() =>
+      expect(view.q.getByTestId("issue-components").textContent).toBe(
+        "Components:None — hiring, not code"
+      )
     );
+    expect(within(view.q.getByTestId("issue-components")).getByText("not").tagName).toBe("STRONG");
     expect(view.q.queryByRole("link")).not.toBeInTheDocument();
   } finally {
     view.unmountAll();

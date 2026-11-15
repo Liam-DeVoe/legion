@@ -218,14 +218,29 @@ function atWordBoundary(before: string, start: number): boolean {
   return /[\s([{"']/u.test(before.charAt(start - 1));
 }
 
+/** The text after a caret that stands in a link's words: the rest of those words, then the `](`
+ *  that closes them. The words hold no line break and no bracket but an escaped one
+ *  (`partyLink`), so text after a caret that only comes before some later link does not match. */
+const LINK_WORDS_AHEAD = /^(?:[^[\]\\\n]|\\.)*\]\(/u;
+
+/** The text before a caret that stands in a link's address: the `](` that opens it, then no
+ *  space and no `)` since. */
+const LINK_ADDRESS_BEHIND = /\]\([^\s)]*$/u;
+
 /**
- * The door open at the caret, read from the text before it: the last trigger the reader typed
- * that still stands - at a word boundary, with no space typed since. Undefined when none does,
- * which is how the picker closes on a space and how it never opens mid-word. Nor does it stand
- * past a `]`: the `@` a mention's words start with (`[@Planner](dispatch://agent/…)`) follows a
- * `[`, and the picker must not open again over the mention it has just written.
+ * The door open at `caret` in `text`, read from the text before it: the last trigger the reader
+ * typed that still stands - at a word boundary, with no space typed since. Undefined when none
+ * does, which is how the picker closes on a space and how it never opens mid-word. Nor does it
+ * stand past a `]`, nor anywhere in a written link's words or address: the `@` a mention's words
+ * start with (`[@Planner](dispatch://agent/…)`) follows a `[`, and the picker must open neither
+ * over the mention it has just written nor where the reader moves the caret into one, since a
+ * pick there would write a link inside a link. The caret defaults to the end of the text.
  */
-export function readTrigger(before: string): RefPickerTrigger | undefined {
+export function readTrigger(text: string, caret = text.length): RefPickerTrigger | undefined {
+  const before = text.slice(0, caret);
+  if (LINK_ADDRESS_BEHIND.test(before) || LINK_WORDS_AHEAD.test(text.slice(caret))) {
+    return undefined;
+  }
   let found: RefPickerTrigger | undefined;
   for (const { chars, door } of REF_PICKER_TRIGGERS) {
     const start = before.lastIndexOf(chars);
@@ -345,6 +360,15 @@ export type RefPickerParties = "listed" | "loading" | "refilling" | "unreachable
 export const REF_PICKER_PARTY_WORDS: Record<"loading" | "unreachable", string> = {
   loading: "Loading live agents…",
   unreachable: "Could not load live agents — Envoy listener unreachable.",
+};
+
+/** The words under a row whose parts the reader opened and whose read answered none: an agent's
+ *  conversation that holds no file, or a node that holds no block. Without them an opened row
+ *  that lists nothing reads as a control that did nothing. The words name the parts as the
+ *  row's control does (`RefPartsControl`). */
+export const REF_PICKER_NO_PARTS_WORDS: Record<"blocks" | "documents", string> = {
+  blocks: "No blocks.",
+  documents: "No documents.",
 };
 
 /** What the instruction below calls one searched kind's rows. */

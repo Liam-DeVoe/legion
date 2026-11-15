@@ -31,8 +31,8 @@ import { conversationTurn, RENDERED_BODY, referenceAgent } from "./reference-sur
 import { expect, type Locator, type Page, test } from "./test";
 
 /** The word the palette rows search for: a word of `readingText` that no title of the world
- *  holds, so the hits are the records holding the text and no issue besides. The text is eight
- *  words, and an ask is searched by its question and then its answer, sixteen: either is inside
+ *  holds, so the hits are the records holding the text and no issue besides. The text is nine
+ *  words, and an ask is searched by its question and then its answer, eighteen: either is inside
  *  the 24 words of the headline's window, so a hit's snippet is its whole text
  *  (`pmdoc.SearchSnippet`) whichever of its words matched. */
 const SEARCH_WORD = "ask";

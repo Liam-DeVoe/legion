@@ -504,6 +504,24 @@ function isTextUrl(target: string, text: string): boolean {
 }
 
 /**
+ * Whether an anchor's words open outside code: the first character a reader sees in them sits
+ * under no `code` element, the link's own or one around it. A mention's sign is words its writer
+ * wrote; an `@` in a code span is the code's characters, so a link whose words open in code keeps
+ * them, as the plain-text projection keeps them (`markdown-engine.ts`'s `plainLines`, which
+ * reads a link's words in code as no mention).
+ */
+function opensInWords(anchor: HTMLElement): boolean {
+  const walker = document.createTreeWalker(anchor, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    if (node.textContent === "") {
+      continue;
+    }
+    return node.parentElement?.closest("code") == null;
+  }
+  return true;
+}
+
+/**
  * Finds every already-rendered `<a>` in root whose href is a dispatch:// reference or a
  * same-origin dashboard path — a link `linkifyDispatchRefs` just inserted, an ordinary Markdown
  * link a user wrote by hand, or a bare `http(s)://` URL remark-gfm autolinked — rewrites its href
@@ -548,8 +566,8 @@ export function collectReferenceAnchors(
     // What reads as the target's current name: an address standing on its own, which the link
     // pass marks as it wraps one (`data-dispatch-bare`), and a link whose words are its own
     // address (`isTextUrl`), the form a document stores an autolink in. A party's mention reads
-    // as the mention sign and that name. A link whose words its author wrote another way keeps
-    // those words.
+    // as the mention sign and that name, where the sign its words open with is words rather than
+    // code (`opensInWords`). A link whose words its author wrote another way keeps those words.
     const textUrl = isTextUrl(href, text);
     const route = textUrl
       ? referenceRouteFromHref(href, appOrigin)
@@ -570,7 +588,7 @@ export function collectReferenceAnchors(
     const reads: ReferenceReading =
       anchor.hasAttribute("data-dispatch-bare") || textUrl
         ? "name"
-        : isPartyMention(text, route)
+        : isPartyMention(text, route) && opensInWords(anchor)
           ? "mention"
           : "words";
     const reference = buildDispatchReference(route);
