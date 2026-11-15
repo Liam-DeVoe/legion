@@ -4456,6 +4456,232 @@ check "exits 1" "$(is "$status" 1)"
 check "refuses the job for its one second of retries" \
   "$(contains "$out" "whose retries take 1 s to exhaust — and no comment block prices that key")"
 
+# Each case below answers a mutant round 35's mutation pass of rule 8 made and the harness
+# missed: the code changed and all of its cases stayed green (dispatch://INFRA-1545, round 35).
+#
+# The first four answer a `break` written after the sum in one of the four loops rule 8 adds a
+# step's arithmetic up over, so the loop counts its first item alone. On this repository's own
+# tree each of them lowered a real step's cost — ci-filters' from 600 to 300 s, test's from 3012
+# to 2700 s, pr-title's from 1800 to 1500 s — so a key could sit under its true sum, and nothing
+# refused it, because no fixture held such a loop over two items that each cost something. In
+# each case below the key is above either item's ladder alone and below the two together, so a
+# sum of one item passes it whichever item that is. The scripts are 5 x 30 + 150 = 300 s and
+# 5 x 60 + 150 = 450 s, 750 s together, and the actions' curls 8 x 30 + 127 = 367 s and
+# 8 x 60 + 127 = 607 s, 974 s together.
+echo "case: a step running two retried scripts is held to both of their ladders"
+root=$(fixture two-scripts-in-a-step)
+cat > "$root/.github/scripts/fetch-small.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+SH
+cat > "$root/.github/scripts/fetch-large.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 60 -- curl -fsSL --max-time 60 -o b https://example.com/b
+SH
+chmod +x "$root/.github/scripts/fetch-small.sh" "$root/.github/scripts/fetch-large.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch both assets
+        timeout-minutes: 12
+        run: |
+          .github/scripts/fetch-small.sh
+          .github/scripts/fetch-large.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts both scripts' ladders" "$(contains "$out" 'its own retries take 750 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 13')"
+
+echo "case: a script running two retried scripts carries both of their ladders"
+root=$(fixture two-scripts-in-a-script)
+cat > "$root/.github/scripts/fetch-small.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+SH
+cat > "$root/.github/scripts/fetch-large.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 60 -- curl -fsSL --max-time 60 -o b https://example.com/b
+SH
+cat > "$root/.github/scripts/fetch-both.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/fetch-small.sh
+.github/scripts/fetch-large.sh
+SH
+chmod +x "$root/.github/scripts/fetch-small.sh" "$root/.github/scripts/fetch-large.sh" \
+  "$root/.github/scripts/fetch-both.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch both assets
+        timeout-minutes: 12
+        run: .github/scripts/fetch-both.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts both scripts' ladders" "$(contains "$out" 'its own retries take 750 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 13')"
+
+echo "case: a composite action running two retried scripts carries both of their ladders"
+root=$(fixture two-scripts-in-an-action)
+cat > "$root/.github/scripts/fetch-small.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+SH
+cat > "$root/.github/scripts/fetch-large.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 60 -- curl -fsSL --max-time 60 -o b https://example.com/b
+SH
+chmod +x "$root/.github/scripts/fetch-small.sh" "$root/.github/scripts/fetch-large.sh"
+mkdir -p "$root/.github/actions/fetch-both"
+cat > "$root/.github/actions/fetch-both/action.yml" <<'YAML'
+name: Fetch both
+description: Fetches both assets through their scripts.
+runs:
+  using: composite
+  steps:
+    - name: Fetch both assets
+      shell: bash
+      run: |
+        .github/scripts/fetch-small.sh
+        .github/scripts/fetch-large.sh
+YAML
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch both assets
+        uses: ./.github/actions/fetch-both
+        timeout-minutes: 12
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts both scripts' ladders" "$(contains "$out" 'its own retries take 750 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 13')"
+
+echo "case: a composite action using two retried actions carries both of their ladders"
+root=$(fixture two-actions-in-an-action)
+mkdir -p "$root/.github/actions/fetch-small" "$root/.github/actions/fetch-large" \
+  "$root/.github/actions/fetch-both"
+cat > "$root/.github/actions/fetch-small/action.yml" <<'YAML'
+name: Fetch small
+description: Fetches the small asset.
+runs:
+  using: composite
+  steps:
+    - name: Fetch the small asset
+      shell: bash
+      run: curl -fsSL --retry 7 --retry-all-errors --max-time 30 -o a https://example.com/a
+YAML
+cat > "$root/.github/actions/fetch-large/action.yml" <<'YAML'
+name: Fetch large
+description: Fetches the large asset.
+runs:
+  using: composite
+  steps:
+    - name: Fetch the large asset
+      shell: bash
+      run: curl -fsSL --retry 7 --retry-all-errors --max-time 60 -o b https://example.com/b
+YAML
+cat > "$root/.github/actions/fetch-both/action.yml" <<'YAML'
+name: Fetch both
+description: Fetches both assets through their actions.
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/fetch-small
+    - uses: ./.github/actions/fetch-large
+YAML
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch both assets
+        uses: ./.github/actions/fetch-both
+        timeout-minutes: 16
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts both actions' ladders" "$(contains "$out" 'its own retries take 974 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 17')"
+
+# DERIVATION and PRICED read a sum and an arrow whatever space is written inside them, and every
+# derivation and arrow of this tree is written with spaces, so each of the two patterns' `\s*`
+# could become `\s+` with every case green (round 35's pass, mutants M265-M273 of DERIVATION and
+# M183-M184 of PRICED). A sum written with no space in it is a derivation all the same, and its
+# key at that sum is refused by the derivation clause; an arrow written with no space in it
+# prices the key below it all the same, and the job it prices passes.
+echo "case: a derivation written with no space in it is read, and its key at its sum refused"
+root=$(fixture job-derivation-tight)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1170 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1170+1050=2220s->37min.
+    timeout-minutes: 37
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says the key does not strictly exceed the sum" \
+  "$(contains "$out" "its own comment derives 1170 + 1050 = 2220 s, which that key does not strictly exceed")"
+
+echo "case: an arrow written with no space in it prices the key below it"
+root=$(fixture arrow-tight)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the large fetch's 1050 s, which comes to 2250 s and takes
+    # the whole minute above it ->38min.
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
 # The promise rule 8 exists to keep: no retried job whose key is below its own sum reaches main.
 # Every case above proves one shape on a fixture written for it, which leaves open whether a shape
 # this repository's own tree holds hides a key, so this case drives the promise on a copy of the
@@ -4499,8 +4725,9 @@ for dockerfile in packages/daemon/docker/worker.Dockerfile packages/envoy/docker
   cp "$repository/$dockerfile" "$tree/$dockerfile"
 done
 cat > "$work/real-tree.py" <<'PY'
-"""The real-tree case's three readings of a copy of this repository's tree.
+"""The real-tree case's four readings of a copy of this repository's tree.
 
+  rows <jobs>                         how many rows --jobs printed
   cover <tree> <jobs> <sites>         the workflow jobs that write their own whole-number
                                       `timeout-minutes`, hold a site --list prints and are not
                                       in --jobs, on one line
@@ -4511,7 +4738,10 @@ cat > "$work/real-tree.py" <<'PY'
                                       one line
 
 <jobs> and <sites> are what the gate's --jobs and --list print over <tree>, and <done> is what
-`shape` printed; every line of them is tab-separated.
+`shape` printed; every line of them is tab-separated. A gate that refuses the tree prints its
+problems there instead of rows, so a line is read as a row only where it has a row's fields:
+round 35's mutation pass ended the harness with a traceback here, and no `Results:` line, under
+62 mutants that made the gate refuse the tree (dispatch://INFRA-1545, round 35).
 """
 import re
 import sys
@@ -4548,17 +4778,28 @@ def workflow_jobs(text):
 
 
 def job_rows(jobs_file):
-    """The rows --jobs printed, as (path, job, key line counted from 0, minutes, cost)."""
+    """The rows --jobs printed, as (path, job, key line counted from 0, minutes, cost): its lines
+    of six tab-separated fields whose third, fourth and fifth are whole numbers."""
     for line in Path(jobs_file).read_text().splitlines():
-        path, job, key, minutes, cost, _step = line.split("\t")
-        yield path, job, int(key) - 1, int(minutes), int(cost)
+        fields = line.split("\t")
+        if len(fields) == 6 and all(re.fullmatch(r"-?[0-9]+", field) for field in fields[2:5]):
+            path, job, key, minutes, cost, _step = fields
+            yield path, job, int(key) - 1, int(minutes), int(cost)
+
+
+def rows(jobs_file):
+    print(sum(1 for _ in job_rows(jobs_file)))
 
 
 def cover(tree, jobs_file, sites_file):
     listed = {(path, job) for path, job, *_ in job_rows(jobs_file)}
     sites: dict[str, set[int]] = {}
     for line in Path(sites_file).read_text().splitlines():
-        path, number = line.split("\t")[:2]
+        # A site --list prints is four tab-separated fields: its path, line, verb and step.
+        fields = line.split("\t")
+        if len(fields) != 4 or not re.fullmatch(r"[0-9]+", fields[1]):
+            continue
+        path, number = fields[:2]
         if path.startswith(".github/workflows/"):
             sites.setdefault(path, set()).add(int(number) - 1)
     omitted = []
@@ -4733,14 +4974,15 @@ def unnamed(done_file, output_file):
         print(", ".join(missing))
 
 
-{"cover": cover, "shape": reshape, "unnamed": unnamed}[sys.argv[1]](*sys.argv[2:])
+{"rows": rows, "cover": cover, "shape": reshape, "unnamed": unnamed}[sys.argv[1]](*sys.argv[2:])
 PY
 set +e
 run_gate null "$tree" --jobs
 set -e
-check "--jobs over the tree exits 0" "$(is "$status" 0)"
+jobs_status=$status
+check "--jobs over the tree exits 0" "$(is "$jobs_status" 0)"
 if [ -n "$out" ]; then printf '%s\n' "$out"; fi > "$work/real-tree.jobs"
-listed=$(grep -c . "$work/real-tree.jobs" || true)
+listed=$(python3 "$work/real-tree.py" rows "$work/real-tree.jobs")
 check "--jobs lists at least one job (it lists $listed)" "$([ "$listed" -ge 1 ] && echo true || echo false)"
 list_check "$tree"
 check "--list over the tree exits 0" "$(is "$status" 0)"
@@ -4748,23 +4990,30 @@ if [ -n "$out" ]; then printf '%s\n' "$out"; fi > "$work/real-tree.sites"
 omitted=$(python3 "$work/real-tree.py" cover "$tree" "$work/real-tree.jobs" "$work/real-tree.sites")
 check "--jobs omits no workflow job that writes its own whole-number key and holds a site --list prints${omitted:+; it omits $omitted}" \
   "$(is "$omitted" "")"
-for shape in key arrows decoy-after decoy-before split neighbour more-figures; do
-  copy="$work/real-tree-$shape"
-  cp -R "$tree" "$copy"
-  python3 "$work/real-tree.py" shape "$tree" "$work/real-tree.jobs" "$shape" "$copy" > "$copy.done"
-  lowered=$(grep -c '^lowered' "$copy.done" || true)
-  if [ "$shape" = split ]; then
-    echo "  $shape: lowered $lowered job(s), split $(grep -c '^split' "$copy.done" || true) derivation(s)"
-  else
-    echo "  $shape: lowered $lowered job(s)"
-  fi
-  check "$shape: lowers at least one job" "$([ "$lowered" -ge 1 ] && echo true || echo false)"
-  run_check "$copy"
-  check "$shape: exits 1" "$(is "$status" 1)"
-  printf '%s\n' "$out" > "$copy.out"
-  unnamed=$(python3 "$work/real-tree.py" unnamed "$copy.done" "$copy.out")
-  check "$shape: a refusal of its own key names every job it lowered${unnamed:+; none names $unnamed}" \
-    "$(is "$unnamed" "")"
-done
+# The shapes lower the jobs --jobs lists, so where it refused the tree or listed none there is
+# nothing for them to lower, and the case says so in a check of its own rather than seven shapes
+# that each lower nothing.
+if [ "$jobs_status" -ne 0 ] || [ "$listed" -lt 1 ]; then
+  check "the seven shapes are skipped: --jobs over the tree exited $jobs_status and listed $listed job(s), so there is no job for them to lower" false
+else
+  for shape in key arrows decoy-after decoy-before split neighbour more-figures; do
+    copy="$work/real-tree-$shape"
+    cp -R "$tree" "$copy"
+    python3 "$work/real-tree.py" shape "$tree" "$work/real-tree.jobs" "$shape" "$copy" > "$copy.done"
+    lowered=$(grep -c '^lowered' "$copy.done" || true)
+    if [ "$shape" = split ]; then
+      echo "  $shape: lowered $lowered job(s), split $(grep -c '^split' "$copy.done" || true) derivation(s)"
+    else
+      echo "  $shape: lowered $lowered job(s)"
+    fi
+    check "$shape: lowers at least one job" "$([ "$lowered" -ge 1 ] && echo true || echo false)"
+    run_check "$copy"
+    check "$shape: exits 1" "$(is "$status" 1)"
+    printf '%s\n' "$out" > "$copy.out"
+    unnamed=$(python3 "$work/real-tree.py" unnamed "$copy.done" "$copy.out")
+    check "$shape: a refusal of its own key names every job it lowered${unnamed:+; none names $unnamed}" \
+      "$(is "$unnamed" "")"
+  done
+fi
 
 summary "check-download-retry.sh"
