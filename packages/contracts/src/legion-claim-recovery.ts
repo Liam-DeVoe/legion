@@ -16,7 +16,7 @@ const nonEmptyString = z.string().min(1);
 
 /** `api.ClaimRequest`, what either of the controller's two claim recoveries names: the claim on
  * `role` of `issue`, under the caller's controller grant. The controller's four claim operations
- * (`POST /legion/v1/claims/stop|retry|suspend|resume`, contract 136) take the same body and the
+ * (`POST /legion/v1/claims/stop|retry|suspend|resume`, contract 150) take the same body and the
  * same door, and answer `LegionClaimOperationResponse` (`legion-api.ts`). The project's controller
  * is no role here, so no body can name its claim (`INVALID_ROLE`); `NOT_THE_CONTROLLER`, the
  * daemon's refusal of the controller's own claim, belongs to the operator's door, and this one
@@ -29,7 +29,7 @@ const nonEmptyString = z.string().min(1);
  * operator's suspension; nothing of the claim changes.
  *
  * The same six operations take an architect's grant for the claims of its own tree alone
- * (contract 136): an issue the daemon does not record is `ISSUE_NOT_FOUND` (404), one of another
+ * (contract 150): an issue the daemon does not record is `ISSUE_NOT_FOUND` (404), one of another
  * tree `ISSUE_OUTSIDE_TREE` (403), and the architect's own claim `OWN_CLAIM` (403). Each is
  * refused `SUSPENDED_BY_OPERATOR` (409) for a claim the operator's suspension holds and
  * `SUSPENDED_BY_CONTROLLER` (409) for one the controller's holds, held or landed, and the

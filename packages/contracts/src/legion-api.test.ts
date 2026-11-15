@@ -84,7 +84,7 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // The four claim operations of the controller and of an architect (contract 136): the claim as
+  // The four claim operations of the controller and of an architect (contract 150): the claim as
   // each left it, and who holds a suspension over it.
   "claim-stop.json": LegionClaimOperationResponse,
   "claim-retry.json": LegionClaimOperationResponse,
@@ -648,6 +648,77 @@ test("the state golden carries each issue's tree memory draw", () => {
   drawn.memoryDrawMode = "off";
   drawn.memoryDrawnAt = "the morning";
   expect(parses()).toBeFalse();
+});
+
+// Contract 141: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
+// tree, each under two experiments — the tree experiment `memory`, whose answer every issue of
+// the tree shows, and the issue experiment `plan-length`, drawn for each issue on its own, so
+// the two stand in different arms of it — and LEGION-210, whose hand-over settled it at no arm:
+// an empty variant, an empty mode and no instant. An issue no experiment holds an answer for
+// carries no key at all, as does every issue of the body served a caller before 141, so the
+// field is optional; a daemon before this contract sent none, and its state must still parse.
+test("the state golden carries the experiments each issue was drawn for", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const issueOf = (key: string) => {
+    const issue = state.issues[key];
+    if (issue === undefined) {
+      throw new Error(`state fixture lacks ${key}`);
+    }
+    return issue;
+  };
+  const drawn = issueOf("LEGION-208");
+  expect(drawn.assignments).toEqual([
+    {
+      experiment: "memory",
+      variant: "memory",
+      mode: "random",
+      drawnAt: "2026-09-20T11:04:05Z",
+    },
+    {
+      experiment: "plan-length",
+      variant: "short",
+      mode: "random",
+      drawnAt: "2026-09-21T18:42:11Z",
+    },
+  ]);
+  // The issue experiment's arm is the issue's own: the child of that tree stands in the other.
+  expect((issueOf("LEGION-209").assignments as Record<string, unknown>[])[1]?.variant).toBe("long");
+  // The hand-over's answer: an arm and a mode, both empty, and no instant at all.
+  expect(issueOf("LEGION-210").assignments).toEqual([
+    { experiment: "plan-length", variant: "", mode: "" },
+  ]);
+  // An issue no experiment has reached carries no key.
+  expect(issueOf("LEGION-211").assignments).toBeUndefined();
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before contract 141, and one served to a pod below it.
+  const held = drawn.assignments;
+  delete drawn.assignments;
+  expect(parses()).toBeTrue();
+  drawn.assignments = held;
+  expect(parses()).toBeTrue();
+
+  // A row naming no experiment, a variant that is no string, and a draw time that is no time.
+  drawn.assignments = [{ experiment: "", variant: "memory", mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "memory", variant: 1, mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [
+    { experiment: "memory", variant: "memory", mode: "random", drawnAt: "the morning" },
+  ];
+  expect(parses()).toBeFalse();
+  // A row that leaves out `variant` or `mode`: both ride the wire whatever they hold, the empty
+  // string included, so a row without one is no row this daemon writes.
+  drawn.assignments = [{ experiment: "memory", mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "memory", variant: "memory" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = held;
+  expect(parses()).toBeTrue();
 });
 
 // The state golden carries LEGION-207, closed by its merge, with its production check open: the
@@ -1867,7 +1938,7 @@ const operatorSchemas: Record<string, true> = {
 /** The one session-facing exception: the four claim operations of the controller and of an
  * architect (`POST /legion/v1/claims/stop|retry|suspend|resume`) answer who holds a suspension,
  * because those routes are where the caller reads whether its own resume lifts it. The reason the
- * guard exists does not reach them: they arrived with contract 136, so only a plugin at that
+ * guard exists does not reach them: they arrived with contract 150, so only a plugin at that
  * contract or later calls them, and no reader of these bodies predates the key. The schema and the
  * four fixtures it pins are named here, and nothing else; a new session-facing body that names a
  * suspender still fails the walk below. */
@@ -1912,7 +1983,7 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from contract 136, to the four claim
+// `suspendedBy` is served to the operator's bearer and, from contract 150, to the four claim
 // operations of the controller and of an architect (claimOperationSchemas), and nowhere else; this
 // holds that for every schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
@@ -1940,7 +2011,7 @@ test("no session-facing response carries suspendedBy", () => {
   }
 });
 
-// An architect's suspension is a source of its own (contract 136, dispatch://INFRA-2709 t41): the
+// An architect's suspension is a source of its own (contract 150, dispatch://INFRA-2709 t41): the
 // claim operations' answer names it, landed or held, while the state, which the walk above holds
 // to no suspender at all, still names none.
 test("the claim operations name an architect's suspension", () => {

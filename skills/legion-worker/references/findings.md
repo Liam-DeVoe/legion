@@ -193,8 +193,10 @@ open, `envoy_publish` its reference, `dispatch://<REPORT KEY>/ask/<id>` (the id 
 `Asked <id> on …` line), to the controller topic your `Legion addressing` line names, with
 `expects_reply: false`. The controller follows the ask and files what the person's answer asks for;
 you file nothing, whatever the answer says. The controller itself skips this step, since it follows
-each ask it opens. When the listener kept that publish rather than a holder taking it, do nothing
-more for an ask on the report issue: the controller's catch-up follows it at its next start.
+each ask it opens. A publish to a role answers with its live `holder`, and with no count of
+recipients: the listener forwards a role message to its holder alone. When the listener kept that
+publish rather than a holder taking it, do nothing more for an ask on the report issue: the
+controller's catch-up follows it at its next start.
 
 An ask on the report issue blocks nothing of your own issue: its work goes on. One on your own
 issue holds its acceptance, as step 1 of [Where it goes](#where-it-goes) says.
