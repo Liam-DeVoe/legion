@@ -1725,7 +1725,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 //
-// 139: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
+// 140: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
 // the launcher wire. The daemon's answer to a launcher's hello carries the settings the trimmer
 // runs by, as one optional member of `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks,
 // the minimum age and the interval, from `runtime.kubernetes.volume_trim`), written by
@@ -1832,7 +1832,8 @@ package api
 // At the forward merge of round 22 main had moved to 133, above 127, and #3659 and #3711 had
 // also declared 127. Read at refs/pull/<n>/head for every open pull request, the open heads
 // above main's declare 134 (#4017 and #4021), 135 (#3659), 136 (#3575 and #3730), 137 (#4046)
-// and 138 (#3712 and #3993), so 139 is the lowest number above main's 133 that no open head
-// declares. It is held under the same rule: move it only when main's own number or another
-// open head's reaches 139.)
-const DaemonAPIVersion = 139
+// and 138 (#3712 and #3993), so 139 was the lowest number above main's 133 that no open head
+// declared. Read again immediately before the push, #4017 had moved to 138 and #3993 to 139,
+// so 140 is the lowest number above main's 133 that no open head declares. It is held under the
+// same rule: move it only when main's own number or another open head's reaches 140.)
+const DaemonAPIVersion = 140
