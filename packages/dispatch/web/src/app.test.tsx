@@ -552,6 +552,7 @@ test("nothing is read and no socket opens until the landing answers, and the fee
           credential_requests: null,
           inbox: null,
           pinned_issues: null,
+          priority_summary: null,
           projects: null,
           unread_replies: null,
         },

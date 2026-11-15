@@ -21,6 +21,7 @@ import {
   issueCoverageQuery,
   issueQuery,
   myRepliesCountQuery,
+  prioritySummaryQuery,
   projectArchitectureSourcesQuery,
   projectIssuesQuery,
   projectsQuery,
@@ -38,6 +39,7 @@ import type {
   LandingResponse,
   LandingShell,
   MyRepliesResponse,
+  Priorities,
   RepoProject,
 } from "../api/types";
 import { credentialPendingQuery } from "../features/credentials/pending";
@@ -115,14 +117,24 @@ const architectureSources: ArchitectureSource[] = [
   },
 ];
 
+/** The two fault counts the rail's Priorities entry adds, as the summary call answers them: a
+ *  count each and no row of either list. */
+const prioritySummary: Priorities = {
+  priorities: [],
+  priority_work_parked: { by_priority: {}, count: 1, issues: [] },
+  work_under_no_priority: { by_project: {}, count: 2, issues: [] },
+};
+
 /** What every page draws, as this deployment answers it: a workspace with one project, nothing
- *  pinned, no ask waiting, two unread threads, a broker with an empty list and no agent. */
+ *  pinned, no ask waiting, two unread threads, a broker with an empty list, three priority
+ *  faults and no agent. */
 const shell: LandingShell = {
   agent_states: {},
   agents: [],
   credential_requests: { pending: [] },
   inbox: [],
   pinned_issues: [],
+  priority_summary: prioritySummary,
   projects: [
     {
       created_at: "2026-09-09T00:00:00Z",
@@ -221,6 +233,10 @@ function readsBehindTheLanding() {
     listIssueAsks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
     listIssues: spyOn(api, "listIssues").mockResolvedValue([]),
     listMyReplies: spyOn(api, "listMyReplies").mockResolvedValue({ ...threads, total: 9 }),
+    listPriorities: spyOn(api, "listPriorities").mockResolvedValue({
+      ...prioritySummary,
+      work_under_no_priority: { by_project: {}, count: 9, issues: [] },
+    }),
     listProjects: spyOn(api, "listProjects").mockResolvedValue([]),
     listProjectArchitectureSources: spyOn(api, "listProjectArchitectureSources").mockResolvedValue(
       []
@@ -265,6 +281,7 @@ test("an issue landing seeds every key the issue page reads, so the page reads n
     expect(await client.fetchQuery(userAgentStateQuery())).toEqual({});
     expect(await client.fetchQuery(myRepliesCountQuery())).toBe(2);
     expect(await client.fetchQuery(credentialPendingQuery())).toEqual({ pending: [] });
+    expect(await client.fetchQuery(prioritySummaryQuery())).toEqual(prioritySummary);
     expect(await client.fetchQuery(agentsQuery())).toEqual([]);
     // The issue's own page.
     expect(await client.fetchQuery(issueQuery("CORE-1"))).toEqual(issue);
@@ -456,9 +473,9 @@ test("an inbox landing seeds the threads the Inbox lists", async () => {
 });
 
 test("a part the landing leaves out is read from its own route", async () => {
-  // A Dispatch whose broker did not answer, whose issue the reader may not read and whose
-  // coverage it therefore could not read either: each part is null, and the page reads it where
-  // it read it before.
+  // A Dispatch whose broker did not answer, whose priorities it could not read, whose issue the
+  // reader may not read and whose coverage it therefore could not read either: each part is
+  // null, and the page reads it where it read it before.
   const answer = issueLanding();
   const getLanding = spyOn(api, "getLanding").mockResolvedValue({
     ...answer,
@@ -467,7 +484,7 @@ test("a part the landing leaves out is read from its own route", async () => {
       issue:
         answer.page.issue === null ? null : { ...answer.page.issue, coverage: null, issue: null },
     },
-    shell: { ...shell, credential_requests: null },
+    shell: { ...shell, credential_requests: null, priority_summary: null },
   });
   const reads = readsBehindTheLanding();
   const client = dashboardClient();
@@ -482,6 +499,10 @@ test("a part the landing leaves out is read from its own route", async () => {
       title: "Read again",
     });
     expect(await client.fetchQuery(credentialPendingQuery())).toBeNull();
+    expect(await client.fetchQuery(prioritySummaryQuery())).toEqual({
+      ...prioritySummary,
+      work_under_no_priority: { by_project: {}, count: 9, issues: [] },
+    });
     expect(await client.fetchQuery(issueCoverageQuery("CORE-1"))).toEqual({
       ...coverage,
       gaps: ["read again"],
@@ -494,6 +515,7 @@ test("a part the landing leaves out is read from its own route", async () => {
       "getCredentialPending",
       "getIssue",
       "getIssueCoverage",
+      "listPriorities",
       "listProjectArchitectureSources",
     ]);
   } finally {

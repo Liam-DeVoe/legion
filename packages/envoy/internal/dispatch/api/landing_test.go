@@ -48,6 +48,13 @@ func TestLandingAnswersWhatThePerResourceRoutesAnswer(t *testing.T) {
 		map[string]any{"pinned": true}, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("pin issue: status=%d body=%s", response.Code, response.Body.String())
 	}
+	// One fault of each kind, in two projects, so the priority summary counts work on both sides
+	// rather than answering the sentence a deployment with no priority answers: the in-flight work
+	// under no priority is OTHER's, so a summary narrowed to the issue's own project would count
+	// none of it and fail against the rail's read, which narrows to no project.
+	createTestPriority(t, handler, map[string]any{"id": "landing-goal", "title": "Landing goal"}, "alice")
+	seedPriorityIssue(t, handler, "OTHER", "Work in flight under no priority", "in_progress", "", nil)
+	seedPriorityIssue(t, handler, "LAND", "Priority work parked", "backlog", "", []string{"landing-goal"})
 
 	landing := readLanding(t, handler, "/api/v1/landing?page=issue&key="+issue.Key)
 
@@ -76,6 +83,7 @@ func TestLandingAnswersWhatThePerResourceRoutesAnswer(t *testing.T) {
 		{"shell.projects", landing.Shell["projects"], "/api/v1/projects"},
 		{"shell.agent_states", landing.Shell["agent_states"], "/api/v1/me/agents/state"},
 		{"shell.credential_requests", landing.Shell["credential_requests"], "/api/v1/credential-requests?approver=me"},
+		{"shell.priority_summary", landing.Shell["priority_summary"], "/api/v1/priorities?summary=true"},
 		{"shell.agents", landing.Shell["agents"], "/api/v1/agents"},
 		{"page.issue.issue", landing.Issue["issue"], "/api/v1/issues/" + issue.Key},
 		{"page.issue.user_state", landing.Issue["user_state"], "/api/v1/me/state"},

@@ -93,6 +93,9 @@ type landingShell struct {
 	// deployment has no secrets broker, which is that route's own answer, and when the read
 	// failed: the page draws no Needs-you badge either way.
 	CredentialRequests *wire.PendingResponse `json:"credential_requests"`
+	// PrioritySummary is GET /api/v1/priorities?summary=true with no project: the two fault
+	// counts the navigation rail's Priorities entry adds, and no row of either list.
+	PrioritySummary *model.Priorities `json:"priority_summary"`
 	// Agents is GET /api/v1/agents: the live sessions, null when the listener did not answer.
 	Agents []agentResponse `json:"agents"`
 }
@@ -348,6 +351,12 @@ func (s *server) landingShell(ctx context.Context, caller model.Actor, trees boo
 	shell.UnreadReplies = landingPart("shell.unread_replies", &replies.Total, err)
 
 	shell.CredentialRequests = s.landingCredentialRequests(ctx, caller)
+
+	// The rail's own read: the two fault counts over every project, as the rail asks for them.
+	// The narrowing is the empty list rather than nil, as the route passes it: a nil slice is
+	// sent as NULL, which the project filter reads as no project at all rather than every one.
+	priorities, err := s.readPriorities(ctx, []string{}, true)
+	shell.PrioritySummary = landingPart("shell.priority_summary", &priorities, err)
 
 	if s.deps.Envoy != nil {
 		agents, _, err := s.loadAgents(ctx)

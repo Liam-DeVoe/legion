@@ -736,10 +736,11 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     "/api/v1/me/state",
     // The one block-schema fetch every document surface shares for the session.
     "/api/v1/schema/blocks",
-    // The navigation rail's Priorities entry, whose badge is the two fault counts added
-    // (`?summary=true` answers those two numbers and neither fault list). The landing carries
-    // no priority, so this read is the rail's own, as it is on main.
-    "/api/v1/priorities?summary=true",
+    // The navigation rail's Priorities entry is NOT in this set. Its badge is the two fault
+    // counts added (`?summary=true` answers those two numbers and neither fault list), and the
+    // landing carries those two counts and seeds them under the key the rail reads them by
+    // (`seedShell`, `prioritySummaryQuery`), where the client's 30,000 ms `staleTime` leaves them
+    // fresh, so the rail sends no read of its own on this load.
     // The credential requests the Inbox counts are NOT in this set, and a measurement is why.
     // The landing carries that list - this harness runs a broker, which answers it - and seeds
     // it under this route's own key (`seedShell`), where the client's 30,000 ms `staleTime`

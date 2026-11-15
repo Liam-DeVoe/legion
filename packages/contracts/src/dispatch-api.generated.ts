@@ -1763,7 +1763,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One page of the dashboard read cold, in one request in place of nine to twenty-one: {viewer, shell, page}. viewer is what GET /auth/whoami answers (event_head, kind, login), with that route's own refusals, 503 EVENT_HEAD_UNAVAILABLE while no event id is proven final and 503 EVENT_HEAD_READ_FAILED when the head could not be read, since the page resumes its event feed from that id. shell is what every page reads whatever its route: the inbox, the caller's pinned issues, the projects, the caller's agent state, the unread-reply count, the pending credential requests (null without a secrets broker) and the agent list. page carries what the page ?page= names reads before it draws: issue (with ?key=), board (?project=), inbox, or document (?project= and ?slug=); any other value, and a page without the parameter it needs, is 400 LANDING_INPUT naming what it takes. Every part but the viewer is null when it could not be read or does not exist - an issue key that is no issue, a slug that is no document, a listener that did not answer - and the client then reads that part from the route it stands in for. */
+    /** @description One page of the dashboard read cold, in one request in place of ten to twenty-two: {viewer, shell, page}. viewer is what GET /auth/whoami answers (event_head, kind, login), with that route's own refusals, 503 EVENT_HEAD_UNAVAILABLE while no event id is proven final and 503 EVENT_HEAD_READ_FAILED when the head could not be read, since the page resumes its event feed from that id. shell is what every page reads whatever its route: the inbox, the caller's pinned issues, the projects, the caller's agent state, the unread-reply count, the pending credential requests (null without a secrets broker), the two priority fault counts (what GET /api/v1/priorities?summary=true answers) and the agent list. page carries what the page ?page= names reads before it draws: issue (with ?key=), board (?project=), inbox, or document (?project= and ?slug=); any other value, and a page without the parameter it needs, is 400 LANDING_INPUT naming what it takes. Every part but the viewer is null when it could not be read or does not exist - an issue key that is no issue, a slug that is no document, a listener that did not answer - and the client then reads that part from the route it stands in for. */
     get: operations["getApiV1Landing"];
     put?: never;
     post?: never;
@@ -5275,6 +5275,7 @@ export interface components {
       credential_requests: components["schemas"]["CredentialPendingResponse"] | null;
       inbox: components["schemas"]["InboxRow"][] | null;
       pinned_issues: components["schemas"]["IssueSummary"][] | null;
+      priority_summary: components["schemas"]["Priorities"] | null;
       projects: components["schemas"]["Project"][] | null;
       unread_replies: null | number;
     };

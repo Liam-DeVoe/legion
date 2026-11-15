@@ -648,6 +648,12 @@ function seedShell(client: QueryClient, shell: LandingShell): void {
   if (shell.credential_requests !== null) {
     client.setQueryData(credentialPendingQuery().queryKey, shell.credential_requests);
   }
+  // The navigation rail's Priorities badge: the two fault counts over every project, which is the
+  // summary the rail reads with no project named (`features/sidebar/Sidebar.tsx`), so it is
+  // written under that call's own key.
+  if (shell.priority_summary !== null) {
+    client.setQueryData(prioritySummaryQuery().queryKey, shell.priority_summary);
+  }
   // The agent registry every surface shares (`features/refs/agent-registry.ts`); null where this
   // Dispatch has no Envoy listener to read it from.
   if (shell.agents !== null) client.setQueryData(agentsQuery().queryKey, shell.agents);
