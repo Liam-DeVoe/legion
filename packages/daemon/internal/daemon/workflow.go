@@ -129,6 +129,10 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// release is the daemon's project release mark, set by attach: while it holds, the idle and
+	// unowned ticks decide no pod (idlePass) and the wakes fire nothing (wakePass). Nil, in a test
+	// that builds the runtime by hand, holds nothing.
+	release *projectRelease
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
@@ -1069,6 +1073,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		return pull, err
 	}
 	w.outbox.mergeStateWait = w.mergeStateWait
+	w.outbox.release, w.release = supervision.plan.release, supervision.plan.release
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)

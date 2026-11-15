@@ -143,6 +143,10 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
+	// release is the daemon's project release mark, set by attach: while it holds, every row that
+	// would start or prompt a role waits (runRow, record.HeldByProjectRelease) until the daemon's
+	// next boot. Nil, in a test that builds the outbox by hand, holds nothing.
+	release *projectRelease
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once

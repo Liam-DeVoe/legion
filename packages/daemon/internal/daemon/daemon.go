@@ -804,9 +804,13 @@ type plan struct {
 	strandedReported func()
 	// beforeServingLatched is overrides.beforeServingLatched; nil runs nothing.
 	beforeServingLatched func(ctx context.Context)
-	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
-	// reaches the real store's own CheckLaunch.
+	// checkLaunch is overrides.checkLaunch; nil adds no refusal of a test's to the launch check
+	// (gateLaunch), so every launch the release does not hold reaches the real store's own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// release is the daemon-wide mark of a project release (projectRelease): the launch check,
+	// the runtime, the machines, the periodic work, the outbox and the operator's routes all read
+	// it. One per process, never nil: a daemon starts with the mark clear.
+	release *projectRelease
 }
 
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
@@ -816,10 +820,14 @@ type plan struct {
 // Dispatch's mapping names now (plan.repositories, which the workflow fills; none without a
 // workflow): the set every role's gh bundle is built over, and the set a configured rename is
 // resolved against, one repository at a time (appauth.GitHubCredential), which the Sandbox
-// runtime's repository caches follow too. openSupervision hands it the
-// plan the workflow completed, so no factory reads a field the workflow sets after prepare.
+// runtime's repository caches follow too. held is whether the daemon's project release holds
+// every pod now (projectRelease.held), which the Sandbox runtime reads at every act that would
+// make one (sandbox.Options.Held); a runtime that runs no pod takes it and reads nothing of it.
+// openSupervision hands it the plan the workflow completed, so no factory reads a field the
+// workflow sets after prepare.
 type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
-	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error)
+	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository,
+	held func() bool) (runtime.Runtime, error)
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
 // then what writes or runs something: the state directory, the instructions copy, and what the
@@ -888,6 +896,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		release: &projectRelease{},
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1067,10 +1076,12 @@ func treeMemoryGroup(st *store.Store) func(ctx context.Context, tree string) (bo
 // works (claimRepository over the workflow's repository), which a pane adopted after a restart
 // holds its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes
 // hold no gh files. The private server's environment is scrubbed before anything is launched on
-// it.
+// it. It reads nothing of the project release's mark: a pane is no pod, and a daemon on this
+// runtime refuses the release itself, so nothing ever sets the mark here.
 func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, repos func() []ghrepo.Repository, log *slog.Logger) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Tokens,
-		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
+		_ func() bool) (runtime.Runtime, error) {
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
 		if tokens != nil {
@@ -1440,7 +1451,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		endDrain()
 		return nil, err
 	}
-	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted)
+	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted, p.release.held)
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1449,7 +1460,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	sup.deps = supervise.Deps{
 		Runtime: rt,
 		Conns:   listener,
-		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
+		Store:   pruning(gateLaunch(tokens.Recording(st), p.release, p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, repository: p.repository,
@@ -1499,6 +1510,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		// The machines hand no claim its task while the project release holds every start.
+		ProjectReleaseHolds: p.release.held,
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
@@ -1511,6 +1524,12 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// after their deps: the one callback whose receiver is supervision itself, set here before
 	// any machine exists, as the workflow sets enqueue where it attaches.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
+	// A release whose record did not commit clears the mark, and every task the machines held
+	// back while it stood is sent then rather than at each claim's next event. Set here, at boot,
+	// before anything can set the mark.
+	if p.release != nil {
+		p.release.unmarked = sup.sendHeldTasks
+	}
 	return supervisionOf, nil
 }
 
@@ -2137,6 +2156,12 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 				return
 			case <-ticker.C:
 			}
+			// The project release holds every start, so a tick while it holds relaunches nothing
+			// and reconciles nothing; the tokens wait for a tick after its mark is cleared, and the
+			// next boot takes up whatever is still unfinished.
+			if s.plan.release.held() {
+				continue
+			}
 			if !reconciled {
 				if reconciled = s.reconcileBootOrphans(relaunching); !reconciled {
 					continue
@@ -2166,21 +2191,34 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		claims, err := s.supervisor.Claims(ctx)
-		if err != nil {
-			if ctx.Err() == nil {
-				s.log.Error("reconcile orphans: read the claims", "error", err)
-			}
-			continue
+		s.sweepOnce(ctx)
+	}
+}
+
+// sweepOnce is one pass of the sweep (reconcileOrphans). While the project release holds every
+// start, the pass skips each act of it that makes a pod or starts a role: the orphan
+// reconciliation, which makes and repairs the repository caches as it sweeps them, the
+// stale-plugin refresh, which relaunches, and the pod update sweep, which replaces pods. The
+// stall backstop and the silence report still run: neither makes a pod itself, and what each
+// starts is held where it starts — the launch check refuses the backstop's relaunch, and the
+// outbox holds the starts the silence report's facts queue.
+func (s *supervision) sweepOnce(ctx context.Context) {
+	claims, err := s.supervisor.Claims(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("reconcile orphans: read the claims", "error", err)
 		}
+		return
+	}
+	if !s.plan.release.held() {
 		if err := s.runtime.ReconcileOrphans(ctx, knownClaims(claims), orphanGrace); err != nil && ctx.Err() == nil {
 			s.log.Error("reconcile orphans", "error", err)
 		}
 		s.refreshStalePlugins(claims, "sweep")
 		s.reconcilePodUpdates(ctx, claims)
-		s.backstopStalledTurns(ctx, claims)
-		s.tellSilentPhaseWorkers(ctx, claims)
 	}
+	s.backstopStalledTurns(ctx, claims)
+	s.tellSilentPhaseWorkers(ctx, claims)
 }
 
 // halt begins the stop, once. It sets when the stop and the API's drain must end by (stopBy,
@@ -2302,6 +2340,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var keeper *controllerKeeper
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
 		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
+		keeper.release = p.release
 	}
 	// The readiness latch the API's /readyz answers from. It is built here, unset: by the time
 	// this runs the runtime is built and the launcher acceptor installed, and what is left of the
@@ -2372,6 +2411,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		CapabilityReported: s.capabilityReported,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
+		// The operator's starts are refused 409 while the project release holds every start.
+		ProjectReleaseHolds: p.release.held,
 	})
 
 	group, serving := errgroup.WithContext(ctx)

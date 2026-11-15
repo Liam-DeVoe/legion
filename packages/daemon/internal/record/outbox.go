@@ -113,6 +113,48 @@ func LaneKinds(lane OutboxLane) []OutboxKind {
 	return slices.Clone(laneKinds[lane])
 }
 
+// HeldByProjectRelease is whether a project release holds an outbox row of payload until the
+// daemon's next boot (dispatch://INFRA-3583 R7): the outbox answers such a row a wait, and it runs
+// once the boot has ended the release and started again the claims the release stopped. A held
+// row is one that would start or prompt a role, which a released daemon does for nobody:
+//
+//   - a supervise row that starts a role (op `start`: a start, a resume, a retry, a phase's task)
+//     or stops one for an idle release (op `release`, whose release the project release took
+//     over);
+//   - the rows that publish to a role or its architect, each of which prompts a turn or waits for
+//     a released pod to come back: notice, controller_notice, role_message, phase_ended,
+//     hook_prompt and merge_queue_removal, and merge_queue_read, which writes that removal's
+//     message;
+//   - the production check's rows, which start and end the checking role's looks: check_wake,
+//     check_look and check_bound;
+//   - the idle release's own save and teardown (issue_bundle, issue_release), which the project
+//     release took over;
+//   - an update round's ask (update_ask), but for the running release's own (releaseRound, the
+//     round its asks ride; "" before its record committed, which holds every ask).
+//
+// Every other row runs: the Dispatch writes and publishes (dispatch_status, dispatch_message,
+// gated_steps_publish, design_gates_publish), the release of a Dispatch claim (claim_release), a
+// supervise row that stops a role (op `suspend`, `issue_close`, `tree_close`), an issue's pod
+// deleted after its close (issue_suspend), a linger's close and its workspace's removal
+// (linger_close, workspace_remove), a gate's seed (gate_seed) and an issue's branch
+// (issue_branch). None of them makes a pod or prompts a role, and a start one of them queues is a
+// row this holds.
+func HeldByProjectRelease(payload OutboxPayload, releaseRound string) bool {
+	switch value := payload.(type) {
+	case SuperviseRequest:
+		return value.Op == "start" || value.Op == "release"
+	case UpdateAsk:
+		return releaseRound == "" || value.Round != releaseRound
+	}
+	switch payload.OutboxKind() {
+	case OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt,
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound,
+		OutboxKindIssueBundle, OutboxKindIssueRelease:
+		return true
+	}
+	return false
+}
+
 // LaneKey names one lane of one issue.
 type LaneKey struct {
 	Issue string

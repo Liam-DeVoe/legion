@@ -504,8 +504,12 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
-		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository,
+		held func() bool) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
+		// The project release's mark, which the runtime reads at every act that would make a pod
+		// of the project, so no path that skips the launch check makes one while it holds.
+		opts.Held = held
 		// The two halves of the release's saved work: an idle release puts the issue's unpushed
 		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
 		// replaces the released one before any role of that pod starts. The confirmation deletes

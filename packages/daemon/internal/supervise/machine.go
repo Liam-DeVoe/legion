@@ -829,6 +829,13 @@ type Deps struct {
 	// (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
 	// (internal/daemon's refreshStalePlugins).
 	NoPluginInstall func(c Claim) bool
+	// ProjectReleaseHolds is whether the daemon's project release holds every start of the
+	// project now (internal/daemon's projectRelease, dispatch://INFRA-3583 R7). While it answers
+	// true no claim is handed a task (sendPending): a role whose turn ends while the release waits
+	// on its pod — the turn that answered the release's ask among them — keeps its pending task,
+	// which is sent once the daemon's next boot has started the claim again, rather than starting
+	// work it would hold its pod open for. Nil holds nothing.
+	ProjectReleaseHolds func() bool
 	// TaskConfirmed is told of each claim whose pending delivery a turn has just confirmed: the
 	// agent took the work the daemon gave it. The workflow decides what a root still owes its
 	// architect from that (admission's ReconcileAwaiting), so without it a root whose wait was
@@ -2163,6 +2170,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}
+		if errors.Is(err, runtime.ErrProjectReleased) {
+			return m.startWaitsForRelease(starting, err, charged, exempt)
+		}
 		err = errors.Join(err, m.stopPrevious(starting))
 		m.claim.Budgets.LaunchFailures++
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
@@ -2248,6 +2258,22 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 		"generation", m.claim.Generation, "retry", sessionStoreRetry, "error", err)
 	m.tellStoreFault(cause)
 	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt) })
+	return errors.Join(err, m.persist(ctx))
+}
+
+// startWaitsForRelease is a start the runtime refused because the daemon's project release holds
+// every pod of the project (runtime.ErrProjectReleased): a launch that passed the launch check
+// just before the release's mark was set, and met the mark at the runtime instead. It is no fault
+// of the claim's, so nothing is charged and nobody is told, as for a store that could not answer.
+// The process this launch let go is stopped, as after every refused start, and the launch is
+// tried again at the probe interval (relaunchLater), where the launch check refuses it, uncharged
+// again, for as long as the release holds (relaunchRefused). The release stops the claim, or the
+// daemon's next boot starts it.
+func (m *Machine) startWaitsForRelease(ctx context.Context, cause error, charged, exempt bool) error {
+	err := errors.Join(cause, m.stopPrevious(ctx))
+	m.log.Info("supervise: the project release holds every pod of the project; this start charges nothing and waits",
+		"generation", m.claim.Generation, "retry", m.deps.Timeouts.Probe, "error", err)
+	m.relaunchLater(m.deps.Timeouts.Probe, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt) })
 	return errors.Join(err, m.persist(ctx))
 }
 

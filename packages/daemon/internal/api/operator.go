@@ -423,7 +423,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, "spawn") {
+	if s.stopped(w, "spawn") || s.releaseRefused(w, "spawn") {
 		return
 	}
 	if req.Tree == req.Issue && req.Role == claim.RoleArchitect {
@@ -545,7 +545,12 @@ func (s *server) postClaimEvent(w http.ResponseWriter, r *http.Request, m *super
 	return true, m.Handle(ctx, ev)
 }
 
+// deliverEvent is an operator's task for the claim, which a project release refuses as it refuses
+// every request that would prompt a role (releaseRefused).
 func (s *server) deliverEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
+	if s.releaseRefused(w, "deliver") {
+		return nil, false
+	}
 	var req DeliverRequest
 	if !s.readBody(w, r, &req, nil) || !requireFields(w, field{"task", req.Task}) {
 		return nil, false
@@ -557,7 +562,12 @@ func suspendEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (su
 	return supervise.RequestSuspend{Claim: c.Token, Reason: "the operator suspended it", By: supervise.SuspendedByOperator}, true
 }
 
-func resumeEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (supervise.Event, bool) {
+// resumeEvent is an operator's resume of the claim, which a project release refuses as it
+// refuses every request that would start a role (releaseRefused).
+func (s *server) resumeEvent(w http.ResponseWriter, _ *http.Request, c supervise.Claim) (supervise.Event, bool) {
+	if s.releaseRefused(w, "resume") {
+		return nil, false
+	}
 	return supervise.RequestResume{Claim: c.Token}, true
 }
 
@@ -647,7 +657,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req RetryRequest
-	if !s.readOptionalBody(w, r, &req) {
+	if !s.readOptionalBody(w, r, &req) || s.releaseRefused(w, "retry") {
 		return
 	}
 	var (

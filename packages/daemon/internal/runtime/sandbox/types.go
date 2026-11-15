@@ -281,6 +281,14 @@ type Options struct {
 	// (*leakguard.Source); nil is a daemon that runs with no GitHub App, which refuses the start of
 	// every role whose launcher names a tag and starts a launcher that names none as it is.
 	LeakCheck LeakCheckReader
+	// Held is whether the daemon's project release holds every pod of the project now
+	// (internal/daemon's projectRelease, dispatch://INFRA-3583 R7). While it answers true the
+	// runtime makes no pod: createSandbox, the Running patch of a relaunch and of a repository
+	// cache's pod, ensureCacheSandbox, createProbe and ReplacePod each refuse with
+	// runtime.ErrProjectReleased before they write anything (releaseHolds). It is read at each of
+	// those acts rather than once, because the mark is set while the daemon runs and cleared again
+	// only when the release's record could not be written. Nil holds nothing.
+	Held func() bool
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.

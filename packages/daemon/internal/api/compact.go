@@ -226,7 +226,9 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, "compact") {
+	// A compaction runs the agent and then sends it the task it owes, which the project release
+	// holds at both doors.
+	if s.stopped(w, "compact") || s.releaseRefused(w, "compact") {
 		return CompactResponse{}, false
 	}
 	switch err := m.Compact(ctx, compactInstructions); {

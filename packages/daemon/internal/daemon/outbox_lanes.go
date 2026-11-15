@@ -274,9 +274,10 @@ func (r *outbox) nextDue(ctx context.Context, issue string, kinds []record.Outbo
 // lease, a row finished since the list, or one an older row of its issue since queued ahead of —
 // is no one's failure and is passed over silently. A claimed row whose kind spends a GitHub budget
 // a limit still stands on (deferral) runs nothing and is retried at that limit's end, so it never
-// meets the limit again. The settle runs even once ctx has ended: the effect ran, so what it came
-// to is recorded on a bounded context of its own (outboxSettleTimeout) rather than left to run
-// again at the next boot.
+// meets the limit again. A claimed row the daemon's project release holds runs nothing either and
+// waits on its backoff (releaseHolds). The settle runs even once ctx has ended: the effect ran, so
+// what it came to is recorded on a bounded context of its own (outboxSettleTimeout) rather than
+// left to run again at the next boot.
 func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	now := r.now().UTC()
 	var row record.OutboxRow
@@ -301,6 +302,12 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 		}
 		return nil
 	}
+	if r.releaseHolds(row) {
+		// The row waits in the database, unrun, and runs on its backoff once the daemon's next
+		// boot has ended the release (R7); the settle records the wait as every wait is recorded.
+		r.settle(ctx, row, fmt.Errorf("outbox row %d: %w", row.ID, errProjectReleased))
+		return nil
+	}
 	// The renewal's ticks run on timer goroutines of their own (renewLease), beside the row's
 	// effect, so they are a second caller of the pool and take a hold mark of their own
 	// (store.ForConcurrentWorker). On the lane's mark a tick that came while the effect was inside
@@ -323,6 +330,21 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	}
 	r.settle(settleCtx, row, err)
 	return nil
+}
+
+// releaseHolds is whether the daemon's project release holds row: while the mark is held, every
+// row that would start or prompt a role waits (record.HeldByProjectRelease), and the release's own
+// asks, the one update round it runs, go. A row whose payload does not decode is left to execute,
+// which refuses it with its own error.
+func (r *outbox) releaseHolds(row record.OutboxRow) bool {
+	if !r.release.held() {
+		return false
+	}
+	payload, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		return false
+	}
+	return record.HeldByProjectRelease(payload, r.release.askRound())
 }
 
 // leaseRenewal keeps a running row's lease live (renewLease): the tick armed next, whether the run

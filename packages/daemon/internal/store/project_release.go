@@ -18,6 +18,24 @@ import (
 // this database ended the release (EndProjectReleasesAtBoot). Nothing else ends one.
 const ProjectReleaseEndedByBoot = "boot"
 
+// ErrProjectReleaseRunning is an idle release, or the release of a pod no claim owns, refused
+// because the project has a project release no boot has ended (ReleaseIdleIssue): that release
+// holds every pod of the project until the daemon's next boot, and an idle release started beside
+// it would stop roles and save work the project release has already taken over.
+var ErrProjectReleaseRunning = errors.New("a project release no boot has ended holds every pod of the project")
+
+// projectReleaseRunning is whether project has a release no boot has ended (ended_at null),
+// finished or not, read in the caller's transaction. Its callers hold the shared serializer, as
+// StartProjectRelease does, so the answer stands until they commit.
+func projectReleaseRunning(ctx context.Context, tx pgx.Tx, project string) (bool, error) {
+	var running bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from project_releases where project = $1 and ended_at is null)`,
+		project).Scan(&running); err != nil {
+		return false, fmt.Errorf("read whether a project release of %s runs: %w", project, err)
+	}
+	return running, nil
+}
+
 // ProjectRelease is one project release as its record holds it (project_releases): its id, the
 // project in the claim token's spelling (claims.project), when it started, the time it deletes
 // every pod still waiting (BoundAt), when it finished its acts and when a boot ended it, each zero

@@ -146,6 +146,13 @@ type Options struct {
 	// first and reaches this for every other failure: while the request is live, and once it has
 	// ended when the call failed with something that is not that ending. Nil is never.
 	Stopping context.Context
+	// ProjectReleaseHolds is whether the daemon's project release holds every start of the
+	// project now (internal/daemon's projectRelease, dispatch://INFRA-3583 R7). While it answers
+	// true an operator's spawn, retry, resume and deliver, and either door's fresh session and
+	// compaction, which start or prompt a role, are refused 409 with ProjectReleaseHolds
+	// (releaseRefused), and nothing of the claim is asked. A role's own calls still record their
+	// facts: the starts those queue wait in the outbox for the boot. Nil holds nothing.
+	ProjectReleaseHolds func() bool
 	// Drained is done once the daemon's stop has drained the API, or the drain ran out, and ends
 	// every decision a route asked of a machine (decision). A decision in flight at the stop's
 	// start gets the drain to finish, so an operator's suspension whose process is already exiting
@@ -358,7 +365,9 @@ type server struct {
 	stopping  context.Context
 	drained   context.Context
 	decisions *RouteDecisions
-	log       *slog.Logger
+	// releaseHolds is Options.ProjectReleaseHolds; nil holds nothing.
+	releaseHolds func() bool
+	log          *slog.Logger
 	// beforeForgetSessionHandle pauses the route's preflight in its concurrency regression test.
 	beforeForgetSessionHandle func()
 }
@@ -423,6 +432,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		stopping:           opts.Stopping,
 		drained:            opts.Drained,
 		decisions:          opts.Decisions,
+		releaseHolds:       opts.ProjectReleaseHolds,
 	}
 	if opts.OperatorToken != "" {
 		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))
@@ -489,7 +499,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("GET /legion/v1/operator/claims", s.operator(s.list))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent)))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", resumeEvent)))
+	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", s.resumeEvent)))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent)))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim))
@@ -663,6 +673,30 @@ func (s *server) stopRefusal(request string) string {
 	}
 	s.log.Info("api: refused an operator request: the daemon is stopping", "request", request)
 	return request + " refused: the daemon is stopping; ask again once it is back"
+}
+
+// ProjectReleaseHolds is the sentence every start the daemon's project release refuses is
+// answered with: the routes' 409 (releaseRefused), and the daemon's launch check and outbox wait
+// (internal/daemon's errProjectReleased), so an operator reads the same words wherever a start
+// was held.
+const ProjectReleaseHolds = "the project release holds every start until the daemon's next boot"
+
+// projectReleased is the code of that refusal (Failure.Code): a controller's door reads its
+// refusals by code, and an operator's command prints the sentence beside it.
+const projectReleased = "PROJECT_RELEASED"
+
+// releaseRefused answers 409 and reports true while the daemon's project release holds every
+// start (Options.ProjectReleaseHolds), for a request that would start or prompt a role: an
+// operator's spawn, retry, resume and deliver, and either door's fresh session and compaction
+// (dispatch://INFRA-3583, decision 9 of its plan). Each such route asks it before it asks the
+// claim anything, so the refused request changes nothing.
+func (s *server) releaseRefused(w http.ResponseWriter, request string) bool {
+	if s.releaseHolds == nil || !s.releaseHolds() {
+		return false
+	}
+	s.log.Info("api: refused a request that would start or prompt a role: the project release holds every start", "request", request)
+	writeFailure(w, http.StatusConflict, projectReleased, request+" refused: "+ProjectReleaseHolds)
+	return true
 }
 
 // stateRoute answers the state out of one repeatable-read, read-only snapshot, under a bound of

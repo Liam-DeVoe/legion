@@ -208,6 +208,12 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		l.spec.Plugins = nil
 	}
 	if replace {
+		// A pod this launch would replace or make is refused while the project release holds
+		// every pod, before the live pod is suspended under it: the release reads and deletes that
+		// pod itself, and a launch that ended its processes would leave it with nothing to read.
+		if err := r.releaseHolds("launch " + string(spec.Claim)); err != nil {
+			return runtime.Locator{}, err
+		}
 		switch {
 		case live:
 			suspended, err := r.suspendDisplacing(bounded, s, pod.UID, launchReplacement)
@@ -239,6 +245,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail("write its launcher secrets", err)
 		}
 		template := r.podTemplate(l)
+		if err := r.releaseHolds("launch " + string(spec.Claim) + ": set its sandbox running"); err != nil {
+			return runtime.Locator{}, err
+		}
 		running, err := r.patch(bounded, s,
 			jsonPatchOp{Op: "add", Path: "/spec/podTemplate", Value: template},
 			jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeRunning},
@@ -715,6 +724,9 @@ func (r *Runtime) replaceSupersededSandbox(ctx context.Context, l launch, s *san
 // the roles the replacement ended are read as displaced until one exists. sandboxManifest carries
 // no annotations of its own, so this sets the one key rather than the manifest threading it.
 func (r *Runtime) createSandbox(ctx context.Context, l launch) (*sandbox, error) {
+	if err := r.releaseHolds("create sandbox " + l.name); err != nil {
+		return nil, err
+	}
 	manifest := r.sandboxManifest(l)
 	held, _ := r.strandedPod(l.name)
 	if held != "" {

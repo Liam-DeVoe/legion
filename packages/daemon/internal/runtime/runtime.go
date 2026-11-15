@@ -166,6 +166,14 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 // started.
 var ErrSessionStore = errors.New("the session store could not be asked")
 
+// ErrProjectReleased is an act the runtime refused because the daemon's project release holds
+// every pod of the project until the daemon's next boot (dispatch://INFRA-3583 R7): the Sandbox
+// runtime creates no Sandbox, patches none to Running, makes no repository cache or image probe
+// and replaces no pod while it holds. Nothing was started. It is no fault of the claim's: a launch
+// that raced the release's mark past the launch check meets it here, and the caller charges
+// nothing for it (supervise's start), as it charges nothing for ErrSessionStore.
+var ErrProjectReleased = errors.New("the project release holds every pod of the project until the daemon's next boot")
+
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
 // pod running now is not the one the locator records, or the pod is being ended under it — the

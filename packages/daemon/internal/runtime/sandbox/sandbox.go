@@ -116,8 +116,11 @@ type Runtime struct {
 	conns                          runtime.Conns
 	launchers                      *launchers
 	launcherAuth                   launcherCredentials
-	now                            func() time.Time
-	log                            *slog.Logger
+	// held is Options.Held: whether the daemon's project release holds every pod now
+	// (releaseHolds). Nil holds nothing.
+	held func() bool
+	now  func() time.Time
+	log  *slog.Logger
 	// podShapes is the configuration each kind of pod is built from now (podShape), by kind,
 	// encoded once here. Every input of a shape — the image, the kind's reservation, the
 	// operator's volumes and mounts and the disk — is set at construction and never written
@@ -369,7 +372,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
-		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
+		store:      opts.Store, conns: opts.Conns, held: opts.Held, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
@@ -898,6 +901,19 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 func (r *Runtime) setMode(ctx context.Context, s *sandbox, mode string) error {
 	_, err := r.patch(ctx, s, jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: mode})
 	return err
+}
+
+// releaseHolds is the refusal of act, an act that would make a pod of the project — a Sandbox
+// created, one patched to Running, a repository cache or an image probe made, a pod replaced —
+// while the daemon's project release holds every pod (Options.Held), and nil while it holds none.
+// Each such act asks it immediately before its first write, so a release whose mark is set while
+// a launch is on its way (provisioning, waiting out a previous pod) still stops that launch short
+// of the pod.
+func (r *Runtime) releaseHolds(act string) error {
+	if r.held == nil || !r.held() {
+		return nil
+	}
+	return fmt.Errorf("sandbox runtime: %s: %w", act, runtime.ErrProjectReleased)
 }
 
 // Release is a claim-scoped operation: it ends at most the recorded role process and forgets the

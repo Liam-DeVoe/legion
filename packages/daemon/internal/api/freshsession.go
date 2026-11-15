@@ -352,6 +352,11 @@ func roleList() string {
 // memory a restart forgets, and the record a restart leaves reads exactly as a claim in a turn
 // does.
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (status int, notRestarted string, started, ok bool) {
+	// A fresh session stops the claim and starts it again, which the project release holds at
+	// both doors, before anything of the claim is read or asked.
+	if s.releaseRefused(w, "fresh-session") {
+		return 0, "", false, false
+	}
 	c := m.Claim()
 	if c.Role == claim.RoleController {
 		// The keeper's resume is the rule's, which an operator's suspension holds against (the

@@ -75,11 +75,22 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			now := time.Now().UTC()
-			w.fireDueBackstops(ctx, now)
-			w.warnStuckResumes(ctx, now)
+			w.wakePass(ctx, time.Now().UTC())
 		}
 	}
+}
+
+// wakePass is one tick of the wakes (tickWakes): the backstops due at now fired, and the stuck
+// resumes warned about. While the project release holds every start it does nothing: a backstop
+// that comes due waits in its table, unfired, until the first pass of the daemon's next boot,
+// which reads every row due by then (fireDueBackstops); and a resume the release's hold keeps
+// from its first turn is no stuck pod to warn about.
+func (w *workflowRuntime) wakePass(ctx context.Context, now time.Time) {
+	if w.release.held() {
+		return
+	}
+	w.fireDueBackstops(ctx, now)
+	w.warnStuckResumes(ctx, now)
 }
 
 // fireDueBackstops applies one PodBackstopDue fact per backstop of the project due at or before

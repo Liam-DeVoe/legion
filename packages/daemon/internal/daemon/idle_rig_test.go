@@ -550,11 +550,12 @@ func (r *idleWakeRig) restart() {
 }
 
 // newRuntime is the runtime factory the daemon boots with: the real Sandbox runtime
-// (sandbox.New) over the rig's Kubernetes API, with the worker stream, store and connection
-// directory the boot hands it, and the rig's own tools — a `legion` that is the role process
-// stand-in, and an agent command it never has to run.
+// (sandbox.New) over the rig's Kubernetes API, with the worker stream, store, connection
+// directory and project release mark the boot hands it, and the rig's own tools — a `legion`
+// that is the role process stand-in, and an agent command it never has to run.
 func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
 	_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
+	held func() bool,
 ) (legionruntime.Runtime, error) {
 	r.built.mu.Lock()
 	r.built.address = address
@@ -565,7 +566,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
 	tools := r.toolsDir()
-	opts.Conns, opts.StreamURL, opts.Store = listener, address, st
+	opts.Conns, opts.StreamURL, opts.Store, opts.Held = listener, address, st, held
 	// The two halves of a release's saved work, as the daemon's own factory hands them to the
 	// runtime it builds (sandboxRuntime): what the launcher of the pod that replaces a released
 	// one is sent before any role of that pod starts, and what the launcher's confirmation
