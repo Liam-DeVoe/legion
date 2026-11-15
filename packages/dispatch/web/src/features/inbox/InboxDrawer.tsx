@@ -1,6 +1,5 @@
 import { type ReactNode, useRef, useState } from "react";
 
-import type { InboxRoute } from "../../lib/page-address";
 import {
   backdrop50,
   borderDefault,
@@ -11,6 +10,7 @@ import {
 import { DIALOG_SCOPE } from "../shell/keymap";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { Inbox } from "./Inbox";
+import type { InboxRoute } from "./inbox-route";
 
 /**
  * The Inbox as a peek over whatever page is open (LEGION-547): the same list, cards and actions

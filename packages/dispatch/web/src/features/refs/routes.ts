@@ -70,8 +70,8 @@ export type DispatchReferenceRoute = IssueRoute | ProjectDocumentRoute | AgentAr
  * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
  * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
  * `unassigned` - because a person's email is not a word this page invented, so it rides in
- * `InboxRoute.assignees` rather than in that type's `filters` (`lib/page-address.ts`, which
- * holds the Inbox's address grammar; these are the words it reads and writes).
+ * `InboxRoute.assignees` rather than in that type's `filters` (`features/inbox/inbox-route.ts`,
+ * which holds the Inbox's address grammar; these are the words it reads and writes).
  */
 export const INBOX_DIMENSIONS = ["priority", "urgency", "type", "project", "assignee"] as const;
 export type InboxDimension = (typeof INBOX_DIMENSIONS)[number];
@@ -101,11 +101,25 @@ export type InboxShow = (typeof INBOX_SHOWS)[number];
  *  priority, a thread with no urgency, a row belonging to no project. */
 export const NO_FILTER_VALUE = "none";
 
-/** The values each filter field offers, in the order the control lists them. A project key is
- *  whatever the workspace holds, so that field takes any non-empty word and `none`. */
+/** The values the priority, urgency and type fields offer, in the order the control lists
+ *  them. */
 export const INBOX_PRIORITY_VALUES = ["P0", "P1", "P2", "P3", NO_FILTER_VALUE] as const;
 export const INBOX_URGENCY_VALUES = [...ASK_URGENCIES, NO_FILTER_VALUE] as const;
 export const INBOX_TYPE_VALUES = INBOX_ROW_TYPES;
+
+/** Each filter field's vocabulary, the one table both the address and the Filter panel read:
+ *  the words the address keeps for the field (`features/inbox/inbox-route.ts` drops any other,
+ *  which would match no row), and the values the field's control lists, in that order. `project`
+ *  has none, because a project key is whatever somebody created: the address keeps any
+ *  non-empty word, and the control lists the keys its rows carry and then `none`. */
+export const INBOX_FILTER_VOCABULARY: Readonly<
+  Record<InboxFilterField, readonly string[] | undefined>
+> = {
+  priority: INBOX_PRIORITY_VALUES,
+  project: undefined,
+  type: INBOX_TYPE_VALUES,
+  urgency: INBOX_URGENCY_VALUES,
+};
 
 export type IssueTab =
   | "spec"

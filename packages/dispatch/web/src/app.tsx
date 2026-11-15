@@ -16,6 +16,7 @@ import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { buildInboxPath } from "./features/inbox/inbox-route";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
@@ -72,7 +73,6 @@ import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
-import { buildInboxPath } from "./lib/page-address";
 import {
   backdrop50,
   badgeBlocking,

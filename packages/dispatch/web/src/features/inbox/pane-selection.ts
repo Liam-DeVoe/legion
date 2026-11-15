@@ -1,7 +1,7 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
-import { type InboxRoute, useInboxRoute } from "../../lib/page-address";
 import { answerDraft } from "./answer-drafts";
+import { type InboxRoute, useInboxRoute } from "./inbox-route";
 import { ROW_ATTRIBUTE } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
 import { answerOutstanding } from "./outstanding-answers";

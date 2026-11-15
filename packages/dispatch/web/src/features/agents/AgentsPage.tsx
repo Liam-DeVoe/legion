@@ -43,7 +43,6 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { useSending } from "../../hooks/useSending";
-import { buildInboxPath } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -71,6 +70,7 @@ import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/Targ
 import { useAgents } from "../conversation/useAgents";
 import { type MeasuredHeights, rowWindow, withMeasuredHeights } from "../delivery/lib/rowWindow";
 import { waitingOnYou } from "../inbox/BlockedOnYou";
+import { buildInboxPath } from "../inbox/inbox-route";
 import {
   AgentName,
   type AgentPart,

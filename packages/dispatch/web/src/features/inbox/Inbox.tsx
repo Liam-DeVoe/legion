@@ -27,12 +27,7 @@ import { LabelPill } from "../../components/Pill";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
 import { useNestedPanels } from "../../components/useNestedPanels";
-import {
-  buildInboxPath,
-  capSearchQuery,
-  type InboxRoute,
-  useInboxRoute,
-} from "../../lib/page-address";
+import { capSearchQuery } from "../../lib/page-address";
 import {
   badgeLow,
   borderDefault,
@@ -59,12 +54,10 @@ import { AgentName, useAgentText } from "../refs/AgentName";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
 import {
   INBOX_FILTER_FIELDS,
+  INBOX_FILTER_VOCABULARY,
   INBOX_GROUP_BYS,
-  INBOX_PRIORITY_VALUES,
   INBOX_SHOWS,
   INBOX_SORTS,
-  INBOX_TYPE_VALUES,
-  INBOX_URGENCY_VALUES,
   type InboxFilterField,
   type InboxGroupBy,
   type InboxShow,
@@ -100,6 +93,7 @@ import {
 } from "./grouping";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { GROUP_PAGE, groupItems } from "./InboxGroups";
+import { buildInboxPath, type InboxRoute, useInboxRoute } from "./inbox-route";
 import { ROW_ATTRIBUTE, ROW_SELECTOR } from "./inbox-row";
 import { matchesInboxSearch } from "./inbox-search";
 import {
@@ -148,7 +142,8 @@ const PAGE_CONTROL_CLASS = `rounded-lg border text-sm font-semibold whitespace-n
 /** One action of the selection bar, as the bar's own line draws it. */
 const BAR_ACTION_CLASS = `min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
 
-/** The values a field offers, in the order its control lists them. Project is the one field
+/** The values a field offers, in the order its control lists them: its vocabulary, the one the
+ *  address keeps the field's values by (`INBOX_FILTER_VOCABULARY`). Project is the one field
  *  whose vocabulary is the workspace's, so it is read off the rows themselves. */
 function fieldOptions(
   field: InboxFilterField,
@@ -156,14 +151,13 @@ function fieldOptions(
   viewer: string,
   chosen: readonly string[]
 ): string[] {
+  const vocabulary = INBOX_FILTER_VOCABULARY[field];
   let listed: readonly string[];
-  if (field === "priority") listed = INBOX_PRIORITY_VALUES;
-  else if (field === "urgency") listed = INBOX_URGENCY_VALUES;
-  else if (field === "type") listed = INBOX_TYPE_VALUES;
+  if (vocabulary !== undefined) listed = vocabulary;
   else {
     const keys = new Set<string>();
     for (const row of rows) {
-      const value = dimensionValue(row, "project", viewer);
+      const value = dimensionValue(row, field, viewer);
       if (value !== NO_FILTER_VALUE) keys.add(value);
     }
     listed = [...keys].sort((left, right) => left.localeCompare(right)).concat(NO_FILTER_VALUE);

@@ -22,7 +22,6 @@ import type {
   Issue,
   IssueDetails,
 } from "../../api/types";
-import type { InboxRoute } from "../../lib/page-address";
 import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
@@ -38,6 +37,7 @@ import {
   mockAskReads,
   withWaitingOnPerson,
 } from "./inbox-fixture";
+import type { InboxRoute } from "./inbox-route";
 
 const mocks = installInboxApiMocks();
 

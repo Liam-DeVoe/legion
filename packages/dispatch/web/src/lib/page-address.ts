@@ -8,19 +8,6 @@ import type {
 import { createElement, type ReactElement, useCallback, useMemo } from "react";
 import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
-import { EVERYONE_FILTER_VALUE } from "../features/inbox/sections";
-import {
-  INBOX_FILTER_FIELDS,
-  INBOX_GROUP_BYS,
-  INBOX_PRIORITY_VALUES,
-  INBOX_SORTS,
-  INBOX_TYPE_VALUES,
-  INBOX_URGENCY_VALUES,
-  type InboxFilterField,
-  type InboxGroupBy,
-  type InboxSort,
-} from "../features/refs/routes";
-
 /**
  * The one module that reads and writes the page address.
  *
@@ -30,13 +17,19 @@ import {
  * features `components/one-definition.test.ts` names in `ADDRESS_FEATURES` - `agents`,
  * `artifacts`, `delivery`, `inbox`, `priorities`, `project` and `search` - that test refuses
  * `useSearchParams`, `useLocation`, React Router's own `<Navigate>` (a page there redirects
- * through `AddressRedirect`), a hand-built `URLSearchParams`, `window.location` and
- * `history.pushState` or `history.replaceState`, so for those pages the address is read and
- * written here alone and there is one rule for how a parameter is read, how it is written, and
- * what happens to the browser's history when it changes. `features/architecture/` is outside
- * that list and still reads the router itself (`ArchitecturePage.tsx`'s own `useSearchParams`);
- * a page moved onto this module joins the list, and the next one is held to it from its first
- * line.
+ * through `AddressRedirect`), a hand-built `URLSearchParams`, `window.location` or the bare
+ * `location`, and `history.pushState` or `history.replaceState`, so for those pages the address
+ * is read and written here alone and there is one rule for how a parameter is read, how it is
+ * written, and what happens to the browser's history when it changes. `features/architecture/`
+ * is outside that list and still reads the router itself (`ArchitecturePage.tsx`'s own
+ * `useSearchParams`); a page moved onto this module joins the list, and the next one is held to
+ * it from its first line.
+ *
+ * This module is the machinery every page shares, and it imports nothing from `features/`. A
+ * page's own grammar - its parameter names and the words they take - lives beside the page,
+ * written with the parameter kinds below: the Inbox's route in `features/inbox/inbox-route.ts`,
+ * the Agents page's filters in `features/agents/agent-search.ts`, and the project's in
+ * `features/project/issue-filters.ts`.
  *
  * The rules this module holds every page to:
  *
@@ -367,186 +360,6 @@ export function useRepeatableAddressParams<K extends string>(
     for (const key of keys) result[key] = params.getAll(key);
     return result;
   }, [keys, params]);
-}
-
-/** The Inbox at `/`, optionally narrowed to one agent's asks (`?agent=<session id>`); with
- *  `section=needs-you` only the asks waiting on the viewer are shown. Every field below is
- *  absent while it holds its default, so a plain `/` is the Inbox as it opens. */
-export interface InboxRoute {
-  agent?: string;
-  /** The row the Inbox has selected, the one its reading pane shows: an ask's id, or a thread's
-   *  `reply:<thread id>` / `agent:<message id>` (`rowId`, `features/inbox/list-row.ts`). The
-   *  address is the whole memory of that selection, so a link carries the reader's place. */
-  item?: string;
-  section?: "needs-you";
-  /** The text the Inbox's search box narrows the list by, as typed. It is a field of the route
-   *  rather than a search parameter of its own because `buildInboxPath` rebuilds the whole query
-   *  string from this type and `usePaneSelection` navigates with it on every selection change, so
-   *  a parameter outside the type would be dropped by the next `j`. */
-  q?: string;
-  /** Who the listed asks are for. Absent is the page's default, the reader's own work; an empty
-   *  array is the cleared filter, every question; a value is a person's lowercase email or the
-   *  literal `unassigned`. */
-  assignees?: readonly string[];
-  /** `?show=dismissed`, the View menu's **Show** switch on **Dismissed**: what the reader has
-   *  dismissed out of their Inbox, newest dismissal first. Absent is the Inbox itself, every
-   *  undismissed row, read or not. */
-  show?: "dismissed";
-  sort?: InboxSort;
-  group?: InboxGroupBy;
-  /** The chosen values of each filter field, one comma list per field in the address. A field
-   *  with nothing chosen is absent, never an empty array. */
-  filters?: Partial<Record<InboxFilterField, readonly string[]>>;
-}
-
-/** The values a filter field accepts, or undefined for the one field whose vocabulary is the
- *  workspace's own: a project key is whatever somebody created, so only `none` is reserved. */
-function filterVocabulary(field: InboxFilterField): readonly string[] | undefined {
-  if (field === "priority") return INBOX_PRIORITY_VALUES;
-  if (field === "urgency") return INBOX_URGENCY_VALUES;
-  return field === "type" ? INBOX_TYPE_VALUES : undefined;
-}
-
-/**
- * The page's `?assignee=` deliberately spells its default the opposite way round from the
- * server's own `?assignee=` on `GET /api/v1/inbox`
- * (`packages/envoy/internal/dispatch/api/inbox.go`), where an absent parameter means everybody:
- * here absent means the reader alone and `assignee=everyone` means everybody, so the same name
- * now means different things on the two sides and neither reads the other's URL.
- *
- * Every other field is absent while it holds its default, so the Inbox as it opens is `/` and a
- * link says only what the reader changed. A value this build does not know - an older link, a
- * typo - is dropped rather than refused: the list is a client-side split of what the two reads
- * answered, so an unknown word would match no row anyway.
- */
-function inboxRouteOf(params: URLSearchParams): InboxRoute {
-  const agent = params.get("agent");
-  const route: InboxRoute = {};
-  if (agent !== null && agent !== "") {
-    route.agent = agent;
-  }
-  const item = params.get("item")?.trim() ?? "";
-  if (item !== "") {
-    route.item = item;
-  }
-  if (params.get("section") === "needs-you") {
-    route.section = "needs-you";
-  }
-  // Neither trimmed nor cut: a reader mid-word has a trailing space that is part of what they
-  // typed, and the box rewrites no address a link arrived with.
-  const q = params.get("q");
-  if (q !== null && q !== "") {
-    route.q = q;
-  }
-  // Nothing refuses an email the page has never heard of: the filter is a client-side split of
-  // one inbox response, so an unlisted or misspelled person simply matches no row.
-  const assignees: string[] = [];
-  let everyone = false;
-  for (const raw of params.getAll("assignee")) {
-    const value = raw.trim().toLowerCase();
-    if (value === "") continue;
-    if (value === EVERYONE_FILTER_VALUE) {
-      everyone = true;
-      continue;
-    }
-    if (!assignees.includes(value)) assignees.push(value);
-  }
-  if (assignees.length > 0 || everyone) {
-    route.assignees = assignees;
-  }
-  if (params.get("show") === "dismissed") {
-    route.show = "dismissed";
-  }
-  const sort = params.get("sort");
-  if (sort !== null && sort !== "newest" && (INBOX_SORTS as readonly string[]).includes(sort)) {
-    route.sort = sort as InboxSort;
-  }
-  const group = params.get("group");
-  if (
-    group !== null &&
-    group !== "priority" &&
-    (INBOX_GROUP_BYS as readonly string[]).includes(group)
-  ) {
-    route.group = group as InboxGroupBy;
-  }
-  const filters: Partial<Record<InboxFilterField, readonly string[]>> = {};
-  for (const field of INBOX_FILTER_FIELDS) {
-    const vocabulary = filterVocabulary(field);
-    const chosen: string[] = [];
-    for (const raw of params.getAll(field)) {
-      for (const part of raw.split(",")) {
-        const value = part.trim();
-        if (value === "" || chosen.includes(value)) continue;
-        if (vocabulary !== undefined && !vocabulary.includes(value)) continue;
-        chosen.push(value);
-      }
-    }
-    if (chosen.length > 0) filters[field] = chosen;
-  }
-  if (Object.keys(filters).length > 0) {
-    route.filters = filters;
-  }
-  return route;
-}
-
-/** The Inbox's route as a query string names it (`inboxRouteOf`), for a caller holding the
- *  address as text: this module's own tests read one. */
-export function parseInboxSearch(search: string): InboxRoute {
-  return inboxRouteOf(copyAddress(search));
-}
-
-export function buildInboxPath(route: InboxRoute = {}): string {
-  const query = copyAddress();
-  if (route.agent !== undefined) {
-    query.set("agent", route.agent);
-  }
-  if (route.item !== undefined) {
-    query.set("item", route.item);
-  }
-  if (route.section !== undefined) {
-    query.set("section", route.section);
-  }
-  if (route.q !== undefined) {
-    query.set("q", route.q);
-  }
-  if (route.assignees !== undefined) {
-    if (route.assignees.length === 0) {
-      query.append("assignee", EVERYONE_FILTER_VALUE);
-    }
-    for (const assignee of route.assignees) {
-      query.append("assignee", assignee);
-    }
-  }
-  if (route.show !== undefined) {
-    query.set("show", route.show);
-  }
-  if (route.sort !== undefined && route.sort !== "newest") {
-    query.set("sort", route.sort);
-  }
-  if (route.group !== undefined && route.group !== "priority") {
-    query.set("group", route.group);
-  }
-  for (const field of INBOX_FILTER_FIELDS) {
-    const chosen = route.filters?.[field];
-    if (chosen !== undefined && chosen.length > 0) query.set(field, chosen.join(","));
-  }
-  const search = query.toString();
-  return search === "" ? "/" : `/?${search}`;
-}
-
-/**
- * The Inbox's whole narrowing, read from the address and written back to it. The write goes
- * through the path `buildInboxPath` builds rather than through the parameters alone, because
- * the Inbox's query string is rebuilt whole from the route on every change - a parameter
- * outside `InboxRoute` would be dropped by the next selection - and because the Inbox the
- * address points at is `/`, whichever of the page's addresses the reader arrived on.
- */
-export function useInboxRoute(): readonly [InboxRoute, (next: InboxRoute) => void] {
-  const params = useAddressParams();
-  const go = useAddressNavigate();
-  const route = useMemo(() => inboxRouteOf(params), [params]);
-  const setRoute = useCallback((next: InboxRoute) => go(buildInboxPath(next)), [go]);
-  return [route, setRoute] as const;
 }
 
 /** A table's view as the address holds it: what it sorts, groups, filters, searches and pages
