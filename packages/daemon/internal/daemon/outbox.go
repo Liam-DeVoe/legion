@@ -1529,7 +1529,9 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 // StopForChildren), and the task that worker's claim holds for that phase goes
 // (supervise.Machine.RetireStoppedTask), so no relaunch, fresh session or wake during the wait,
 // and no send after the return to that same phase, carries the stopped phase's work. It stops
-// nothing and starts nothing.
+// nothing and starts no phase. The one prompt it can lead to is the claim's untold record of what
+// its last let-go ended, sent alone in place of the retired task that would have carried it
+// (supervise's relaunchAfterDrop).
 //
 // A row of an earlier run finishes without acting, as every supervise row of one does. The phase
 // is not fenced: the row names the phase the issue has left, and the machine retires only a task

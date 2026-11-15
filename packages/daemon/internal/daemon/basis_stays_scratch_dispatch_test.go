@@ -70,7 +70,7 @@ func (r *personHandoverRig) catchUpNow(key string) record.CatchUpGate {
 	root := r.record(key)
 	launch := r.architects[key].launch.Generation
 	if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
-		return workflow.QueueCatchUp(t.Context(), tx, record.NewStore(), r.cfg.Gates.Steps(), root, launch, time.Now().UTC(), time.Time{})
+		return workflow.QueueCatchUp(t.Context(), tx, record.NewStore(), r.cfg.Gates.Steps(), root, launch, "", time.Now().UTC(), time.Time{})
 	}); err != nil {
 		t.Fatalf("compose the catch-up of the architect of %s: %v", key, err)
 	}
