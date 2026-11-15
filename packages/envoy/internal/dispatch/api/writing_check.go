@@ -63,19 +63,18 @@ type WritingCheckModel struct {
 	TokensPerMinute int    `json:"tokens_per_minute"`
 }
 
-// WritingCheckConfig is the writing check as cmd/dispatch configured it (DISPATCH_WRITING_CHECK
-// and the settings beside it).
+// WritingCheckConfig is the writing check as its builder configured it: cmd/dispatch turns it on
+// with the bundle's structure rules alone, and a test sets the rest.
 type WritingCheckConfig struct {
 	// Enabled turns the check on.
 	Enabled bool
-	// RulesOff is the rule ids DISPATCH_WRITING_CHECK_RULES_OFF turns off, the detector's
+	// RulesOff is the rule ids the check does not apply, the detector's
 	// writingcheck.DetectorRule among them where it names it.
 	RulesOff []string
-	// Detector is whether DISPATCH_WRITING_CHECK_DETECTOR leaves the bundle's detector on.
+	// Detector is whether the bundle's detector is left on.
 	Detector bool
-	// DetectorTestHook is DISPATCH_TEST_WRITING_CHECK_DETECTOR=on, which a test process sets
-	// under DISPATCH_TEST_HOOKS=1 alone: the detector runs although the bundle ships it off, so
-	// an end-to-end test reads the detector's refusals. Detector off still turns it off.
+	// DetectorTestHook runs the detector although the bundle ships it off, so a test reads the
+	// detector's findings. Detector off still turns it off.
 	DetectorTestHook bool
 	// Reader is the model reader the detector calls; nil where no model is configured, and the
 	// structure rules then run alone.
@@ -280,7 +279,7 @@ func (c *WritingCheck) state() writingCheckState {
 		case !slices.Contains(writingcheck.EnabledRules, rule.ID):
 			state.RulesLeftOut = append(state.RulesLeftOut, writingCheckRuleLeftOut{rule.ID, "the bundle does not enable it"})
 		case slices.Contains(cfg.RulesOff, rule.ID):
-			state.RulesLeftOut = append(state.RulesLeftOut, writingCheckRuleLeftOut{rule.ID, "DISPATCH_WRITING_CHECK_RULES_OFF names it"})
+			state.RulesLeftOut = append(state.RulesLeftOut, writingCheckRuleLeftOut{rule.ID, "the server's configuration turns it off"})
 		default:
 			state.Rules = append(state.Rules, rule.ID)
 		}
@@ -290,17 +289,17 @@ func (c *WritingCheck) state() writingCheckState {
 	}
 	switch {
 	case !cfg.Enabled:
-		state.Detector.Reason = "the check is off (DISPATCH_WRITING_CHECK)"
+		state.Detector.Reason = "the check is off"
 	case !writingcheck.DetectorEnabled && !cfg.DetectorTestHook:
 		state.Detector.Reason = "the bundle ships the detector off"
 	case !cfg.Detector:
-		state.Detector.Reason = "DISPATCH_WRITING_CHECK_DETECTOR is off"
+		state.Detector.Reason = "the server's configuration turns the detector off"
 	case slices.Contains(cfg.RulesOff, writingcheck.DetectorRule):
-		state.Detector.Reason = "DISPATCH_WRITING_CHECK_RULES_OFF names " + writingcheck.DetectorRule
+		state.Detector.Reason = "the server's configuration turns " + writingcheck.DetectorRule + " off"
 	case cfg.Reader == nil:
 		state.Detector = writingCheckDetector{On: true, Reason: "no model is configured: the structure rules run alone, and each check records no_model"}
 	case !writingcheck.DetectorEnabled:
-		state.Detector = writingCheckDetector{On: true, Reason: "DISPATCH_TEST_WRITING_CHECK_DETECTOR turns on the detector the bundle ships off, for this test process alone"}
+		state.Detector = writingCheckDetector{On: true, Reason: "a test turns on the detector the bundle ships off, for this process alone"}
 	default:
 		state.Detector.On = true
 	}

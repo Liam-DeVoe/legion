@@ -744,7 +744,7 @@ func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 	if !writingcheck.DetectorEnabled && !strings.Contains(off.Detector.Reason, "the bundle ships the detector off") {
 		t.Errorf("state names no bundle reason for its detector: %+v", off.Detector)
 	}
-	if !slices.Contains(off.RulesLeftOut, writingCheckRuleLeftOut{badRule, "DISPATCH_WRITING_CHECK_RULES_OFF names it"}) {
+	if !slices.Contains(off.RulesLeftOut, writingCheckRuleLeftOut{badRule, "the server's configuration turns it off"}) {
 		t.Errorf("state with %s off names no reason for it: %+v", badRule, off.RulesLeftOut)
 	}
 }
@@ -792,11 +792,10 @@ func (r *namingReader) Read(_ context.Context, cands []candidates.Candidate) ([]
 
 func (r *namingReader) Calls() int64 { return r.calls }
 
-// TestTheWritingCheckPostsACommentTheDetectorFlagsAtOnce: a test process's DetectorTestHook
-// (DISPATCH_TEST_WRITING_CHECK_DETECTOR=on) runs the detector although the bundle ships it off,
-// and an agent's comment holding a sentence its reader calls vacuous posts at once, 201, recorded
-// findings under the detector's rule; the state route says what turned the detector on.
-// DISPATCH_WRITING_CHECK_DETECTOR=off still turns it off.
+// TestTheWritingCheckPostsACommentTheDetectorFlagsAtOnce: a test's DetectorTestHook runs the
+// detector although the bundle ships it off, and an agent's comment holding a sentence its reader
+// calls vacuous posts at once, 201, recorded findings under the detector's rule; the state route
+// says what turned the detector on. Detector off still turns it off.
 func TestTheWritingCheckPostsACommentTheDetectorFlagsAtOnce(t *testing.T) {
 	stub := &namingReader{}
 	check := NewWritingCheck(WritingCheckConfig{Enabled: true, Detector: true, DetectorTestHook: true, Reader: stub})
@@ -814,7 +813,7 @@ func TestTheWritingCheckPostsACommentTheDetectorFlagsAtOnce(t *testing.T) {
 		t.Errorf("event = %+v, %d calls, want %s under %s after one call", event, stub.calls, writingCheckFindings, writingcheck.DetectorRule)
 	}
 	state := check.state()
-	if !state.Detector.On || (!writingcheck.DetectorEnabled && !strings.Contains(state.Detector.Reason, "DISPATCH_TEST_WRITING_CHECK_DETECTOR")) {
+	if !state.Detector.On || (!writingcheck.DetectorEnabled && !strings.Contains(state.Detector.Reason, "a test turns on the detector")) {
 		t.Errorf("state detector = %+v, want on and the test hook named", state.Detector)
 	}
 	if off := NewWritingCheck(WritingCheckConfig{Enabled: true, Detector: false, DetectorTestHook: true, Reader: stub}).state(); off.Detector.On {

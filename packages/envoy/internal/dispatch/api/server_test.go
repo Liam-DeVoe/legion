@@ -134,8 +134,7 @@ type testServerOptions struct {
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
 	// writingCheck is the writing check the server runs (INFRA-3231); nil is the check on with
-	// the bundle's structure rules and no model, as a deployment with DISPATCH_WRITING_CHECK=on
-	// and no model group runs it.
+	// the bundle's structure rules and no model, as every deployment runs it.
 	writingCheck *WritingCheck
 	// writingCheckOff runs the server with the writing check turned off, for a test about the
 	// server with the check off.

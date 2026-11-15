@@ -217,6 +217,17 @@ if [ "${DISPATCH_E2E_EMBEDDER:-}" = "fake" ]; then
   )
 fi
 
+# The stand-in model, read before the sweep below: FAKE_MODEL_PORT names e2e/fake-model.ts, which
+# the harness starts beside the fake Envoy (e2e/harness-listeners.ts), and the server takes it as
+# DISPATCH_TEST_MODEL_URL under the DISPATCH_TEST_HOOKS=1 below, so every model group a run sets
+# calls it, over plain HTTP and with no credential. A caller that starts no stand-in (an
+# acceptance script, the skill-scenarios rig) sets no FAKE_MODEL_PORT, and its server has none;
+# with no model group set, the server calls no model either way.
+model_env=()
+if [ -n "${FAKE_MODEL_PORT:-}" ]; then
+  model_env=(DISPATCH_TEST_MODEL_URL="http://127.0.0.1:$FAKE_MODEL_PORT")
+fi
+
 # The server binary, read before the sweep below: DISPATCH_E2E_SERVER_BIN names a prebuilt
 # envoy-dispatch this run executes instead of building one from this checkout
 # (scripts/e2e/dispatch-claimant-delivery.sh's DISPATCH_BIN is the precedent), which
@@ -374,6 +385,7 @@ exec "${listen[@]}" env \
   "${broker_env[@]}" \
   "${file_store_env[@]}" \
   "${fake_embedder_env[@]}" \
+  "${model_env[@]}" \
   "${signin_env[@]}" \
   DATABASE_URL="$database_url" \
   DISPATCH_AGENT_TOKEN=e2e-token \

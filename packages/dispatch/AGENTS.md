@@ -2129,7 +2129,9 @@ directory. A caller's environment or `~/.config/legion/envoy.json` /
 `~/.local/share/dispatch/{app.json,signing-key}` therefore cannot point the
 test server at a live Envoy, dashboard origin or GitHub App (every Legion pane
 exports `ENVOY_URL`). `FAKE_ENVOY_PORT` and `FAKE_GITHUB_PORT` are required inputs, the fakes'
-reported ports; on the TypeScript side `e2e/harness-ports.ts` is the one place the harness ports
+reported ports; `FAKE_MODEL_PORT`, the stand-in model's (`e2e/fake-model.ts`), is optional, and
+set it reaches the server as `DISPATCH_TEST_MODEL_URL`, which every model group the run sets
+calls. On the TypeScript side `e2e/harness-ports.ts` is the one place the harness ports
 are resolved. The secrets broker
 the server relays credential requests to is one switch, `DISPATCH_E2E_AGENT_SECRETS_URL`, which
 `run-server.sh` and `e2e/harness-broker.ts` read alike (`${VAR-default}`, so empty and unset
@@ -2439,7 +2441,7 @@ this paragraph is where the harness-port rule lives — `README.md` and the `doc
 learnings point here rather than restating it.
 
 `e2e/harness-ports.ts` resolves `DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`,
-`PLAIN_HTTP_PORT`, `FAKE_BROKER_PORT`, two-process mode's `DISPATCH_E2E_PORT_A` and
+`FAKE_MODEL_PORT`, `PLAIN_HTTP_PORT`, `FAKE_BROKER_PORT`, two-process mode's `DISPATCH_E2E_PORT_A` and
 `DISPATCH_E2E_PORT_B`, and the sign-in issuer's `DISPATCH_E2E_SIGNIN_ISSUER_PORT` (below), for
 every reader in `e2e/`, the Playwright config and the Bun listeners
 included. `harnessPorts()` reads the environment when it is called, not when the

@@ -129,7 +129,7 @@ Each item below names a variable, then its purpose.
 
   Where the server generates text: `azure` is a chat deployment of an Azure AI Foundry resource, reached with the shared Azure sign-in; `endpoint` is any OpenAI-shaped chat completions service, reached with the bearer token `DISPATCH_CHAT_TOKEN_FILE` names, which is read on every call.
   Unset, no model is configured, and the server starts and says so.
-  The sign-in is the embedder's too, read by whichever of the two is `azure`, so a deployment may embed on Bedrock and answer on Azure; it is refused only where neither is.
+  The sign-in is the embedder's too, and each `azure` model group's (Agents' texts, below), read by whichever of them is `azure`, so a deployment may embed on Bedrock and answer on Azure; it is refused only where none is.
   `DISPATCH_AZURE_CHAT_SCOPE` is configuration because one Azure AI Foundry resource serves two inference families: the models inference endpoint (`/models`, an `api-version`, scope `https://cognitiveservices.azure.com/.default`) and the Azure OpenAI endpoint (`/openai/v1`, no `api-version`, scope `https://ai.azure.com/.default`), and which of the two a deployment serves is named by that deployment.
 
 - `DISPATCH_MAX_LIVE_ROOMS`, `DISPATCH_MAX_DOC_CONNECTIONS`
@@ -1185,7 +1185,7 @@ A process that finds it held tries again
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
 
-- The writing check event sweep (`api.RunWritingCheckEventSweep`) deletes the `writing_check_events` rows older than 90 days (`store.WritingCheckRetention`, Writing check below) once a day, its first pass at start, whether the check is on or off.
+- The writing check event sweep (`api.RunWritingCheckEventSweep`) deletes the `writing_check_events` rows older than 90 days (`store.WritingCheckRetention`, Writing check below) once a day, its first pass at start.
   It takes no lease and records no `duty_passes` row, so it holds no connection of the lease pool: the pass is one delete by age on the shared pool, which every process runs, and a second process's pass the same day deletes nothing the first left.
 
 Outside these classes, the document compaction sweep (lease `document-compaction`) runs every hour from a tick at start whether or not NATS is configured, the display tree fill (lease `text-tree-fill`, `texttreefill.Run`) runs every hour from a tick at start and holds its lease for a whole pass, which is as long as it takes to store a tree for every stored text that has none at this build's display-parser version, the outbox's publish scan is woken, never periodic (`outbox.Run`), the settlement resumption still runs every minute, the block index reconciliation (lease `block-index`) runs every 30 s (every 2 s while a batch is full) and the repair of closed and reopened issues' asks (lease `issue-ask-repair`, Database migrations below) every 10 minutes after its boot pass, each recording its passes in `duty_passes` with its period, and the per-feature listeners (the delivery live hub, the event stream relay and the events outbox) keep their own connections and keep-alive pings.
@@ -2642,50 +2642,74 @@ At that moment the running answer, a reader and the sweep may each try to end on
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
 So a reader sees exactly one ending, never two and never none.
 
-## Writing check
+## Agents' texts: the reviewer, Rewrite and Define, and the word records
 
-The writing check reads the prose of an agent's write before the server stores it and records what it finds (`internal/dispatch/writingcheck`, `internal/dispatch/api/writing_check.go`); the write goes on whatever it finds.
-It is off unless `DISPATCH_WRITING_CHECK=on`.
+These settings configure the work on the texts agents write to people (INFRA-3231): the reviewer of an agent's text, a person's Rewrite and Define, the records of the words people ask agents about, and the `dispatch` command's refusal that shows the written rules (`skills/plain-words`).
+`writing_settings.go` reads them at boot into one value (`writingSettings`) and refuses a value it cannot use, naming the setting; it calls nothing and reads no file.
+Every default keeps each change to a text off.
 
 ### Settings
 
-- `DISPATCH_WRITING_CHECK`: `on` or `off` (default `off`).
+- `DISPATCH_REVIEWER_ASKS`, `DISPATCH_REVIEWER_ISSUES`, `DISPATCH_REVIEWER_COMMENTS`, `DISPATCH_REVIEWER_MESSAGES`: `off`, `after` or `hold` (default `off`), for an ask, a new issue's title and spec, a comment and a message.
+  `after` posts the text at once and sends the reviewer's findings to the writer session; `hold` keeps the text from every person until the review ends and the writer acts.
 
-- `DISPATCH_WRITING_CHECK_RULES_OFF`: a comma list of rule ids not to apply: `phrasal-verb`, `nominalization`, `dangling-conjunction`, and `vacuous-verb-phrase` for the detector.
-  An id the check does not carry refuses the boot.
-  It turns rules off and never on: the bundle (`writingcheck/bundle.go`) names the rules that can run.
-  The bundle ships `semicolon` and `long-sentence` off (`writingcheck.MeasuredOff`): over 600 drawn agent writes they matched 62.2% and 79.1%, and the ceiling for one rule is 5%; `GET /api/v1/writing-check` lists them in `rules_left_out` with that reason.
+- `DISPATCH_REVIEWER_DOCUMENTS`: `off` or `after` (default `off`); no document version is held.
 
-- `DISPATCH_WRITING_CHECK_DETECTOR`: `on` or `off`.
-  `off` turns the detector off; the structure rules still run.
-  It can turn the bundle's detector off and never on: the bundle ships it off (`writingcheck.DetectorEnabled`), so today `on` changes nothing and the model group below is accepted and ignored.
-  When it runs, the reader sends no `reasoning_effort` (`writingcheck.ReaderNoEffort`), since a Foundry chat deployment refuses the value `none`.
+- `DISPATCH_REVIEWER_DECISION_BLOCKS`: `off`, `after` or `hold` (default `off`); `hold` shows the block in its document and keeps it out of every person's Inbox, counts and notices until the review ends.
+  A choice other than `off` of any of these six needs the reviewer's model group, and refuses the boot without it.
 
-- `DISPATCH_WRITING_CHECK_AZURE_ENDPOINT`, `_AZURE_DEPLOYMENT`, `_AZURE_TOKENS_PER_MINUTE`: the detector's reader: an Azure AI Foundry chat deployment of its own, with a rate limiter of its own sized by the quota.
-  It shares neither the answerer's model nor its quota.
-  With the check and the detector on, the three are set together or not at all: a group set in part refuses the boot, and a group not set at all is no model, where the structure rules run alone and each check records `no_model`.
-  With the check or the detector off, the group is accepted and ignored.
+- `DISPATCH_REVIEWER_RULES`: a comma list of `noslop`, `phrases`, `reader_words`, `ask_parts`, `structure` and `detector` (default `noslop,phrases,reader_words,ask_parts`).
+  `structure` and `detector` are the writing check's structure rules and phrase detector (Writing check, below).
 
-- `DISPATCH_WRITING_CHECK_AZURE_API_VERSION`: optional `api-version` query value.
+- `DISPATCH_REVIEWER_TIMEOUT` (default `120s`) and `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`): positive Go durations, the bound on the reviewer's model call and the time a writer session has to act on a held text.
 
-- `DISPATCH_WRITING_CHECK_AZURE_SCOPE`: the token scope (default `embed.DefaultEntraScope`, as the answerer's).
+- `DISPATCH_REVIEWER_UNEDITED`: `rewrite` (default: the reviewer's rewrite posts, marked as the reviewer's) or `as_written`, for a held text the writer does not act on in time.
 
-- `DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID`, `DISPATCH_AZURE_FEDERATED_TOKEN_FILE`: the shared keyless Azure sign-in.
-  The writing check's model is its third reader, beside an `azure` embedder and an `azure` answerer: the three are accepted when any `DISPATCH_WRITING_CHECK_AZURE_*` setting is set.
+- `DISPATCH_WORD_RECORDS`: `on` (default) or `off`; the records job runs only while its model group is set.
+  `DISPATCH_WORD_RECORDS_FROM`: an RFC 3339 time (default `2026-10-16T00:00:00Z`), the first event the job's backfill reads.
 
-- `DISPATCH_TEST_WRITING_CHECK_READER_TIMEOUT`: test processes only, under `DISPATCH_TEST_HOOKS=1`: a Go duration that bounds each reader call; unset, the reader sets no bound beyond the request's own.
+- `DISPATCH_WRITING_RULES_REFUSAL`: `on` or `off` (default `off`); and `DISPATCH_WRITING_RULES_EXTRA`, a comma list of `reader_words` and `ask_parts` the refusal shows beside the written rules (default none).
 
-- `DISPATCH_TEST_WRITING_CHECK_DETECTOR`: test processes only, under `DISPATCH_TEST_HOOKS=1`: `on` runs the detector although the bundle ships it off, so an end-to-end test reads the detector's findings.
-  `DISPATCH_WRITING_CHECK_DETECTOR=off` still turns it off, and any other value refuses the boot.
-  `GET /api/v1/writing-check` then says in `detector.reason` that this setting turned it on.
+### Model groups
 
-- `DISPATCH_TEST_WRITING_CHECK_READER_URL`: test processes only, under `DISPATCH_TEST_HOOKS=1`: the base URL of a stand-in reader, an http or https URL that `/chat/completions` is appended to.
-  The stand-in answers the reader's Chat Completions call, with its verdict schema, as the Azure deployment does; the reader calls it with no Azure sign-in and no token, and sets no tokens-per-minute budget.
-  It takes the place of the `DISPATCH_WRITING_CHECK_AZURE_*` group: with the check and the detector on, a group set beside it refuses the boot.
-  With the check or the detector off, it is accepted and ignored.
-  `packages/envoy-client/test/dispatch-stack.ts` starts a server with both of these and a stand-in of its own (`startStandInReader`, `detectorOnWith`).
+Three groups, one each for the reviewer (`DISPATCH_REVIEWER_MODEL_*`), Rewrite and Define (`DISPATCH_REWRITE_DEFINE_MODEL_*`) and the records job (`DISPATCH_WORD_RECORDS_MODEL_*`), take the same seven settings after their prefix:
 
-Without `DISPATCH_TEST_HOOKS=1`, each of the three test-only settings above refuses the boot, so no deployment can turn the detector on or point its reader anywhere but its Azure deployment.
+- `_KIND`: `azure`, a chat deployment of an Azure AI Foundry resource, reached with the shared Azure sign-in (`DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID`, `DISPATCH_AZURE_FEDERATED_TOKEN_FILE`) as an `azure` answerer is; or `anthropic`, an Anthropic Messages service such as the operator's model gateway.
+
+- `_ENDPOINT`: the base URL the kind's route is appended to, `/chat/completions` or `/v1/messages`: https for `azure`, http or https for `anthropic`, since the model gateway serves plain HTTP inside the cluster.
+
+- `_DEPLOYMENT`: the Azure deployment's name or the Anthropic model's id, which each request names as its model.
+
+- `_API_VERSION` (optional) and `_SCOPE` (default `embed.DefaultEntraScope`): `azure` only.
+
+- `_KEY_FILE`: `anthropic` only, and required there: the file holding the key each call presents, read on each call.
+
+- `_TOKENS_PER_MINUTE`: required, the group's ceiling on its share of its deployment's quota (One pacer per deployment, below).
+
+A group is set whole or not at all: a group set in part refuses the boot, naming each setting it is missing, and so does a setting its kind does not read.
+An `azure` group reads the shared Azure sign-in, so a deployment with neither an `azure` embedder nor an `azure` answerer may set the sign-in for its `azure` groups alone.
+Rewrite and Define are on whenever their group is set.
+
+### One pacer per deployment
+
+Every caller of a model deployment in one process charges one token limiter (`internal/dispatch/modelpace`), keyed by the caller's kind, the endpoint's host and the deployment's name or model id.
+The limiter's rate is the deployment's quota in `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` (`name=tokens_per_minute,…`), else the answerer's `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE` for the answerer's deployment, else the largest ceiling any caller sets for it.
+Each caller's own tokens-per-minute setting is a ceiling on its share inside that limiter, and each limiter holds a minute's tokens as its burst.
+The answerer joins the process's pacer at boot (`newAnswerer`); a call the limiters cannot serve inside the run's time left ends the run as its deadline does.
+
+### The stand-in model
+
+`DISPATCH_TEST_MODEL_URL`, read only under `DISPATCH_TEST_HOOKS=1`, is the base URL of a stand-in model that serves Anthropic Messages and OpenAI Chat Completions over plain HTTP.
+Every set group's calls go to it with no credential, each still naming its group's deployment as the model, so a test tells the callers apart by the model each request names.
+A group beside it takes only its `_KIND`, `_DEPLOYMENT`, `_TOKENS_PER_MINUTE` and, for `azure`, `_API_VERSION`; its `_ENDPOINT`, `_KEY_FILE` and `_SCOPE` refuse the boot, and it reads no sign-in.
+The browser suite starts `packages/dispatch/e2e/fake-model.ts` and hands its URL to the server; a Go test starts `internal/dispatch/modeltest`.
+
+## Writing check
+
+The writing check reads the prose of an agent's write before the server stores it and records what it finds (`internal/dispatch/writingcheck`, `internal/dispatch/api/writing_check.go`); the write goes on whatever it finds.
+It runs on every server with the bundle's structure rules (`writingcheck.EnabledRules`) and no detector, and no setting turns it on or off.
+The bundle ships `semicolon` and `long-sentence` off (`writingcheck.MeasuredOff`): over 600 drawn agent writes they matched 62.2% and 79.1%, and the ceiling for one rule is 5%; `GET /api/v1/writing-check` lists them in `rules_left_out` with that reason.
+The reviewer applies the structure rules and the detector as its `structure` and `detector` rule sets (`DISPATCH_REVIEWER_RULES`, above).
 
 ### What the check reads
 

@@ -69,9 +69,9 @@ export interface HarnessProcess {
 
 export interface Harness {
   /** The port each started listener serves on, by its variable (`DISPATCH_E2E_PORT`,
-   *  `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`, `PLAIN_HTTP_PORT`, and in
-   *  two-process mode `DISPATCH_E2E_PORT_A` and `DISPATCH_E2E_PORT_B`): the environment a process
-   *  that addresses the harness needs. */
+   *  `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`, `FAKE_MODEL_PORT`, `FAKE_BROKER_PORT`,
+   *  `PLAIN_HTTP_PORT`, and in two-process mode `DISPATCH_E2E_PORT_A` and `DISPATCH_E2E_PORT_B`):
+   *  the environment a process that addresses the harness needs. */
   readonly env: Readonly<Record<string, string>>;
   readonly processes: readonly HarnessProcess[];
   /** Rejects as soon as one of the processes exits by itself, naming it. */

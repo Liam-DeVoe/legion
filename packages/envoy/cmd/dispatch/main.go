@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
@@ -229,9 +230,10 @@ type bootConfig struct {
 	// or DISPATCH_CHAT_* settings of the place it names), checked whole; an empty Place is no
 	// model configured, which the server says at boot rather than refusing to start.
 	Answerer answererConfig
-	// WritingCheck is the writing check (DISPATCH_WRITING_CHECK and the settings beside it),
-	// checked whole; newWritingCheck builds it, its reader's model included where one is set.
-	WritingCheck writingCheckConfig
+	// Writing is the work on agents' texts (the DISPATCH_REVIEWER_*, DISPATCH_REWRITE_DEFINE_*,
+	// DISPATCH_WORD_RECORDS*, DISPATCH_WRITING_RULES_* and DISPATCH_MODEL_DEPLOYMENT_QUOTAS
+	// settings, and DISPATCH_TEST_MODEL_URL), checked whole.
+	Writing writingSettings
 }
 
 func main() {
@@ -481,21 +483,20 @@ func main() {
 		embedder = client
 	}
 
+	// pacer is the process's one pacer of model deployments (modelpace): every part of the server
+	// that calls a model joins it, so the callers of one deployment share its quota.
+	pacer := modelpace.New(modelpace.Config{Quotas: boot.Writing.DeploymentQuotas})
 	// answerer is nil where the deployment configured no model, which newAnswerer logs: the
 	// server boots and says it cannot answer. A shape it could not build from is a refusal to
 	// boot, as the embedder's is, since the deployment asked for a model and got none.
-	answerer, err := newAnswerer(boot.Answerer)
+	answerer, err := newAnswerer(boot.Answerer, pacer)
 	if err != nil {
 		slog.Error("dispatch: build the answerer", "error", err)
 		os.Exit(1)
 	}
-	// The writing check (INFRA-3231): its reader is a model of its own with a quota of its own,
-	// never the answerer's. A shape it could not build from refuses the boot.
-	writingCheck, err := newWritingCheck(boot.WritingCheck)
-	if err != nil {
-		slog.Error("dispatch: build the writing check", "error", err)
-		os.Exit(1)
-	}
+	// The writing check (INFRA-3231) records what its structure rules find in each agent's
+	// write, on every server, and lets every write through; its detector stays off.
+	writingCheck := api.NewWritingCheck(api.WritingCheckConfig{Enabled: true})
 
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
@@ -1259,7 +1260,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if err != nil {
 		return bootConfig{}, err
 	}
-	boot.WritingCheck, err = resolveWritingCheck(env, boot.TestHooksEnabled)
+	boot.Writing, err = resolveWritingSettings(env, boot.TestHooksEnabled)
 	if err != nil {
 		return bootConfig{}, err
 	}
@@ -1898,6 +1899,26 @@ func testHookDuration(env settingValues, name string, testHooksEnabled bool, tar
 		return fmt.Errorf("%s=%q (expected a positive Go duration)", name, raw)
 	}
 	*target = value
+	return nil
+}
+
+// testHookURL reads the test-only URL setting name into target, leaving target as it is when the
+// setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is any value
+// that is not an absolute http or https URL with a host and no query or fragment: a test process
+// reaches its stand-ins over plain HTTP, which only the hooks allow.
+func testHookURL(env settingValues, name string, testHooksEnabled bool, target *string) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || strings.ContainsAny(raw, "?#") {
+		return fmt.Errorf("%s=%q (expected an absolute http or https URL with a host and no query or fragment)", name, raw)
+	}
+	*target = raw
 	return nil
 }
 

@@ -98,7 +98,7 @@ type Deps struct {
 	Answerer Answerer
 	// WritingCheck is the writing check every route whose request carries prose runs before it
 	// writes (INFRA-3231, writing_check.go); nil is the check turned off. cmd/dispatch builds it
-	// (DISPATCH_WRITING_CHECK and the settings beside it).
+	// on, with the bundle's structure rules and no detector, on every server.
 	WritingCheck *WritingCheck
 	Envoy        *envoy.Client
 	Events       *events.Broker

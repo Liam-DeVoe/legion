@@ -3,6 +3,7 @@ import { forgetSessions, quiesceDocuments, resetLogins } from "./api";
 import { resetFakeBroker } from "./fake-broker-helpers";
 import { resetFakeEmbedder } from "./fake-embedder-helpers";
 import { resetFakeGithub } from "./fake-github-helpers";
+import { resetFakeModel } from "./fake-model-helpers";
 import { measured } from "./measure";
 import { sql } from "./psql";
 
@@ -283,6 +284,7 @@ export async function resetDatabase(): Promise<void> {
         resetFakeBroker(),
         resetFakeGithub(),
         resetFakeEmbedder(),
+        resetFakeModel(),
       ]);
       for (const fake of fakes) if (fake.status === "rejected") throw fake.reason;
     }),

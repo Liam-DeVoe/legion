@@ -126,7 +126,7 @@ type AppContextOptions struct {
 	// cmd/dispatch builds it (newAnswerer). See api.DepsInput.
 	Answerer api.Answerer
 	// WritingCheck is the writing check every prose write runs; nil turns it off. cmd/dispatch
-	// builds it (newWritingCheck). See api.Deps.WritingCheck.
+	// builds it on, in main. See api.Deps.WritingCheck.
 	WritingCheck  *api.WritingCheck
 	Events        *events.Broker
 	App           *auth.AppConfig

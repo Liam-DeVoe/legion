@@ -90,7 +90,7 @@ loopback database: `e2e/seed.ts` empties it before every row and never selects a
 default, and the dev sign-in flag refuses a non-loopback host. psql runs without
 `PGHOSTADDR` (`e2e/psql.ts`), which would otherwise send it somewhere the server
 never checked. The harness ports `DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`,
-`FAKE_GITHUB_PORT`, `PLAIN_HTTP_PORT` and `FAKE_BROKER_PORT` are its other
+`FAKE_GITHUB_PORT`, `FAKE_MODEL_PORT`, `PLAIN_HTTP_PORT` and `FAKE_BROKER_PORT` are its other
 inputs, resolved for the whole suite by `e2e/harness-ports.ts`. Unset, each
 server serves on a port the OS chooses and holds until it serves: the Dispatch
 server on a socket `scripts/e2e/lib/held-port.py` hands it, each Bun listener by
@@ -111,7 +111,10 @@ live sessions with `setLiveSessions` from `e2e/agents.ts`. It starts
 credential-request feature is on, and tests seed its pending requests with
 `setPendingCredentialRequests` from `e2e/fake-broker-helpers.ts`; an empty
 `DISPATCH_E2E_AGENT_SECRETS_URL` runs the suite with no broker instead, as a
-deployment that configures none (`AGENTS.md` has the switch). It also starts
+deployment that configures none (`AGENTS.md` has the switch). It starts
+`e2e/fake-model.ts`, the stand-in model, which the server's model groups call through
+`DISPATCH_TEST_MODEL_URL`, and tests script its answers and read the requests it got with
+`setModelRules` and `modelRequests` from `e2e/fake-model-helpers.ts`. It also starts
 `e2e/plain-http-proxy.ts` for the plain-HTTP project.
 
 `DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the
