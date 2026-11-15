@@ -80,6 +80,11 @@ func launchFixture() *config.Config {
 // A secret row is recorded as a digest of its value and never as itself: an annotation is
 // readable by everything that may read the pod, and a rotation must be drift without the
 // credential, its source or the path of its file reaching the cluster.
+//
+// The path of the daemon's own token at the secrets broker
+// (`runtime.kubernetes.agent_secrets.token_file`) is recorded not even as a digest: the daemon's
+// login alone reads it, a pod being handed a projected token of its own, so it is no launch key
+// (config.Classes' row) and a change of it is drift of no pod.
 func TestLaunchSettingsHoldEveryLaunchKeyOfTheClassTable(t *testing.T) {
 	recorded := LaunchSettings(launchFixture())
 	settings, err := launchSettingsOf(recorded)
@@ -90,7 +95,7 @@ func TestLaunchSettingsHoldEveryLaunchKeyOfTheClassTable(t *testing.T) {
 		"advertise_host", "daemon_url", "instructions", "omp_invocation", "omp_launch_prefix",
 		"provider_keys", "role_config_files",
 		"runtime.kubernetes.agent_secrets.audience", "runtime.kubernetes.agent_secrets.token_expiry_seconds",
-		"runtime.kubernetes.agent_secrets.token_file", "runtime.kubernetes.agent_secrets.url",
+		"runtime.kubernetes.agent_secrets.url",
 		"runtime.kubernetes.image", "runtime.kubernetes.issue_volume",
 		"runtime.kubernetes.plugins.pi_envoy", "runtime.kubernetes.plugins.pi_legion",
 		"runtime.kubernetes.pod.env", "runtime.kubernetes.pod.service_account",
@@ -126,8 +131,19 @@ func TestLaunchSettingsHoldEveryLaunchKeyOfTheClassTable(t *testing.T) {
 			t.Errorf("the record carries %q: %s", planted, recorded)
 		}
 	}
-	if digest := settings["runtime.kubernetes.agent_secrets.token_file"]; !strings.HasPrefix(digest, "sha256:") {
-		t.Errorf("agent_secrets.token_file is recorded as %q, want a digest", digest)
+	digests := 0
+	for _, row := range config.Classes {
+		value, held := settings[row.Path]
+		if !held || !row.Secret {
+			continue
+		}
+		if !strings.HasPrefix(value, "sha256:") {
+			t.Errorf("%s is recorded as %q, want a digest", row.Path, value)
+		}
+		digests++
+	}
+	if digests == 0 {
+		t.Error("the record holds no secret key, so nothing here proves a secret is recorded as a digest")
 	}
 	if again := LaunchSettings(launchFixture()); again != recorded {
 		t.Errorf("one configuration encodes differently twice:\n%s\n%s", recorded, again)
@@ -160,7 +176,14 @@ func TestPodDriftReadsAPodThatRecordsNoLaunchSettingsAsUndrifted(t *testing.T) {
 
 // A pod whose launch keys have moved since its template recorded them has drifted, and the reason
 // names the key, what the pod's launch read and what a launch now reads. A secret key names
-// itself and no value either way.
+// itself and no value either way. PodDrift is what the update-round sweep opens a round over an
+// issue pod on, so each row here is whether a change of that key alone opens one.
+//
+// The secrets broker's two rows are the two sides of one block: the broker's `url` is told to
+// every pod, so a pod launched on another drifts, while the path of the daemon's own token
+// (`token_file`) is read by the daemon's login alone, so its change drifts no pod and opens no
+// round — where every pod of the fleet would otherwise be asked to push and be replaced, its
+// disk deleted, for a value nothing in it reads.
 func TestPodDriftNamesTheLaunchKeyThatMoved(t *testing.T) {
 	for name, tc := range map[string]struct {
 		move func(*config.Config)
@@ -184,6 +207,18 @@ func TestPodDriftNamesTheLaunchKeyThatMoved(t *testing.T) {
 		"the pod's service account": {
 			func(cfg *config.Config) { cfg.Runtime.Kubernetes.Pod.ServiceAccount = "legion-worker-2" },
 			"launch setting runtime.kubernetes.pod.service_account legion-worker, now legion-worker-2",
+		},
+		"the secrets broker a pod is told": {
+			func(cfg *config.Config) {
+				cfg.Runtime.Kubernetes.AgentSecrets.URL = "https://secrets-2.internal.example"
+			},
+			"launch setting runtime.kubernetes.agent_secrets.url https://secrets.internal.example, now https://secrets-2.internal.example",
+		},
+		"the path of the daemon's own broker token": {
+			func(cfg *config.Config) {
+				cfg.Runtime.Kubernetes.AgentSecrets.TokenFile = "/var/run/secrets/agent-secrets/fixture-token-2"
+			},
+			"",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

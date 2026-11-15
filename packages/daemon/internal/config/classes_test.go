@@ -90,7 +90,15 @@ func TestEverySettingsPathHasAClass(t *testing.T) {
 }
 
 // Each row is sound on its own terms: a fixed row says why it is refused and names no holder, a
-// rebuild row names the holder it rebuilds, and no other row carries a refusal.
+// rebuild row names the holder it rebuilds, a launch row names a holder a launch reads values
+// from, and no other row carries a refusal.
+//
+// Two holders hand a launch anything: the runtime, which launches every pod and pane and records
+// every launch key in each pod's launch-settings annotation, and the launch specs every launch is
+// built from. A launch row naming any other holder is a value the daemon reads for itself and no
+// launch reads, which that annotation would record all the same, so a change of it would drift
+// every pod of the fleet and open an update round over each one: the path of the daemon's own
+// broker token was such a row, held by the daemon's login and no launch.
 func TestEveryClassRowIsWellFormed(t *testing.T) {
 	for _, row := range Classes {
 		switch row.Class {
@@ -105,7 +113,11 @@ func TestEveryClassRowIsWellFormed(t *testing.T) {
 			if row.Holder == "" {
 				t.Errorf("%s is a rebuild with no holder: name what the daemon builds again", row.Field)
 			}
-		case ClassDecision, ClassLaunch:
+		case ClassDecision:
+		case ClassLaunch:
+			if row.Holder != HolderRuntime && row.Holder != HolderLaunchSpecs {
+				t.Errorf("%s is a launch row held by %q, which no launch reads a value from: a value only the daemon reads is a rebuild of its holder", row.Field, row.Holder)
+			}
 		default:
 			t.Errorf("%s has the class %q, which is none of the four", row.Field, row.Class)
 		}

@@ -101,7 +101,11 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 // life with the launch keys of the day its pod was created.
 //
 // A launch that installs a stale-plugin pair keeps the pod, as it does for every other kind of
-// drift, and a daemon restarted on the launch keys its pod was built from replaces nothing.
+// drift, and a daemon restarted on the launch keys its pod was built from replaces nothing. Nor
+// does a change of the path of the daemon's own broker token
+// (`runtime.kubernetes.agent_secrets.token_file`): the daemon's login alone reads it, the
+// controller's pod being handed a projected token of its own, so it is no launch key of this pod
+// and its next launch keeps the pod.
 func TestALaunchReplacesTheControllersPodWhoseLaunchKeysMoved(t *testing.T) {
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
@@ -113,6 +117,11 @@ func TestALaunchReplacesTheControllersPodWhoseLaunchKeysMoved(t *testing.T) {
 		"another instructions file": {func(cfg *config.Config) { cfg.InstructionsPath = "/etc/legion/instructions-2.md" }, nil, true},
 		"a rotated provider key":    {func(cfg *config.Config) { cfg.ProviderKeys[0].Secret = "fixture-anthropic-secret-2" }, nil, true},
 		"another daemon url":        {func(cfg *config.Config) { cfg.DaemonURL = "http://legion-daemon.legion.svc:13371" }, nil, true},
+		"another path of the daemon's own broker token": {
+			func(cfg *config.Config) {
+				cfg.Runtime.Kubernetes.AgentSecrets.TokenFile = "/var/run/secrets/agent-secrets/fixture-token-2"
+			}, nil, false,
+		},
 		"an installing launch into a pod whose instructions moved": {
 			func(cfg *config.Config) { cfg.InstructionsPath = "/etc/legion/instructions-2.md" }, plugins, false,
 		},

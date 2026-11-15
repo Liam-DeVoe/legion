@@ -1198,6 +1198,12 @@ func (b *secretsBroker) enrolled(pod string) bool {
 // answers the daemon, its rebuild observer and that token file.
 func secretsDaemon(t *testing.T, url, token string) (*daemon, *rebuilder, string) {
 	t.Helper()
+	return secretsDaemonLogging(t, url, token, quietLogger())
+}
+
+// secretsDaemonLogging is secretsDaemon writing the daemon's log to log.
+func secretsDaemonLogging(t *testing.T, url, token string, log *slog.Logger) (*daemon, *rebuilder, string) {
+	t.Helper()
 	tokenFile := filepath.Join(t.TempDir(), "agent-secrets-token")
 	if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1209,7 +1215,7 @@ func secretsDaemon(t *testing.T, url, token string) (*daemon, *rebuilder, string
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	var rebuild *rebuilder
 	o.settingsRebuilder = func(r *rebuilder) { rebuild = r }
-	d := startDaemon(t, cfg, o)
+	d := startDaemonLogging(t, cfg, o, log)
 	if rebuild == nil {
 		t.Fatal("the daemon handed the test no rebuild observer")
 	}
@@ -1262,6 +1268,69 @@ func TestAChangedSecretsBrokerURLReachesTheDaemonsOwnEnrollment(t *testing.T) {
 	}
 	if !moved.enrolled("pod-after-the-change") || booted.enrolled("pod-after-the-change") {
 		t.Fatal("the pod launched after the change was enrolled with the broker the daemon booted on, want the one the change names")
+	}
+}
+
+// A change of `runtime.kubernetes.agent_secrets.token_file` builds the daemon's own login again on
+// the file the change names, and builds nothing else. The login is the path's one reader: it logs
+// in with the daemon's own projected token, which the file holds, and every pod enrollment goes
+// through it. No pod reads the path, since each pod is handed a projected token of its own, so the
+// path's row names the login alone (config.Classes), the route answers `rebuilt` naming it, and
+// the runtime — which records every launch key in each pod's launch-settings annotation, the
+// record an update round reads a pod's drift from — is not built again. Held by the runtime too,
+// as a launch key, the change rebuilt the runtime on a record carrying the path's digest, and
+// every pod of the fleet read as drifted: an update round over all of them, for a value none of
+// them reads.
+//
+// The boot's login holds a live credential, so it is replaced because its file moved and for no
+// other reason (secretsLoginHolder.rebuild), and the broker sees the token only the new file
+// holds. The change reaches the rebuild observer as an apply hands it, as the url's does above.
+func TestAChangedSecretsTokenFileRebuildsTheDaemonsLoginAndNothingElse(t *testing.T) {
+	const booted, routed = "the-daemon's-token", "the-token-at-the-new-path"
+	broker := newSecretsBroker(t)
+	logs := &syncBuffer{}
+	d, rebuild, _ := secretsDaemonLogging(t, broker.URL, booted, slog.New(slog.NewJSONHandler(logs, nil)))
+	testwait.Eventually(t, "the boot's login on the boot's token file", func() bool {
+		return broker.loggedIn(booted) && loginState(d) == "issued"
+	})
+	routedFile := filepath.Join(t.TempDir(), "agent-secrets-token")
+	if err := os.WriteFile(routedFile, []byte(routed+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	next := *d.live.Snapshot()
+	block := *next.Runtime.Kubernetes
+	agentSecrets := *block.AgentSecrets
+	agentSecrets.TokenFile = routedFile
+	block.AgentSecrets = &agentSecrets
+	next.Runtime.Kubernetes = &block
+	change := changeOfPath(t, "runtime.kubernetes.agent_secrets.token_file")
+	before := len(logs.String())
+	d.live.WhileSettled(func(*config.Config) {
+		rebuild.observe(&next, []config.Change{change})
+	})
+
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the daemon's login on the token the new file holds", func() bool {
+		return broker.loggedIn(routed) && loginState(d) == "issued"
+	})
+	login, held := rebuild.holders[config.HolderSecretsLogin].(*secretsLoginHolder)
+	if !held {
+		t.Fatalf("the daemon registered no login that enrolls its pods; it registered %v", rebuild.order)
+	}
+	if file := login.current.Load().client.TokenFile; file != routedFile {
+		t.Fatalf("the login every enrollment goes through reads %s, want the file the change names, %s", file, routedFile)
+	}
+	if _, err := login.Enroll(t.Context(), supervise.PodEnrollment{PodUID: "pod-after-the-change", Thumbprint: "thumbprint", PodToken: "a.b.c"}); err != nil {
+		t.Fatalf("enroll a pod after the change: %v", err)
+	}
+	if !broker.enrolled("pod-after-the-change") {
+		t.Fatal("the pod launched after the change was not enrolled")
+	}
+	if after := logs.String()[before:]; strings.Contains(after, `"msg":"legion settings: holder rebuilt","holder":"runtime"`) {
+		t.Fatalf("a change of the daemon's own token file built the runtime again, whose record of each pod's launch it is no key of:\n%s", after)
+	}
+	if change.Class != config.ClassRebuild || change.Outcome != config.OutcomeRebuilt || change.Holder != config.HolderSecretsLogin {
+		t.Fatalf("the route answers a change of token_file %+v, want rebuilt naming the daemon's login", change)
 	}
 }
 

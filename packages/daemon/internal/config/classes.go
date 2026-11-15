@@ -566,24 +566,31 @@ var Classes = []Row{
 	{Field: "PodConfig.Volumes", Path: "runtime.kubernetes.pod.volumes", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "PodConfig.VolumeMounts", Path: "runtime.kubernetes.pod.volume_mounts", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "PodConfig.ServiceAccount", Path: "runtime.kubernetes.pod.service_account", Class: ClassLaunch, Holder: HolderRuntime},
-	// The secrets broker, which two things read. The runtime tells each pod it launches the
-	// broker's `url` and projects the pod's own token for it (`audience`,
-	// `token_expiry_seconds`), and records every key of the block in each pod's launch-settings
-	// annotation. The daemon's own login at that broker (internal/daemon's secretsLoginHolder)
-	// reads `url` and `token_file`, the daemon's own projected token, which no pod reads: it logs
-	// in with it and enrolls every pod at that broker. So `url` names the runtime and the login
-	// beside it, and `token_file` names the login, with the runtime beside it for its record. The
+	// The secrets broker every pod is enrolled with. A pod reads three of the block's members,
+	// each a launch key of the runtime, which records them in every pod's launch-settings
+	// annotation: `url`, the broker's address, which the runtime tells each pod it launches, and
+	// `audience` and `token_expiry_seconds`, the audience and the lifetime of the pod's own
+	// ServiceAccount token, which the runtime projects into each pod for the broker
+	// (internal/daemon's sandboxOptions, runtime/sandbox's brokerTokenProjection). The daemon's own
+	// login at the broker (internal/daemon's secretsLoginHolder) reads `url` as well, logs in there
+	// and enrolls every pod the runtime launches, so `url` names the runtime and the login beside
+	// it, and a pod is enrolled at the broker it is told.
+	//
+	// `token_file` differs: it is the path of the daemon's own projected token, which the login
+	// alone reads and logs in with, and no pod reads it, a pod presenting the token projected into
+	// it instead. So it is a rebuild of the login, with no launch holder beside it and no place in
+	// any pod's annotation: a change of it builds the login again on the file it names and drifts
+	// no pod, where a change of a launch key replaces every pod whose launch reads it. The
 	// login is a holder of its own and no part of the runtime because the kubelet rewrites
-	// `token_file` in place through its life: as one of the runtime's credential files, every
-	// such rewrite would build the Sandbox runtime again, its informers and refreshers with it.
+	// `token_file` in place through its life: as one of the runtime's credential files, every such
+	// rewrite would build the Sandbox runtime again, its informers and refreshers with it.
 	{Field: "Kubernetes.AgentSecrets", Path: "runtime.kubernetes.agent_secrets", Class: ClassLaunch, Holder: HolderRuntime,
 		Also: []string{HolderSecretsLogin}, Block: true},
 	{Field: "AgentSecretsConfig.URL", Path: "runtime.kubernetes.agent_secrets.url", Class: ClassLaunch, Holder: HolderRuntime,
 		Also: []string{HolderSecretsLogin}},
 	{Field: "AgentSecretsConfig.Audience", Path: "runtime.kubernetes.agent_secrets.audience", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "AgentSecretsConfig.TokenExpirySeconds", Path: "runtime.kubernetes.agent_secrets.token_expiry_seconds", Class: ClassLaunch, Holder: HolderRuntime},
-	{Field: "AgentSecretsConfig.TokenFile", Path: "runtime.kubernetes.agent_secrets.token_file", Class: ClassLaunch, Holder: HolderSecretsLogin,
-		Also: []string{HolderRuntime}, Secret: true},
+	{Field: "AgentSecretsConfig.TokenFile", Path: "runtime.kubernetes.agent_secrets.token_file", Class: ClassRebuild, Holder: HolderSecretsLogin, Secret: true},
 	// The plugin pair a stale-plugin relaunch installs into a kept pod, which two things read:
 	// the launch specs, which hand the pair to the launch of a claim on another plugin contract
 	// (internal/daemon's stalePluginInstall), and the Sandbox runtime, which records it in each

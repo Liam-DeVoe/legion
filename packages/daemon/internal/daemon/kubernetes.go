@@ -476,10 +476,12 @@ func providersSecrets(cfg config.Config, lookup func(string) (string, bool)) []s
 // of them reaches the login the configuration names now. Never part of launchSecrets, so no pod
 // is ever handed the daemon's key, token or credential.
 //
-// Each build reads the block of the configuration it is given (rebuild), which is the one the
-// runtime is built from in the same apply: a changed `url` logs in and enrolls every pod at the
-// new broker, and a changed `token_file` is read at its new path. The token file is the holder's
-// credential file (credentials), so a rotation in place builds the login again as well. A
+// Each build reads the block of the configuration it is given (rebuild). A changed `url` logs in
+// and enrolls every pod at the new broker, and builds the runtime in that same apply, since a
+// pod is told the broker it enrols at; a changed `token_file` builds this login alone, because
+// the daemon's own projected token is a value no pod reads and no launch carries
+// (config.Classes). The token file is the holder's credential file (credentials), so a rotation
+// in place builds the login again as well. A
 // Kubernetes daemon always holds one, with no login while the configuration names no broker, so
 // a block an operator adds under a running daemon enrolls the pods launched after it.
 type secretsLoginHolder struct {
