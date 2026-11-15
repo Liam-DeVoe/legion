@@ -539,6 +539,68 @@ test("the Delivery page's Legion section draws the four metrics @legion", async 
   }
 });
 
+// dispatch://INFRA-2916's R8 and R14 over the page's longest preset: "Last 84 days" is the most
+// the eval routes answer, and the Legion section reads each card's items and each chart's Previous
+// range over the days it asked for. A section that sent the window the list answered (85 whole
+// UTC days, since the server widens a window to whole days) had its items read refused 400, showed
+// "Couldn't load the issues of this metric." on the work-time and rework cards, and offered
+// "Previous 85 days", whose compare reads were refused too.
+test("the Delivery page's Legion section reads 84 days and its Previous 84 days with the last 84 days preset @legion", async ({
+  browser,
+}) => {
+  test.setTimeout(legionEvalsBuilt + 60_000);
+  const daemon = await startFakeLegionDaemon({});
+  await seedLegionFixture(daemon.url);
+  await seedLegionFinishedTree();
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const evalReads: { url: string; status: number }[] = [];
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname.includes("/evals")) {
+      evalReads.push({ url: response.url(), status: response.status() });
+    }
+  });
+  const days = (url: string) => {
+    const query = new URL(url).searchParams;
+    const from = query.get("from");
+    const to = query.get("to");
+    return from === null || to === null ? 0 : (Date.parse(to) - Date.parse(from)) / 86_400_000;
+  };
+
+  try {
+    await page.goto("/delivery?window=84d");
+    const section = page.getByRole("region", { name: "Legion: issue to merge" });
+    const block = section.locator(`[data-legion-project="${LEGION_PROJECT}"]`);
+    await expect(block).toBeVisible();
+    const label = `${LEGION_PROJECT}: Work time to merge`;
+    const workTime = block.locator('[data-legion-metric="work_time"]');
+    await expect(workTime.locator(`[data-chart="${label}"]`)).toBeVisible();
+    await expect(workTime.locator('[data-legion-figure="Issues finished"]')).toHaveText(/^[0-9]+$/);
+    await expect
+      .poll(() => evalReads.filter((read) => read.url.includes("/items")).length)
+      .toBeGreaterThan(0);
+    await expect(section.getByText("Couldn't load the issues of this metric.")).toHaveCount(0);
+
+    const compare = workTime.locator(`select[data-chart-compare="${label}"]`);
+    await expect(compare.locator('option[value="preceding"]')).toHaveText("Previous 84 days");
+    await compare.selectOption("preceding");
+    await expect
+      .poll(() => evalReads.filter((read) => read.url.includes("compare_from")).length)
+      .toBeGreaterThan(0);
+    await expect(section.getByText("Couldn't load the issues of this metric.")).toHaveCount(0);
+    await expect(section.getByText("Couldn't load the Legion metrics.")).toHaveCount(0);
+
+    // Every eval read of the page was answered, and none asked more than the server's 84 days.
+    const refused = evalReads.filter((read) => read.status >= 400);
+    expect(refused, JSON.stringify(refused)).toEqual([]);
+    const items = evalReads.filter((read) => read.url.includes("/items"));
+    expect(items.map((read) => days(read.url)).filter((span) => span > 84)).toEqual([]);
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
 // dispatch://INFRA-2916's R14 (k14's browser half): the Legion section reads the eval routes and
 // draws one block for each project with a Legion setting, with no first-project default. Two
 // projects are made through the API, which seeds each one's evals, and each names a daemon; the
