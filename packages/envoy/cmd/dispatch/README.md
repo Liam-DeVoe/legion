@@ -804,6 +804,19 @@ the earlier build's broadcast send reads and writes the table `0141` drops, so e
 A tab opened before the deploy needs a reload:
 `GET /api/v1/events` is gone, so it shows `Live updates unavailable`, and its broadcast body still carries `idempotency_key`, which this release refuses as an unknown field (`400 INVALID_JSON`).
 
+**The release that stores a message for a stopped session (INFRA-626) rolls, so for the length of the update an earlier server and a new server both take a model or thinking switch.**
+A switch is the live view's one-line `/model <value>` or `/effort <value>` message, and a new server sends every targeted message that is one with `connected_only`, whatever its request says (`isSessionSwitchCommand`, `api/messages.go`), so a stopped session refuses it and its attempt records `the session is stopped`:
+stored for a stopped session, the line would change that session's model at an unknown later time.
+A tab opened before the deploy sends the switch without `connected_only`, and a new server holds it to a running session by that rule all the same, so that tab needs no reload for it.
+An earlier server that takes the same switch, until the update ends or for good after a rollback, sends it as that release always did:
+its registry read does not find a session the listener knows only by its record, so it fails that attempt `no live session`, and it sends the switch to a session whose registry entry still stands, for which the listener stores it if that session's process has gone, as it did before this release.
+A tab opened after the deploy sends `connected_only`, which an earlier server refuses as an unknown field (`400 INVALID_JSON`, from `decodeJSON`'s `DisallowUnknownFields`), and the page drops the switch, shows that refusal and sends nothing.
+The person presses again: a press that reaches a new server goes through, and every press does once the update ends.
+After a rollback no press goes through until the deployment moves forward again, and reloading the tab onto the earlier build's page sends the switch the earlier way.
+An earlier server's delivery sweep resumes an attempt without the flag, since that build does not read the column, so it can send a switch attempt a new server left pending the way the earlier release sends one (above).
+That takes a new server killed mid-send, whose drain therefore never settles the attempt, while an earlier server still serves, in a rolling update or a rollback.
+The earlier server's sweep can then send that attempt once its claim lapses, one to two minutes after the kill (`model.DeliveryClaimLapse`, and the sweep's one pass a minute), unless a new server's sweep takes it first and sends it with the flag.
+
 What the two processes share, and what each keeps to itself:
 
 - One process publishes the events outbox at a time.
@@ -1717,7 +1730,7 @@ Migration `20261114081434_delivery_queued_state` adds the fourth delivery attemp
 It drops `comment_deliveries_state_check` (`0039`) and `message_deliveries_state_check` (`0046`) without `cascade` and adds each back `not valid` with `queued` beside `pending`, `sent` and `failed`, so no stored row is read:
 no row can fail a check wider than the one it was written under.
 It adds `message_deliveries.connected_only`, a nullable `text` column with no default whose one other value is `connected_only` (its own check, also `not valid`), set on an attempt whose sends ask the listener for a session that is running now:
-only the live view's model and thinking switch asks that, and every later attempt of a message inherits attempt 1's value.
+every model or thinking switch asks that whatever its request says (a targeted message whose body is one `/model <value>` or `/effort <value>` line, `isSessionSwitchCommand`), so does any request that sets `connected_only`, and every later attempt of a message inherits attempt 1's value.
 The release before this one writes only `pending`, `sent` and `failed` and never names the column, so the two builds run against the widened schema at once.
 Each statement is one of the census's catalog-only `alter table` forms, so the census exempts the migration from its table size limit at any size, and each takes `ACCESS EXCLUSIVE` on its table for its catalog write alone.
 Its census answers `0`: it refuses and rewrites no row.

@@ -285,10 +285,11 @@ type pendingMessageDelivery struct {
 	urgency  *string
 	// connectedOnly is the attempt row's own connected_only, which the send this call makes
 	// asks the listener for: the listener refuses a stopped target rather than storing the
-	// message for it. Every attempt of a message carries the same flag - attempt 1 records what
-	// the request asked for (createStoredMessage) and every later attempt is inserted with
+	// message for it. Every attempt of a message carries the same flag - attempt 1 records it
+	// when the request asked for it or the body is a session switch command
+	// (createStoredMessage, isSessionSwitchCommand), and every later attempt is inserted with
 	// attempt 1's (insertMessageDeliveryAttempt) - so a resumed attempt, a Retry and a mode
-	// change all ask the listener what the message asked for.
+	// change all ask the listener what attempt 1 asked.
 	connectedOnly bool
 	frame         []byte
 }

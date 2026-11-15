@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -31,11 +32,11 @@ type createMessageInput struct {
 	// ConnectedOnly asks that this message reach a session that is running now or not at all:
 	// the send is made with the listener's connected_only, which refuses a session the listener
 	// knows and that is not running rather than storing the message for it, and the attempt
-	// records that refusal as its failure. Unset - every message but the live view's model and
-	// thinking switch - a stopped session is a recipient whose attempt is recorded queued, and
-	// the listener hands it the message when it runs again. The switch sets it because its line
-	// applies to the session that reads it: queued, it would change a model at an unknown later
-	// time.
+	// records that refusal as its failure. Any send may set it. Unset, a stopped session is a
+	// recipient whose attempt is recorded queued, and the listener hands it the message when it
+	// runs again - except a model or thinking switch, which asks for a running session whether
+	// this is set or not (isSessionSwitchCommand): its line applies to the session that reads
+	// it, and queued it would change a model at an unknown later time.
 	ConnectedOnly bool         `json:"connected_only"`
 	Actor         *model.Actor `json:"actor"`
 }
@@ -89,9 +90,11 @@ type createAgentMessageInput struct {
 	Delivery       string  `json:"delivery" required:"true"`
 	InReplyTo      *string `json:"in_reply_to"`
 	InReplyToBlock *string `json:"in_reply_to_block"`
-	// ConnectedOnly is the live view's model and thinking switch asking for a session that is
-	// running now (createMessageInput.ConnectedOnly). Every other send leaves it out and is
-	// queued for a stopped session.
+	// ConnectedOnly asks for a session that is running now (createMessageInput.ConnectedOnly).
+	// The live view's model and thinking switch sets it; a switch sent without it, from a tab
+	// loaded before the field existed, is held to a running session all the same
+	// (isSessionSwitchCommand). Every other send that leaves it out is queued for a stopped
+	// session.
 	ConnectedOnly bool `json:"connected_only"`
 }
 
@@ -365,15 +368,18 @@ func (s *server) createStoredMessage(
 	// release opened it after the listener lookup, so a message it stored could have no attempt at
 	// all, and the recovery that opens a first attempt for one (owedKeyedSend,
 	// openFirstMessageDeliveryAttempt) serves only the messages such a release stored. It records
-	// who asked for it, the urgency they chose and whether they asked for a session running now,
-	// which every send of it carries (pendingMessageDelivery), this request's own and a resumed
-	// one alike.
+	// who asked for it, the urgency they chose and whether it asks for a session running now -
+	// the request's connected_only, or a model or thinking switch whatever the request said
+	// (isSessionSwitchCommand) - which every send of it carries (pendingMessageDelivery), this
+	// request's own and a resumed one alike. The target is read here and not at validation, since
+	// a person's reply that names none takes its thread root's above.
 	if message.Target != nil {
+		connectedOnly := input.ConnectedOnly || isSessionSwitchCommand(input.Body)
 		if _, err := tx.Exec(ctx, `
 			insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by,
 			                                urgency, connected_only)
 			values ($1, 1, $2, '', 'pending', $3, $4, $5)
-		`, message.ID, delivery, author, input.Urgency, model.ConnectedOnlyColumn(input.ConnectedOnly)); err != nil {
+		`, message.ID, delivery, author, input.Urgency, model.ConnectedOnlyColumn(connectedOnly)); err != nil {
 			return model.Message{}, nil, err
 		}
 	}
@@ -449,6 +455,29 @@ func validateCreateMessage(input *createMessageInput) (string, error) {
 		return "", errorf(http.StatusBadRequest, "MESSAGE_INPUT", "urgency must be one of low, med, high, blocking")
 	}
 	return delivery, nil
+}
+
+// isSessionSwitchCommand reports whether body is a model or thinking switch, the line the live
+// view's switch writes: the whole body, trimmed, is one `/model <value>` or `/effort <value>`
+// line, its value not empty and holding no whitespace (switchMessageInput in
+// packages/dispatch/web/src/features/agent-view/use-session-switch.ts, and switchCommand there
+// in the release before it). A body that only mentions /model in its prose is not one.
+//
+// A targeted message that is one asks the listener for a session that is running now whatever
+// its request says (createStoredMessage): this rule decides a switch, not the client's
+// connected_only, which any other send may still set to ask the same. A tab loaded before
+// connected_only existed sends the switch without the field, and a switch stored for a stopped
+// session would change that session's model or thinking level at an unknown later time, long
+// after the person chose it. The spec keeps the switch out of the queued path (its non-goal,
+// dispatch://INFRA-626/spec) and plan D9 refuses it for a stopped session with nothing stored
+// (dispatch://INFRA-626/artifact/plan-md).
+func isSessionSwitchCommand(body string) bool {
+	command := strings.TrimSpace(body)
+	value, found := strings.CutPrefix(command, "/model ")
+	if !found {
+		value, found = strings.CutPrefix(command, "/effort ")
+	}
+	return found && value != "" && !strings.ContainsFunc(value, unicode.IsSpace)
 }
 
 func validMessageUrgency(value string) bool {

@@ -389,11 +389,14 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   no user turn, with the id exactly as the session's `settings` frame listed it (the select clips a
   long id on screen only). Dispatch stores it under the person's name, which is the record of who
   switched the session and to what, and it bumps `ownSendCount` as a Send does.
-  It is the one send that carries `connected_only` (`switchMessageInput` in
+  It is the one send of the page that carries `connected_only` (`switchMessageInput` in
   `features/agent-view/use-session-switch.ts`): a `/model` or `/effort` line applies to the session
   that reads it, so a session that is not running is refused rather than queued, the attempt
   records `the session is stopped`, and the header says so instead of holding the pickers for its
-  deadline.
+  deadline. The field is not what decides it: Dispatch's server holds every targeted message whose
+  body is one such line to a running session with or without it (`isSessionSwitchCommand` in
+  `packages/envoy/internal/dispatch/api/messages.go`), because a tab loaded before the field
+  existed sends the switch without it.
 - Every label the dashboard composes for a delivery mode comes from one mapping, `MODE_LABELS` in
   `features/conversation/delivery.ts` (`steer` is Send, `aside` Aside, `btw` BTW), and a session's
   advertised capability reads through `capabilityLabel`; `grep -n 'MODE_LABELS\|capabilityLabel'`

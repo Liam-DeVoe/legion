@@ -42,6 +42,9 @@ type queueingListener struct {
 	sessions map[string]fakeSession
 	mu       sync.Mutex
 	sends    []map[string]any
+	// refused is every send it answered 409 "the session is stopped": each one carried
+	// connected_only and met a stopped target, and nothing of it was stored, so it is not in sends.
+	refused []map[string]any
 	// stoppedReads counts the registry reads that asked for stopped sessions too.
 	stoppedReads int
 	// registryOnlyReads counts the registry reads that did not.
@@ -137,7 +140,10 @@ func (l *queueingListener) writeSend(t *testing.T, w http.ResponseWriter, r *htt
 	stopped := session.stopped || session.crashed
 	if stopped && request["connected_only"] == true {
 		// The listener stores nothing for a connected_only send to a stopped target, so this
-		// send is not recorded either.
+		// send is not among the stored ones; it is recorded as refused instead.
+		l.mu.Lock()
+		l.refused = append(l.refused, request)
+		l.mu.Unlock()
 		w.WriteHeader(http.StatusConflict)
 		_, _ = w.Write([]byte(`{"error":"the session is stopped"}`))
 		return
@@ -164,8 +170,21 @@ func (l *queueingListener) writeSend(t *testing.T, w http.ResponseWriter, r *htt
 func (l *queueingListener) sentTo(target string) []map[string]any {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return sendsFor(l.sends, target)
+}
+
+// refusedFor is every connected_only send the listener refused for target, in order.
+func (l *queueingListener) refusedFor(target string) []map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return sendsFor(l.refused, target)
+}
+
+// sendsFor is the sends of record addressed to target, in order. The caller holds the
+// listener's lock.
+func sendsFor(record []map[string]any, target string) []map[string]any {
 	took := []map[string]any{}
-	for _, send := range l.sends {
+	for _, send := range record {
 		if send["target_session"] == target {
 			took = append(took, send)
 		}
@@ -565,6 +584,94 @@ func TestARetryOfARefusedSwitchIsRefusedAgainAndQueuesNothing(t *testing.T) {
 	}
 	if sends := listener.sentTo("s1"); len(sends) != 0 {
 		t.Fatalf("the listener stored %d sends for the refused switch and its retries, want none", len(sends))
+	}
+}
+
+// A tab loaded before connected_only existed sends the switch in the shape the release before
+// this one sent - {body, delivery: "steer"} and no connected_only - and Dispatch's own rule holds
+// it to a running session all the same (isSessionSwitchCommand): the send asks the listener for a
+// session that is running now, the stopped session refuses it, the attempt is settled failed with
+// the listener's reason and nothing is stored, a /model and an /effort switch alike and the same
+// switch sent to the session as an issue message too. Attempt 1 records the flag, so every later
+// attempt asks the same. A message in that old shape that is no switch - plain text, or text that
+// only mentions /model - is still queued for the same stopped session.
+func TestASwitchInTheOldShapeIsStillRefusedForAStoppedSession(t *testing.T) {
+	listener := stoppedAndLive(t)
+	handler, database := newTargetedMessageHandler(t, listener.url)
+	issue := createInteractionIssue(t, handler, "TEST", "A switch from an old tab", "before")
+
+	switches := []struct {
+		name    string
+		body    string
+		onIssue bool
+	}{
+		{name: "a model switch", body: "/model anthropic/claude-x"},
+		{name: "a thinking switch", body: "/effort high"},
+		{name: "a model switch sent as an issue message", body: "/model anthropic/claude-x", onIssue: true},
+	}
+	for _, sent := range switches {
+		var message model.Message
+		if sent.onIssue {
+			message = createIssueMessage(t, handler, issue.Key, map[string]any{
+				"body": sent.body, "target": "session:s1", "delivery": "steer",
+			}, "alice")
+		} else {
+			created := postAgentMessage(t, handler, "s1", map[string]any{"body": sent.body, "delivery": "steer"}, "alice")
+			if created.Code != http.StatusCreated {
+				t.Fatalf("%s: status=%d body=%s", sent.name, created.Code, created.Body.String())
+			}
+			message = decodeBody[model.Message](t, created)
+		}
+		attempts := messageAttempts(t, database, message.ID)
+		if len(attempts) != 1 || attempts[0].State != "failed" || attempts[0].Error == nil ||
+			*attempts[0].Error != "the session is stopped" {
+			t.Fatalf("%s: attempts = %#v, want one failed attempt reading \"the session is stopped\"", sent.name, attempts)
+		}
+		if flags := connectedOnlyFlags(t, database, message.ID); !slices.Equal(flags, []bool{true}) {
+			t.Fatalf("%s: attempt 1 carries connected_only %v, want true", sent.name, flags)
+		}
+	}
+	if sends := listener.sentTo("s1"); len(sends) != 0 {
+		t.Fatalf("the listener stored %d sends for the switches, want none", len(sends))
+	}
+	refused := listener.refusedFor("s1")
+	if len(refused) != len(switches) {
+		t.Fatalf("the listener refused %d sends for s1, want the %d switches' own", len(refused), len(switches))
+	}
+	for _, send := range refused {
+		if send["connected_only"] != true {
+			t.Fatalf("a refused switch's send = %#v, want it carrying connected_only", send)
+		}
+	}
+
+	for _, ordinary := range []struct{ name, body string }{
+		{name: "a plain message", body: "hello"},
+		{name: "a message that mentions /model", body: "Run /model anthropic/claude-x when you are back."},
+		{name: "a /model line with more words", body: "/model anthropic/claude-x and then carry on"},
+	} {
+		created := postAgentMessage(t, handler, "s1", map[string]any{"body": ordinary.body, "delivery": "steer"}, "alice")
+		if created.Code != http.StatusCreated {
+			t.Fatalf("%s: status=%d body=%s", ordinary.name, created.Code, created.Body.String())
+		}
+		message := decodeBody[model.Message](t, created)
+		if attempts := messageAttempts(t, database, message.ID); len(attempts) != 1 || attempts[0].State != "queued" {
+			t.Fatalf("%s: attempts = %#v, want one queued attempt", ordinary.name, attempts)
+		}
+		if flags := connectedOnlyFlags(t, database, message.ID); !slices.Equal(flags, []bool{false}) {
+			t.Fatalf("%s: attempt 1 carries connected_only %v, want false", ordinary.name, flags)
+		}
+	}
+	sends := listener.sentTo("s1")
+	if len(sends) != 3 {
+		t.Fatalf("the listener stored %d sends for s1, want the three ordinary messages'", len(sends))
+	}
+	for _, send := range sends {
+		if _, asked := send["connected_only"]; asked {
+			t.Fatalf("an ordinary message asked for a connected session: %#v", send)
+		}
+	}
+	if refused := listener.refusedFor("s1"); len(refused) != len(switches) {
+		t.Fatalf("the listener refused %d sends for s1 after the ordinary messages, want still %d", len(refused), len(switches))
 	}
 }
 
