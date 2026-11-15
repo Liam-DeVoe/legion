@@ -273,10 +273,11 @@ const (
 // Each claim of a pod that ended from outside it says, in a line of its own, what it got for that
 // end (endedFromOutside). The runtime's line for the pod's end is written before any claim is
 // decided and names every role the end ended, so it cannot say which were continued and which
-// charged. An end below launch_failure_limit writes the continued line at Info, naming the run
-// that counted it, its count, the limit and the observation's detail; the end that reaches the
+// charged. An end below launch_failure_limit writes the continued line at Info, carrying the keys
+// the charge line carries: both runs' counts, the limit, whether the claim's agent was starting,
+// which says which run counted the end, and the observation's detail. The end that reaches the
 // limit writes the charge line at Warn instead, and no continued line. A claim whose agent is
-// still starting names the run of a start's ends.
+// still starting counts the end in the run of a start's ends.
 func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 	limit := testLimits().LaunchFailures
 	const detail = "the cluster marked the pod a disruption target (TerminationByKubelet)"
@@ -287,8 +288,8 @@ func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 		}})
 	}
 	// wantContinued fails unless the continued line was written lines times, the last of them at
-	// Info naming run, its count and the limit, and carrying the observation's detail.
-	wantContinued := func(h *harness, lines int, run string, count int) {
+	// Info carrying the two runs' counts, the limit, starting and the observation's detail.
+	wantContinued := func(h *harness, lines int, runs Budgets, starting bool) {
 		h.t.Helper()
 		continued := h.records.of(continuedLine)
 		if len(continued) != lines {
@@ -299,7 +300,8 @@ func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 			h.t.Fatalf("%q is %s, want INFO", continuedLine, r.level)
 		}
 		for _, want := range []struct{ key, value string }{
-			{"run", run}, {"count", strconv.Itoa(count)}, {"limit", strconv.Itoa(limit)}, {"detail", detail},
+			{"podEndsNotOurs", strconv.Itoa(runs.PodEndsNotOurs)}, {"startEndsNotOurs", strconv.Itoa(runs.StartEndsNotOurs)},
+			{"limit", strconv.Itoa(limit)}, {"starting", strconv.FormatBool(starting)}, {"detail", detail},
 		} {
 			if got, ok := r.attr(want.key); !ok || got.String() != want.value {
 				h.t.Errorf("%q carries %s=%v (present %v), want %q", continuedLine, want.key, got, ok, want.value)
@@ -314,7 +316,7 @@ func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 
 			h.wantState(StateLaunching)
 			h.wantBudgets(Budgets{PodEndsNotOurs: end})
-			wantContinued(h, end, "podEndsNotOurs", end)
+			wantContinued(h, end, Budgets{PodEndsNotOurs: end}, false)
 			h.relaunched()
 			h.wantOwed(owedTask)
 		}
@@ -346,7 +348,7 @@ func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
 		endFromOutside(h)
 
 		h.wantBudgets(Budgets{StartEndsNotOurs: 1})
-		wantContinued(h, 1, "startEndsNotOurs", 1)
+		wantContinued(h, 1, Budgets{StartEndsNotOurs: 1}, true)
 	})
 }
 

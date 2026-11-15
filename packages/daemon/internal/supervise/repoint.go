@@ -144,10 +144,10 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // continued from one charged. An end with no work outstanding writes displaced's line alone.
 func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
 	starting := slices.Contains(unready, m.claim.State)
-	run, runName := &m.claim.Budgets.PodEndsNotOurs, "podEndsNotOurs"
+	run := &m.claim.Budgets.PodEndsNotOurs
 	switch {
 	case starting:
-		run, runName = &m.claim.Budgets.StartEndsNotOurs, "startEndsNotOurs"
+		run = &m.claim.Budgets.StartEndsNotOurs
 	case !m.workOutstanding():
 		return m.displaced(ctx, observation)
 	}
@@ -161,7 +161,8 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 		return m.died(ctx, observation)
 	}
 	m.log.Info(continuedFromOutsideLine,
-		"run", runName, "count", *run, "limit", m.deps.Limits.LaunchFailures, "detail", observation.Detail)
+		"podEndsNotOurs", m.claim.Budgets.PodEndsNotOurs, "startEndsNotOurs", m.claim.Budgets.StartEndsNotOurs,
+		"limit", m.deps.Limits.LaunchFailures, "starting", starting, "detail", observation.Detail)
 	m.claim.DeathCharged = true
 	if !starting {
 		m.claim.LastTurnEnd = m.deps.Clock.Now()
@@ -171,10 +172,12 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 
 // continuedFromOutsideLine is the line, at Info, of an end from outside the claim's pod that is
 // continued: counted in one of the two runs and below launch_failure_limit, so the claim's own
-// session is resumed and nothing is charged (endedFromOutside). It names the run that counted the
-// end, its count and the limit. It is pinned as a constant, beside chargedFromOutsideLine, because
-// an operator and a production check read the two whole and together: the runtime's line for the
-// pod's end says what ended, and each claim's line says what that claim got.
+// session is resumed and nothing is charged (endedFromOutside). It carries the keys the charge
+// line carries — both runs' counts, the limit, and `starting`, which says which run counted the
+// end — so an operator reads one claim's ends from outside its pod by the same keys whichever
+// line each wrote. It is pinned as a constant, beside chargedFromOutsideLine, because an operator
+// and a production check read the two whole and together: the runtime's line for the pod's end
+// says what ended, and each claim's line says what that claim got.
 const continuedFromOutsideLine = "supervise: the claim's pod ended from outside it; continued in its own session and charged nothing"
 
 // chargedFromOutsideLine is the line, at Warn, of an end from outside the claim's pod that

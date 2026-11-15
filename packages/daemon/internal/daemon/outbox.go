@@ -2257,11 +2257,11 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // the pod stays, nothing having been stopped yet, and the work a role has not pushed is kept at
 // the cost of a pod. The two are recorded apart, the one under workflow.IdleHoldBundleSave and
 // the other under workflow.IdleHoldBundleTooLarge with the size it came to. The shim refuses a
-// bundle over the bound itself, naming its size, which the runtime answers as a
-// *runtime.WorkspaceBundleTooLargeError; a bundle that arrives whole over the bound all the same
-// is read here as that error too, so a shim that sent one is still a release kept for its size. A
-// workspace with nothing unpushed bundles to nothing, and the row the previous release stored
-// goes with it, so the next pod never restores stale work.
+// bundle over the bound itself, naming its size, and the worker stream's connection answers that
+// refusal, and a bundle that arrives whole over the bound all the same, as a
+// *runtime.WorkspaceBundleTooLargeError (stream.Conn.BundleWorkspace), so a shim that sent one is
+// still a release kept for its size. A workspace with nothing unpushed bundles to nothing, and
+// the row the previous release stored goes with it, so the next pod never restores stale work.
 //
 // The copy the cadence took while this pod ran goes whichever way the save falls, in the save's
 // own transaction (store.PutWorkspaceBundle, store.DeleteWorkspaceBundle). This bundle is the
@@ -2283,7 +2283,9 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // copy owed while the save held the place — a push recorded in the meantime above all — is started
 // once the place is given back, whatever the save did: behind a save that stored no bundle it holds
 // the pod's newest work, and behind one that stored its bundle it is refused as a copy off the pod
-// that bundle is the last copy of (takeRunningCopy).
+// that bundle is the last copy of (takeRunningCopy). A copy that came to nothing for a fault while
+// the save held the place, such as a push's copy that found no live role, leaves its retry owed
+// past the give-back (runningCopy.missed).
 //
 // The bundle's time is the store's clock as the save's take begins, read once the save holds the
 // issue's place and before it asks the shim (store.Store.BeginWorkspaceCopy), as a running copy's
@@ -2324,13 +2326,6 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		return fmt.Errorf("release save of %s: %w", row.Issue, err)
 	}
 	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
-	// No shim answers a whole body over the bound: the shim refuses it on its size before it reads
-	// it (internal/shim's runBundle, MaxBytes), and the stream answers that refusal as
-	// runtime.WorkspaceBundleTooLargeError. This guard is the second line for a bundler that
-	// broke that rule, and it cannot run against any shim today, so no test drives it.
-	if size := bundle.Size(); err == nil && size > runtime.MaxWorkspaceBundleBytes {
-		err = &runtime.WorkspaceBundleTooLargeError{Bytes: size, Max: runtime.MaxWorkspaceBundleBytes}
-	}
 	var tooLarge *runtime.WorkspaceBundleTooLargeError
 	switch {
 	case errors.As(err, &tooLarge):

@@ -4617,7 +4617,8 @@ The daemon counts these ends in two runs, by whether the claim's agent was ready
 A pod that uses more memory than it requested can drive its own node into pressure, its start as much as its work, and that eviction carries `DisruptionTarget` exactly as a neighbour's does, so the condition cannot tell the two apart.
 Both runs are kept in the claim's row (`claims.pod_ends_not_ours` and `claims.start_ends_not_ours`), so a daemon restart starts neither again.
 Each claim writes its own line for what it got:
-`supervise: the claim's pod ended from outside it; continued in its own session and charged nothing` at info for an end below the limit, naming the run that counted it (`podEndsNotOurs` or `startEndsNotOurs`), its `count` and the `limit`, and, for the end that reaches the limit, `supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts` at warn in its place.
+`supervise: the claim's pod ended from outside it; continued in its own session and charged nothing` at info for an end below the limit, and, for the end that reaches the limit, `supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts` at warn in its place.
+Both lines carry the same keys: the two runs' counts (`podEndsNotOurs` and `startEndsNotOurs`), the `limit`, `starting`, which says which run counted the end (`true` for the run of a start's ends), and the `detail` of the reading.
 
 The first run counts the ends that find the claim's agent ready with work outstanding, which is the condition a death is charged under: a task the claim holds, or a turn that was open when the pod ended, such as one a message started.
 When a claim's pod ends from outside it for the third time with no turn of that claim completed between those ends, the daemon charges that end as it charges a death of the claim's own.
@@ -5002,7 +5003,8 @@ The daemon keeps a copy of each issue workspace's unpushed work outside the pod 
 Three triggers take that copy:
 the end of each turn of the issue, a cadence that takes one every 5 minutes while a turn of that issue runs (`runningCopyPeriod`, `packages/daemon/internal/daemon/workspace_copies.go`), and each push of the issue's branch that the daemon records (`copyWorkspaceAtPush`, the same file).
 The 5 minutes run from the start of the copy before it and not from its end, and no `legion.yaml` key changes them.
-The daemon reads the cadence on its own minute tick, and an issue is due once less than one tick of the 5 minutes is left since its last copy started, so while that tick comes on time two copies of one turn start at most 5 minutes apart and never less than 4 minutes apart.
+The daemon reads the cadence on its own minute tick, and an issue is due once less than one tick of the 5 minutes is left since its last copy started, so while that tick comes on time two of the cadence's copies of one turn start at most 5 minutes apart and never less than 4 minutes apart.
+The copies a turn's end and a push take, and a copy owed behind one in flight, start when they come, whatever the period.
 A copy the shim is still building after 4 minutes is abandoned and logged `budget_spent`, so even a slow copy has ended by the tick that starts the next one, and two copies of one workspace never run at once.
 Between turns the cadence copies an issue only to retry a copy of it that came to nothing, as described below, and never on its period alone:
 the turn that ended took the copy that holds that work, and a workspace nobody writes would store the same bundle every period for as long as the pod stands.
@@ -5024,15 +5026,20 @@ A workspace that holds nothing unpushed drops the issue's running copy instead, 
 A copy that is not taken or not stored holds nothing back:
 the daemon logs `running copy: no copy of the issue workspace was stored` with the reason by name
 — `claims_unread`, `no_live_role`, `clock_unread`, `bundler_failed`, `budget_spent`, `bundle_too_large`, `save_failed`, `drop_failed` or `release_bundle_unread` —
-the issue keeps the copy it had, and the next period tries again.
+the issue keeps the copy it had, and the next period tries again, unless the reason is `bundle_too_large` (below).
 That retry comes between turns as well: the cadence takes an issue whose last copy came to nothing again once its 5 minutes are up, whether or not a turn of it runs, until a copy of it is stored, so the end of a turn whose copy failed is copied within the period and an eviction of the idle pod after that restores it.
 A retry waits for a live role of its issue, since an issue with none, released or with every role stopped, has no running pod whose work a copy could hold.
 The cadence skips such an issue with no log line and keeps its retry, which runs at the first tick after a resumed or relaunched pod's role is live again and the 5 minutes are up.
 An issue that no claim names at all is forgotten, retry included.
-A copy that is stored, a workspace that holds nothing unpushed, a copy a push overtook, and the refusals `release_bundle_saved` and `newer_copy_stands` below, which are no fault, owe no retry.
+A copy that is stored, a workspace that holds nothing unpushed, a copy a push overtook, a copy refused as `bundle_too_large`, and the refusals `release_bundle_saved` and `newer_copy_stands` below, which are no fault, owe no retry.
+A copy that comes to nothing for a fault while another copy or an idle release's save of its issue is in flight owes its retry all the same, and the issue keeps that retry whatever the run in flight comes to, since that run read the workspace before whatever asked for the copy was written.
+A push whose copy finds no live role while a copy of its issue is in flight is the case that needs it: the copy in flight is not stored, as a push overtook it, and nothing else follows it.
 The daemon keeps the retry in memory, so a daemon that restarts owes none, and the issue's next turn's end or push copies it again.
 A workspace over the 40 MiB bound is refused by the shim itself, which builds the bundle, finds it too large and answers with its size in place of its bytes;
 the daemon logs that copy under `bundle_too_large` with the size as `bytes`, and cancels an idle release's save over the same bound under the `bundle_too_large` hold ([Idle release](#idle-release)).
+A bundle that arrives whole over the bound is read the same way (`BundleWorkspace`, `packages/daemon/internal/stream/conn.go`).
+Such a copy owes no retry, since the work stays over the bound until a role pushes or drops some of it:
+the cadence asks again at its next period only while a turn of the issue runs, and a turn's end or a push asks as it comes.
 
 Once an idle release has saved its bundle, that bundle is the pod's last copy.
 No running copy is taken off that pod afterwards, at a push or for any other reason, and no running copy taken earlier supersedes it, since the save deletes the issue's running copy in its own transaction.

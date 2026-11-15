@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -208,14 +209,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBun
 		t.Fatalf("after a save whose bundler failed the release is marked = %t and the store holds a bundle = %t, want the release cancelled with no bundle",
 			rig.marked(t), rig.bundled(t))
 	}
-	stored := rig.awaitCopy(t, len(atPush.Bundle))
-	var pushedAt time.Time
-	if err := rig.pool.QueryRow(ctx, `select pushed_at from issue_pushes where issue = $1`, rig.issue.Key).Scan(&pushedAt); err != nil {
-		t.Fatalf("read the push record of %s: %v", rig.issue.Key, err)
-	}
-	if !stored.At.After(pushedAt) {
-		t.Fatalf("the stored copy was taken at %s, want the push's copy, its take begun after the push recorded at %s", stored.At, pushedAt)
-	}
+	rig.copiedAfterThePush(t, rig.awaitCopy(t, len(atPush.Bundle)))
 	if asked := rig.bundler.reads(); len(asked) != 1 {
 		t.Fatalf("the cadence's bundler was asked %v, want the one copy the push owed", asked)
 	}
@@ -491,4 +485,117 @@ func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing
 	}) {
 		t.Fatalf("a turn's end that found no live role was not logged at WARN; the daemon logged:\n%s", rig.logs.String())
 	}
+}
+
+// copiedAfterThePush fails unless stored, the issue's running copy, was taken after the issue's
+// newest recorded push, which is what the restore of the next pod asks of it.
+func (r *copyRig) copiedAfterThePush(t *testing.T, stored heldCopy) {
+	t.Helper()
+	var pushedAt time.Time
+	if err := r.pool.QueryRow(context.Background(), `select pushed_at from issue_pushes where issue = $1`, r.issue.Key).Scan(&pushedAt); err != nil {
+		t.Fatalf("read the push record of %s: %v", r.issue.Key, err)
+	}
+	if !stored.At.After(pushedAt) {
+		t.Fatalf("the stored copy was taken at %s, want its take begun after the push recorded at %s", stored.At, pushedAt)
+	}
+}
+
+// A push that overtakes a copy in flight while the issue has no live role leaves the issue owing
+// a retry. The push's copy looks for its role before it takes the issue's place, finds none, and
+// so is not owed behind the copy in flight; the copy in flight is not stored, since the push
+// overtook it. Were the overtaken copy to settle the issue on the premise that the push's copy
+// follows it, nothing would follow and nothing would be owed: with a role live again, the idle
+// pod's newest copy would stay older than both the turn's end and the push for as long as the pod
+// stood, and an eviction of that pod would lose both. The first due tick with a live role takes
+// the copy instead, after the push, and the stored copy pays the retry.
+func TestAPushCopyThatFindsNoRoleBesideACopyInFlightLeavesTheOvertakenCopyOwingARetry(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	rig.clock.advance(0)
+	apply := rig.pushEngine(t)
+	release := make(chan struct{})
+	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return runtime.WorkspaceBundle{}, ctx.Err()
+		}
+		return copyRigBundle, nil
+	})
+	// The turn's end's copy is still being built when the role goes and the push arrives.
+	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	rig.awaitAsks(t, 1)
+	rig.setClaimState(t, "suspended")
+	apply("c1", "c2")
+	rig.awaitUnsaved(t, runningCopyNoRole, 1)
+	rig.setClaimState(t, "idle")
+	close(release)
+
+	rig.awaitLine(t, runningCopyOvertakenLine)
+	rig.awaitQuiet(t)
+	if lines := rig.lines(t, runningCopyOvertakenLine); len(lines) != 1 {
+		t.Fatalf("the daemon logged %d overtaken copies, want the one copy in flight", len(lines))
+	}
+	if facts, held := rig.facts(t); held {
+		t.Fatalf("the issue holds %+v, want the overtaken copy unstored", facts)
+	}
+	if owed := rig.w.copies.retries(); !slices.Equal(owed, []string{rig.issue.Key}) {
+		t.Fatalf("after the overtaken copy ended the cadence owes retries of %v, want %s's: the push's copy came to nothing and no copy followed the one it overtook",
+			owed, rig.issue.Key)
+	}
+
+	// The first due tick with a live role takes the copy, after the push, and stores it.
+	atPush := copyRigBundle
+	atPush.Bundle = []byte("PACK the workspace after the push")
+	rig.bundler.answers(atPush, nil)
+	rig.wind(t)
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.copiedAfterThePush(t, rig.awaitCopy(t, len(atPush.Bundle)))
+
+	// The stored copy paid the retry, so the period after it takes nothing.
+	rig.wind(t)
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.asksStay(t, 2)
+}
+
+// A copy that comes to nothing while an idle release's save holds the issue's place leaves its
+// retry owed past the save's give-back. The push lands here while the save holds the place and the
+// issue has no live role, so its copy finds none and is not owed behind the save; the save's
+// bundler then fails and the release is cancelled, so no bundle holds the push's work either. Were
+// the give-back to leave the issue's retry as the save found it, nothing would copy the idle pod
+// again and its newest copy would stay older than the push.
+func TestACopyThatCameToNothingWhileAReleaseSaveHeldThePlaceIsRetriedOnceTheReleaseIsCancelled(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	rig.clock.advance(0)
+	apply := rig.pushEngine(t)
+	atPush := copyRigBundle
+	atPush.Bundle = []byte("PACK the workspace after the push")
+	rig.bundler.answers(atPush, nil)
+	rig.rt.bundleErr = errors.New("the launcher is gone")
+	rig.rt.beforeBundle = func() {
+		rig.setClaimState(t, "suspended")
+		apply("c0", "c2")
+		rig.awaitUnsaved(t, runningCopyNoRole, 1)
+		rig.setClaimState(t, "idle")
+	}
+
+	rig.w.releaseIdlePods(ctx)
+	rig.drain(t)
+	if rig.marked(t) || rig.bundled(t) {
+		t.Fatalf("after a save whose bundler failed the release is marked = %t and the store holds a bundle = %t, want the release cancelled with no bundle",
+			rig.marked(t), rig.bundled(t))
+	}
+	if owed := rig.w.copies.retries(); !slices.Equal(owed, []string{rig.issue.Key}) {
+		t.Fatalf("after the save gave the place back the cadence owes retries of %v, want %s's: the push's copy came to nothing while the save held the place",
+			owed, rig.issue.Key)
+	}
+	if asked := rig.bundler.reads(); len(asked) != 0 {
+		t.Fatalf("the cadence's bundler was asked %v, want nothing before the retry is due", asked)
+	}
+
+	// The first due tick with a live role takes the copy, after the push, and stores it.
+	rig.wind(t)
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.copiedAfterThePush(t, rig.awaitCopy(t, len(atPush.Bundle)))
 }

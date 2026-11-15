@@ -289,7 +289,9 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 // that refusal is the one that names a size over the bound. It is answered as a
 // *runtime.WorkspaceBundleTooLargeError, which the daemon records as a workspace too large to
 // carry; every other refusal, one naming a size within the bound or none, is a *RefusedError, a
-// bundle the shim could not build.
+// bundle the shim could not build. An answer that carries a bundle over the bound all the same is
+// that same *runtime.WorkspaceBundleTooLargeError, carrying the size it arrived at, so no caller
+// reads a bundle's size against the bound itself.
 func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (runtime.WorkspaceBundle, error) {
 	id := rand.Text()
 	frame := shimwire.BundleWorkspace{
@@ -312,6 +314,9 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 				return runtime.WorkspaceBundle{}, &runtime.WorkspaceBundleTooLargeError{Bytes: answer.SizeBytes, Max: frame.MaxBytes}
 			}
 			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
+		}
+		if size := len(answer.Bundle); size > frame.MaxBytes {
+			return runtime.WorkspaceBundle{}, &runtime.WorkspaceBundleTooLargeError{Bytes: size, Max: frame.MaxBytes}
 		}
 		// The shim's own time of its reading is left out: it is the node's clock, and a copy's
 		// time is the store's when its take began (store.Store.BeginWorkspaceCopy).

@@ -1005,3 +1005,52 @@ func TestTheCadenceForgetsTheRetryOfAnIssueNoClaimNamesAndKeepsAClaimedIssues(t 
 		t.Fatalf("the cadence still remembers %s, which no claim names", unclaimed)
 	}
 }
+
+// A copy refused for its size is no fault to retry, so it owes no retry: the work stays over the
+// bound until a role pushes or drops some of it, and a retry between turns would have the shim
+// build the same refused bundle every period for as long as the idle pod stands, none of which
+// could be stored. A turn's end refused for its size on an idle claim is therefore asked once, and
+// the periods after it ask nothing. With a turn running, the cadence asks again at its next period,
+// as it asks of every issue in a turn, and not inside the period. The shim refuses the bundle with
+// its size, as the fake connection answers it, as production's does.
+func TestACopyRefusedForItsSizeOwesNoRetryAndIsAskedAgainOnlyInsideATurn(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	rig.clock.advance(0)
+	over := copyRigBundle
+	over.Bundle = make([]byte, runtime.MaxWorkspaceBundleBytes+1)
+	rig.conn.SetWorkspaceBundle(over)
+	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
+		return shimBundle(ctx, rig.conn, rig.issue.Key)
+	})
+
+	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	rig.awaitUnsaved(t, runningCopyTooLarge, 1)
+	rig.awaitQuiet(t)
+	if owed := rig.w.copies.retries(); len(owed) != 0 {
+		t.Fatalf("the copy refused for its size left retries of %v owed, want none", owed)
+	}
+
+	// The idle issue is left alone at every period after it.
+	for range 3 {
+		rig.wind(t)
+		rig.w.copyWorkingWorkspaces(ctx)
+	}
+	rig.asksStay(t, 1)
+	if lines := rig.unsavedFor(t, runningCopyTooLarge); len(lines) != 1 {
+		t.Fatalf("the daemon logged %d copies refused for their size, want the turn's end's alone; it logged:\n%s", len(lines), rig.logs.String())
+	}
+
+	// A turn runs, and its period is long up: the cadence asks again, and then not again until the
+	// next period.
+	rig.turnStart(t)
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.awaitUnsaved(t, runningCopyTooLarge, 2)
+	rig.awaitQuiet(t)
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.asksStay(t, 2)
+	rig.wind(t)
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.awaitAsks(t, 3)
+	rig.awaitQuiet(t)
+}

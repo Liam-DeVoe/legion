@@ -23,8 +23,8 @@ const MaxWorkspaceBundleBytes = 40 << 20
 // It is a refusal of its own and not one more bundle that could not be built, because the two
 // readers record it by name: an idle release's save cancels the release under
 // workflow.IdleHoldBundleTooLarge, and a copy of a running pod's workspace is logged under
-// `bundle_too_large`. Each reads a bundle that arrives whole over MaxWorkspaceBundleBytes as this
-// error too.
+// `bundle_too_large`. The connection answers a bundle that arrives whole over
+// MaxWorkspaceBundleBytes as this error too, so neither reader checks a bundle's size itself.
 type WorkspaceBundleTooLargeError struct {
 	Bytes int
 	Max   int
