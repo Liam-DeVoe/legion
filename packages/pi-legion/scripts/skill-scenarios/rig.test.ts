@@ -282,6 +282,7 @@ describe("a setup that fails after install_model_route", () => {
         "on_exit",
         "drop_unready_keys",
         "install_model_route",
+        "given_omp",
         "cmd_profile",
       ].map(fn),
       "checkout_commit() { printf 'fixture parents=base\\n'; }",
@@ -764,7 +765,7 @@ echo done
     );
     const run = () =>
       bash(
-        `${fn("fail")}\n${fn("pinned_omp")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
+        `${fn("fail")}\n${fn("given_omp")}\n${fn("pinned_omp")}\n${fn("pinned_command")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
         [label],
         { PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
       );
@@ -1245,7 +1246,7 @@ describe("launch", () => {
 tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
 sleep() { command sleep 0.05; }`;
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
+      `${fn("fail")}\n${fn("given_omp")}\n${fn("pinned_omp")}\n${fn("pinned_command")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
       [run],
       { PATH: `${bin}:${childEnv.PATH}` }
     );
@@ -1255,6 +1256,106 @@ sleep() { command sleep 0.05; }`;
     );
   });
 });
+
+// own_dispatch on a Postgres the batch was given (SKILL_SCENARIOS_POSTGRES_URL): the run's own
+// database there is scripts/e2e/lib/loopback-dsn.sh's run_database_url, which reads the URL with
+// libpq. The server's CREATE DATABASE, the Dispatch server and the seed are stood in for, so a row
+// reads what the server was asked and the connection string the run's Dispatch was given.
+const withoutPython = skipWithout("python3");
+const withoutLibpq =
+  !withoutPython &&
+  Bun.spawnSync([
+    "python3",
+    "-c",
+    'import ctypes.util, sys; sys.exit(0 if ctypes.util.find_library("pq") else 1)',
+  ]).exitCode !== 0;
+if (withoutLibpq) {
+  console.warn(
+    `Skipped the own_dispatch tests in ${import.meta.path}. run_database_url reads each URL with ` +
+      `libpq, and ctypes.util.find_library("pq") finds none on this host; install libpq5.`
+  );
+}
+describe.skipIf(withoutPython || withoutLibpq)(
+  "own_dispatch on a Postgres the batch was given",
+  () => {
+    /** One run's own_dispatch on the server `url` names: the run's database, its exit, what the
+     * server was asked (`sql`) and the connection string the run's Dispatch was given. */
+    function ownDispatch(url: string) {
+      const run = freshDir("own-dispatch");
+      const result = bash(
+        [
+          fn("fail"),
+          fn("safe_url"),
+          fn("own_dispatch"),
+          '. "$2/scripts/e2e/lib/loopback-dsn.sh"',
+          'pg_sql() { printf \'%s\\n\' "$2" >>"$R/sql"; }',
+          'start_dispatch() { printf \'%s\\n\' "$1" >"$R/database-url"; dispatch_port=5555; }',
+          "bun() { :; }",
+          "R=$1 root=$2 here=/rig services_postgres=$1/postgres-url",
+          'printf \'%s\\n\' "$3" >"$services_postgres"',
+          "own_dispatch project",
+        ].join("\n"),
+        [run, root, url]
+      );
+      const [sql, databaseUrl] = ["sql", "database-url"].map((file) =>
+        existsSync(path.join(run, file)) ? readFileSync(path.join(run, file), "utf8") : ""
+      );
+      return {
+        database: `run_${path.basename(run).replaceAll("-", "_")}`,
+        code: result.code,
+        stderr: result.stderr,
+        sql,
+        databaseUrl,
+      };
+    }
+
+    // The URLs scripts/e2e/lib/loopback-dsn.test.ts pins run_database_url with (its first row is
+    // the one a shell rewrite of the URL got wrong: a `?` inside the user name, which libpq reads
+    // as part of it), each with the connection string the helper rebuilds for the run's database.
+    // Catches: a run's Dispatch given a string a text join of the URL's parts would make, which
+    // names another database, another user or another host.
+    test.each([
+      [
+        "postgres://u?x:p@localhost:5433/db",
+        "host='localhost' password='p' port='5433' user='u?x'",
+      ],
+      ["postgres://evil.example?x=@localhost", "host='localhost' user='evil.example?x='"],
+      ["postgres://localhost/db?", "host='localhost'"],
+      [
+        "postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable",
+        "host='127.0.0.1' port='5433' sslmode='disable' user='legion_test'",
+      ],
+      ["postgres://u@localhost:5432@10.1.2.3/db", "host='localhost' port='5432@10.1.2.3' user='u'"],
+      ["postgres://evil.example?@localhost/db", "host='localhost' user='evil.example?'"],
+      [
+        "postgres://u@127.0.0.1:5433/postgres?dbname=other&sslmode=disable",
+        "host='127.0.0.1' port='5433' sslmode='disable' user='u'",
+      ],
+    ])("%s gives the run's Dispatch its own database there", (url, rest) => {
+      const { database, ...made } = ownDispatch(url);
+      expect(made).toEqual({
+        code: 0,
+        stderr: "",
+        sql: `CREATE DATABASE ${database}\n`,
+        databaseUrl: `dbname='${database}' ${rest}\n`,
+      });
+    });
+
+    // Catches: a run that makes its database on a server that is not this machine's, which the
+    // run's Dispatch would refuse only after the database was made.
+    test("a server that is not this machine's is refused by name, before any database is made", () => {
+      expect(ownDispatch("postgres://legion_test:secret@db.prod.example/db")).toEqual({
+        database: expect.any(String),
+        code: 1,
+        stderr:
+          "skill-scenarios: SKILL_SCENARIOS_POSTGRES_URL must name 127.0.0.1, localhost or ::1: " +
+          "libpq reads the host db.prod.example, and each run makes a database of its own there\n",
+        sql: "",
+        databaseUrl: "",
+      });
+    });
+  }
+);
 
 // red-at-the-head (rig.sh's header, red_fixture, run_red_at_the_head, cmd_run and cmd_batch): the
 // world's red at the head of worker_fixture's pull request, the one role booted on it, and the
@@ -1358,7 +1459,7 @@ function greenRun(name: string): string {
 function redFixture(world: string): string {
   const run = greenRun(`red-${world}`);
   const result = bash(
-    `${fn("fail")}\n${fn("red_fixture")}\nR=$1 worker_key=$2 worker_repo=$3\nred_fixture "$4"`,
+    `${fn("fail")}\n${fn("red_world")}\n${fn("red_fixture")}\nR=$1 worker_key=$2 worker_repo=$3\nred_fixture "$4"`,
     [run, RED_KEY, RED_REPO, world]
   );
   if (result.code !== 0) throw new Error(`red_fixture ${world} failed: ${result.stderr}`);
@@ -1514,8 +1615,9 @@ const envelope = (notify: number, passed: string[], failed: string[]) => ({
 });
 
 /** The rig reporting world `l`'s check between the two turns (red_report), with `listener` as
- * the Envoy the batch's services_env names. The shell runs as a child this test awaits, never a
- * synchronous one, so the listener of the row answers the publish while it runs. */
+ * the Envoy the batch's services_env names, and what it printed. The shell runs as a child this
+ * test awaits, never a synchronous one, so the listener of the row answers the publish while it
+ * runs. */
 async function redReport(run: string, listener: string) {
   const token = path.join(run, "envoy-token");
   writeFileSync(token, "rig-envoy-token\n");
@@ -1525,15 +1627,21 @@ async function redReport(run: string, listener: string) {
     [
       "bash",
       "-c",
-      `${fn("fail")}\n${fn("note")}\n${fn("red_report")}\nR=$1 services_env=$2\nred_report`,
+      `${fn("fail")}\n${fn("note")}\n${fn("red_report")}\nR=$1 services_env=$2 here=$3\nred_report`,
       "-",
       run,
       services,
+      import.meta.dir,
     ],
     { env: childEnv, stdout: "pipe", stderr: "pipe" }
   );
-  const [stderr, exit] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+  const [stdout, stderr, exit] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
   if (exit !== 0) throw new Error(`red_report: ${stderr}`);
+  return stdout;
 }
 
 describe("red_fixture", () => {
@@ -2009,10 +2117,10 @@ describe("red_fixture", () => {
     ]);
   });
 
-  // Catches: a world.json that loses the world, its check, its settlement, the failing line or
-  // the failing test's name, each of which the scorer reads the run's answers against (score.ts,
-  // redAtTheHead: the record is judged against `log` and the role's `dispatch search` against
-  // `test`).
+  // Catches: a world.json that loses the world, its check, its settlement, the failing line, the
+  // failing test's name or a fact of the world, each of which the scorer reads the run's answers
+  // against (score.ts, redAtTheHead: the record is judged against `log` and the role's `dispatch
+  // search` against `test`) or run_red_at_the_head runs the world by.
   test("world.json carries the world, its check, its job, its settlement and its failing line", () => {
     const run = redFixture("g");
     expect(JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"))).toEqual({
@@ -2029,14 +2137,131 @@ describe("red_fixture", () => {
       job_id: RED_JOB_ID,
       log: "(fail) notify > retries a refused send [3.00ms]",
       test: "notify > retries a refused send",
+      role: "tester",
+      phase: "testing",
+      handoff: "test",
+      turns: 2,
+      rerun: true,
+      round: "goes-on",
+      disposal: true,
+      report: false,
+      decline_fails: false,
     });
+  });
+
+  // red_world is the one place a world's facts are written: red_fixture copies them into
+  // world.json, run_red_at_the_head runs the world by them and score.ts's redAtTheHead scores it
+  // by them. Catches: a fact that moves in one world, which every reader would then take, and a
+  // world outside the twelve that prints facts at all.
+  test("red_world prints each world's facts, and nothing for a world outside the twelve", () => {
+    const tester = { role: "tester", phase: "testing", handoff: "test" };
+    const reviewer = { role: "reviewer", phase: "reviewing", handoff: "review" };
+    const reruns = { rerun: true, turns: 2 };
+    const none = { rerun: false, turns: 1, disposal: false };
+    const plain = { report: false, decline_fails: false };
+    const facts: Record<RedWorld, object> = {
+      a: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: true, ...plain },
+      b: {
+        after: "red",
+        ...tester,
+        ...reruns,
+        round: "fails-naming-check",
+        disposal: false,
+        ...plain,
+      },
+      c: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: false, ...plain },
+      d: { after: "red", ...tester, ...none, round: "fails", ...plain },
+      e: { after: "red", ...tester, ...none, round: "fails-spent", ...plain },
+      f: { after: "red", ...tester, ...none, round: "fails", ...plain },
+      g: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: true, ...plain },
+      h: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: false, ...plain },
+      i: { after: "green", ...reviewer, ...reruns, round: "goes-on", disposal: true, ...plain },
+      j: {
+        after: "red",
+        ...reviewer,
+        ...reruns,
+        round: "fails-naming-check",
+        disposal: false,
+        ...plain,
+      },
+      k: {
+        after: "green",
+        ...tester,
+        ...reruns,
+        round: "goes-on",
+        disposal: true,
+        report: false,
+        decline_fails: true,
+      },
+      l: {
+        after: "green",
+        ...tester,
+        ...reruns,
+        round: "goes-on",
+        disposal: true,
+        report: true,
+        decline_fails: false,
+      },
+    };
+    expect(
+      RED_WORLDS.map((world) =>
+        JSON.parse(bash(`${fn("red_world")}\nred_world "$1"`, [world]).stdout)
+      )
+    ).toEqual(RED_WORLDS.map((world) => facts[world]));
+    expect(bash(`${fn("red_world")}\nred_world "$1"`, ["z"])).toEqual({
+      code: 4,
+      stdout: "",
+      stderr: "",
+    });
+  });
+
+  // Catches: a red_report that trims routes by their shape, which takes any other route of three
+  // replies with them, a mark the gh stand-in drops when it writes fixtures.json back (a re-run
+  // pressed before the report writes it, as a pull request body edit does), which would leave
+  // world l's counted set unreported for good, and a mark in a world the rig reports nothing in.
+  test("world l marks the routes red_report trims, and the mark outlives the stand-in's writes", async () => {
+    /** Each route of the run's fixtures.json that carries the mark, with its count of replies. */
+    const marked = (run: string) => {
+      const fixtures: { routes: { match: string; replies?: unknown[]; unreported?: boolean }[] } =
+        JSON.parse(readFileSync(path.join(run, "fixtures.json"), "utf8"));
+      return fixtures.routes
+        .filter((route) => route.unreported === true)
+        .map((route) => [route.match, route.replies?.length]);
+    };
+    const counted = [
+      "^gh api .*graphql.*statusCheckRollup",
+      "^gh pr view",
+      "^gh pr checks\\b.*\\s--required\\b",
+      "^gh pr checks",
+    ];
+    expect(RED_WORLDS.filter((world) => marked(redFixture(world)).length > 0)).toEqual(["l"]);
+
+    const run = redFixture("l");
+    expect(marked(run)).toEqual(counted.map((match) => [match, 3]));
+    await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    expect(marked(run)).toEqual(counted.map((match) => [match, 3]));
+    // A listener that is gone: the report is noted and red_report goes on.
+    expect(await redReport(run, "http://127.0.0.1:1")).toContain(
+      "skill-scenarios: the report of the check reached no listener at http://127.0.0.1:1\n"
+    );
+    expect(marked(run)).toEqual([]);
+    const fixtures: { routes: { match: string; replies?: unknown[] }[] } = JSON.parse(
+      readFileSync(path.join(run, "fixtures.json"), "utf8")
+    );
+    expect(
+      counted.map(
+        (match) => fixtures.routes.find((route) => route.match === match)?.replies?.length
+      )
+    ).toEqual([2, 2, 2, 2]);
   });
 });
 
 // run_red_at_the_head with every process it starts stood in for: the run's Dispatch, the seeds,
 // both fixtures, the rig's own report of world `l`'s check (red_report), the daemon stand-in
 // (start_process), the worker pane (`bun`) and the turns (launch). Each stand-in records its
-// call, so a row reads what the run passed on.
+// call, so a row reads what the run passed on. The red_fixture stand-in writes what the real one
+// writes to world.json that the run reads: the world's facts, from the rig's own red_world, and
+// its check.
 describe("run_red_at_the_head", () => {
   const standIns = `
 own_dispatch() { dispatch_port=5555; }
@@ -2048,7 +2273,13 @@ worker_fixture() {
   printf 'worker_fixture %s\\n' "$*" >>"$R/calls"
   jq -n '{pr:${RED_PR}, head:"${RED_HEAD}", branch:"legion/${RED_KEY}"}' >"$R/world.json"
 }
-red_fixture() { printf 'red_fixture %s\\n' "$*" >>"$R/calls"; }
+write_facts() {
+  jq --argjson facts "$(red_world "$1")" --arg world "$1" \\
+    '. + $facts + {check:(${JSON.stringify(Object.fromEntries(RED_WORLDS.map((world) => [world, RED_WORLD[world].check])))})[$world]}' \\
+    "$R/world.json" >"$R/world.red.json"
+  mv "$R/world.red.json" "$R/world.json"
+}
+red_fixture() { printf 'red_fixture %s\\n' "$*" >>"$R/calls"; write_facts "$1"; }
 start_process() {
   printf 'start_process %s\\n' "$*" >>"$R/calls"
   daemon_pid=4242
@@ -2069,10 +2300,13 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
     [
       fn("fail"),
       fn("note"),
-      // The three helpers run_red_at_the_head shares with run_tester_proof: the seeds and the
-      // world's read (worker_world), the pane and the daemon stand-in (boot_worker), and each
-      // turn's line of turns.txt (record_turn).
+      // The helpers run_red_at_the_head shares with run_tester_proof: the seeds and the world's
+      // read (worker_world), the architect's assignment (architect_assignment), the pane and the
+      // daemon stand-in (boot_worker), and each turn's line of turns.txt (record_turn); and the
+      // world's facts (red_world), which worker_world seeds the issue by.
       fn("worker_world"),
+      fn("red_world"),
+      fn("architect_assignment"),
       fn("boot_worker"),
       fn("record_turn"),
       fn("run_red_at_the_head"),
@@ -2146,6 +2380,33 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
     );
   });
 
+  // The text each turn of a world gives its agent, which no fact of the world may change. Catches:
+  // an assignment of another role's phase, a told line in a world whose counted set reports its
+  // red, and a resume task of another phase.
+  test("each world's prompts are the architect's assignment and the resume task, word for word", () => {
+    const prompts = RED_WORLDS.map((world) => {
+      const run = freshDir(`red-prompts-${world}`);
+      mkdirSync(path.join(run, "logs"));
+      const launch = `launch() { cat "$R/prompt.txt" >>"$R/prompts"; printf 'exit=0\\n' >"$R/out.txt"; }`;
+      const result = bash(redRunScript("/rig", [launch]), [run, world]);
+      if (result.code !== 0) throw new Error(`run_red_at_the_head ${world}: ${result.stderr}`);
+      return readFileSync(path.join(run, "prompts"), "utf8");
+    });
+    const pr = `PR #${RED_PR} (https://github.com/${RED_REPO}/pull/${RED_PR}, repository ${RED_REPO}) is at ${RED_HEAD}.`;
+    const handoff = `Handoff: implement version 4 (dispatch handoff-read --issue ${RED_KEY} --phase implement --version 4).`;
+    expect(prompts).toEqual(
+      RED_WORLDS.map((world) => {
+        const reviewer = world === "i" || world === "j";
+        const told = world === "l" ? " The daemon reports test (notify) red at that head." : "";
+        const assignment = reviewer
+          ? `Architect → reviewer, ${RED_KEY}. The tester has finished: ${pr}${told} ${handoff} Tester's verdict: pass. Review it and finish your phase.\n`
+          : `Architect → tester, ${RED_KEY}. The implementer has finished: ${pr}${told} ${handoff} Test it and finish your phase.\n`;
+        const resume = `Continue greet(): a greeting helper for the widgets CLI. Issue: ${RED_KEY}. Phase: ${reviewer ? "reviewing" : "testing"}. Resume the existing phase work.\n`;
+        return world === "d" || world === "e" || world === "f" ? assignment : assignment + resume;
+      })
+    );
+  });
+
   // Catches: a run whose fixtures.json the gh stand-in refuses, which would boot its worker and
   // answer each of the role's `gh` calls with the refusal, a head that never turns scored as the
   // role's failure. worker_world runs the stand-in's own parse once the fixtures are written, so
@@ -2155,7 +2416,7 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
     // red_fixture as a typo in its jq would leave the routes, and the real `bun` for the
     // stand-in's own parse; every other `bun` call is recorded, as above.
     const extra = [
-      `red_fixture() { printf 'red_fixture %s\\n' "$*" >>"$R/calls"; cp "$R/red.json" "$R/fixtures.json"; }`,
+      `red_fixture() { printf 'red_fixture %s\\n' "$*" >>"$R/calls"; cp "$R/red.json" "$R/fixtures.json"; write_facts "$1"; }`,
       `bun() { if [ "$2" = --check ]; then command bun "$@"; else printf 'bun %s\\n' "$*" >>"$R/calls"; fi; }`,
     ];
     const seen = ["^gh run rerunn", "^gh run rerun"].map((follows) => {

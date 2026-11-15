@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -4114,9 +4115,26 @@ const redTest = "notify > retries a refused send";
 /** The error that read answers in world h, where the log cannot be read. */
 const redLogError =
   "failed to get run log: HTTP 410: Gone (https://api.github.com/repos/example/widgets/actions)";
+/** Each world's facts as rig.sh's red_world prints them, which red_fixture writes into world.json
+ * beside the world's red: read from the rig itself, so each row below is scored by the facts a
+ * run of its world is given. */
+const redFacts: Record<string, object> = (() => {
+  const worlds = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
+  const printed = Bun.spawnSync([
+    "bash",
+    "-c",
+    `${scriptFunctions(path.join(import.meta.dir, "rig.sh"))("red_world")}\nfor world in "$@"; do red_world "$world" || exit; done`,
+    "-",
+    ...worlds,
+  ]);
+  if (printed.exitCode !== 0) throw new Error(`red_world: ${printed.stderr.toString()}`);
+  const lines = printed.stdout.toString().trim().split("\n");
+  return Object.fromEntries(worlds.map((world, index) => [world, JSON.parse(lines[index] ?? "")]));
+})();
 /** world.json as rig.sh's red_fixture leaves it: worker_fixture's world, the world's red, the
- * failing line its log read answers (`log`) and the full name of the test that failed (`test`). */
-const redWorldFile = (fields: object = {}) =>
+ * failing line its log read answers (`log`), the full name of the test that failed (`test`) and
+ * the world's facts (red_world). */
+const redWorldFile = (fields: { world?: string } = {}) =>
   JSON.stringify({
     key: "LWEVAL-1",
     repo: "example/widgets",
@@ -4126,7 +4144,7 @@ const redWorldFile = (fields: object = {}) =>
     world: "a",
     check: "test (notify)",
     job: "test (notify)",
-    after: "green",
+    ...redFacts[fields.world ?? "a"],
     run_id: 7001001,
     job_id: 8001001,
     log: redLine,

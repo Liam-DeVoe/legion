@@ -48,9 +48,18 @@
 // settlement the fixture wrote. The fixture writes every field of that envelope (`topic`, `source`,
 // `message`, its `payload`) and the stand-in fills in none of it. A publish that fails leaves the
 // call's exit status to the route, since a non-zero one would read to the agent as a failed `gh`
-// call; what became of it is the call's record `published`.
+// call; what became of it is the call's record `published`. `--publish <file>` is that same POST
+// of the envelope the file holds, made on its own, with no run and no call: rig.sh's red_report
+// publishes the settlement of a check the rig reports with it, so the rig has one publisher. It
+// prints what became of the envelope, as a call records it, and exits 0 when the listener
+// answered 2xx and 1 when it did not.
+// `unreported` is rig.sh's mark on a route whose first reply is a counted set that has not
+// reported the check yet, which red_report drops when the rig reports it. The stand-in answers no
+// differently for it, and keeps it through its own writes of fixtures.json, which hold only what
+// Fixtures parses.
 //   gh-standin.ts gh <args...>
 //   gh-standin.ts --check
+//   gh-standin.ts --publish <envelope file>
 import {
   appendFileSync,
   closeSync,
@@ -69,8 +78,9 @@ const Reply = z.object({
 });
 /** rig.sh's worker_fixture writes each route as {match, stdout?, stderr?, exit?}, and a route that
  * answers a sequence, follows another route's calls, spends itself or publishes a settlement adds
- * `replies`, `follows`, `spends` and `publish`. A `follows` names the `match` of a route of the
- * same file. `answered` is the stand-in's own: the count of calls the route has answered. */
+ * `replies`, `follows`, `spends` and `publish`; red_fixture marks a route red_report trims
+ * `unreported`. A `follows` names the `match` of a route of the same file. `answered` is the
+ * stand-in's own: the count of calls the route has answered. */
 const Fixtures = z
   .looseObject({
     routes: z.array(
@@ -81,6 +91,7 @@ const Fixtures = z
         spends: z.number().optional(),
         answered: z.number().optional(),
         publish: z.unknown().optional(),
+        unreported: z.boolean().optional(),
       })
     ),
   })
@@ -96,6 +107,18 @@ const Fixtures = z
     });
   });
 
+const [as = "gh", ...args] = Bun.argv.slice(2);
+// `--publish <file>` reads no run: it is the publish below, of the envelope the file holds.
+if (as === "--publish") {
+  const [file] = args;
+  if (file === undefined) {
+    console.error("usage: gh-standin.ts --publish <envelope file>");
+    process.exit(2);
+  }
+  const result = await publish(JSON.parse(readFileSync(file, "utf8")));
+  console.log(JSON.stringify(result));
+  process.exit("status" in result && result.status >= 200 && result.status < 300 ? 0 : 1);
+}
 const run = process.env.SKILL_SCENARIO_RUN;
 if (!run) {
   console.error("gh-standin: SKILL_SCENARIO_RUN is unset");
@@ -122,7 +145,6 @@ function lockFixtures(): number {
   }
   return lock;
 }
-const [as = "gh", ...args] = Bun.argv.slice(2);
 if (as === "--check") {
   readFixtures();
   process.exit(0);

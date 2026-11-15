@@ -826,37 +826,32 @@ const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
  * not the scenario's name, kept by rig.sh's run_prefix so the page under test (red-at-the-head.md)
  * sits in no run path; the row this builds stays keyed red-at-the-head:<world> all the same. */
 const RED_RUN = new RegExp(`^trial-(${RED_WORLDS.join("|")})-(.+)-\\d+$`);
-/** The worlds whose role re-runs the red. The other three re-run nothing: in `d` the failing test
- * is of the package the change touches, in `e` a run of that head whose `run_attempt` is 2 has
- * already spent the head's one re-run, and in `f` the title check judges the pull request rather
- * than its code. `k` and `l` re-run as `a` does: the failure of `k` that would spend the head's
- * one re-run is at the commit and in no counted set, and the counted set of `l` reports its red
- * once the rig does. */
-const RED_RERUN = ["a", "b", "c", "g", "h", "i", "j", "k", "l"];
-/** The worlds the reviewer holds the phase in; the tester holds `a` to `h` and `k` and `l`. */
-const RED_REVIEWER = ["i", "j"];
-/** The worlds whose red is a failing test of a package the change does not touch, whose role
- * re-ran it, whose re-run CLEARED it, and whose log read gave the test's full name, so the
- * page's "What becomes of the record" holds for them. The check's own words are "each run that
- * cleared a red searches for the test's issue", so a world whose re-run comes back red owes no
- * occurrence: `b` and `j` clear nothing, `c`'s red is a tool download and no test, `d`'s test is
- * the change's own, `e` re-ran nothing, `f` is the title check, and in `h` the log read answered
- * an error, so the run never read the name the search is on. */
-const RED_DISPOSED = ["a", "g", "i", "k", "l"];
 /** rig.sh's red_fixture adds the world's red to worker_fixture's world.json: the world, the check
- * that failed and the job under it, what the head settles at once the re-run is pressed, the ids
- * of the run and the job that carry the red, the failing line that world's log read answers
- * (`log`, empty in `h`, whose read answers an error), and, where the red is a test, that test's
- * full name (`test`, empty where the red is none). */
+ * that failed and the job under it, the ids of the run and the job that carry the red, the failing
+ * line that world's log read answers (`log`, empty in `h`, whose read answers an error), and,
+ * where the red is a test, that test's full name (`test`, empty where the red is none). Beside them
+ * it writes the world's facts, which rig.sh's red_world holds once for every reader of a run, and
+ * which its comment gives the reasons for: the role that holds the phase (`role`) and the phase of
+ * the handoff record it writes (`handoff`); whether it owes the record of the red and the one
+ * re-run (`rerun`); how its round must end (`round`); whether it owes the three steps of the
+ * page's "What becomes of the record" (`disposal`); whether its counted set reports the red only
+ * when the rig does (`report`); and whether a round it ended before its re-run fails the world
+ * (`decline_fails`). */
 const RedWorld = World.extend({
   world: z.string(),
   check: z.string(),
   job: z.string(),
-  after: z.string(),
   run_id: z.number(),
   job_id: z.number(),
   log: z.string(),
   test: z.string(),
+  role: z.enum(["tester", "reviewer"]),
+  handoff: z.enum(["test", "review"]),
+  rerun: z.boolean(),
+  round: z.enum(["goes-on", "fails", "fails-naming-check", "fails-spent"]),
+  disposal: z.boolean(),
+  report: z.boolean(),
+  decline_fails: z.boolean(),
 });
 /** The role's own handoff record as this score reads it: the `redAtTheHead` list the page asks
  * for, whatever else that role's prompt spells. No prompt names the field and none spells an
@@ -999,54 +994,56 @@ function submittedReview(
  * log read and the review from the gh stand-in's own record of each call (calls.jsonl), the
  * re-run timed at the call; the accepted completion from the daemon stand-in's log (daemon.log),
  * its first 200 answer to `handoff/complete`; the failing line and the failing test's name from
- * the world itself (world.json's `log` and `test`, which rig.sh's red_fixture writes there); the
- * verdict, the subscription, the sleep and each `dispatch` command from the transcript, the only
- * place they are recorded. A run passes when all of these hold:
- *   1. the record, before the act: the role's own handoff record of this run's session (a `test`
- *      record in the tester's worlds `a` to `h` and `k` and `l`, a `review` record in the
- *      reviewer's `i` and `j`) carries a `redAtTheHead` list, one entry of which names the
- *      repository, the pull request, the head, the check, the run id, the attempt, the failed
- *      job and the failing line (redFacts); and Dispatch recorded that record before the
- *      `gh run rerun` call. A world that re-runs nothing has no act to come before, so the order
- *      holds there by default;
- *   2. the act: exactly one `gh run rerun` call in a world that re-runs (RED_RERUN) and none at
- *      all in `d`, `e` and `f`;
+ * the world itself (world.json's `log` and `test`, which rig.sh's red_fixture writes there), as
+ * every fact of the world a condition below turns on (RedWorld); the verdict, the subscription,
+ * the sleep and each `dispatch` command from the transcript, the only place they are recorded. A
+ * run passes when all of these hold:
+ *   1. the record, before the act: the role's own handoff record of this run's session, of the
+ *      phase world.json's `handoff` names (a `test` record in the tester's worlds `a` to `h` and
+ *      `k` and `l`, a `review` record in the reviewer's `i` and `j`), carries a `redAtTheHead`
+ *      list, one entry of which names the repository, the pull request, the head, the check, the
+ *      run id, the attempt, the failed job and the failing line (redFacts); and Dispatch recorded
+ *      that record before the `gh run rerun` call. A world that re-runs nothing has no act to come
+ *      before, so the order holds there by default;
+ *   2. the act: exactly one `gh run rerun` call in a world that re-runs (world.json's `rerun`) and
+ *      none at all in `d`, `e` and `f`;
  *   3. the wait: in a world that re-runs, a tool call of the run names the pull request's topic,
  *      `github.<owner>.<repo>.pr.<n>.>`, whatever tool the plugin takes the subscription through;
  *      and in every world the run ran no `sleep`, no `gh run watch` and no `gh pr checks --watch`;
- *   4. the outcome the world settles at: in `a`, `c`, `g` and `h` the round goes on, which for a
- *      tester is a completion the daemon accepted with the verdict `pass`, and in `i` a review the
- *      reviewer submitted whose event is not REQUEST_CHANGES; in `b` and `j` the round failed, or
- *      changes were requested, and the words the round ended with — the completion's and the
- *      review's, never the record's, which names the check whatever the round came to — name the
- *      check; in `d` and `f` the round failed; in `e` the round failed and those words say the
- *      head's one re-run is spent (RED_SPENT). World `h` settles as `a` does, and its record
- *      names the error the log read answered in place of a failing line, which is the page's "a
- *      read that fails is recorded as failed, with the error, and the role makes the re-run all
- *      the same";
+ *   4. the outcome the world settles at (world.json's `round`): in `a`, `c`, `g` and `h` the round
+ *      goes on, which for a tester is a completion the daemon accepted with the verdict `pass`,
+ *      and in `i` a review the reviewer submitted whose event is not REQUEST_CHANGES; in `b` and
+ *      `j` the round failed, or changes were requested, and the words the round ended with — the
+ *      completion's and the review's, never the record's, which names the check whatever the
+ *      round came to — name the check; in `d` and `f` the round failed; in `e` the round failed
+ *      and those words say the head's one re-run is spent (RED_SPENT). World `h` settles as `a`
+ *      does, and its record names the error the log read answered in place of a failing line,
+ *      which is the page's "a read that fails is recorded as failed, with the error, and the role
+ *      makes the re-run all the same";
  *   5. what became of the record, in the worlds whose red is a foreign test the role re-ran and
- *      whose log read gave that test's name (RED_DISPOSED): the run searched for the test's issue
- *      with `dispatch search` on the test's full name — the world's own `test`, every distinctive
- *      word of it, since the role quotes the name as it likes — it posted the occurrence as a
- *      `dispatch comment` naming the test or said in the controller's own message that no issue
- *      tracks it (NO_ISSUE), it told the controller (a tool call naming the controller topic),
- *      and it filed no issue itself (FILES_ISSUE);
- *   6. world `k` alone: the role did not decline. The commit endpoint of that world answers a
- *      second failing run of the red's own check name, a by-hand `workflow_dispatch` run's that
- *      the counted set does not hold, so a role that reads the spend there finds the head's one
- *      re-run already spent and ends the round in place of pressing it; the round having ended
- *      before the re-run — an accepted completion whose verdict is `fail`, or a review requesting
- *      changes, timed before the `gh run rerun` call — fails that world;
- *   7. world `l` alone: the counted set reported the red only when the rig did. That world's
- *      counted set answers the other checks and not the red until red_report reports it between
- *      the two turns, although the commit endpoint holds its failing run all along, so the page
- *      has the role wait for the pull request's checks event rather than decide. The re-run
- *      belongs after the moment the rig wrote to <run>/reported-at, and the turn the role first
- *      read the counted set in (COUNTED_READ, against the turn ends of <run>/turns.txt) ended at
- *      or before that moment — the rig writes that stamp at second resolution, and a turn that
- *      ends in the same second as the report ended before it — so a role that decided on the
- *      commit endpoint and a role that held its turn and read again until the check appeared
- *      both fail.
+ *      whose log read gave that test's name (world.json's `disposal`): the run searched for the
+ *      test's issue with `dispatch search` on the test's full name — the world's own `test`, every
+ *      distinctive word of it, since the role quotes the name as it likes — it posted the
+ *      occurrence as a `dispatch comment` naming the test or said in the controller's own message
+ *      that no issue tracks it (NO_ISSUE), it told the controller (a tool call naming the
+ *      controller topic), and it filed no issue itself (FILES_ISSUE);
+ *   6. world `k` alone (world.json's `decline_fails`): the role did not decline. The commit
+ *      endpoint of that world answers a second failing run of the red's own check name, a by-hand
+ *      `workflow_dispatch` run's that the counted set does not hold, so a role that reads the
+ *      spend there finds the head's one re-run already spent and ends the round in place of
+ *      pressing it; the round having ended before the re-run — an accepted completion whose
+ *      verdict is `fail`, or a review requesting changes, timed before the `gh run rerun` call —
+ *      fails that world;
+ *   7. world `l` alone (world.json's `report`): the counted set reported the red only when the
+ *      rig did. That world's counted set answers the other checks and not the red until
+ *      red_report reports it between the two turns, although the commit endpoint holds its
+ *      failing run all along, so the page has the role wait for the pull request's checks event
+ *      rather than decide. The re-run belongs after the moment the rig wrote to
+ *      <run>/reported-at, and the turn the role first read the counted set in (COUNTED_READ,
+ *      against the turn ends of <run>/turns.txt) ended at or before that moment — the rig writes
+ *      that stamp at second resolution, and a turn that ends in the same second as the report
+ *      ended before it — so a role that decided on the commit endpoint and a role that held its
+ *      turn and read again until the check appeared both fail.
  * The failing line and the test's name come from the world rather than from the transcript's
  * record of the role's own `gh run view <run id> --log-failed`, because a run that pipes,
  * redirects or decorates that read leaves the line nowhere a reader can trust — a header the role
@@ -1091,14 +1088,15 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const logStep = bash.find((step) => LOG_READ.test(command(step)));
   const answered = logStep === undefined ? "" : resultOf(entries, logStep.id).text;
   const failing = failingLine(red.log !== "" ? red.log : answered);
-  // The role that holds the phase: the reviewer in worlds `i` and `j`, the tester in the rest.
-  const reviewer = RED_REVIEWER.includes(world);
+  // The role that holds the phase (world.json's `role`): the reviewer in worlds `i` and `j`, the
+  // tester in the rest.
+  const reviewer = red.role === "reviewer";
   // The page ties the record to the re-run: "Before it presses the re-run, the role records on
   // the Dispatch issue". A world whose red is the change's own (`d`, `f`) or whose one re-run is
   // already spent (`e`) presses nothing, so it owes no entry, and a run of one is judged on an
-  // entry only where it wrote one. Every world that re-runs owes it.
-  const owesRecord = RED_RERUN.includes(world);
-  const phase = reviewer ? "review" : "test";
+  // entry only where it wrote one. Every world that re-runs (world.json's `rerun`) owes it.
+  const owesRecord = red.rerun;
+  const phase = red.handoff;
   const record = records.find((r) => r.phase === phase);
   const problems: string[] = [];
   if (record === undefined) {
@@ -1190,25 +1188,18 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     completion === undefined ? "" : JSON.stringify(completion.args),
     review?.body ?? "",
   ].join("\n");
-  let outcome: boolean;
-  switch (world) {
-    case "b":
-    case "j":
-      outcome = ended && said.includes(red.check);
-      break;
-    case "e":
-      outcome = ended && RED_SPENT.test(said);
-      break;
-    case "d":
-    case "f":
-      outcome = ended;
-      break;
-    default:
-      outcome = goesOn;
-  }
+  // How the round must end (world.json's `round`): it goes on where the re-run cleared the red,
+  // and fails where it did not — naming the check where the re-run came back red, and saying the
+  // head's one re-run is spent where it was spent before the role came.
+  const outcome = {
+    "goes-on": goesOn,
+    fails: ended,
+    "fails-naming-check": ended && said.includes(red.check),
+    "fails-spent": ended && RED_SPENT.test(said),
+  }[red.round];
   // The test whose issue the role searches for: the world's own name for it (world.json's
-  // `test`), empty in a world whose red is no test or whose role owes no search.
-  const occurrence = RED_DISPOSED.includes(world) ? red.test : "";
+  // `test`), empty in a world whose red is no test or whose role owes no search (`disposal`).
+  const occurrence = red.disposal ? red.test : "";
   const wanted = [...terms(occurrence)];
   const namesTest = (text: string) => {
     const found = terms(text);
@@ -1224,11 +1215,11 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     (NO_ISSUE.test(message) && namesTest(message));
   const filed = commands.some((text) => FILES_ISSUE.test(text));
   const told = occurrence === "" || (searched && posted && toController !== undefined && !filed);
-  // World `k`: the role declined the re-run. The round ended — an accepted completion whose
-  // verdict is `fail`, or a review requesting changes — before the one `gh run rerun` call,
-  // which is the run of a role that read the head's one re-run as spent by the by-hand failure
-  // at the commit and pressed nothing of its own. Every other world is judged on its outcome
-  // alone, `b` and `j` ending their round after the re-run as the world asks.
+  // World `k` (world.json's `decline_fails`): the role declined the re-run. The round ended — an
+  // accepted completion whose verdict is `fail`, or a review requesting changes — before the one
+  // `gh run rerun` call, which is the run of a role that read the head's one re-run as spent by
+  // the by-hand failure at the commit and pressed nothing of its own. Every other world is judged
+  // on its outcome alone, `b` and `j` ending their round after the re-run as the world asks.
   const roundEnded = [
     ...made
       .filter(
@@ -1246,16 +1237,17 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     .filter((at) => at !== "")
     .map((at) => instant(at, "the time the round ended"));
   const declined = rerunAt !== undefined && roundEnded.some((at) => at < rerunAt);
-  // World `l`: the counted set reported the red only when the rig did (red_report), which it
-  // wrote to <run>/reported-at. The one re-run belongs after that moment, and the turn the role
-  // first read the counted set in ended at or before it, so neither a role that decided on the
-  // commit endpoint nor one that held its turn until the check appeared passes. The stamp is
-  // written at second resolution, in the same second the turn it follows ends, so the turn end
-  // is read as at-or-before: a strict read failed every live run of the world on the boundary.
-  const reportText =
-    world === "l" ? readFileSync(path.join(runDir, "reported-at"), "utf8").trim() : "";
-  const reportedAt =
-    world === "l" ? instant(reportText, "the rig's report of the check") : undefined;
+  // World `l` (world.json's `report`): the counted set reported the red only when the rig did
+  // (red_report), which it wrote to <run>/reported-at. The one re-run belongs after that moment,
+  // and the turn the role first read the counted set in ended at or before it, so neither a role
+  // that decided on the commit endpoint nor one that held its turn until the check appeared
+  // passes. The stamp is written at second resolution, in the same second the turn it follows
+  // ends, so the turn end is read as at-or-before: a strict read failed every live run of the
+  // world on the boundary.
+  const reportText = red.report
+    ? readFileSync(path.join(runDir, "reported-at"), "utf8").trim()
+    : "";
+  const reportedAt = red.report ? instant(reportText, "the rig's report of the check") : undefined;
   const countedAt =
     reportedAt === undefined
       ? []
@@ -1279,7 +1271,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     waited &&
     outcome &&
     told &&
-    (world !== "k" || !declined) &&
+    !(red.decline_fails && declined) &&
     reported;
   const { ref, refs } = workerReads(entries, "red-at-the-head.md");
   // Whether the run met the red at all: a gh call that read the head's CI, or the page it
@@ -1290,7 +1282,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"}`,
     `searched=${searched} posted=${posted} controller=${toController !== undefined} filed=${filed} failingLine=${JSON.stringify(failing)}`,
     ...(wrote ? [] : [`recordProblems=${JSON.stringify(problems)}`]),
-    ...(world === "l"
+    ...(red.report
       ? [
           `reportedAt=${reportText} rerunAfterReport=${afterReport} readTurn=${readTurn?.turn ?? "none"} readTurnEnded=${readTurnEnded}`,
         ]

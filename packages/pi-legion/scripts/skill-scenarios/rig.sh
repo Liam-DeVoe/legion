@@ -117,12 +117,15 @@
 #                   counted set that has not reported the check when the role first reads it. The
 #                   world is in the run's name, trial-<world>-<label>-<n> (run_prefix), so each
 #                   world's batch keeps its own runs, and each run writes it to <run>/world.txt
-#                   (run_red_at_the_head, red_fixture). A world that expects a re-run takes two
-#                   turns: the architect's assignment, then, once the re-run has reached
-#                   calls.jsonl, --continue on the settlement the re-run's own route published;
-#                   `d`, `e` and `f` expect no re-run and take one turn, and `l` takes its second
-#                   turn on the rig's own report of the check (red_report) rather than on a
-#                   re-run. Scored by redAtTheHead, which reads <run>/world.txt.
+#                   (run_red_at_the_head, red_fixture). Each world's facts, among them its role,
+#                   its phase and its turns, are written once (red_world), and red_fixture writes
+#                   them to <run>/world.json, where the run and the score read them. A world that
+#                   expects a re-run takes two turns: the architect's assignment, then, once the
+#                   re-run has reached calls.jsonl, --continue on the settlement the re-run's own
+#                   route published; `d`, `e` and `f` expect no re-run and take one turn, and `l`
+#                   takes its second turn on the rig's own report of the check (red_report) rather
+#                   than on a re-run. Scored by redAtTheHead, which reads <run>/world.txt and
+#                   <run>/world.json.
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -195,7 +198,9 @@
 #                                 keeps its own SKILL_SCENARIOS_JUDGE_OMP and its container
 #   SKILL_SCENARIOS_POSTGRES_URL  a Postgres the batch uses in place of the container it would
 #                                 start, as a URL
-#                                 (postgres://<user>:<password>@<host>:<port>/<database>). Its
+#                                 (postgres://<user>:<password>@<host>:<port>/<database>) whose
+#                                 host is this machine's, 127.0.0.1, localhost or ::1: each run's
+#                                 Dispatch takes a loopback database only (own_dispatch). Its
 #                                 login must be allowed to CREATE DATABASE, since each run makes a
 #                                 database of its own on it (own_dispatch); those databases stay
 #                                 there, because the batch drops no database and stops no server
@@ -273,8 +278,11 @@ set -euo pipefail
 # exports ENVOY_URL, DISPATCH_URL and their token files, a developer's shell can hold NATS
 # credentials (packages/dispatch/e2e/run-server.sh strips the same three families), and e2e/api.ts,
 # which seed.ts calls, addresses PLAYWRIGHT_BASE_URL with E2E_AGENT_TOKEN whenever it is set.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go too: own_dispatch reads a given Postgres's URL with
+# the loopback guard's run_database_url, and require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh:78-83 says why a caller of that guard clears the three.
 for name in $(compgen -e); do
-  case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN) unset "$name" ;; esac
+  case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;; esac
 done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -540,7 +548,7 @@ cmd_profile() {
   # a pod carries the pinned Oh My Pi and no mise; with it unset the installer reads .omp-pin and
   # runs it through mise, as it always has.
   local -a omp_arg=()
-  [ -z "${SKILL_SCENARIOS_OMP:-}" ] || omp_arg=(--omp "$SKILL_SCENARIOS_OMP")
+  if given_omp; then omp_arg=(--omp "$SKILL_SCENARIOS_OMP"); fi
   bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$P/home" --dest "$P/pi-envoy" "${omp_arg[@]}" >"$P/install.log" 2>&1 ||
     fail "install-plugin-profile.sh --package pi-envoy failed; see $P/install.log"
   bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$P/home" --dest "$P/pi-legion" "${omp_arg[@]}" >>"$P/install.log" 2>&1 ||
@@ -566,21 +574,35 @@ cmd_profile() {
   cat "$P/built-from"
 }
 
+# given_omp is whether SKILL_SCENARIOS_OMP names the Oh My Pi binary a label's agents run, in place
+# of the install mise made for the label's pin: a pod carries the pinned binary and no mise.
+given_omp() { [ -n "${SKILL_SCENARIOS_OMP:-}" ]; }
+
 # pinned_omp PIN prints the path of the omp binary mise installed for PIN, or of the binary
-# SKILL_SCENARIOS_OMP names when it is set, which a batch runs in place of mise's install: a pod
-# carries the pinned binary and no mise. A run names the binary by path: `mise x <pin> -- omp`
-# leaves an `omp` earlier on the caller's PATH (a wrapper script, say) ahead of the pin's own
-# whenever PIN is the version mise already has active there, so the run would get the wrapper and
-# whatever omp and configuration it picks, not the label's pin.
+# SKILL_SCENARIOS_OMP names when it is set (given_omp), which a batch runs in place of mise's
+# install. A run names the binary by path: `mise x <pin> -- omp` leaves an `omp` earlier on the
+# caller's PATH (a wrapper script, say) ahead of the pin's own whenever PIN is the version mise
+# already has active there, so the run would get the wrapper and whatever omp and configuration it
+# picks, not the label's pin.
 pinned_omp() {
   local omp
-  if [ -n "${SKILL_SCENARIOS_OMP:-}" ]; then
+  if given_omp; then
     omp=$SKILL_SCENARIOS_OMP
   else
     omp=$(mise where "$1")/bin/omp || fail "mise has no install of $1"
   fi
   [ -x "$omp" ] || fail "$omp, the Oh My Pi binary ${SKILL_SCENARIOS_OMP:+SKILL_SCENARIOS_OMP names}${SKILL_SCENARIOS_OMP:-of the pin $1}, is not executable"
   printf '%s\n' "$omp"
+}
+
+# pinned_command PIN sets the caller's array omp_command to the command that runs the label's omp
+# by its path (pinned_omp): the pin's own install is reached through `mise x <pin> --`, and a given
+# binary (given_omp) is run as it is.
+pinned_command() {
+  local omp
+  omp=$(pinned_omp "$1") || exit 1
+  omp_command=("$omp")
+  given_omp || omp_command=(mise x "$1" -- "$omp")
 }
 
 # install_superpowers P PROFILE PIN copies SKILL_SCENARIOS_SUPERPOWERS's writing-plans and
@@ -592,11 +614,9 @@ pinned_omp() {
 # pass. It records the plugin's version and each skill's digest in built-from. It marks the label
 # with a `superpowers` file, which a spec run needs.
 install_superpowers() {
-  local P=$1 profile=$2 pin=$3 src=$SKILL_SCENARIOS_SUPERPOWERS skill dest probe version omp
-  # The pin's own install is reached through `mise x <pin> --`; a given binary is run as it is.
-  local -a under=(mise x "$pin" --)
-  [ -z "${SKILL_SCENARIOS_OMP:-}" ] || under=()
-  omp=$(pinned_omp "$pin") || exit 1
+  local P=$1 profile=$2 pin=$3 src=$SKILL_SCENARIOS_SUPERPOWERS skill dest probe version
+  local -a omp_command
+  pinned_command "$pin"
   dest=$P/home/.omp/profiles/$profile/agent/skills
   mkdir -p "$dest"
   for skill in "${superpowers_skills[@]}"; do
@@ -619,7 +639,7 @@ install_superpowers() {
       env -i HOME="$P/home" USER="$USER" TERM=xterm-256color TMPDIR="$probe/tmp" PATH="$PATH" \
         MISE_DATA_DIR="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}" OMP_PROFILE="$profile" \
         PI_NOTIFICATIONS=off PI_NO_TITLE=1 ENVOY_URL=http://127.0.0.1:1 timeout "${SKILL_SCENARIOS_TIMEOUT:-1500}" \
-        "${under[@]}" "$omp" -p 'Call the read tool once on the path skill://writing-plans, and nothing else. Then reply with the first line of what it returned.' \
+        "${omp_command[@]}" -p 'Call the read tool once on the path skill://writing-plans, and nothing else. Then reply with the first line of what it returned.' \
         --session-dir "$probe/sessions" </dev/null
   ) >"$probe/out.txt" 2>&1 || fail "the read of skill://writing-plans under profile $profile failed; see $probe/out.txt"
   ! grep -q 'Unknown skill' "$probe/out.txt" "$probe"/sessions/*.jsonl 2>/dev/null ||
@@ -683,11 +703,11 @@ EOF
 # until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
 # wait reads only its own exit line.
 launch() {
-  local system='' extra='' omp run name=$1 start
-  omp=$(pinned_omp "$pin") || exit 1
-  # The pin's own install is reached through `mise x <pin> --`; a given binary is run as it is.
-  run=$(printf %q "$omp")
-  [ -n "${SKILL_SCENARIOS_OMP:-}" ] || run="mise x $(printf %q "$pin") -- $run"
+  local system='' extra='' run name=$1 start
+  local -a omp_command
+  pinned_command "$pin"
+  run=$(printf '%q ' "${omp_command[@]}")
+  run=${run% }
   session=''
   shift
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
@@ -701,7 +721,7 @@ EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
   start="bash $(printf %q "$R/launch.sh"); echo exit=\$? >>$(printf %q "$R/out.txt")"
-  if [ -n "${SKILL_SCENARIOS_OMP:-}" ]; then
+  if given_omp; then
     # No tmux: the agent is a process group of its own (start_process's `set -m`), which stop_tree
     # stops as it stops any other process this shell started, and its log holds what launch.sh
     # itself writes. The agent takes the run's SKILL_SCENARIO_RUN from its pane file, so the sweep
@@ -904,24 +924,6 @@ try {
 }' -- "$2"
 }
 
-# pg_database_url URL NAME prints URL with NAME as its database and its query kept, less a
-# `dbname` key: where a run's own Dispatch server reaches the database own_dispatch made for it.
-# A `dbname` in the query outranks the path for libpq and for pgx, the rule
-# scripts/e2e/lib/loopback-dsn.sh's run_database_url states and solves for a loopback DSN, so a
-# SKILL_SCENARIOS_POSTGRES_URL carrying one would give every run the operator's own database
-# while $R/dispatch.json records NAME: the per-run isolation own_dispatch exists for would be
-# gone, and score.ts refuses two runs that name one database.
-pg_database_url() {
-  local scheme=${1%%://*} rest=${1#*://} query=''
-  case $rest in *\?*)
-    query=$(printf '%s' "?${rest#*\?}" |
-      sed -E 's/(\?|&)dbname=[^&]*/\1/g; s/\?&+/?/; s/&&+/\&/g; s/[?&]$//')
-    rest=${rest%%\?*}
-    ;;
-  esac
-  printf '%s://%s/%s%s\n' "$scheme" "${rest%%/*}" "$2" "$query"
-}
-
 # nats_ready URL succeeds when a server answers on URL's host and port with the INFO line every
 # NATS server sends on connect, so it tells a NATS from any other process holding the port. bash's
 # own /dev/tcp opens the connection, in a child with a timeout of its own: the probe needs no
@@ -1006,7 +1008,18 @@ own_dispatch() {
   [ "${#database}" -le 63 ] || fail "the run's database name $database is longer than Postgres's 63 bytes"
   if [ -f "$services_postgres" ]; then
     postgres=$(<"$services_postgres")
-    url=$(pg_database_url "$postgres" "$database")
+    # The run's own database on that server is scripts/e2e/lib/loopback-dsn.sh:117's
+    # run_database_url: the connection string rebuilt from what libpq reads of the URL, with this
+    # database as its one dbname, so neither a `dbname` in the URL's query (which outranks the
+    # path for libpq and for pgx) nor a `?` inside its user name, where libpq starts no query,
+    # gives the run any other database. The rig carried a copy of that rewrite in shell before,
+    # because the helper begins with the loopback guard (loopback-dsn.sh:100) and refuses a server
+    # that is not this machine's. That refusal costs a run nothing: run-server.sh starts each
+    # run's Dispatch with dev sign-in, which refuses a database that is not on this machine
+    # (loopbackDatabase, packages/envoy/cmd/dispatch/main.go), and here it comes before the
+    # CREATE DATABASE below writes the server, in the helper's own words.
+    run_database_url url SKILL_SCENARIOS_POSTGRES_URL "$postgres" "$database" \
+      "each run makes a database of its own there" || fail "$url"
     # A given server must let its login make a database. Nothing here checks that: the refusal a
     # server without the right gives is Postgres's own, in the run's fixture.log.
     pg_sql "$postgres" "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
@@ -1651,13 +1664,17 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 # `check` set for the caller, read from world.json in one jq, `check` being `null` where the
 # world has none.
 worker_world() {
-  local index=$1 start=$2 world=${3:-} gate=()
-  # A world whose role must reach an approval takes its check as `after_merge`, since this rig's
-  # Dispatch reaches no GitHub and so can place no commit, which leaves every `before_merge`
-  # check without a standing pass and makes a reviewer refuse every approval it is asked for
-  # (seed.ts testerProofIssue says what was measured). World `i` is the one such world: `j`'s
-  # round ends in a changes request, which the gate does not hold up.
-  [ "$world" != i ] || gate=(after-merge-check)
+  local index=$1 start=$2 world=${3:-} gate=() facts
+  # A world whose role must reach an approval, the reviewer whose round goes on (red_world), takes
+  # its check as `after_merge`, since this rig's Dispatch reaches no GitHub and so can place no
+  # commit, which leaves every `before_merge` check without a standing pass and makes a reviewer
+  # refuse every approval it is asked for (seed.ts testerProofIssue says what was measured). A
+  # reviewer whose round ends in a changes request is not held up by the gate. The issue is seeded
+  # before red_fixture writes the world's facts to world.json, so they are read from red_world.
+  if [ -n "$world" ]; then
+    facts=$(red_world "$world") || fail "red_world: '$world' is no world of red-at-the-head"
+    if jq -e '.role == "reviewer" and .round == "goes-on"' <<<"$facts" >/dev/null; then gate=(after-merge-check); fi
+  fi
   own_dispatch project
   seed_ts tester-proof "$R/fixture.json" "${gate[@]}"
   worker_key=$(jq -r .issue "$R/fixture.json")
@@ -1718,19 +1735,88 @@ record_turn() {
   cp "$R/out.txt" "$R/out-$1.txt"
 }
 
+# architect_assignment ROLE [TOLD] writes to $R/prompt.txt the architect's assignment of ROLE's
+# phase (tester or reviewer) on the run's pull request, with the Handoff line the daemon's task
+# names the predecessor's record in (packages/daemon/internal/workflow/effects.go), and TOLD, a
+# sentence of what the daemon reports, after the head. The issue holds an implement record and no
+# test record, since no tester ran here, so the reviewer's `Handoff:` line names that implement
+# record and its version too; the daemon's own reviewer task would name the test record the tester
+# wrote. It reads the caller's `worker_key`, `pr`, `head` and `version` (worker_world).
+architect_assignment() {
+  local from ask
+  case $1 in
+  tester) from=implementer ask='Test it and finish your phase.' ;;
+  reviewer) from=tester ask="Tester's verdict: pass. Review it and finish your phase." ;;
+  *) fail "architect_assignment: '$1' is not tester or reviewer" ;;
+  esac
+  printf 'Architect → %s, %s. The %s has finished: PR #%s (%s, repository %s) is at %s.%s Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). %s\n' \
+    "$1" "$worker_key" "$from" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "${2:+ $2}" \
+    "$version" "$worker_key" "$version" "$ask" >"$R/prompt.txt"
+}
+
 run_tester_proof() {
   local name=$1 n=$2 index=$3 start=$4 state project port pr head check version
   # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
   # reads and whose newest test record it writes.
   worker_world "$index" "$start"
-  # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
-  # record in (packages/daemon/internal/workflow/effects.go).
-  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
-    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+  architect_assignment tester
   boot_worker tester
   launch "$name"
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
+}
+
+# red_world WORLD prints the facts of WORLD as one JSON object, the one place each world's facts are
+# written: red_fixture adds them to <run>/world.json, where run_red_at_the_head and score.ts's
+# redAtTheHead read them, and worker_world reads the two it seeds the run's issue by. WORLD outside
+# the twelve prints nothing and fails. The facts:
+#   after         what the head settles at once the re-run is pressed, green or red
+#   role          the role that holds the phase: the reviewer in `i` and `j`, the tester in the rest
+#   phase         that role's phase, as the daemon's task names it (testing or reviewing)
+#   handoff       the phase of the handoff record that role writes, test or review (phase.Handoff,
+#                 packages/daemon/internal/phase/phase.go)
+#   rerun         whether the role writes the red down and re-runs it once. `d`, `e` and `f` re-run
+#                 nothing: in `d` the failing test is of the package the change touches, in `e` a
+#                 run of that head whose `run_attempt` is 2 has already spent the head's one
+#                 re-run, and in `f` the title check judges the pull request rather than its code.
+#                 `k` and `l` re-run as `a` does: the failure of `k` that would spend the head's one
+#                 re-run is at the commit and in no counted set, and the counted set of `l` reports
+#                 its red once the rig does
+#   turns         2 in a world that re-runs, the second turn on the wake the re-run's settlement (in
+#                 `l`, the rig's report of the check) brings; 1 in a world that re-runs nothing
+#   round         how the role must end its round: goes-on where the re-run clears the red, and
+#                 fails-naming-check where it comes back red; fails in `d` and `f`, and fails-spent
+#                 in `e`, whose words must say the head's one re-run is spent
+#   disposal      whether the role owes the three steps of the page's "What becomes of the record":
+#                 its red is a test of a package the change does not touch, the re-run cleared it,
+#                 and the log read gave the test's full name. The page's own words are "each run
+#                 that cleared a red searches for the test's issue", so `b` and `j` clear nothing,
+#                 `c`'s red is a tool download and no test, `d`'s test is the change's own, `e`
+#                 re-ran nothing, `f` is the title check, and in `h` the log read answered an
+#                 error, so the role never read the name the search is on
+#   report        whether the counted set has not reported the red when the role first reads it,
+#                 and reports it only when the rig does, between the two turns (red_report): `l`
+#   decline_fails whether a round the role ended before its re-run fails the world: `k`, whose
+#                 commit endpoint answers a by-hand failure that reads as the re-run already spent
+red_world() {
+  jq -nce --arg world "$1" '
+    {
+      a: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false},
+      b: {after:"red",   role:"tester",   rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false},
+      c: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false},
+      d: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false},
+      e: {after:"red",   role:"tester",   rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false},
+      f: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false},
+      g: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false},
+      h: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false},
+      i: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false},
+      j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false},
+      k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true},
+      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false}
+    }[$world] // empty
+    | . + {phase:{tester:"testing", reviewer:"reviewing"}[.role],
+           handoff:{tester:"test", reviewer:"review"}[.role],
+           turns:(if .rerun then 2 else 1 end)}'
 }
 
 # red_fixture WORLD turns worker_fixture's green head red, over the world it has already written:
@@ -1760,7 +1846,8 @@ run_tester_proof() {
 # required checks reported on the '<branch>' branch` and exits 1. In a world that stays red both
 # answers are red, and nothing of it moves; in a world that presses no re-run (`d`, `e`, `f`) the
 # head reads red for the whole run. World `l`'s counted reads answer three states, the first of
-# them reporting no red at all: red_report drops that one between the two turns, which is the rig
+# them reporting no red at all, and each route that answers them carries the mark `unreported`:
+# red_report drops that first state of each marked route between the two turns, which is the rig
 # reporting the check. The head's check-runs route goes in front of worker_fixture's generic
 # check-runs route, which is left answering the same red to a `status` read. The re-run's route
 # carries the settlement the head's checks would raise later, as the envelope the gh stand-in
@@ -1790,8 +1877,9 @@ run_tester_proof() {
 #      the commit endpoint already holds its failing run: the role waits for the pull request's
 #      checks event, and the rig reports the check between the two turns (red_report)
 red_fixture() {
-  local world=$1 pr head branch check job step summary log log_err test_name world_log
-  local after run_id job_id red_id
+  local world=$1 facts pr head branch check job step summary log log_err test_name world_log
+  local run_id job_id red_id
+  facts=$(red_world "$world") || fail "red_fixture: '$world' is no world of red-at-the-head"
   read -r pr head branch < <(jq -r '"\(.pr) \(.head) \(.branch)"' "$R/world.json")
   run_id=$((7000000 + pr))
   job_id=$((8000000 + pr))
@@ -1841,14 +1929,13 @@ red_fixture() {
     ;;
   *) fail "red_fixture: '$world' is no world of red-at-the-head" ;;
   esac
-  case $world in a | c | g | h | i | k | l) after=green ;; *) after=red ;; esac
   # The failing line this world's log read answers, as the world knows it: a world whose read
   # answers an error (h) leaves none, since the role reads no line there.
   world_log=$log
   [ -z "$log_err" ] || world_log=''
   jq --arg head "$head" --argjson pr "$pr" --arg repo "$worker_repo" --arg branch "$branch" \
     --arg world "$world" --arg check "$check" --arg job "$job" --arg step "$step" \
-    --arg summary "$summary" --arg log "$log" --arg log_err "$log_err" --arg after "$after" \
+    --arg summary "$summary" --arg log "$log" --arg log_err "$log_err" --argjson facts "$facts" \
     --argjson run_id "$run_id" --argjson job_id "$job_id" --argjson red_id "$red_id" '
     def entry($id; $name; $conclusion; $output; $at):
       {id:$id, name:$name, status:"completed", conclusion:$conclusion, started_at:$at,
@@ -1921,9 +2008,9 @@ red_fixture() {
        + [entry($red_id; $check; "failure"; {title:$check, summary:$summary}; $t0)]) as $red_checks
     # The attempt the re-run makes, which `filter=all` lists beside the attempt it replaces.
     | ($red_checks + [entry($red_id + 1; $check;
-        (if $after == "green" then "success" else "failure" end);
+        (if $facts.after == "green" then "success" else "failure" end);
         {title:$check,
-         summary:(if $after == "green" then "The re-run of " + $check + " passed." else $summary end)};
+         summary:(if $facts.after == "green" then "The re-run of " + $check + " passed." else $summary end)};
         $t1)]) as $settled_checks
     | ($settled_checks | group_by(.name) | map(max_by(.id))) as $latest
     | (($red_checks | group_by(.name) | map(max_by(.id)))) as $shown
@@ -1940,12 +2027,16 @@ red_fixture() {
                        + (($run_id + 1)|tostring))}]
        else [] end) as $uncounted
     # What the counted set answers, in order: the state the role first reads, and the state the
-    # head settles at once the re-run is pressed. The counted set of world `l` has not reported
-    # the red when the role first reads it, so it answers three, the red in the middle:
-    # red_report drops the first between the two turns, which is the rig reporting the check.
-    | (if $world == "l" then [($shown | map(select(.name != $check))), $shown, $latest]
+    # head settles at once the re-run is pressed. A counted set that has not reported the red when
+    # the role first reads it (`report` among the facts, world `l`) answers three, the red in the
+    # middle: red_report drops the first between the two turns, which is the rig reporting the
+    # check. counted(reply) is the replies of a route that answers the counted set, one per state,
+    # and in such a world the mark red_report trims that route by, `unreported`.
+    | (if $facts.report then [($shown | map(select(.name != $check))), $shown, $latest]
        else [$shown, $latest] end) as $counted
-    | [{id:$job_id, run_id:$run_id, run_attempt:1, name:$job, status:"completed",
+    | def counted(reply):
+        {replies:($counted | map(reply))} + (if $facts.report then {unreported:true} else {} end);
+    [{id:$job_id, run_id:$run_id, run_attempt:1, name:$job, status:"completed",
         conclusion:"failure", started_at:$t0, completed_at:$t0,
         html_url:($run_url + "/job/" + ($job_id|tostring)),
         steps:[{number:1, name:"Set up job", status:"completed", conclusion:"success"},
@@ -1982,8 +2073,7 @@ red_fixture() {
                           check_runs:($red_checks + $uncounted)}},
                  {stdout:{total_count:(($settled_checks + $uncounted)|length),
                           check_runs:($settled_checks + $uncounted)}}]},
-       {match:"^gh api .*graphql.*statusCheckRollup", follows:$rerun,
-        replies:($counted | map({stdout:graphql(.)}))},
+       ({match:"^gh api .*graphql.*statusCheckRollup", follows:$rerun} + counted({stdout:graphql(.)})),
        {match:$rerun, stdout:"✓ Requested rerun of failed jobs", publish:published($latest)},
        ({match:"^gh run view .*--log-failed"}
         + (if $log_err == "" then {stdout:$log} else {stderr:($log_err + "\n"), exit:1} end)),
@@ -2014,7 +2104,7 @@ red_fixture() {
     | .routes |= map(
         if (.stdout|type) == "object" and (.stdout|has("statusCheckRollup"))
         then (.stdout as $view
-              | .replies = ($counted | map({stdout:($view + {statusCheckRollup:rollup(.)})}))
+              | . + counted({stdout:($view + {statusCheckRollup:rollup(.)})})
               | .follows = $rerun | del(.stdout))
         elif .match == "^gh pr checks"
         # `gh pr checks --required` answers the checks the base requires and no other, as GitHub
@@ -2025,22 +2115,22 @@ red_fixture() {
         then (def answer($checks):
                 {stdout:rows($checks), exit:(if (failing($checks)|length) > 0 then 1 else 0 end)};
               "ci" as $required
-              | {match:"^gh pr checks\\b.*\\s--required\\b", follows:$rerun,
-                 replies:($counted | map(map(select(.name == $required))
+              | ({match:"^gh pr checks\\b.*\\s--required\\b", follows:$rerun}
+                 + counted(map(select(.name == $required))
                    | if . == []
                      then {stderr:("no required checks reported on the \u0027" + $branch
                                    + "\u0027 branch\n"), exit:1}
-                     else answer(.) end))},
-                (.replies = ($counted | map(answer(.))) | .follows = $rerun | del(.stdout)))
+                     else answer(.) end)),
+                (. + counted(answer(.)) | .follows = $rerun | del(.stdout)))
         elif .match == "^gh api .*(check-runs|status)"
         then .stdout = {total_count:($red_checks|length), check_runs:$red_checks}
         else . end)
     | .routes = $new + .routes
-    # The envelope red_report publishes for world `l`, the settlement the head would raise when
-    # the counted set reports the red.
-    | . + (if $world == "l" then {reported:published($shown)} else {} end)' \
+    # The envelope red_report publishes in a world whose counted set the rig reports (world `l`),
+    # the settlement the head would raise when the counted set reports the red.
+    | . + (if $facts.report then {reported:published($shown)} else {} end)' \
     "$R/fixtures.json" >"$R/fixtures.red.json"
-  if [ "$world" = l ]; then
+  if jq -e .report <<<"$facts" >/dev/null; then
     jq '.reported' "$R/fixtures.red.json" >"$R/reported.json"
     jq 'del(.reported)' "$R/fixtures.red.json" >"$R/fixtures.json"
     rm -f "$R/fixtures.red.json"
@@ -2048,45 +2138,41 @@ red_fixture() {
     mv "$R/fixtures.red.json" "$R/fixtures.json"
   fi
   # The world the scorer reads, beside worker_fixture's: the red check, the run and job that carry
-  # it, what the head settles at once the re-run is pressed, the failing line the world's log read
-  # answers (`log`, empty where that read answers an error), and, where the red is a test, that
-  # test's full name (`test`, empty where it is none). score.ts's redAtTheHead judges the role's
-  # record against `log` and its `dispatch search` against `test`, so that neither rests on how
-  # the role printed its own log read.
-  jq --arg world "$world" --arg check "$check" --arg job "$job" --arg after "$after" \
+  # it, the failing line the world's log read answers (`log`, empty where that read answers an
+  # error), where the red is a test, that test's full name (`test`, empty where it is none), and
+  # the world's facts (red_world). score.ts's redAtTheHead judges the role's record against `log`
+  # and its `dispatch search` against `test`, so that neither rests on how the role printed its own
+  # log read.
+  jq --arg world "$world" --arg check "$check" --arg job "$job" --argjson facts "$facts" \
     --arg log "$world_log" --arg test "$test_name" \
     --argjson run_id "$run_id" --argjson job_id "$job_id" \
-    '. + {world:$world, check:$check, job:$job, after:$after, run_id:$run_id, job_id:$job_id,
-          log:$log, test:$test}' \
+    '. + {world:$world, check:$check, job:$job, run_id:$run_id, job_id:$job_id, log:$log,
+          test:$test} + $facts' \
     "$R/world.json" >"$R/world.red.json"
   mv "$R/world.red.json" "$R/world.json"
 }
 
 # red_report: the rig reports the check world `l`'s counted set had not reported, between that
-# world's two turns and after the role's first turn has ended. Each of the counted reads drops
-# the answer that reported no red — red_fixture wrote three answers for that world, and the
-# other eleven carry two — so the counted set now reports the check red before the re-run and
-# green after it, as every other world's counted reads already do. Then the settlement the head's
-# checks would raise goes to the run's listener, the envelope red_fixture wrote to
-# <run>/reported.json, as the re-run's own route publishes one; a publish that fails, or that a
-# listener holds past twenty seconds, is noted and the run goes on, since the turn below runs
-# whether the wake reached the role or not.
+# world's two turns and after the role's first turn has ended. Each route red_fixture marked
+# `unreported` drops its first answer, the one that reported no red, and the mark with it — the
+# gh stand-in keeps that mark through its own writes of fixtures.json — so the counted set now
+# reports the check red before the re-run and green after it, as every other world's counted
+# reads already do. Then the settlement the head's checks would raise goes to the run's listener,
+# the envelope red_fixture wrote to <run>/reported.json, through the gh stand-in's own publish
+# (`gh-standin.ts --publish`), the one the re-run's own route publishes with; a publish that
+# fails, or that a listener holds past the stand-in's five seconds, is noted and the run goes on,
+# since the turn below runs whether the wake reached the role or not.
 # <run>/reported-at is the moment the counted set reported it, which score.ts's redAtTheHead
 # reads the role's re-run and its first turn against.
 red_report() {
-  local url token
-  jq '.routes |= map(if (.replies|length) == 3 then .replies |= .[1:] else . end)' \
+  local url
+  jq '.routes |= map(if .unreported then .replies |= .[1:] | del(.unreported) else . end)' \
     "$R/fixtures.json" >"$R/fixtures.reported.json"
   mv "$R/fixtures.reported.json" "$R/fixtures.json"
   date -u +%Y-%m-%dT%H:%M:%SZ >"$R/reported-at"
-  # The trailing slash goes, as gh-standin.ts's own publish strips it (`url.replace(/\/+$/, "")`),
-  # so the two agree on an ENVOY_URL written with one.
   url=$(sed -n 's/^ENVOY_URL=//p' "$services_env")
-  url=${url%/}
-  token=$(sed -n 's/^ENVOY_TOKEN_FILE=//p' "$services_env")
-  curl -fsS --max-time 20 -o /dev/null -X POST -H "Authorization: Bearer $(<"$token")" \
-    -H 'Content-Type: application/json' --data-binary @"$R/reported.json" \
-    "$url/v1/messages/publish" ||
+  ENVOY_URL=$url ENVOY_TOKEN_FILE=$(sed -n 's/^ENVOY_TOKEN_FILE=//p' "$services_env") \
+    bun "$here/gh-standin.ts" --publish "$R/reported.json" ||
     note "the report of the check reached no listener at $url"
 }
 
@@ -2105,26 +2191,23 @@ rerun_pressed() {
 }
 
 # run_red_at_the_head NAME N INDEX START WORLD: run_tester_proof's run with the world's red at the
-# head (red_fixture), for the one role that holds the phase in it — the tester in a to h and in k
-# and l, the reviewer in i and j — and never two workers. A world that expects a re-run takes a
+# head (red_fixture), for the one role that holds the phase in it, which the world's facts name
+# (red_world, read from world.json), and never two workers. A world that expects a re-run takes a
 # second turn once the re-run has reached calls.jsonl: the role ended its first turn waiting, and
 # the re-run's route has already published the settlement, which the role's subscription carries
-# to it. World `l` takes its second turn on the rig's own report of the check instead
-# (red_report), the role having ended its first turn waiting for the counted set to report it.
+# to it. A world whose counted set the rig reports (`report`, world `l`) takes its second turn on
+# the rig's own report of the check instead (red_report), the role having ended its first turn
+# waiting for the counted set to report it.
 # A world whose re-run never came, and a second turn that settles nothing, are the run's result,
 # which the scorer reads; neither fails the rig.
 # <run>/turns.txt has one line per turn, `<turn> <assignment|settlement|report> <the moment the
 # turn ended, RFC 3339> <exit line>`, and each turn's output is <run>/out-<turn>.txt.
 run_red_at_the_head() {
-  local name=$1 n=$2 index=$3 start=$4 world=$5 role phase turns wake state project port pr head check version
+  local name=$1 n=$2 index=$3 start=$4 world=$5 role phase turns report wake told='' state project port pr head check version
   printf '%s\n' "$world" >"$R/world.txt"
-  case $world in i | j) role=reviewer phase=reviewing ;; *) role=tester phase=testing ;; esac
-  case $world in d | e | f) turns=1 ;; *) turns=2 ;; esac
   worker_world "$index" "$start" "$world"
-  # The architect's assignment for the world's phase, in run_tester_proof's shape. The issue holds
-  # an implement record and no test record, since no tester ran here, so the reviewer's `Handoff:`
-  # line names that implement record and its version; the daemon's own reviewer task would name the
-  # test record the tester wrote (packages/daemon/internal/workflow/effects.go).
+  read -r role phase turns report < <(jq -r '"\(.role) \(.phase) \(.turns) \(.report)"' "$R/world.json")
+  # The architect's assignment for the world's phase, in run_tester_proof's shape.
   #
   # World l's task names the failing check, as the daemon's own task names the checks a red moved
   # the issue for (effects.go). Without it the role has no sign of the red at all, since the
@@ -2132,15 +2215,8 @@ run_red_at_the_head() {
   # judging on, so the world asked the role to wait for something it could not know about: four
   # of its five head runs of 2026-11-12 completed a green round, correctly by every rule the page
   # gives them.
-  local told=''
-  [ "$world" != l ] || told=" The daemon reports $check red at that head."
-  if [ "$role" = reviewer ]; then
-    printf "Architect → reviewer, %s. The tester has finished: PR #%s (%s, repository %s) is at %s.%s Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Tester's verdict: pass. Review it and finish your phase.\n" \
-      "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$told" "$version" "$worker_key" "$version" >"$R/prompt.txt"
-  else
-    printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s.%s Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
-      "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$told" "$version" "$worker_key" "$version" >"$R/prompt.txt"
-  fi
+  [ "$report" != true ] || told="The daemon reports $check red at that head."
+  architect_assignment "$role" "$told"
   boot_worker "$role"
   launch "$name"
   : >"$R/turns.txt"
@@ -2151,8 +2227,8 @@ run_red_at_the_head() {
   # that pressed it. World `l` waits on no re-run: the rig reports the check the counted set had
   # not reported, which is that world's own wake (red_report).
   wake=''
-  if [ "$world" = l ]; then
-    red_report >>"$R/fixture.log" 2>&1 || fail "the world l report failed; see $R/fixture.log"
+  if [ "$report" = true ]; then
+    red_report >>"$R/fixture.log" 2>&1 || fail "the world $world report failed; see $R/fixture.log"
     wake=report
   elif [ "$turns" = 2 ] && rerun_pressed 60; then
     wake=settlement

@@ -18,7 +18,7 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Nine call sites read a DSN with this guard before they start anything, because the server must
+# Ten call sites read a DSN with this guard before they start anything, because the server must
 # be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
 # verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
 # envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
@@ -26,10 +26,12 @@
 # DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. The ninth is
 # lib/live-daemon-proof.sh, whose prerequisites check
 # reads LEGION_TEST_PG_DSN for each proof that makes that run, which is every entry script that
-# sources it. Seven of the nine call sites call this function.
-# envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
-# run_database_url alone, which begins with this guard's own check. Every proof that writes a
-# server its caller's DSN names reads that DSN with this guard before it starts anything.
+# sources it. The tenth is packages/pi-legion/scripts/skill-scenarios/rig.sh, the skill-scenario
+# rig, whose own_dispatch reads SKILL_SCENARIOS_POSTGRES_URL for each run's own database. Seven of
+# the ten call sites call this function.
+# envoy-session-delivery.sh, dispatch-session-settings.sh and the skill-scenario rig read their
+# DSN with run_database_url alone, which begins with this guard's own check. Every proof that
+# writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 #
 # libpq's own parser answers which host the DSN names, because libpq and a URL parser read
 # different text as the host. libpq ends the user name at the first `@` and starts no query
@@ -101,7 +103,7 @@ require_loopback_dsn() {
 # well. envoy-session-delivery.sh and dispatch-session-settings.sh therefore call it in their
 # setup step as their one read of the DSN, before the builds, the services and the `create
 # database`, so a refused input ends the run where the run's other refusals are. The database's
-# name is only the shell's pid and random bytes, so each has it that early. The three other
+# name is only the shell's pid and random bytes, so each has it that early. The four other
 # callers name a database per run or per attempt, and call this where that name is made.
 #
 # lib/loopback-dsn.py does the work: it rebuilds the connection string from the keywords libpq
