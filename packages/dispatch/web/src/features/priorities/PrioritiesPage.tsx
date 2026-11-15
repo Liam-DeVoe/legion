@@ -91,13 +91,13 @@ export function PrioritiesPage(): ReactNode {
         <PrioritiesTable rows={rows} titles={titles} />
       )}
 
-      <section aria-label="Running under no priority" className="space-y-2">
+      <section aria-label="Active under no priority" className="space-y-2">
         <CountedHeading
           count={body.work_under_no_priority.count}
-          title="Running under no priority"
+          title="Active under no priority"
         />
         <IssuesTable
-          label="Issues running under no priority"
+          label="Issues active under no priority"
           layout={NO_PRIORITY_LAYOUT}
           listing={NO_PRIORITY}
           stateKey="n"

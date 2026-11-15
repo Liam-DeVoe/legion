@@ -466,7 +466,7 @@ function visits(seed: Seeded): readonly Visit[] {
         heading(page, "Priorities"),
         page.locator('section[aria-label="Priorities"]'),
         page.getByRole("table", { name: "Priorities table" }),
-        page.locator('section[aria-label="Running under no priority"]'),
+        page.locator('section[aria-label="Active under no priority"]'),
         page.locator('section[aria-label="Parked priority work"]'),
       ],
       url: "/priorities",

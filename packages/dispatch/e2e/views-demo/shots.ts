@@ -148,14 +148,14 @@ async function tabCount(page: Page, id: string): Promise<number> {
 }
 
 /** `/priorities` once its three tables have drawn their rows: the priorities and the two
- *  faults. The design names them "Running under no priority" and "Parked priority work"; main,
+ *  faults. The design names them "Active under no priority" and "Parked priority work"; main,
  *  where the before pictures are taken, "In flight under no priority" and "Priority work in
  *  backlog or icebox". */
 async function openPriorities(page: Page): Promise<void> {
   await open(
     page,
     "/priorities",
-    prioritySection(page, "Running under no priority", "In flight under no priority")
+    prioritySection(page, "Active under no priority", "In flight under no priority")
   );
   await prioritySection(page, "Parked priority work", "Priority work in backlog or icebox").waitFor(
     { timeout: 30_000 }
